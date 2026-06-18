@@ -111,9 +111,9 @@ describe('ClaimAttemptTimeline — rendered rows', () => {
     );
     const r1 = screen.getByTestId('claim-attempt-row-1');
     const r2 = screen.getByTestId('claim-attempt-row-2');
-    // The "lost" row should have a background style; the won row should not.
-    expect(r2.getAttribute('style') ?? '').toContain('background');
-    expect(r1.getAttribute('style') ?? '').not.toContain('background');
+    // The highlighted row should carry a distinct background from the base grid row.
+    expect(r2.getAttribute('style') ?? '').toContain('rgba(80, 120, 200, 0.06)');
+    expect(r1.getAttribute('style') ?? '').not.toContain('rgba(80, 120, 200, 0.06)');
   });
 
   it('renders an em-dash for ts=0 (defensive)', () => {

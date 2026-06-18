@@ -35,6 +35,28 @@ vi.mock('../../harness/ChatPanel', () => ({
     </div>
   ),
 }));
+vi.mock('../../harness/Select', () => ({
+  Select: ({ value, onChange, options, disabled, testId, ariaLabel, placeholder }: {
+    value: string;
+    onChange: (value: string) => void;
+    options: { value: string; label: string }[];
+    disabled?: boolean;
+    testId?: string;
+    ariaLabel?: string;
+    placeholder?: string;
+  }) => (
+    <select
+      aria-label={ariaLabel}
+      data-testid={testId}
+      disabled={disabled}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      <option value="">{placeholder ?? 'Select'}</option>
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  ),
+}));
 
 import AdvChatPanel from './AdvChatPanel';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';

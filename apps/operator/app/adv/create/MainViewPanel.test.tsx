@@ -9,13 +9,14 @@
 // tests seed.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-const { nuqs, view, maps, setters } = vi.hoisted(() => ({
+const { nuqs, view, maps, setters, dialogs } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
   view: { value: 'plans' as string },
   maps: { visiblePlans: [] as Array<{ slug: string }>, planList: { loading: false } },
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
+  dialogs: { confirmAnswer: false, confirm: vi.fn() },
 }));
 function mkSetter(key: string) {
   if (!setters[key]) setters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });
@@ -55,6 +56,12 @@ vi.mock('./QueuePanel', () => ({ default: () => <div data-testid="queue-panel" /
 vi.mock('./PreviewPanel', () => ({ default: () => <div data-testid="preview-panel" /> }));
 vi.mock('./SessionsPanel', () => ({ default: () => <div data-testid="sessions-panel" /> }));
 vi.mock('./ObservationsPanel', () => ({ default: () => <div data-testid="observations-panel" /> }));
+vi.mock('@/app/harness/useConfirmDialog', () => ({
+  useConfirmDialog: () => ({
+    confirm: dialogs.confirm,
+    element: null,
+  }),
+}));
 
 import MainViewPanel from './MainViewPanel';
 
@@ -70,6 +77,9 @@ beforeEach(() => {
   view.value = 'plans';
   maps.visiblePlans = [];
   maps.planList = { loading: false };
+  dialogs.confirmAnswer = false;
+  dialogs.confirm.mockReset();
+  dialogs.confirm.mockImplementation(async () => dialogs.confirmAnswer);
 });
 afterEach(() => cleanup());
 
@@ -148,10 +158,6 @@ describe('<MainViewPanel /> view routing', () => {
 });
 
 describe('<MainViewPanel /> open-plan close guard', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it('closes (clears ?plan) immediately when there are no unsaved edits', () => {
     view.value = 'plans';
     nuqs.plan = 'open-plan';
@@ -161,24 +167,24 @@ describe('<MainViewPanel /> open-plan close guard', () => {
   });
 
   it('keeps the plan open when edits are dirty and the discard prompt is declined', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    dialogs.confirmAnswer = false;
     view.value = 'plans';
     nuqs.plan = 'open-plan';
     render(<MainViewPanel {...mkProps()} />);
     fireEvent.click(screen.getByTestId('pd-dirty')); // mark dirty
     fireEvent.click(screen.getByTestId('pd-close'));
-    expect(window.confirm).toHaveBeenCalled();
+    expect(dialogs.confirm).toHaveBeenCalled();
     expect(setters.plan).not.toHaveBeenCalled();
   });
 
   it('discards and closes when dirty but the prompt is confirmed', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    dialogs.confirmAnswer = true;
     view.value = 'plans';
     nuqs.plan = 'open-plan';
     render(<MainViewPanel {...mkProps()} />);
     fireEvent.click(screen.getByTestId('pd-dirty'));
     fireEvent.click(screen.getByTestId('pd-close'));
-    expect(window.confirm).toHaveBeenCalled();
-    expect(setters.plan).toHaveBeenCalledWith(null);
+    expect(dialogs.confirm).toHaveBeenCalled();
+    return waitFor(() => expect(setters.plan).toHaveBeenCalledWith(null));
   });
 });

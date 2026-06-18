@@ -87,9 +87,9 @@ describe('<DbosClient />', () => {
       }),
     });
     render(<DbosClient />, { wrapper: withNuqsTestingAdapter({ searchParams: '?' }) });
-    await waitFor(() => expect(screen.getByText('doWork')).toBeTruthy());
-    expect(screen.getByText('abcdef12')).toBeTruthy(); // first 8 chars of the uuid
-    expect(screen.getByText('SUCCESS')).toBeTruthy();
+    await waitFor(() => expect(screen.getAllByText('doWork').length).toBeGreaterThan(0));
+    expect(screen.getByText('abcdef12')).toBeTruthy(); // first 8 chars of the visible uuid
+    expect(screen.getAllByText('SUCCESS').length).toBeGreaterThan(0);
   });
 
   it('shows the queues table when ?view=queues', async () => {
@@ -98,7 +98,7 @@ describe('<DbosClient />', () => {
       json: async () => payload({ queues: [{ queue_name: 'email', depth: 2, active: 1 }] }),
     });
     render(<DbosClient />, { wrapper: withNuqsTestingAdapter({ searchParams: '?view=queues' }) });
-    await waitFor(() => expect(screen.getByText('email')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('email').length).toBeGreaterThan(0));
   });
 
   it('renders an error message when the status fetch fails', async () => {

@@ -117,7 +117,7 @@ describe('ProvisionalOwnerExplainer — P-069d', () => {
 
   it('overlay click also calls onClose', () => {
     const close = vi.fn();
-    render(
+    const { container } = render(
       <ProvisionalOwnerExplainer
         open={true}
         ownerLogin="alice"
@@ -125,7 +125,9 @@ describe('ProvisionalOwnerExplainer — P-069d', () => {
         onClose={close}
       />,
     );
-    fireEvent.click(screen.getByTestId('provisional-owner-explainer'));
+    const overlay = container.ownerDocument.querySelector('[data-anim="fade"]');
+    expect(overlay).toBeTruthy();
+    fireEvent.click(overlay!);
     expect(close).toHaveBeenCalledOnce();
   });
 

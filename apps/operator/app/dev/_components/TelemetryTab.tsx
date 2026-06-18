@@ -169,6 +169,7 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
                     type="button"
                     className="pc-dev-btn-mini"
 
+                    aria-label="Open in API tab with this tool selected"
                     onClick={() => onRerun({ toolName: row.tool_name, workspace: row.workspaces[0] })}
                   >↗</button></Tooltip>
                 ),

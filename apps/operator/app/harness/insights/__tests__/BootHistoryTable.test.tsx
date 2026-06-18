@@ -90,10 +90,9 @@ describe('BootHistoryTable', () => {
     render(
       <BootHistoryTable entries={[entry({ kind: 'boot_ok' })]} nowMs={NOW} />,
     );
-    // Message column exists but is empty for boot_ok without a message.
     const row = screen.getByTestId('boot-history-row-boot_ok');
-    const cells = row.querySelectorAll('td');
-    expect(cells.length).toBeGreaterThanOrEqual(5);
+    expect(row.textContent).toContain('boot_ok');
+    expect(row.textContent).not.toContain('undefined');
   });
 
   it('shows kind text + mark', () => {

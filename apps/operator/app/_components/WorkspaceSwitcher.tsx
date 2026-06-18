@@ -336,6 +336,7 @@ export default function WorkspaceSwitcher() {
                       type="button"
                       onClick={() => startRename(ws)}
 
+                      aria-label={`Rename ${ws.name}`}
                       className="pc-workspace-menu-action"
                       style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: 'pointer', padding: '0 4px' }}
                     >
@@ -345,6 +346,7 @@ export default function WorkspaceSwitcher() {
                       type="button"
                       onClick={() => onDelete(ws)}
 
+                      aria-label={`Delete ${ws.name}`}
                       disabled={undeletable(ws.id) || reg.workspaces.length <= 1}
                       className="pc-workspace-menu-action"
                       style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: undeletable(ws.id) || reg.workspaces.length <= 1 ? 'not-allowed' : 'pointer', padding: '0 4px', opacity: undeletable(ws.id) || reg.workspaces.length <= 1 ? 0.3 : 1 }}
