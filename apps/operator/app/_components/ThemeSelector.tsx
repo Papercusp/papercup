@@ -14,10 +14,10 @@
  * dropdown is agent-driveable and survives reloads.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, useState } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { Tooltip } from '../harness/Tooltip';
+import { Popover } from '../harness/Popover';
 import RouteLink from './RouteLink';
 import {
   fetchCustomThemes,
@@ -41,7 +41,7 @@ function ThemeSwatch({ themeId }: { themeId: string }) {
         flex: '0 0 auto',
         borderRadius: 3,
         background: 'var(--accent)',
-        border: '1px solid var(--border-strong, #2a2a2a)',
+        border: '1px solid var(--border-strong)',
       }}
     />
   );
@@ -52,9 +52,6 @@ export default function ThemeSelector() {
   const activeTheme = useActiveTheme();
   const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
   const wrapRef = useRef<HTMLSpanElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   // Load custom themes so they show alongside the built-ins. Fails quietly:
   // the /api/themes endpoint is unavailable until the operator restarts after
@@ -67,44 +64,6 @@ export default function ThemeSelector() {
     return () => { alive = false; };
   }, []);
 
-  // Outside-click / Escape close (mirrors WorkspaceSwitcher).
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (ev: MouseEvent) => {
-      const target = ev.target as Node;
-      if (wrapRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open, setOpen]);
-
-  // Anchor the portaled menu to the trigger; track layout shifts.
-  useLayoutEffect(() => {
-    if (!open) return;
-    const update = () => {
-      const btn = buttonRef.current;
-      if (!btn) return;
-      const r = btn.getBoundingClientRect();
-      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [open]);
-
   const themes = themeList(customThemes);
   const activeLabel = themes.find((t) => t.id === activeTheme)?.label ?? 'Theme';
 
@@ -115,19 +74,36 @@ export default function ThemeSelector() {
 
   return (
     <span ref={wrapRef} className="pc-theme-switcher" style={{ position: 'relative', fontSize: 13 }}>
-      <Tooltip label="Switch theme">
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        side="bottom"
+        align="end"
+        sideOffset={4}
+        zIndex={200}
+        ariaLabel="Switch theme"
+        contentClassName="pc-theme-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
+        contentStyle={{
+          minWidth: 200,
+          background: 'var(--bg-popover)',
+          backdropFilter: 'none',
+          WebkitBackdropFilter: 'none',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: 4,
+          boxShadow: '0 12px 32px color-mix(in oklab, black, transparent 40%), 0 0 0 1px color-mix(in oklab, var(--fg), transparent 96%)',
+        }}
+        trigger={
         <button
-          ref={buttonRef}
           type="button"
-          onClick={() => setOpen((v) => !v)}
           className="pc-theme-trigger"
           style={{
             display: 'inline-flex',
             alignItems: 'center',
             gap: 6,
             background: 'transparent',
-            border: '1px solid var(--border, #2a2a2a)',
-            color: 'var(--fg-dim, #aaa)',
+            border: '1px solid var(--border)',
+            color: 'var(--fg-dim)',
             padding: '3px 8px',
             borderRadius: 4,
             cursor: 'pointer',
@@ -143,32 +119,10 @@ export default function ThemeSelector() {
           </span>
           <span className="pc-theme-trigger-caret" style={{ opacity: 0.6 }}>▾</span>
         </button>
-      </Tooltip>
-      {open && menuPos && typeof document !== 'undefined' && createPortal(
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="Theme"
-          className="pc-theme-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
-          style={{
-            position: 'fixed',
-            top: menuPos.top,
-            right: menuPos.right,
-            minWidth: 200,
-            // Solid hex + backdrop-filter:none, portaled to <body> so it escapes
-            // the sticky header stacking context — identical treatment to the
-            // workspace menu (otherwise the OracleDock z:80 paints over it).
-            background: '#0f1319',
-            backdropFilter: 'none',
-            WebkitBackdropFilter: 'none',
-            border: '1px solid #2a3344',
-            borderRadius: 6,
-            padding: 4,
-            zIndex: 200,
-            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
-          }}
-        >
-          <div style={{ padding: '4px 8px', color: 'var(--fg-mute, #777)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        }
+      >
+        <div role="menu" aria-label="Theme">
+          <div style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             Theme
           </div>
           {themes.map((t) => {
@@ -189,7 +143,7 @@ export default function ThemeSelector() {
                   textAlign: 'left',
                   background: isCurrent ? 'var(--accent)' : 'transparent',
                   border: 'none',
-                  color: isCurrent ? 'var(--accent-ink, #06121c)' : 'inherit',
+                  color: isCurrent ? 'var(--accent-ink)' : 'inherit',
                   cursor: 'pointer',
                   font: 'inherit',
                   padding: '5px 8px',
@@ -205,7 +159,7 @@ export default function ThemeSelector() {
               </button></Tooltip>
             );
           })}
-          <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />
+          <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
           <RouteLink
             href="/settings/personalization"
             onClick={() => setOpen(false)}
@@ -214,7 +168,7 @@ export default function ThemeSelector() {
               display: 'block',
               width: '100%',
               textAlign: 'left',
-              color: 'var(--fg-dim, #aaa)',
+              color: 'var(--fg-dim)',
               textDecoration: 'none',
               font: 'inherit',
               padding: '4px 8px',
@@ -223,9 +177,8 @@ export default function ThemeSelector() {
           >
             Manage themes…
           </RouteLink>
-        </div>,
-        document.body,
-      )}
+        </div>
+      </Popover>
     </span>
   );
 }

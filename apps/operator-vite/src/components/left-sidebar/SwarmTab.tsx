@@ -19,6 +19,7 @@ import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import { useLexicon } from '@/lib/useLexicon';
+import { Chip } from '../ui';
 
 interface PresenceRecord {
   ownerId: string;
@@ -191,18 +192,17 @@ export default function SwarmTab({ active }: { active: boolean }) {
           {t('fleet')} · {roster.length} live
         </span>
         <span className="pclsb-panel__bar-spacer" />
-        <button
-          type="button"
-          className={`pclsb-chipbtn${comms ? ' is-on' : ''}`}
+        <Chip
+          active={comms}
           data-testid="left-sidebar-comms-toggle"
           onClick={() => setComms(!comms)}
         >
           comms
-        </button>
+        </Chip>
         {selected && (
-          <button type="button" className="pclsb-chipbtn" onClick={() => setSelected(null)}>
+          <Chip onClick={() => setSelected(null)}>
             ✕ filter
-          </button>
+          </Chip>
         )}
       </div>
 

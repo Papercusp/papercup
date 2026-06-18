@@ -23,6 +23,8 @@ import { startLoopPressureGovernor } from '@papercusp/operator-core/lib/loop-pre
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
+import { startCluster } from '@papercusp/operator-core/lib/cluster-fork';
+import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
 import { isBenignHostError } from './host-benign-errors';
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
@@ -59,8 +61,6 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-runBootstrap();
-
 // Port/host: `PAPERCUSP_HONO_PORT`/`PAPERCUSP_BIND_HOST` are the explicit
 // knobs (dev). The packaged desktop's Tauri main spawns the sidecar with
 // the generic `PORT` it already sets for every sidecar — accept that as a
@@ -75,72 +75,140 @@ const port = Number(
 );
 const hostname = process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1';
 
-// Export the resolved port so selfUrl() builds correct server-side
-// self-fetch origins inside this host (the operator brain's agentmcp
-// MCP URL, the <spawn> dispatch). Without it selfUrl() falls back to
-// the :3055 dev default — post-Vite-migration :3055 is the frontend
-// SPA, not this API host, so self-fetches would hit the wrong server.
-process.env.PORT = String(port);
+/**
+ * Start the request-serving plane: the HTTP server + per-process loop monitors +
+ * (opt-in) the PTY WS data plane + the RSS self-recycle watchdog. Runs in EACH
+ * cluster worker — and, in single-process mode, in the one process. Everything
+ * here is per-process state; the background machinery (runBootstrap) is separate.
+ */
+function startRequestServers(): void {
+  // Export the resolved port so selfUrl() builds correct server-side self-fetch
+  // origins inside this host (the operator brain's agentmcp MCP URL, the <spawn>
+  // dispatch). Without it selfUrl() falls back to the :3055 dev default — post-
+  // Vite-migration :3055 is the frontend SPA, not this API host.
+  process.env.PORT = String(port);
 
-// EI-79 observability: a standing event-loop-lag gauge. Silent on a healthy
-// host; logs a single structured warning when p95 loop delay over a 10s window
-// crosses 100ms — the signal that the main thread is CPU-bound (the exact shape
-// that degraded agent-mcp routes to 12-30s while /api/health stayed fast).
-startEventLoopLagMonitor();
+  // EI-79 observability: a standing event-loop-lag gauge. Silent on a healthy
+  // host; logs a single structured warning when p95 loop delay over a 10s window
+  // crosses 100ms — the signal that the main thread is CPU-bound. Per-process:
+  // each worker has its own event loop to watch.
+  startEventLoopLagMonitor();
 
-// P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()
-// (above) and, when the event loop is CRITICALLY saturated, makes the fleet shed
-// effective agent concurrency (AIMD multiplicative-decrease), ramping back as the
-// loop clears — so the box can't keep admitting agents into a wedged loop (the
-// crash-loop shape). Bounded under the user's cap + self-recovering; always-on
-// infra like the lag monitor + the P5-1 load-shedding it pairs with.
-startLoopPressureGovernor();
+  // P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()
+  // (above) and, when this process's event loop is CRITICALLY saturated, makes the
+  // fleet shed effective agent concurrency (AIMD multiplicative-decrease), ramping
+  // back as the loop clears. Bounded under the user's cap + self-recovering.
+  startLoopPressureGovernor();
 
-const server = serve({ fetch: handler, port, hostname }, (info) => {
-  console.log(`[hono-host] listening on http://${hostname}:${info.port}`);
+  const server = serve({ fetch: handler, port, hostname }, (info) => {
+    console.log(`[hono-host] listening on http://${hostname}:${info.port} (pid=${process.pid})`);
 
-  // Guardrail: a stray PAPERCUSP_WORKSPACE_ID pin silently rebinds every
-  // non-request path on this multi-workspace host. Warn loudly at boot — a bare
-  // `# TEMPORARY` comment in .env.local was not enough to stop one surviving.
-  // (Logic + rationale in lib/workspace-pin-guard.ts, unit-tested.)
-  const pinWarning = workspacePinWarning();
-  if (pinWarning) console.warn(pinWarning);
-});
+    // Guardrail: a stray PAPERCUSP_WORKSPACE_ID pin silently rebinds every
+    // non-request path on this multi-workspace host. Warn loudly at boot — a bare
+    // `# TEMPORARY` comment in .env.local was not enough to stop one surviving.
+    // (Logic + rationale in lib/workspace-pin-guard.ts, unit-tested.)
+    const pinWarning = workspacePinWarning();
+    if (pinWarning) console.warn(pinWarning);
+  });
 
-// PTY WebSocket data plane (opt-in via PAPERCUSP_PTY_WS_PORT — bin/dev sets
-// 3056). The HTTP control plane (/pty/spawn|input|resize|kill) lives in this
-// host's routes, and PiPanel PREFERS ws://:<port>/pty/<id> (AttachAddon) over
-// the SSE fallback — but the server lost its boot wiring when the Next
-// instrumentation.ts path was retired, leaving the WS transport silently dead
-// (pty-stack.integration.test.ts pins it). Must run in THIS process: the pty
-// registry the WS attaches to is in-process state shared with the spawn
-// routes. Fail-soft on EADDRINUSE (a sibling host already bound it).
-const ptyWsPort = Number(process.env.PAPERCUSP_PTY_WS_PORT ?? '');
-if (Number.isFinite(ptyWsPort) && ptyWsPort > 0) {
-  startPtyWsServer({ port: ptyWsPort });
+  // PTY WebSocket data plane (opt-in via PAPERCUSP_PTY_WS_PORT — bin/dev sets
+  // 3056). The HTTP control plane (/pty/spawn|input|resize|kill) lives in this
+  // host's routes, and PiPanel PREFERS ws://:<port>/pty/<id> (AttachAddon) over
+  // the SSE fallback. Must run in THIS process: the pty registry the WS attaches
+  // to is in-process state shared with the spawn routes — which is precisely why
+  // PTY is INCOMPATIBLE with multi-worker clustering (spawn + WS could land on
+  // different workers). It's desktop/dev-only (off on the server cluster target),
+  // so the two never coexist. Fail-soft on EADDRINUSE (a sibling already bound it).
+  const ptyWsPort = Number(process.env.PAPERCUSP_PTY_WS_PORT ?? '');
+  if (Number.isFinite(ptyWsPort) && ptyWsPort > 0) {
+    startPtyWsServer({ port: ptyWsPort });
+  }
+
+  // Bounded-RSS self-recycle (per-process): the host leaks retained heap under
+  // fleet load (~0.2 GB/min, no plateau); past ~4 GB the GC pauses stall the event
+  // loop and intermittently break MCP mounts / invokes / health (2026-06-07).
+  // Recycle at a high-water mark BELOW the stall zone — drain in-flight HTTP, then
+  // exit; the systemd unit's `Restart=always` (RestartSec=5s) brings up a fresh
+  // low-RSS process. See lib/memory-watchdog.ts.
+  if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== '0') {
+    const limitMb = Number(process.env.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB) || 3200;
+    startMemoryWatchdog({
+      rssLimitMb: limitMb,
+      onTrip: ({ rssMb }) => {
+        console.warn(
+          '[memory-watchdog] RSS high-water mark tripped — draining + recycling host (systemd will restart)',
+          { rssMb, rssLimitMb: limitMb },
+        );
+        // Drain in-flight HTTP + tear down the P2P substrate (Hypercores,
+        // Hyperswarm sockets, PG LISTEN close-hooks) before exit — a bare
+        // process.exit() abandons those handles (audit P-002, EI-127). The
+        // helper hard-exits after 8s if either side hangs.
+        gracefulHostRecycle({ server: server as { close?: (cb?: () => void) => void } });
+      },
+    });
+  }
 }
 
-// Bounded-RSS self-recycle: the host leaks retained heap under fleet load
-// (~0.2 GB/min, no plateau); past ~4 GB the GC pauses stall the event loop and
-// intermittently break MCP mounts / invokes / health (2026-06-07). Recycle at a
-// high-water mark BELOW the stall zone — drain in-flight HTTP, then exit; the
-// systemd unit's `Restart=always` (RestartSec=5s) brings up a fresh low-RSS
-// process. The PAPERCUSP_* env knobs let an operator tune/disable without a
-// redeploy. See lib/memory-watchdog.ts.
-if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== '0') {
-  const limitMb = Number(process.env.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB) || 3200;
-  startMemoryWatchdog({
-    rssLimitMb: limitMb,
-    onTrip: ({ rssMb }) => {
-      console.warn(
-        '[memory-watchdog] RSS high-water mark tripped — draining + recycling host (systemd will restart)',
-        { rssMb, rssLimitMb: limitMb },
-      );
-      // Drain in-flight HTTP + tear down the P2P substrate (Hypercores,
-      // Hyperswarm sockets, PG LISTEN close-hooks) before exit — a bare
-      // process.exit() abandons those handles (audit P-002, EI-127). The
-      // helper hard-exits after 8s if either side hangs.
-      gracefulHostRecycle({ server: server as { close?: (cb?: () => void) => void } });
-    },
-  });
+/**
+ * Resolve the request-worker count. DEFAULT-OFF (1 = single process). `auto`/`on`/
+ * `1` ⇒ the host's recommended count (resource-profile.httpWorkers, which is 1 on a
+ * laptop/workstation/embedded-PG host anyway); a number ⇒ exactly that many. This is
+ * a process-MODEL boot switch (infra), not a runtime feature flag — env is the right
+ * home, alongside PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_UTILITY_HOST.
+ */
+function resolveClusterWorkers(): number {
+  const raw = process.env.PAPERCUSP_CLUSTER_WORKERS ?? process.env.PAPERCUSP_CLUSTER;
+  if (!raw || raw === '0' || raw === 'off' || raw === 'false') return 1;
+  if (raw === 'auto' || raw === 'on' || raw === 'true' || raw === '1') {
+    return Math.max(1, getResourceProfile().httpWorkers);
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+// P3-2 (operator-scalability-event-loop-2026-06-16): optional node:cluster. DEFAULT
+// OFF → single process: startCluster runs onPrimary() then onWorker() inline, and
+// runBootstrap() is idempotent (globalThis guard), so the net boot is byte-identical
+// to the pre-cluster sequence (runBootstrap → request servers). When PAPERCUSP_CLUSTER
+// is enabled on a server-class host, the PRIMARY runs the background machinery
+// (DBOS/git-sync/substrate — which MUST be exactly one process) and forks N
+// request-only WORKERS — each a PAPERCUSP_BACKGROUND_WORKERS=0 host (the battle-tested
+// :3170 request-only mode) that shares the port via cluster's built-in round-robin.
+// Workers carry PAPERCUSP_EXPECTED_OPERATOR_PROCS so their PG pools are sized for the
+// fleet and can't multiply past max_connections (the 2026-06-17 exhaustion).
+// ENABLING is owner-gated: cross-process sync-invalidate needs the pg-listen-hub on,
+// and it should be validated under the Tauri shell / a staging restart first.
+const clusterWorkers = resolveClusterWorkers();
+if (clusterWorkers > 1) {
+  // Size THIS (primary) process's pools for the fleet too; workers inherit + the
+  // fork env reinforces it.
+  process.env.PAPERCUSP_EXPECTED_OPERATOR_PROCS = String(getResourceProfile().processCount);
+}
+const clusterHandle = startCluster({
+  workers: clusterWorkers,
+  workerEnv: {
+    PAPERCUSP_BACKGROUND_WORKERS: '0',
+    PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(getResourceProfile().processCount),
+  },
+  onPrimary: () => runBootstrap(), // background machinery (single process in cluster mode)
+  onWorker: () => {
+    // A worker is request-only: runBootstrap with background gated off (fork env),
+    // then start the HTTP/loop servers. In single mode this is the same process as
+    // onPrimary, so runBootstrap no-ops the second call.
+    runBootstrap();
+    startRequestServers();
+  },
+});
+
+// Graceful drain on shutdown — PRIMARY ONLY (single/worker keep Node's default
+// SIGTERM = exit, so a plain `systemctl restart` still works). The primary stops
+// respawning + signals workers to exit, then exits itself so systemd restarts clean.
+if (clusterHandle.role === 'primary') {
+  const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
+    console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
+    clusterHandle.drain?.(sig);
+    setTimeout(() => process.exit(0), 2000).unref?.();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }

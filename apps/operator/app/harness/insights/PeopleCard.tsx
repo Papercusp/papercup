@@ -170,7 +170,7 @@ export function PeopleCard(props: PeopleCardProps): ReactNode {
               key={p.github_user_id}
               href={buildProfileHref(p)}
               style={PERSON}
-              title={p.display_name ?? p.login}
+              aria-label={p.display_name ? `${p.display_name} profile` : `${p.login} profile`}
               data-testid={`people-card-person-${p.github_user_id}`}
             >
               <div style={AVATAR_WRAP}>

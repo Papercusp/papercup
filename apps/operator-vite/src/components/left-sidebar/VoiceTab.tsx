@@ -16,6 +16,7 @@ import VoiceChannelPanel from '../voice-video/VoiceChannelPanel';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
 import { useLexicon } from '@/lib/useLexicon';
+import { Chip } from '../ui';
 
 export default function VoiceTab({ active }: { active: boolean }) {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
@@ -31,14 +32,12 @@ export default function VoiceTab({ active }: { active: boolean }) {
           peers{harnessSlug ? ` · ${harnessSlug}` : ''}
         </span>
         <span className="pclsb-panel__bar-spacer" />
-        <button
-          type="button"
-          className="pclsb-chipbtn"
+        <Chip
           onClick={() => navigateClient('/settings/voice')}
           aria-label="Peer audio settings: engines, role voices, spend"
         >
           <Settings2 size={12} aria-hidden="true" /> settings
-        </button>
+        </Chip>
       </div>
       {active && voiceOn && <VoiceChannelPanel className="pclsb-voice__channels" />}
       {active && videoOn && harnessSlug ? (

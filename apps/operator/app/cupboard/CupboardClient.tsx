@@ -815,7 +815,7 @@ export function ListingCard({
             target="_blank"
             rel="noopener noreferrer"
             className="pc-button"
-            title={`github.com/${repoSlug}`}
+            aria-label={`Open github.com/${repoSlug}`}
           >
             <ExternalLink size={13} />
           </a>

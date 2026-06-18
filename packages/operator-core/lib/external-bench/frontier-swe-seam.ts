@@ -37,6 +37,14 @@ export interface FrontierSweSeamConfig {
   oracle?: boolean;
   /** Extra `docker run` flags (e.g. resource limits) the driver wants applied uniformly. Default none. */
   extraRunArgs?: string[];
+  /**
+   * The vendored Proximal-Labs/frontier-swe checkout (default PAPERCUSP_FRONTIER_SWE_DIR). At GRADE time the
+   * seam `docker cp`s `<repoDir>/tasks/<id>/tests` into the container at `/tests` (and `/solution` in oracle
+   * mode) — the task image bakes only `/app`; Harbor uploads tests/ at verify time, so we mirror that. Staging
+   * at GRADE time (post-agent) keeps the hidden tests away from the agent (anti-cheat). Confirmed against the
+   * real harness 2026-06-18: gold control → 0.985, empty → 0.0 (libexpat-to-x86asm).
+   */
+  repoDir?: string;
 }
 
 /** Build FrontierSWE's CloneGradeSeam — supplied once to the shared topology runtime; every arm uses it identically. */
@@ -64,6 +72,17 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
     },
 
     async grade(task: BenchTask, handle: FrontierSweEnvHandle) {
+      // Stage the hidden tests INTO the container at GRADE time (post-agent) — the image bakes only /app; Harbor
+      // uploads tests/ at verify time. Doing it here (not in clone) keeps /tests away from the agent (anti-cheat).
+      const repoDir = cfg.repoDir ?? process.env.PAPERCUSP_FRONTIER_SWE_DIR;
+      if (repoDir) {
+        try {
+          await exec('docker', ['cp', `${repoDir}/tasks/${handle.instanceId}/tests`, `${handle.containerId}:/tests`]);
+          if (cfg.oracle) await exec('docker', ['cp', `${repoDir}/tasks/${handle.instanceId}/solution`, `${handle.containerId}:/solution`]);
+        } catch (e) {
+          return { resolved: null, score: null, graderStatus: 'error', detail: { stageTestsError: e instanceof Error ? e.message : String(e) } };
+        }
+      }
       // Run the task's OWN verifier in the container, then read the reward back — reusing the grader primitives.
       const { cmd, args, cwd, env } = liveBuildVerifierCommand({
         instanceId: handle.instanceId,

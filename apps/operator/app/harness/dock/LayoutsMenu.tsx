@@ -20,6 +20,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useState } from 'react';
 import { Layers, X } from 'lucide-react';
 import { usePromptDialog } from '../usePromptDialog';
+import { Popover } from '../Popover';
 import {
   getLayoutSnapshot,
   loadLayout,
@@ -64,15 +65,6 @@ export function LayoutsMenu({
   useEffect(() => {
     if (open) void refresh();
   }, [open, refresh]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
 
   const saveAs = useCallback(async () => {
     const name = await askPrompt({
@@ -120,9 +112,27 @@ export function LayoutsMenu({
   return (
     <div style={{ position: 'relative', display: 'inline-block' }} className={className}>
       {promptEl}
-      <Tooltip label="Save, switch, or reset named layouts"><button
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        side="bottom"
+        align="end"
+        sideOffset={4}
+        ariaLabel="Layouts"
+        contentStyle={{
+          minWidth: 240,
+          maxHeight: 360,
+          overflowY: 'auto',
+          background: 'var(--bg-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          boxShadow: '0 8px 24px color-mix(in oklab, black, transparent 50%)',
+          padding: 4,
+          zIndex: 999,
+        }}
+        trigger={
+        <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
         aria-label="Layouts menu"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -135,39 +145,17 @@ export function LayoutsMenu({
           fontSize: 11,
           background: 'var(--bg-2)',
           color: 'var(--fg)',
-          border: '1px solid var(--border, #333)',
+          border: '1px solid var(--border)',
           borderRadius: 3,
           cursor: 'pointer',
         }}
       >
         <Layers size={12} aria-hidden />
         Layouts
-      </button></Tooltip>
-      {open && (
-        <>
-          <div
-            onClick={() => setOpen(false)}
-            style={{ position: 'fixed', inset: 0, zIndex: 998 }}
-            aria-hidden
-          />
-          <div
-            role="menu"
-            aria-label="Layouts"
-            style={{
-              position: 'absolute',
-              top: 28,
-              right: 0,
-              minWidth: 240,
-              maxHeight: 360,
-              overflowY: 'auto',
-              background: 'var(--bg-2)',
-              border: '1px solid var(--border, #333)',
-              borderRadius: 4,
-              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-              zIndex: 999,
-              padding: 4,
-            }}
-          >
+      </button>
+        }
+      >
+          <div role="menu" aria-label="Layouts">
             <div
               style={{
                 display: 'flex',
@@ -175,7 +163,7 @@ export function LayoutsMenu({
                 padding: '6px 10px',
                 fontSize: 11,
                 color: 'var(--fg-mute)',
-                borderBottom: '1px solid var(--border, #333)',
+                borderBottom: '1px solid var(--border)',
                 marginBottom: 2,
               }}
             >
@@ -213,13 +201,13 @@ export function LayoutsMenu({
             <div
               style={{
                 height: 1,
-                background: 'var(--border, #333)',
+                background: 'var(--border)',
                 margin: '4px 0',
               }}
             />
 
             {error && (
-              <div style={{ padding: '6px 10px', color: '#f87171', fontSize: 11 }}>
+              <div style={{ padding: '6px 10px', color: 'var(--bad)', fontSize: 11 }}>
                 {error.message}
               </div>
             )}
@@ -275,8 +263,7 @@ export function LayoutsMenu({
                 );
               })}
           </div>
-        </>
-      )}
+      </Popover>
     </div>
   );
 }

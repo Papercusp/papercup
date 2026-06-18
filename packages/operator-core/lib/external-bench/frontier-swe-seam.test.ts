@@ -104,6 +104,27 @@ describe('makeFrontierSweCloneGradeSeam', () => {
     expect(g.graderStatus).toBe('error');
   });
 
+  it('grade stages tests/ into the container at GRADE time (anti-cheat: the agent never saw /tests)', async () => {
+    const { exec, calls } = fakeDocker({ '/logs/verifier/reward.txt': '0.4' });
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, repoDir: '/vendor/frontier-swe' });
+    await seam.grade(task(), { containerId: 'cid', image: 'i', instanceId: 'cranelift-codegen-opt' });
+    expect(calls.find((c) => c[0] === 'cp')).toEqual(['cp', '/vendor/frontier-swe/tasks/cranelift-codegen-opt/tests', 'cid:/tests']);
+  });
+
+  it('oracle mode also stages solution/ (the gold positive control)', async () => {
+    const { exec, calls } = fakeDocker({ '/logs/verifier/reward.txt': '1.0' });
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, repoDir: '/vendor/frontier-swe', oracle: true });
+    await seam.grade(task(), { containerId: 'cid', image: 'i', instanceId: 'cranelift-codegen-opt' });
+    expect(calls.some((c) => c[0] === 'cp' && c[2] === 'cid:/solution')).toBe(true);
+  });
+
+  it('clone does NOT stage tests/ (they must be hidden from the agent until grade time)', async () => {
+    const { exec, calls } = fakeDocker({});
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, repoDir: '/vendor/frontier-swe' });
+    await seam.clone(task());
+    expect(calls.find((c) => c[0] === 'cp')).toBeUndefined();
+  });
+
   it('teardown removes the container and never throws', async () => {
     const { exec, calls } = fakeDocker({});
     const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec });

@@ -157,7 +157,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
               className={`pc-adv-tab${isActive ? ' is-active' : ''}${t.closeable ? '' : ' is-pinned'}`}
               role="tab"
               aria-selected={isActive}
-              title={t.hint ?? t.label}
+              aria-label={t.hint ?? t.label}
             >
               <button
                 type="button"

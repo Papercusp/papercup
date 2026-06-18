@@ -100,11 +100,11 @@ describe('<ThemeSelector />', () => {
     await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 
-  it('an outside mousedown closes the open menu', async () => {
+  it('an outside pointer down closes the open menu', async () => {
     render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
     await screen.findByRole('menu');
-    // mousedown outside the trigger + menu → the document listener closes it.
-    fireEvent.mouseDown(document.body);
+    // Radix Popover owns outside dismissal through pointer-down outside.
+    fireEvent.pointerDown(document.body);
     await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 

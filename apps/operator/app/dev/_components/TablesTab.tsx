@@ -545,7 +545,7 @@ export default function TablesTab() {
                               target="_blank"
                               rel="noopener noreferrer"
                               className="pc-tables-slug-link"
-                              title={`Open harness "${value}" in dashboard ↗`}
+                              aria-label={`Open harness "${value}" in dashboard`}
                             >
                               {renderCell(value)} <span className="pc-tables-slug-arrow">↗</span>
                             </a>

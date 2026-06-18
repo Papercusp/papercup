@@ -36,6 +36,8 @@ const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
 ]);
 
 const LEGACY_BUTTON_TITLE_FILES = new Set<string>();
+const LEGACY_LINK_TITLE_FILES = new Set<string>();
+const LEGACY_TAB_TITLE_FILES = new Set<string>();
 
 function walk(dir: string, out: string[]): void {
   let entries: string[];
@@ -128,5 +130,19 @@ describe('design primitive lint', () => {
 
   it('blocks title-only tooltips on buttons', () => {
     expectNoUnexpected('Button title tooltip', unexpectedFiles(/<button\b[^>]*\btitle=/g, LEGACY_BUTTON_TITLE_FILES));
+  });
+
+  it('blocks title-only tooltips on links', () => {
+    expectNoUnexpected(
+      'Link title tooltip',
+      unexpectedFiles(/<(?:a\b|RouteLink\b)[^>]*\btitle=/g, LEGACY_LINK_TITLE_FILES),
+    );
+  });
+
+  it('blocks title-only tooltips on tab controls', () => {
+    expectNoUnexpected(
+      'Tab title tooltip',
+      unexpectedFiles(/\brole=["']tab["'][^>]*\btitle=/g, LEGACY_TAB_TITLE_FILES),
+    );
   });
 });

@@ -18,13 +18,12 @@
  *   • Remove  — unlink from a workspace. Disabled on the last membership so a
  *               harness can never be orphaned out of every workspace.
  *
- * Portaled popover (escapes the topbar's stacking context like
- * WorkspaceSwitcher) anchored to the trigger button.
+ * Popover anchored to the trigger button.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useState } from 'react';
 import { Boxes } from 'lucide-react';
 import { toast } from 'sonner';
+import { Popover } from '../../harness/Popover';
 import { Tooltip } from '../../harness/Tooltip';
 import { listWorkspaces, type Workspace } from '@papercusp/operator-core/lib/workspaces-tauri';
 
@@ -38,11 +37,6 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
   const [current, setCurrent] = useState<string | null>(null);
   const [members, setMembers] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const wrapRef = useRef<HTMLSpanElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   const refresh = () => {
     // Two independent sources — deliberately NOT gated on each other. The
@@ -67,35 +61,6 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
     if (open) void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, slug]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (ev: MouseEvent) => {
-      const t = ev.target as Node;
-      if (wrapRef.current?.contains(t)) return;
-      if (menuRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
-  }, [open]);
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    const update = () => {
-      const btn = buttonRef.current;
-      if (!btn) return;
-      const r = btn.getBoundingClientRect();
-      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [open]);
 
   const post = async (body: Record<string, string>, okMsg: string) => {
     if (busy) return;
@@ -128,13 +93,32 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
   const soleSource = memberCount === 1 ? members![0] : null;
 
   return (
-    <span ref={wrapRef} className="pc-hws" style={{ position: 'relative' }}>
-      <Tooltip label="Which workspaces this harness is linked into — link, move, or remove">
+    <span className="pc-hws" style={{ position: 'relative' }}>
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        side="bottom"
+        align="end"
+        sideOffset={4}
+        zIndex={200}
+        ariaLabel="Harness workspaces"
+        contentClassName="pc-hws__menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
+        contentStyle={{
+          minWidth: 260,
+          maxHeight: '70vh',
+          overflowY: 'auto',
+          background: 'var(--bg-popover)',
+          backdropFilter: 'none',
+          WebkitBackdropFilter: 'none',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: 4,
+          boxShadow: '0 12px 32px color-mix(in oklab, black, transparent 40%), 0 0 0 1px color-mix(in oklab, var(--fg), transparent 96%)',
+        }}
+        trigger={
         <button
-          ref={buttonRef}
           type="button"
           className="pc-hws__trigger"
-          onClick={() => setOpen((v) => !v)}
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label="Harness workspaces"
@@ -142,30 +126,9 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
           <Boxes size={13} aria-hidden />
           Workspaces{members ? ` (${memberCount})` : ''}
         </button>
-      </Tooltip>
-
-      {open && menuPos && typeof document !== 'undefined' && createPortal(
-        <div
-          ref={menuRef}
-          role="menu"
-          className="pc-hws__menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
-          style={{
-            position: 'fixed',
-            top: menuPos.top,
-            right: menuPos.right,
-            minWidth: 260,
-            maxHeight: '70vh',
-            overflowY: 'auto',
-            background: '#0f1319',
-            backdropFilter: 'none',
-            WebkitBackdropFilter: 'none',
-            border: '1px solid #2a3344',
-            borderRadius: 6,
-            padding: 4,
-            zIndex: 200,
-            boxShadow: '0 12px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04)',
-          }}
-        >
+        }
+      >
+        <div role="menu">
           <div className="pc-hws__title" style={titleStyle}>
             Linked into{members ? ` — ${memberCount}` : ''}
           </div>
@@ -238,9 +201,8 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
           <div style={{ ...mutedRow, fontSize: 11, lineHeight: 1.4 }}>
             🔗 Membership is registry-only — the folder is never moved or copied.
           </div>
-        </div>,
-        document.body,
-      )}
+        </div>
+      </Popover>
 
       <style>{`
         .pc-hws__trigger {

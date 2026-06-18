@@ -344,7 +344,7 @@ function ActionRow({ action: a, now }: { action: UserAction; now: number }) {
             rel={detailHref.startsWith('http') ? 'noopener noreferrer' : undefined}
             className="notif-action"
             style={{ marginTop: 0, padding: '2px 6px', fontSize: 10.5 }}
-            title="Open detail link"
+            aria-label="Open detail link"
           >
             open ↗
           </a>

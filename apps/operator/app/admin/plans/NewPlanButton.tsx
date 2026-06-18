@@ -2,6 +2,7 @@
 
 
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Popover } from '@/app/harness/Popover';
 /**
  * NewPlanButton — the "New plan" launcher with an EXPLICIT owning-hive choice
  * (steering-nested-hive-plan-tree-2026-06-17, P-005).
@@ -17,7 +18,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * menu of the workspace's hives (+ an explicit "Workspace-level") — instead of a
  * silent default. The chosen slug becomes the drafting agent's harness.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronDown, Plus } from 'lucide-react';
 import { groupByHive, type HiveGroupProject } from '@papercusp/operator-core/lib/harness/hive-groups';
 
@@ -57,25 +58,7 @@ export function ownerHiveOptions(
 
 export default function NewPlanButton({ resolvedHarnessSlug, projects, launching, potLabel, onLaunch }: NewPlanButtonProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
   const hiveOptions = useMemo(() => ownerHiveOptions(projects), [projects]);
-
-  // Dismiss the menu on outside-click / Escape.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [menuOpen]);
 
   // Concrete scope (or no hives to choose from) → the plain button, unchanged.
   const concrete = !!resolvedHarnessSlug || hiveOptions.length === 0;
@@ -102,11 +85,29 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
     onLaunch(slug);
   };
   return (
-    <div ref={wrapRef} style={{ position: 'relative' }}>
-      <Tooltip label="Choose the owning hive for the new plan"><button
+    <Popover
+      open={menuOpen}
+      onOpenChange={setMenuOpen}
+      side="bottom"
+      align="start"
+      sideOffset={4}
+      ariaLabel="New plan in hive"
+      contentStyle={{
+        minWidth: 220,
+        display: 'flex',
+        flexDirection: 'column',
+        padding: 4,
+        borderRadius: 8,
+        border: '1px solid var(--border)',
+        background: 'var(--bg-popover)',
+        boxShadow: '0 8px 24px color-mix(in oklab, black, transparent 60%)',
+        maxHeight: 320,
+        overflowY: 'auto',
+      }}
+      trigger={
+      <button
         type="button"
         className="pc-plans__new-plan"
-        onClick={() => setMenuOpen((o) => !o)}
         disabled={launching}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
@@ -115,29 +116,11 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
         <Plus size={14} aria-hidden />
         {launching ? 'Launching…' : 'New plan'}
         <ChevronDown size={12} aria-hidden style={{ marginLeft: 'auto' }} />
-      </button></Tooltip>
-      {menuOpen && (
-        <div
-          role="menu"
-          aria-label="New plan in hive"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 4px)',
-            left: 0,
-            right: 0,
-            zIndex: 30,
-            display: 'flex',
-            flexDirection: 'column',
-            padding: 4,
-            borderRadius: 8,
-            border: '1px solid var(--border, rgba(125, 211, 252, 0.22))',
-            background: 'var(--bg-1, #0b1626)',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-            maxHeight: 320,
-            overflowY: 'auto',
-          }}
-        >
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--fg-mute, #7f9bb4)', padding: '4px 8px' }}>
+      </button>
+      }
+    >
+        <div role="menu" aria-label="New plan in hive" style={{ display: 'flex', flexDirection: 'column' }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--fg-mute)', padding: '4px 8px' }}>
             New plan in…
           </div>
           {hiveOptions.map((h) => (
@@ -153,7 +136,7 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
                 textAlign: 'left',
                 padding: h.member ? '5px 8px 5px 20px' : '5px 8px',
                 fontSize: 12,
-                color: 'var(--fg, #e7f7ff)',
+                color: 'var(--fg)',
                 background: 'none',
                 border: 'none',
                 borderRadius: 6,
@@ -175,10 +158,10 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
               padding: '5px 8px',
               marginTop: 4,
               fontSize: 11.5,
-              color: 'var(--fg-mute, #7f9bb4)',
+              color: 'var(--fg-mute)',
               background: 'none',
               border: 'none',
-              borderTop: '1px solid var(--border, rgba(125, 211, 252, 0.14))',
+              borderTop: '1px solid var(--border)',
               borderRadius: 0,
               cursor: 'pointer',
             }}
@@ -187,7 +170,6 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
             Workspace-level (no hive)
           </button></Tooltip>
         </div>
-      )}
-    </div>
+    </Popover>
   );
 }

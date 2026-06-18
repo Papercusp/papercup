@@ -69,7 +69,6 @@ export function DiscordChannelLink({ discordChannelUrl, className }: Props) {
       href={discordChannelUrl}
       onClick={handleClick}
       className={className}
-      title="Open Discord channel"
       aria-label="Open Discord channel"
       style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
     >

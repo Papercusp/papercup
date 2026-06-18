@@ -322,6 +322,74 @@ test('fails over to a second account when the active one hits its 5h budget (EI-
   resetGovernorRegistry();
 });
 
+test('a 403 org/subscription-disallowed account pauses + fails over to a healthy one (avi-storewolf fix)', async () => {
+  resetGovernorRegistry();
+  // Upstream: 403 "OAuth not allowed for this organization" for account A; 200 for B.
+  upstream = await startUpstream((req, res) => {
+    if (req.headers['authorization'] === 'Bearer A-tok') {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    }
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  port = await gw.listen(0);
+
+  // A's 403 is an org-level disqualification → pause A out of rotation + fail over to B, returning B's
+  // 200 (NOT forwarding the 403, which would hard-fail the bee / 403-block the fleet when A is active()).
+  const first = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(first.status, 200, "403 org-disallowed → internal failover A→B → B's 200");
+  assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok', 'egressed on B');
+  assert.equal(pool.active().accountId, 'B', 'A paused out of rotation, B is active');
+  resetGovernorRegistry();
+});
+
+test('the spawned-claude-code disallow ("subscription disabled for Claude Code") also fails over', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((req, res) => {
+    if (req.headers['authorization'] === 'Bearer A-tok') {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end('{"type":"error","error":{"type":"permission_error","message":"Claude subscription disabled for Claude Code"}}');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    }
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  port = await gw.listen(0);
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'subscription-disabled 403 → failover A→B');
+  assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok');
+  resetGovernorRegistry();
+});
+
+test('a NON-org 403 is forwarded unchanged (not treated as account-disqualifying)', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end('{"type":"error","error":{"type":"permission_error","message":"some other forbidden reason"}}');
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  port = await gw.listen(0);
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 403, 'a non-org 403 is forwarded as-is (no failover loop)');
+  resetGovernorRegistry();
+});
+
 test('per-request x-papercusp-account header routes to the named pool account (P-002/P-003)', async () => {
   const acctA: ActiveAccount = { accountId: 'acctA', token: async () => 'tokA' };
   const acctB: ActiveAccount = { accountId: 'acctB', token: async () => 'tokB' };

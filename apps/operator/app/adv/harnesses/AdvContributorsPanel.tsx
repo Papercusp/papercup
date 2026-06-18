@@ -215,7 +215,7 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
               <a
                 className="pc-adv-contributors__who"
                 href={`/users/github/${c.github_user_id}`}
-                title={`View ${c.login}'s profile`}
+                aria-label={`View ${c.login}'s profile`}
               >
                 {c.avatar_url && (
                   // eslint-disable-next-line @next/next/no-img-element

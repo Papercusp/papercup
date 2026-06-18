@@ -1253,7 +1253,7 @@ export function OracleDock() {
             </div>
             <div className="oracle-header-actions">
               <Tooltip label="Reset this chat"><button onClick={newOracleChat} aria-label="Reset this chat" className="oracle-icon-button"><RefreshCcw aria-hidden="true" className="oracle-header-action-icon" /></button></Tooltip>
-              <RouteLink href="/settings/oracle" className="oracle-icon-button" title="Configure" aria-label="Configure"><Settings2 aria-hidden="true" className="oracle-header-action-icon" /></RouteLink>
+              <Tooltip label="Configure"><RouteLink href="/settings/oracle" className="oracle-icon-button" aria-label="Configure"><Settings2 aria-hidden="true" className="oracle-header-action-icon" /></RouteLink></Tooltip>
               <button onClick={() => setOpen(false)} aria-label="Close" className="oracle-icon-button oracle-icon-button-close"><X aria-hidden="true" className="oracle-header-action-icon" /></button>
             </div>
           </header>

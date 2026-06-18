@@ -83,6 +83,13 @@ console.log(describeFrontierSweRun('<container>'));
 
 ## Bounded smoke — the gold/empty controls (P-003)
 
+> ✅ **VALIDATED 2026-06-18 on `libexpat-to-x86asm`** (no LLM): gold (oracle solution) → `reward.txt = 0.98511`
+> (correctness 1.0 + performance 0.9702, weights 0.5/0.5); empty (unsolved) → `0.0` ("No .so found"). This
+> confirms ghcr access, the seam clone→grade path, the `reward.txt`→[0,1] read-back, the `reward.json`
+> schema, and the perf-task formula. **The seam stages `tests/` (and `solution/` in oracle mode) into the
+> container at GRADE time from `PAPERCUSP_FRONTIER_SWE_DIR`** — the image bakes only `/app`, so that env MUST
+> be set for a live run.
+
 Run ONE cheap CPU task end-to-end before any batch. Pick from `frontier-swe-cpu`.
 
 ```bash
