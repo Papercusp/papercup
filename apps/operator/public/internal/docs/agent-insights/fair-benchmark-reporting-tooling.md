@@ -22,6 +22,18 @@ The single most common way to fake a benchmark win is to score each arm only on 
 
 So: a clean run with no infra failures reads identically under both modes; the modes only diverge when coverage is asymmetric — exactly when fairness matters.
 
+## The other trap (C4) — was the capability actually EXERCISED?
+
+The second-most-common way to report a phantom win: an arm that *looks* different in config but whose agents never actually used the thing under test. A tau2 **+memory** arm reported a "lift" that was retracted (plan `benchmark-capability-injection-redesign-2026-06-17` D-022) — root cause: the agent made **zero** `memory_search`/`remember` calls (the capability is discretionary and opus simply never invoked it), so +memory ≡ vanilla and the "lift" was noise. Same trap for a coordination topology: a `dist-broadcast` arm that "beat" `su-independent` is meaningless if its agents never actually broadcast.
+
+C4 is **not** satisfied by config (the arm being *configured* with the capability) — it needs **positive telemetry evidence that the capability ran**:
+
+* **Coordination topologies:** the run driver (`run-topology.ts`) surfaces `armMeta.coordCalls` per task — the count of coordination tool calls the agents actually made. A coordination arm (broadcast / peer-review / blackboard / huddle / ensemble) whose rows show `coordCalls ≈ 0` is **C4 NEEDS-EVIDENCE**: the topology was never exercised, so the delta is variance, not capability. (A `worker` in a central/no-coord arm legitimately reports 0.)
+* **Capability injection (memory, tools, …):** count the capability's own tool calls from `agent_usage_samples` before trusting a lift; zero calls ⇒ the arm is its own control.
+* **Clean scoping is part of "exercised":** a capability wired to the wrong scope silently no-ops. `memory:search` scopes by `harness_slug`, **not** `hive_slug` — passing the hive slug returns workspace noise, not the arm's recall. Verify the capability reads/writes the scope you think it does.
+
+Pre-flight the run on a 1–2 task probe and confirm the capability-exercised telemetry is non-zero **before** any big spend or claim. `buildFairnessAudit` marks C4 `NEEDS-EVIDENCE` by default — supply the `coordCalls`/tool-call evidence to clear it; never hand-wave past it.
+
 ## Pointers
 
 * Standard: [benchmarks/fairness-criteria](/internal/docs/benchmarks/fairness-criteria) (C1–C10 + the worked cautionary audit).

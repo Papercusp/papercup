@@ -1,6 +1,6 @@
 ---
 title: Operator crash-loops with a postgres null-`write` TypeError = event-loop saturation tearing down PG connections (NOT connection exhaustion)
-description: When :3070 (papercup-dev-api) crash-loops with "[hono-host] fatal uncaughtException — exiting: TypeError: Cannot read properties of null (reading 'write')" from postgres/src/connection.js, the cause is sustained main-thread event-loop saturation — the loop blocks long enough (observed p99 ~103s) that PG/the OS drops the backend, then postgres-js's detached nextWrite() fires on a null socket and crashes the whole host. PG itself is healthy. Fix: the host guards now treat this as a recoverable blip; the root cause is loop saturation.
+description: 'When :3070 (papercup-dev-api) crash-loops with "[hono-host] fatal uncaughtException — exiting: TypeError: Cannot read properties of null (reading ''write'')" from postgres/src/connection.js, the cause is sustained main-thread event-loop saturation — the loop blocks long enough (observed p99 ~103s) that PG/the OS drops the backend, then postgres-js''s detached nextWrite() fires on a null socket and crashes the whole host. PG itself is healthy. Fix: the host guards now treat this as a recoverable blip; the root cause is loop saturation.'
 discovered: 2026-06-18
 tags: [operator, hono-host, postgres, event-loop, crash-loop, resilience, performance, diagnostics]
 status: active

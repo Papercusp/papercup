@@ -33,6 +33,7 @@ const getEscalationMock = vi.fn();
 const listPendingReviewsMock = vi.fn();
 const listFeaturesForHarnessMock = vi.fn();
 const getHealthMock = vi.fn();
+const readHarnessStuckFeaturesMock = vi.fn();
 
 let actionsRecent: { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };
 let notificationsRecent: typeof actionsRecent;
@@ -54,6 +55,12 @@ beforeAll(async () => {
     listPendingReviews: listPendingReviewsMock,
     listFeaturesForHarness: listFeaturesForHarnessMock,
     getHealth: getHealthMock,
+  }));
+  // P-008 (work-queue-stuck-item-recovery): harness:health dynamically imports
+  // work-queue-health to augment the lib data with the per-harness stuck-queue slice.
+  // Mock it so the projection is deterministic (no real PG dependency in this unit test).
+  vi.doMock('../../work-queue-health', () => ({
+    readHarnessStuckFeatures: readHarnessStuckFeaturesMock,
   }));
 
   actionsRecent = (await import('../operator/actions_recent')).default as never;
@@ -190,7 +197,7 @@ describe('harness:pending_reviews', () => {
 });
 
 describe('harness:health', () => {
-  it('passes lib data through', async () => {
+  it('passes lib data through (+ augments with the P-008 stuck-queue slice)', async () => {
     const data = {
       ok: true,
       alive: true,
@@ -201,8 +208,10 @@ describe('harness:health', () => {
       checks: [],
     };
     getHealthMock.mockResolvedValueOnce({ ok: true, data });
+    readHarnessStuckFeaturesMock.mockResolvedValueOnce({ stuckFeatures: 0, deadHeldFeatures: 0 });
     const result = await harnessHealth.handler({ slug: 'sheets' }, MAKE_CTX());
-    expect(parsePayload(result)).toEqual(data);
+    // P-008: the handler surfaces the per-harness stuck-queue counts alongside the lib data.
+    expect(parsePayload(result)).toEqual({ ...data, stuckQueue: { stuckFeatures: 0, deadHeldFeatures: 0 } });
   });
 
   it('returns error shape on unknown project', async () => {

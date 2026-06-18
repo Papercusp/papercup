@@ -40,6 +40,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // domain-generic-agent-personas-2026-06-17 P-013/P-014: replace-the-Claude-base prompt
   // delivery — unverified fleet-wide hot-path; OFF = today's stdin/append. Owner flips post smoke.
   FLAGS.REPLACE_CLAUDE_BASE,
+  // watchdog-and-exposed-systems-improvement-2026-06-18 P-009: the watchdog auto-close sweep.
+  // OFF = escalate-only (today's behavior, byte-identical) — auto-closing real improvement
+  // items autonomously is unsafe until the owner reviews the guards. Safe to ship dark.
+  FLAGS.WATCHDOG_AUTO_CLOSE,
   // inbox-cards-unification Phase D (P-031): durable-escalation mirror of
   // chat decision cards is still building; the live ctx.askUser path is
   // unchanged with this off.

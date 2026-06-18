@@ -126,20 +126,29 @@ Produce this for every run; fill PASS/FAIL/N-A with evidence:
 
 The benchmark is a **coordination-topology comparison**, all arms on the same tasks, same model, **same per-task model-call budget (iso-call-budget)**, same denominator. Each arm is a pluggable **topology strategy** over one shared pool driver (so adding/removing an arm is a small config, not a new driver). Axes: *locus* (none / central / distributed-flat / hierarchical) × *mechanism* (none / direct-message / shared-artifact / review / aggregation) × *granularity* (per-backlog / per-task).
 
-| Arm                           | Locus                        | Mechanism                                        | Status                             |
-| ----------------------------- | ---------------------------- | ------------------------------------------------ | ---------------------------------- |
-| `mini-swe`                    | none (1 agent)               | —                                                | ✅ baseline floor                   |
-| `su-independent`              | none (N isolated)            | —                                                | ✅ no-coordination pole             |
-| `dist-broadcast`              | distributed-flat             | self-claim + declare-intent + broadcast findings | ❌ build                            |
-| `dist-peer-review`            | distributed-flat             | self-claim + peer-review diffs before submit     | ❌ build                            |
-| `dist-repo-huddle`            | distributed (per-repo group) | same-repo agents share understanding + co-edit   | ❌ build                            |
-| `dist-blackboard`             | distributed-flat             | indirect via shared scratchpad (stigmergic)      | ❌ build                            |
-| `ensemble-vote`               | none-during, aggregate-after | solve-N-independently → judge picks/merges       | ❌ build (key control)              |
-| `hier-lead-worker` (opt)      | hierarchical                 | elected lead decomposes + delegates              | ❌ build                            |
-| `pair-driver-navigator` (opt) | per-task pair                | continuous review                                | ❌ build                            |
-| `hive-realqueen`              | central                      | Queen places/evicts/re-places/briefs/wakes       | ✅ (reliability-degraded — EI-1293) |
+Each arm is a **blueprint** (the `spine.claimModel` + `coordination` schema section); the run driver maps the resolved spec → the right spawn shape. "blueprint+driver ✅" = the topology is declared + the unit-tested driver runs it; the only remaining step for a live run is the consumer's `runAgent` binding (fleet-spawn-backed) — see *Runtime enforcement* below.
 
-**Framework:** one `CoordinationStrategy` seam over `makePoolBacklogDriver` — hooks for `claimNext` (how an agent gets work), `onProgress` (what it shares/writes), `beforeSubmit` (review/aggregate), `teamShape` (per-task vs per-backlog vs per-repo). Iso-call-budget + same-denominator grading live in the shared driver, applied identically to every strategy.
+| Arm (blueprint id)       | Locus                        | Mechanism                                                           | Status                                       |
+| ------------------------ | ---------------------------- | ------------------------------------------------------------------- | -------------------------------------------- |
+| `mini-swe`               | none (1 agent)               | —                                                                   | ✅ baseline floor                             |
+| `su-independent`         | none (N isolated)            | —                                                                   | ✅ no-coordination pole                       |
+| `dist-broadcast`         | distributed-flat             | self-claim + declare-intent + broadcast findings                    | ✅ blueprint+driver                           |
+| `dist-peer-review`       | distributed-flat             | self-claim + peer-review diffs before submit                        | ✅ blueprint+driver                           |
+| `dist-repo-huddle`       | distributed (per-repo group) | same-repo agents share understanding + co-edit                      | ✅ blueprint+driver                           |
+| `dist-blackboard`        | distributed-flat             | indirect via shared scratchpad (stigmergic; `coord:send` forbidden) | ✅ blueprint+driver                           |
+| `ensemble-solve`         | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`) | ✅ blueprint+driver (key control)             |
+| `pair`                   | per-task pair                | driver writes / navigator continuously reviews                      | ✅ blueprint+driver                           |
+| `hier-lead-worker` (opt) | hierarchical                 | elected lead decomposes + delegates                                 | ❌ deferred (needs an election schema)        |
+| `hive`                   | central                      | Queen places/evicts/re-places/briefs/wakes                          | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
+
+**Framework (built):** a topology is a blueprint, resolved to a `CoordinationSpec` by `resolveCoordinationSpec` (`coordination-topology.ts`), mapped to per-team spawn plans (directive + tool-scope + team grouping) by `coordination-runtime.ts`, and executed by `runTopology` (`run-topology.ts`). The driver is generic across benchmarks via two injected seams: a per-benchmark `CloneGradeSeam` (clone/grade — identical across arms, C5) and a `runAgent` (the fleet-spawn-backed agent invocation). SWE-bench-Pro (diff) and FrontierSWE (in-container) both wire onto it.
+
+### Runtime enforcement — how the driver makes C1 + C3 + C4 mechanical (not aspirational)
+
+* **C1 (same denominator):** `runTopology` emits a `TaskRunResult` row only for tasks it actually ran. A task the iso-budget couldn't reach gets **no row** — and `buildCapabilityAttribution` (default `sameDenominator:true`) counts a task with no row, or one whose rows are all infra-failed, as **`false`**. So a less-efficient arm that finishes fewer tasks is penalised, never flattered by exclusion (the exact failure mode of the 2026-06-17 audit). The report's task universe is the full backlog; `skippedTaskIds` is surfaced for the C6 coverage table.
+* **C3 (iso-budget):** one `IsoBudget` (`maxModelCalls` primary, + `$`/tokens/wall) is applied **uniformly** across every arm and is a **hard ceiling** checked before each task-unit dispatches (bounded ≤`cap` overshoot, since a unit's call cost is only known after it runs). A cap-terminated attempt sets `capped:true` (graded normally — a capped run ≠ a genuine fail).
+* **C4 (capability actually exercised):** each agent run reports `coordCalls` (the count of coordination tool calls it actually made); the driver sums it onto `armMeta.coordCalls`. A coordination arm whose rows show `coordCalls ≈ 0` is **C4 NEEDS-EVIDENCE** — the topology was never exercised, so any "delta" is variance, not capability (the trap that sank a peer's tau2 +memory "lift": the +memory arm made zero memory calls). Verify coordination is non-zero on a probe before any claim.
+* **No-debris teardown:** each run retires its **own** work-items (`retireBenchDebris`, scoped to the run's hive slug) on clean exit AND signal-kill/crash — scoped so it can never deprecate a concurrent peer benchmark's in-flight items.
 
 ## What a fair run requires (the build target)
 

@@ -3729,6 +3729,22 @@ The single most common way to fake a benchmark win is to score each arm only on 
 
 So: a clean run with no infra failures reads identically under both modes; the modes only diverge when coverage is asymmetric — exactly when fairness matters.
 
+## The other trap (C4) — was the capability actually EXERCISED?
+
+[Section titled “The other trap (C4) — was the capability actually EXERCISED?”](#the-other-trap-c4--was-the-capability-actually-exercised)
+
+A capability/topology arm that never invoked the capability is identical to control — any 'delta' is variance
+
+The second-most-common way to report a phantom win: an arm that *looks* different in config but whose agents never actually used the thing under test. A tau2 **+memory** arm reported a “lift” that was retracted (plan `benchmark-capability-injection-redesign-2026-06-17` D-022) — root cause: the agent made **zero** `memory_search`/`remember` calls (the capability is discretionary and opus simply never invoked it), so +memory ≡ vanilla and the “lift” was noise. Same trap for a coordination topology: a `dist-broadcast` arm that “beat” `su-independent` is meaningless if its agents never actually broadcast.
+
+C4 is **not** satisfied by config (the arm being *configured* with the capability) — it needs **positive telemetry evidence that the capability ran**:
+
+* **Coordination topologies:** the run driver (`run-topology.ts`) surfaces `armMeta.coordCalls` per task — the count of coordination tool calls the agents actually made. A coordination arm (broadcast / peer-review / blackboard / huddle / ensemble) whose rows show `coordCalls ≈ 0` is **C4 NEEDS-EVIDENCE**: the topology was never exercised, so the delta is variance, not capability. (A `worker` in a central/no-coord arm legitimately reports 0.)
+* **Capability injection (memory, tools, …):** count the capability’s own tool calls from `agent_usage_samples` before trusting a lift; zero calls ⇒ the arm is its own control.
+* **Clean scoping is part of “exercised”:** a capability wired to the wrong scope silently no-ops. `memory:search` scopes by `harness_slug`, **not** `hive_slug` — passing the hive slug returns workspace noise, not the arm’s recall. Verify the capability reads/writes the scope you think it does.
+
+Pre-flight the run on a 1–2 task probe and confirm the capability-exercised telemetry is non-zero **before** any big spend or claim. `buildFairnessAudit` marks C4 `NEEDS-EVIDENCE` by default — supply the `coordCalls`/tool-call evidence to clear it; never hand-wave past it.
+
 ## Pointers
 
 [Section titled “Pointers”](#pointers)
@@ -5047,6 +5063,10 @@ The wrong fix (rejected) was `isSelfHarness(slug) ? adminRegistry : …` wired i
 
 The **papercup dogfood harness** (its worktree IS the operator repo) ships a `.papercusp/testing-domains.json` **generated from `adminRegistry`** (so there’s no hand-maintained drift) — that’s why its Tests tab shows the full `adminRegistry` set while a generic harness shows the sparse Universal tier + Acceptance. Regenerate it the same way (load `adminRegistry` + the Acceptance domain, serialize) if the domains change. Note that several Universal-tier domains are `admin-suite` runners that are non-functional in the harness data-source, and others (`live-web`/`chaos-web`/`routes`) glob operator-internal paths — so for a *non-papercup* harness the Built-in tier is mostly empty; that’s expected, not a bug. Default the nav to the first non-`universal` (content-bearing) tab.
 
+The contract DOES drift on the dev box — regenerate it by hand
+
+“Generated from `adminRegistry` so there’s no hand-maintained drift” is the *intent*, not the dev-box reality. The only guards that catch a stale `.papercusp/testing-domains.json` (or a test file that matches no domain glob → invisible in the tab) are `gen:contract:check` and `lint:tests` — and those run **only in GitHub Actions CI** (`.github/workflows/test.yml`). git-sync commits the shared tree with `[skip ci]`, and the local green-checkpoint gate runs only `npm run test:affected` (the registry self-tests check structure, not contract↔registry freshness). So on the dev box a stale contract sails straight to `main`/`:3070` and the Tests tab silently shows old domains. Found 2026-06-18: the committed contract was stale and a real test (`gitnexus-bridge/index.test.ts`) was an uncaught orphan. **After ANY edit to `testing-domains-registry.ts`, run `npx tsx scripts/gen-testing-domains-contract.ts` + `npm --prefix apps/operator run lint:tests`** yourself — do not trust the tab to reflect a registry change, and do not trust CI to have caught a stale contract. (Systemic fix tracked separately — wire both gates into green-checkpoint.)
+
 ## Harness endpoints resolve against `reg.current` — your curl can hit the wrong workspace
 
 [Section titled “Harness endpoints resolve against reg.current — your curl can hit the wrong workspace”](#harness-endpoints-resolve-against-regcurrent--your-curl-can-hit-the-wrong-workspace)
@@ -5888,6 +5908,55 @@ Triad invariants all held (items named + `assigned_at` stamped at fire, no exit-
 **Residual gap (observability, EI-403 cluster): implement workers run invisibly to `fleet:tree`.** ⚠ Watch-out for the next monitor: the `durableSpawnFire` workflow `updated_at` does NOT advance while its `/invoke` step runs (the step blocks for the worker’s first \~6-8 min — `loopbackFetch` holds the connection), so a mid-run check looks like a “frozen PENDING / stuck” workflow. It is not — both implement workflows completed **SUCCESS** (recovery\_attempts=2, step output checkpointed in `dbos.operation_outputs`); EI-403’s core durability fix works and does not double-dispatch. Don’t call “stuck” from a single PENDING snapshot — re-check after the step’s block window.
 
 The genuine residual is narrower: **the durable-spawn path writes no `spawned_agents` row.** In `launch-blueprint.ts` the durable branch of `defaultFire` returns `{spawnId: null, runId: idempotencyKey, durable: true}` and `buildLaunchSpawnRequest` (the EI-403-A implement seam) just returns the `DurableSpawnFireInput` — neither calls `recordSpawn`; only the fire-and-forget fallback does (the WI-108 fix). So round 1’s worker WAS in `spawned_agents` (`s-…-983e57d1`, child\_role=worker, via the fallback) but round 2’s two workers appear in neither `spawned_agents` nor `agent_runs_consolidated` — invisible in `fleet:tree`. EI-403-A/EI-437 fixed durability but regressed visibility vs round **Fixed (staging, rides the release gate — EI-403 comment #45125):** `DurableSpawnFireInput` gained an opt-in `spawnRecord`; `durableSpawnFireImpl` now `recordSpawn`s (stable `spawn_id = durable-spawn:<key>`, idempotent on conflict → recovery/retry-safe) before the fire and `finishSpawn`s it after (`done`, or `failed`+error if the fire exhausts retries), and `buildLaunchSpawnRequest` (the implement seam) opts in — deliberately NOT the `defaultFire` durable branch, since hive launches record their own queen/bee rows and would otherwise double-count in fleet:tree. Close criterion (re-verify post-deploy): the next durably-fired implement worker shows a `spawned_agents` row (child\_role=worker, parent\_role=operator, item\_id=EI-NNN) and appears in `fleet:tree`.
+
+# Integrating an in-container, own-scorer benchmark (the CloneGradeSeam pattern)
+
+> How to add a benchmark whose tasks self-grade inside their own Docker container (FrontierSWE, TheAgentCompany, METR-HCAST) — the CloneGradeSeam seam, the reward read-back contract, and the continuous-score denominator/NaN gotchas.
+
+Some external benchmarks are **not** diff-batch (clone repo → git-diff → external eval). They are **in-container, own-scorer**: the agent works *inside* the task’s Docker image over a long horizon, and the task ships its OWN verifier that emits a score in place. FrontierSWE is the worked example (`benchmark-suite-frontier-swe-2026-06-18`); TheAgentCompany and METR-HCAST are the same shape. If you’re adding one, this is the path that avoids a week of false starts.
+
+## 1. It’s a `CloneGradeSeam`, not a grader-from-scratch
+
+[Section titled “1. It’s a CloneGradeSeam, not a grader-from-scratch”](#1-its-a-clonegradeseam-not-a-grader-from-scratch)
+
+Wire to the shared `external-bench/coordination-topology.ts` `CloneGradeSeam<H>` — the per-benchmark clone/grade half every coordination-topology arm shares (fairness C5). You supply ONE seam + a task-set and get every topology (central-Queen / distributed / ensemble / baseline) for free; you do **not** author arm code or re-roll the run driver (that’s the shared topology runtime — D-007). For FrontierSWE see `makeFrontierSweCloneGradeSeam` (`external-bench/frontier-swe-seam.ts`):
+
+* `clone(task)` → `docker run -d <graderMeta.dockerImage> sleep infinity` → a container handle (the agent execs in; the workspace is baked into the image). Add `--gpus all` when `graderMeta.gpus > 0`.
+* `grade(task, handle)` → run the task’s OWN verifier (`docker exec … bash /tests/test.sh`), then read the reward back. **You author no scorer.**
+* `teardown(handle)` → `docker rm -f`, **never-throw** (it’s called on every path — success / capability-fail / infra-fail — so a run never leaks containers).
+
+## 2. The reward read-back is a file, not stdout
+
+[Section titled “2. The reward read-back is a file, not stdout”](#2-the-reward-read-back-is-a-file-not-stdout)
+
+The non-obvious bit: the verifier writes the score to a **file inside the container**, not stdout. For FrontierSWE every task’s `tests/test.sh` → `compute_reward.py` writes `/logs/verifier/reward.txt` (the bare `[0,1]` scalar — the uniform primary) + `reward.json` (structured, per-task keys). Read `reward.txt` first, fall back to `reward.json`’s `reward`/`score` key. `HARBOR_ORACLE_MODE=1` runs the gold/oracle path (skips anti-cheat) — use it with `solution/solve.sh` as the C9 positive control.
+
+## 3. Continuous score → the denominator discipline (where bugs hide)
+
+[Section titled “3. Continuous score → the denominator discipline (where bugs hide)”](#3-continuous-score--the-denominator-discipline-where-bugs-hide)
+
+These suites grade a **continuous `score ∈ [0,1]`** (no model fully solves the hard tasks), so `resolved` is degenerate (`score === 1`) and the headline is mean\@k / best\@k + rank, never a resolved%. Two traps:
+
+0 counts; infra is excluded; rank fallbacks are NaN not 0
+
+* A verifier that RAN and emitted a numeric reward — **including `0`** (empty / no-progress workspace) — is a genuine capability outcome that **COUNTS** in the denominator. Never a vanished row.
+* A verifier that FAILED to produce a reward (image/OOM/timeout/gateway) is **infra** → `graderStatus:'error'`, `score:null`, EXCLUDED + surfaced symmetrically across arms (C6). Never silently scored 0.
+* In cross-arm rollups (`@papercusp/bench-metrics` `frontierRankReport`), an arm with **no opponents** on a task (e.g. a per-bucket filter leaving one arm) must get `dominance: NaN` (“no comparison”), **not `0`** (“lost everything”) — `0` falsely ranks it below a 50-50 arm. Same for an undefined `meanAtK`/`avgRank` → NaN.
+
+## 4. Gates that will bite
+
+[Section titled “4. Gates that will bite”](#4-gates-that-will-bite)
+
+* **GPU / wall-clock**: long-horizon tasks (FrontierSWE: 4–20 h/task) need iso-budget that bounds **wall-clock** as a first-class dim, and some tasks need datacenter GPUs (B200/H100) a dev box doesn’t have — provide a GPU-free task-set variant (`frontier-swe-cpu`) for local work.
+* **Disk**: GB-scale per-task images — grade on a **dedicated volume**, never the shared checkout (disk-eviction risk), prune between tasks.
+* **Resumability**: long runs WILL be interrupted — keep a durable `results.jsonl` and re-run only the missing `(task, seed)` trials (infra rows re-run; scored rows skip). See `external-bench/frontier-swe-resume.ts`.
+* **License**: vendored task repos may ship no LICENSE — research/eval use only, no redistribution of derived data without owner sign-off.
+
+## 5. Fairness is the hard part
+
+[Section titled “5. Fairness is the hard part”](#5-fairness-is-the-hard-part)
+
+Every number ships with the **C1–C10 pre-claim audit** (`buildFairnessAudit`); see [Benchmark Fairness Criteria](/benchmarks/fairness-criteria). Feed every arm’s `TaskRunResult` rows straight into `buildCapabilityAttribution` + `buildFairnessAudit` — one fair denominator, iso-budget, model verified from telemetry, ≥2 seeds, reference reproduces a published number.
 
 # In-repo lib tests — JSX runtime + which vitest runs
 
@@ -7963,6 +8032,58 @@ Writing Vitest unit tests for `packages/operator-core/lib/endpoint-route/routes/
 [Section titled “Provenance”](#provenance)
 
 Proven on `tui-routes.test.ts` (48 tests, 2026-06-04). Lifted from the Claude memory archive (`project_operator_core_route_test_dborg_mock`) during the claude-memory-projection-integration boundary split.
+
+# Operator crash-loops with a postgres null-`write` TypeError = event-loop saturation tearing down PG connections (NOT connection exhaustion)
+
+> When :3070 (papercup-dev-api) crash-loops with "[hono-host] fatal uncaughtException — exiting: TypeError: Cannot read properties of null (reading 'write')" from postgres/src/connection.js, the cause is sustained main-thread event-loop saturation — the loop blocks long enough (observed p99 ~103s) that PG/the OS drops the backend, then postgres-js's detached nextWrite() fires on a null socket and crashes the whole host. PG itself is healthy. Fix: the host guards now treat this as a recoverable blip; the root cause is loop saturation.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+`:3070` (papercup-dev-api, the green operator that also runs the background machinery) crash-loops — `systemctl --user show papercup-dev-api -p NRestarts` climbs, `curl :3070/api/health` times out (8s+), while `:3170` (request-only) is snappy. The journal shows, in order:
+
+```plaintext
+[event-loop-lag] high loop delay — host is CPU-bound on the main thread { p99Ms: 103079, … }
+[…] write CONNECTION_CLOSED localhost:5432            (subsystems' PG writes failing)
+[hono-host] fatal uncaughtException — exiting: TypeError: Cannot read properties of null (reading 'write')
+    at Immediate.nextWrite (…/node_modules/postgres/src/connection.js:255:22)
+papercup-dev-api.service: Main process exited, code=exited, status=1/FAILURE
+```
+
+Caution
+
+This is NOT “too many clients” / connection exhaustion — `pg_stat_activity` has plenty of free slots (e.g. 166/512). Don’t chase the pool. The DB is fine; the **main thread** is the problem.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+Sustained main-thread CPU work (heavy fleet/MCP load + in-process background work: TOON encoding, gzip, large JSON, git-sync shelling, DBOS) blocks the single event loop for *seconds to minutes* (observed p99 \~103s). While the loop is blocked, Postgres / the OS tears down the operator’s now-idle/stuck backend connection. When the loop finally unblocks, postgres-js’s **detached** `nextWrite()` flush fires against the connection whose socket is now `null` → `TypeError: Cannot read properties of null (reading 'write')`. Because it’s detached (a queued immediate, not awaited at a call site), it surfaces as an **uncaughtException** → the host’s fatal guard calls `process.exit(1)` → systemd restarts → the box is still loaded → it saturates + crashes again → crash loop.
+
+So two compounding faults: (1) the event-loop saturation (the real driver), and (2) a *recoverable* connection blip crashing the whole multi-tenant host.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Fault (2) — resilience — is fixed: `apps/operator/bin/host-benign-errors.ts` `isTransientPgConnectionError` classifies the postgres-js null-`write` TypeError (scoped to a stack inside `postgres/src/connection.js`, so a genuine null-deref elsewhere still fails fast) and `CONNECTION_CLOSED` as recoverable. The `uncaughtException` / `unhandledRejection` guards in `hono-host.ts` now SWALLOW it (log + keep serving — the pool reconnects on the next query) instead of exiting. The host degrades under load instead of crash-looping the fleet.
+
+Fault (1) — the saturation itself — is the durable fix, and lives in `operator-scalability-event-loop-2026-06-16`: P1 (un-block the loop — offload TOON/gzip/large-JSON serialization to worker threads), P3 (split the background host off the request loop + cluster). The resilience patch stops the *crash*; it does not make a saturated loop fast.
+
+## Diagnose / runbook
+
+[Section titled “Diagnose / runbook”](#diagnose--runbook)
+
+```bash
+systemctl --user show papercup-dev-api.service -p NRestarts          # climbing = crash loop
+journalctl --user -u papercup-dev-api.service -n 40 --no-pager        # look for the null-write + [event-loop-lag]
+curl -s -o /dev/null -w '%{http_code} %{time_total}s' --max-time 8 http://127.0.0.1:3070/api/health   # 000/8s = wedged
+uptime                                                                # is the box CPU-bound?
+sudo -u postgres psql -p 5432 -tAc "select count(*),current_setting('max_connections') from pg_stat_activity"  # confirm PG is NOT exhausted
+```
+
+If the box is overloaded by fleet activity, that load is the hive’s domain (it holds benchmark runs until the box quiets) — let it recede rather than double-intervening. The resilience patch keeps the operator alive through the spike.
 
 # The :3070 operator heap leak is mcp-handler's stateless POST path (per-request McpServer never closed)
 
@@ -14393,6 +14514,71 @@ This bit EI-908 hard: `resolveBrainOwner` in `wake-brain-action.ts` gated on a f
 
 If you are writing/reviewing a routine that fires a wake: resolve the recipient and call `wakeRecipients([owner], …)`. Do **not** pre-filter on liveness, and do **not** mutate the recipient’s durable pin/registration based on a presence heartbeat. The pump + executor are the single liveness authority. See also [await-event-primitive](/agent-insights/await-event-primitive) and [always-armed-inbox-wake](/agent-insights/always-armed-inbox-wake).
 
+# Watchdog can SEE a tool failing yet file nothing — dedup masking + the rate-limit class
+
+> When a tool (e.g. memory:search) is failing for a NEW reason but the watchdog files no improvement, the cause is usually dedup masking — the repeated-tool-error key is `<tool>:<class>`, so a NEW failure mode collapses onto an already-OPEN EI about a DIFFERENT bug. Also: external provider rate-limits (OpenAI embed 429 / TPM) used to misclassify as `structural` code bugs. Diagnose via watchdog_ticks.known_open_keys + the EI's real "Sample error:" body, not the key alone.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A tool is visibly, repeatedly failing — `memory:search`/`memory:remember` returning `openai_embed_failed_429` dozens of times in `harness_shared.tool_invocations` — yet the improvement watchdog files **no new EI** and surfaces nothing actionable. It looks like the watchdog “missed it.”
+
+It didn’t miss it. It **saw the signal every tick and deliberately dropped it.**
+
+## Root cause 1 — dedup masking (the key is blind to the error shape)
+
+[Section titled “Root cause 1 — dedup masking (the key is blind to the error shape)”](#root-cause-1--dedup-masking-the-key-is-blind-to-the-error-shape)
+
+The `repeated-tool-error` collector keys each signal as `repeated-tool-error:<tool>:<class>` (class ∈ structural | transient | caller | rate-limit). The pre-filter (`partitionSignalsByKnownKeys`) drops any signal whose key matches an **OPEN** EI — that’s the cross-tick dedup. The trap: the key carries **no error fingerprint**, so two genuinely different failure modes under one tool share one key.
+
+On 2026-06-17 the OpenAI embedding endpoint hit its org-wide 1M-TPM ceiling and `memory:search` started failing with `openai_embed_failed_429`. That error has `error_code='handler_error'`, which classified as **`structural`** → key `repeated-tool-error:memory:search:structural`. But **EI-630 was already open** under that exact key — for a *completely unrelated* bug (`"requires a workspace-scoped call"`, a session-scoping error from two days earlier). So every tick the embed-429 signal landed in `known_open_keys` and was dropped as a “duplicate” of EI-630.
+
+Caution
+
+A watchdog key in `watchdog_ticks.known_open_keys` means “already filed, don’t re-file” — but the OPEN EI it matched may be about a **different** failure than the one firing now. Always read the EI’s actual `body` (“Sample error: …”), not just its key, before concluding an issue is tracked.
+
+### How to diagnose
+
+[Section titled “How to diagnose”](#how-to-diagnose)
+
+```sql
+-- Is the tool actually failing, and with what?
+SELECT tool_name, error_code, left(error_message,80), count(*)
+  FROM harness_shared.tool_invocations
+ WHERE status<>'ok' AND invoked_at > now() - interval '24 hours'
+ GROUP BY 1,2,3 ORDER BY 4 DESC;
+
+
+-- Did the watchdog SEE it? (known_open = saw-but-deduped; captured = filed)
+SELECT tick_at, known_open_keys, captured FROM harness_shared.watchdog_ticks
+ ORDER BY tick_at DESC LIMIT 3;
+
+
+-- What is the masking EI ACTUALLY about? (read the body, not the key)
+SELECT issue_id, state, payload->>'watchdogKey', left(body,200)
+  FROM harness_shared.engineer_issues
+ WHERE payload->>'watchdogKey' = 'repeated-tool-error:memory:search:structural';
+```
+
+## Root cause 2 — external rate-limits misclassified as `structural`
+
+[Section titled “Root cause 2 — external rate-limits misclassified as structural”](#root-cause-2--external-rate-limits-misclassified-as-structural)
+
+`classifyToolError` only treated **PG/DB exhaustion** (`too many clients`, `ECONNREFUSED`, …) as `transient`. An **external provider** rate-limit (OpenAI embed 429, `rate limit reached`, `tokens per min`) matched nothing and fell through to the `ELSE 'structural'` branch — i.e. it was filed as a *deterministic code bug* (kind=bug, major), routed to the auto-implement lane, when it is really **capacity/infra** (owner-escalation). The misleading OpenAI body `"Request too large … Requested 6, Limit 1000000"` is the SAME TPM saturation — even a 6-token request is rejected when the org budget is already spent by other traffic.
+
+## The fix (plan watchdog-embed-resilience-and-dedup-2026-06-17)
+
+[Section titled “The fix (plan watchdog-embed-resilience-and-dedup-2026-06-17)”](#the-fix-plan-watchdog-embed-resilience-and-dedup-2026-06-17)
+
+* **New `rate-limit` `ToolErrorClass`** (`EXTERNAL_RATE_LIMIT_ERROR_RE`, mirrored in `classifyToolError` and the SQL CASE). Volume-gated, `kind=change`, body says “EXTERNAL CAPACITY, not a code bug — route to infra/owner, not auto-implement.” This alone unmasks the embed-429: it now gets its own `repeated-tool-error:<tool>:rate-limit` key, distinct from any `structural` EI.
+* **Structural dedup fingerprint** (P-003): the SQL computes a normalized error-shape fingerprint (first 6 alpha tokens of the digit/punct-stripped message) and groups structural rows by it; the key becomes `<tool>:structural:<fingerprint>`. Two different deterministic modes under one tool no longer mask each other. Load classes keep the bare `<tool>:<class>` key.
+* **Embedder resilience** (`buildOpenAiEmbedder`): retries a 429 on the SAME embedder with header-aware (`Retry-After` / `x-ratelimit-reset-tokens`), jittered, budget-capped backoff (8 attempts / \~30s) instead of hard-failing — rides out transient spikes (it cannot ride out an hours-long saturation; for that, isolate the embedding load that’s burning the TPM).
+
+Note
+
+A key-shape change orphans existing EIs from their dedup match. Do the EI-key backfill/cleanup **after** the code deploys — a pre-deploy backfill races the still-live old watchdog (bare keys) and causes the very re-file churn it’s meant to avoid.
+
 # Windows-VM desktop testing — the working recipe and its sharp edges
 
 > How to build, install, launch, observe and tear down the Windows desktop app in the local QEMU Windows 11 VM — schtasks launch, bk.log observation, wsl --exec (never `wsl --`), UNC discovery, and the WSL signal boundary.
@@ -18533,20 +18719,31 @@ Produce this for every run; fill PASS/FAIL/N-A with evidence:
 
 The benchmark is a **coordination-topology comparison**, all arms on the same tasks, same model, **same per-task model-call budget (iso-call-budget)**, same denominator. Each arm is a pluggable **topology strategy** over one shared pool driver (so adding/removing an arm is a small config, not a new driver). Axes: *locus* (none / central / distributed-flat / hierarchical) × *mechanism* (none / direct-message / shared-artifact / review / aggregation) × *granularity* (per-backlog / per-task).
 
-| Arm                           | Locus                        | Mechanism                                        | Status                             |
-| ----------------------------- | ---------------------------- | ------------------------------------------------ | ---------------------------------- |
-| `mini-swe`                    | none (1 agent)               | —                                                | ✅ baseline floor                   |
-| `su-independent`              | none (N isolated)            | —                                                | ✅ no-coordination pole             |
-| `dist-broadcast`              | distributed-flat             | self-claim + declare-intent + broadcast findings | ❌ build                            |
-| `dist-peer-review`            | distributed-flat             | self-claim + peer-review diffs before submit     | ❌ build                            |
-| `dist-repo-huddle`            | distributed (per-repo group) | same-repo agents share understanding + co-edit   | ❌ build                            |
-| `dist-blackboard`             | distributed-flat             | indirect via shared scratchpad (stigmergic)      | ❌ build                            |
-| `ensemble-vote`               | none-during, aggregate-after | solve-N-independently → judge picks/merges       | ❌ build (key control)              |
-| `hier-lead-worker` (opt)      | hierarchical                 | elected lead decomposes + delegates              | ❌ build                            |
-| `pair-driver-navigator` (opt) | per-task pair                | continuous review                                | ❌ build                            |
-| `hive-realqueen`              | central                      | Queen places/evicts/re-places/briefs/wakes       | ✅ (reliability-degraded — EI-1293) |
+Each arm is a **blueprint** (the `spine.claimModel` + `coordination` schema section); the run driver maps the resolved spec → the right spawn shape. “blueprint+driver ✅” = the topology is declared + the unit-tested driver runs it; the only remaining step for a live run is the consumer’s `runAgent` binding (fleet-spawn-backed) — see *Runtime enforcement* below.
 
-**Framework:** one `CoordinationStrategy` seam over `makePoolBacklogDriver` — hooks for `claimNext` (how an agent gets work), `onProgress` (what it shares/writes), `beforeSubmit` (review/aggregate), `teamShape` (per-task vs per-backlog vs per-repo). Iso-call-budget + same-denominator grading live in the shared driver, applied identically to every strategy.
+| Arm (blueprint id)       | Locus                        | Mechanism                                                           | Status                                       |
+| ------------------------ | ---------------------------- | ------------------------------------------------------------------- | -------------------------------------------- |
+| `mini-swe`               | none (1 agent)               | —                                                                   | ✅ baseline floor                             |
+| `su-independent`         | none (N isolated)            | —                                                                   | ✅ no-coordination pole                       |
+| `dist-broadcast`         | distributed-flat             | self-claim + declare-intent + broadcast findings                    | ✅ blueprint+driver                           |
+| `dist-peer-review`       | distributed-flat             | self-claim + peer-review diffs before submit                        | ✅ blueprint+driver                           |
+| `dist-repo-huddle`       | distributed (per-repo group) | same-repo agents share understanding + co-edit                      | ✅ blueprint+driver                           |
+| `dist-blackboard`        | distributed-flat             | indirect via shared scratchpad (stigmergic; `coord:send` forbidden) | ✅ blueprint+driver                           |
+| `ensemble-solve`         | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`) | ✅ blueprint+driver (key control)             |
+| `pair`                   | per-task pair                | driver writes / navigator continuously reviews                      | ✅ blueprint+driver                           |
+| `hier-lead-worker` (opt) | hierarchical                 | elected lead decomposes + delegates                                 | ❌ deferred (needs an election schema)        |
+| `hive`                   | central                      | Queen places/evicts/re-places/briefs/wakes                          | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
+
+**Framework (built):** a topology is a blueprint, resolved to a `CoordinationSpec` by `resolveCoordinationSpec` (`coordination-topology.ts`), mapped to per-team spawn plans (directive + tool-scope + team grouping) by `coordination-runtime.ts`, and executed by `runTopology` (`run-topology.ts`). The driver is generic across benchmarks via two injected seams: a per-benchmark `CloneGradeSeam` (clone/grade — identical across arms, C5) and a `runAgent` (the fleet-spawn-backed agent invocation). SWE-bench-Pro (diff) and FrontierSWE (in-container) both wire onto it.
+
+### Runtime enforcement — how the driver makes C1 + C3 + C4 mechanical (not aspirational)
+
+[Section titled “Runtime enforcement — how the driver makes C1 + C3 + C4 mechanical (not aspirational)”](#runtime-enforcement--how-the-driver-makes-c1--c3--c4-mechanical-not-aspirational)
+
+* **C1 (same denominator):** `runTopology` emits a `TaskRunResult` row only for tasks it actually ran. A task the iso-budget couldn’t reach gets **no row** — and `buildCapabilityAttribution` (default `sameDenominator:true`) counts a task with no row, or one whose rows are all infra-failed, as **`false`**. So a less-efficient arm that finishes fewer tasks is penalised, never flattered by exclusion (the exact failure mode of the 2026-06-17 audit). The report’s task universe is the full backlog; `skippedTaskIds` is surfaced for the C6 coverage table.
+* **C3 (iso-budget):** one `IsoBudget` (`maxModelCalls` primary, + `$`/tokens/wall) is applied **uniformly** across every arm and is a **hard ceiling** checked before each task-unit dispatches (bounded ≤`cap` overshoot, since a unit’s call cost is only known after it runs). A cap-terminated attempt sets `capped:true` (graded normally — a capped run ≠ a genuine fail).
+* **C4 (capability actually exercised):** each agent run reports `coordCalls` (the count of coordination tool calls it actually made); the driver sums it onto `armMeta.coordCalls`. A coordination arm whose rows show `coordCalls ≈ 0` is **C4 NEEDS-EVIDENCE** — the topology was never exercised, so any “delta” is variance, not capability (the trap that sank a peer’s tau2 +memory “lift”: the +memory arm made zero memory calls). Verify coordination is non-zero on a probe before any claim.
+* **No-debris teardown:** each run retires its **own** work-items (`retireBenchDebris`, scoped to the run’s hive slug) on clean exit AND signal-kill/crash — scoped so it can never deprecate a concurrent peer benchmark’s in-flight items.
 
 ## What a fair run requires (the build target)
 

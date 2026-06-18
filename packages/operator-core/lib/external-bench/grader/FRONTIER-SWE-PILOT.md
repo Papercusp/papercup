@@ -132,6 +132,34 @@ The TS path: `buildLiveFrontierSweGrader().grade([{modality:'in-container', inst
 - `PAPERCUSP_BENCH_FRONTIER_SWE_JSONL` — override the corpus path.
 - `TINKER_API_KEY` — only for `frogsgame-rl`.
 
+## Running the topology arms (code path)
+
+Once a dedicated volume + ghcr auth + compute are available, the arms run through the shared topology driver —
+no bespoke launcher. Wire the FrontierSWE in-container runAgent (drives opus inside the task container) + the
+self-healing resume:
+
+```ts
+import { makeFrontierSweRunAgent } from '../frontier-swe-runagent';   // adapts metr-hcast singleOpusDriveArm
+import { runFrontierSweResilient } from '../frontier-swe-arm';
+import { resolveCoordinationSpec } from '../coordination-topology';
+// live bindings (metr-hcast-live.ts): the :8788-gateway model call + docker exec
+const runAgent = makeFrontierSweRunAgent({ modelCall: liveGatewayModelCall, exec: liveDockerExec });
+
+await runFrontierSweResilient({
+  spec: resolveCoordinationSpec(blueprint),  // su-independent (no-coord) | hive (central) | dist-broadcast/-peer-review/-blackboard (distributed) | (ensemble/pair)
+  taskSetId: 'frontier-swe-cpu',             // 12 GPU-free tasks; the 5 GPU tasks need B200/H100
+  k: 5,                                      // 5 trials → mean@5 / best@5
+  resultsPath: '<dedicated-volume>/frontier-swe/runs/<arm>.jsonl',  // durable; re-invoke to resume only missing (task,seed)
+  runAgent,
+  budget: { maxModelCalls: N, maxWallMs: M },  // iso-budget — wall-clock is load-bearing (4–20h/task)
+  rowMeta: { version, modelId: 'claude-opus-4-8', harnessVersion, preregHash, rolloutId },
+});
+// rows → buildFrontierSweSuiteData(rows) (mean@5/best@5/avgRank/dominance) + buildFairnessAudit (the C1–C10 table).
+```
+
+Run ≥2 arms (e.g. `su-independent` vs `hive`) over the same tasks + same iso-budget for the topology lift (D-002).
+Interrupted? Re-run the same call — only missing trials re-execute.
+
 ## Discipline
 
 - **Two-port model** — the bench routes `PAPERCUSP_OPERATOR_BASE=:3170` (staging) + the
