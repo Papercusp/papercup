@@ -124,4 +124,14 @@ describe('nextEmbedBackoffMs', () => {
   it('honors a server hint over exponential backoff', () => {
     expect(nextEmbedBackoffMs(0, 2000, 0, { rand: () => 0 })).toBe(2000);
   });
+
+  it('widens reset-moment jitter so clients on the SAME reset window do not re-fire in sync (anti-herd)', () => {
+    // Two clients both told "reset in 5s" get DIFFERENT waits — spread across the jitter
+    // window — so they don't all hammer OpenAI at the exact reset boundary.
+    const a = nextEmbedBackoffMs(0, 5000, 0, { rand: () => 0 });
+    const b = nextEmbedBackoffMs(0, 5000, 0, { rand: () => 0.99 });
+    expect(a).toBe(5000); // reset honored exactly when jitter draws 0
+    expect(b).toBeGreaterThan(6000); // a different client is jittered later
+    expect((b as number) - (a as number)).toBeGreaterThan(1000); // spread > 1s across the herd
+  });
 });

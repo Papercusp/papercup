@@ -34,9 +34,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
-  // NOTE: SU_BLUEPRINT_PERSONA + REPLACE_CLAUDE_BASE (domain-generic-agent-personas P-006/P-013/P-014)
-  // are now DEFAULT ON (owner-authorized 2026-06-18) — removed from this allowlist. Composition-tested
-  // + live-validated; the full deployed-hive e2e smoke remains infra-gated (EI-1433).
+  // domain-generic-agent-personas-2026-06-17 P-006: su-as-blueprint-role persona. DARK pending P-008 —
+  // the papercup-hive su instance-override content (Papercusp operational specifics) was never written
+  // (hive_settings empty), so flag-ON regresses su to the lean base/su.md (code audit 2026-06-18). OFF =
+  // today's renderSuPlaybook. Re-default-ON after the owner writes the instance override.
+  FLAGS.SU_BLUEPRINT_PERSONA,
+  // NOTE: REPLACE_CLAUDE_BASE (P-013/P-014) is now DEFAULT ON (owner-authorized 2026-06-18) — removed
+  // from this allowlist; composition-tested + validated by the live e2e (a bee produced a judge-verified
+  // artifact with it on) + 173 orchestrator tests.
   // watchdog-and-exposed-systems-improvement-2026-06-18 P-009: the watchdog auto-close sweep.
   // OFF = escalate-only (today's behavior, byte-identical) — auto-closing real improvement
   // items autonomously is unsafe until the owner reviews the guards. Safe to ship dark.

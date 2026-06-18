@@ -49,14 +49,23 @@ const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
 
-// ── Embedder retry budget (watchdog-embed-resilience-and-dedup-2026-06-17 P-001) ──
+// ── Embedder retry budget (watchdog-embed-resilience-and-dedup-2026-06-17 P-001;
+//    patience raised 2026-06-18 per owner ask, to ride out longer TPM bursts) ──
 // A sustained org-wide TPM 429 on text-embedding-3-small (1M TPM) hard-failed
 // memory:remember/search FLEET-WIDE on 2026-06-17. We ride the spikes out on the
-// SAME embedder (no fallback) with a header-aware, jittered, budget-capped retry.
-export const EMBED_MAX_ATTEMPTS = 8; // 1 try + 7 retries
-const EMBED_MAX_TOTAL_WAIT_MS = 30_000; // never block ONE embed call longer than this
+// SAME embedder (no fallback) with a header-aware, JITTERED, budget-capped retry.
+// Budget is ~50s — just UNDER the 60s per-tool-call timeout. SAFE for a multi-fact
+// memory:remember because mem0 embeds facts in PARALLEL (Promise.all, mem0-client.ts
+// embedBatch), so a call's embed phase is bounded by the SLOWEST single embed, not
+// the sum — N facts don't multiply the wait.
+// THUNDERING HERD: full jitter on the exponential path AND a widened jitter on the
+// reset-header path (EMBED_RESET_JITTER_MS) so many clients waiting on the SAME reset
+// window don't all re-fire at the exact same moment.
+export const EMBED_MAX_ATTEMPTS = 12; // 1 try + 11 retries
+const EMBED_MAX_TOTAL_WAIT_MS = 50_000; // never block ONE embed call past this (< the 60s tool timeout)
 const EMBED_BACKOFF_BASE_MS = 500;
-const EMBED_BACKOFF_CAP_MS = 8_000; // per-attempt ceiling
+const EMBED_BACKOFF_CAP_MS = 8_000; // per-attempt ceiling (exponential / no-hint path)
+const EMBED_RESET_JITTER_MS = 2_500; // spread post-reset retries across this window (anti-herd)
 
 // Dodge bundler static analysis — @huggingface/transformers is an
 // optional, lazily-resolved dependency (only present when local mode is
@@ -147,8 +156,10 @@ export function nextEmbedBackoffMs(
   if (remaining <= 0) return null;
   let wait: number;
   if (serverHintMs != null && serverHintMs > 0) {
-    // Honor the server's reset window + a little jitter so the herd doesn't resync.
-    wait = Math.min(serverHintMs + Math.floor(rand() * base), cap * 2);
+    // Honor the server's FULL reset window (bounded only by the remaining budget below)
+    // + a WIDENED jitter so many clients waiting on the SAME reset don't all re-fire at
+    // once — de-correlates the retry storm at the window boundary (anti-thundering-herd).
+    wait = serverHintMs + Math.floor(rand() * EMBED_RESET_JITTER_MS);
   } else {
     // Full jitter over an exponential window, with a small floor.
     const window = Math.min(cap, base * 2 ** attempt);
