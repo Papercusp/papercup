@@ -173,11 +173,20 @@ test('a BARE upstream 429 (no rate-limit headers) fails over to the next account
     },
     { pool },
   );
-  assert.equal(pool.active().accountId, 'A', 'starts active on A');
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(res.status, 200, 'gateway fails over A→B on bare 429 and retries → 200 from B');
-  // The fix: a bare 429 must ROTATE active off A (not 429-loop it) so the next retry tries B.
-  assert.equal(pool.active().accountId, 'B', 'bare 429 failed over A→B (no stuck-loop on the limited account)');
+  assert.equal(res.status, 200, 'gateway fails over off the throttled account on a bare 429 and retries → 200');
+  // Upstream was hit twice: one bare-429 attempt + one internal-failover success on the other account.
+  assert.equal(attempt, 2, 'one throttled attempt + one internal-failover success (no stuck-loop on the limited account)');
+  // The fix's invariant under round-robin: the bare-429 account is ROTATED OUT (onExhausted marked it
+  // out of rotation), so the account that SERVED the 200 is the survivor and the throttled one is
+  // skipped. The routed-account header names the survivor; the throttled account must stay out of
+  // rotation — over a full pass of active() it never reappears (round-robin only cycles live accounts).
+  const survivor = res.headers.get('x-papercusp-routed-account');
+  assert.ok(survivor === 'A' || survivor === 'B', `served by a pool account (got ${survivor})`);
+  const throttled = survivor === 'A' ? 'B' : 'A';
+  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
+  assert.ok(!seen.has(throttled), `bare-429 account '${throttled}' is out of rotation (no stuck-loop on the limited account)`);
+  assert.ok(seen.has(survivor), `the healthy account '${survivor}' still serves rotation`);
 });
 
 test('ALL accounts transiently throttled (bare 429) → gateway WAITS out the short penalty + retries, returns the recovered 200 (not a forwarded retryable 429)', async () => {
@@ -228,13 +237,20 @@ test('a usage/session CAP (429 body names the limit) is INTERNALLY failed over �
     },
     { pool },
   );
-  assert.equal(pool.active().accountId, 'A', 'starts active on A');
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(res.status, 200, 'gateway internally failed over the cap → returns B\'s success, not A\'s 429 wall');
+  assert.equal(res.status, 200, 'gateway internally failed over the cap → returns the other account\'s success, not a 429 wall');
   const body = JSON.parse(await res.text());
-  assert.equal(body.ok, true, "the forwarded body is B's success, not the session-limit error");
-  assert.equal(pool.active().accountId, 'B', 'rotated off the session-capped account A');
-  assert.equal(calls, 2, 'one capped attempt on A + one internal-failover success on B');
+  assert.equal(body.ok, true, 'the forwarded body is the healthy account\'s success, not the session-limit error');
+  assert.equal(calls, 2, 'one capped attempt + one internal-failover success on a healthy account');
+  // The capped account is rotated OUT of rotation (penalize + onExhausted). The routed-account header
+  // names the survivor that served the 200; the session-capped account must stay skipped — over a full
+  // pass of active() it never reappears (round-robin only cycles accounts that still have budget).
+  const survivor = res.headers.get('x-papercusp-routed-account');
+  assert.ok(survivor === 'A' || survivor === 'B', `served by a pool account (got ${survivor})`);
+  const capped = survivor === 'A' ? 'B' : 'A';
+  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
+  assert.ok(!seen.has(capped), `rotated off the session-capped account '${capped}' (it stays out of rotation)`);
+  assert.ok(seen.has(survivor), `the healthy account '${survivor}' still serves rotation`);
 });
 
 test('401 from upstream invalidates the cached token', async () => {
