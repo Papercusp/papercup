@@ -488,6 +488,14 @@ export const FLAGS = {
   // (alpha flags-default-on); keep-all is the default behavior regardless. OFF
   // hides the nav entry (the page never auto-prunes — only an explicit trim runs).
   STORAGE_SETTINGS: "papercusp-storage-settings",
+  // storage-settings-page-2026-06-15 P-006 — per-retention disable for the
+  // pre-existing background prunes surfaced on the Storage page (D-001: "see the
+  // full retention picture and disable if desired"). ON by default = the prune
+  // keeps running (current behavior); OFF = the DBOS tick skips it. The tick guard
+  // is fail-safe (a flag-read error keeps the prune running).
+  STORAGE_RETAIN_TELEMETRY: "papercusp-storage-retain-telemetry",
+  STORAGE_RETAIN_SCRATCH: "papercusp-storage-retain-scratch",
+  STORAGE_RETAIN_TEST_RUNS: "papercusp-storage-retain-test-runs",
   // agent-capability-confinement-2026-06-13 B-18 (P-020/P-021): the FLEET CUTOVER —
   // when ON, autonomous-fleet (bee/pipeline) claude-code spawns drop the native
   // WRITE/exec tools (Bash/Edit/Write/WebFetch) from `--allowed-tools` and route
