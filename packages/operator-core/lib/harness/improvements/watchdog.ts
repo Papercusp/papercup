@@ -42,6 +42,7 @@ import {
   type KnownOpenAgingOutcome,
   type KnownOpenAgingTickTunables,
 } from './known-open-aging';
+import { processAutoClose as runAutoCloseSweep, type AutoCloseOutcome } from './auto-close';
 import type { ImprovementSeverity } from './policy';
 import type { LearningSloOptions } from './learning-slo';
 
@@ -1478,6 +1479,11 @@ export interface WatchdogDeps {
    * firing into escalation pressure. Defaults to `processKnownOpenAging`; tests inject.
    */
   processAging: (workspaceId: string, knownOpenKeys: string[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
+  /**
+   * AUTO-CLOSE (P-009): retire watchdog-sourced EIs whose signal stopped firing for N
+   * ran-ticks. Defaults to `processAutoClose` (DEFAULT-OFF flag-gated); tests inject.
+   */
+  processAutoClose?: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
 }
 
 /** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down. */
@@ -1904,6 +1910,7 @@ interface ResolvedTickDeps {
   readKeyDups: (keys: string[]) => Promise<WatchdogKeyDup[]>;
   pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
   processAging: (workspaceId: string, knownOpenKeys: string[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
+  processAutoClose: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
   collect?: () => Promise<WatchdogSignal[]>;
   collectors?: WatchdogCollector[];
 }
@@ -1967,6 +1974,15 @@ async function runWatchdogTickBody(
     } catch (e) {
       console.warn(`[improvement-watchdog] known-open aging failed: ${e instanceof Error ? e.message : e}`);
     }
+  }
+
+  // P-009 (auto-close lifecycle): retire watchdog-sourced EIs whose signal cleared
+  // (absent from the recent ran-ticks' known-open keys). DEFAULT-OFF flag-gated inside;
+  // best-effort — an auto-close failure never aborts the tick.
+  try {
+    await deps.processAutoClose(workspaceId, opts);
+  } catch (e) {
+    console.warn(`[improvement-watchdog] auto-close failed: ${e instanceof Error ? e.message : e}`);
   }
 
   // P-009 deferred-escalation: feed the last RAN tick's deferred keys so a signal
@@ -2122,6 +2138,8 @@ export async function runWatchdogTick(
   const pruneTicks = deps?.pruneTicks ?? pruneWatchdogTicks;
   const processAging = deps?.processAging
     ?? ((ws: string, keys: string[], o: WatchdogTickOptions) => processKnownOpenAging(ws, keys, agingOptionsFromTick(o)));
+  const processAutoClose = deps?.processAutoClose
+    ?? ((ws: string, _o: WatchdogTickOptions) => runAutoCloseSweep(ws));
 
   const outcome = await withLock(workspaceId, () =>
     runWatchdogTickBody(workspaceId, opts, {
@@ -2131,6 +2149,7 @@ export async function runWatchdogTick(
       readKeyDups,
       pruneTicks,
       processAging,
+      processAutoClose,
       collect: deps?.collect,
       collectors: deps?.collectors,
     }),
