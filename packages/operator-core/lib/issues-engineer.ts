@@ -111,11 +111,18 @@ export interface EngineerIssueDetail extends EngineerIssue {
 // reads false ⇒ 'default' (today's behavior, safe). EI-<n> ids stay GLOBALLY allocated
 // (nextIssueId is unchanged), so the global ObjectRef contract is preserved.
 let issuesPerWorkspaceOn = false;
+let issuesFlagReadAtMs = 0;
+// Self-heal cadence for the cached flag (EI-1460). Short enough that a flip is
+// honoured within a few seconds anywhere; long enough that the PG-backed getFlag
+// (itself 5s-TTL-cached) is hit at most ~once per window per process.
+const ISSUES_FLAG_TTL_MS = 3_000;
 async function refreshIssuesPerWorkspace(): Promise<void> {
   try {
     issuesPerWorkspaceOn = await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId());
   } catch {
     issuesPerWorkspaceOn = false;
+  } finally {
+    issuesFlagReadAtMs = Date.now();
   }
 }
 void refreshIssuesPerWorkspace();
@@ -123,8 +130,17 @@ onFlagChange((key) => {
   if (key === null || key === FLAGS.ISSUES_PER_WORKSPACE) void refreshIssuesPerWorkspace();
 });
 /** The engineer-issues workspace scope NOW (F): active workspace when the flag is ON,
- *  else the legacy shared `default` coord workspace. */
+ *  else the legacy shared `default` coord workspace.
+ *
+ *  EI-1460: `onFlagChange` is IN-PROCESS only and the registration happens at module
+ *  load, so a flip via the PG override store in another operator process — or a flip
+ *  that lands before this module is lazily imported — would leave the cached bool stale
+ *  FOREVER (the flag would silently never take effect, the symptom that shipped a wrong
+ *  data-backfill). Self-heal on a short TTL: a stale read kicks a fire-and-forget
+ *  refresh through `getFlag`, which reads the PG-backed override (cross-process-correct).
+ *  The sync contract is preserved; the value converges within one getFlag round-trip. */
 export function issuesScopeWorkspace(): string {
+  if (Date.now() - issuesFlagReadAtMs > ISSUES_FLAG_TTL_MS) void refreshIssuesPerWorkspace();
   return issuesPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
 }
 

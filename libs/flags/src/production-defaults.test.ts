@@ -274,6 +274,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // heartbeat on the self-selection path. Owner flips ON after the recovery layer is exercised;
   // OFF = today's local SELECT … FOR UPDATE SKIP LOCKED, byte-identical.
   FLAGS.WORKITEM_CLAIM_LEASE,
+  // scoped-superuser-workspace-clamp-2026-06-18: bind a psu workspace-scoped superuser
+  // session to its launch workspace at the dispatch layer (engaging the existing
+  // effectiveDispatchWorkspace clamp) + deny crossWorkspace tools / the harness:'all' global
+  // plan escape for a scoped session. DELIBERATE dark ship — it changes auth enforcement for
+  // every superuser session, so it ships as a reversible kill-switch the owner flips ON after
+  // an attended :3170 verification (OFF = today's unscoped '*' superuser, byte-identical).
+  FLAGS.SCOPED_SUPERUSER_CLAMP,
 ]);
 
 /**
