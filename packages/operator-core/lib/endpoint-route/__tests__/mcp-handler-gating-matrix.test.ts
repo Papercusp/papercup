@@ -216,6 +216,15 @@ registerProjectedTool({
   expose: { mcp: { name: 'gatingtest:crossworkspace' } },
   fn: probeFn('gatingtest:crossworkspace'),
 });
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: a cross_harness-prefixed tool (reads other harnesses)',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['operator'],
+  expose: { mcp: { name: 'cross_harness:probe' } },
+  fn: probeFn('cross_harness:probe'),
+});
 
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
@@ -339,6 +348,48 @@ describe('scoped-superuser-workspace-clamp', () => {
     const res = await callTool('gatingtest:crossworkspace', {}, superuserExtra());
     expect(res.isError).not.toBe(true);
     expect(textOf(res)).toContain('gatingtest:crossworkspace-ok');
+  });
+});
+
+/* ─── scoped-superuser HIVE clamp (P-014a — auto-confine on harness) ──── */
+
+describe('scoped-superuser hive clamp', () => {
+  // Flag ON, scoped to ws-test, launched ON a hive harness ⇒ hive-confined.
+  const hiveScoped = () => superuserExtra('&workspace=ws-test&harness=hiveA-home');
+
+  it('flag ON: denies a cross_harness:* tool (it reads other harnesses)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('cross_harness:probe', {}, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: rejects a per-call `harness` in a DIFFERENT hive', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'hiveB-home' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: rejects a harness:\'all\' escape', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'all' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: ALLOWS a harness within the same hive subtree (a member)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'hiveA-member' }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(seen.at(-1)?.tool).toBe('gatingtest:scoped');
+  });
+
+  it('flag OFF: a hive-harness session may still use cross_harness:* (unchanged)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool('cross_harness:probe', {}, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('cross_harness:probe-ok');
   });
 });
 
