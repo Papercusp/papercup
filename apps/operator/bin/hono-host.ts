@@ -19,6 +19,7 @@ import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
+import { startLoopPressureGovernor } from '@papercusp/operator-core/lib/loop-pressure-governor';
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
@@ -86,6 +87,14 @@ process.env.PORT = String(port);
 // crosses 100ms — the signal that the main thread is CPU-bound (the exact shape
 // that degraded agent-mcp routes to 12-30s while /api/health stayed fast).
 startEventLoopLagMonitor();
+
+// P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()
+// (above) and, when the event loop is CRITICALLY saturated, makes the fleet shed
+// effective agent concurrency (AIMD multiplicative-decrease), ramping back as the
+// loop clears — so the box can't keep admitting agents into a wedged loop (the
+// crash-loop shape). Bounded under the user's cap + self-recovering; always-on
+// infra like the lag monitor + the P5-1 load-shedding it pairs with.
+startLoopPressureGovernor();
 
 const server = serve({ fetch: handler, port, hostname }, (info) => {
   console.log(`[hono-host] listening on http://${hostname}:${info.port}`);

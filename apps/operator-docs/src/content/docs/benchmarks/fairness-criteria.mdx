@@ -132,7 +132,7 @@ Each arm is a **blueprint** (the `spine.claimModel` + `coordination` schema sect
 | `dist-blackboard` | distributed-flat | indirect via shared scratchpad (stigmergic; `coord:send` forbidden) | ✅ blueprint+driver |
 | `ensemble-solve` | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`) | ✅ blueprint+driver (key control) |
 | `pair` | per-task pair | driver writes / navigator continuously reviews | ✅ blueprint+driver |
-| `hier-lead-worker` (opt) | hierarchical | elected lead decomposes + delegates | ❌ deferred (needs an election schema) |
+| `hier-lead-worker` | hierarchical (elected lead) | a lead runs a coordination pass (charged to the iso-budget), then workers execute under it | ✅ blueprint+driver |
 | `hive` | central | Queen places/evicts/re-places/briefs/wakes | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
 
 **Framework (built):** a topology is a blueprint, resolved to a `CoordinationSpec` by `resolveCoordinationSpec` (`coordination-topology.ts`), mapped to per-team spawn plans (directive + tool-scope + team grouping) by `coordination-runtime.ts`, and executed by `runTopology` (`run-topology.ts`). The driver is generic across benchmarks via two injected seams: a per-benchmark `CloneGradeSeam` (clone/grade — identical across arms, C5) and a `runAgent` (the fleet-spawn-backed agent invocation). SWE-bench-Pro (diff) and FrontierSWE (in-container) both wire onto it.

@@ -25,9 +25,9 @@ import type {
 } from '@papercusp/operator-core/lib/harness-insights/card-types';
 
 const CARD: CSSProperties = {
-  border: '1px solid var(--border, #2a2a2a)',
-  background: 'var(--surface, #1a1a1a)',
-  borderRadius: 10,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-1)',
+  borderRadius: 8,
   padding: 20,
   display: 'flex',
   flexDirection: 'column',
@@ -38,7 +38,7 @@ const CARD: CSSProperties = {
 const TITLE: CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const SECTION: CSSProperties = {
@@ -46,7 +46,7 @@ const SECTION: CSSProperties = {
   flexDirection: 'column',
   gap: 4,
   paddingTop: 8,
-  borderTop: '1px solid var(--border-subtle, #222)',
+  borderTop: '1px solid var(--border)',
 };
 
 const SECTION_TITLE: CSSProperties = {
@@ -54,25 +54,25 @@ const SECTION_TITLE: CSSProperties = {
   fontWeight: 600,
   textTransform: 'uppercase',
   letterSpacing: '0.06em',
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 const STATS_ROW: CSSProperties = {
   display: 'flex',
   gap: 14,
   fontSize: 13,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const STAT_VAL: CSSProperties = {
   fontSize: 16,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const STAT_LABEL: CSSProperties = {
   fontSize: 11,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 const BADGE: CSSProperties = {
@@ -80,18 +80,18 @@ const BADGE: CSSProperties = {
   alignItems: 'center',
   gap: 4,
   padding: '2px 8px',
-  borderRadius: 12,
+  borderRadius: 999,
   fontSize: 12,
   fontWeight: 500,
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg-dim, #aaa)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg-dim)',
   marginRight: 4,
 };
 
 const BADGE_ACTIVE: CSSProperties = {
   ...BADGE,
-  background: 'var(--accent-soft, rgba(76, 175, 80, 0.15))',
-  color: 'var(--accent, #4CAF50)',
+  background: 'color-mix(in oklab, var(--good), transparent 84%)',
+  color: 'var(--good)',
 };
 
 export type {

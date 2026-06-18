@@ -28,10 +28,10 @@ export const fmt = (epochMs: string): string => {
 
 /** Pure: workflow-status → swatch color. Exported for tests. */
 export const statusColor = (s: string): string =>
-  s === 'SUCCESS' ? '#86efac'
-    : s === 'ERROR' || s.includes('MAX_RECOVERY') ? '#fca5a5'
-      : s === 'PENDING' || s === 'ENQUEUED' ? '#fde68a'
-        : '#dbeafe';
+  s === 'SUCCESS' ? 'var(--good)'
+    : s === 'ERROR' || s.includes('MAX_RECOVERY') ? 'var(--bad)'
+      : s === 'PENDING' || s === 'ENQUEUED' ? 'var(--warn)'
+        : 'var(--fg)';
 
 const workflowColumns: ColumnDef<Workflow>[] = [
   {
@@ -108,7 +108,7 @@ export default function DbosClient() {
   useEffect(() => { void load(); }, [load]);
 
   return (
-    <div style={{ padding: 16, color: '#dbeafe', fontSize: 13 }}>
+    <div style={{ padding: 16, color: 'var(--fg)', fontSize: 13 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
         {(['workflows', 'queues'] as const).map((v) => (
           <button key={v} onClick={() => void setView(v)} style={tabBtn(view === v)}>{v}</button>
@@ -118,7 +118,7 @@ export default function DbosClient() {
       </div>
 
       {state === 'loading' && <p style={{ opacity: 0.6 }}>Loading…</p>}
-      {state === 'error' && <p style={{ color: '#fca5a5' }}>Error: {err}</p>}
+      {state === 'error' && <p style={{ color: 'var(--bad)' }}>Error: {err}</p>}
       {state === 'ok' && data && !data.enabled && (
         <p style={{ opacity: 0.75, maxWidth: 560, lineHeight: 1.5 }}>
           DBOS is not running — the <code>dbos</code> schema doesn’t exist yet. Enable it with{' '}
@@ -173,20 +173,21 @@ export default function DbosClient() {
 }
 
 const tabBtn = (on: boolean): CSSProperties => ({
-  padding: '5px 12px', borderRadius: 8, border: '1px solid rgba(103,232,249,0.25)',
-  background: on ? 'rgba(17,34,53,0.98)' : 'rgba(255,255,255,0.02)',
-  color: on ? '#f7fdff' : 'rgba(214,236,248,0.72)', cursor: 'pointer', fontSize: 12,
+  padding: '5px 12px', borderRadius: 8,
+  border: '1px solid color-mix(in oklab, var(--accent), transparent 72%)',
+  background: on ? 'var(--bg-raised)' : 'var(--bg-2)',
+  color: on ? 'var(--fg)' : 'var(--fg-dim)', cursor: 'pointer', fontSize: 12,
 });
 const pill = (on: boolean): CSSProperties => ({
   padding: '3px 10px', borderRadius: 999,
-  border: `1px solid ${on ? 'rgba(103,232,249,0.5)' : 'rgba(103,232,249,0.18)'}`,
-  background: on ? 'color-mix(in srgb, var(--bg-raised), transparent 2%)' : 'transparent', color: '#dbeafe', cursor: 'pointer', fontSize: 12,
+  border: `1px solid ${on ? 'color-mix(in oklab, var(--accent), transparent 48%)' : 'var(--border)'}`,
+  background: on ? 'var(--bg-raised)' : 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 12,
 });
 const monoCell: CSSProperties = { fontFamily: 'ui-monospace, Menlo, monospace' };
 const emptyGrid: CSSProperties = {
   padding: '10px 12px',
-  border: '1px solid rgba(103,232,249,0.12)',
+  border: '1px solid var(--border)',
   borderRadius: 6,
-  color: 'rgba(214,236,248,0.62)',
+  color: 'var(--fg-dim)',
   fontSize: 12,
 };

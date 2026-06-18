@@ -11,6 +11,7 @@ import {
   coordinationSpawnPlans,
   isCoordinationToolCall,
   countCoordinationCalls,
+  leadDirective,
 } from './coordination-runtime';
 import type { CoordinationSpec } from './coordination-topology';
 import type { BenchTask } from './types';
@@ -34,6 +35,7 @@ const spec = (over: Partial<CoordinationSpec>): CoordinationSpec => ({
   sharedState: 'both',
   team: 'per-backlog',
   aggregate: 'none',
+  coordinator: 'none',
   disciplineForbid: [],
   central: false,
   ...over,
@@ -85,6 +87,19 @@ test('coordinationSpawnPlans — per-repo yields one plan per repo with tasks + 
   assert.ok(plans.every((p) => p.tasks.length >= 1 && p.directive.length > 0));
   assert.ok(plans.every((p) => p.forbidTools.length === 1 && p.forbidTools[0] === 'coord:send'));
   assert.deepEqual(plans.map((p) => p.teamKey).sort(), ['ansible__ansible', 'flipt-io__flipt']);
+});
+
+test('hierarchical — leadDirective coordinates (not solves); the worker directive becomes lead-aware', () => {
+  const s = spec({ coordinator: 'elected-lead', broadcast: 'topic' });
+  const lead = leadDirective(s, 'all-0', 5);
+  assert.ok(/LEAD/.test(lead) && /coordinator/i.test(lead), 'lead is a peer coordinator');
+  assert.ok(/do NOT write the solutions|NOT .*solver/i.test(lead), 'the lead coordinates, does not solve');
+  assert.ok(/5 task/.test(lead), 'lead sees the team size');
+  // the worker directive (for the SAME spec) tells workers to align with + report back to the lead.
+  const worker = coordinationDirective(s, 'all-0');
+  assert.ok(/LEAD/.test(worker) && /align/i.test(worker), 'worker directive is lead-aware');
+  // a flat spec (coordinator:none) has NO lead-aware line.
+  assert.ok(!/UNDER A LEAD/.test(coordinationDirective(spec({ broadcast: 'topic' }), 'all-0')));
 });
 
 test('C4 coordination-call measurement — counts inter-agent comms, NOT work-acquisition', () => {

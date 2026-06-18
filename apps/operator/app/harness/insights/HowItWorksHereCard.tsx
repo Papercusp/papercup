@@ -37,9 +37,9 @@ import remarkGfm from 'remark-gfm';
 const README_MAX_CHARS = 12_000;
 
 const CARD: CSSProperties = {
-  border: '1px solid var(--border, #2a2a2a)',
-  background: 'var(--surface, #1a1a1a)',
-  borderRadius: 10,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-1)',
+  borderRadius: 8,
   padding: 20,
   display: 'flex',
   flexDirection: 'column',
@@ -50,13 +50,13 @@ const CARD: CSSProperties = {
 const TITLE: CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const PROSE: CSSProperties = {
   fontSize: 13,
   lineHeight: 1.5,
-  color: 'var(--fg-dim, #aaa)',
+  color: 'var(--fg-dim)',
 };
 
 const STEPS: CSSProperties = {
@@ -75,9 +75,9 @@ const STEP: CSSProperties = {
 const STEP_NUM: CSSProperties = {
   width: 22,
   height: 22,
-  borderRadius: 11,
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg, #ddd)',
+  borderRadius: 999,
+  background: 'var(--bg-2)',
+  color: 'var(--fg)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -87,19 +87,19 @@ const STEP_NUM: CSSProperties = {
 };
 
 const STEP_BODY: CSSProperties = {
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
   lineHeight: 1.5,
 };
 
 const STEP_SUB: CSSProperties = {
   marginTop: 2,
   fontSize: 12,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 const README_SECTION: CSSProperties = {
   marginTop: 4,
-  borderTop: '1px solid var(--border, #2a2a2a)',
+  borderTop: '1px solid var(--border)',
   paddingTop: 12,
   display: 'flex',
   flexDirection: 'column',
@@ -111,7 +111,7 @@ const README_BODY: CSSProperties = {
   overflowY: 'auto',
   fontSize: 12.5,
   lineHeight: 1.55,
-  color: 'var(--fg-dim, #aaa)',
+  color: 'var(--fg-dim)',
   wordBreak: 'break-word',
 };
 

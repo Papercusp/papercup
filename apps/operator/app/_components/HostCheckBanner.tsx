@@ -67,10 +67,10 @@ const banner: React.CSSProperties = {
   position: 'fixed', top: 56, left: 0, right: 0, zIndex: 1000,
   display: 'flex', alignItems: 'center', gap: 16,
   padding: '10px 16px', fontSize: 13,
-  background: 'rgba(255,180,40,.15)', borderBottom: '1px solid rgba(255,180,40,.4)',
-  color: '#ffd070',
+  background: 'var(--warn-bg)', borderBottom: '1px solid var(--warn-border)',
+  color: 'var(--warn)',
 };
 const btn: React.CSSProperties = {
-  padding: '6px 14px', background: '#e9a040', color: '#000',
+  padding: '6px 14px', background: 'var(--warn)', color: 'var(--accent-ink)',
   border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
 };

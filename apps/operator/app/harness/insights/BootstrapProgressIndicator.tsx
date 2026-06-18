@@ -26,7 +26,7 @@ const PILL_BASE: CSSProperties = {
   alignItems: 'center',
   gap: 6,
   padding: '4px 10px',
-  borderRadius: 12,
+  borderRadius: 999,
   fontSize: 12,
   fontWeight: 500,
   lineHeight: 1.2,
@@ -35,16 +35,16 @@ const PILL_BASE: CSSProperties = {
 
 const SYNCING_PILL: CSSProperties = {
   ...PILL_BASE,
-  background: 'var(--accent-soft, rgba(33, 150, 243, 0.15))',
-  color: 'var(--accent-2, #2196F3)',
-  border: '1px solid var(--accent-2, #2196F3)',
+  background: 'color-mix(in oklab, var(--accent), transparent 84%)',
+  color: 'var(--accent)',
+  border: '1px solid color-mix(in oklab, var(--accent), transparent 56%)',
 };
 
 const CAUGHT_UP_PILL: CSSProperties = {
   ...PILL_BASE,
-  background: 'var(--accent-soft, rgba(76, 175, 80, 0.15))',
-  color: 'var(--accent, #4CAF50)',
-  border: '1px solid var(--accent, #4CAF50)',
+  background: 'color-mix(in oklab, var(--good), transparent 84%)',
+  color: 'var(--good)',
+  border: '1px solid color-mix(in oklab, var(--good), transparent 56%)',
 };
 
 const SPINNER: CSSProperties = {

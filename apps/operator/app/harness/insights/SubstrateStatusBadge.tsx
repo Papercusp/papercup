@@ -35,34 +35,34 @@ const PILL_BASE: CSSProperties = {
   alignItems: 'center',
   gap: 6,
   padding: '3px 10px',
-  borderRadius: 12,
+  borderRadius: 999,
   fontSize: 12,
   fontWeight: 500,
   lineHeight: 1.2,
   whiteSpace: 'nowrap',
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: 'var(--border, #2a2a2a)',
+  borderColor: 'var(--border)',
 };
 
 const DISABLED: CSSProperties = {
   ...PILL_BASE,
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg-dim, #888)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg-dim)',
 };
 
 const BOOTING: CSSProperties = {
   ...PILL_BASE,
-  background: 'var(--bg-warning, rgba(255, 152, 0, 0.12))',
-  color: 'var(--fg-warning, #FF9800)',
-  borderColor: 'var(--fg-warning, #FF9800)',
+  background: 'var(--warn-bg)',
+  color: 'var(--warn)',
+  borderColor: 'var(--warn-border)',
 };
 
 const BOOTED: CSSProperties = {
   ...PILL_BASE,
-  background: 'var(--accent-soft, rgba(76, 175, 80, 0.15))',
-  color: 'var(--accent, #4CAF50)',
-  borderColor: 'var(--accent, #4CAF50)',
+  background: 'color-mix(in oklab, var(--good), transparent 84%)',
+  color: 'var(--good)',
+  borderColor: 'color-mix(in oklab, var(--good), transparent 56%)',
 };
 
 const DOT_BASE: CSSProperties = {
@@ -72,9 +72,9 @@ const DOT_BASE: CSSProperties = {
 };
 
 const DOT_BY_STATUS: Record<SubstrateStatus, CSSProperties> = {
-  disabled: { ...DOT_BASE, background: 'var(--fg-dim, #888)' },
-  booting: { ...DOT_BASE, background: 'var(--fg-warning, #FF9800)' },
-  booted: { ...DOT_BASE, background: 'var(--accent, #4CAF50)' },
+  disabled: { ...DOT_BASE, background: 'var(--fg-dim)' },
+  booting: { ...DOT_BASE, background: 'var(--warn)' },
+  booted: { ...DOT_BASE, background: 'var(--good)' },
 };
 
 const LABEL_BY_STATUS: Record<SubstrateStatus, string> = {
@@ -108,7 +108,7 @@ export function SubstrateStatusBadge(
       {LABEL_BY_STATUS[status]}
       {hint ? (
         <span
-          style={{ color: 'var(--fg-dim, #888)', marginLeft: 4 }}
+          style={{ color: 'var(--fg-dim)', marginLeft: 4 }}
           data-testid="substrate-status-hint"
         >
           {hint}

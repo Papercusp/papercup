@@ -37,7 +37,7 @@ import type { BenchTask } from './types';
 
 /** The role an agent plays in a topology. `worker` = a plain distributed/huddle/central bee; `solver`/
  *  `judge` = ensemble; `driver`/`navigator` = pair. The live runAgent uses it to pick the spawn persona. */
-export type TopologyRole = 'worker' | 'solver' | 'judge' | 'driver' | 'navigator';
+export type TopologyRole = 'worker' | 'solver' | 'judge' | 'driver' | 'navigator' | 'lead';
 
 /** What the driver hands the (injected) agent invocation per attempt. */
 export interface RunAgentInput<H = unknown> {

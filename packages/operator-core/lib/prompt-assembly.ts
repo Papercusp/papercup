@@ -131,6 +131,8 @@ export interface AssembledSection {
     | 'friction-tripwire'
     | 'yield-policy'
     | 'testing-standard'
+    | 'account-routing-note'
+    | 'deploy-pipeline-note'
     | 'runtime';
   chars: number;
 }

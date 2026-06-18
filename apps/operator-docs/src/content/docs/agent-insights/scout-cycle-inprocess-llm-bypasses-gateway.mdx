@@ -3,15 +3,20 @@ title: The Scout cycle's in-process ideators/critics bypass the inference gatewa
 description: >-
   Spawned bees get ANTHROPIC_BASE_URL at the spawn chokepoint (gatewaySpawnEnv),
   but Scout's IN-PROCESS ideator/critic/recombine llmCalls never pass through it —
-  so they hit api.anthropic.com directly on a SINGLE account. Under the busy fleet
-  that account is perpetually rate-limited → every ideator 429s → the cycle returns
-  `no-ideas` with $0 spent. Symptom that means READ THIS: a scout_ticks row with
+  so they hit api.anthropic.com directly with the Claude Max SUBSCRIPTION OAuth
+  token (no ANTHROPIC_API_KEY set) but WITHOUT the `anthropic-beta: oauth-2025-04-20`
+  header Anthropic requires for a subscription token on the direct API → every
+  ideator fails INSTANTLY with `403 permission_error: "OAuth authentication is
+  currently not allowed for this organization"` (NOT a 429/rate-limit — an earlier
+  read of this was wrong). Symptom that means READ THIS: a scout_ticks row with
   status=ran, ideas_generated=0, budget_used_usd=0, detail.stop='no-ideas' —
-  repeatedly. Fix = mirror the gym (FB-16): set gatewayLlmEnv() so the in-process
-  SDK routes through the localhost gateway. anthropicDirectTransport honors
-  PAPERCUSP_ANTHROPIC_URL, NOT the standard ANTHROPIC_BASE_URL.
+  repeatedly, completing fast (no slow 429 retries). Bees avoid it via the `claude
+  -p` CLI path the gateway injects Bearer+oauth-beta for. Fix = mirror the gym
+  (FB-16): gatewayLlmEnv() routes the in-process SDK through the gateway, which
+  injects the oauth-beta — but ONLY works when the gateway's credential injection is
+  healthy. anthropicDirectTransport honors PAPERCUSP_ANTHROPIC_URL, NOT ANTHROPIC_BASE_URL.
 discovered: 2026-06-18
-tags: [scout, inference-gateway, llm-transport, anthropic-direct, rate-limit]
+tags: [scout, inference-gateway, llm-transport, anthropic-direct, oauth, auth-403]
 ---
 
 ## Symptom

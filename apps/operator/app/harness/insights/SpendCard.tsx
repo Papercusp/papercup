@@ -23,9 +23,9 @@ import type { CSSProperties, ReactNode } from 'react';
 import type { SpendCardProps } from '@papercusp/operator-core/lib/harness-insights/card-types';
 
 const CARD: CSSProperties = {
-  border: '1px solid var(--border, #2a2a2a)',
-  background: 'var(--surface, #1a1a1a)',
-  borderRadius: 10,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-1)',
+  borderRadius: 8,
   padding: 20,
   display: 'flex',
   flexDirection: 'column',
@@ -42,7 +42,7 @@ const TITLE_ROW: CSSProperties = {
 const TITLE: CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const TIER_PILL: CSSProperties = {
@@ -52,8 +52,8 @@ const TIER_PILL: CSSProperties = {
   fontWeight: 600,
   padding: '1px 6px',
   borderRadius: 6,
-  border: '1px solid var(--fg-dim, #888)',
-  color: 'var(--fg-dim, #888)',
+  border: '1px solid var(--border)',
+  color: 'var(--fg-dim)',
   textTransform: 'uppercase',
   letterSpacing: '0.04em',
 };
@@ -66,12 +66,12 @@ const STATS: CSSProperties = {
 const STAT_VAL: CSSProperties = {
   fontSize: 22,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const STAT_LABEL: CSSProperties = {
   fontSize: 11,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
   marginTop: 2,
 };
 
@@ -79,8 +79,8 @@ const BANNER: CSSProperties = {
   fontSize: 12,
   padding: '8px 12px',
   borderRadius: 6,
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg-dim, #aaa)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg-dim)',
   lineHeight: 1.5,
 };
 

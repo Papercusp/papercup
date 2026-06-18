@@ -245,3 +245,46 @@ test('central pole (hive) resolves to plain workers with an empty coordination d
   assert.ok(calls.every((c) => c.role === 'worker'));
   assert.equal(calls[0].directive, '', 'central arm: the Queen coordinates; the worker directive is empty');
 });
+
+test('hierarchical (hier-lead-worker) — a lead coordination pass runs first, then workers; lead charged to budget', async () => {
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('hier-lead-worker').blueprint);
+  assert.equal(spec.coordinator, 'elected-lead');
+  const { seam, cloned, tornDown } = fakeSeam();
+  const { run, calls } = fakeAgent();
+  const backlog = [task('instance_h__h-1'), task('instance_h__h-2'), task('instance_h__h-3')];
+
+  const res = await runTopology<FakeHandle>({
+    spec, backlog, seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'rh', seed: 1, now: fakeClock(), runAgent: run, cap: 2,
+  });
+
+  assert.equal(calls.filter((c) => c.role === 'lead').length, 1, 'exactly one lead coordination pass');
+  assert.equal(calls.filter((c) => c.role === 'worker').length, 3, 'one worker per task');
+  assert.equal(res.rows.length, 3);
+  assert.equal(res.modelCallsSpent, 4, '1 lead + 3 workers — the lead overhead is charged to the iso-budget');
+  const lead = calls.find((c) => c.role === 'lead')!;
+  assert.equal(lead.candidates?.length, 3, 'the lead sees all 3 team tasks');
+  assert.match(lead.directive, /LEAD/);
+  // C4 evidence: every team row carries the lead's coordination count.
+  assert.ok(res.rows.every((r) => r.armMeta?.leadCoordCalls === 2), 'leadCoordCalls attached to the team rows');
+  assert.equal(cloned.length, 4, 'lead clone + 3 worker clones');
+  assert.equal(tornDown.length, 4, 'all clones (incl. the lead pass) torn down');
+});
+
+test('hierarchical — the lead overhead consumes iso-budget, so fewer worker tasks fit (C3 fair cost)', async () => {
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('hier-lead-worker').blueprint);
+  const { seam } = fakeSeam();
+  const { run } = fakeAgent();
+  const backlog = [1, 2, 3, 4].map((n) => task(`instance_h__h-${n}`));
+
+  // budget 3 calls: 1 lead + 2 workers fit; the other 2 tasks are budget-skipped (no row → counted false).
+  const res = await runTopology<FakeHandle>({
+    spec, backlog, seam, budget: { maxModelCalls: 3 }, rowMeta: ROW_META,
+    runId: 'rh2', seed: 1, now: fakeClock(), runAgent: run, cap: 1,
+  });
+
+  assert.equal(res.modelCallsSpent, 3, '1 lead + 2 workers = the iso-budget');
+  assert.equal(res.rows.length, 2, 'only 2 worker tasks fit AFTER the lead coordination overhead');
+  assert.equal(res.skippedTaskIds.length, 2, 'the coordination cost is paid in fewer completed tasks (C3)');
+  assert.equal(res.budgetExhausted, true);
+});

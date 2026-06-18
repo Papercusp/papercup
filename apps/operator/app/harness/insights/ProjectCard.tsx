@@ -22,9 +22,9 @@ import type {
 } from '@papercusp/operator-core/lib/harness-insights/card-types';
 
 const CARD: CSSProperties = {
-  border: '1px solid var(--border, #2a2a2a)',
-  background: 'var(--surface, #1a1a1a)',
-  borderRadius: 10,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-1)',
+  borderRadius: 8,
   padding: 20,
   display: 'flex',
   flexDirection: 'column',
@@ -41,11 +41,11 @@ const TITLE_ROW: CSSProperties = {
 const TITLE: CSSProperties = {
   fontSize: 18,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const DESCRIPTION: CSSProperties = {
-  color: 'var(--fg-dim, #aaa)',
+  color: 'var(--fg-dim)',
   fontSize: 13,
   lineHeight: 1.5,
 };
@@ -59,11 +59,11 @@ const META_GRID: CSSProperties = {
 };
 
 const META_LABEL: CSSProperties = {
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 const META_VALUE: CSSProperties = {
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const LANG_PILL: CSSProperties = {
@@ -71,10 +71,10 @@ const LANG_PILL: CSSProperties = {
   alignItems: 'center',
   gap: 4,
   padding: '2px 8px',
-  borderRadius: 12,
+  borderRadius: 999,
   fontSize: 12,
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg, #ddd)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg)',
   marginRight: 4,
 };
 
@@ -93,10 +93,10 @@ const TOPICS_ROW: CSSProperties = {
 
 const TOPIC_PILL: CSSProperties = {
   padding: '2px 8px',
-  borderRadius: 12,
+  borderRadius: 999,
   fontSize: 12,
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg-dim, #aaa)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg-dim)',
 };
 
 const LINK_ROW: CSSProperties = {
@@ -106,7 +106,7 @@ const LINK_ROW: CSSProperties = {
 };
 
 const LINK: CSSProperties = {
-  color: 'var(--accent, #4CAF50)',
+  color: 'var(--accent)',
   textDecoration: 'none',
 };
 
@@ -115,7 +115,7 @@ const STATS_ROW: CSSProperties = {
   flexWrap: 'wrap',
   gap: 14,
   fontSize: 12,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 /** Coarse "x ago" for the repo's last-push timestamp. */

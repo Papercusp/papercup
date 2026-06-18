@@ -40,17 +40,17 @@ export interface ClaimAttemptTimelineProps {
 }
 
 const WRAP: CSSProperties = {
-  border: '1px solid var(--border, #2a2a2a)',
+  border: '1px solid var(--border)',
   borderRadius: 8,
-  background: 'var(--surface, #1a1a1a)',
+  background: 'var(--bg-1)',
   fontSize: 12,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
   overflow: 'hidden',
 };
 
 const HEADER: CSSProperties = {
   padding: '8px 12px',
-  borderBottom: '1px solid var(--border, #2a2a2a)',
+  borderBottom: '1px solid var(--border)',
   fontWeight: 600,
   fontSize: 13,
   display: 'flex',
@@ -61,13 +61,13 @@ const HEADER: CSSProperties = {
 const COUNT_PILL: CSSProperties = {
   fontSize: 11,
   fontWeight: 400,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 const MONO: CSSProperties = {
   fontFamily: 'ui-monospace, SF Mono, Menlo, monospace',
   fontSize: 11,
-  color: 'var(--fg-dim, #aaa)',
+  color: 'var(--fg-dim)',
 };
 
 const OUTCOME_PILL_BASE: CSSProperties = {
@@ -81,14 +81,14 @@ const OUTCOME_PILL_BASE: CSSProperties = {
 };
 
 const OUTCOME_STYLES: Record<string, CSSProperties> = {
-  won: { ...OUTCOME_PILL_BASE, background: 'rgba(40,140,80,0.18)', color: '#6ec98c' },
-  lost: { ...OUTCOME_PILL_BASE, background: 'rgba(180,80,80,0.18)', color: '#d68a8a' },
-  error: { ...OUTCOME_PILL_BASE, background: 'rgba(180,140,60,0.18)', color: '#d6c08a' },
+  won: { ...OUTCOME_PILL_BASE, background: 'color-mix(in oklab, var(--good), transparent 82%)', color: 'var(--good)' },
+  lost: { ...OUTCOME_PILL_BASE, background: 'color-mix(in oklab, var(--bad), transparent 84%)', color: 'var(--bad)' },
+  error: { ...OUTCOME_PILL_BASE, background: 'color-mix(in oklab, var(--warn), transparent 82%)', color: 'var(--warn)' },
 };
 
 const EMPTY: CSSProperties = {
   padding: 16,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
   fontStyle: 'italic',
   fontSize: 12,
 };
@@ -170,7 +170,7 @@ export function ClaimAttemptTimeline(props: ClaimAttemptTimelineProps): ReactNod
             getRowId={(row) => String(row.id)}
             rowMinHeight={32}
             headerHeight={32}
-            getRowBg={(row) => props.highlightOutcome !== undefined && row.outcome === props.highlightOutcome ? 'rgba(80, 120, 200, 0.06)' : undefined}
+            getRowBg={(row) => props.highlightOutcome !== undefined && row.outcome === props.highlightOutcome ? 'color-mix(in oklab, var(--accent), transparent 92%)' : undefined}
             rowProps={({ row }) => ({
               'data-testid': `claim-attempt-row-${row.id}`,
               'data-outcome': row.outcome,

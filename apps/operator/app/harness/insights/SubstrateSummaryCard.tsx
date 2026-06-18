@@ -41,9 +41,9 @@ const CARD: CSSProperties = {
   display: 'block',
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: 'var(--border, #2a2a2a)',
-  borderRadius: 10,
-  background: 'var(--surface, #1a1a1a)',
+  borderColor: 'var(--border)',
+  borderRadius: 8,
+  background: 'var(--bg-1)',
   padding: 16,
   fontSize: 13,
   position: 'relative',
@@ -51,8 +51,8 @@ const CARD: CSSProperties = {
 
 const STRIPE: CSSProperties = {
   height: 4,
-  borderTopLeftRadius: 10,
-  borderTopRightRadius: 10,
+  borderTopLeftRadius: 8,
+  borderTopRightRadius: 8,
   position: 'absolute',
   top: 0,
   left: 0,
@@ -73,7 +73,7 @@ const VERDICT_LABEL: CSSProperties = {
 };
 
 const TOTAL: CSSProperties = {
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
   fontSize: 12,
 };
 
@@ -87,7 +87,7 @@ const STAT_ROW: CSSProperties = {
 const STAT: CSSProperties = {
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: 'var(--border, #2a2a2a)',
+  borderColor: 'var(--border)',
   borderRadius: 6,
   padding: '6px 8px',
   textAlign: 'center',
@@ -101,7 +101,7 @@ const STAT_NUM: CSSProperties = {
 
 const STAT_LABEL: CSSProperties = {
   fontSize: 11,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
   marginTop: 2,
   textTransform: 'uppercase',
   letterSpacing: 0.4,
@@ -110,17 +110,17 @@ const STAT_LABEL: CSSProperties = {
 const CTA: CSSProperties = {
   marginTop: 12,
   display: 'inline-block',
-  color: 'var(--accent, #4CAF50)',
+  color: 'var(--accent)',
   fontSize: 12,
   textDecoration: 'none',
 };
 
 const VERDICT_COLOR: Record<SubstrateHealthVerdict, string> = {
-  disabled: 'var(--fg-dim, #888)',
-  healthy: 'var(--accent, #4CAF50)',
-  booting: 'var(--fg-warning, #FF9800)',
-  degraded: 'var(--fg-warning, #FF9800)',
-  unhealthy: 'var(--fg-danger, #f44336)',
+  disabled: 'var(--fg-dim)',
+  healthy: 'var(--good)',
+  booting: 'var(--warn)',
+  degraded: 'var(--warn)',
+  unhealthy: 'var(--bad)',
 };
 
 const VERDICT_LABEL_TEXT: Record<SubstrateHealthVerdict, string> = {

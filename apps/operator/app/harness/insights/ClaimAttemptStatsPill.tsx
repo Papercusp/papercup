@@ -29,12 +29,12 @@ const PILL: CSSProperties = {
   alignItems: 'center',
   gap: 6,
   padding: '3px 10px',
-  borderRadius: 12,
+  borderRadius: 999,
   fontSize: 12,
   fontWeight: 500,
-  border: '1px solid var(--border, #2a2a2a)',
-  background: 'var(--surface-2, #1a1a1a)',
-  color: 'var(--fg, #ddd)',
+  border: '1px solid var(--border)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg)',
   lineHeight: 1.2,
   whiteSpace: 'nowrap',
 };
@@ -46,23 +46,23 @@ const SEG: CSSProperties = {
 };
 
 const SEP: CSSProperties = {
-  color: 'var(--fg-dim, #555)',
+  color: 'var(--fg-dim)',
   margin: '0 2px',
 };
 
 const WON: CSSProperties = {
   ...SEG,
-  color: 'var(--accent, #4CAF50)',
+  color: 'var(--good)',
 };
 
 const LOST: CSSProperties = {
   ...SEG,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 const ERROR: CSSProperties = {
   ...SEG,
-  color: 'var(--fg-warning, #FF9800)',
+  color: 'var(--warn)',
 };
 
 export function ClaimAttemptStatsPill(

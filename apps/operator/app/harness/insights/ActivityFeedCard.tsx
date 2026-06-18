@@ -35,9 +35,9 @@ const TIER_BY_KIND: Record<ActivityKind, 'A' | 'B' | 'C'> = {
 };
 
 const TIER_COLOR: Record<'A' | 'B' | 'C', string> = {
-  A: 'var(--accent, #4CAF50)',
-  B: 'var(--accent-2, #2196F3)',
-  C: 'var(--fg-dim, #888)',
+  A: 'var(--good)',
+  B: 'var(--accent)',
+  C: 'var(--fg-dim)',
 };
 
 const ICON_BY_KIND: Record<ActivityKind, string> = {
@@ -49,9 +49,9 @@ const ICON_BY_KIND: Record<ActivityKind, string> = {
 };
 
 const CARD: CSSProperties = {
-  border: '1px solid var(--border, #2a2a2a)',
-  background: 'var(--surface, #1a1a1a)',
-  borderRadius: 10,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-1)',
+  borderRadius: 8,
   padding: 20,
   display: 'flex',
   flexDirection: 'column',
@@ -62,7 +62,7 @@ const CARD: CSSProperties = {
 const TITLE: CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const LIST: CSSProperties = {
@@ -75,7 +75,7 @@ const ROW: CSSProperties = {
   alignItems: 'center',
   gap: 10,
   padding: '8px 0',
-  borderBottom: '1px solid var(--border-subtle, #222)',
+  borderBottom: '1px solid var(--border)',
   fontSize: 13,
   textDecoration: 'none',
   color: 'inherit',
@@ -95,7 +95,7 @@ const ICON: CSSProperties = {
 
 const PROSE: CSSProperties = {
   flex: 1,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
@@ -103,12 +103,12 @@ const PROSE: CSSProperties = {
 
 const WHO: CSSProperties = {
   fontSize: 12,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 const TIME: CSSProperties = {
   fontSize: 12,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
   whiteSpace: 'nowrap',
 };
 
@@ -124,7 +124,7 @@ const TIER_PILL: CSSProperties = {
 
 const EMPTY: CSSProperties = {
   fontSize: 13,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 export type { ActivityKind, ActivityFeedEvent, ActivityFeedCardProps };
@@ -151,7 +151,7 @@ export function ActivityFeedCard(
             const inner = (
               <>
                 <div
-                  style={{ ...ICON, background: `${color}22`, color }}
+                  style={{ ...ICON, background: `color-mix(in oklab, ${color}, transparent 86%)`, color }}
                   data-testid={`activity-row-icon-${e.id}`}
                 >
                   {ICON_BY_KIND[e.kind]}

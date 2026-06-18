@@ -112,8 +112,8 @@ describe('ClaimAttemptTimeline — rendered rows', () => {
     const r1 = screen.getByTestId('claim-attempt-row-1');
     const r2 = screen.getByTestId('claim-attempt-row-2');
     // The highlighted row should carry a distinct background from the base grid row.
-    expect(r2.getAttribute('style') ?? '').toContain('rgba(80, 120, 200, 0.06)');
-    expect(r1.getAttribute('style') ?? '').not.toContain('rgba(80, 120, 200, 0.06)');
+    expect(r2.getAttribute('style') ?? '').toContain('color-mix(in oklab, var(--accent), transparent 92%)');
+    expect(r1.getAttribute('style') ?? '').not.toContain('color-mix(in oklab, var(--accent), transparent 92%)');
   });
 
   it('renders an em-dash for ts=0 (defensive)', () => {

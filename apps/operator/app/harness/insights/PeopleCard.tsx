@@ -21,9 +21,9 @@ import type {
 import { BindingStatusBadge } from '../../_components/BindingStatusBadge';
 
 const CARD: CSSProperties = {
-  border: '1px solid var(--border, #2a2a2a)',
-  background: 'var(--surface, #1a1a1a)',
-  borderRadius: 10,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-1)',
+  borderRadius: 8,
   padding: 20,
   display: 'flex',
   flexDirection: 'column',
@@ -34,7 +34,7 @@ const CARD: CSSProperties = {
 const TITLE: CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
   display: 'flex',
   alignItems: 'center',
   gap: 6,
@@ -42,8 +42,8 @@ const TITLE: CSSProperties = {
 
 const COUNT_PILL: CSSProperties = {
   fontSize: 12,
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg-dim, #aaa)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg-dim)',
   padding: '1px 6px',
   borderRadius: 8,
 };
@@ -73,7 +73,7 @@ const AVATAR: CSSProperties = {
   height: 48,
   borderRadius: '50%',
   display: 'block',
-  background: 'var(--surface-2, #2a2a2a)',
+  background: 'var(--bg-2)',
 };
 
 const AVATAR_FALLBACK: CSSProperties = {
@@ -83,7 +83,7 @@ const AVATAR_FALLBACK: CSSProperties = {
   justifyContent: 'center',
   fontSize: 16,
   fontWeight: 600,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
 };
 
 const BINDING_OVERLAY: CSSProperties = {
@@ -96,7 +96,7 @@ const BINDING_OVERLAY: CSSProperties = {
 
 const LOGIN: CSSProperties = {
   fontSize: 12,
-  color: 'var(--fg, #ddd)',
+  color: 'var(--fg)',
   maxWidth: 64,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -105,7 +105,7 @@ const LOGIN: CSSProperties = {
 
 const COMMITS: CSSProperties = {
   fontSize: 11,
-  color: 'var(--accent, #4CAF50)',
+  color: 'var(--good)',
   whiteSpace: 'nowrap',
 };
 
@@ -113,8 +113,8 @@ const MORE_PILL: CSSProperties = {
   width: 48,
   height: 48,
   borderRadius: '50%',
-  background: 'var(--surface-2, #2a2a2a)',
-  color: 'var(--fg-dim, #aaa)',
+  background: 'var(--bg-2)',
+  color: 'var(--fg-dim)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -124,7 +124,7 @@ const MORE_PILL: CSSProperties = {
 
 const EMPTY: CSSProperties = {
   fontSize: 13,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
 };
 
 export type { PeopleCardPerson, PeopleCardProps };

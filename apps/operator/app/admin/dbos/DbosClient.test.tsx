@@ -36,18 +36,18 @@ describe('fmt (pure)', () => {
 
 describe('statusColor (pure)', () => {
   it('greens SUCCESS', () => {
-    expect(statusColor('SUCCESS')).toBe('#86efac');
+    expect(statusColor('SUCCESS')).toBe('var(--good)');
   });
   it('reds ERROR and any MAX_RECOVERY variant', () => {
-    expect(statusColor('ERROR')).toBe('#fca5a5');
-    expect(statusColor('MAX_RECOVERY_ATTEMPTS')).toBe('#fca5a5');
+    expect(statusColor('ERROR')).toBe('var(--bad)');
+    expect(statusColor('MAX_RECOVERY_ATTEMPTS')).toBe('var(--bad)');
   });
   it('ambers PENDING and ENQUEUED', () => {
-    expect(statusColor('PENDING')).toBe('#fde68a');
-    expect(statusColor('ENQUEUED')).toBe('#fde68a');
+    expect(statusColor('PENDING')).toBe('var(--warn)');
+    expect(statusColor('ENQUEUED')).toBe('var(--warn)');
   });
   it('blues anything else', () => {
-    expect(statusColor('RUNNING')).toBe('#dbeafe');
+    expect(statusColor('RUNNING')).toBe('var(--fg)');
   });
 });
 

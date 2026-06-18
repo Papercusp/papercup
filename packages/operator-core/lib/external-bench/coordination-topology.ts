@@ -17,7 +17,7 @@
  * one contract every consumer imports) → buildCapabilityAttribution + buildFairnessAudit report them
  * identically under one fair denominator. No SWE-Pro-specifics live here.
  */
-import type { TaskRunResult, GraderModality } from '@papercusp/bench-metrics';
+import type { TaskRunResult, GraderModality, GraderStatus } from '@papercusp/bench-metrics';
 import type { BenchTask } from './types';
 
 /**
@@ -37,7 +37,12 @@ export interface CloneGradeSeam<H = unknown> {
   grade(task: BenchTask, handle: H): Promise<{
     resolved: boolean | null;
     score?: number | null;
-    graderStatus: string;
+    /** MUST be a CANONICAL status — `passed`/`failed`/`error`/`timeout`. A genuine capability-fail (empty
+     *  or wrong output) is `'failed'` + `resolved:false` (scored, counts in every denominator), NOT a
+     *  bespoke string: a non-canonical status coerces to infra (`'error'`) and SILENTLY drops the row from
+     *  the valid denominator — flattering the arm (the C1 denominator-shrink one layer down; D-023). Keep
+     *  the nuance (e.g. "empty-diff") in `detail`, never in the status. */
+    graderStatus: GraderStatus;
     detail?: unknown;
   }>;
   /** Tear down the handle (rm worktree | docker rm). ALWAYS called — success, capability-fail, AND

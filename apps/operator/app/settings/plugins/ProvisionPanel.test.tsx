@@ -52,13 +52,13 @@ describe('kindColor', () => {
     expect(kindColor('consent-rejected')).toBe('var(--bad)');
   });
   it('colours successes green', () => {
-    expect(kindColor('setup-succeeded')).toBe('#7fcf7f');
+    expect(kindColor('setup-succeeded')).toBe('var(--good)');
   });
   it('colours log-truncated amber', () => {
-    expect(kindColor('log-truncated')).toBe('#e9a040');
+    expect(kindColor('log-truncated')).toBe('var(--warn)');
   });
   it('falls back to grey for unknown kinds', () => {
-    expect(kindColor('script-output')).toBe('#bbb');
+    expect(kindColor('script-output')).toBe('var(--fg-dim)');
   });
 });
 

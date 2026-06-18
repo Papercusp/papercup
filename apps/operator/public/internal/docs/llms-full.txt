@@ -2323,6 +2323,78 @@ Handlers that are *already* PG-bound (e.g. `system:gym-cycle` calls `getOrgPg()`
 
 **Check before you ship** (FB-05..FB-15 will all wire glue like this): grep the factory’s existing `.test.ts` — if its tests invoke the handler without PG, your new default must not reach a pool. `enabled()`-first ordering is not enough once the flag defaults ON.
 
+# Your change reaches :3070 through an async, self-healing pipeline — don't babysit it
+
+> Agents repeatedly get confused getting changes live: they edit, re-check :3070 (which serves GREEN main, not their staging edit), conclude 'my change didn't ship', then either thrash trying to 'submit' it (git-sync owns commit/push) or self-diagnose a red gate and grind the WRONG target. The pipeline is automatic + self-healing: git-sync commits→staging, green-checkpoint runs test:affected and FFs main, release-trigger deploys main→:3070 with auto-rollback; a red gate auto-dispatches a release-fixer and git-sync conflicts go to merge-resolver/content-fixer (the 'deployer' role already exists as this fixer family — no new role). The reflex is dev:pipeline_position (NOT a browser) to locate your change, and a non-blocking coord:escalate on a genuine stall. Every spawned role already carries this as the shared DEPLOY_PIPELINE_NOTE.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+A single red gate this session drew **three conflicting diagnoses from three agents** (a tsc ratchet that doesn’t gate deploys / a load-flake / stale gateway tests) and nobody had the authoritative picture. The recurring confusion has a few shapes:
+
+* **“My change didn’t ship”** — you edit a file, re-open `:3070`, don’t see it, and conclude it was lost. `:3070` serves **green `main`**, not your staging edit.
+* **Thrashing to “submit”** — there is nothing to submit. A background **git-sync** routine commits + pushes the whole tree. You never run `git add/commit/push`.
+* **Self-diagnosing a stalled gate** — you see the gate red and start grinding an unrelated error “to unblock deploys”. A stall is almost always **shared-fate** (a peer’s failing test, a flake under load), not your change, and a **release-fixer** is already auto-dispatched to handle it.
+
+## The pipeline (async, \~minutes, two ports)
+
+[Section titled “The pipeline (async, \~minutes, two ports)”](#the-pipeline-async-minutes-two-ports)
+
+You leave an edit in the tree. Then, automatically:
+
+1. **git-sync** commits the whole shared tree and pushes to `origin/staging` (you do **not** `git add/commit/push`; don’t stash/branch/worktree to isolate “your” diff).
+2. **green-checkpoint** runs the gate suite — **`npm run test:affected`** (NOT `lint`/`tsc`; a tsc ratchet does **not** gate deploys) — and fast-forwards `main` when green.
+3. **release-trigger** deploys `main` → the live `:3070` operator with auto-rollback.
+
+Two ports: **`:3070` = green `main`** (deployed), **`:3170` = staging**. Never edit the `papercup-release/` or `*-checkpoint/` trees — they are clobbered by the pipeline.
+
+## The “deployer” already exists — as the fixer family
+
+[Section titled “The “deployer” already exists — as the fixer family”](#the-deployer-already-exists--as-the-fixer-family)
+
+There is **no separate deployer role**, and you shouldn’t build or wait on one. The pipeline self-heals through wired launch blueprints (all in `BUILTIN_LAUNCH_BLUEPRINTS`):
+
+* **release-fixer** — auto-dispatched on `green-checkpoint:red` (`release-actions.ts` → `resolveLaunchTargetForEvent('green-checkpoint:red', …)`), deduped by failure signature, escalates to a human after N reds. It classifies regression-vs-flake then fixes or quarantines.
+* **merge-resolver** / **content-fixer** — dispatched on git-sync conflicts.
+
+You do **not** own diagnosing or fixing a deploy stall.
+
+## The reflex: `dev:pipeline_position`, not a browser
+
+[Section titled “The reflex: dev:pipeline\_position, not a browser”](#the-reflex-devpipeline_position-not-a-browser)
+
+To see where your change is (**committed → staging → main → deployed**) and whether the gate is stalled, call:
+
+```plaintext
+dev:pipeline_position { path: "packages/.../your-file.ts" }   // or { sha }
+```
+
+It is **read-only** and available to **every** execution/judgment role (operator, queen, the eight pipeline roles, bee, sentinel, overwatch, and the fixers). That one read is the answer to “did my edit go live?” — not opening `:3070`.
+
+## On a genuine stall: escalate non-blocking, then move on
+
+[Section titled “On a genuine stall: escalate non-blocking, then move on”](#on-a-genuine-stall-escalate-non-blocking-then-move-on)
+
+Your committed change is **safe on staging** and ships automatically when the gate clears. If `dev:pipeline_position` shows a genuine stall:
+
+* **Do not block** waiting for it, and **do not** grind unrelated errors.
+* `coord:escalate` (advisory, **non-blocking**) and continue with other work.
+
+The self-healing dispatch is **best-effort** (a fire-and-forget loopback invoke that warns-on-fail, a 2h signature-dedup, a short-lived fixer that may exit before `coord:presence` sees it), so a fixer occasionally “no-shows”. That is dispatch fragility, **not** missing wiring — still non-blocking for you.
+
+## When you actually need to debug a wedged pipeline
+
+[Section titled “When you actually need to debug a wedged pipeline”](#when-you-actually-need-to-debug-a-wedged-pipeline)
+
+This doc is orientation. If `main` and `:3070` are genuinely frozen on hours-old code, the deep runbook is [Deploy pipeline silently stalled: the dead-executor dedup wedge](/internal/docs/agent-insights/deploy-pipeline-silent-stall-dead-executor-dedup) — it separates the two failure layers (green-checkpoint FF vs. release-trigger deploy) and shows how to clear a DBOS dead-executor dedup.
+
+## Where this lives in code
+
+[Section titled “Where this lives in code”](#where-this-lives-in-code)
+
+The cross-role guidance is sourced once as the **`DEPLOY_PIPELINE_NOTE`** constant (`libs/papercusp/packages/orchestrator/src/prompt-build.ts`) and spliced into both prompt bases — the spawned-bee base and the operator-launched-role base (via `renderDeployPipelineNote` in `packages/operator-core/lib/deploy-pipeline-policy.ts`) — so the two can’t desync. Every spawned agent already carries it.
+
 # Deploy pipeline silently stalled: the dead-executor dedup wedge (and the health-probe 406)
 
 > main/:3070 frozen on old code for hours while green-checkpoint 'fires' but never advances — a routineFire stuck PENDING on a DEAD executor holds its dedup forever, and the stall-detector misses it (consecutiveReds stays 0). Plus the post-deploy 406 that auto-rolls-back every deploy. Two distinct layers; check both.
@@ -6089,6 +6161,89 @@ The inbox emitter is two pure functions:
 * **Inline chat needs a bounded height.** `ChatPanel` is `height:100%`; give the inline host (`.pc-plan-chat-inline`) a fixed height or it collapses.
 
 See the plan `inbox-cards-unification-2026-05-31` and the predecessor `planning-attention-importance-2026-05-31` (P-017, superseded).
+
+# Account pins silently route to `local`: the stale gateway pool
+
+> Why `psu --account X` (or any bee account pin) can land all usage on the wrong account. The pin routes via the localhost inference gateway (:8788) + the x-papercusp-account header; the gateway resolves its account pool ONCE at startup and caches it for its whole lifetime. A swallowed pool-load error used to collapse that pool to a one-account `local` fallback (the box's ~/.claude login), so every pin was silently ignored for hours. How to spot it (/healthz accountId:local), the fix (fail-closed resolve + restart), and the x-papercusp-routed-account header that makes a pin's real destination visible.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+You pin a session or bee to a specific pool account — `psu --account aviynw`, or a Queen/spawn account binding — and the usage **does not show up on that account**. It lands somewhere else (often the box’s own login) and the pin appears to do nothing.
+
+## How the pin is *supposed* to work
+
+[Section titled “How the pin is supposed to work”](#how-the-pin-is-supposed-to-work)
+
+`--account X` threads through five links (plan `psu-account-chooser`):
+
+1. `psu-launcher.mjs` POSTs `{account:'X'}` to `/api/agent-mcp/console/bootstrap-su`.
+2. `bootstrap-su` → `gatewaySpawnEnv(true,{accountId:'X'})` → returns env + an `accountNotice`.
+3. That env is `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` + `ANTHROPIC_CUSTOM_HEADERS=x-papercusp-account: X` + `PAPERCUSP_ACCOUNT_ID=X`, folded into the `exec`’d agent.
+4. The agent sends every model call to the localhost gateway, forwarding the `x-papercusp-account` header (its own `~/.claude` bearer rides along and is **stripped** by the gateway).
+5. The gateway (`gateway.ts`) reads the header → `pool.select('X')` → injects X’s OAuth bearer → forwards upstream. **Usage lands on X.**
+
+The whole chain is observable from inside a pinned session: its env has `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` and `ANTHROPIC_CUSTOM_HEADERS=x-papercusp-account: …`.
+
+## The fault: a stale, `local`-only pool
+
+[Section titled “The fault: a stale, local-only pool”](#the-fault-a-stale-local-only-pool)
+
+The gateway resolves its account pool **once at startup and holds it for its whole lifetime** (`account-resolver.ts` — “a rebind is a gateway restart”). The resolver used to swallow a transient pool-load error:
+
+```ts
+const pool = await loadAccountPool(ws).catch(() => ({ accounts: [] }));
+```
+
+`loadAccountPool` **throws** on a DB read blip but **resolves `{accounts:[]}`** for a genuinely empty pool. The `.catch` collapsed *both* into empty → the `local-fallback` branch → a one-account pool `[local]` (the box’s `~/.claude/.credentials.json`). With that pool, `createFailoverPool([local]).select('X')` returns `null`, so the `x-papercusp-account` header is **silently ignored** and every request egresses on `local`. One \~1-second blip at a restart poisoned routing for \~10 hours, with zero signal — the launcher still printed “pinned to account X”.
+
+## Diagnose it
+
+[Section titled “Diagnose it”](#diagnose-it)
+
+```bash
+curl -s http://127.0.0.1:8788/healthz        # accountId:"local"  ← the fault
+journalctl --user -u papercup-inference-gateway.service | grep "account pool"
+#   account pool [local]; primary 'local' via local-fallback   ← bad
+#   account pool [aviynw10, …, aviynw]; primary 'aviynw10' via pool   ← healthy
+```
+
+A healthy pool lists every registered account. `loadAccountPool(undefined)` from a quick tsx probe will show the accounts *exist* even while the live gateway is stuck on `local` — the gateway’s copy is just stale.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+* **Immediate:** `systemctl --user restart papercup-inference-gateway.service` — it re-resolves the pool (the service runs `tsx` from the staging tree, so code edits take effect on restart too). Confirm `/healthz` no longer says `local`.
+* **Durable (shipped 2026-06-18):** the resolver now **fails closed** — a pool-load error is retried briefly then **thrown** (the supervised gateway exits → systemd `Restart=always` retries against a healthy DB) instead of caching a wrong `local` pool. A genuinely empty pool still → `local`.
+
+## Detectability: `x-papercusp-routed-account`
+
+[Section titled “Detectability: x-papercusp-routed-account”](#detectability-x-papercusp-routed-account)
+
+Every gateway response now carries `x-papercusp-routed-account: <id>` naming the account the request **actually** egressed on. Use it to confirm a pin took, or to see a silent redirect:
+
+```bash
+curl -sD - -o /dev/null -H "x-papercusp-account: aviynw" \
+  -H "anthropic-version: 2023-06-01" --data '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+  http://127.0.0.1:8788/v1/messages | grep -i routed-account
+```
+
+## A pin is a PREFERENCE, not a hard pin
+
+[Section titled “A pin is a PREFERENCE, not a hard pin”](#a-pin-is-a-preference-not-a-hard-pin)
+
+Even with a healthy pool, the gateway **yields a pin to liveness** (`gateway.ts` — “cache-affinity yields to liveness”): if the pinned account’s live governor is rate-limit-paused, the request fails over to the pool’s `active()` account rather than 429-looping. So a pin to a *paced* account legitimately routes elsewhere — and `x-papercusp-routed-account` will show it. For reliable attribution, pin to an account with headroom (`accounts:status` → `available:true`, low utilization). There is no “hard pin / wait-don’t-failover” option today; if you need one, that’s a feature ask.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [rate-limit-is-usually-account-routing-not-capacity](/internal/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity)
+* [llm-429-check-the-transport-not-the-account](/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account)
+* [fleet-inference-auth](/internal/docs/agent-insights/fleet-inference-auth)
+* [gym-cycle-inprocess-llm-bypasses-gateway](/internal/docs/agent-insights/gym-cycle-inprocess-llm-bypasses-gateway)
 
 # Adding a column to a shared SELECT list breaks hand-rolled integration fixtures
 

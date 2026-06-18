@@ -51,21 +51,21 @@ export interface BootHistoryTableProps {
 }
 
 const KIND_COLOR: Record<BootHistoryKind, string> = {
-  boot_start: 'var(--fg-dim, #888)',
-  boot_ok: 'var(--accent, #4CAF50)',
-  boot_fail: 'var(--fg-danger, #f44336)',
-  close: 'var(--fg-dim, #888)',
-  peer_connected: 'var(--fg-link, #4a9eff)',
-  swarm_join_failed: 'var(--fg-warning, #ff9800)',
-  peer_rejected: 'var(--fg-warning, #ff9800)',
-  peer_rate_limited: 'var(--fg-danger, #f44336)',
-  peer_capped: 'var(--fg-warning, #ff9800)',
-  peer_revoked: 'var(--fg-danger, #f44336)',
-  announce_admitted: 'var(--accent, #4CAF50)',
-  announce_pending: 'var(--fg-warning, #ff9800)',
-  announce_rejected: 'var(--fg-warning, #ff9800)',
-  announce_error: 'var(--fg-danger, #f44336)',
-  merge_error: 'var(--fg-danger, #f44336)',
+  boot_start: 'var(--fg-dim)',
+  boot_ok: 'var(--good)',
+  boot_fail: 'var(--bad)',
+  close: 'var(--fg-dim)',
+  peer_connected: 'var(--accent)',
+  swarm_join_failed: 'var(--warn)',
+  peer_rejected: 'var(--warn)',
+  peer_rate_limited: 'var(--bad)',
+  peer_capped: 'var(--warn)',
+  peer_revoked: 'var(--bad)',
+  announce_admitted: 'var(--good)',
+  announce_pending: 'var(--warn)',
+  announce_rejected: 'var(--warn)',
+  announce_error: 'var(--bad)',
+  merge_error: 'var(--bad)',
 };
 
 const KIND_MARK: Record<BootHistoryKind, string> = {
@@ -88,7 +88,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
 
 const EMPTY: CSSProperties = {
   fontSize: 12,
-  color: 'var(--fg-dim, #888)',
+  color: 'var(--fg-dim)',
   padding: '12px 0',
 };
 
@@ -140,7 +140,7 @@ function columns(now: number): ColumnDef<BootHistoryEntry>[] {
       header: 'Message',
       width: 2.4,
       toCopyText: (e) => e.message ?? '',
-      render: ({ row }) => <span style={{ color: 'var(--fg-dim, #aaa)' }}>{row.message ?? ''}</span>,
+      render: ({ row }) => <span style={{ color: 'var(--fg-dim)' }}>{row.message ?? ''}</span>,
     },
   ];
 }

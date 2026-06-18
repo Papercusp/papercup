@@ -119,7 +119,7 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
 
   return (
     <div style={panel}>
-      <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--fg-mute, #aaa)' }}>
+      <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--fg-mute)' }}>
         Provisioning
       </h4>
 
@@ -194,9 +194,9 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
             <ul style={list}>
               {state.createdResources.map((r) => (
                 <li key={`${r.kind}:${r.externalId}`} style={li}>
-                  <code style={{ color: '#7faaff' }}>{r.kind}</code>{' '}
+                  <code style={{ color: 'var(--accent)' }}>{r.kind}</code>{' '}
                   <code>{r.externalId}</code>
-                  <span style={{ float: 'right', fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+                  <span style={{ float: 'right', fontSize: 11, color: 'var(--fg-mute)' }}>
                     {new Date(r.recordedAt).toLocaleString()}
                   </span>
                 </li>
@@ -217,9 +217,9 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
             <ul style={{ ...list, fontFamily: 'monospace', fontSize: 11 }}>
               {audit.map((e, i) => (
                 <li key={i} style={li}>
-                  <span style={{ color: 'var(--fg-mute, #888)' }}>{new Date(e.ts).toLocaleTimeString()}</span>{' '}
+                  <span style={{ color: 'var(--fg-mute)' }}>{new Date(e.ts).toLocaleTimeString()}</span>{' '}
                   <strong style={{ color: kindColor(e.kind) }}>{e.kind}</strong>
-                  {e.data && <span style={{ marginLeft: 6, color: 'var(--fg-mute, #999)' }}>{shortJson(e.data)}</span>}
+                  {e.data && <span style={{ marginLeft: 6, color: 'var(--fg-mute)' }}>{shortJson(e.data)}</span>}
                 </li>
               ))}
             </ul>
@@ -228,7 +228,7 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
       )}
 
       {state?.hashes && (
-        <div style={{ marginTop: 12, fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+        <div style={{ marginTop: 12, fontSize: 11, color: 'var(--fg-mute)' }}>
           configHash <code>{state.hashes.configHash.slice(7, 19)}</code>{' · '}
           scriptHash <code>{state.hashes.scriptHash.slice(7, 19)}</code>{' · '}
           v<code>{state.hashes.pluginVersion}</code>
@@ -245,38 +245,38 @@ export function shortJson(o: unknown): string {
 
 export function kindColor(k: string): string {
   if (k.endsWith('-failed')) return 'var(--bad)';
-  if (k.endsWith('-succeeded')) return '#7fcf7f';
+  if (k.endsWith('-succeeded')) return 'var(--good)';
   if (k === 'consent-rejected') return 'var(--bad)';
-  if (k === 'log-truncated') return '#e9a040';
-  return '#bbb';
+  if (k === 'log-truncated') return 'var(--warn)';
+  return 'var(--fg-dim)';
 }
 
 const panel: React.CSSProperties = {
-  marginTop: 24, padding: 16, border: '1px solid var(--border, #2a2a2a)',
-  borderRadius: 6, background: 'rgba(255,255,255,.02)',
+  marginTop: 24, padding: 16, border: '1px solid var(--border)',
+  borderRadius: 6, background: 'var(--bg-1)',
 };
 function banner(tone: 'info' | 'error'): React.CSSProperties {
   return {
     padding: '8px 12px', marginBottom: 12, borderRadius: 4, fontSize: 12,
-    background: tone === 'error' ? 'rgba(255,90,90,.1)' : 'rgba(88,166,255,.08)',
-    border: `1px solid ${tone === 'error' ? 'rgba(255,90,90,.3)' : 'rgba(88,166,255,.3)'}`,
-    color: tone === 'error' ? '#ffb0b0' : '#a8c8ff',
+    background: tone === 'error' ? 'color-mix(in oklab, var(--bad), transparent 86%)' : 'color-mix(in oklab, var(--accent), transparent 88%)',
+    border: `1px solid ${tone === 'error' ? 'color-mix(in oklab, var(--bad), transparent 64%)' : 'color-mix(in oklab, var(--accent), transparent 68%)'}`,
+    color: tone === 'error' ? 'var(--bad)' : 'var(--fg)',
   };
 }
 const summary: React.CSSProperties = {
-  cursor: 'pointer', fontSize: 12, fontWeight: 500, color: 'var(--fg-mute, #ccc)',
+  cursor: 'pointer', fontSize: 12, fontWeight: 500, color: 'var(--fg-mute)',
   padding: '4px 0',
 };
 const list: React.CSSProperties = { listStyle: 'none', padding: 0, margin: '4px 0 0', fontSize: 12 };
-const li: React.CSSProperties = { padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,.04)' };
+const li: React.CSSProperties = { padding: '4px 0', borderBottom: '1px solid var(--border)' };
 const btn: React.CSSProperties = {
-  padding: '6px 12px', background: 'transparent', color: 'var(--fg, #ddd)',
-  border: '1px solid var(--border, #2a2a2a)', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+  padding: '6px 12px', background: 'transparent', color: 'var(--fg)',
+  border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', fontSize: 12,
 };
 const btnDanger: React.CSSProperties = {
-  ...btn, color: '#ff8080', border: '1px solid rgba(255,90,90,.3)',
+  ...btn, color: 'var(--bad)', border: '1px solid color-mix(in oklab, var(--bad), transparent 64%)',
 };
 const primary: React.CSSProperties = {
-  padding: '6px 14px', background: 'var(--accent, #58a6ff)', color: '#000',
+  padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-ink)',
   border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
 };
