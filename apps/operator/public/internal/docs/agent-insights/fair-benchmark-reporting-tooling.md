@@ -34,6 +34,17 @@ C4 is **not** satisfied by config (the arm being *configured* with the capabilit
 
 Pre-flight the run on a 1–2 task probe and confirm the capability-exercised telemetry is non-zero **before** any big spend or claim. `buildFairnessAudit` marks C4 `NEEDS-EVIDENCE` by default — supply the `coordCalls`/tool-call evidence to clear it; never hand-wave past it.
 
+## The seam-contract trap (emit only CANONICAL grader statuses)
+
+If your `CloneGradeSeam.grade` returns a non-canonical `graderStatus` (anything outside `passed` / `failed` / `error` / `timeout`), the topology row-builder (`run-topology.ts` → `coerceGraderStatus`) coerces it to `'error'`, and bench-metrics' `isScored()` treats `graderStatus:'error'` as **infra** — so the row is EXCLUDED from the exclude-infra "valid" denominator. A genuine capability-fail you labelled cleverly (e.g. `'empty-diff'` for "the agent produced no patch") thus vanishes from the denominator, flattering the arm — the same C1 denominator-shrink, one layer down.
+
+Map every grade outcome to a CANONICAL status, and keep the nuance in `detail`:
+
+* **genuine capability-fail** (empty/invalid output, wrong answer) → `graderStatus: 'failed'`, `resolved: false` — scored, counts under BOTH denominators. SWE-bench scores an empty patch as a fail, not infra.
+* **genuine infra** (clone / extract / grader crash, timeout) → `graderStatus: 'error'` / `'timeout'`, `resolved: null` — reconciled `false` in the C1 headline, excluded from the exclude-infra view (correct: it carries no capability signal).
+
+Caught live: the SWE-Pro seam (the P-003 reference the other suites copy) returned `'empty-diff'`, which coerced to infra and would have dropped empty-patch fails from the valid denominator — fixed to canonical `'failed'` + `detail.reason:'empty-diff'` (plan `benchmark-capability-injection-redesign-2026-06-17` D-023).
+
 ## Pointers
 
 * Standard: [benchmarks/fairness-criteria](/internal/docs/benchmarks/fairness-criteria) (C1–C10 + the worked cautionary audit).

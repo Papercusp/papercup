@@ -68,6 +68,8 @@ Approved content-disclosure `<details>` sites:
 * `app/dev/_components/SessionsTab.tsx` — transcript JSON dump
 * `app/dev/_components/TablesTab.tsx` — table-row JSON dumps
 * `app/_components/SetupWizard/StepAutoUpdate.tsx` — release-notes prose
+* `app/cupboard/[id]/page.tsx` — learning-pack content preview
+* `app/harness/dock/sample-panels.tsx` — sample/debug panel parameters
 
 A tell that `<details>` is correct: the content is prose (or auto-generated text), the user doesn't tab/select inside it, and rendering it costs real work (Monaco, MarkdownPreview, a long log dump). Interactive disclosures — collapsible form sections, per-row expanders inside lists where you want shared animation and focus management — still use `<Collapsible>`.
 
@@ -198,6 +200,8 @@ The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operat
 * Starlight tokens in operator code: `--sl-color-*`
 
 **If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from `design-tokens/` via `npm run tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don't add it to the runtime allowlist unless a framework genuinely sets it at runtime.
+
+**Raw color carve-out:** user-authored media values are not UI chrome. A sketch canvas's persisted paper color or a color-picker's current ink value can be a literal CSS color because it is saved drawing content, not app styling. Keep that carve-out narrow: if the color affects a panel, button, label, border, status badge, or layout surface, it must be a semantic token.
 
 ## Migration anti-patterns
 

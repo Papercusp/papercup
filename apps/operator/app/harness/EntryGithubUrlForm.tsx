@@ -729,8 +729,13 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             <button
               type="button"
               onClick={() => {
-                if (joinSummary?.firstSlug) onCreated(joinSummary.firstSlug);
-                else onBack();
+                // A successful join is terminal — Done CLOSES the modal (onCreated
+                // is the parent's close path). Focus the joined hive when its local
+                // slug is known; otherwise still close with an empty slug. It must
+                // NOT fall back to onBack(): a discovery-join with no returned
+                // hiveSlug dropped the user back on the "Add a Hive" picker with no
+                // way to dismiss it (stuck-modal report).
+                onCreated(joinSummary?.firstSlug ?? '');
               }}
               style={primaryBtn}
             >

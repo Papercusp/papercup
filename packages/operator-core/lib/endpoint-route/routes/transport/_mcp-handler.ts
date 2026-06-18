@@ -949,42 +949,61 @@ const handler = createMcpHandler(
           // tooldef-mcp returns an SDK-neutral McpToolCallResult; cast it to the
           // mutable shape the MCP SDK's setRequestHandler accepts (same shape the
           // legacy branch below returns) at this host boundary.
-          const runDispatch = async (ctx: UnifiedToolContext) => {
-            const result = (await dispatchProjectedToolToMcp(
-              projected,
-              toolName,
-              dispatchArgs,
-              ctx,
-              PROJECTED_DEPS,
-            )) as {
-              content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-              isError?: boolean;
-              // Format tag + envelope (P-006) and lossless structuredContent (P-010)
-              // — forwarded to the MCP SDK's tools/call result so clients see them.
-              _meta?: Record<string, unknown>;
-              structuredContent?: unknown;
-            };
-            // Persist the outcome BEFORE the response hits the (possibly
-            // already-closed) stream — the whole point of P-046/EI-68: the
-            // result must survive the transport. Best-effort.
-            if (idempotencyKey) {
-              try {
-                await storeMcpResult({
-                  ownerKey: replayOwnerKey,
-                  idempotencyKey,
-                  toolName,
-                  workspaceId: dispatchSpawnCtx.workspaceId,
-                  result: result as StoredMcpResult,
-                });
-              } catch (err) {
-                // eslint-disable-next-line no-console
-                console.warn(
-                  `[mcp-replay] store failed for ${toolName} (key=${idempotencyKey}): ` +
-                    (err instanceof Error ? err.message : String(err)),
-                );
+          type McpCallResult = {
+            content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
+            isError?: boolean;
+            // Format tag + envelope (P-006) and lossless structuredContent (P-010)
+            // — forwarded to the MCP SDK's tools/call result so clients see them.
+            _meta?: Record<string, unknown>;
+            structuredContent?: unknown;
+          };
+          const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
+            // The tool execution + idempotent persistence as ONE promise, so the P2-5
+            // deadline can return a clean client error WITHOUT cancelling it: it
+            // completes server-side + persists (P-046/EI-68), so a retry with the same
+            // idempotencyKey replays the outcome instead of re-running.
+            const execute = async (): Promise<McpCallResult> => {
+              const result = (await dispatchProjectedToolToMcp(
+                projected,
+                toolName,
+                dispatchArgs,
+                ctx,
+                PROJECTED_DEPS,
+              )) as McpCallResult;
+              // Persist the outcome BEFORE the response hits the (possibly
+              // already-closed) stream — the whole point of P-046/EI-68: the
+              // result must survive the transport. Best-effort.
+              if (idempotencyKey) {
+                try {
+                  await storeMcpResult({
+                    ownerKey: replayOwnerKey,
+                    idempotencyKey,
+                    toolName,
+                    workspaceId: dispatchSpawnCtx.workspaceId,
+                    result: result as StoredMcpResult,
+                  });
+                } catch (err) {
+                  // eslint-disable-next-line no-console
+                  console.warn(
+                    `[mcp-replay] store failed for ${toolName} (key=${idempotencyKey}): ` +
+                      (err instanceof Error ? err.message : String(err)),
+                  );
+                }
               }
-            }
-            return result;
+              return result;
+            };
+            // P2-5 deadline: a tool exceeding MCP_DEADLINE_MS returns a clean error to
+            // the client (no silent tunnel drop); it keeps running + persists for an
+            // idempotent retry to replay.
+            return raceDeadline<McpCallResult>(MCP_DEADLINE_MS, execute, () => ({
+              isError: true,
+              content: [{
+                type: 'text' as const,
+                text: idempotencyKey
+                  ? `request_timeout: tool "${toolName}" exceeded ${MCP_DEADLINE_MS}ms (still running server-side; retry with the same _meta.idempotencyKey to replay its result once it completes).`
+                  : `request_timeout: tool "${toolName}" exceeded ${MCP_DEADLINE_MS}ms (still running server-side; pass _meta.idempotencyKey to make a retry replay-safe instead of re-executing).`,
+              }],
+            }));
           };
           // Establish the request-scoped workspace ALS for the duration of the
           // tool call (P-022) so handlers that resolve via `activeWorkspaceId()`
@@ -1201,6 +1220,42 @@ const SSE_PRIME = new TextEncoder().encode(':stream-open\n\n');
 // comment). Tunable/disable-able via PAPERCUSP_MCP_KEEPALIVE_MS (0 = off).
 const SSE_KEEPALIVE = new TextEncoder().encode(': keepalive\n\n');
 const DEFAULT_KEEPALIVE_MS = Number(process.env.PAPERCUSP_MCP_KEEPALIVE_MS) || 20_000;
+
+// P2-5 (operator-scalability-event-loop-2026-06-16): a server-side tool-call deadline.
+// A tool exceeding this returns a CLEAN JSON-RPC error to the client instead of
+// hanging to maxDuration / a silent tunnel drop. Set UNDER maxDuration (60s). 0
+// disables. Env-tunable (PAPERCUSP_MCP_DEADLINE_MS).
+const MCP_DEADLINE_MS = Number(process.env.PAPERCUSP_MCP_DEADLINE_MS) || 55_000;
+
+/**
+ * Race a tool dispatch against a deadline (P2-5). On expiry, resolve to `onTimeout()`
+ * — a clean error result — so the client gets a definitive response, not a silent
+ * drop. The `run()` promise is deliberately NOT cancelled: the tool finishes
+ * server-side and (via runDispatch) persists its result, so a retry with the same
+ * `_meta.idempotencyKey` replays the completed outcome rather than re-executing or
+ * leaving a half-applied mutating write. `deadlineMs<=0` ⇒ no race (await run).
+ */
+export async function raceDeadline<T>(
+  deadlineMs: number,
+  run: () => Promise<T>,
+  onTimeout: () => T,
+): Promise<T> {
+  const p = run();
+  if (!(deadlineMs > 0)) return p;
+  // Once the race settles on the timeout branch, the orphaned tool promise is still
+  // in flight; its eventual rejection must not surface as an unhandledRejection.
+  p.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(onTimeout()), deadlineMs);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KEEPALIVE_MS): Response {
   const ctype = res.headers.get('content-type') ?? '';

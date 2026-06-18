@@ -28,22 +28,30 @@ Scout's ideator/critic/recombine calls are **in-process** `anthropic-direct`
 `llmCall`s (`register-scout-action.ts` → `cycle-deps.ts` → `ideators.ts`). The
 inference gateway is only wired onto **spawned subprocesses**: `operator-spawn.ts`
 merges `gatewaySpawnEnv()` (`ANTHROPIC_BASE_URL=http://127.0.0.1:<gatewayPort>`)
-at the spawn chokepoint, and bees egress through the gateway's load-balanced,
-paced, multi-account pool. An in-process call **never passes that chokepoint**, so
-Scout hits `api.anthropic.com` **directly on a single account**. Under a busy
-fleet that one account sits at its Anthropic rate/usage limit → every ideator gets
-`429 rate_limit_error` → `no-ideas`, `$0`.
+at the spawn chokepoint, and bees egress through the gateway, which **strips** the
+incoming `authorization`/`x-api-key` and **injects** `Authorization: Bearer <bound-account-token>` + `anthropic-beta: oauth-2025-04-20` (the gateway's
+`CLAUDE_OAUTH_BETA`, `credential-store.ts`). That beta header is **mandatory** for a
+Claude Max **subscription OAuth** token on a direct-API call. An in-process call
+**never passes that chokepoint**, so Scout hits `api.anthropic.com` directly with the
+subscription OAuth token (the operator has no `ANTHROPIC_API_KEY` — `llm-client.ts`
+defaults to `~/.claude/.credentials.json`) but **without the oauth-beta** → Anthropic
+rejects every ideator INSTANTLY with `403 permission_error: "OAuth authentication is
+currently not allowed for this organization"` → `no-ideas`, `$0`, fast (no retries —
+403 is non-transient).
 
 This is **the same bug class** the gym hit (see
 [gym-cycle-inprocess-llm-bypasses-gateway](/agent-insights/gym-cycle-inprocess-llm-bypasses-gateway),
-FB-16) — there it surfaced as a 401 (org-blocked OAuth) instead of a 429, but the
-mechanism is identical: in-process anthropic-direct egress bypassing the gateway.
+FB-16) — a 401/403 OAuth/org error, identical mechanism: in-process anthropic-direct
+egress bypassing the gateway's oauth-beta injection. Bees work because the gateway
+adds the beta for them.
 
-Why it's easy to misdiagnose: the rate-governor buckets show opus with headroom
-and `accounts_status` shows several available accounts — because *those* reflect
-the **gateway** pool the fleet uses. Scout isn't in that pool, so its single
-direct account can be pinned while the pool looks healthy. Don't trust the
-governor/accounts view to explain a *direct* caller's 429.
+Why it's easy to misdiagnose: (1) the rate-governor buckets show opus with headroom
+and several accounts available — those reflect the **gateway** pool, which Scout
+isn't in. (2) The cycle SWALLOWS the per-ideator error (`ideators.ts` try/catch →
+`info.error`, never persisted to `scout_ticks`), so all you see is `$0`/no-ideas —
+which looks identical whether the cause is a 429 (rate) or a 403 (auth). To get the
+real error, call `runIdeators(digest, {llmCall, maxIdeators})` standalone and inspect
+`result.ideators[i].error` (an EARLIER pass here mis-read it as a 429 — it is a 403).
 
 ## Fix
 
@@ -68,12 +76,18 @@ NOT the standard `ANTHROPIC_BASE_URL` (which only the `claude` CLI honors).
 `gatewayLlmEnv(true)` sets both, so subprocess + in-process egress both route
 through the gateway.
 
-## Caveat — routing ≠ capacity
+## Caveat — the fix depends on the gateway's credential injection being healthy
 
-Routing Scout through the gateway fixes the *bypass* (single un-paced account), but
-Scout still competes with the whole fleet for the **same opus-4-8 pool**, and it's
-the lowest-priority consumer. If every pooled account is at its weekly limit (e.g.
-the pre-reset window), a Scout call still 429s — now from the gateway instead of
-direct. The cadence `idle-capacity` trigger mitigates this (Scout fires when the
-fleet is idle and there's pool headroom). If Scout stays starved even post-fix,
-the next levers are a less-contended ideator model or a reserved account.
+Routing Scout through the gateway only helps if the gateway actually **strips the
+org-blocked OAuth + reinjects Bearer + `oauth-2025-04-20` beta** for the in-process
+SDK request. If the gateway is **degraded** — e.g. its account-pool load is failing
+(`account-resolver.loadPoolOrThrow` fail-closed) or `:8788` is flapping — it can't
+resolve a bound account to inject, so the original org-blocked token passes through
+and you get the **same 403 even through the gateway** (observed 2026-06-18: a
+standalone repro through `:8788` still 403'd during a pool-load flap, while the gym's
+in-process egress was simultaneously down for the same reason). So a `403` *through*
+the gateway points at the gateway's credential layer, not the Scout fix. Verify the
+gateway is healthy (pool loaded, `:8788` stable) before concluding the routing fix
+failed. If the gateway genuinely can't inject for the in-process path, the alternates
+are: set a real `ANTHROPIC_API_KEY` (a direct-API key sidesteps the oauth-beta
+requirement entirely), or egress ideators via the `claude -p` CLI path bees use.

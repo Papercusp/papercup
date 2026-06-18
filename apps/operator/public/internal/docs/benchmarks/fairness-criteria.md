@@ -128,18 +128,18 @@ The benchmark is a **coordination-topology comparison**, all arms on the same ta
 
 Each arm is a **blueprint** (the `spine.claimModel` + `coordination` schema section); the run driver maps the resolved spec → the right spawn shape. "blueprint+driver ✅" = the topology is declared + the unit-tested driver runs it; the only remaining step for a live run is the consumer's `runAgent` binding (fleet-spawn-backed) — see *Runtime enforcement* below.
 
-| Arm (blueprint id)       | Locus                        | Mechanism                                                           | Status                                       |
-| ------------------------ | ---------------------------- | ------------------------------------------------------------------- | -------------------------------------------- |
-| `mini-swe`               | none (1 agent)               | —                                                                   | ✅ baseline floor                             |
-| `su-independent`         | none (N isolated)            | —                                                                   | ✅ no-coordination pole                       |
-| `dist-broadcast`         | distributed-flat             | self-claim + declare-intent + broadcast findings                    | ✅ blueprint+driver                           |
-| `dist-peer-review`       | distributed-flat             | self-claim + peer-review diffs before submit                        | ✅ blueprint+driver                           |
-| `dist-repo-huddle`       | distributed (per-repo group) | same-repo agents share understanding + co-edit                      | ✅ blueprint+driver                           |
-| `dist-blackboard`        | distributed-flat             | indirect via shared scratchpad (stigmergic; `coord:send` forbidden) | ✅ blueprint+driver                           |
-| `ensemble-solve`         | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`) | ✅ blueprint+driver (key control)             |
-| `pair`                   | per-task pair                | driver writes / navigator continuously reviews                      | ✅ blueprint+driver                           |
-| `hier-lead-worker` (opt) | hierarchical                 | elected lead decomposes + delegates                                 | ❌ deferred (needs an election schema)        |
-| `hive`                   | central                      | Queen places/evicts/re-places/briefs/wakes                          | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
+| Arm (blueprint id) | Locus                        | Mechanism                                                                                  | Status                                       |
+| ------------------ | ---------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| `mini-swe`         | none (1 agent)               | —                                                                                          | ✅ baseline floor                             |
+| `su-independent`   | none (N isolated)            | —                                                                                          | ✅ no-coordination pole                       |
+| `dist-broadcast`   | distributed-flat             | self-claim + declare-intent + broadcast findings                                           | ✅ blueprint+driver                           |
+| `dist-peer-review` | distributed-flat             | self-claim + peer-review diffs before submit                                               | ✅ blueprint+driver                           |
+| `dist-repo-huddle` | distributed (per-repo group) | same-repo agents share understanding + co-edit                                             | ✅ blueprint+driver                           |
+| `dist-blackboard`  | distributed-flat             | indirect via shared scratchpad (stigmergic; `coord:send` forbidden)                        | ✅ blueprint+driver                           |
+| `ensemble-solve`   | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`)                        | ✅ blueprint+driver (key control)             |
+| `pair`             | per-task pair                | driver writes / navigator continuously reviews                                             | ✅ blueprint+driver                           |
+| `hier-lead-worker` | hierarchical (elected lead)  | a lead runs a coordination pass (charged to the iso-budget), then workers execute under it | ✅ blueprint+driver                           |
+| `hive`             | central                      | Queen places/evicts/re-places/briefs/wakes                                                 | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
 
 **Framework (built):** a topology is a blueprint, resolved to a `CoordinationSpec` by `resolveCoordinationSpec` (`coordination-topology.ts`), mapped to per-team spawn plans (directive + tool-scope + team grouping) by `coordination-runtime.ts`, and executed by `runTopology` (`run-topology.ts`). The driver is generic across benchmarks via two injected seams: a per-benchmark `CloneGradeSeam` (clone/grade — identical across arms, C5) and a `runAgent` (the fleet-spawn-backed agent invocation). SWE-bench-Pro (diff) and FrontierSWE (in-container) both wire onto it.
 

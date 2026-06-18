@@ -3817,6 +3817,21 @@ C4 is **not** satisfied by config (the arm being *configured* with the capabilit
 
 Pre-flight the run on a 1–2 task probe and confirm the capability-exercised telemetry is non-zero **before** any big spend or claim. `buildFairnessAudit` marks C4 `NEEDS-EVIDENCE` by default — supply the `coordCalls`/tool-call evidence to clear it; never hand-wave past it.
 
+## The seam-contract trap (emit only CANONICAL grader statuses)
+
+[Section titled “The seam-contract trap (emit only CANONICAL grader statuses)”](#the-seam-contract-trap-emit-only-canonical-grader-statuses)
+
+A bespoke grade status silently becomes infra — and infra is dropped from the valid denominator
+
+If your `CloneGradeSeam.grade` returns a non-canonical `graderStatus` (anything outside `passed` / `failed` / `error` / `timeout`), the topology row-builder (`run-topology.ts` → `coerceGraderStatus`) coerces it to `'error'`, and bench-metrics’ `isScored()` treats `graderStatus:'error'` as **infra** — so the row is EXCLUDED from the exclude-infra “valid” denominator. A genuine capability-fail you labelled cleverly (e.g. `'empty-diff'` for “the agent produced no patch”) thus vanishes from the denominator, flattering the arm — the same C1 denominator-shrink, one layer down.
+
+Map every grade outcome to a CANONICAL status, and keep the nuance in `detail`:
+
+* **genuine capability-fail** (empty/invalid output, wrong answer) → `graderStatus: 'failed'`, `resolved: false` — scored, counts under BOTH denominators. SWE-bench scores an empty patch as a fail, not infra.
+* **genuine infra** (clone / extract / grader crash, timeout) → `graderStatus: 'error'` / `'timeout'`, `resolved: null` — reconciled `false` in the C1 headline, excluded from the exclude-infra view (correct: it carries no capability signal).
+
+Caught live: the SWE-Pro seam (the P-003 reference the other suites copy) returned `'empty-diff'`, which coerced to infra and would have dropped empty-patch fails from the valid denominator — fixed to canonical `'failed'` + `detail.reason:'empty-diff'` (plan `benchmark-capability-injection-redesign-2026-06-17` D-023).
+
 ## Pointers
 
 [Section titled “Pointers”](#pointers)
@@ -11270,7 +11285,7 @@ While auditing tsconfig for stragglers I ran `grep '"@restart/sync"' tsconfig*.j
 
 # The Scout cycle's in-process ideators/critics bypass the inference gateway (same class as the gym's FB-16)
 
-> Spawned bees get ANTHROPIC_BASE_URL at the spawn chokepoint (gatewaySpawnEnv), but Scout's IN-PROCESS ideator/critic/recombine llmCalls never pass through it — so they hit api.anthropic.com directly on a SINGLE account. Under the busy fleet that account is perpetually rate-limited → every ideator 429s → the cycle returns `no-ideas` with $0 spent. Symptom that means READ THIS: a scout_ticks row with status=ran, ideas_generated=0, budget_used_usd=0, detail.stop='no-ideas' — repeatedly. Fix = mirror the gym (FB-16): set gatewayLlmEnv() so the in-process SDK routes through the localhost gateway. anthropicDirectTransport honors PAPERCUSP_ANTHROPIC_URL, NOT the standard ANTHROPIC_BASE_URL.
+> Spawned bees get ANTHROPIC_BASE_URL at the spawn chokepoint (gatewaySpawnEnv), but Scout's IN-PROCESS ideator/critic/recombine llmCalls never pass through it — so they hit api.anthropic.com directly with the Claude Max SUBSCRIPTION OAuth token (no ANTHROPIC_API_KEY set) but WITHOUT the `anthropic-beta: oauth-2025-04-20` header Anthropic requires for a subscription token on the direct API → every ideator fails INSTANTLY with `403 permission_error: "OAuth authentication is currently not allowed for this organization"` (NOT a 429/rate-limit — an earlier read of this was wrong). Symptom that means READ THIS: a scout_ticks row with status=ran, ideas_generated=0, budget_used_usd=0, detail.stop='no-ideas' — repeatedly, completing fast (no slow 429 retries). Bees avoid it via the `claude -p` CLI path the gateway injects Bearer+oauth-beta for. Fix = mirror the gym (FB-16): gatewayLlmEnv() routes the in-process SDK through the gateway, which injects the oauth-beta — but ONLY works when the gateway's credential injection is healthy. anthropicDirectTransport honors PAPERCUSP_ANTHROPIC_URL, NOT ANTHROPIC_BASE_URL.
 
 ## Symptom
 
@@ -11289,11 +11304,11 @@ detail = {"stop":"no-ideas","reason":"idle-capacity",...}
 
 [Section titled “Root cause”](#root-cause)
 
-Scout’s ideator/critic/recombine calls are **in-process** `anthropic-direct` `llmCall`s (`register-scout-action.ts` → `cycle-deps.ts` → `ideators.ts`). The inference gateway is only wired onto **spawned subprocesses**: `operator-spawn.ts` merges `gatewaySpawnEnv()` (`ANTHROPIC_BASE_URL=http://127.0.0.1:<gatewayPort>`) at the spawn chokepoint, and bees egress through the gateway’s load-balanced, paced, multi-account pool. An in-process call **never passes that chokepoint**, so Scout hits `api.anthropic.com` **directly on a single account**. Under a busy fleet that one account sits at its Anthropic rate/usage limit → every ideator gets `429 rate_limit_error` → `no-ideas`, `$0`.
+Scout’s ideator/critic/recombine calls are **in-process** `anthropic-direct` `llmCall`s (`register-scout-action.ts` → `cycle-deps.ts` → `ideators.ts`). The inference gateway is only wired onto **spawned subprocesses**: `operator-spawn.ts` merges `gatewaySpawnEnv()` (`ANTHROPIC_BASE_URL=http://127.0.0.1:<gatewayPort>`) at the spawn chokepoint, and bees egress through the gateway, which **strips** the incoming `authorization`/`x-api-key` and **injects** `Authorization: Bearer <bound-account-token>` + `anthropic-beta: oauth-2025-04-20` (the gateway’s `CLAUDE_OAUTH_BETA`, `credential-store.ts`). That beta header is **mandatory** for a Claude Max **subscription OAuth** token on a direct-API call. An in-process call **never passes that chokepoint**, so Scout hits `api.anthropic.com` directly with the subscription OAuth token (the operator has no `ANTHROPIC_API_KEY` — `llm-client.ts` defaults to `~/.claude/.credentials.json`) but **without the oauth-beta** → Anthropic rejects every ideator INSTANTLY with `403 permission_error: "OAuth authentication is currently not allowed for this organization"` → `no-ideas`, `$0`, fast (no retries — 403 is non-transient).
 
-This is **the same bug class** the gym hit (see [gym-cycle-inprocess-llm-bypasses-gateway](/agent-insights/gym-cycle-inprocess-llm-bypasses-gateway), FB-16) — there it surfaced as a 401 (org-blocked OAuth) instead of a 429, but the mechanism is identical: in-process anthropic-direct egress bypassing the gateway.
+This is **the same bug class** the gym hit (see [gym-cycle-inprocess-llm-bypasses-gateway](/agent-insights/gym-cycle-inprocess-llm-bypasses-gateway), FB-16) — a 401/403 OAuth/org error, identical mechanism: in-process anthropic-direct egress bypassing the gateway’s oauth-beta injection. Bees work because the gateway adds the beta for them.
 
-Why it’s easy to misdiagnose: the rate-governor buckets show opus with headroom and `accounts_status` shows several available accounts — because *those* reflect the **gateway** pool the fleet uses. Scout isn’t in that pool, so its single direct account can be pinned while the pool looks healthy. Don’t trust the governor/accounts view to explain a *direct* caller’s 429.
+Why it’s easy to misdiagnose: (1) the rate-governor buckets show opus with headroom and several accounts available — those reflect the **gateway** pool, which Scout isn’t in. (2) The cycle SWALLOWS the per-ideator error (`ideators.ts` try/catch → `info.error`, never persisted to `scout_ticks`), so all you see is `$0`/no-ideas — which looks identical whether the cause is a 429 (rate) or a 403 (auth). To get the real error, call `runIdeators(digest, {llmCall, maxIdeators})` standalone and inspect `result.ideators[i].error` (an EARLIER pass here mis-read it as a 429 — it is a 403).
 
 ## Fix
 
@@ -11314,11 +11329,11 @@ if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
 
 Key detail: the in-process `anthropic-direct` transport (`chat-stream.ts` `resolveAnthropicBaseUrl()`) reads **`PAPERCUSP_ANTHROPIC_URL`**, NOT the standard `ANTHROPIC_BASE_URL` (which only the `claude` CLI honors). `gatewayLlmEnv(true)` sets both, so subprocess + in-process egress both route through the gateway.
 
-## Caveat — routing ≠ capacity
+## Caveat — the fix depends on the gateway’s credential injection being healthy
 
-[Section titled “Caveat — routing ≠ capacity”](#caveat--routing--capacity)
+[Section titled “Caveat — the fix depends on the gateway’s credential injection being healthy”](#caveat--the-fix-depends-on-the-gateways-credential-injection-being-healthy)
 
-Routing Scout through the gateway fixes the *bypass* (single un-paced account), but Scout still competes with the whole fleet for the **same opus-4-8 pool**, and it’s the lowest-priority consumer. If every pooled account is at its weekly limit (e.g. the pre-reset window), a Scout call still 429s — now from the gateway instead of direct. The cadence `idle-capacity` trigger mitigates this (Scout fires when the fleet is idle and there’s pool headroom). If Scout stays starved even post-fix, the next levers are a less-contended ideator model or a reserved account.
+Routing Scout through the gateway only helps if the gateway actually **strips the org-blocked OAuth + reinjects Bearer + `oauth-2025-04-20` beta** for the in-process SDK request. If the gateway is **degraded** — e.g. its account-pool load is failing (`account-resolver.loadPoolOrThrow` fail-closed) or `:8788` is flapping — it can’t resolve a bound account to inject, so the original org-blocked token passes through and you get the **same 403 even through the gateway** (observed 2026-06-18: a standalone repro through `:8788` still 403’d during a pool-load flap, while the gym’s in-process egress was simultaneously down for the same reason). So a `403` *through* the gateway points at the gateway’s credential layer, not the Scout fix. Verify the gateway is healthy (pool loaded, `:8788` stable) before concluding the routing fix failed. If the gateway genuinely can’t inject for the in-process path, the alternates are: set a real `ANTHROPIC_API_KEY` (a direct-API key sidesteps the oauth-beta requirement entirely), or egress ideators via the `claude -p` CLI path bees use.
 
 # Scout 'ran' ticks with 0 ideas / $0 mean transport death, not a quiet muse
 
@@ -18971,18 +18986,18 @@ The benchmark is a **coordination-topology comparison**, all arms on the same ta
 
 Each arm is a **blueprint** (the `spine.claimModel` + `coordination` schema section); the run driver maps the resolved spec → the right spawn shape. “blueprint+driver ✅” = the topology is declared + the unit-tested driver runs it; the only remaining step for a live run is the consumer’s `runAgent` binding (fleet-spawn-backed) — see *Runtime enforcement* below.
 
-| Arm (blueprint id)       | Locus                        | Mechanism                                                           | Status                                       |
-| ------------------------ | ---------------------------- | ------------------------------------------------------------------- | -------------------------------------------- |
-| `mini-swe`               | none (1 agent)               | —                                                                   | ✅ baseline floor                             |
-| `su-independent`         | none (N isolated)            | —                                                                   | ✅ no-coordination pole                       |
-| `dist-broadcast`         | distributed-flat             | self-claim + declare-intent + broadcast findings                    | ✅ blueprint+driver                           |
-| `dist-peer-review`       | distributed-flat             | self-claim + peer-review diffs before submit                        | ✅ blueprint+driver                           |
-| `dist-repo-huddle`       | distributed (per-repo group) | same-repo agents share understanding + co-edit                      | ✅ blueprint+driver                           |
-| `dist-blackboard`        | distributed-flat             | indirect via shared scratchpad (stigmergic; `coord:send` forbidden) | ✅ blueprint+driver                           |
-| `ensemble-solve`         | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`) | ✅ blueprint+driver (key control)             |
-| `pair`                   | per-task pair                | driver writes / navigator continuously reviews                      | ✅ blueprint+driver                           |
-| `hier-lead-worker` (opt) | hierarchical                 | elected lead decomposes + delegates                                 | ❌ deferred (needs an election schema)        |
-| `hive`                   | central                      | Queen places/evicts/re-places/briefs/wakes                          | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
+| Arm (blueprint id) | Locus                        | Mechanism                                                                                  | Status                                       |
+| ------------------ | ---------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| `mini-swe`         | none (1 agent)               | —                                                                                          | ✅ baseline floor                             |
+| `su-independent`   | none (N isolated)            | —                                                                                          | ✅ no-coordination pole                       |
+| `dist-broadcast`   | distributed-flat             | self-claim + declare-intent + broadcast findings                                           | ✅ blueprint+driver                           |
+| `dist-peer-review` | distributed-flat             | self-claim + peer-review diffs before submit                                               | ✅ blueprint+driver                           |
+| `dist-repo-huddle` | distributed (per-repo group) | same-repo agents share understanding + co-edit                                             | ✅ blueprint+driver                           |
+| `dist-blackboard`  | distributed-flat             | indirect via shared scratchpad (stigmergic; `coord:send` forbidden)                        | ✅ blueprint+driver                           |
+| `ensemble-solve`   | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`)                        | ✅ blueprint+driver (key control)             |
+| `pair`             | per-task pair                | driver writes / navigator continuously reviews                                             | ✅ blueprint+driver                           |
+| `hier-lead-worker` | hierarchical (elected lead)  | a lead runs a coordination pass (charged to the iso-budget), then workers execute under it | ✅ blueprint+driver                           |
+| `hive`             | central                      | Queen places/evicts/re-places/briefs/wakes                                                 | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
 
 **Framework (built):** a topology is a blueprint, resolved to a `CoordinationSpec` by `resolveCoordinationSpec` (`coordination-topology.ts`), mapped to per-team spawn plans (directive + tool-scope + team grouping) by `coordination-runtime.ts`, and executed by `runTopology` (`run-topology.ts`). The driver is generic across benchmarks via two injected seams: a per-benchmark `CloneGradeSeam` (clone/grade — identical across arms, C5) and a `runAgent` (the fleet-spawn-backed agent invocation). SWE-bench-Pro (diff) and FrontierSWE (in-container) both wire onto it.
 
@@ -23645,6 +23660,8 @@ Approved content-disclosure `<details>` sites:
 * `app/dev/_components/SessionsTab.tsx` — transcript JSON dump
 * `app/dev/_components/TablesTab.tsx` — table-row JSON dumps
 * `app/_components/SetupWizard/StepAutoUpdate.tsx` — release-notes prose
+* `app/cupboard/[id]/page.tsx` — learning-pack content preview
+* `app/harness/dock/sample-panels.tsx` — sample/debug panel parameters
 
 A tell that `<details>` is correct: the content is prose (or auto-generated text), the user doesn’t tab/select inside it, and rendering it costs real work (Monaco, MarkdownPreview, a long log dump). Interactive disclosures — collapsible form sections, per-row expanders inside lists where you want shared animation and focus management — still use `<Collapsible>`.
 
@@ -23797,6 +23814,8 @@ The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operat
 * Starlight tokens in operator code: `--sl-color-*`
 
 **If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from `design-tokens/` via `npm run tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don’t add it to the runtime allowlist unless a framework genuinely sets it at runtime.
+
+**Raw color carve-out:** user-authored media values are not UI chrome. A sketch canvas’s persisted paper color or a color-picker’s current ink value can be a literal CSS color because it is saved drawing content, not app styling. Keep that carve-out narrow: if the color affects a panel, button, label, border, status badge, or layout surface, it must be a semantic token.
 
 ## Migration anti-patterns
 

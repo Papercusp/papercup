@@ -566,6 +566,30 @@ describe('join offer (existing hive)', () => {
     expect(onCreated).toHaveBeenCalledWith('acme-web');
   });
 
+  it('a join with NO returned hiveSlug still CLOSES on Done — never falls back to onBack (stuck-modal report)', async () => {
+    // The user's report: joining a shared hive "worked" but dropped them back on
+    // the "Add a Hive" picker with no way to dismiss it. Root cause: a
+    // discovery-join whose response omits hiveSlug left firstSlug undefined, and
+    // Done fell back to onBack() — which re-renders the picker. Done must ALWAYS
+    // close (onCreated is the parent's close path), even with no slug to focus.
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': { status: 200, body: existingHive([memberLink('web', 1)]) },
+      // join succeeded (members ok) but the route returned NO hiveSlug
+      '/api/discovery/join-hive': { status: 200, body: { ok: true, members: [{ ok: true }] } },
+    });
+    const { onCreated, onBack } = renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => screen.getByText('Acme Web'));
+    await user.click(screen.getByRole('button', { name: 'Join hive' }));
+    await waitFor(() => screen.getByText(/Joined 1\/1 member harness/));
+
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onCreated).toHaveBeenCalledWith(''); // closes with an empty slug…
+    expect(onBack).not.toHaveBeenCalled();      // …and NEVER bounces to the picker
+  });
+
   it('no member links → "isn’t joinable yet" + Create-anyway resubmits with force', async () => {
     const user = userEvent.setup();
     let call = 0;

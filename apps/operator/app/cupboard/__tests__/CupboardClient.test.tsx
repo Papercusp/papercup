@@ -193,8 +193,8 @@ describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', ()
         onDetail={() => {}}
       />,
     );
-    // The external-repo link title carries the derived slug.
-    expect(screen.getByTitle('github.com/acme/widget')).toBeTruthy();
+    // The external-repo link accessible name carries the derived slug.
+    expect(screen.getByRole('link', { name: 'Open github.com/acme/widget' })).toBeTruthy();
   });
 });
 

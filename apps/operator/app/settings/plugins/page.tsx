@@ -228,13 +228,13 @@ export default function PluginSettingsPage() {
                       onClick={() => setActivePlugin(p.name)}
                       style={{
                         ...pluginBtn,
-                        background: isActive ? 'var(--bg-1, #1e1e1e)' : 'transparent',
+                        background: isActive ? 'var(--bg-1)' : 'transparent',
                         opacity: enabled ? 1 : 0.55,
                       }}
 
                     >
                       {p.name.split('/').pop()}
-                      {!enabled && <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--fg-mute, #888)' }}>off</span>}
+                      {!enabled && <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--fg-mute)' }}>off</span>}
                     </button></Tooltip>
                   </li>
                 );
@@ -244,14 +244,14 @@ export default function PluginSettingsPage() {
 
           <main>
             {!activePlugin ? (
-              <p style={{ color: 'var(--fg-mute, #999)' }}>Select a plugin on the left to configure it.</p>
+              <p style={{ color: 'var(--fg-mute)' }}>Select a plugin on the left to configure it.</p>
             ) : !activePluginManifest ? (
               <p>Plugin not found.</p>
             ) : (
               <form onSubmit={onSave}>
                 <div style={{ marginBottom: 16 }}>
                   <h3 style={{ margin: '0 0 4px' }}>{activePluginManifest.name}</h3>
-                  <div style={{ fontSize: 12, color: 'var(--fg-mute, #999)' }}>v{activePluginManifest.version}</div>
+                  <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>v{activePluginManifest.version}</div>
                   {activePluginManifest.description && (
                     <p style={{ margin: '8px 0 0', fontSize: 13 }}>{activePluginManifest.description}</p>
                   )}
@@ -282,7 +282,7 @@ export default function PluginSettingsPage() {
                         )}
                       </label>
                       {field.description && (
-                        <div style={{ fontSize: 12, color: 'var(--fg-mute, #999)', marginBottom: 4 }}>{field.description}</div>
+                        <div style={{ fontSize: 12, color: 'var(--fg-mute)', marginBottom: 4 }}>{field.description}</div>
                       )}
                       {field.oauth ? (
                         <OAuthFieldEditor
@@ -374,21 +374,21 @@ function renderInput(
 }
 
 const lbl: React.CSSProperties = {
-  display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--fg-mute, #ccc)', marginBottom: 4,
+  display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--fg-mute)', marginBottom: 4,
   textTransform: 'uppercase', letterSpacing: '.04em',
 };
 const input: React.CSSProperties = {
-  width: '100%', padding: '6px 8px', background: 'var(--bg-1, #141414)',
-  border: '1px solid var(--border, #2a2a2a)', borderRadius: 4, color: 'var(--fg, #ddd)',
+  width: '100%', padding: '6px 8px', background: 'var(--bg-1)',
+  border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)',
   fontSize: 13, fontFamily: 'inherit',
 };
 const pluginBtn: React.CSSProperties = {
   display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px',
-  border: '1px solid var(--border, #2a2a2a)', borderRadius: 4, color: 'var(--fg, #ddd)',
+  border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)',
   background: 'transparent', cursor: 'pointer', fontSize: 13, marginBottom: 4,
 };
 const primary: React.CSSProperties = {
-  padding: '8px 16px', background: 'var(--accent, #58a6ff)', color: 'var(--accent-ink)',
+  padding: '8px 16px', background: 'var(--accent)', color: 'var(--accent-ink)',
   border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 13, fontWeight: 600,
 };
 const notice: React.CSSProperties = {
@@ -501,7 +501,7 @@ function OAuthFieldEditor({ plugin, harness, field, provider, scopes, currentVal
           >
             {verifying ? 'Verifying…' : 'Verify + save'}
           </button>
-          <p style={{ fontSize: 11, color: 'var(--fg-mute, #888)', marginTop: 6 }}>
+          <p style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 6 }}>
             We'll hit the provider's introspection endpoint to confirm the
             token has the scopes this plugin needs. Tokens with too few
             scopes are rejected; tokens with extra scopes warn but save.
@@ -517,14 +517,14 @@ const connectBtn: React.CSSProperties = {
   borderRadius: 4, textDecoration: 'none', fontSize: 13, fontWeight: 600,
 };
 const linkBtn: React.CSSProperties = {
-  fontSize: 12, color: 'var(--fg-mute, #999)', textDecoration: 'underline',
+  fontSize: 12, color: 'var(--fg-mute)', textDecoration: 'underline',
 };
 const advBtn: React.CSSProperties = {
-  background: 'transparent', border: 'none', color: 'var(--fg-mute, #888)',
+  background: 'transparent', border: 'none', color: 'var(--fg-mute)',
   fontSize: 12, cursor: 'pointer', padding: 0,
 };
 const advPanel: React.CSSProperties = {
-  marginTop: 8, padding: 10, border: '1px solid var(--border, #2a2a2a)',
+  marginTop: 8, padding: 10, border: '1px solid var(--border)',
   borderRadius: 4, background: 'color-mix(in srgb, var(--fg), transparent 98%)',
   display: 'flex', flexDirection: 'column', gap: 8,
 };
