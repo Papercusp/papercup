@@ -23,14 +23,22 @@
  * A4 batch 35 — prereq for `/agents`, `/usage`, `/streams` route migrations
  * which all share these helpers).
  */
-import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { extractRunUsage } from '@papercusp/orchestrator';
-import { costFromTokens } from '@papercusp/model-pricing';
-import { getHarnessPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from './workspace-registry';
-import { harnessDir } from './harness-core';
-import { type ProjectEntry } from './harness-registry';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readSync,
+  statSync,
+} from "node:fs";
+import { join } from "node:path";
+import { extractRunUsage } from "@papercusp/orchestrator";
+import { costFromTokens } from "@papercusp/model-pricing";
+import { harnessQuery } from "@papercusp/db-org";
+import { activeWorkspaceId } from "./workspace-registry";
+import { harnessDir } from "./harness-core";
+import { type ProjectEntry } from "./harness-registry";
 
 // A run is "live" when its jsonl has no terminal marker AND its mtime is
 // recent. The mtime guard prevents orphaned runs (harness SIGKILLed
@@ -49,7 +57,10 @@ const TERMINAL_MARKERS = [
   '"type":"papercusp.run_meta"',
 ];
 
-export function probeRunLiveness(jsonlPath: string, now: number): { running: boolean; lastEventTs: number } {
+export function probeRunLiveness(
+  jsonlPath: string,
+  now: number,
+): { running: boolean; lastEventTs: number } {
   if (!existsSync(jsonlPath)) return { running: false, lastEventTs: 0 };
   const stat = statSync(jsonlPath);
   const lastEventTs = stat.mtimeMs;
@@ -58,12 +69,15 @@ export function probeRunLiveness(jsonlPath: string, now: number): { running: boo
     return { running: now - lastEventTs < LIVE_MTIME_GRACE_MS, lastEventTs };
   }
   const tailSize = Math.min(size, 4096);
-  const fd = openSync(jsonlPath, 'r');
+  const fd = openSync(jsonlPath, "r");
   try {
     const buf = Buffer.allocUnsafe(tailSize);
     readSync(fd, buf, 0, tailSize, size - tailSize);
-    const tail = buf.toString('utf8');
-    const lines = tail.split('\n').map((l) => l.trim()).filter(Boolean);
+    const tail = buf.toString("utf8");
+    const lines = tail
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
     for (let i = lines.length - 1; i >= 0; i--) {
       if (TERMINAL_MARKERS.some((m) => lines[i].includes(m))) {
         return { running: false, lastEventTs };
@@ -105,18 +119,18 @@ const HEAD_WINDOW = 16384;
 const TAIL_WINDOW = 65536;
 
 function readUsageWindows(jsonlPath: string, size: number): string {
-  if (size <= HEAD_WINDOW + TAIL_WINDOW) return readFileSync(jsonlPath, 'utf8');
-  const fd = openSync(jsonlPath, 'r');
+  if (size <= HEAD_WINDOW + TAIL_WINDOW) return readFileSync(jsonlPath, "utf8");
+  const fd = openSync(jsonlPath, "r");
   try {
     const head = Buffer.allocUnsafe(HEAD_WINDOW);
     readSync(fd, head, 0, HEAD_WINDOW, 0);
     const tail = Buffer.allocUnsafe(TAIL_WINDOW);
     readSync(fd, tail, 0, TAIL_WINDOW, size - TAIL_WINDOW);
     // Drop the partial line at each cut edge so the line parser skips cleanly.
-    const headStr = head.toString('utf8');
-    const tailStr = tail.toString('utf8');
-    const headCut = headStr.slice(0, headStr.lastIndexOf('\n') + 1);
-    const tailCut = tailStr.slice(tailStr.indexOf('\n') + 1);
+    const headStr = head.toString("utf8");
+    const tailStr = tail.toString("utf8");
+    const headCut = headStr.slice(0, headStr.lastIndexOf("\n") + 1);
+    const tailCut = tailStr.slice(tailStr.indexOf("\n") + 1);
     return `${headCut}\n${tailCut}`;
   } finally {
     closeSync(fd);
@@ -124,25 +138,35 @@ function readUsageWindows(jsonlPath: string, size: number): string {
 }
 
 export function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
-  const logDir = join(harnessDir(project), 'logs');
+  const logDir = join(harnessDir(project), "logs");
   if (!existsSync(logDir)) return [];
   const now = Date.now();
   const out: AgentRunFull[] = [];
   for (const f of readdirSync(logDir)) {
-    if (!f.endsWith('.jsonl')) continue;
-    const base = f.replace(/\.jsonl$/, '');
+    if (!f.endsWith(".jsonl")) continue;
+    const base = f.replace(/\.jsonl$/, "");
     // Filename: <ts>-<role>[-<featureId>] e.g. 1777000000-worker-F-FIX-009
     const match = base.match(/^(\d+)-([a-z]+)(?:-(F-[A-Z0-9-]+))?$/);
     const jsonlPath = join(logDir, f);
     let jsonlMtime = 0;
-    try { jsonlMtime = Math.floor(statSync(jsonlPath).mtimeMs); } catch {}
+    try {
+      jsonlMtime = Math.floor(statSync(jsonlPath).mtimeMs);
+    } catch {}
     const outPath = join(logDir, `${base}.out`);
     let outSize = 0;
-    try { if (existsSync(outPath)) outSize = statSync(outPath).size; } catch {}
+    try {
+      if (existsSync(outPath)) outSize = statSync(outPath).size;
+    } catch {}
     const { running, lastEventTs } = probeRunLiveness(jsonlPath, now);
-    let costUsd = 0, costIsEstimate = false, inputTokens = 0, outputTokens = 0,
-      cacheReadTokens = 0, cacheCreationTokens = 0, durationMs = 0;
-    let backend: string | null = null, model: string | null = null;
+    let costUsd = 0,
+      costIsEstimate = false,
+      inputTokens = 0,
+      outputTokens = 0,
+      cacheReadTokens = 0,
+      cacheCreationTokens = 0,
+      durationMs = 0;
+    let backend: string | null = null,
+      model: string | null = null;
     // Backend-aware usage parse (claude result / codex turn.completed / omp
     // message_end+agent_end / run_meta stamp) over a bounded windowed read.
     try {
@@ -171,13 +195,19 @@ export function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
     } catch {}
     out.push({
       runId: base,
-      role: match ? match[2] : 'unknown',
+      role: match ? match[2] : "unknown",
       featureId: (match && match[3]) || null,
       ts: match ? Number(match[1]) * 1000 : jsonlMtime,
       sizeBytes: outSize,
       durationMs,
-      costUsd, costIsEstimate, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens,
-      backend, model,
+      costUsd,
+      costIsEstimate,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      backend,
+      model,
       running,
       lastEventTs: Math.floor(lastEventTs || jsonlMtime),
     });
@@ -193,19 +223,28 @@ export function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
 // mtime/size signature; appending to an existing jsonl does NOT bump
 // mtime (we tolerate a 2 s lag on liveness/cost in exchange for
 // throughput).
-const __agentScanCacheKey = Symbol.for('papercusp.harnessAgentScanCache');
+const __agentScanCacheKey = Symbol.for("papercusp.harnessAgentScanCache");
 type AgentScanCacheGlobals = typeof globalThis & {
-  [__agentScanCacheKey]?: Map<string, { sig: string; expires: number; value: AgentRunFull[] }>;
+  [__agentScanCacheKey]?: Map<
+    string,
+    { sig: string; expires: number; value: AgentRunFull[] }
+  >;
 };
-const __agentScanCache: Map<string, { sig: string; expires: number; value: AgentRunFull[] }> = (() => {
+const __agentScanCache: Map<
+  string,
+  { sig: string; expires: number; value: AgentRunFull[] }
+> = (() => {
   const g = globalThis as AgentScanCacheGlobals;
   if (!g[__agentScanCacheKey]) g[__agentScanCacheKey] = new Map();
   return g[__agentScanCacheKey]!;
 })();
 
-export function scanAgentRunsCached(project: ProjectEntry, ttlMs = 2000): AgentRunFull[] {
-  const logDir = join(harnessDir(project), 'logs');
-  let sig = 'no-dir';
+export function scanAgentRunsCached(
+  project: ProjectEntry,
+  ttlMs = 2000,
+): AgentRunFull[] {
+  const logDir = join(harnessDir(project), "logs");
+  let sig = "no-dir";
   try {
     if (existsSync(logDir)) {
       const st = statSync(logDir);
@@ -226,36 +265,41 @@ export function scanAgentRunsCached(project: ProjectEntry, ttlMs = 2000): AgentR
  * Workspace-scoped (migration 170): rows carry workspace_id and the
  * DELETE-not-in never reaps another workspace's rows under a shared slug.
  */
-export async function syncAgentRunsToPg(project: ProjectEntry, runs: AgentRunFull[]): Promise<void> {
-  const { sql } = getHarnessPg(project.slug);
+export async function syncAgentRunsToPg(
+  project: ProjectEntry,
+  runs: AgentRunFull[],
+): Promise<void> {
   const ws = activeWorkspaceId();
   const now = Date.now();
   const ids = runs.map((r) => r.runId);
-  if (runs.length > 0) {
-    const rows = runs.map((r) => ({
-      workspace_id: ws,
-      harness_slug: project.slug,
-      run_id: r.runId,
-      role: r.role,
-      feature_id: r.featureId ?? null,
-      ts: r.ts,
-      size_bytes: r.sizeBytes,
-      duration_ms: r.durationMs,
-      cost_usd: r.costUsd,
-      cost_is_estimate: r.costIsEstimate,
-      input_tokens: r.inputTokens,
-      output_tokens: r.outputTokens,
-      cache_read_tokens: r.cacheReadTokens,
-      cache_creation_tokens: r.cacheCreationTokens,
-      backend: r.backend ?? null,
-      model: r.model ?? null,
-      running: r.running,
-      last_event_ts: r.lastEventTs,
-      created_ts: now,
-      updated_ts: now,
-    }));
-    await sql`
-      INSERT INTO agent_runs ${sql(rows, 'workspace_id', 'harness_slug', 'run_id', 'role', 'feature_id', 'ts', 'size_bytes', 'duration_ms', 'cost_usd', 'cost_is_estimate', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'backend', 'model', 'running', 'last_event_ts', 'created_ts', 'updated_ts')}
+  // C1-2: one harnessQuery() so the upsert + reconcile DELETE share one
+  // transaction (and per-tx search_path) under PgBouncer. Param `sql` keeps refs.
+  await harnessQuery(project.slug, async (sql) => {
+    if (runs.length > 0) {
+      const rows = runs.map((r) => ({
+        workspace_id: ws,
+        harness_slug: project.slug,
+        run_id: r.runId,
+        role: r.role,
+        feature_id: r.featureId ?? null,
+        ts: r.ts,
+        size_bytes: r.sizeBytes,
+        duration_ms: r.durationMs,
+        cost_usd: r.costUsd,
+        cost_is_estimate: r.costIsEstimate,
+        input_tokens: r.inputTokens,
+        output_tokens: r.outputTokens,
+        cache_read_tokens: r.cacheReadTokens,
+        cache_creation_tokens: r.cacheCreationTokens,
+        backend: r.backend ?? null,
+        model: r.model ?? null,
+        running: r.running,
+        last_event_ts: r.lastEventTs,
+        created_ts: now,
+        updated_ts: now,
+      }));
+      await sql`
+      INSERT INTO agent_runs ${sql(rows, "workspace_id", "harness_slug", "run_id", "role", "feature_id", "ts", "size_bytes", "duration_ms", "cost_usd", "cost_is_estimate", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "backend", "model", "running", "last_event_ts", "created_ts", "updated_ts")}
       ON CONFLICT (harness_slug, run_id) DO UPDATE SET
         workspace_id            = EXCLUDED.workspace_id,
         role                    = EXCLUDED.role,
@@ -275,13 +319,14 @@ export async function syncAgentRunsToPg(project: ProjectEntry, runs: AgentRunFul
         last_event_ts           = EXCLUDED.last_event_ts,
         updated_ts              = EXCLUDED.updated_ts
     `;
-    await sql`
+      await sql`
       DELETE FROM agent_runs
       WHERE harness_slug = ${project.slug}
         AND workspace_id = ${ws}
         AND run_id NOT IN ${sql(ids)}
     `;
-  } else {
-    await sql`DELETE FROM agent_runs WHERE harness_slug = ${project.slug} AND workspace_id = ${ws}`;
-  }
+    } else {
+      await sql`DELETE FROM agent_runs WHERE harness_slug = ${project.slug} AND workspace_id = ${ws}`;
+    }
+  });
 }

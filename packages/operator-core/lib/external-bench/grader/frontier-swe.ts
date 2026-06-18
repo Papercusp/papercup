@@ -124,6 +124,8 @@ export interface FrontierSweGraderConfig {
     instanceId: string;
     /** The arm's mutated-env handle ({@link ArmSubmission} `envRef`) — the task container the arm operated. */
     envRef: string;
+    /** The matched {@link BenchTask} (its `graderMeta` carries the per-task `verifierCmd` / `rewardPath`). */
+    task?: BenchTask;
     oracle?: boolean;
   }) => { cmd: string; args: string[]; cwd?: string; env?: Record<string, string> };
   /**
@@ -134,6 +136,8 @@ export interface FrontierSweGraderConfig {
   readReward: (ctx: {
     instanceId: string;
     envRef: string;
+    /** The matched {@link BenchTask} (its `graderMeta.rewardPath` / `rewardJsonPath` say where the verifier wrote). */
+    task?: BenchTask;
     readFile: (path: string) => Promise<string>;
     exec: ProcExec;
   }) => Promise<FrontierSweRawReward>;
@@ -157,16 +161,18 @@ export function makeFrontierSweGrader(cfg: FrontierSweGraderConfig, deps: Fronti
   return {
     family: GRADER_FAMILY,
     modality: 'in-container',
-    async grade(submissions: ArmSubmission[], _tasks: BenchTask[]): Promise<GradeResult[]> {
+    async grade(submissions: ArmSubmission[], tasks: BenchTask[]): Promise<GradeResult[]> {
       const envSubs = submissions.filter(
         (s): s is Extract<ArmSubmission, { modality: 'in-container' }> => s.modality === 'in-container',
       );
       if (envSubs.length === 0) return [];
 
+      const taskById = new Map(tasks.map((t) => [t.instanceId, t] as const));
       const out: GradeResult[] = [];
       for (const sub of envSubs) {
+        const task = taskById.get(sub.instanceId);
         try {
-          const { cmd, args, cwd, env } = cfg.buildVerifierCommand({ instanceId: sub.instanceId, envRef: sub.envRef });
+          const { cmd, args, cwd, env } = cfg.buildVerifierCommand({ instanceId: sub.instanceId, envRef: sub.envRef, task });
           const { code, stderr } = await exec(cmd, args, { cwd, env });
 
           let raw: FrontierSweRawReward;
@@ -174,6 +180,7 @@ export function makeFrontierSweGrader(cfg: FrontierSweGraderConfig, deps: Fronti
             raw = await cfg.readReward({
               instanceId: sub.instanceId,
               envRef: sub.envRef,
+              task,
               readFile: (p) => fs.readFile(p),
               exec,
             });

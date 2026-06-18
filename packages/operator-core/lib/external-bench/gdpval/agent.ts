@@ -87,32 +87,42 @@ export async function generateGdpvalDeliverable(
   task: { instanceId: string; prompt: string },
   deps: GdpvalGenerationDeps,
 ): Promise<GdpvalGenerationResult> {
-  const gaiaTask: GaiaTask = {
-    taskId: task.instanceId,
-    question: buildGdpvalBrief(task.prompt, deps.stagedInputFiles),
-    level: 1,
-    finalAnswer: '',
-    fileName: '',
-  };
-  const agent = await runGaiaAgent(gaiaTask, { llm: deps.llm, tools: deps.tools }, { systemPrompt: GDPVAL_AGENT_SYSTEM, ...deps.agentConfig });
-
-  const after = await deps.listFiles(deps.scratchDir).catch(() => []);
-  const outputs = collectOutputFileNames(after, deps.stagedInputFiles);
-  const parts: string[] = [];
-  const excluded: { file: string; reason: string }[] = [];
   // extractFile only needs officeExtract for local files (fetchBytes is unused — we read bytes directly).
   const extractDeps: ResolverDeps = { fetchBytes: async () => { throw new Error('local file, no fetch'); }, officeExtract: deps.officeExtract };
-  for (const f of outputs) {
-    let bytes: Uint8Array;
-    try {
-      bytes = await deps.readFileBytes(join(deps.scratchDir, f));
-    } catch (e) {
-      excluded.push({ file: f, reason: `read failed: ${e instanceof Error ? e.message : String(e)}` });
-      continue;
+
+  // Run the agent once for `question`, then collect + reduce the files it created to deliverable text.
+  const runOnce = async (question: string): Promise<GdpvalGenerationResult> => {
+    const gaiaTask: GaiaTask = { taskId: task.instanceId, question, level: 1, finalAnswer: '', fileName: '' };
+    const agent = await runGaiaAgent(gaiaTask, { llm: deps.llm, tools: deps.tools }, { systemPrompt: GDPVAL_AGENT_SYSTEM, ...deps.agentConfig });
+    const after = await deps.listFiles(deps.scratchDir).catch(() => []);
+    const outputs = collectOutputFileNames(after, deps.stagedInputFiles);
+    const parts: string[] = [];
+    const excluded: { file: string; reason: string }[] = [];
+    for (const f of outputs) {
+      let bytes: Uint8Array;
+      try {
+        bytes = await deps.readFileBytes(join(deps.scratchDir, f));
+      } catch (e) {
+        excluded.push({ file: f, reason: `read failed: ${e instanceof Error ? e.message : String(e)}` });
+        continue;
+      }
+      const r = await extractFile(bytes, f, extractDeps);
+      if (r.ok) parts.push(`## ${f}\n${r.text}`);
+      else excluded.push({ file: f, reason: r.excludeReason });
     }
-    const r = await extractFile(bytes, f, extractDeps);
-    if (r.ok) parts.push(`## ${f}\n${r.text}`);
-    else excluded.push({ file: f, reason: r.excludeReason });
-  }
-  return { deliverableText: parts.join('\n\n'), outputFiles: outputs, excluded, agent };
+    return { deliverableText: parts.join('\n\n'), outputFiles: outputs, excluded, agent };
+  };
+
+  const first = await runOnce(buildGdpvalBrief(task.prompt, deps.stagedInputFiles));
+  if (first.deliverableText.trim() || (deps.retryOnEmpty ?? true) === false) return first;
+
+  // Empty deliverable: the agent narrated a plan without calling run_python, or wrote only unreadable/empty
+  // files (the GAIA loop ends on "no tool call"). Retry ONCE, forcefully demanding the file be written.
+  const forceful =
+    'CRITICAL: your previous attempt saved NO readable deliverable. You MUST now use run_python to WRITE a file ' +
+    'named "deliverable.md" containing the COMPLETE deliverable (all sections, tables as markdown), then stop. ' +
+    'Do not end your turn until that file exists.\n\n' +
+    buildGdpvalBrief(task.prompt, deps.stagedInputFiles);
+  const second = await runOnce(forceful);
+  return second.deliverableText.trim() ? second : first; // keep whichever produced content
 }

@@ -85,6 +85,11 @@ export type BenchSuite =
   // blinded PAIRWISE comparison vs an expert reference → win/tie/loss → win-or-tie rate. resolved = win-or-tie;
   // `score` carries the win=1/tie=.5/loss=0 value (the suite headline is the mean = the win-rate).
   | 'gdpval'
+  // FrontierSWE (Proximal Labs; plan benchmark-suite-frontier-swe-2026-06-18). Ultra-long-horizon
+  // implementation / perf-eng / ML-research; CONTINUOUS [0,1] score on TaskRunResult.score (no model
+  // fully solves the implementation tasks). M2 in-container + own-scorer. Headline = mean@5/best@5 +
+  // AVG-RANK/dominance across a coordination-topology arm pool; resolved = (score === 1) is degenerate.
+  | 'frontier-swe'
   | (string & {});
 
 /** Grader modality (P-001 §1): offline diff-batch · online in-container · qa (a single FINAL ANSWER string,

@@ -1,4 +1,5 @@
 'use client';
+
 import { Plate, PlateContent, PlateElement, PlateLeaf, useEditorRef, usePlateEditor } from '@udecode/plate/react';
 import { BasicElementsPlugin } from '@udecode/plate-basic-elements/react';
 import { BasicMarksPlugin } from '@udecode/plate-basic-marks/react';

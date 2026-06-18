@@ -501,6 +501,169 @@ export function isMetrHcastTaskSet(taskSetId: string): boolean {
   return (METR_HCAST_TASK_SET_IDS as readonly string[]).includes(taskSetId);
 }
 
+/* ----------------------------- FrontierSWE ----------------------------- */
+
+/** The full FrontierSWE corpus JSONL (env-overridable) — written by the P-001 ingest of the vendored repo. */
+export function frontierSweTaskSetPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL ??
+    join(homedir(), '.papercusp', 'bench-results', 'frontier-swe', 'tasks.jsonl')
+  );
+}
+
+/**
+ * One FrontierSWE task row (plan benchmark-suite-frontier-swe-2026-06-18 P-001), ingested from the vendored
+ * `Proximal-Labs/frontier-swe` repo (task.toml + instruction.md) to `~/.papercusp/bench-results/frontier-swe/
+ * tasks.jsonl`. FrontierSWE is an M2 in-container, CONTINUOUS-score suite: each task ships its OWN scorer
+ * (`tests/test.sh` → `compute_reward.py` → `/logs/verifier/reward.txt`), so we don't author a verifier. There is
+ * no git repo/base commit — the runner pulls `dockerImage`, drives the arm inside the container over a long
+ * horizon, then runs `verifierCmd` and reads the reward. Everything the grader/runner needs rides graderMeta; the
+ * ARM only ever sees `problemStatement` (the instruction.md brief) → generation stays grader-agnostic/un-gameable.
+ */
+interface FrontierSweTaskRow {
+  /** Stable instance id = the task dir name, e.g. 'cranelift-codegen-opt'. */
+  instanceId: string;
+  /** FrontierSWE's canonical fine-grained category (task.toml [metadata].category), e.g. 'ml-systems-optimization'. */
+  category?: string;
+  /** Coarse bucket for per-tier (C8) reporting: implementation|performance|research (OUR mapping; `category` is canonical). */
+  tier?: 'implementation' | 'performance' | 'research';
+  difficulty?: string;
+  tags?: string[];
+  /** The agent brief (instruction.md). */
+  prompt: string;
+  /** Prebuilt task image, `ghcr.io/proximal-labs/frontier-swe/<task>:vN`. */
+  dockerImage: string;
+  /** Agent wall-clock budget (s) — 4–20h. Load-bearing for the C3 iso-budget WALL-CLOCK cap. */
+  agentTimeoutSec?: number;
+  /** Verifier wall-clock budget (s). */
+  verifierTimeoutSec?: number;
+  cpus?: number;
+  memoryMb?: number;
+  storageMb?: number;
+  /** Datacenter GPU count + types (B200/H100); >0 ⇒ NOT runnable on a CPU host (infra gate — 5 of 17 tasks). */
+  gpus?: number;
+  gpuTypes?: string[];
+  allowInternet?: boolean;
+  /** The verifier entrypoint run inside the container (`bash /tests/test.sh`). */
+  verifierCmd: string;
+  /** In-container paths the verifier writes: the bare [0,1] scalar + the structured reward. */
+  rewardPath: string;
+  rewardJsonPath?: string;
+  /** The gold/oracle reference command (`bash /solution/solve.sh`) for the C9 positive control — null for 6 tasks. */
+  solutionCmd?: string | null;
+  /** Whether the task ships an oracle.yaml (the gold-run config). */
+  hasOracle?: boolean;
+}
+
+/** Map one FrontierSWE row → a BenchTask. `in-container`: no repo/baseCommit; the runner pulls `dockerImage`,
+ *  drives the arm, runs `verifierCmd`, reads the reward. The scorer cmd + image + budgets + reward paths + the
+ *  coarse `bucket` all ride graderMeta (the arm never sees it). BenchTask.tier (easy/medium/hard) is left unset —
+ *  FrontierSWE's implementation/performance/research bucket lives in graderMeta.bucket for per-tier reporting. */
+export function frontierSweRowToBenchTask(r: FrontierSweTaskRow): BenchTask {
+  return {
+    benchmark: 'frontier-swe',
+    instanceId: r.instanceId,
+    problemStatement: r.prompt,
+    graderMeta: {
+      category: r.category ?? null,
+      bucket: r.tier ?? null,
+      difficulty: r.difficulty ?? null,
+      tags: r.tags ?? [],
+      dockerImage: r.dockerImage,
+      agentTimeoutSec: r.agentTimeoutSec ?? null,
+      verifierTimeoutSec: r.verifierTimeoutSec ?? null,
+      cpus: r.cpus ?? null,
+      memoryMb: r.memoryMb ?? null,
+      storageMb: r.storageMb ?? null,
+      gpus: r.gpus ?? 0,
+      gpuTypes: r.gpuTypes ?? [],
+      allowInternet: r.allowInternet ?? false,
+      verifierCmd: r.verifierCmd,
+      rewardPath: r.rewardPath,
+      rewardJsonPath: r.rewardJsonPath ?? null,
+      solutionCmd: r.solutionCmd ?? null,
+      hasOracle: r.hasOracle ?? false,
+    },
+  } satisfies BenchTask;
+}
+
+function readFrontierSweJsonl(path: string): FrontierSweTaskRow[] {
+  if (!existsSync(path)) {
+    throw new Error(
+      `FrontierSWE task set not found at ${path} — ingest the corpus (plan ` +
+        `benchmark-suite-frontier-swe-2026-06-18 P-001: vendor Proximal-Labs/frontier-swe, then build tasks.jsonl) ` +
+        `before launching it.`,
+    );
+  }
+  return readFileSync(path, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as FrontierSweTaskRow);
+}
+
+/** Pick 1 representative task per bucket (implementation/performance/research) — the cheapest runnable: prefer
+ *  GPU-free, then a gold-solution control, then the shortest agent budget. The 3-task pilot (plan P-014). */
+export function frontierSwePilotSubset(rows: FrontierSweTaskRow[]): FrontierSweTaskRow[] {
+  const byTier = new Map<string, FrontierSweTaskRow[]>();
+  for (const r of rows) {
+    const t = r.tier ?? 'implementation';
+    const list = byTier.get(t) ?? [];
+    list.push(r);
+    byTier.set(t, list);
+  }
+  const pick = (rs: FrontierSweTaskRow[]) =>
+    [...rs].sort(
+      (a, b) =>
+        (a.gpus ?? 0) - (b.gpus ?? 0) ||
+        (a.solutionCmd ? 0 : 1) - (b.solutionCmd ? 0 : 1) ||
+        (a.agentTimeoutSec ?? 0) - (b.agentTimeoutSec ?? 0) ||
+        (a.memoryMb ?? 0) - (b.memoryMb ?? 0),
+    )[0];
+  const out: FrontierSweTaskRow[] = [];
+  for (const rs of byTier.values()) {
+    const p = pick(rs);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Load a FrontierSWE task set → BenchTask[]. `frontier-swe` = the full 17; `frontier-swe-pilot` = 1 task/bucket
+ * (the cheap cross-section, P-014); `frontier-swe-cpu` = the GPU-free subset (runnable without B200/H100 — the
+ * 5 GPU tasks are infra-gated, D-006); `frontier-swe-custom` filters the full set to `taskIds`.
+ */
+export function loadFrontierSweTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[] {
+  const rows = readFrontierSweJsonl(frontierSweTaskSetPath());
+  let selected = rows;
+  if (taskSetId === 'frontier-swe-pilot') selected = frontierSwePilotSubset(rows);
+  if (taskSetId === 'frontier-swe-cpu') {
+    selected = rows.filter((r) => (r.gpus ?? 0) === 0);
+    if (selected.length === 0) throw new Error('no CPU-only FrontierSWE tasks in the corpus');
+  }
+  let tasks = selected.map(frontierSweRowToBenchTask);
+  if (taskSetId === 'frontier-swe-custom') {
+    const want = new Set(taskIds ?? []);
+    if (want.size === 0) throw new Error('task set "frontier-swe-custom" requires a non-empty taskIds list');
+    tasks = tasks.filter((t) => want.has(t.instanceId));
+    if (tasks.length === 0) throw new Error('no tasks in the FrontierSWE corpus matched the custom taskIds');
+  }
+  return tasks;
+}
+
+/** The FrontierSWE task-set ids this loader serves. */
+export const FRONTIER_SWE_TASK_SET_IDS = [
+  'frontier-swe-pilot',
+  'frontier-swe',
+  'frontier-swe-cpu',
+  'frontier-swe-custom',
+] as const;
+
+/** True iff `taskSetId` is a FrontierSWE set (routes to {@link loadFrontierSweTaskSet}). */
+export function isFrontierSweTaskSet(taskSetId: string): boolean {
+  return (FRONTIER_SWE_TASK_SET_IDS as readonly string[]).includes(taskSetId);
+}
+
 /** The tiers.json shape (instance_id → tier + difficulty diagnostics). */
 type TierEntry = { tier: 'easy' | 'medium' | 'hard'; score?: number };
 
@@ -594,6 +757,13 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
   if (isMetrHcastTaskSet(taskSetId)) {
     try {
       return Promise.resolve(loadMetrHcastTaskSet(taskSetId, taskIds));
+    } catch (e) {
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+  if (isFrontierSweTaskSet(taskSetId)) {
+    try {
+      return Promise.resolve(loadFrontierSweTaskSet(taskSetId, taskIds));
     } catch (e) {
       return Promise.reject(e instanceof Error ? e : new Error(String(e)));
     }
@@ -726,6 +896,19 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
     gdpvalGoldCount = null;
     gdpvalPilotCount = null;
   }
+  let frontierSweCount: number | null = null;
+  let frontierSwePilotCount: number | null = null;
+  let frontierSweCpuCount: number | null = null;
+  try {
+    const fsw = readFrontierSweJsonl(frontierSweTaskSetPath());
+    frontierSweCount = fsw.length;
+    frontierSwePilotCount = frontierSwePilotSubset(fsw).length;
+    frontierSweCpuCount = fsw.filter((r) => (r.gpus ?? 0) === 0).length;
+  } catch {
+    frontierSweCount = null;
+    frontierSwePilotCount = null;
+    frontierSweCpuCount = null;
+  }
   return [
     { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)', count: pilotCount },
     {
@@ -749,6 +932,9 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
     { id: 'swarmbench', label: 'SwarmBench full (5 tasks × 10 agents × 100 rounds — EXPENSIVE)', count: swarmbenchScenarios('swarmbench').length },
     { id: 'gdpval-pilot', label: 'GDPval pilot (1 task/occupation, deliverable win-rate)', count: gdpvalPilotCount },
     { id: 'gdpval-gold-220', label: 'GDPval gold subset (220, pairwise-judge win-rate vs expert)', count: gdpvalGoldCount },
+    { id: 'frontier-swe-pilot', label: 'FrontierSWE pilot (1 task/bucket — impl/perf/research)', count: frontierSwePilotCount },
+    { id: 'frontier-swe-cpu', label: 'FrontierSWE CPU-only (GPU-free subset, no B200/H100)', count: frontierSweCpuCount },
+    { id: 'frontier-swe', label: 'FrontierSWE full (17 ultra-long-horizon tasks)', count: frontierSweCount },
     { id: 'custom', label: 'Custom instance ids', count: null },
   ];
 }

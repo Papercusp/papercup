@@ -79,6 +79,40 @@ describe('gdpval agent — generateGdpvalDeliverable', () => {
     expect(r.excluded.map((e) => e.file)).toEqual(['diagram.png']);
   });
 
+  it('retries once with a forceful brief when the first run yields an empty deliverable', async () => {
+    let listCalls = 0;
+    const deps: GdpvalGenerationDeps = {
+      llm: doneLlm,
+      tools: emptyTools,
+      scratchDir: '/s',
+      stagedInputFiles: [],
+      // empty on the first run, a file appears on the retry
+      listFiles: async () => (++listCalls >= 2 ? ['report.md'] : []),
+      readFileBytes: async () => new TextEncoder().encode('the retried deliverable'),
+      officeExtract: async () => 'x',
+    };
+    const r = await generateGdpvalDeliverable({ instanceId: 't', prompt: 'p' }, deps);
+    expect(listCalls).toBeGreaterThanOrEqual(2); // it retried
+    expect(r.deliverableText).toContain('the retried deliverable');
+  });
+
+  it('does not retry when retryOnEmpty is false', async () => {
+    let listCalls = 0;
+    const deps: GdpvalGenerationDeps = {
+      llm: doneLlm,
+      tools: emptyTools,
+      scratchDir: '/s',
+      stagedInputFiles: [],
+      retryOnEmpty: false,
+      listFiles: async () => { listCalls++; return []; },
+      readFileBytes: async () => new Uint8Array(),
+      officeExtract: async () => '',
+    };
+    const r = await generateGdpvalDeliverable({ instanceId: 't', prompt: 'p' }, deps);
+    expect(r.deliverableText).toBe('');
+    expect(listCalls).toBe(1); // no retry
+  });
+
   it('empty deliverable when the agent created no files', async () => {
     const deps: GdpvalGenerationDeps = {
       llm: doneLlm,

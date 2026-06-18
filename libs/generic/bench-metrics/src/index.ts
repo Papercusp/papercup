@@ -19,6 +19,21 @@ export * from './schema';
 
 // Pure domain-free statistics cores.
 export { passAtK, passHatK, meanPassAtK } from './pass-k';
+// Continuous-score aggregation for FrontierSWE-style suites (mean@k / best@k / AVG-RANK / dominance) —
+// plan benchmark-suite-frontier-swe-2026-06-18 P-011. Distinct from pass-k (binary) + pareto (cost/accuracy).
+export {
+  meanAtK,
+  bestAtK,
+  armMeanAtK,
+  armBestAtK,
+  avgRank,
+  dominance,
+  frontierRankReport,
+  type AggAtK,
+  type PerTaskArmScores,
+  type ArmTaskTrials,
+  type FrontierArmSummary,
+} from './frontier-rank';
 export { wilsonInterval, bootstrapMeanCI, meanStderr, type Interval } from './intervals';
 export { dominates, paretoFrontier, costAccuracyFrontier, type Direction } from './pareto';
 
