@@ -91,6 +91,13 @@ const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; gover
  *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
  *  we must NOT 429-loop the bee into a $0 hang. Short, so failover is quick; cache-affinity yields. */
 const PINNED_FAILOVER_WAIT_MS = 10_000;
+/** Max round-robin hops the admission router takes looking for an account whose governor has headroom
+ *  RIGHT NOW before falling back to waiting on the chosen one. Bounds the walk to roughly the pool size
+ *  so an UNPINNED request egresses through an account with capacity instead of hanging the full
+ *  maxQueueWaitMs on one paused-governor account while siblings sit admittable (the 2026-06-18
+ *  "accounts unused / opus hangs" bug: aviynw2/aviynw7 returned opus 200 upstream while the gateway
+ *  pinned all egress to one paused account). */
+const POOL_WALK_MAX_ATTEMPTS = 16;
 /** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
 export const PRIORITY_HEADER = 'x-papercusp-priority';
 /** Header a spawn sets to pin its requests to one pool account for cache affinity
@@ -432,6 +439,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       log('warn', `inference-gateway: pinned '${pinned!.accountId}' paused → routing via active '${poolActive.accountId}' (cache-affinity yields to liveness)`);
       active = poolActive;
       gov = governorForAccount(model, active.accountId);
+    }
+
+    // ROUTE TO CAPACITY (2026-06-18, owner-reported "accounts unused / opus hangs"): if the chosen
+    // UNPINNED (or pinned-yielded-to-active) account's governor is currently PAUSED, round-robin the
+    // pool to an account whose governor has headroom NOW — rather than hanging the full maxQueueWaitMs
+    // (2 min) on a paused account while sibling accounts sit admittable (some Max accounts return opus
+    // 200 upstream while others are 429-paused; the pool must egress through one with capacity). A
+    // still-pinned request is left on its pin (it already yielded to active() above if its pin was
+    // paused). `pool.active()` round-robins, so each hop advances to a different account.
+    if (active.accountId !== pinned?.accountId && gov.state.pausedUntil > Date.now()) {
+      for (let walk = 0; walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
+        const cand = pool.active();
+        const cgov = governorForAccount(model, cand.accountId);
+        if (cgov.state.pausedUntil <= Date.now()) {
+          active = cand;
+          gov = cgov;
+          break;
+        }
+      }
     }
 
     totalRequests++;
