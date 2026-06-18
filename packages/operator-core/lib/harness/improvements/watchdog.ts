@@ -398,6 +398,10 @@ export interface CollectOptions extends LearningSloOptions {
   transientMinCount?: number;
   /** Caller/DX tool-error (invalid_args / role-denied) sustained-pattern bar. Default 10. */
   callerMinCount?: number;
+  /** External-rate-limit tool-error (provider 429 / TPM) volume bar. Default 8 — sustained, not a one-off spike (P-002). */
+  rateLimitMinCount?: number;
+  /** External-rate-limit fires MAJOR (vs minor) at this many occurrences in the window. Default 30. */
+  rateLimitMajorCount?: number;
   /** Max age of the service-health snapshot to trust for service-down (P-004). Default 2× the 60s probe interval. */
   serviceHealthMaxStaleMs?: number;
   /** smoke-fail recency gate (audit P-007): only a failure recorded within this many hours fires. Default 48. */
@@ -577,8 +581,14 @@ export async function collectSmokeFailSignals(sql: Sql, workspaceId: string, opt
  *   - transient  — timeout / load / network. Volume-gated, lower severity.
  *   - caller     — the CALLER sent bad input or lacks a role (invalid_args /
  *     role-denied). A sustained pattern = a DX/schema problem → kind=change.
+ *   - rate-limit — an EXTERNAL provider rate-limit / quota (OpenAI embedding TPM,
+ *     a 429, "rate limit reached"). NOT a code bug and NOT a structural defect —
+ *     it's capacity. Volume-gated, kind=change, routed to infra/owner, never the
+ *     auto-implement lane. (watchdog-embed-resilience-and-dedup-2026-06-17 P-002:
+ *     a sustained OpenAI embed-429 used to fall through to `structural` and file
+ *     as a deterministic tool bug, masked under an unrelated scoping EI.)
  */
-export type ToolErrorClass = 'structural' | 'transient' | 'caller';
+export type ToolErrorClass = 'structural' | 'transient' | 'caller' | 'rate-limit';
 
 /**
  * Pure: classify one tool failure. Prefers the first-class dispatcher `error_code`
@@ -600,6 +610,18 @@ export type ToolErrorClass = 'structural' | 'transient' | 'caller';
 export const INFRA_TRANSIENT_ERROR_RE =
   /too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|connection terminated|could not connect to server/i;
 
+/**
+ * An EXTERNAL provider rate-limit / quota error (watchdog-embed-resilience-and-dedup
+ * -2026-06-17 P-002). A sustained OpenAI embedding TPM 429 ("Request too large …
+ * tokens per min (TPM)", "Rate limit reached", surfaced as `openai_embed_failed_429`)
+ * is CAPACITY, not a code bug — it used to fall through to `structural` and file as
+ * a deterministic tool bug (then get masked under an unrelated open structural EI).
+ * Pattern-only, like INFRA_TRANSIENT_ERROR_RE. MIRROR of the SQL `~*` clause in
+ * `collectToolErrorSignals`. Keep the two in sync.
+ */
+export const EXTERNAL_RATE_LIMIT_ERROR_RE =
+  /openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests/i;
+
 export function classifyToolError(
   errorCode: string | null | undefined,
   status: string,
@@ -613,6 +635,10 @@ export function classifyToolError(
       errorCode === 'role_not_allowed' || errorCode === 'missing_capability' ||
       errorCode === 'quota_exceeded'
     ) return 'caller';
+    // EXTERNAL provider rate-limit (OpenAI embed TPM 429) — capacity, not a code bug.
+    // Checked before the structural fallback so a sustained embed-429 is not mis-filed
+    // as a deterministic tool defect (mirrors SQL).
+    if (EXTERNAL_RATE_LIMIT_ERROR_RE.test(m)) return 'rate-limit';
     // INFRA-transient takes precedence over the structural fallback: a PG max_connections /
     // DB-unavailable failure is shared-infra load, not this tool's bug (mirrors SQL).
     if (INFRA_TRANSIENT_ERROR_RE.test(m)) return 'transient';
@@ -620,6 +646,7 @@ export function classifyToolError(
   }
   if (status === 'timeout' || /exceeded timeout|timed?\s*out/i.test(m)) return 'transient';
   if (status === 'role-not-allowed' || /^invalid_args:/i.test(m)) return 'caller';
+  if (EXTERNAL_RATE_LIMIT_ERROR_RE.test(m)) return 'rate-limit'; // external provider rate-limit / quota
   if (INFRA_TRANSIENT_ERROR_RE.test(m)) return 'transient'; // shared-infra exhaustion, not a tool bug
   return 'structural'; // unclassified error → structural; the per-class FIRE bar gates noise
 }
@@ -628,6 +655,14 @@ interface ClassifiedToolErrorRow {
   tool_name: string;
   /** SQL alias `class`; one of ToolErrorClass. */
   class: ToolErrorClass;
+  /**
+   * Normalized error-shape fingerprint (P-003): SQL-computed for the `structural`
+   * class only (first 6 alpha tokens of the digit/punct-stripped message), null
+   * otherwise. Appended to the structural dedup key so two genuinely DIFFERENT
+   * deterministic failure modes under the same tool don't collapse onto one key
+   * (the 2026-06-17 embed-429-masked-by-EI-630 class of bug).
+   */
+  fingerprint?: string | null;
   /** Failures of this class for this tool in the window. */
   n: number;
   /** Total calls (any status) for this tool in the window — the rate denominator. */
@@ -663,6 +698,8 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
   const structuralRateCalls = opts.structuralMinCallsForRate ?? 3;
   const transientMin = opts.transientMinCount ?? 15;
   const callerMin = opts.callerMinCount ?? 10;
+  const rateLimitMin = opts.rateLimitMinCount ?? 8;
+  const rateLimitMajor = opts.rateLimitMajorCount ?? 30;
 
   const out: WatchdogSignal[] = [];
   for (const r of rows) {
@@ -671,13 +708,18 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
     const pct = Math.round(rate * 100);
     const sample = (r.sample ?? '').slice(0, 800) || '(no message)';
     const latestAt = toIsoOrUndefined(r.latest_at);
+    // P-003: a fingerprint sharpens ONLY the structural key (so two DIFFERENT
+    // deterministic modes under one tool don't collapse onto one key, masking each
+    // other). Load classes (transient/caller/rate-limit) stay keyed by tool:class.
+    const fp = r.class === 'structural' && r.fingerprint ? r.fingerprint : null;
+    const key = fp ? `${r.tool_name}:${r.class}:${fp}` : `${r.tool_name}:${r.class}`;
 
     if (r.class === 'structural') {
       if (!(r.n >= structuralMin || (r.total >= structuralRateCalls && rate >= structuralRate))) continue;
       out.push({
         source: 'repeated-tool-error',
-        key: `${r.tool_name}:structural`,
-        title: `Tool ${r.tool_name} returns a structural error`,
+        key,
+        title: `Tool ${r.tool_name} returns a structural error${fp ? ` (${fp})` : ''}`,
         body:
           `Watchdog signal (structural tool-error): ${r.tool_name} returned a deterministic error ${r.n}× ` +
           `(${pct}% of ${r.total} calls) in the window — the shape that recurs identically (a bug/misconfig), ` +
@@ -690,7 +732,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
       if (r.n < transientMin) continue;
       out.push({
         source: 'repeated-tool-error',
-        key: `${r.tool_name}:transient`,
+        key,
         title: `Tool ${r.tool_name} timing out repeatedly`,
         body:
           `Watchdog signal (transient tool-error): ${r.tool_name} timed out / errored transiently ${r.n}× ` +
@@ -699,11 +741,31 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
         kind: 'bug',
         latestAt,
       });
+    } else if (r.class === 'rate-limit') {
+      // EXTERNAL provider rate-limit / quota (OpenAI embed TPM 429). Volume-gated
+      // like transient; filed as kind=change (capacity / infra, not an auto-fixable
+      // code bug). P-002 (watchdog-embed-resilience-and-dedup-2026-06-17).
+      if (r.n < rateLimitMin) continue;
+      out.push({
+        source: 'repeated-tool-error',
+        key,
+        title: `Tool ${r.tool_name} failing on an external provider rate-limit`,
+        body:
+          `Watchdog signal (external rate-limit): ${r.tool_name} failed ${r.n}× ` +
+          `(${pct}% of ${r.total} calls) in the window with a provider rate-limit / quota error ` +
+          `(e.g. OpenAI embedding TPM saturation). This is EXTERNAL CAPACITY, not a code bug — route ` +
+          `to infra/owner (a separate key/quota, throttling, or the account pool), NOT the ` +
+          `auto-implement lane.\n\nSample: ${sample}`,
+        severity: r.n >= rateLimitMajor ? 'major' : 'minor',
+        kind: 'change',
+        latestAt,
+        findingClass: `external-rate-limit:${r.tool_name}`,
+      });
     } else {
       if (r.n < callerMin) continue;
       out.push({
         source: 'repeated-tool-error',
-        key: `${r.tool_name}:caller`,
+        key,
         title: `Tool ${r.tool_name} repeatedly rejecting caller input`,
         body:
           `Watchdog signal (caller/DX tool-error): ${r.tool_name} rejected caller input ${r.n}× ` +
@@ -741,6 +803,11 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
           WHEN error_code = 'timeout' OR status = 'timeout' THEN 'transient'
           WHEN error_code IN ('invalid_args','invalid_input','role_not_allowed','missing_capability','quota_exceeded')
                OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%' THEN 'caller'
+          -- EXTERNAL provider rate-limit (mirrors classifyToolError / EXTERNAL_RATE_LIMIT_ERROR_RE):
+          -- an OpenAI embedding TPM 429 ("Rate limit reached" / "tokens per min" / openai_embed_failed_429)
+          -- is CAPACITY, not a code bug. Checked before the structural fallback so a sustained
+          -- embed-429 isn't mis-filed as a deterministic tool defect (and masked under a scoping EI).
+          WHEN error_message ~* 'openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests' THEN 'rate-limit'
           -- INFRA-transient (mirrors classifyToolError / INFRA_TRANSIENT_ERROR_RE): PG
           -- connection-exhaustion + DB-unavailability recur identically in SHAPE across every
           -- tool during a wedge, but are shared-infra LOAD, not a per-tool bug. Defer to the
@@ -765,13 +832,28 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
          AND tool_name NOT LIKE 'improvements:%'
          AND tool_name NOT LIKE 'system:improvement-%'
        GROUP BY tool_name
+    ),
+    -- P-003 fingerprint: a normalized error-shape skeleton (first 6 alpha tokens of
+    -- the digit/punct-stripped message), computed for the STRUCTURAL class only, so
+    -- two genuinely DIFFERENT deterministic modes under one tool group (and key) apart
+    -- instead of collapsing onto one structural key that masks the other. This is the
+    -- single source of truth for the fingerprint — the EI backfill mirrors this exact
+    -- expression (watchdog-embed-resilience-and-dedup-2026-06-17 P-003).
+    tagged AS (
+      SELECT tool_name, class, error_message, invoked_at,
+        CASE WHEN class = 'structural' THEN
+          nullif(array_to_string((string_to_array(
+            trim(regexp_replace(regexp_replace(lower(coalesce(error_message, '')), '[0-9]+', '', 'g'), '[^a-z]+', ' ', 'g')),
+          ' '))[1:6], '-'), '')
+        ELSE NULL END AS fingerprint
+        FROM fail
     )
-    SELECT fail.tool_name, fail.class, count(*)::int AS n,
+    SELECT tagged.tool_name, tagged.class, tagged.fingerprint, count(*)::int AS n,
            COALESCE(tot.total, count(*))::int AS total,
-           max(fail.error_message) AS sample,
-           max(fail.invoked_at) AS latest_at
-      FROM fail LEFT JOIN tot ON tot.tool_name = fail.tool_name
-     GROUP BY fail.tool_name, fail.class, tot.total
+           max(tagged.error_message) AS sample,
+           max(tagged.invoked_at) AS latest_at
+      FROM tagged LEFT JOIN tot ON tot.tool_name = tagged.tool_name
+     GROUP BY tagged.tool_name, tagged.class, tagged.fingerprint, tot.total
      ORDER BY count(*) DESC
      LIMIT 30`;
   return toolErrorSignalsFromRows(rows, opts);
