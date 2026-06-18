@@ -12,7 +12,6 @@
  * shape.
  */
 import { createRequire } from 'node:module';
-import { DateTime } from 'luxon';
 import { computeNextFireAt } from './cron';
 
 // `rrule` is a CommonJS package: under the ESM/tsx host its classes are exposed on the
@@ -23,6 +22,28 @@ import { computeNextFireAt } from './cron';
 // placement. Load it via createRequire (the repo's ESM-safe CJS pattern; cf.
 // libs/generic/resource-profile) so the named classes resolve at runtime.
 const { RRule, RRuleSet } = createRequire(import.meta.url)('rrule') as typeof import('rrule');
+
+// luxon ships no type declarations in this install (no `types` field / bundled .d.ts) and
+// `@types/luxon` is not a dependency, so a static `import { DateTime } from 'luxon'` trips TS7016.
+// Load it via createRequire (the same ESM-safe CJS pattern as rrule above) with a minimal local
+// type for the slice we use — typed floating-frame conversion without adding a dependency.
+interface LuxonDateTime {
+  readonly year: number;
+  readonly month: number;
+  readonly day: number;
+  readonly hour: number;
+  readonly minute: number;
+  readonly second: number;
+  readonly millisecond: number;
+  setZone(zone: string): LuxonDateTime;
+  toJSDate(): Date;
+}
+const { DateTime } = createRequire(import.meta.url)('luxon') as {
+  DateTime: {
+    fromJSDate(date: Date, opts?: { zone?: string }): LuxonDateTime;
+    fromObject(obj: Record<string, number>, opts?: { zone?: string }): LuxonDateTime;
+  };
+};
 
 /**
  * tzid handling (EI-1370). The `rrule` lib's own `opts.tzid` mis-handles a calendar-time rule
