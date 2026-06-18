@@ -739,6 +739,15 @@ export const FLAGS = {
   // carries workspace_id). These tools are SU-only, so this is a guard rail (low exploitability).
   // DEFAULT OFF — reversible; OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
   UI_WORKSPACE_GUARD: "papercusp-ui-workspace-guard",
+  // scoped-superuser-workspace-clamp-2026-06-18: bind a psu workspace-scoped superuser
+  // session to its launch workspace at the DISPATCH layer (its ctx workspaceId becomes that
+  // concrete workspace instead of '*'), engaging the EXISTING effectiveDispatchWorkspace
+  // clamp; ALSO deny crossWorkspace:true tools + the harness:'all' global plan escape for a
+  // scoped session. DEFAULT OFF — DELIBERATE (not alpha default-on): it changes auth
+  // enforcement for every superuser session, so it ships as a reversible kill-switch the
+  // owner flips ON after an attended :3170 verification (OFF = today's unscoped '*'
+  // superuser, byte-identical). Listed in KNOWN_DARK_FLAGS.
+  SCOPED_SUPERUSER_CLAMP: "papercusp-scoped-superuser-clamp",
   // domain-generic-agent-personas-2026-06-17 P-006: resolve the `su` role's persona via the
   // blueprint prompt-resolve chain (blueprints/base/prompts/su.md) instead of the hardcoded
   // papercusp-su playbook. DEFAULT ON (owner-authorized 2026-06-18; the papercup-hive su instance
@@ -826,6 +835,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (deliberate) — ui:dispatch/get_state cross-workspace guard, reversible;
   // OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
   [FLAGS.UI_WORKSPACE_GUARD]: false,
+  // DEFAULT OFF (deliberate, NOT alpha default-on) — the scoped-superuser workspace clamp
+  // changes auth enforcement for every superuser session; reversible kill-switch the owner
+  // flips ON after an attended verification. OFF = today's unscoped '*' superuser,
+  // byte-identical. Listed in KNOWN_DARK_FLAGS.
+  [FLAGS.SCOPED_SUPERUSER_CLAMP]: false,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,
