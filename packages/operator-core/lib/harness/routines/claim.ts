@@ -36,7 +36,25 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
          AND (next_fire_at IS NULL OR next_fire_at <= now())
       RETURNING id
     `;
-    return rows.length > 0;
+    const claimed = rows.length > 0;
+    // A plan-schedule ONE-SHOT that just auto-deactivated must ALSO un-arm its owning plan —
+    // mirror disarmPlanSchedule's two-write — else the plan still reads schedule_active=true
+    // ("armed") though its routine is dead and it will never fire again (EI-1371). The routine
+    // name (`plan-schedule-<templateSlug>`) + target_role identify a plan-schedule routine; the
+    // template slug is the name minus the prefix (cf. materialize-plan-schedule.ts
+    // planScheduleRoutineName / PLAN_RUN_ACTION). pot-wake & other one-shots don't match, so they
+    // never touch harness_plans.
+    if (claimed && routine.targetRole === 'system:plan-run' && routine.name.startsWith('plan-schedule-')) {
+      const templateSlug = routine.name.slice('plan-schedule-'.length);
+      await sql`
+        UPDATE harness_shared.harness_plans
+           SET schedule_active = FALSE, updated_at = now()
+         WHERE workspace_id = ${routine.workspaceId}
+           AND harness_slug = ${routine.installSlug}
+           AND plan_slug = ${templateSlug}
+      `;
+    }
+    return claimed;
   }
   const next = computeNextFire(cfg, new Date());
   const rows = await sql<{ id: string }[]>`

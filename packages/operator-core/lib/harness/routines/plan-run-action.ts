@@ -31,6 +31,18 @@ import { FEATURE_FAMILY_KINDS } from '../../work-items';
 /** launched_by label for a scheduled run's plan_runs row. */
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
 
+/**
+ * A MANUAL run (plans:run-now) takes a fresh token each call (EI-1369). A module-monotonic
+ * counter guarantees a strictly-increasing, unique token even for two run-nows within the same
+ * millisecond on one host — so the instance slug never collides and the run never replay-no-ops.
+ */
+let lastManualToken = 0;
+function nextManualToken(): number {
+  const t = Math.max(Date.now(), lastManualToken + 1);
+  lastManualToken = t;
+  return t;
+}
+
 interface TemplateItem {
   id: string;
   text?: string | null;
@@ -84,12 +96,22 @@ export async function runScheduledPlanFire(
   const rawKind = template.schedule?.executorKind;
   const itemKind = rawKind && (FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind) ? rawKind : 'feature';
 
-  // 2. Replay-stable run token = the routine's last_fired_at (set at claim, stable on replay).
+  // 2. Run token → instance slug. A SCHEDULED/event fire uses the routine's last_fired_at
+  //    (stamped at claim, stable across a DBOS step replay) so a re-executed step is a no-op,
+  //    not a double-mint. A MANUAL run (plans:run-now) is independent of the cadence and has no
+  //    DBOS replay, so it ALWAYS takes a FRESH token — otherwise, once the routine has fired even
+  //    once, every run-now would recompute the SAME slug and replay-no-op instead of minting a new
+  //    run (EI-1369).
   const rt = await sql<Array<{ last_fired_at: Date | null }>>`
     SELECT last_fired_at FROM harness_shared.routines
      WHERE install_slug = ${installSlug} AND name = ${planScheduleRoutineName(templateSlug)}
   `;
-  const token = rt[0]?.last_fired_at ? new Date(rt[0].last_fired_at).getTime() : Date.now();
+  const token =
+    trigger === 'manual'
+      ? nextManualToken()
+      : rt[0]?.last_fired_at
+        ? new Date(rt[0].last_fired_at).getTime()
+        : Date.now();
   const instanceSlug = `${templateSlug}@run-${token}`;
 
   // 3. Idempotency: the instance already existing ⇒ this is a replay ⇒ no-op.
@@ -106,7 +128,7 @@ export async function runScheduledPlanFire(
   // 4. run_seq = count of prior runs of this template (display ordinal, D-003).
   const seqRow = await sql<Array<{ n: number }>>`
     SELECT count(*)::int AS n FROM harness_shared.plan_runs
-     WHERE harness_slug = ${installSlug} AND plan_slug = ${templateSlug}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND plan_slug = ${templateSlug}
   `;
   const runSeq = seqRow[0]?.n ?? 0;
   const now = Date.now();
@@ -125,9 +147,9 @@ export async function runScheduledPlanFire(
   //    "all runs of X" = WHERE plan_slug=X (D-003); instance_plan_slug names the copy.
   const runRows = await sql<Array<{ id: number }>>`
     INSERT INTO harness_shared.plan_runs
-      (harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at,
+      (workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at,
        status, title, updated_at, run_type, trigger, instance_plan_slug, run_seq)
-    VALUES (${installSlug}, ${templateSlug}, ${template.content_hash}, ${'sched:' + instanceSlug},
+    VALUES (${workspaceId}, ${installSlug}, ${templateSlug}, ${template.content_hash}, ${'sched:' + instanceSlug},
             ${PLAN_RUN_LAUNCHER}, ${now}, 'running', ${template.title}, ${now},
             'scheduled', ${trigger}, ${instanceSlug}, ${runSeq})
     RETURNING id
