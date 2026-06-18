@@ -215,6 +215,33 @@ const invoke = defineTool({
     const extra: string[] = Array.isArray((body as any)?.extra)
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
+    // Per-hive override (domain-generic-hive-architecture-2026-06-18 P-012/P-013/D-013):
+    // the loopback invoke route is the single chokepoint for the HTTP-based autonomous
+    // spawns (queen via bpkind=hive, overwatch, launch blueprints) — all of which carry a
+    // BLUEPRINT_ID extra. Materialize the home Hive's FEDERATED promptOverride.* into a
+    // local-tier blueprint and pass its root via BLUEPRINT_LOCAL_ROOT= so invoke.ts's
+    // tier-aware resolver (P-014) picks the hive's customized role prompts over the
+    // built-in (the bee/direct path is wired separately in operator-spawn.ts). Best-effort
+    // + only when a BLUEPRINT_ID is present: a miss leaves `extra` unchanged (built-in only).
+    try {
+      const bpId = extra.find((e) => e.startsWith('BLUEPRINT_ID='))?.slice('BLUEPRINT_ID='.length);
+      if (bpId) {
+        const { resolveHiveLocalBlueprintRoot, blueprintLocalRootExtra } = await import(
+          '../../../hive-local-blueprint-resolve'
+        );
+        const localRootExtra = blueprintLocalRootExtra(
+          await resolveHiveLocalBlueprintRoot({
+            workspaceId: activeWorkspaceId(),
+            harnessSlug: project.slug,
+            harnessDir: project.path,
+            hiveBlueprintId: bpId,
+          }),
+        );
+        if (localRootExtra) extra.push(localRootExtra);
+      }
+    } catch {
+      /* best-effort: never block a spawn on a per-hive-override miss */
+    }
     const kickoff = extractKickoff((body as any)?.kickoff);
     // Auto-implement dispatch correlation (EI-404): when present, the implement lane
     // fired this invoke fire-and-forget (it runs inside a DBOS step, so it can't await

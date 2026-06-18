@@ -35,6 +35,29 @@ describe('gitSyncEligibility — the verdict matrix (P-001)', () => {
     expect(gitSyncEligibility(entry(), allExist)).toEqual({ eligible: true });
   });
 
+  it('an ephemeral/benchmark INSTANCE slug is ineligible: ephemeral_debris (INCIDENT 2026-06-18, highest precedence — pure, no IO)', () => {
+    // The torn-down xbench/SWE-bench per-task instances whose active git-sync routines
+    // saturated the :3070 event loop. Both naming forms + the bare prefixes.
+    for (const slug of [
+      'xbench-su-Bag54m-instance_navidrome__',   // clean `-instance_` form
+      'xbqyn2hx7nbminstancenavidromenavidrokhx8', // smushed `instance<...>` form
+      'xbench-su-CjnO8m',                          // bare xbench prefix (scout/base)
+      'memcap-run-3',
+      'pot-verify-DELETEME',
+    ]) {
+      expect(gitSyncEligibility(entry({ slug }), allExist)).toEqual({
+        eligible: false,
+        reason: 'ephemeral_debris',
+      });
+    }
+  });
+
+  it('real harnesses never match ephemeral_debris (regression guard)', () => {
+    for (const slug of ['papercup', 'sb-devboard', 'sheets', 'restart', 'papercup-hive', 'grapes-research', 'hiveloop']) {
+      expect(gitSyncEligibility(entry({ slug }), allExist)).toEqual({ eligible: true });
+    }
+  });
+
   it('a hive HOME (kind hive, non-repo state dir) is ineligible: hive_home', () => {
     expect(gitSyncEligibility(entry({ harness_kind: 'hive' }), allExist)).toEqual({
       eligible: false,

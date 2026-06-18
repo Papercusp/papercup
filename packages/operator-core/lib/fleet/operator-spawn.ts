@@ -808,6 +808,36 @@ export async function spawnAgentInHarness(
   if (role === 'bee' && !extras.some((e) => e.startsWith('BLUEPRINT_ID='))) {
     extras.push('BLUEPRINT_ID=hive');
   }
+
+  // Per-hive override (domain-generic-hive-architecture-2026-06-18 P-012/P-013/D-013):
+  // materialize the home Hive's FEDERATED promptOverride.* into a local-tier blueprint
+  // tree and pass its root via BLUEPRINT_LOCAL_ROOT= so the AUTONOMOUS spawn's prompt
+  // resolver (invoke.ts, tier-aware per P-014) picks the hive's customized role prompts
+  // over the built-in. Closes the gap where only interactive/psu launches got per-hive
+  // overrides — required for dogfood (P-026/P-027). Best-effort + only when a BLUEPRINT_ID
+  // is set: a miss leaves extras unchanged → built-in-only resolution (byte-identical).
+  try {
+    const hiveBlueprintId = extras
+      .find((e) => e.startsWith('BLUEPRINT_ID='))
+      ?.slice('BLUEPRINT_ID='.length);
+    if (hiveBlueprintId) {
+      const { resolveHiveLocalBlueprintRoot, blueprintLocalRootExtra } = await import(
+        '../hive-local-blueprint-resolve'
+      );
+      const extra = blueprintLocalRootExtra(
+        await resolveHiveLocalBlueprintRoot({
+          workspaceId: input.workspaceId,
+          harnessSlug: slug,
+          harnessDir: project.path,
+          hiveBlueprintId,
+        }),
+      );
+      if (extra) extras.push(extra);
+    }
+  } catch {
+    /* best-effort: never break a spawn on a per-hive-override miss */
+  }
+
   const extraEnv = buildPipelineExtraEnv({
     harnessSlug: slug,
     idempotencyKey: runId,

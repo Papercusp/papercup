@@ -24,11 +24,32 @@ import { join } from 'node:path';
 import type { ProjectEntry } from '../../harness-registry';
 
 export type IneligibleReason =
+  | 'ephemeral_debris'
   | 'hive_home'
   | 'remote_hive_view'
   | 'no_path'
   | 'non_local_deployment'
   | 'not_a_git_repo';
+
+/**
+ * Ephemeral/benchmark INSTANCE slugs that must NEVER get a git-sync routine.
+ *
+ * INCIDENT 2026-06-18: a benchmark fleet (xbench / SWE-bench) left ~170 torn-down
+ * per-task INSTANCE harnesses (`xbench-su-*-instance_*`, `xbq<hash>*instance*`) in
+ * the registry. Each carried an ACTIVE `git-sync` routine that the routine engine
+ * woke every tick → 143 no_path ticks/cycle saturated the single :3070 event loop →
+ * it stopped draining PG result sockets → every MCP/HTTP call timed out (psu down).
+ *
+ * `no_path` alone did NOT save us: the routine still fires, stat()s, logs, and skips
+ * every tick — the churn IS the per-tick wake ×170. Gating these at eligibility (the
+ * one verdict both SEED and RUN consult) means they never get a routine seeded AND a
+ * surviving routine fast-skips before any IO. Mirrors the watchdog's
+ * EPHEMERAL_BENCHMARK_SLUG_RE (watchdog.ts P-006) — kept as a local copy so this pure,
+ * import-light module gains no dependency on the heavy watchdog module. Real harnesses
+ * (papercup, sb-devboard, sheets, restart, …) never match.
+ */
+const EPHEMERAL_INSTANCE_SLUG_RE =
+  /(^|[^a-z0-9])(xbench|xbq[a-z0-9]{6}|memcap|memrun)|-instance[_-]|_instance[_-]|instance[a-z0-9]{4,}|deleteme/i;
 
 export interface GitSyncEligibility {
   eligible: boolean;
@@ -43,19 +64,24 @@ export interface GitSyncEligibilityDeps {
 
 /**
  * Verdict for one registry entry. Reasons, in precedence order:
- *   1. `remote_hive_view` — joiner-side hive VIEW (`remote_hive` flag; these are
+ *   1. `ephemeral_debris` — an ephemeral/benchmark INSTANCE slug (xbench / xbq /
+ *      *instance* / memcap / deleteme). Checked FIRST: it is a pure regex (no IO),
+ *      and these must never get a git-sync routine (INCIDENT 2026-06-18 — the
+ *      per-tick routine churn over torn-down instances saturated the event loop).
+ *   2. `remote_hive_view` — joiner-side hive VIEW (`remote_hive` flag; these are
  *      also `kind:'hive'`, so the flag is checked first).
- *   2. `hive_home`        — `harness_kind === 'hive'` (non-repo state dir).
- *   3. `non_local_deployment` — `deployment.target` present and ≠ 'local'
+ *   3. `hive_home`        — `harness_kind === 'hive'` (non-repo state dir).
+ *   4. `non_local_deployment` — `deployment.target` present and ≠ 'local'
  *      (seed-side half of P-008: the checkout lives on a cloud frame).
- *   4. `no_path`          — no registered path, or the path vanished from disk.
- *   5. `not_a_git_repo`   — the path exists but carries no `.git`.
+ *   5. `no_path`          — no registered path, or the path vanished from disk.
+ *   6. `not_a_git_repo`   — the path exists but carries no `.git`.
  */
 export function gitSyncEligibility(
   p: ProjectEntry,
   deps: GitSyncEligibilityDeps = {},
 ): GitSyncEligibility {
   const pathExists = deps.pathExists ?? existsSync;
+  if (EPHEMERAL_INSTANCE_SLUG_RE.test(p.slug)) return { eligible: false, reason: 'ephemeral_debris' };
   if (p.remote_hive) return { eligible: false, reason: 'remote_hive_view' };
   if (p.harness_kind === 'hive') return { eligible: false, reason: 'hive_home' };
   const target = p.deployment?.target;

@@ -22,6 +22,13 @@ vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
+// Per-hive override resolver (P-012/P-013) is a PG-backed spawn dep like its siblings —
+// mock it to a no-op so the unit tests don't touch PG. vi.mock intercepts the dynamic
+// import operator-spawn uses, so the BLUEPRINT_LOCAL_ROOT producer is a clean no-op here.
+vi.mock('../hive-local-blueprint-resolve', () => ({
+  resolveHiveLocalBlueprintRoot: vi.fn(async () => null),
+  blueprintLocalRootExtra: (root: string | null) => (root ? `BLUEPRINT_LOCAL_ROOT=${root}` : null),
+}));
 vi.mock('../rate-limit-config', () => ({
   getCachedRateLimitConfig: () => ({ maxSimultaneousAgents: 16, concurrencyFloor: 1 }),
 }));
@@ -76,6 +83,13 @@ beforeEach(() => {
   });
   const sql = Object.assign(tag, {
     begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(tag),
+    // recordDecisionDisposition (now reached on the spawn path) does a
+    // `tx.unsafe(INSERT ... RETURNING id, [params])`; without it the catch
+    // logged "[decision-ledger] disposition insert failed: tx.unsafe is not a
+    // function", which vitest-fail-on-console reddened. Complete the fake sql
+    // interface — an empty result is fine (the disposition write is
+    // fire-and-forget and the tests don't assert on it).
+    unsafe: async (_q: string, _params?: unknown[]) => [] as unknown[],
   });
   vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
   vi.mocked(resolveProject).mockResolvedValue(PROJECT as never);
