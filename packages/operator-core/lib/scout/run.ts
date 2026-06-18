@@ -37,6 +37,7 @@ import {
 import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
 import type { ScoutCadenceOptions } from './cadence';
 import { resolveScoutBudget, type ScoutBudget } from './budget';
+import { parseScoutConfigBlock, resolveScoutConfig, type ScoutConfig } from './config';
 import type { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import type { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 
@@ -46,6 +47,10 @@ export type ScoutCycleRunner = (ctx: {
   workspaceId: string;
   budget: Required<ScoutBudget>;
   cycleId: string;
+  /** Per-blueprint Scout tuning resolved from the blueprint `scout` block (P-009,
+   *  domain-generic-hive-architecture-2026-06-18). Omitted ⇒ the runner uses
+   *  DEFAULT_SCOUT_CONFIG (behavior-neutral). */
+  scoutConfig?: ScoutConfig;
 }) => Promise<ScoutCycleLike>;
 
 export interface ScoutCycleActionConfig {
@@ -67,15 +72,32 @@ export interface ScoutCycleInput {
  */
 export type ScoutTickDepsBuilder = (input: ScoutCycleInput, runCycle: ScoutCycleRunner) => ScoutTickDeps;
 
-export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) =>
-  buildScoutTickDeps({
+export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => {
+  // P-009: resolve the per-blueprint Scout tuning from the routine/blueprint-step
+  // payload's `scout` block (alongside cadence/budget). Absent or typo'd block ⇒
+  // DEFAULT_SCOUT_CONFIG (behavior-neutral). Parsed once per tick and threaded into the
+  // cycle runner's ctx (productionScoutRunner forwards it to buildScoutCycleDeps).
+  const scoutConfig = resolveScoutConfig(parseScoutConfigBlock(scoutBlockOf(input.payloadTemplate)));
+  return buildScoutTickDeps({
     harnessSlug: input.installSlug,
     workspaceId: input.workspaceId,
     runCycle: ({ budget, cycleId }) =>
-      runCycle({ harnessSlug: input.installSlug, workspaceId: input.workspaceId, budget, cycleId }),
+      runCycle({
+        harnessSlug: input.installSlug,
+        workspaceId: input.workspaceId,
+        budget,
+        cycleId,
+        scoutConfig,
+      }),
     readIdleRatio: () => readHiveIdleRatio({ workspaceId: input.workspaceId }),
     readFrictionSignals: () => readFrictionSignalCount({ harnessSlug: input.installSlug }),
   });
+};
+
+/** Pull the `scout` tuning block out of a routine/blueprint-step payload_template (if any). */
+function scoutBlockOf(payload: Record<string, unknown> | null): unknown {
+  return payload && typeof payload === 'object' ? payload.scout : undefined;
+}
 
 /**
  * Parse a routine's payload_template into cadence + budget overrides. Unknown keys
