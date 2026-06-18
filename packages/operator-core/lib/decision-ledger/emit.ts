@@ -63,6 +63,27 @@ function normalizeAction(toolName: string): string {
   return dot > 0 ? `${toolName.slice(0, dot)}:${toolName.slice(dot + 1)}` : toolName;
 }
 
+/**
+ * EI-597 — `coord:wake-mode` + `coord:wake-queue` declare `coord:write` (tier
+ * medium) yet have READ modes: `wake-mode` with no `mode` only reads the current
+ * mode; `wake-queue` with action `list` (its default) only lists staged wakes. A
+ * client polling those reads (the loopback `palette` command-palette / TUI wake
+ * board, ~37/min) floods the decision ledger with read rows — crowding genuine
+ * governed actions out of the retained window and reading back as "N
+ * auto-actions" (the queen-loop-alignment D-006 misdiagnosis). The emit's own
+ * contract is that reads are execution, not governance (D-003) — they belong in
+ * `tool_invocations` only — but the tier='low' read-exclusion misses these
+ * because their declared capability is write-tier. Skip the read-shaped
+ * invocation here. The WRITE paths (set a mode; release/skip a wake) are not
+ * read-shaped, so they still log; `tool_invocations` still records every read.
+ */
+function isReadShapedCoordPoll(action: string, args: unknown): boolean {
+  const a = args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+  if (action === 'coord:wake-mode') return a.mode == null; // no mode ⇒ read
+  if (action === 'coord:wake-queue') return a.action == null || a.action === 'list'; // list (default) ⇒ read
+  return false;
+}
+
 /** The columns one action-chokepoint ledger row carries (the host fills the rest by default). */
 export interface DecisionLedgerRow {
   workspaceId: string;
@@ -110,6 +131,10 @@ export function buildDecisionLedgerRow(event: PostInvokeEvent): DecisionLedgerRo
   const verdict = event.envelopeVerdict ?? null;
   const primaryCap = caps[0] ?? null;
   const normAction = normalizeAction(toolName);
+  // EI-597: a read-shaped poll of a dual-mode coord verb is a read, not a
+  // governed action — skip it (see isReadShapedCoordPoll). Stops the `palette`
+  // wake-board poll loop from flooding the ledger out of its retained window.
+  if (isReadShapedCoordPoll(normAction, event.args)) return null;
   const axes = ACTION_AXES.get(normAction);
   return {
     workspaceId: ctx.workspaceId,

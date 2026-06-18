@@ -57,6 +57,9 @@ function renderPicker(props?: {
   hiveLabel?: string;
 }) {
   const onOpenChange = vi.fn();
+  // Capture URL writes: the picker now closes via a single atomic useQueryStates
+  // write (clears ?create + ?picker together), NOT the onOpenChange callback.
+  const urlUpdates: URLSearchParams[] = [];
   const result = render(
     <CreateHarnessPicker
       open
@@ -66,9 +69,14 @@ function renderPicker(props?: {
       hiveLabel={props?.hiveLabel ?? 'Hive'}
     />,
     // The picker's selected entry rides the `?picker=` nuqs param now.
-    { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
+    {
+      wrapper: withNuqsTestingAdapter({
+        searchParams: '',
+        onUrlUpdate: (e) => urlUpdates.push(e.searchParams),
+      }),
+    },
   );
-  return { ...result, onOpenChange };
+  return { ...result, onOpenChange, urlUpdates };
 }
 
 /** Route fetch by URL so the viewer fetch is harmless + the create returns ok. */
@@ -374,7 +382,7 @@ describe('P-006 — Hive invite card', () => {
 
   it('joining POSTs the artifact to /api/discovery/join-invite and shows the success copy', async () => {
     const user = userEvent.setup();
-    const { onOpenChange } = renderPicker();
+    const { urlUpdates } = renderPicker();
     mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
       if (url.includes('/api/discovery/join-invite')) {
@@ -396,9 +404,14 @@ describe('P-006 — Hive invite card', () => {
     const call = mockFetch.mock.calls.find((c) => String(c[0]).includes('/api/discovery/join-invite'));
     expect(JSON.parse((call?.[1] as RequestInit).body as string)).toEqual({ link: INVITE_LINK });
 
-    // Joining creates no harness — Done just closes the picker.
+    // Joining creates no harness — Done just closes the picker. The close is a
+    // single atomic nav write that clears ?create AND ?picker (the step was
+    // 'hive-invite'); assert the step was cleared (the close fired).
     await user.click(screen.getByRole('button', { name: 'Done' }));
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+    await waitFor(() => {
+      const last = urlUpdates.at(-1);
+      expect(last && last.get('picker')).toBeFalsy();
+    });
   });
 
   it('a malformed link errors inline without POSTing (the route parser runs client-side too)', async () => {

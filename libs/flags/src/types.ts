@@ -1072,6 +1072,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // exposes the Settings → Storage page. Keep-all stays the default behavior; the
   // page only prunes on an explicit user trim. OFF hides the nav entry.
   [FLAGS.STORAGE_SETTINGS]: true,
+  // ON by default (current behavior) — storage-settings-page-2026-06-15 P-006:
+  // the pre-existing background prunes keep running unless the owner disables one
+  // from the Storage page. OFF makes its DBOS tick skip (fail-safe).
+  [FLAGS.STORAGE_RETAIN_TELEMETRY]: true,
+  [FLAGS.STORAGE_RETAIN_SCRATCH]: true,
+  [FLAGS.STORAGE_RETAIN_TEST_RUNS]: true,
   // OFF by default — DELIBERATE (capability-confinement B-06 / P-012): envelope ENFORCEMENT
   // would deny fleet tool calls before the B-18 cutover + B-05 capability tools exist. OFF =
   // observe-only/shadow (evaluate + annotate, never block). The B-18 flip is the arming act.

@@ -382,7 +382,7 @@ describe('AdvShell — selector + actions', () => {
     await waitFor(() => expect(nuqsSetters.share).toHaveBeenCalledWith(false));
   });
 
-  it('New opens the create picker; onCreated selects + persists the new pot', async () => {
+  it('New opens the create picker; onCreated persists the new pot', async () => {
     await renderShell();
     fireEvent.click(screen.getByRole('button', { name: /New/ }));
     await waitFor(() => expect(nuqsSetters.create).toHaveBeenCalledWith(true));
@@ -391,8 +391,12 @@ describe('AdvShell — selector + actions', () => {
     nuqsState.create = true;
     await renderShell();
     fireEvent.click(screen.getByText('simulate-created'));
-    await waitFor(() => expect(nuqsSetters.slug).toHaveBeenCalledWith('fresh-pot'));
-    expect(localStorage.getItem(LS_KEY())).toBe('fresh-pot');
+    // onCreated is side-effects only now (localStorage). The new pot's FOCUS
+    // (?slug/?harness) is written by the picker ITSELF in the SAME atomic
+    // useQueryStates write as the modal close — doing it here too would be a second
+    // same-tick write the custom adapter clobbers (the stuck-modal bug). The
+    // focus+close atomicity is covered by nuqs-two-write-race.router-integration.
+    await waitFor(() => expect(localStorage.getItem(LS_KEY())).toBe('fresh-pot'));
   });
 });
 

@@ -68,4 +68,22 @@ describe('storage categories taxonomy', () => {
     expect(plans?.federation).toBe('federated');
     expect(isTrimmable(plans!)).toBe(false);
   });
+
+  it('harness_run_output is a local-diagnostic epoch_ms category (deferred follow-up)', () => {
+    const c = getStorageCategory('harness-run-output');
+    expect(c && isPgCategory(c) && c.table).toBe('harness_run_output');
+    expect(c && isPgCategory(c) && c.ageColumn).toBe('ended_at');
+    expect(c && isPgCategory(c) && c.ageColumnType).toBe('epoch_ms');
+    expect(registryFederationClass('harness_run_output')).toBe('local');
+    expect(isTrimmable(c!)).toBe(true);
+  });
+
+  it('perf-tarballs is a safe glob-files disk store (prefix+suffix, never the whole root)', () => {
+    const c = getStorageCategory('perf-tarballs');
+    expect(c?.kind).toBe('disk');
+    expect(c && c.kind === 'disk' && c.store).toBe('glob-files');
+    expect(c && c.kind === 'disk' && c.glob?.prefix).toBe('p2p-perf-runtime-');
+    expect(c && c.kind === 'disk' && c.glob?.suffix).toBe('.tgz');
+    expect(isTrimmable(c!)).toBe(true);
+  });
 });

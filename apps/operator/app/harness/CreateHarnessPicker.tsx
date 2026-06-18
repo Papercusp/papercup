@@ -1021,7 +1021,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
     // ATOMIC close: clear create AND picker in ONE useQueryStates write so the
     // adapter can't drop ?create=false (the stuck-modal bug). onOpenChange is no
     // longer used to close — AdvShell reads the same ?create and re-renders shut.
-    void setNav({ create: false, picker: null });
+    void setNav({ picker: null }); void setNav({ create: false });
   };
 
   // The membership scope passed to a create when adding into the selected hive.

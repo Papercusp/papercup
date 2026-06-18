@@ -19,6 +19,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 
 /* ── Wire types — mirror StorageUsageRow / PruneResult (operator-core/lib/storage). ── */
 type Federation = 'federated' | 'local-diagnostic' | 'bloat-queue';
@@ -385,6 +387,8 @@ export default function StorageSettingsPage() {
         )}
       </section>
 
+      <RetentionSection />
+
       {trimTarget && (
         <TrimDialog
           row={trimTarget.row}
@@ -395,6 +399,108 @@ export default function StorageSettingsPage() {
         />
       )}
     </div>
+  );
+}
+
+/* ── Automatic retention: the pre-existing background prunes (read + disable) ──
+ * D-001: surface the full retention picture and let the owner disable any. Each
+ * maps to a default-on STORAGE_RETAIN_* flag the DBOS tick honors (fail-safe). */
+const RETENTIONS = [
+  {
+    flag: FLAGS.STORAGE_RETAIN_TELEMETRY,
+    label: 'Telemetry archive',
+    detail: 'Auto-deletes local telemetry rows older than 30 days.',
+  },
+  {
+    flag: FLAGS.STORAGE_RETAIN_SCRATCH,
+    label: 'Tool-output scratch',
+    detail: 'Auto-GCs scratch dirs older than 24 h (plus a 5 GB per-workspace quota).',
+  },
+  {
+    flag: FLAGS.STORAGE_RETAIN_TEST_RUNS,
+    label: 'Test runs',
+    detail: 'Keeps only the 50 most recent test runs per file/branch.',
+  },
+] as const;
+
+function RetentionSection() {
+  const telemetry = useFlag(FLAGS.STORAGE_RETAIN_TELEMETRY);
+  const scratch = useFlag(FLAGS.STORAGE_RETAIN_SCRATCH);
+  const testRuns = useFlag(FLAGS.STORAGE_RETAIN_TEST_RUNS);
+  const enabledByFlag: Record<string, boolean> = {
+    [FLAGS.STORAGE_RETAIN_TELEMETRY]: telemetry,
+    [FLAGS.STORAGE_RETAIN_SCRATCH]: scratch,
+    [FLAGS.STORAGE_RETAIN_TEST_RUNS]: testRuns,
+  };
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const toggle = useCallback(async (flag: string, next: boolean) => {
+    setBusy(flag);
+    try {
+      const r = await fetch('/api/flags/set', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: flag, enabled: next }),
+      });
+      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!r.ok || d.ok === false) throw new Error(d.error ?? `HTTP ${r.status}`);
+      toast.success(`Automatic retention ${next ? 'enabled' : 'disabled'} — keeping forever${next ? ' off' : ''}.`);
+    } catch (e) {
+      toast.error(`Couldn’t update: ${e instanceof Error ? e.message : 'failed'}`);
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  return (
+    <section className="pc-settings-section" aria-label="Automatic retention" style={{ marginTop: 24 }}>
+      <h2 style={{ fontSize: 14, margin: '0 0 4px' }}>Automatic retention</h2>
+      <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '0 0 12px' }}>
+        These background prunes already run on a schedule. Turn any off to keep that data forever.
+      </p>
+      {RETENTIONS.map((r) => {
+        const on = enabledByFlag[r.flag];
+        return (
+          <div
+            key={r.flag}
+            data-testid={`retention-${r.flag}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '8px 12px',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              marginBottom: 6,
+            }}
+          >
+            <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{r.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--fg-mute)' }}>{r.detail}</div>
+            </div>
+            <button
+              type="button"
+              disabled={busy === r.flag}
+              aria-pressed={on}
+              data-testid={`retention-toggle-${r.flag}`}
+              onClick={() => void toggle(r.flag, !on)}
+              style={{
+                padding: '4px 14px',
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: busy === r.flag ? 'default' : 'pointer',
+                border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                background: on ? 'color-mix(in srgb, var(--accent), transparent 85%)' : 'var(--bg-2)',
+                color: 'var(--fg)',
+              }}
+            >
+              {on ? 'On' : 'Off'}
+            </button>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 

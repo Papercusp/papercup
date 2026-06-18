@@ -27,6 +27,8 @@ import { activeWorkspaceId } from './workspace-registry';
 import { ensureInstallId } from './setup-wizard-install-id';
 import { getPosthogConfigWithSource } from './posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from './posthog-public-defaults';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 interface BufferedReport {
   received_at: string;
@@ -215,8 +217,17 @@ export async function flushTelemetry(): Promise<FlushResult> {
     }
   }
 
-  // 3. Enforce retention on the local archive.
-  if (Number.isFinite(RETENTION_DAYS) && RETENTION_DAYS > 0) {
+  // 3. Enforce retention on the local archive — UNLESS the owner disabled it on
+  // the Storage page (storage-settings-page-2026-06-15 P-006: keep telemetry
+  // forever). Fail-safe: getFlag returns the default (true) on a read error, and
+  // we keep retention on if the check throws, so this never silently stops a flush.
+  let retainTelemetry = true;
+  try {
+    retainTelemetry = await getFlag(FLAGS.STORAGE_RETAIN_TELEMETRY, 'system:retention');
+  } catch {
+    /* keep retention enabled */
+  }
+  if (retainTelemetry && Number.isFinite(RETENTION_DAYS) && RETENTION_DAYS > 0) {
     const deleted = await sql<{ count: number }[]>`
       WITH d AS (
         DELETE FROM harness_shared.telemetry_reports_archive

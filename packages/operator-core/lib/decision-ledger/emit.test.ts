@@ -53,6 +53,24 @@ describe('buildDecisionLedgerRow — skip filters', () => {
   it('skips reads (tier low) — not governance actions (D-003)', () => {
     expect(buildDecisionLedgerRow(ev({ capabilities: ['plans:read'], toolName: 'plans.get' }))).toBeNull();
   });
+
+  // EI-597: dual-mode coord verbs declare `coord:write` (tier medium) but their
+  // READ paths must not be logged as governed actions, or a client polling them
+  // floods the ledger out of its retained window (queen-loop-alignment D-006).
+  it('skips a read-shaped coord:wake-mode poll (no mode) — EI-597', () => {
+    expect(
+      buildDecisionLedgerRow(ev({ capabilities: ['coord:write'], toolName: 'coord:wake-mode', args: { agent: 'su-x' } })),
+    ).toBeNull();
+  });
+
+  it('skips a read-shaped coord:wake-queue poll (default/explicit list) — EI-597', () => {
+    expect(
+      buildDecisionLedgerRow(ev({ capabilities: ['coord:write'], toolName: 'coord:wake-queue', args: { agent: 'su-x' } })),
+    ).toBeNull();
+    expect(
+      buildDecisionLedgerRow(ev({ capabilities: ['coord:write'], toolName: 'coord:wake-queue', args: { action: 'list' } })),
+    ).toBeNull();
+  });
 });
 
 describe('buildDecisionLedgerRow — governed actions', () => {
@@ -115,5 +133,24 @@ describe('buildDecisionLedgerRow — governed actions', () => {
     const row = buildDecisionLedgerRow(ev({ capabilities: ['fleet:spawn'], toolName: 'fleet.spawn' }));
     expect(row!.category).toBe('agent-lifecycle');
     expect(row!.tier).toBe('medium');
+  });
+
+  // EI-597: only the READ paths of the dual-mode coord verbs are skipped — their
+  // WRITES (set a mode; release/skip a wake) are genuine governed actions + still log.
+  it('records a coord:wake-mode WRITE (mode set) — only its reads are skipped (EI-597)', () => {
+    const row = buildDecisionLedgerRow(
+      ev({ capabilities: ['coord:write'], toolName: 'coord:wake-mode', args: { mode: 'manual' } }),
+    );
+    expect(row).not.toBeNull();
+    expect(row!.action).toBe('coord:wake-mode');
+    expect(row!.tier).toBe('medium');
+  });
+
+  it('records a coord:wake-queue WRITE (release) — only its list reads are skipped (EI-597)', () => {
+    const row = buildDecisionLedgerRow(
+      ev({ capabilities: ['coord:write'], toolName: 'coord:wake-queue', args: { agent: 'su-x', action: 'release', id: 3 } }),
+    );
+    expect(row).not.toBeNull();
+    expect(row!.action).toBe('coord:wake-queue');
   });
 });

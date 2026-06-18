@@ -28,6 +28,8 @@ import { runHarnessStatusSweepOnce } from '../harness-status-sweep';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
 import { getOrgPg } from '@papercusp/db-org';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { isLoopSaturated } from '../event-loop-lag-monitor';
@@ -73,10 +75,26 @@ function shouldShedHeavyTick(tickName: string): boolean {
   return shedUnderLoopPressure(tickName) || shedUnderPowerSave(tickName);
 }
 
+// storage-settings-page-2026-06-15 P-006: a pre-existing background prune is
+// skipped when the owner disables its STORAGE_RETAIN_* flag from the Storage page
+// (D-001 keep-all). FAIL-SAFE: getFlag already returns the flag's default (true)
+// on any read error, and we default true on an unexpected throw — so this can
+// never silently STOP a prune.
+async function retentionEnabled(flag: FlagKey): Promise<boolean> {
+  try {
+    return await getFlag(flag, 'system:retention');
+  } catch {
+    return true;
+  }
+}
+
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
 // enforce retention. A transient PostHog failure already degrades to retry-next,
 // so a light step retry covers PG hiccups.
 async function telemetryFlushTick(): Promise<void> {
+  // NB: the telemetry RETENTION (30d archive delete) is gated inside flushTelemetry
+  // itself (STORAGE_RETAIN_TELEMETRY) — NOT here, so disabling retention still lets
+  // the flush archive + forward telemetry; only the delete-old step is skipped.
   await DBOS.runStep(() => flushTelemetry(), {
     name: 'flush-telemetry', retriesAllowed: true, maxAttempts: 2, intervalSeconds: 30,
   });
@@ -88,6 +106,7 @@ DBOS.registerScheduled(telemetryFlushWorkflow, { name: 'telemetryFlush', crontab
 
 // Daily 03:00: scratch-storage GC sweep (retention + dead-workspace + quota).
 async function scratchGcTick(): Promise<void> {
+  if (!(await retentionEnabled(FLAGS.STORAGE_RETAIN_SCRATCH))) return;
   await DBOS.runStep(async () => {
     const workspaceRegistry = readRegistry().workspaces.map((w) => w.id);
     runScratchGc({ workspaceRegistry });
@@ -453,6 +472,7 @@ DBOS.registerScheduled(pushCredentialsWorkflow, { name: 'pushCredentialsRefresh'
 // papercup-test-runs-prune systemd-user timer; calls harness_shared.prune_test_runs(50)
 // (migration 083 — keep 50 rows per file_path/branch). Fail-soft inside the SQL fn.
 async function testRunsPruneTick(): Promise<void> {
+  if (!(await retentionEnabled(FLAGS.STORAGE_RETAIN_TEST_RUNS))) return;
   await DBOS.runStep(async () => {
     const { sql } = getOrgPg();
     await sql`SELECT harness_shared.prune_test_runs(50)`;

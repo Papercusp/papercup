@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 /* ── Mocks (hoisted) ───────────────────────────────────────────────────── */
 const h = vi.hoisted(() => ({
   rows: [] as unknown[],
+  flagOn: true,
   doTrim: vi.fn(async () => ({
     ok: true,
     removed: 5,
@@ -22,6 +23,7 @@ vi.mock('@papercusp/sync', () => ({
 vi.mock('sonner', () => ({
   toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
 }));
+vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => h.flagOn }));
 vi.mock('nuqs', async () => {
   const React = await import('react');
   const useQueryState = (_key: string, parser?: { defaultValue?: unknown }) => {
@@ -74,11 +76,22 @@ function fedRow(over: Record<string, unknown> = {}) {
   };
 }
 
+let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   h.rows = [pgRow(), fedRow()];
+  h.flagOn = true;
   h.doTrim.mockClear();
+  fetchMock = vi.fn(async () => ({
+    ok: true,
+    json: async () => ({ ok: true }),
+    text: async () => JSON.stringify({ ok: true }),
+  }));
+  vi.stubGlobal('fetch', fetchMock);
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('Storage settings page', () => {
   it('renders a card per category', () => {
@@ -123,5 +136,26 @@ describe('Storage settings page', () => {
     await waitFor(() =>
       expect(h.doTrim).toHaveBeenCalledWith({ category: 'route-invocations', olderThanDays: null }),
     );
+  });
+
+  it('renders the Automatic retention section with the pre-existing prunes', () => {
+    render(<StorageSettingsPage />);
+    expect(screen.getByRole('heading', { name: 'Automatic retention' })).toBeTruthy();
+    expect(screen.getByTestId('retention-papercusp-storage-retain-telemetry')).toBeTruthy();
+    expect(screen.getByTestId('retention-papercusp-storage-retain-scratch')).toBeTruthy();
+    expect(screen.getByTestId('retention-papercusp-storage-retain-test-runs')).toBeTruthy();
+  });
+
+  it('toggling a retention POSTs /api/flags/set with the flag disabled', async () => {
+    render(<StorageSettingsPage />);
+    fireEvent.click(screen.getByTestId('retention-toggle-papercusp-storage-retain-scratch'));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => c[0] === '/api/flags/set');
+      expect(call).toBeTruthy();
+      expect(JSON.parse(call![1].body as string)).toEqual({
+        key: 'papercusp-storage-retain-scratch',
+        enabled: false, // was on → toggles off
+      });
+    });
   });
 });
