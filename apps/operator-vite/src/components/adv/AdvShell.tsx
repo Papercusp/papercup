@@ -547,11 +547,11 @@ export default function AdvShell({
       </header>
       <CreateHarnessPicker
         open={createOpen}
-        // Return the nuqs promise (no `void`): the picker AWAITS this close-write
-        // so it serializes after the focus-write — the custom adapter clobbers
-        // same-tick writes, which left the modal stuck open (CreateHarnessPicker
-        // handleClose).
-        onOpenChange={(o: boolean) => setCreateOpen(o)}
+        // Opening only: the picker CLOSES itself via a single atomic useQueryStates
+        // write (clearing ?create + ?picker together) — writing ?create here too
+        // would be a second same-tick write the custom adapter clobbers. AdvShell
+        // re-reads ?create and re-renders shut.
+        onOpenChange={(o: boolean) => void setCreateOpen(o)}
         // EI-319: the removed bottom-right FAB was the only opener that passed a
         // hive scope, so the header "New" button (now the primary opener) lost
         // the into-hive "Add to <hive>" mode. Restore it when scoped to a single
@@ -567,22 +567,16 @@ export default function AdvShell({
         // scope. activeIsHive already requires activeProject to exist AND be
         // kind:'hive' (line ~318), exactly the backend's into-hive precondition.
         hiveScope={activeIsHive ? activeSlug : null}
-        onCreated={async (slug: string, opts?: { hive?: string }) => {
+        onCreated={(slug: string, opts?: { hive?: string }) => {
+          // SIDE-EFFECTS ONLY. The picker writes the focus params (?slug / ?harness)
+          // in the SAME atomic useQueryStates write as the modal close, so the
+          // custom nuqs adapter can't clobber one of two same-tick writes (that
+          // dropped ?create=false → stuck-open modal). Doing setActiveSlug/Harness
+          // here would re-introduce that race, so we keep only non-URL effects.
           setRefreshNonce((n) => n + 1);
-          // AWAIT each nuqs write so the focus-write settles before the picker's
-          // subsequent close-write — the custom adapter clobbers same-tick writes,
-          // so an unawaited focus-write here raced the modal close and one was lost.
-          if (opts?.hive && opts.hive === activeSlug) {
-            // Added INTO the active hive (P-011): keep ?slug= on the hive, focus
-            // the new member via ?harness= — same contract as HarnessesWorkspace.
-            await setActiveHarness(slug);
-          } else {
-            // A new hive / standalone harness becomes the focused scope.
-            await setActiveSlug(slug);
-            await setActiveHarness(null);
-            if (typeof window !== 'undefined') {
-              window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
-            }
+          const intoActiveHive = opts?.hive && opts.hive === activeSlug;
+          if (!intoActiveHive && typeof window !== 'undefined') {
+            window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
           }
         }}
       />
