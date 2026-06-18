@@ -1699,6 +1699,48 @@ export async function collectWatchdogSignals(workspaceId: string, opts: CollectO
   return (await collectWatchdogSignalsDetailed(workspaceId, opts, collectors)).signals;
 }
 
+// ── P-013: signal-to-noise rollup for improvements:watchdog-status ────────────────
+// Surfaces how much the ephemeral-benchmark filter dropped (P-006/P-008) and the
+// per-class repeated-tool-error spread, so a classification regression (a class
+// suddenly ballooning) or a noise spike is VISIBLE in the status tool, not buried in
+// raw ticks. Pure — unit-tested. (watchdog-and-exposed-systems-improvement-2026-06-18.)
+export interface WatchdogRollupTick {
+  collectors?: Array<{ name: string; note?: string }>;
+  knownOpenKeys?: string[];
+}
+export interface WatchdogRollup {
+  /** Ephemeral-benchmark signals the filter dropped across the ticks (P-006/P-008). */
+  benchmarkDropped: number;
+  /** OPEN repeated-tool-error keys by class — structural | transient | caller | rate-limit | other. */
+  toolErrorByClass: Record<string, number>;
+}
+export function rollupWatchdogTicks(ticks: readonly WatchdogRollupTick[]): WatchdogRollup {
+  let benchmarkDropped = 0;
+  const toolErrorByClass: Record<string, number> = {};
+  for (const t of ticks) {
+    for (const c of t.collectors ?? []) {
+      if (c.name === 'ephemeral-benchmark-filter' && c.note) {
+        const m = /dropped (\d+)/.exec(c.note);
+        if (m) benchmarkDropped += Number(m[1]);
+      }
+    }
+    for (const k of t.knownOpenKeys ?? []) {
+      if (!k.startsWith('repeated-tool-error:')) continue;
+      const cls = /:rate-limit$/.test(k)
+        ? 'rate-limit'
+        : /:transient$/.test(k)
+          ? 'transient'
+          : /:caller$/.test(k)
+            ? 'caller'
+            : /:structural$/.test(k) || /:structural:/.test(k)
+              ? 'structural'
+              : 'other';
+      toolErrorByClass[cls] = (toolErrorByClass[cls] ?? 0) + 1;
+    }
+  }
+  return { benchmarkDropped, toolErrorByClass };
+}
+
 /**
  * Default tick-record sink (watchdog-robustness P-001): one row per tick into
  * `harness_shared.watchdog_ticks`. Injectable via `WatchdogDeps.recordTick` so
