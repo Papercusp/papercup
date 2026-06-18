@@ -54,6 +54,16 @@ const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
 const USAGE_LIMIT_PEEK_BYTES = 64 * 1024;
 /** When a usage/session-limit message carries no parseable reset, pause the capped account this long. */
 const USAGE_LIMIT_DEFAULT_PAUSE_MS = 60 * 60 * 1000;
+/** An account-level org/subscription DISQUALIFICATION (a 403 that is NOT a transient throttle): the
+ *  account's Anthropic org disabled OAuth API access, or Claude Code for the subscription. The account
+ *  is unusable until an admin re-enables it, so pause it OUT of rotation this long (re-probes after) +
+ *  fail over — instead of forwarding the 403, which hard-fails the bee AND, when the account is
+ *  active(), 403-blocks the WHOLE fleet (the avi-storewolf incident, 2026-06-18). */
+const ORG_DISALLOW_PAUSE_MS = 6 * 60 * 60 * 1000;
+/** Body signatures of an org/subscription disqualification (403). Covers both observed forms: the
+ *  OAuth-org disallow ("OAuth authentication is currently not allowed for this organization") and the
+ *  spawned-claude-code disallow ("Claude subscription disabled for Claude Code"). */
+const ORG_DISALLOWED_RE = /not allowed for this organization|subscription disabled for claude code|disabled for claude code/i;
 /** Bounded INTERNAL retry: how many upstream attempts the gateway makes on a SINGLE client request,
  *  walking past usage-capped / transiently-throttled accounts before giving up and forwarding the error.
  *  The gateway absorbs transient throttles itself so a bee's SMALL CLI retry budget never exhausts (the
@@ -547,6 +557,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
               exhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000; // unifiedRejected: bounded pause already set
             }
             internalRetry = { rotate: true, backoffMs: TRANSIENT_429_BACKOFF_MS, exhaustResetAt };
+          }
+        } else if (up.status === 403) {
+          // Account-level org/subscription DISQUALIFICATION (not a transient throttle): the account's
+          // Anthropic org disabled OAuth API access, or Claude Code for the subscription. Forwarding the
+          // 403 hard-fails the bee AND, when this account is active(), 403-blocks the WHOLE fleet
+          // (avi-storewolf, 2026-06-18). Treat it like a hard cap: pause this account out of rotation +
+          // fail over to a healthy one. A DIFFERENT 403 (not org/subscription) is forwarded unchanged.
+          if (up.body) {
+            const peek = await peekBody(up.body, USAGE_LIMIT_PEEK_BYTES);
+            peekedHead = peek.head;
+            peekedRest = peek.rest;
+            if (ORG_DISALLOWED_RE.test(peek.head.toString('utf8'))) {
+              const resetAt = Date.now() + ORG_DISALLOW_PAUSE_MS;
+              gov.penalize({ resetAt });
+              internalRetry = { rotate: true, backoffMs: 0, exhaustResetAt: resetAt };
+              log('warn', `inference-gateway: account '${active.accountId}' org/subscription-disallowed (403) → pausing ${Math.round(ORG_DISALLOW_PAUSE_MS / 3600000)}h + failover to a healthy account`);
+            }
           }
         } else if (up.status === 401) {
           active.invalidateToken?.();
