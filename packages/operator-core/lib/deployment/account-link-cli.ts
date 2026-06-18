@@ -34,9 +34,20 @@ const ID_RE = /^[A-Za-z0-9._-]+$/;
 // Match the authorize URL / the minted token in the CLI's (ANSI-stripped) output.
 const URL_RE = /https:\/\/\S*\/oauth\/authorize\?[^\s'"]+/;
 const TOKEN_RE = /sk-ant-oat[0-9]*-[A-Za-z0-9_-]+/;
+// Settle the code→token step on EITHER the minted token OR a rejection line, so a
+// bad/expired code fails fast with claude's own message instead of hanging out the
+// full COMPLETE_TIMEOUT_MS. (Rejection shapes seen live: "OAuth error: Request failed
+// with status code 400", "Authorization failed", "Invalid …".)
+const OUTCOME_RE =
+  /sk-ant-oat[0-9]*-[A-Za-z0-9_-]+|OAuth error[^\n]*|Authorization failed[^\n]*|Invalid (?:request|code|authorization)[^\n]*|status code [45]\d\d/i;
 const START_TIMEOUT_MS = 30_000; // the CLI to print the URL
 const COMPLETE_TIMEOUT_MS = 60_000; // the CLI to mint after we feed the code
 const LINK_TTL_MS = 10 * 60 * 1000; // how long a started link waits for the owner's code
+// The current `claude setup-token` is an Ink TUI: its masked code input treats a bulk
+// `code\r` write as paste text and SWALLOWS the trailing CR, so the code is never
+// submitted (the "Linking…" stall). The Enter must be its OWN write, sent AFTER the
+// paste settles. Proven against claude CLI v2.1.181.
+const SUBMIT_ENTER_DELAY_MS = 300;
 
 function stripAnsi(s: string): string {
   // CSI sequences + OSC sequences — Ink colors its output; the URL/token would otherwise
@@ -86,6 +97,8 @@ interface PendingCliLink {
   label?: string;
   configDir: string;
   reaper: ReturnType<typeof setTimeout>;
+  /** The deferred Enter-keystroke timer (cleared on cleanup so it can't fire late). */
+  enterTimer?: ReturnType<typeof setTimeout>;
 }
 
 type G = typeof globalThis & { __papercuspCliLinks?: Map<string, PendingCliLink> };
@@ -98,6 +111,7 @@ function cleanup(linkId: string): void {
   if (!l) return;
   links.delete(linkId);
   clearTimeout(l.reaper);
+  if (l.enterTimer) clearTimeout(l.enterTimer);
   try {
     l.pty.kill();
   } catch {
@@ -162,6 +176,8 @@ export interface CompleteCliLinkInput {
 }
 export interface CompleteCliLinkDeps {
   notify?: () => void;
+  /** Override the post-paste Enter delay (ms). Tests inject a small value. */
+  enterDelayMs?: number;
 }
 export type CompleteCliLinkResult = { ok: true; account: AccountStatusRow | null } | { ok: false; error: string };
 
@@ -179,22 +195,41 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
   if (!code) return { ok: false, error: 'code required (paste the value claude.ai showed)' };
 
   l.buf = ''; // capture only post-code output
-  // Register the token listener, THEN submit the code (so we never miss the response).
-  const token = await readUntil(
+  // Register the listener, paste the code, THEN press Enter as a SEPARATE write after a
+  // short settle (the Ink TUI swallows a CR appended to the paste — see SUBMIT_ENTER_DELAY_MS).
+  // Settle on the token OR a rejection line (OUTCOME_RE) so a bad code fails fast.
+  const enterDelay = deps.enterDelayMs ?? SUBMIT_ENTER_DELAY_MS;
+  const matched = await readUntil(
     l.pty,
     () => l.buf,
     (d) => {
       l.buf += d;
     },
-    TOKEN_RE,
+    OUTCOME_RE,
     COMPLETE_TIMEOUT_MS,
-    () => l.pty.write(`${code}\r`),
+    () => {
+      l.pty.write(code);
+      l.enterTimer = setTimeout(() => {
+        try {
+          l.pty.write('\r');
+        } catch {
+          /* pty already gone */
+        }
+      }, enterDelay);
+    },
   );
+  const token = matched && TOKEN_RE.test(matched) ? (matched.match(TOKEN_RE)?.[0] ?? null) : null;
 
   if (!token) {
     const tail = stripAnsi(l.buf).replace(/\s+/g, ' ').trim().slice(-180);
     cleanup(input.linkId);
-    return { ok: false, error: `claude did not return a token${tail ? ` — it said: "${tail}"` : ' (the code may be expired/invalid — restart the flow)'}` };
+    const said = tail ? ` — claude said: "${tail}"` : '';
+    return {
+      ok: false,
+      error: matched
+        ? `claude rejected the code (it may be expired, already used, or for a different account)${said} — restart the add-account flow`
+        : `claude did not return a token${said || ' (the code may be expired/invalid — restart the flow)'}`,
+    };
   }
 
   try {

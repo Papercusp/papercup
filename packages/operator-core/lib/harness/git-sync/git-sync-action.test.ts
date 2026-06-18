@@ -252,7 +252,9 @@ beforeEach(() => {
   captureHeadShaMock.mockReset();
   runDocSweepMock.mockReset();
   getFlagMock.mockReset();
-  getFlagMock.mockResolvedValue(true); // content-guard flag defaults ON
+  // content-guard defaults ON; derived-attribution (P-004) defaults OFF — mirror the real
+  // defaults so the runGitSync-opts assertions don't see a loadRoster added.
+  getFlagMock.mockImplementation(async (key: string) => key !== 'papercusp-git-sync-derived-attribution');
   resolverRows = [];
   contentFixerRows = [];
   counterRows = [];

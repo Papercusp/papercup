@@ -289,6 +289,21 @@ export async function spawnInvokeOnce(
     /* flag lookup failure ⇒ cutover stays off (current behavior) */
   }
 
+  // domain-generic-agent-personas-2026-06-17 P-013: resolve the papercusp-replace-claude-base
+  // flag PER-SPAWN and thread it to the invoke-once child as PAPERCUSP_REPLACE_CLAUDE_BASE.
+  // invoke() reads it (replaceClaudeBaseEnabled) to REPLACE the Claude coding base with our
+  // neutral preamble (+ blueprint overlay) via --system-prompt-file; the assembled prompt
+  // still rides stdin. DEFAULT-OFF (getFlag falls back to FLAG_DEFAULTS=false on a PostHog
+  // miss; a thrown lookup degrades to off) — so a flag hiccup can never silently swap the
+  // fleet's base; the owner's post-smoke flip is the only thing that arms it.
+  try {
+    if (await getFlag(FLAGS.REPLACE_CLAUDE_BASE, 'system')) {
+      resolvedExtraEnv = { ...resolvedExtraEnv, PAPERCUSP_REPLACE_CLAUDE_BASE: '1' };
+    }
+  } catch {
+    /* flag lookup failure ⇒ replace-base stays off (Claude default stands) */
+  }
+
   try {
     const { command, args, env } = buildInvokeOnce({
       projectDir,

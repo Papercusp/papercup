@@ -6,7 +6,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const h = vi.hoisted(() => {
-  const state = { dataCbs: [] as ((d: string) => void)[], written: [] as string[], killed: 0 };
+  const state = {
+    dataCbs: [] as ((d: string) => void)[],
+    written: [] as string[],
+    killed: 0,
+    outcome: 'token' as 'token' | 'reject',
+  };
   const makePty = () => ({
     onData: (cb: (d: string) => void) => {
       state.dataCbs.push(cb);
@@ -15,8 +20,17 @@ const h = vi.hoisted(() => {
     onExit: (_cb: (e: { exitCode: number; signal?: number }) => void) => ({ dispose: () => {} }),
     write: (d: string) => {
       state.written.push(d);
-      // The CLI mints + prints the token once we paste the code.
-      if (d.trim()) setTimeout(() => state.dataCbs.forEach((cb) => cb('\r\n\x1b[32mSuccess!\x1b[0m token:\r\nsk-ant-oat01-TESTtoken_AbC-123\r\n')), 0);
+      // Model the real `claude setup-token` Ink TUI: the pasted code alone does NOTHING;
+      // a SEPARATE Enter (\r) submits it. A regression to a single `code\r` write (which
+      // the TUI swallows) therefore never resolves — exactly the production stall this fixes.
+      const hasPastedCode = state.written.some((w) => w !== '\r' && w.trim());
+      if (d === '\r' && hasPastedCode) {
+        const out =
+          state.outcome === 'reject'
+            ? '\r\n\x1b[31mOAuth error: Request failed with status code 400\x1b[0m Press Enter to retry.\r\n'
+            : '\r\n\x1b[32mSuccess!\x1b[0m token:\r\nsk-ant-oat01-TESTtoken_AbC-123\r\n';
+        setTimeout(() => state.dataCbs.forEach((cb) => cb(out)), 0);
+      }
     },
     kill: () => { state.killed += 1; },
   });
@@ -53,6 +67,7 @@ afterEach(() => {
   __resetCliLinksForTest();
   h.state.dataCbs = [];
   h.state.written = [];
+  h.state.outcome = 'token';
   vi.clearAllMocks();
 });
 
@@ -74,11 +89,14 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     const s = await startCliLink({ accountId: 'acme', label: 'Acme' });
     expect(s.ok).toBe(true);
     if (!s.ok) return;
-    const r = await completeCliLink({ linkId: s.linkId, code: 'THECODE#STATE' }, { notify: () => {} });
+    const r = await completeCliLink({ linkId: s.linkId, code: 'THECODE#STATE' }, { notify: () => {}, enterDelayMs: 5 });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    // the code was written to the CLI's stdin
-    expect(h.state.written.some((w) => w.includes('THECODE#STATE'))).toBe(true);
+    // the code is pasted, then Enter is sent as a SEPARATE write — the Ink TUI swallows a
+    // CR appended to the paste (the production "Linking…" stall). Regression guard.
+    expect(h.state.written).toContain('THECODE#STATE');
+    expect(h.state.written).toContain('\r');
+    expect(h.state.written.some((w) => w.includes('THECODE#STATE') && w.includes('\r'))).toBe(false);
     // the token was written to a 0600 file under the account id + registered as token:<path>
     expect(h.writeFile).toHaveBeenCalledWith(
       expect.stringContaining('deploy-credentials/acme'),
@@ -90,6 +108,19 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     expect(regInput.credentialRef).toMatch(/^token:/);
     // SECURITY invariant: the token must never appear in the API result.
     expect(JSON.stringify(r)).not.toContain('sk-ant-oat01-TESTtoken');
+  });
+
+  it('completeCliLink fails fast (no write/register) when claude rejects the code', async () => {
+    const s = await startCliLink({ accountId: 'acme', label: 'Acme' });
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    h.state.outcome = 'reject';
+    const r = await completeCliLink({ linkId: s.linkId, code: 'BADCODE#STATE' }, { enterDelayMs: 5 });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toMatch(/rejected the code/i);
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
   });
 
   it('completeCliLink rejects an unknown/expired linkId (no write, no register)', async () => {

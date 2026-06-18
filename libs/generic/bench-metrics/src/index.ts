@@ -54,6 +54,21 @@ export { accountTokens, verifyIsoBudget, budgetExceeded, isScored, type IsoBudge
 // Report builder — the importable aggregation surface for the Evaluation UI (P-020).
 export { aggregateArm, buildSuiteReport, type AggregateOpts } from './aggregate';
 
+// Per-capability attribution + cross-suite roll-up (capability-injection redesign / P-011).
+export {
+  buildCapabilityAttribution,
+  buildCrossSuiteAttribution,
+  formatAttributionLines,
+  DEFAULT_CONTROL_ARM,
+  ATTRIBUTION_CAVEATS,
+  type CapabilityArmAttribution,
+  type CapabilityAttributionReport,
+  type CapabilityAttributionOpts,
+  type CrossSuiteCell,
+  type CrossSuiteAttribution,
+  type CapabilityRollup,
+} from './capability-attribution';
+
 // ── Hive layer (Phase 5 / D-010) — fleet-over-backlog metrics ──────────────
 // L2 throughput + L3 value-capture + the report builder for the UI's
 // Throughput / Value subtabs (P-030).

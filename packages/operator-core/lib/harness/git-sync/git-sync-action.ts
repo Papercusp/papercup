@@ -28,7 +28,6 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
-import { listPresence } from '../../agent-tools/coordination/presence';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
@@ -757,6 +756,11 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       loadRoster: attributionOn
         ? async () => {
             try {
+              // Lazy import: git-sync-action is loaded by the system-action registry, and the
+              // presence module pulls in identity → … → the registry — a top-level import would
+              // close that cycle and leave a partial export at load. Deferring to call-time (only
+              // when the flag is ON) breaks the cycle. Matches the lazy-import idiom used here.
+              const { listPresence } = await import('../../agent-tools/coordination/presence');
               const recs = await listPresence({ workspaceId });
               return recs
                 .map((r) => ({
