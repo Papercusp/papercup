@@ -9,9 +9,10 @@
 import { bindLiveBenchHarness } from './bench-harness-live';
 import { instantiateBenchHarness } from './run-loop';
 import { cloneTaskRepo, extractDiff } from './clone';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { BenchTask } from './types';
 
-const WORKSPACE_ID = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
+const WORKSPACE_ID = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID);
 const SRC_REPO = process.env.XBENCH_SRC_REPO ?? '/tmp/xbench-ansible-repo';
 
 const INSTANCE_ID =

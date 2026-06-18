@@ -25,9 +25,10 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { extractDiff } from './clone';
 import { readMemberUsage, readMemberBeeSpawns } from './hive-backlog-live';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { BenchTask, TaskCheckout } from './types';
 
-const WORKSPACE_ID = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
+const WORKSPACE_ID = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID);
 const ARM = process.env.XBENCH_ARM ?? 'hive-realqueen';
 const OUT_DIR = process.env.XBENCH_OUT_DIR ?? '/tmp/xbench-realqueen-out';
 

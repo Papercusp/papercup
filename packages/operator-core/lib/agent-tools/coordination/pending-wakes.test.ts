@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+// Mock workspace-registry so the workspace-isolation tests can assert that
+// listAllPendingWakes / countAllPendingWakes scope to the active workspace
+// (F-C3/EI-1426).  Default: 'ws-active'.
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
 
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../../workspace-registry';
 import {
   stagePendingWake,
   listPendingWakes,
   listAllPendingWakes,
   countPendingWakes,
+  countAllPendingWakes,
   releasePendingWake,
   clearPendingWakes,
   hasPendingWakeFromSource,
@@ -57,6 +63,19 @@ function fakeStore() {
       }
       return Promise.resolve([]);
     }
+    if (q.includes('SELECT owner_id, count(*)')) {
+      // countAllPendingWakes: workspace-filtered GROUP BY (F-C3/EI-1426).
+      const ws = vals[0];
+      const filtered = rows.filter((r) => r.workspace_id === ws);
+      const counts = new Map<string, number>();
+      for (const r of filtered) {
+        const oid = String(r.owner_id);
+        counts.set(oid, (counts.get(oid) ?? 0) + 1);
+      }
+      return Promise.resolve(
+        [...counts.entries()].map(([owner_id, n]) => ({ owner_id, n })),
+      );
+    }
     if (q.includes('count(*)')) {
       return Promise.resolve([{ n: rows.filter((r) => r.owner_id === vals[0]).length }]);
     }
@@ -83,8 +102,26 @@ function fakeStore() {
     if (q.includes('WHERE owner_id')) {
       return Promise.resolve(rows.filter((r) => r.owner_id === vals[0]));
     }
-    // Fleet-wide board (listAllPendingWakes): no owner filter, owner-then-id
-    // order, bounded by a trailing LIMIT bind (BOARD_READ_LIMIT, EI-943).
+    // Fleet-wide board (listAllPendingWakes): workspace-filtered (F-C3/EI-1426),
+    // owner-then-id order, bounded by BOARD_READ_LIMIT.
+    // vals = [workspaceId, BOARD_READ_LIMIT] (matching the real query).
+    if (q.includes('WHERE workspace_id')) {
+      const ws = vals[0];
+      const limit = typeof vals[vals.length - 1] === 'number' ? Number(vals[vals.length - 1]) : rows.length;
+      return Promise.resolve(
+        [...rows]
+          .filter((r) => r.workspace_id === ws)
+          .sort((a, b) =>
+            a.owner_id === b.owner_id
+              ? Number(a.id) - Number(b.id)
+              : String(a.owner_id) < String(b.owner_id)
+                ? -1
+                : 1,
+          )
+          .slice(0, limit),
+      );
+    }
+    // Fallback: unfiltered board (should not normally be reached).
     const limit = typeof vals[vals.length - 1] === 'number' ? Number(vals[vals.length - 1]) : rows.length;
     return Promise.resolve(
       [...rows]
@@ -105,12 +142,13 @@ let store: ReturnType<typeof fakeStore>;
 beforeEach(() => {
   store = fakeStore();
   vi.mocked(getOrgPg).mockReturnValue({ sql: store.sql } as never);
+  vi.mocked(activeWorkspaceId).mockReturnValue('ws-active');
 });
 afterEach(() => vi.clearAllMocks());
 
 describe('pending-wakes (P-007)', () => {
   it('stage → list → count → release round-trip, oldest-first', async () => {
-    await stagePendingWake({ ownerId: 's-1', summary: 'a', source: 'x', workspaceId: 'ws' });
+    await stagePendingWake({ ownerId: 's-1', summary: 'a', source: 'x', workspaceId: 'ws-active' });
     await stagePendingWake({ ownerId: 's-1', summary: 'b', payload: { k: 1 } });
     await stagePendingWake({ ownerId: 's-2', summary: 'other' });
 
@@ -133,7 +171,7 @@ describe('pending-wakes (P-007)', () => {
 
 describe('pending-wakes staging coalescing (EI-312)', () => {
   it('an identical re-fire coalesces into ONE row: count bumps, no new insert', async () => {
-    const boot = { ownerId: 's-1', summary: 'Watchdog wake (boot)', source: 'hive-watchdog:boot', workspaceId: 'ws' };
+    const boot = { ownerId: 's-1', summary: 'Watchdog wake (boot)', source: 'hive-watchdog:boot', workspaceId: 'ws-active' };
     for (let i = 0; i < 11; i++) await stagePendingWake({ ...boot, payload: { fire: i } });
 
     expect(await countPendingWakes('s-1')).toBe(1); // badge reads 1, not 11
@@ -156,9 +194,9 @@ describe('pending-wakes staging coalescing (EI-312)', () => {
   });
 
   it('listAllPendingWakes returns every owner, grouped owner-then-oldest (the wake board)', async () => {
-    await stagePendingWake({ ownerId: 's-2', summary: 'theirs' });
-    await stagePendingWake({ ownerId: 's-1', summary: 'a' });
-    await stagePendingWake({ ownerId: 's-1', summary: 'b' });
+    await stagePendingWake({ ownerId: 's-2', summary: 'theirs', workspaceId: 'ws-active' });
+    await stagePendingWake({ ownerId: 's-1', summary: 'a', workspaceId: 'ws-active' });
+    await stagePendingWake({ ownerId: 's-1', summary: 'b', workspaceId: 'ws-active' });
 
     const all = await listAllPendingWakes();
     expect(all.map((w) => [w.ownerId, w.summary])).toEqual([
@@ -198,7 +236,7 @@ describe('pending-wakes binding safety + bounded board read (EI-943)', () => {
   it('the agent-less board read binds no undefined and is bounded to BOARD_READ_LIMIT', async () => {
     // More owners than the board cap — the read must not return the whole table.
     for (let i = 0; i < BOARD_READ_LIMIT + 25; i++) {
-      await stagePendingWake({ ownerId: `s-${String(i).padStart(4, '0')}`, summary: 'x' });
+      await stagePendingWake({ ownerId: `s-${String(i).padStart(4, '0')}`, summary: 'x', workspaceId: 'ws-active' });
     }
     const all = await listAllPendingWakes();
     expect(all.length).toBe(BOARD_READ_LIMIT); // not BOARD_READ_LIMIT + 25 — the scan is bounded
@@ -216,13 +254,14 @@ describe('pending-wakes binding safety + bounded board read (EI-943)', () => {
     expect(list[0].source).toBeNull();
     await expect(releasePendingWake(list[0].id)).resolves.toBeUndefined();
     await expect(countPendingWakes('s-sparse')).resolves.toBe(0);
+    // sparse row has no workspaceId so it doesn't appear in the active-workspace board
     await expect(listAllPendingWakes()).resolves.toEqual([]);
   });
 
   it('a missing owner id fails fast and clearly, never as an opaque postgres bind error', async () => {
     // The real failure mode: a caller hands `undefined` where an owner id is required.
     // It must throw a self-attributing error naming the function — NOT the cryptic
-    // `UNDEFINED_VALUE` the watchdog could only guess at.
+    // `UNDEFINED_VALUE` the watchdog could only see.
     const bad = undefined as unknown as string;
     await expect(listPendingWakes(bad)).rejects.toThrow(/listPendingWakes: ownerId is required/);
     await expect(clearPendingWakes(bad)).rejects.toThrow(/clearPendingWakes: ownerId is required/);
@@ -236,5 +275,59 @@ describe('pending-wakes binding safety + bounded board read (EI-943)', () => {
     await expect(releasePendingWake(undefined as unknown as number)).rejects.toThrow(
       /releasePendingWake: id must be a finite number/,
     );
+  });
+});
+
+// EI-1426 / F-C3: listAllPendingWakes and countAllPendingWakes MUST scope to the
+// active workspace. getOrgPg() bypasses RLS — without the WHERE workspace_id = ?
+// filter, every workspace's staged wakes appear in one board (data leakage) and,
+// on a debris-laden table with no workspace_id index, the full seqscan causes
+// repeated 60s timeouts.  Migration 311 adds the missing composite index; these
+// tests verify the workspace isolation the index is built to accelerate.
+describe('pending-wakes workspace isolation (F-C3 / EI-1426)', () => {
+  it('listAllPendingWakes excludes wakes from OTHER workspaces', async () => {
+    await stagePendingWake({ ownerId: 's-mine', summary: 'active', workspaceId: 'ws-active' });
+    await stagePendingWake({ ownerId: 's-other', summary: 'foreign', workspaceId: 'ws-other' });
+
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-active');
+    const all = await listAllPendingWakes();
+
+    expect(all.map((w) => w.ownerId)).toEqual(['s-mine']); // foreign workspace is invisible
+    expect(all.every((w) => w.workspaceId === 'ws-active')).toBe(true);
+  });
+
+  it('listAllPendingWakes returns NOTHING when the active workspace has no staged wakes', async () => {
+    await stagePendingWake({ ownerId: 's-other', summary: 'nope', workspaceId: 'ws-other' });
+
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-empty');
+    expect(await listAllPendingWakes()).toEqual([]);
+  });
+
+  it('countAllPendingWakes badge counts are scoped to the active workspace', async () => {
+    await stagePendingWake({ ownerId: 's-a', summary: 'x', workspaceId: 'ws-active' });
+    await stagePendingWake({ ownerId: 's-a', summary: 'y', workspaceId: 'ws-active' });
+    await stagePendingWake({ ownerId: 's-b', summary: 'z', workspaceId: 'ws-active' });
+    // Foreign workspace rows must not inflate the badge
+    await stagePendingWake({ ownerId: 's-a', summary: 'foreign', workspaceId: 'ws-foreign' });
+
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-active');
+    const counts = await countAllPendingWakes();
+
+    expect(counts.get('s-a')).toBe(2); // not 3 — foreign row excluded
+    expect(counts.get('s-b')).toBe(1);
+    expect(counts.has('ws-foreign')).toBe(false);
+  });
+
+  it('switching the active workspace changes which wakes are visible', async () => {
+    await stagePendingWake({ ownerId: 's-ws1', summary: 'ws1-wake', workspaceId: 'ws-1' });
+    await stagePendingWake({ ownerId: 's-ws2', summary: 'ws2-wake', workspaceId: 'ws-2' });
+
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-1');
+    const from1 = await listAllPendingWakes();
+    expect(from1.map((w) => w.ownerId)).toEqual(['s-ws1']);
+
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-2');
+    const from2 = await listAllPendingWakes();
+    expect(from2.map((w) => w.ownerId)).toEqual(['s-ws2']);
   });
 });

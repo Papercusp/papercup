@@ -52,11 +52,12 @@ import { bindRealQueenBacklogDriver, dissolveBenchHive, HIVE_REALQUEEN_ARM } fro
 import { runHiveBacklog } from './hive-backlog';
 import { loadBenchTaskSet } from './task-sets';
 import { gradeGaia, coerceLevel, type GaiaPrediction, type GaiaLevel } from './grader/gaia';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { BenchTask } from './types';
 
 type GaiaArm = typeof SU_INDEPENDENT_ARM | typeof HIVE_REALQUEEN_ARM;
 
-const WORKSPACE_ID = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
+const WORKSPACE_ID = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID);
 const ARM: GaiaArm = (process.env.XBENCH_GAIA_ARM ?? SU_INDEPENDENT_ARM) === HIVE_REALQUEEN_ARM
   ? HIVE_REALQUEEN_ARM
   : SU_INDEPENDENT_ARM;

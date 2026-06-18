@@ -4,9 +4,10 @@
  * exit. Isolates why a placed bee does $0 work. KEEP_FILES so nothing is cleaned. Removed after.
  */
 import { liveHiveBacklogOps } from './hive-backlog-live';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { BenchTask } from './types';
 
-const WS = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
+const WS = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID);
 const SRC = process.env.XBENCH_SRC_REPO ?? '/tmp/xbench-ansible-repo';
 
 async function main() {

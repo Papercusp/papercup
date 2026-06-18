@@ -13,9 +13,10 @@
  */
 import { bindLiveHiveBacklog } from './hive-backlog-live';
 import { runHiveBacklog, HIVE_ARM, QUEEN_ABLATED_ARM } from './hive-backlog';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { BenchTask } from './types';
 
-const WORKSPACE_ID = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
+const WORKSPACE_ID = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID);
 const SRC_REPO = process.env.XBENCH_SRC_REPO ?? '/tmp/xbench-ansible-repo';
 const ARM = (process.env.XBENCH_ARM ?? HIVE_ARM) === QUEEN_ABLATED_ARM ? QUEEN_ABLATED_ARM : HIVE_ARM;
 

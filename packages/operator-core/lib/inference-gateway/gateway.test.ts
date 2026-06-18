@@ -172,6 +172,34 @@ test('a BARE upstream 429 (no rate-limit headers) fails over to the next account
   assert.equal(pool.active().accountId, 'B', 'bare 429 failed over A→B (no stuck-loop on the limited account)');
 });
 
+test('ALL accounts transiently throttled (bare 429) → gateway WAITS out the short penalty + retries, returns the recovered 200 (not a forwarded retryable 429)', async () => {
+  // The owner-reported gap (2026-06-18): a transient burst-throttle (bare 429, x-should-retry:true —
+  // capacity EXISTS) on EVERY pool account used to make the gateway give up + forward the retryable
+  // 429, which an in-process caller (scout/gym, no CLI retry budget) can't absorb → $0 no-ideas.
+  // The fix: when no fresh account remains, wait out the soonest account's SHORT penalty and retry.
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B')]);
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls += 1;
+      if (calls <= 2) {
+        // Both A and B hit the transient burst (bare 429: rate_limit_error, NO window headers).
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+      } else {
+        // The short burst cleared — capacity was there all along.
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, content: 'recovered' }));
+      }
+    },
+    { pool },
+  );
+  const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 200, 'gateway waited out the all-accounts transient throttle + retried → 200, not a forwarded retryable 429');
+  assert.equal(JSON.parse(await res.text()).ok, true, "forwarded body is the recovered 200, not the burst error");
+}, 30_000);
+
 test('a usage/session CAP (429 body names the limit) is INTERNALLY failed over — bee gets B\'s success, not A\'s wall', async () => {
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
   const pool = createFailoverPool([acct('A'), acct('B')]);

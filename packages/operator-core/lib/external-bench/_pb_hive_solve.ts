@@ -23,6 +23,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isCliEntry } from '../util/cli-entry';
+import { resolveBenchWorkspace } from './bench-workspace';
 
 /** The paper context the harness drops in the sandbox (mirrors `PAPER_TEXT_FILES` in hive_solver.py). */
 export interface PaperContext {
@@ -214,7 +215,7 @@ async function main(): Promise<void> {
     console.error(String(e instanceof Error ? e.message : e));
     process.exit(2);
   }
-  const workspaceId = process.env.PAPERCUSP_BENCH_WORKSPACE ?? 'papercusp-workspace';
+  const workspaceId = resolveBenchWorkspace(process.env.PAPERCUSP_BENCH_WORKSPACE); // dedicated benchmark workspace, never production (plan benchmark-workspace-isolation)
   const runId = process.env.PAPERCUSP_PB_RUN_ID ?? `pb-${args.paperId}`;
   const req: PaperReplicationRequest = {
     paperId: args.paperId,

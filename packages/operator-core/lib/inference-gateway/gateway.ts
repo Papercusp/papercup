@@ -47,6 +47,11 @@ const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-
  *  transient-throttle duration: long enough to let it clear, short enough not to over-bench an
  *  account that's already recovered (which would thin the pool under broad concurrent contention). */
 const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
+/** When EVERY pool account is transiently throttled at once, the gateway waits out the soonest
+ *  account's short penalty and retries rather than forwarding a retryable (x-should-retry:true) 429.
+ *  This caps that wait so a request can never hang on a hard/long reset (a multi-hour usage cap is
+ *  forwarded, not waited on). Sized to cover a bare-429 burst penalty + slack. */
+const ALL_THROTTLED_RECOVERY_WAIT_CAP_MS = 20 * 1000;
 /** Inspect a NON-200 upstream body up to this many bytes for a usage/session-limit signature (the
  *  Claude-Code subscription cap — "You've hit your session limit · resets 10:50am" — a WALL the bee
  *  classifies as usage_limit + WON'T retry). Such error bodies are tiny; this just bounds the read.
@@ -591,7 +596,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
               active = next;
               gov = governorForAccount(model, active.accountId);
             } else {
-              proceed = false; // no other account to try → don't spin on the same one; forward the error.
+              // No OTHER account has budget — EVERY pool account is throttled. For a SHORT TRANSIENT
+              // throttle (x-should-retry:true burst / bare-429 — `exhaustResetAt` is seconds away,
+              // capacity exists), forwarding the retryable 429 makes an in-process caller (scout/gym,
+              // no CLI retry budget) fail with $0 — which is exactly the "the gateway should absorb
+              // this" gap. So WAIT OUT the soonest account's short penalty and retry it, instead of
+              // giving up. Bounded: only for a genuinely transient reset (NOT a multi-hour usage cap)
+              // and to ALL_THROTTLED_RECOVERY_WAIT_CAP_MS, with the attempt counter still capping total
+              // iterations — so a request can never hang unbounded.
+              const waitMs = internalRetry.exhaustResetAt - Date.now();
+              if (internalRetry.exhaustResetAt > 0 && waitMs > 0 && waitMs <= ALL_THROTTLED_RECOVERY_WAIT_CAP_MS) {
+                internalRetry.backoffMs = Math.max(internalRetry.backoffMs, waitMs);
+                // `active` is unchanged (onExhausted didn't rotate); its penalty expires during the
+                // wait, so the retry re-hits the now-recovered account. proceed stays true.
+                log('warn', `inference-gateway: all accounts transiently throttled on ${model} → waiting ${waitMs}ms for soonest recovery + retry (not forwarding a retryable 429)`);
+              } else {
+                proceed = false; // hard cap / multi-hour reset → genuinely out of capacity; forward.
+              }
             }
           }
           if (proceed) {
