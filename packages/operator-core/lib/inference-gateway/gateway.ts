@@ -77,6 +77,12 @@ export const PRIORITY_HEADER = 'x-papercusp-priority';
 /** Header a spawn sets to pin its requests to one pool account for cache affinity
  *  (inference-gateway-multi-credential-routing P-003). Stripped before the upstream forward. */
 export const ACCOUNT_HEADER = 'x-papercusp-account';
+/** Response header naming the pool account the gateway ACTUALLY routed a request to. Lets the
+ *  caller (psu launcher / bootstrap-su / tests / operator) detect a silent fallback off a pinned
+ *  account — e.g. the pin was ignored because the gateway's pool didn't contain it (the
+ *  stale-`local`-pool fault), or it failed over off a paced/paused account. Not forwarded upstream
+ *  (it's set on the response back to the client). */
+export const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
 const ANTHROPIC_VERSION = '2023-06-01';
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
 const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
@@ -428,7 +434,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         res,
         429,
         { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: account '${active.accountId}' paced/paused; retry after ${retryAfterSec}s` }, gateway: true },
-        { 'retry-after': String(retryAfterSec) },
+        { 'retry-after': String(retryAfterSec), [ROUTED_ACCOUNT_HEADER]: active.accountId },
       );
       return;
     }
@@ -572,6 +578,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         up.headers.forEach((v, k) => {
           if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
         });
+        // Detectability: name the account this request ACTUALLY egressed on, so a silent fallback
+        // off a pin (unknown id / paced-account failover) is visible to the caller, not invisible.
+        outHeaders[ROUTED_ACCOUNT_HEADER] = active.accountId;
         res.writeHead(up.status, outHeaders);
         if (peekedHead !== null) {
           // We already consumed this body via peekBody — write the peeked head, then stream any remainder.

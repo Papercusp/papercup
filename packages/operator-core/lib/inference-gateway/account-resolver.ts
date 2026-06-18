@@ -14,19 +14,56 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { loadAccountPool } from '../deployment/account-pool-store';
-import { accountByCredentialRef, type AccountEgress } from '../deployment/account-pool';
+import { accountByCredentialRef, type AccountEgress, type AccountPool } from '../deployment/account-pool';
 
 export interface ResolvedAccount {
   accountId: string;
   credentialRef: string;
-  /** How it was resolved (for /healthz + logs). */
-  source: 'env' | 'sole-pool-account' | 'local-fallback';
+  /** How it was resolved (for /healthz + logs). `pool` = one entry of a multi-account pool;
+   *  `sole-pool-account` = the single registered account; `env` = the PAPERCUSP_ACCOUNT_ID pin;
+   *  `local-fallback` = the box's own login (no accounts registered). */
+  source: 'env' | 'pool' | 'sole-pool-account' | 'local-fallback';
   /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress. */
   egress?: AccountEgress;
 }
 
+/**
+ * Load the account pool, retrying a TRANSIENT read error (a PG blip) a few times, then THROWING.
+ *
+ * This is the fix for the silent-`local`-fallback fault: the gateway holds its resolved pool for its
+ * whole lifetime, so a single swallowed read error used to collapse routing to the box's `local`
+ * credential for hours — every `x-papercusp-account` pin silently ignored, all usage landing on the
+ * wrong account. A THROW here fails the supervised gateway CLOSED (bin.ts → exit 1 → systemd
+ * Restart=always), so it retries against a healthy DB instead of caching a wrong one-account pool.
+ *
+ * Crucially distinct from a genuinely EMPTY pool (a fresh box with no accounts registered):
+ * loadAccountPool RESOLVES `{accounts:[]}` without throwing, which the callers still treat as the
+ * legitimate `local` fallback. Only a read FAILURE fails closed.
+ */
+const POOL_LOAD_ATTEMPTS = 3;
+const POOL_LOAD_BACKOFF_MS = 150;
+
+async function loadPoolOrThrow(ws?: string): Promise<AccountPool> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= POOL_LOAD_ATTEMPTS; attempt++) {
+    try {
+      return await loadAccountPool(ws);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < POOL_LOAD_ATTEMPTS) {
+        await new Promise<void>((r) => setTimeout(r, POOL_LOAD_BACKOFF_MS * attempt));
+      }
+    }
+  }
+  throw new Error(
+    `inference-gateway: account-pool load failed after ${POOL_LOAD_ATTEMPTS} attempts ` +
+      `(${(lastErr as Error)?.message ?? String(lastErr)}); failing closed rather than silently ` +
+      `collapsing to the local credential and ignoring every account pin — the supervised gateway will retry`,
+  );
+}
+
 export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount> {
-  const pool = await loadAccountPool(ws).catch(() => ({ accounts: [] as never[] }));
+  const pool = await loadPoolOrThrow(ws);
   const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
   if (wanted) {
     const acct = pool.accounts.find((a) => a.id === wanted);
@@ -52,12 +89,12 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
  * is to use them all, primary = pool order.
  */
 export async function resolveAccountPool(ws?: string): Promise<ResolvedAccount[]> {
-  const pool = await loadAccountPool(ws).catch(() => ({ accounts: [] as never[] }));
+  const pool = await loadPoolOrThrow(ws);
   const all: ResolvedAccount[] = pool.accounts.map((a) => ({
     accountId: a.id,
     credentialRef: a.credentialRef,
     egress: a.egress,
-    source: 'sole-pool-account' as const,
+    source: 'pool' as const,
   }));
   if (all.length === 0) {
     const localBundle = join(homedir(), '.claude', '.credentials.json');
