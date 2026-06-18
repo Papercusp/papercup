@@ -45,6 +45,49 @@ export function isRequeueableFeatureState(status: string | null | undefined): bo
   return status != null && status !== '' && !FEATURE_NON_REQUEUE_STATES.includes(status);
 }
 
+/**
+ * The canonical feature-family lifecycle states an AGENT may set via the validated
+ * agent-facing path (work_items:set_state / :complete → setWorkItemState). GAP 5 /
+ * P-011 / D-010. The DBOS pipeline writes phase statuses (scoping/building/…) via
+ * RAW SQL and is NOT governed by this — so app-level validation catches agent typos
+ * without freezing the pipeline (D-004). A genuinely-new agent-settable state must be
+ * ADDED here deliberately (the reviewed extension), not silently drifted.
+ */
+export const FEATURE_FAMILY_STATES: readonly string[] = [
+  'todo', 'in_progress', 'validating', 'passed', 'failing', 'deprecated', 'blocked', 'wip', 'needs-human',
+];
+
+/**
+ * Cross-dialect + drift-variant aliases → canonical feature state. The canonical
+ * lifecycle dialect (done/dropped/…) folds to the native vocabulary, AND known
+ * separator/case typos (`in-progress`, `needs_human`) fold to canonical so a typo
+ * lands in the RIGHT state instead of a non-dispatchable limbo (the GAP-5 harm).
+ * Inputs are lower-cased before lookup, so case typos normalize too.
+ */
+const FEATURE_STATE_ALIASES: Record<string, string> = {
+  // canonical lifecycle dialect → native feature vocabulary
+  done: 'passed', resolved: 'passed', dropped: 'deprecated', closed: 'deprecated', open: 'todo',
+  // known separator/case drift variants → canonical
+  'in-progress': 'in_progress', inprogress: 'in_progress', 'in progress': 'in_progress',
+  needs_human: 'needs-human', needshuman: 'needs-human', 'needs human': 'needs-human',
+  'need-human': 'needs-human',
+};
+
+/**
+ * Normalize an agent-supplied feature state onto the canonical vocabulary, or REJECT
+ * it (typed, listing the valid set) — the GAP-5 typo guard (P-011 / D-010). Folds
+ * case + known separator drift; a truly-unknown state is rejected. Trusted internal
+ * restore paths (autonomy revert) bypass this via setWorkItemState's allowNonCanonical.
+ */
+export function normalizeFeatureStateInput(
+  state: string,
+): { ok: true; state: string } | { ok: false; valid: readonly string[] } {
+  const lower = state.trim().toLowerCase();
+  const mapped = FEATURE_STATE_ALIASES[lower] ?? lower;
+  if (FEATURE_FAMILY_STATES.includes(mapped)) return { ok: true, state: mapped };
+  return { ok: false, valid: FEATURE_FAMILY_STATES };
+}
+
 /** Default cap on how many times the stale-claim reaper will requeue one row
  *  before dead-lettering it to `blocked` (D-007). Env-overridable. */
 export const DEFAULT_STALE_RECLAIM_REQUEUE_CAP = 3;

@@ -32,6 +32,16 @@ export default defineTool({
     if (!result.ok) {
       return { content: [{ type: 'text', text: JSON.stringify({ error: result.error }) }] };
     }
-    return { content: [{ type: 'text', text: JSON.stringify(result.data) }] };
+    // P-008: augment with this harness's stuck-queue slice (freed-but-non-dispatchable
+    // + dead-held feature rows). Best-effort — omitted if the read fails. The
+    // workspace-global reaper metric + reaper-liveness alarm live in system-health.
+    let stuckQueue: { stuckFeatures: number; deadHeldFeatures: number } | undefined;
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { activeWorkspaceId } = await import('../../workspace-registry');
+      const { readHarnessStuckFeatures } = await import('../../work-queue-health');
+      stuckQueue = await readHarnessStuckFeatures(getOrgPg().sql, activeWorkspaceId(), args.slug);
+    } catch { /* best-effort — omit stuckQueue on failure */ }
+    return { content: [{ type: 'text', text: JSON.stringify({ ...result.data, stuckQueue }) }] };
   },
 });

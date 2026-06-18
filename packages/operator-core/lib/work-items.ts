@@ -45,7 +45,7 @@ import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { autoPickableWhereSql } from './work-items-admission';
-import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES } from './work-item-dispatch-states';
+import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
 import {
   ISSUE_KIND,
   type IssueKind,
@@ -647,14 +647,12 @@ export function normalizeWorkItemState(
   state: string,
 ): { ok: true; state: string } | { ok: false; valid: readonly string[] } {
   if (family === 'feature') {
-    const aliases: Record<string, string> = {
-      done: 'passed',
-      resolved: 'passed',
-      dropped: 'deprecated',
-      closed: 'deprecated',
-      open: 'todo',
-    };
-    return { ok: true, state: aliases[state] ?? state };
+    // P-011 / D-010: validate against the canonical agent-settable set (folding the
+    // canonical lifecycle dialect + known separator/case drift); a truly-unknown state
+    // is rejected with the valid list — the GAP-5 typo guard. The DBOS pipeline writes
+    // phase statuses via raw SQL and bypasses this path entirely (D-004), and trusted
+    // restores bypass via setWorkItemState's allowNonCanonical.
+    return normalizeFeatureStateInput(state);
   }
   const aliases: Record<string, string> = {
     done: 'resolved',
@@ -683,16 +681,23 @@ export function normalizeWorkItemState(
 /** Lifecycle.setState — feature → status; issue → state. The requested state is
  *  normalized onto the family's native vocabulary first (EI-24); an unmappable
  *  state throws a typed error naming the valid set. */
-export async function setWorkItemState(id: string, state: string, opts: { harness?: string; by?: string } = {}): Promise<WorkItem | null> {
+export async function setWorkItemState(id: string, state: string, opts: { harness?: string; by?: string; allowNonCanonical?: boolean } = {}): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   const norm = normalizeWorkItemState(wi.family, state);
-  if (!norm.ok) {
+  if (norm.ok) {
+    state = norm.state;
+  } else if (opts.allowNonCanonical && wi.family === 'feature') {
+    // Trusted internal restore (e.g. autonomy tripwire revert restoring a CAPTURED
+    // prior DB state, possibly a raw-SQL pipeline phase): the feature family has no DB
+    // CHECK, so a non-canonical restore safely bypasses the agent-typo guard (D-010).
+    // The issue family is NOT bypassable — it has a real DB CHECK that would reject it.
+    state = state.trim();
+  } else {
     throw new Error(
       `work_item '${id}' (kind=${wi.kind}) cannot take state '${state}' — valid: ${norm.valid.join(', ')}`,
     );
   }
-  state = norm.state;
   let result: WorkItem | null;
   if (wi.family === 'issue') {
     const updated = await setIssueState(id, state as IssueState, opts.by);

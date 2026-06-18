@@ -115,6 +115,23 @@ describe('workItemsStatus', () => {
   it('ok otherwise (backlog alone is not unhealthy)', () => {
     expect(workItemsStatus(wi({ blocked: 50 }))).toBe('ok');
   });
+  // Stuck-items recovery (work-queue-stuck-item-recovery P-008 / P-009).
+  it('crit when the reaper is WEDGED (recorded but aged-out: reaperStale + non-null age)', () => {
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: 600 }))).toBe('crit');
+  });
+  it('warn (not crit) when the reaper has NEVER recorded a run (null age — fresh boot)', () => {
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: null }))).toBe('warn');
+  });
+  it('warn when any feature is freed-but-non-dispatchable (stuck)', () => {
+    expect(workItemsStatus(wi({ stuckFeatures: 1 }))).toBe('warn');
+  });
+  it('warn on a dead-held claim backlog or a dead-assigned issue', () => {
+    expect(workItemsStatus(wi({ deadHeldClaims: 3 }))).toBe('warn');
+    expect(workItemsStatus(wi({ deadAssignedIssues: 2 }))).toBe('warn');
+  });
+  it('ok when recovery fields are healthy (reaper fresh, nothing stuck)', () => {
+    expect(workItemsStatus(wi({ reaperStale: false, reaperAgeSec: 30, stuckFeatures: 0, deadHeldClaims: 0 }))).toBe('ok');
+  });
 });
 
 describe('workFeedStatus', () => {
