@@ -622,6 +622,17 @@ export const INFRA_TRANSIENT_ERROR_RE =
 export const EXTERNAL_RATE_LIMIT_ERROR_RE =
   /openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests/i;
 
+/**
+ * Caller-side scope/arg errors that surface with a NON-`invalid_args` code (usually
+ * `handler_error`/`harness_required`): the caller omitted or named an unregistered
+ * harness, or the session isn't workspace-scoped. These are DX/caller problems
+ * (kind=change), NOT tool bugs — without this they fall through to `structural` and
+ * flood the auto-implement bug lane with un-fixable "the caller passed the wrong arg"
+ * EIs (watchdog-embed-resilience-and-dedup-2026-06-17 P-007). MIRROR of the SQL clause.
+ */
+export const CALLER_SCOPE_ERROR_RE =
+  /requires a workspace-scoped call|No harness specified|harness_required|not registered in (any workspace|harness_shared)/i;
+
 export function classifyToolError(
   errorCode: string | null | undefined,
   status: string,
@@ -630,11 +641,18 @@ export function classifyToolError(
   const m = errorMessage ?? '';
   if (errorCode) {
     if (errorCode === 'timeout') return 'transient';
+    // A timeout that surfaced as handler_error ("exceeded timeout … handler returned but
+    // signal had aborted" — interactive chat:ask_choice, slow plans:attention) is still a
+    // timeout, not a structural bug (P-009). The message form previously ran only in the
+    // no-errorCode branch, so these mis-filed as structural.
+    if (/exceeded timeout|timed?\s*out/i.test(m)) return 'transient';
     if (
       errorCode === 'invalid_args' || errorCode === 'invalid_input' ||
       errorCode === 'role_not_allowed' || errorCode === 'missing_capability' ||
-      errorCode === 'quota_exceeded'
+      errorCode === 'quota_exceeded' || errorCode === 'harness_required'
     ) return 'caller';
+    // Caller-side scope/arg error carrying a non-invalid_args code (P-007, mirrors SQL).
+    if (CALLER_SCOPE_ERROR_RE.test(m)) return 'caller';
     // EXTERNAL provider rate-limit (OpenAI embed TPM 429) — capacity, not a code bug.
     // Checked before the structural fallback so a sustained embed-429 is not mis-filed
     // as a deterministic tool defect (mirrors SQL).
@@ -645,7 +663,7 @@ export function classifyToolError(
     return 'structural'; // unauthorized / handler_error / harness_required / any other deterministic code
   }
   if (status === 'timeout' || /exceeded timeout|timed?\s*out/i.test(m)) return 'transient';
-  if (status === 'role-not-allowed' || /^invalid_args:/i.test(m)) return 'caller';
+  if (status === 'role-not-allowed' || /^invalid_args:/i.test(m) || CALLER_SCOPE_ERROR_RE.test(m)) return 'caller';
   if (EXTERNAL_RATE_LIMIT_ERROR_RE.test(m)) return 'rate-limit'; // external provider rate-limit / quota
   if (INFRA_TRANSIENT_ERROR_RE.test(m)) return 'transient'; // shared-infra exhaustion, not a tool bug
   return 'structural'; // unclassified error → structural; the per-class FIRE bar gates noise
@@ -800,9 +818,16 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
     WITH fail AS (
       SELECT tool_name,
         CASE
-          WHEN error_code = 'timeout' OR status = 'timeout' THEN 'transient'
-          WHEN error_code IN ('invalid_args','invalid_input','role_not_allowed','missing_capability','quota_exceeded')
-               OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%' THEN 'caller'
+          -- A timeout (incl. one that surfaced as handler_error: "exceeded timeout …
+          -- handler returned but signal had aborted") is transient, not a tool bug (P-009).
+          WHEN error_code = 'timeout' OR status = 'timeout'
+               OR error_message ~* 'exceeded timeout|timed out' THEN 'transient'
+          -- Caller-side arg/scope errors (incl. handler_error/harness_required: missing or
+          -- unregistered harness, un-scoped session) are DX, not tool bugs (P-007, mirrors
+          -- classifyToolError / CALLER_SCOPE_ERROR_RE).
+          WHEN error_code IN ('invalid_args','invalid_input','role_not_allowed','missing_capability','quota_exceeded','harness_required')
+               OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%'
+               OR error_message ~* 'requires a workspace-scoped call|No harness specified|not registered in (any workspace|harness_shared)' THEN 'caller'
           -- EXTERNAL provider rate-limit (mirrors classifyToolError / EXTERNAL_RATE_LIMIT_ERROR_RE):
           -- an OpenAI embedding TPM 429 ("Rate limit reached" / "tokens per min" / openai_embed_failed_429)
           -- is CAPACITY, not a code bug. Checked before the structural fallback so a sustained
@@ -1538,6 +1563,41 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
  * status array is what makes a forever-failing collector visible — before this
  * the only trace of a rejected collector was a `console.warn` nobody tails.
  */
+/**
+ * Ephemeral benchmark / throwaway harness instances — the xbench fleet
+ * (`xbench-su-*`, `xbq…` hive hashes), `*-DELETEME` memory-capacity probes, hive-loop
+ * e2e harnesses, gym-eval sandboxes — spin up, churn, and are torn down constantly.
+ * Their stalled features, unresolved git-sync escalations, and saturated-fleet governor
+ * signals are TEST DEBRIS, not improvements: on 2026-06-17 they were ~94% of open
+ * stalled-feature and 100% of open unresolved-escalation EIs, drowning the real signal.
+ * Conservative pattern (only unmistakable throwaway markers) so a real harness slug —
+ * papercup, papercup-org, papercup-hive, sheets, … — never matches.
+ * (watchdog-embed-resilience-and-dedup-2026-06-17 P-006.)
+ */
+export const EPHEMERAL_BENCHMARK_SLUG_RE =
+  /(^|[^a-z0-9])(xbench|xbq[a-z0-9]{6}|hiveloop|memcap|memrun)|-instance[_-]|_instance[_-]|deleteme|^e2e-imp|^sb-gym|gym-eval|^bench-|smoke-p[0-9]/i;
+
+export function isEphemeralBenchmarkHarnessSlug(slug: string | null | undefined): boolean {
+  return !!slug && EPHEMERAL_BENCHMARK_SLUG_RE.test(slug);
+}
+
+/** Per-harness watchdog sources whose signal is meaningless for a torn-down benchmark
+ *  instance. Global code-health sources (red-test, repeated-tool-error, migration-drift,
+ *  service-down, insight-staleness, …) are NEVER filtered — they are not per-harness. */
+const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
+  'stalled-feature', 'unresolved-escalation', 'escalation-spike', 'orphaned-spawn',
+  'failed-spawn', 'stuck-plan', 'smoke-fail', 'fire-circuit-open', 'ship-link-stuck',
+  'governor-starvation',
+]);
+
+/** A signal is ephemeral-benchmark debris when it is a per-harness source AND any slug it
+ *  carries (scope `harness:<slug>`, key, or title) matches the benchmark pattern. */
+export function isEphemeralBenchmarkSignal(s: WatchdogSignal): boolean {
+  if (!HARNESS_SCOPED_WATCHDOG_SOURCES.has(s.source)) return false;
+  const slugFromScope = s.scope?.startsWith('harness:') ? s.scope.slice('harness:'.length) : '';
+  return [slugFromScope, s.key, s.title].some((c) => isEphemeralBenchmarkHarnessSlug(c));
+}
+
 export async function collectWatchdogSignalsDetailed(
   workspaceId: string,
   opts: CollectOptions = {},
@@ -1563,7 +1623,24 @@ export async function collectWatchdogSignalsDetailed(
       statuses.push({ name, ok: false, signalCount: 0, error });
     }
   }
-  return { signals, collectors: statuses };
+  // P-006: drop ephemeral benchmark-instance debris (xbench / *-DELETEME / gym-eval /
+  // hive-loop) from the per-harness sources — torn-down test churn, not improvements.
+  // Counted into a synthetic collector status so the drop is visible, never silent.
+  const kept: WatchdogSignal[] = [];
+  let benchmarkDropped = 0;
+  for (const sig of signals) {
+    if (isEphemeralBenchmarkSignal(sig)) benchmarkDropped++;
+    else kept.push(sig);
+  }
+  if (benchmarkDropped > 0) {
+    statuses.push({
+      name: 'ephemeral-benchmark-filter',
+      ok: true,
+      signalCount: 0,
+      note: `dropped ${benchmarkDropped} ephemeral-benchmark harness signal(s) — xbench/DELETEME/gym-eval/hive-loop debris (P-006)`,
+    });
+  }
+  return { signals: kept, collectors: statuses };
 }
 
 /** Back-compat: signals only (delegates to the detailed collector). */
