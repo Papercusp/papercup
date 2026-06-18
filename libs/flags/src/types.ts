@@ -703,6 +703,11 @@ export const FLAGS = {
   // persona is the whole system prompt. DEFAULT OFF (unverified fleet-wide hot-path) — OFF =
   // today's stdin/append, byte-identical. Owner flips after a per-role×backend live smoke. KNOWN_DARK_FLAGS.
   REPLACE_CLAUDE_BASE: "papercusp-replace-claude-base",
+  // watchdog-and-exposed-systems-improvement-2026-06-18 P-009: the watchdog auto-CLOSES
+  // an EI whose signal stopped firing for N ran-ticks. DEFAULT OFF — auto-closing real
+  // improvement items autonomously is unsafe until the owner reviews; OFF = today's
+  // behavior (escalate-only, never auto-resolve), byte-identical. KNOWN_DARK_FLAGS.
+  WATCHDOG_AUTO_CLOSE: "papercusp-watchdog-auto-close",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -712,6 +717,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
   // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.
   [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: false,
+  // DEFAULT OFF (P-009): the watchdog auto-close sweep. OFF ⇒ escalate-only (today's
+  // behavior, byte-identical). Owner flips ON after reviewing the guards. KNOWN_DARK_FLAGS.
+  [FLAGS.WATCHDOG_AUTO_CLOSE]: false,
   // DEFAULT OFF (domain-generic-agent-personas P-006): su persona via the blueprint prompt-resolve
   // chain. OFF ⇒ today's renderSuPlaybook (byte-identical). Flip after a live su-launch smoke.
   [FLAGS.SU_BLUEPRINT_PERSONA]: false,
