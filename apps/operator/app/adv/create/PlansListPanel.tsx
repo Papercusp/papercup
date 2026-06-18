@@ -24,6 +24,7 @@ import PlanFilters from '@/app/admin/plans/PlanFilters';
 import PlanBucketTabs from '@/app/admin/plans/PlanBucketTabs';
 import PlanRail from '@/app/admin/plans/PlanRail';
 import { usePlanSearch } from '@/app/admin/plans/plans-api';
+import { Select } from '@/app/harness/Select';
 import {
   useCreateScope,
   usePlanListMaps,
@@ -161,22 +162,20 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
             <label className="pc-plans__harness-filter-label" htmlFor="pc-create-harness-filter">
               {t('pot')}
             </label>
-            <select
+            <Select
               id="pc-create-harness-filter"
-              className="pc-plans__harness-filter-select"
+              triggerClassName="pc-plans__harness-filter-select"
               value={harnessFilter ?? ''}
-              onChange={(e) => void setHarnessFilter(e.target.value || null)}
-            >
-              <option value="">All ({maps.planList.data?.plans.length ?? 0})</option>
-              {maps.harnessOptions.map((h) => {
-                const count = (maps.planList.data?.plans ?? []).filter((p) => p.harness === h).length;
-                return (
-                  <option key={h} value={h}>
-                    {h} ({count})
-                  </option>
-                );
-              })}
-            </select>
+              onChange={(value) => void setHarnessFilter(value === '_all' ? null : value)}
+              ariaLabel={`Filter plans by ${t('pot', { lower: true })}`}
+              options={[
+                { value: '_all', label: `All (${maps.planList.data?.plans.length ?? 0})` },
+                ...maps.harnessOptions.map((h) => {
+                  const count = (maps.planList.data?.plans ?? []).filter((p) => p.harness === h).length;
+                  return { value: h, label: `${h} (${count})` };
+                }),
+              ]}
+            />
           </div>
         ) : null}
 

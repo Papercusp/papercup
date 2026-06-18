@@ -39,7 +39,17 @@ type PgClient = ReturnType<typeof postgres>;
 export type AdminPgFactory = (url: string, searchPath: string) => PgClient;
 
 const defaultFactory: AdminPgFactory = (url, searchPath) =>
-  postgres(url, { max: 1, connect_timeout: 5, connection: { search_path: searchPath } });
+  postgres(url, {
+    max: 1,
+    connect_timeout: 5,
+    // application_name so this cached admin client is attributable in
+    // pg_stat_activity (C0-2 of backend-connection-scaling-2026-06-17). Capped at
+    // PG's 63-byte NAMEDATALEN-1 limit.
+    connection: {
+      search_path: searchPath,
+      application_name: `pcusp:admin-cache:p${process.pid}`.slice(0, 63),
+    },
+  });
 
 const cache = new Map<string, PgClient>();
 

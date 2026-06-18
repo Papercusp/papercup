@@ -372,6 +372,17 @@ const post = defineTool({
       process.stderr.write(`[bootstrap-role] saved-prompts materialize failed (non-fatal): ${e?.message}\n`);
     }
 
+    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
+    // resolve server-side + thread via envelopeEnv (same env the fleet + su paths read) so an
+    // interactive role session's prompt REPLACES the Claude base when armed (coherent with
+    // suLaunchArgs). Fail-soft ⇒ off (the launcher uses --append, byte-identical to today).
+    let replaceClaudeBase = false;
+    try {
+      replaceClaudeBase = await getFlag(FLAGS.REPLACE_CLAUDE_BASE, workspace);
+    } catch {
+      /* flag miss ⇒ replace-base stays off */
+    }
+
     const result: BootstrapRoleResult = {
       status: 'ok',
       sessionId,
@@ -393,6 +404,7 @@ const post = defineTool({
         // session's calls + hooks share one owner and concurrent sessions
         // don't collide. Same value recorded as adv_sessions.coord_owner_id.
         PAPERCUSP_SID: sid,
+        ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),

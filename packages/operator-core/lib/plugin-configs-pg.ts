@@ -7,10 +7,14 @@
  * and Zero subscriptions ("which harnesses have plugin X configured how?").
  *
  * Encryption-at-rest (Migration 039): the JSONB payload is pgcrypto-encrypted
- * via pgp_sym_encrypt into the `config_ct BYTEA` column; the legacy plaintext
- * `config` column is always written NULL by this helper. The on-disk file is
- * a separate exposure — the substrate plugin loader cannot decrypt — and is
- * mode 0600 (see oauth/storage-fs.ts).
+ * via pgp_sym_encrypt into the `config_ct BYTEA` column. The legacy plaintext
+ * `config` column is dead — the payload moved to config_ct — so this helper
+ * never writes it: it is `NOT NULL DEFAULT '{}'` in the shipped schema, so we
+ * OMIT it on insert (the default applies) rather than writing NULL (which the
+ * constraint would reject). `updated_at` is the bigint epoch-MS the column
+ * stores, not `now()` (a timestamptz the bigint column would reject). The
+ * on-disk file is a separate exposure — the substrate plugin loader cannot
+ * decrypt — and is mode 0600 (see oauth/storage-fs.ts).
  *
  * Contract:
  *   - Every API route that mutates a plugin-config file MUST call
@@ -49,16 +53,15 @@ export async function mirrorPluginConfig(
   await withWorkspace(activeWorkspaceId(), async (tx) => {
     await tx`
       INSERT INTO harness_shared.plugin_configs
-        (harness_slug, plugin_slug, config, config_ct, updated_at, workspace_id)
+        (harness_slug, plugin_slug, config_ct, updated_at, workspace_id)
       VALUES (
         ${harness}, ${plugin},
-        NULL, pgp_sym_encrypt(${text}, ${key}),
-        now(), ${activeWorkspaceId()}
+        pgp_sym_encrypt(${text}, ${key}),
+        (extract(epoch from now()) * 1000)::bigint, ${activeWorkspaceId()}
       )
       ON CONFLICT (harness_slug, plugin_slug) DO UPDATE
-        SET config = NULL,
-            config_ct = pgp_sym_encrypt(${text}, ${key}),
-            updated_at = now(),
+        SET config_ct = pgp_sym_encrypt(${text}, ${key}),
+            updated_at = (extract(epoch from now()) * 1000)::bigint,
             workspace_id = EXCLUDED.workspace_id
     `;
   });

@@ -19,6 +19,7 @@ import { openFeatureChat } from '@papercusp/papercup-shared';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import ChatPanel from '../../harness/ChatPanel';
+import { Select } from '../../harness/Select';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 // Terminal states excluded from the picker — steering targets in-flight work.
@@ -84,23 +85,16 @@ function StartChatPicker({ slug }: { slug: string }) {
         work item&apos;s Detail pane.
       </span>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', maxWidth: '100%' }}>
-        <select
+        <Select
           aria-label="Work item to chat about"
-          data-testid="adv-chat-pick"
+          testId="adv-chat-pick"
           value={featureId}
-          onChange={(e) => setFeatureId(e.target.value)}
+          onChange={setFeatureId}
           disabled={query.loading || items.length === 0}
-          style={{ maxWidth: 260, fontSize: 12, padding: '4px 6px' }}
-        >
-          <option value="">
-            {query.loading ? 'Loading work items…' : items.length === 0 ? 'No open work items' : 'Choose a work item…'}
-          </option>
-          {items.map((i) => (
-            <option key={i.id} value={i.id}>
-              {i.id} · {i.title}
-            </option>
-          ))}
-        </select>
+          placeholder={query.loading ? 'Loading work items…' : items.length === 0 ? 'No open work items' : 'Choose a work item…'}
+          triggerStyle={{ maxWidth: 260, fontSize: 12, padding: '4px 6px' }}
+          options={items.map((i) => ({ value: i.id, label: `${i.id} · ${i.title}` }))}
+        />
         <button
           type="button"
           data-testid="adv-chat-start"

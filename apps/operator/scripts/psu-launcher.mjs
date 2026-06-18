@@ -207,13 +207,21 @@ export const NATIVE_SCHEDULER_DENY_FLAG =
  * approvals/sandbox bypass MCP tool calls need (mirrors the codex-su
  * wrapper).
  */
-export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, nativeSessionId } = {}) {
+export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, nativeSessionId, replaceClaudeBase } = {}) {
   if (backend === 'claude') {
+    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
+    // mirror suLaunchArgs — when armed, the role prompt REPLACES the Claude coding base
+    // (--system-prompt-file + --exclude-dynamic-system-prompt-sections) so an interactive
+    // role session runs on OUR base too (coherent with the fleet + su/brain paths). Flag-off
+    // ⇒ --append-system-prompt-file, byte-identical to today.
+    const systemPromptArgs = replaceClaudeBase
+      ? ['--system-prompt-file', promptFile, '--exclude-dynamic-system-prompt-sections']
+      : ['--append-system-prompt-file', promptFile];
     return {
       bin: 'claude',
       args: [
         '--dangerously-skip-permissions',
-        '--append-system-prompt-file', promptFile,
+        ...systemPromptArgs,
         '--mcp-config', mcpJsonPath,
         '--strict-mcp-config',
         // Force the spec-minted session id (mirrors suLaunchArgs) so `psu --resume`
@@ -234,7 +242,11 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
     // files + whose activity belongs in the fleet view, so it gets the same hook the
     // su omp launch + role codex/claude do. (claude/codex role hooks are user-level /
     // baked; omp's is the `-e` module.)
-    const args = ['--approval-mode', 'yolo', '--append-system-prompt', promptFile];
+    // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
+    const args = [
+      '--approval-mode', 'yolo',
+      replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
+    ];
     if (coordExtPath) args.push('-e', coordExtPath);
     return { bin: 'omp', args };
   }
@@ -1494,6 +1506,9 @@ async function roleFlow(args, role, rolesMeta) {
     // EXACTLY it — never `--continue`'s most-recent-in-cwd peer on the shared
     // tree (unify-launch-mechanics P-003 invariant d).
     nativeSessionId: res.envelopeEnv?.PAPERCUSP_NATIVE_SESSION_ID || null,
+    // P-014: REPLACE_CLAUDE_BASE — bootstrap-role resolves the flag server-side and threads
+    // it via envelopeEnv (same env the fleet + su paths read). Off/absent ⇒ --append (today).
+    replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === '1',
   });
   console.error(
     `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +

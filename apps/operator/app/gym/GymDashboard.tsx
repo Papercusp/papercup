@@ -23,6 +23,7 @@ import { useLexicon } from '@/lib/useLexicon';
 // The compare table is lifted to a shared eval-viz component (P-021 / BRIEF 10),
 // reused on the Evaluation surface; the gym renders the same one here.
 import { Compare } from '../eval-viz';
+import { Select } from '../harness/Select';
 
 // Monaco DiffEditor (the gym-ui-handoff's named merge surface) — lazy so it never weighs on
 // first paint, and wrapped (below) in an error boundary that falls back to the robust jsdiff
@@ -78,12 +79,18 @@ export default function GymDashboard() {
         <h1 style={{ fontSize: 18, margin: 0 }}>Harness Gym</h1>
         <label style={{ ...mono, display: 'flex', alignItems: 'center', gap: 6 }}>
           {t('pot', { lower: true })}
-          <select value={slug} onChange={(e) => void setSlug(e.target.value)} data-testid="gym-harness-select" style={{ ...mono, background: '#0e0e12', color: 'inherit', border: '1px solid #2a2a33', borderRadius: 6, padding: '3px 6px' }}>
-            <option value="">— select —</option>
-            {harnesses.map((h) => (
-              <option key={h.harnessSlug} value={h.harnessSlug}>{h.harnessSlug}{h.pendingCount ? ` (${h.pendingCount})` : ''}</option>
-            ))}
-          </select>
+          <Select
+            value={slug}
+            onChange={(value) => void setSlug(value)}
+            testId="gym-harness-select"
+            ariaLabel={`Select ${t('pot', { lower: true })}`}
+            triggerStyle={{ ...mono, padding: '3px 6px' }}
+            options={harnesses.map((h) => ({
+              value: h.harnessSlug,
+              label: `${h.harnessSlug}${h.pendingCount ? ` (${h.pendingCount})` : ''}`,
+            }))}
+            placeholder="select"
+          />
         </label>
         {harnessErr && <span style={{ color: '#ff6b6b', ...mono }} data-testid="gym-harness-error">{harnessErr}</span>}
       </header>

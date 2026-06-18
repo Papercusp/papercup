@@ -31,12 +31,14 @@ import PreviewPanel from './PreviewPanel';
 import SessionsPanel from './SessionsPanel';
 import ObservationsPanel from './ObservationsPanel';
 import { useCreateScope, usePlanListMaps, useCreateView } from './use-create-data';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 export default function MainViewPanel(_props?: PanelComponentProps) {
   const [view] = useCreateView();
   const [plan, setPlan] = useQueryState('plan', parseAsString);
   const [q] = useQueryState('q', parseAsString.withDefault(''));
   const dirtyRef = useRef(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Plans view always shows a full plan. Auto-open the first plan in the
   // (scoped) list when none is selected and no search is active, so entering
@@ -74,10 +76,16 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
         showBack={false}
         onClose={() => {
           if (
-            dirtyRef.current &&
-            typeof window !== 'undefined' &&
-            !window.confirm('Discard unsaved changes to this plan?')
+            dirtyRef.current
           ) {
+            void askConfirm({
+              title: 'Discard unsaved edits?',
+              body: 'Your current plan edits will be discarded.',
+              confirmLabel: 'Discard',
+              destructive: true,
+            }).then((ok) => {
+              if (ok) void setPlan(null);
+            });
             return;
           }
           void setPlan(null);
@@ -89,6 +97,7 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
         onStartStatusChange={() => {}}
         onPlanStatusChange={() => {}}
       />
+      {confirmEl}
       </div>
     );
   }

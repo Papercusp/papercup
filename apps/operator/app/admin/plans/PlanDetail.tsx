@@ -38,6 +38,7 @@ import RevisionConversationModal from './RevisionConversationModal';
 import AgentsPanel from './AgentsPanel';
 import RunsPanel from './RunsPanel';
 import PlanConflictModal from './PlanConflictModal';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import PlanStatusPopover, {
   resolveItemId,
   type PendingStatusFlip,
@@ -74,6 +75,7 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
   const { data: lock } = usePlanLock(data ? slug : null, archived);
   const [writeTick, setWriteTick] = useState(0);
   const { data: lintReport } = usePlanLint(data ? slug : null, writeTick);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const editorScopeRef = useRef<HTMLDivElement>(null);
 
   // P-013: subscribe to features promoted from this plan for live status badges.
@@ -261,8 +263,13 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
     // visible.
     setTab('editor');
   };
-  const exitEdit = () => {
-    if (dirty && !window.confirm('Discard unsaved edits to this plan?')) return;
+  const exitEdit = async () => {
+    if (dirty && !await askConfirm({
+      title: 'Discard unsaved edits?',
+      body: 'Your current plan edits will be discarded.',
+      confirmLabel: 'Discard',
+      destructive: true,
+    })) return;
     setDraft(null);
     setRationale('');
     setSaveError(null);
@@ -331,7 +338,7 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
               dirty={dirty}
               locked={locked}
               onEnter={enterEdit}
-              onExit={exitEdit}
+              onExit={() => void exitEdit()}
             />
           </>
         )
@@ -376,22 +383,30 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
           rationale={rationale}
           onRationaleChange={setRationale}
           onSave={save}
-          onCancel={exitEdit}
+          onCancel={() => void exitEdit()}
         />
       ) : null}
       <LintBanner report={lintReport} scopeRef={editorScopeRef} />
       <PlanTabStrip
         tab={tab}
         editing={editing}
-        onTab={(next) => {
-          if (editing && next !== 'editor') {
-            // Going away from the editor mid-edit would visually
-            // discard the draft. Confirm — same gate as exitEdit's
-            // "discard unsaved edits".
-            if (dirty && !window.confirm('Leave the editor with unsaved edits?')) {
-              return;
+          onTab={(next) => {
+            if (editing && next !== 'editor') {
+              // Going away from the editor mid-edit would visually
+              // discard the draft. Confirm — same gate as exitEdit's
+              // "discard unsaved edits".
+              if (dirty) {
+                void askConfirm({
+                  title: 'Leave editor?',
+                  body: 'Your current plan edits will be discarded when you leave the editor.',
+                  confirmLabel: 'Leave',
+                  destructive: true,
+                }).then((ok) => {
+                  if (ok) setTab(next);
+                });
+                return;
+              }
             }
-          }
           setTab(next);
         }}
       />
@@ -516,6 +531,7 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
         }}
         onKeepEditing={() => setConflict(null)}
       />
+      {confirmEl}
       {/* Revision modals are mounted here (P-020) — not under the
        *  Revisions tab — so a deep link `?rev=42` / `?convo=42`
        *  resolves regardless of which tab is active. */}

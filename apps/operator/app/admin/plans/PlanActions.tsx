@@ -25,6 +25,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '@/app/harness/Modal';
+import { Select } from '@/app/harness/Select';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import {
@@ -754,14 +755,12 @@ function AddItemDialog({
         </label>
         <label className="pc-plan-dialog__field">
           <span>Importance</span>
-          <select
+          <Select
             value={importance}
-            onChange={(e) => setImportance(e.target.value as Importance)}
-          >
-            {IMPORTANCE_LEVELS.map((lvl) => (
-              <option key={lvl} value={lvl}>{lvl}</option>
-            ))}
-          </select>
+            onChange={(value) => setImportance(value as Importance)}
+            ariaLabel="Plan item importance"
+            options={IMPORTANCE_LEVELS.map((lvl) => ({ value: lvl, label: lvl }))}
+          />
           <span className="pc-plan-dialog__hint">
             How much this matters — urgent (interrupt now / pick up first) · high
             (today) · normal (default) · low (safe to defer).

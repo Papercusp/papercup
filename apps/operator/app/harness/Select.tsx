@@ -97,8 +97,10 @@ export function Select({
   onChange,
   options,
   placeholder,
+  id,
   ariaLabel,
   disabled,
+  testId,
   triggerStyle,
   contentStyle,
   className,
@@ -108,8 +110,10 @@ export function Select({
   onChange: (value: string) => void;
   options: SelectEntry[];
   placeholder?: string;
+  id?: string;
   ariaLabel?: string;
   disabled?: boolean;
+  testId?: string;
   triggerStyle?: CSSProperties;
   contentStyle?: CSSProperties;
   className?: string;
@@ -118,7 +122,9 @@ export function Select({
   return (
     <RS.Root value={value} onValueChange={onChange} disabled={disabled}>
       <RS.Trigger
+        id={id}
         aria-label={ariaLabel}
+        data-testid={testId}
         className={triggerClassName ?? className}
         style={triggerClassName || className ? undefined : { ...TRIGGER_DEFAULT_STYLE, ...triggerStyle }}
       >

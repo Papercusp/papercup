@@ -84,7 +84,8 @@ describe('plugin-configs PG mirror (encryption-at-rest)', () => {
     const raw = await rootSql<{ config: unknown; ct: Buffer | null }[]>`
       SELECT config, config_ct AS ct FROM harness_shared.plugin_configs
        WHERE harness_slug = 'web' AND plugin_slug = 'github'`;
-    expect(raw[0]!.config).toBeNull(); // legacy plaintext column NOT populated
+    expect(raw[0]!.config).toEqual({}); // legacy plaintext column left at its '{}' default — never the payload
+    expect(JSON.stringify(raw[0]!.config)).not.toContain('ghp_secret'); // no plaintext secret at rest
     expect(raw[0]!.ct).toBeInstanceOf(Buffer); // ciphertext present
     expect(raw[0]!.ct!.toString('utf8')).not.toContain('ghp_secret'); // and it really is encrypted
   });

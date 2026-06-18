@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Button } from '../../../harness/Button';
+import { Checkbox } from '../../../harness/Checkbox';
+import { Select } from '../../../harness/Select';
 import RouteLink from '@/app/_components/RouteLink';
 import {
   type AdminTestCheckResult,
@@ -431,19 +433,24 @@ function ProbePanel({ action, busy, onSubmit }: { action: ProbeAction; busy: boo
       ) : null}
       {action === 'remember' || action === 'list' ? (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-          <label>kind:
-            <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)} style={{ marginLeft: 4 }}>
-              <option value="identity">identity</option>
-              <option value="preference">preference</option>
-              <option value="project">project</option>
-              <option value="correction">correction</option>
-              <option value="ephemeral">ephemeral</option>
-            </select>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>kind:
+            <Select
+              value={kind}
+              onChange={(value) => setKind(value as typeof kind)}
+              ariaLabel="Memory kind"
+              options={[
+                { value: 'identity', label: 'identity' },
+                { value: 'preference', label: 'preference' },
+                { value: 'project', label: 'project' },
+                { value: 'correction', label: 'correction' },
+                { value: 'ephemeral', label: 'ephemeral' },
+              ]}
+            />
           </label>
           {action === 'remember' ? (
-            <label>
-              <input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} />
-              {' '}workspace-shared
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <Checkbox checked={shared} onChange={setShared} ariaLabel="Workspace-shared memory" />
+              workspace-shared
             </label>
           ) : null}
         </div>

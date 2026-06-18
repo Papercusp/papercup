@@ -49,6 +49,8 @@ import TwoPaneShell from '@/app/_components/layout/TwoPaneShell';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
+import { Select } from '@/app/harness/Select';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import {
   usePlanList,
   usePlanItems,
@@ -548,14 +550,20 @@ export default function PlansClient() {
   // state. `leaveGuard` is consulted before every navigation that abandons
   // the open plan.
   const dirtyRef = useRef(false);
-  const leaveGuard = useCallback((): boolean => {
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const leaveGuard = useCallback(async (): Promise<boolean> => {
     if (!dirtyRef.current) return true;
-    return window.confirm('Discard unsaved edits to this plan?');
-  }, []);
+    return askConfirm({
+      title: 'Discard unsaved edits?',
+      body: 'Your current plan edits will be discarded.',
+      confirmLabel: 'Discard',
+      destructive: true,
+    });
+  }, [askConfirm]);
 
   const navSlug = useCallback(
-    (next: string | null) => {
-      if (!leaveGuard()) return;
+    async (next: string | null) => {
+      if (!await leaveGuard()) return;
       setPane('read');
       setSlug(next);
     },
@@ -567,8 +575,8 @@ export default function PlansClient() {
   // switch the view too, so the full PlanDetail shows (it only renders in the
   // Plans view now) instead of silently shadowing the Queue/Sessions 3-pane.
   const navPlanTarget = useCallback(
-    (next: string, targetId?: string) => {
-      if (!leaveGuard()) return;
+    async (next: string, targetId?: string) => {
+      if (!await leaveGuard()) return;
       setPane('read');
       setTab('editor');
       setJump(targetId ?? null);
@@ -581,8 +589,8 @@ export default function PlansClient() {
   // "Queue" — jump to the items view with item-status filters cleared
   // (active plan-status / harness filters stay). Closes any open plan +
   // search + per-plan rail selection so the full cross-plan Queue shows.
-  const goQueue = useCallback(() => {
-    if (!leaveGuard()) return;
+  const goQueue = useCallback(async () => {
+    if (!await leaveGuard()) return;
     setPane('read');
     setSlug(null);
     void setQ(null);
@@ -593,8 +601,8 @@ export default function PlansClient() {
 
   // "Plans" — the plan browser view. Closes any open plan + search; plan-status
   // / harness filters stay applied (they scope which plans show).
-  const goPlans = useCallback(() => {
-    if (!leaveGuard()) return;
+  const goPlans = useCallback(async () => {
+    if (!await leaveGuard()) return;
     setPane('read');
     setSlug(null);
     void setQ(null);
@@ -604,8 +612,8 @@ export default function PlansClient() {
   // "Sessions" — the live agent roster. Closes any open plan + search; the rail
   // plan selection (itemPlans) STAYS, since it filters the roster's plan groups
   // exactly as it filters inbox items (D-003/D-005).
-  const goSessions = useCallback(() => {
-    if (!leaveGuard()) return;
+  const goSessions = useCallback(async () => {
+    if (!await leaveGuard()) return;
     setPane('read');
     setSlug(null);
     void setQ(null);
@@ -711,6 +719,7 @@ export default function PlansClient() {
 
   return (
     <div className="pc-plans">
+      {confirmEl}
       <aside className="pc-plans__rail">
         <div className="pc-plans__rail-actions">
           <NewPlanButton
@@ -723,7 +732,7 @@ export default function PlansClient() {
           <button
             type="button"
             className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
-            onClick={goPlans}
+            onClick={() => void goPlans()}
             title={`Browse plans — open one to view/edit it. (Plan-status & ${t('pot', { lower: true })} filters stay applied.)`}
           >
             <ClipboardList size={14} aria-hidden />
@@ -732,7 +741,7 @@ export default function PlansClient() {
           <button
             type="button"
             className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
-            onClick={goQueue}
+            onClick={() => void goQueue()}
             title="Open the Queue — every decision & action surface across plans the Queen did not auto-handle, with item filters cleared (plan filters stay)."
           >
             <Inbox size={14} aria-hidden />
@@ -742,7 +751,7 @@ export default function PlansClient() {
           <button
             type="button"
             className={`pc-plans__sessions-btn${view === 'sessions' ? ' is-active' : ''}`}
-            onClick={goSessions}
+            onClick={() => void goSessions()}
             title="Live agent roster — who's active across plans, what they're doing, which files. The plan selection filters the plan-grouped section."
           >
             <Terminal size={14} aria-hidden />
@@ -757,22 +766,20 @@ export default function PlansClient() {
               <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
                 {t('pot')}
               </label>
-              <select
+              <Select
                 id="pc-plans-harness-filter"
-                className="pc-plans__harness-filter-select"
+                triggerClassName="pc-plans__harness-filter-select"
                 value={harnessFilter ?? ''}
-                onChange={(e) => void setHarnessFilter(e.target.value || null)}
-              >
-                <option value="">All ({planList.data?.plans.length ?? 0})</option>
-                {harnessOptions.map((h) => {
+                onChange={(value) => void setHarnessFilter(value === '_all' ? null : value)}
+                ariaLabel={`Filter plans by ${t('pot', { lower: true })}`}
+                options={[
+                  { value: '_all', label: `All (${planList.data?.plans.length ?? 0})` },
+                  ...harnessOptions.map((h) => {
                   const count = (planList.data?.plans ?? []).filter((p) => p.harness === h).length;
-                  return (
-                    <option key={h} value={h}>
-                      {h} ({count})
-                    </option>
-                  );
-                })}
-              </select>
+                    return { value: h, label: `${h} (${count})` };
+                  }),
+                ]}
+              />
             </div>
           ) : null}
 
@@ -816,7 +823,7 @@ export default function PlansClient() {
           <PlanDetail
             key={slug}
             slug={slug}
-            onClose={() => navSlug(null)}
+            onClose={() => void navSlug(null)}
             onDirtyChange={(d) => {
               dirtyRef.current = d;
             }}
@@ -837,7 +844,7 @@ export default function PlansClient() {
         ) : view === 'plans' && q.trim() ? (
           <PlanSearchResults
             query={q}
-            onPick={(s) => navSlug(s)}
+            onPick={(s) => void navSlug(s)}
             needsHumanPlans={needsHumanPlans}
             needsDecisionPlans={needsDecisionPlans}
           />

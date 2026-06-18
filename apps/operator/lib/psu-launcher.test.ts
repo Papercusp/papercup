@@ -461,6 +461,45 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(() => roleLaunchArgs('gemini', files)).toThrow();
   });
 
+  // domain-generic-agent-personas-2026-06-17 P-014: REPLACE_CLAUDE_BASE (default-off) — coherent
+  // with suLaunchArgs so flipping the flag replaces the base for interactive role sessions too.
+  it('replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)', () => {
+    expect(roleLaunchArgs('claude', files).args).toContain('--append-system-prompt-file');
+    expect(roleLaunchArgs('claude', files).args).not.toContain('--system-prompt-file');
+    expect(roleLaunchArgs('omp', files).args).toContain('--append-system-prompt');
+    expect(roleLaunchArgs('omp', files).args).not.toContain('--system-prompt');
+  });
+
+  it('replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic), MCP + lockout intact', () => {
+    const { args } = roleLaunchArgs('claude', { ...files, replaceClaudeBase: true });
+    expect(args).toEqual([
+      '--dangerously-skip-permissions',
+      '--system-prompt-file', '/lc/session-7.md',
+      '--exclude-dynamic-system-prompt-sections',
+      '--mcp-config', '/proj/.mcp.json',
+      '--strict-mcp-config',
+      '--permission-mode', 'bypassPermissions',
+      NATIVE_SCHEDULER_DENY_FLAG,
+    ]);
+    expect(args).not.toContain('--append-system-prompt-file');
+  });
+
+  it('replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append', () => {
+    const { args } = roleLaunchArgs('omp', { ...files, coordExtPath: '/h/coord.ts', replaceClaudeBase: true });
+    expect(args).toEqual([
+      '--approval-mode', 'yolo',
+      '--system-prompt', '/lc/session-7.md',
+      '-e', '/h/coord.ts',
+    ]);
+  });
+
+  it('replaceClaudeBase ON: codex is a no-op (CODEX_HOME AGENTS.md is already the whole prompt)', () => {
+    expect(roleLaunchArgs('codex', { ...files, replaceClaudeBase: true }).args).toEqual([
+      '--dangerously-bypass-hook-trust',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ]);
+  });
+
   it('agentInvalidForRole accepts claude/omp/codex', () => {
     expect(agentInvalidForRole('claude')).toBe(false);
     expect(agentInvalidForRole('omp')).toBe(false);

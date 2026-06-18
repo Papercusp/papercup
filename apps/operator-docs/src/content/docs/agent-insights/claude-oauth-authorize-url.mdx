@@ -20,7 +20,7 @@ Root cause, proven against **claude CLI v2.1.181** with a node-pty probe:
 
 - `claude setup-token` is now a full **Ink TUI** (animated banner + spinner + a **masked**
   code input), not a line prompt.
-- Feeding the code as a single `pty.write(`${code}\r`)` pastes it but the **trailing CR is
+- Feeding the code as a single ``pty.write(`${code}\r`)`` pastes it but the **trailing CR is
   absorbed into the paste** — the code is NEVER submitted, no token is minted, and the 60s
   `readUntil` times out → the stall.
 - **Fix (D-017):** paste the code, then send Enter (`\r`) as a **SEPARATE `pty.write` after a
