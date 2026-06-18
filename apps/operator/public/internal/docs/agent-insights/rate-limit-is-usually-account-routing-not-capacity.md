@@ -63,6 +63,29 @@ account. Tell: `/healthz` `upstream429` climbs while `failovers` stays flat, the
 never changes, and the 429 body is the bare `message:"Error"` form. **`x-should-retry: true` ⇒ this
 is not a wall — retry / fail over, don't conclude exhaustion.**
 
+**4. The PERSISTED penalty false-pause (a transient 429 → a 16-HOUR fleet-wide lockout).** The worst
+one, and it SURVIVES RESTARTS. The governor's pause lives in `harness_shared.agent_rate_budget` (one row
+per `bucket_key`, `paused_until` epoch-ms — `agent-governor-pg-store.ts`), SHARED by every operator + gym
+process. When a `429` is classified `accountWide && !retryable` (the usage-cap path in
+`resilience/retry.ts`), the handler calls `governor.penalize({ resetAt })` with `resetAt` = the
+account's **rolling-window** reset (Claude Max 5h/**7d**). `recordPenalty` honored that reset FULLY
+(no `maxPauseMs`), so a single transient 429 pinned the **account-blind** `anthropic:opus` (+ `sonnet` +
+`haiku`) bucket to a reset boundary **\~16 h out** — locking the WHOLE fleet out of opus with **rpm 0/45,
+$0, zero in-flight**, while `api.anthropic.com` direct-probes returned **200** (5h util 0.48 *allowed*,
+7d 0.79 *allowed*). The tells: `dev:rate_governor_status` shows `paused:true` with `pausedUntil` a round
+hour many hours out + `usage.calls 0 / $0`; the pause is identical across `:3070` and `:3170` (it's the
+shared PG row); and a process restart does **NOT** clear it (the row reloads on boot — this is why
+"restart the gateway" alone failed on 2026-06-17). A **rolling-utilization** window recovers
+continuously, so sitting on its multi-hour reset is always wrong — `recordHeaders` already re-probes a
+rejected unified window at `ROLLING_WINDOW_REPROBE_MS` (2 min); `penalize()` was the gap. **Fixed**
+(`resilience/governor.ts`): `penalize()` auto-caps the pause at `ROLLING_WINDOW_REPROBE_MS` for a
+subscription account (detected via `state.unified`), and bakes that cap into `opts` so the cross-process
+PG write inherits it (the persisted row never carries `unified`, so an in-memory-only cap would still
+write 16 h). **To CLEAR a live one** (no verb does it — `accounts:reset-rate` explicitly skips live
+governor buckets, and they otherwise self-expire only at `paused_until`):
+`UPDATE harness_shared.agent_rate_budget SET paused_until = 0, pace_delay_ms = 0 WHERE paused_until > <now_ms>`
+— scoped to the future-paused rows; the next `acquire` reads it fresh, fleet-wide, no restart needed.
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 * **`dev:rate_governor_status`** — is the paused bucket the **global** `anthropic:opus`
@@ -91,15 +114,20 @@ There are **two** governor singletons in **two** processes, and they are not the
   `maxSimultaneousAgents` cap → the **AIMD adaptive concurrency** (rate-limit-layer-v2 D-005:
   multiplicative-decrease on `penalize`, additive-increase after clean streaks) IS active here.
 * **Gateway** (`:8788`, `bin.ts → startGatewayService`): **never** calls `initRateLimitConfig` /
-  `setGlobalConcurrencyCap`, so its global gate has no finite cap → **AIMD is DORMANT in the
-  gateway.** Only the *static* per-account governor runs there (`maxConcurrent: 3`, `rpm: 45`,
-  `recordResponse` util-pacing, `penalize` pause, + the fault-#3 bare-429 failover). So under
-  sustained transient throttles the gateway pauses-then-resumes at the SAME static rate rather than
-  adaptively settling — predictive per-account pacing is *designed* but only *partly* wired on the
-  egress path. ⚠ You can't just install the operator's cap into the gateway: the operator cap is
-  **agent-concurrency**; the gateway gate is **per-request concurrency** — copying `cap=1` would
-  throttle the gateway to one in-flight HTTP request. A true gateway fix is per-account AIMD on the
-  gateway's own buckets.
+  `setGlobalConcurrencyCap`, so its global gate has no finite cap → fleet-wide **AIMD is DORMANT in
+  the gateway**; only the *static* per-account governor runs there (`maxConcurrent: 3`, `rpm: 45`,
+  `recordResponse` util-pacing, `penalize` pause). ⚠ You can't just install the operator's cap into
+  the gateway: the operator cap is **agent-concurrency**; the gateway gate is **per-request
+  concurrency** — copying `cap=1` would throttle the gateway to one in-flight HTTP request.
+  Instead (2026-06-17) the gateway became a **resilient retrying proxy** — the practical fix that
+  matters more than AIMD: on a throttle it doesn't just forward the error (bees have a tiny CLI retry
+  budget that exhausts → `$0` fail), it **internally retries across the pool before responding**
+  (`INTERNAL_RETRY_MAX_ATTEMPTS`): a transient/bare 429 → pace + rotate + short backoff; a **529** →
+  short backoff; a **usage/session CAP** → `peekBody` the non-200 body (`classifyHttpError` → its meter
+  is invisible in headers, util can read 0 on a capped account) → pause-to-reset + rotate to a healthy
+  account (the bee classifies `usage_limit` as a no-retry wall, so the gateway MUST route around it
+  itself). Net: a bee egresses opus through heavy 429 churn (seen: 497 upstream-429 / 409 failovers on
+  one run) and still completes.
 
 ## The fix levers
 
@@ -107,6 +135,21 @@ There are **two** governor singletons in **two** processes, and they are not the
   must both be enabled for per-account routing + per-account governor keying (fixes #1).
 * **Pool all accounts in the gateway** (not just 1–2) so the `x-papercusp-account` header can
   route to any of them and it never falls back to one exhausted account (fixes #2).
+* **Gateway resilient retry** (2026-06-17, `gateway.ts`) — internally retries/rotates across the pool
+  on every throttle shape (bare-429, transient-429, 529, usage/session cap via `peekBody`) so a bee
+  never sees a wall it won't retry (fixes #3 + the session-cap case).
+* **SPAWN-side governor must not veto what the gateway can serve** (`dbos/orchestrator-runner.ts`,
+  2026-06-17). A SECOND governor gates spawn ADMISSION (per-account bucket, `PAPERCUSP_AGENT_GOVERNOR=1`):
+  when that bucket was paused past `maxWait` it failed the spawn `$0` with **"agent governor: rate-limit
+  pause exceeded max wait"** — even with five idle accounts. Fix: when gateway egress is configured
+  (`extraEnv.ANTHROPIC_BASE_URL` set), **proceed** and let the gateway's failover route to a healthy
+  account instead of hard-failing. Tell: a bee dies in under 1s, `$0`, that exact `error_message`.
+* **Not every bench `$0` is rate-limit** — the su-independent driver's `collectTask`
+  (`external-bench/su-independent-backlog.ts`) used to read the diff/cost IMMEDIATELY after
+  `placeFifoBatch` with no wait → empty diff + `$0` + `infra-failed` while the bee was STILL running
+  (orphaning a live opus bee). Fix: poll `spawned_agents.status` to terminal before extracting (the
+  real-Queen arm's DRIVER polls-until-drained; this arm didn't). Tell: bee `status=running` with a
+  fresh heartbeat + climbing gateway requests, yet the launcher already recorded `infra-failed`.
 
 ## If you BUILD on the LLM
 

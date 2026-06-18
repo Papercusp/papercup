@@ -23,6 +23,8 @@
 import { useState } from 'react';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
+import { Modal } from '@/app/harness/Modal';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 
@@ -67,16 +69,17 @@ export function AgentLauncherButton() {
 
   return (
     <>
-      <button
-        type="button"
-        className={`pc-console-btn${busy ? ' is-busy' : ''}`}
-        aria-label="Launch agent"
-        title={tooltip}
-        disabled={busy}
-        onClick={attempt}
-      >
-        <AgentIcon />
-      </button>
+      <Tooltip label={tooltip}>
+        <button
+          type="button"
+          className={`pc-console-btn${busy ? ' is-busy' : ''}`}
+          aria-label="Launch agent"
+          disabled={busy}
+          onClick={attempt}
+        >
+          <AgentIcon />
+        </button>
+      </Tooltip>
 
       {installCmd !== null && (
         <OmpInstallHintModal
@@ -102,37 +105,21 @@ function OmpInstallHintModal(props: {
 }) {
   const { installCmd, busy, onRetry, onClose } = props;
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Install OMP"
-      onClick={onClose}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'color-mix(in srgb, var(--bg-deeper), transparent 38%)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
+    <Modal
+      open
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      title="Install OMP"
+      contentStyle={{
+        background: 'var(--bg)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: '20px 22px',
+        maxWidth: 460,
+        width: '90%',
+        color: 'var(--fg)',
       }}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: 'var(--surface, var(--bg))',
-          border: '1px solid var(--border, #1e2a3a)',
-          borderRadius: 10,
-          padding: '20px 22px',
-          maxWidth: 460,
-          width: '90%',
-          color: 'var(--text, #d7e2ee)',
-          boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
-        }}
-      >
-        <h2 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 700 }}>
-          OMP isn’t installed
-        </h2>
+      <div>
         <p style={{ margin: '0 0 12px', fontSize: 13, lineHeight: 1.5, opacity: 0.85 }}>
           Launching an agent needs the OMP runtime and the{' '}
           <code>@papercusp/omp</code> plugin. Install both, then retry:
@@ -160,14 +147,14 @@ function OmpInstallHintModal(props: {
                 () => {/* clipboard unavailable — the <pre> is select-all */},
               );
             }}
-            style={btnStyle(false)}
+            className="pc-button"
           >
             Copy
           </button>
           <button
             type="button"
             onClick={onClose}
-            style={btnStyle(false)}
+            className="pc-button"
           >
             Close
           </button>
@@ -175,27 +162,14 @@ function OmpInstallHintModal(props: {
             type="button"
             onClick={onRetry}
             disabled={busy}
-            style={btnStyle(true)}
+            className="pc-button-primary"
           >
             {busy ? 'Retrying…' : 'Retry'}
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
-}
-
-function btnStyle(primary: boolean): React.CSSProperties {
-  return {
-    fontSize: 12.5,
-    fontWeight: 600,
-    padding: '6px 12px',
-    borderRadius: 6,
-    cursor: 'pointer',
-    border: '1px solid var(--border, #1e2a3a)',
-    background: primary ? 'var(--accent, #2f81f7)' : 'transparent',
-    color: primary ? 'var(--bg-deep)' : 'var(--text, #d7e2ee)',
-  };
 }
 
 function AgentIcon() {

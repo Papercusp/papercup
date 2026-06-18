@@ -40,6 +40,20 @@ export function runBootstrap(): void {
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
 
+  // [pg-budget] C0-4 of backend-connection-scaling-2026-06-17 — log this
+  // process's worst-case PG connection ceiling vs the live max_connections, so a
+  // future pool-sizing change can't silently re-create the 2026-06-17 connection
+  // exhaustion. Fire-and-forget on EVERY host (the request-only :3170 was a top
+  // holder); resilient if PG isn't ready yet.
+  void (async () => {
+    try {
+      const { logConnectionBudget } = await import('@papercusp/db-org');
+      await logConnectionBudget((m) => console.log(m));
+    } catch {
+      /* non-fatal diagnostic */
+    }
+  })();
+
   // HostPlatform registration — every getHostPlatform() consumer (agent:role,
   // operator:scanner prompt resolvers, …) throws without it. This call lived
   // ONLY in the retired instrumentation-node.ts (same story as the IPC server

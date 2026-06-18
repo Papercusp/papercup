@@ -36,6 +36,7 @@ import {
   type Worktree,
 } from '@papercusp/git-graph';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { Select } from '../../harness/Select';
 import { crossOriginUrl } from '@papercusp/operator-core/lib/cross-origin-url';
 
 const LIMITS = [100, 300, 500, 1000] as const;
@@ -316,24 +317,25 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
     <div className="pc-adv-gitgrid">
       <div className="pc-adv-gitgrid__bar">
         {worktrees && worktrees.length > 0 ? (
-          <select
-            className="pc-adv-gitgrid__limit pc-adv-gitgrid__worktree"
+          <Select
+            triggerClassName="pc-adv-gitgrid__limit pc-adv-gitgrid__worktree"
             value={worktree ?? '_all'}
-            onChange={(e) => setWorktree(e.target.value === '_all' ? null : e.target.value)}
-            aria-label="Filter commits by worktree"
-          >
-            <option value="_all">All worktrees ({worktrees.length})</option>
-            {worktrees.map((w) => {
+            onChange={(value) => setWorktree(value === '_all' ? null : value)}
+            ariaLabel="Filter commits by worktree"
+            options={[
+              { value: '_all', label: `All worktrees (${worktrees.length})` },
+              ...worktrees.flatMap((w) => {
               const v = w.branch ?? w.head;
-              if (!v) return null;
+                if (!v) return [];
               const label =
                 (w.branch ?? `${w.head.slice(0, 8)} (detached)`) +
                 (w.bare ? ' (bare)' : '') +
                 (w.locked ? ' 🔒' : '') +
                 (w.prunable ? ' ⚠' : '');
-              return <option key={v} value={v}>{label}</option>;
-            })}
-          </select>
+                return [{ value: v, label }];
+              }),
+            ]}
+          />
         ) : null}
         <input
           type="search"
@@ -347,14 +349,13 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
             clear
           </button>
         ) : null}
-        <select
-          className="pc-adv-gitgrid__limit"
-          value={limit}
-          onChange={(e) => setLimit(Number(e.target.value))}
-          aria-label="Commit limit"
-        >
-          {LIMITS.map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
+        <Select
+          triggerClassName="pc-adv-gitgrid__limit"
+          value={String(limit)}
+          onChange={(value) => setLimit(Number(value))}
+          ariaLabel="Commit limit"
+          options={LIMITS.map((n) => ({ value: String(n), label: String(n) }))}
+        />
         <span className="pc-adv-gitgrid__count">{visible.length}</span>
         <button
           type="button"

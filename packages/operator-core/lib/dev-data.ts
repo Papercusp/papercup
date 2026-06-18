@@ -405,6 +405,16 @@ export interface PgHealth {
   totalConnections: number;
   activeConnections: number;
   idleConnections: number;
+  /** Server-wide `max_connections` ceiling. */
+  maxConnections: number;
+  /** Backends across ALL databases — this is what counts against `max_connections`
+   *  (e.g. the su-lock pool lives in `papercusp_su` but shares the same instance). */
+  serverWideConnections: number;
+  /** serverWideConnections / maxConnections, 0–100. >~85 is the danger zone. */
+  saturationPct: number;
+  /** Top connection holders by `application_name`, server-wide — the attribution
+   *  the 2026-06-17 exhaustion incident lacked. `(unset)` = an untagged pool. */
+  byApplication: { name: string; count: number }[];
 }
 
 export interface PgActiveQuery {
@@ -426,22 +436,44 @@ export interface PgTableSize {
 
 export async function pgHealth(): Promise<PgHealth> {
   const { sql } = getOrgPg();
-  type Row = { version: string; total: number; active: number; idle: number };
+  type Row = {
+    version: string;
+    total: number;
+    active: number;
+    idle: number;
+    server_wide: number;
+    max_conn: number;
+  };
   const rows = (await sql`
     SELECT
       version() AS version,
-      count(*)::int AS total,
-      count(*) FILTER (WHERE state = 'active')::int AS active,
-      count(*) FILTER (WHERE state = 'idle')::int AS idle
+      count(*) FILTER (WHERE datname = current_database())::int AS total,
+      count(*) FILTER (WHERE datname = current_database() AND state = 'active')::int AS active,
+      count(*) FILTER (WHERE datname = current_database() AND state = 'idle')::int AS idle,
+      count(*)::int AS server_wide,
+      current_setting('max_connections')::int AS max_conn
     FROM pg_stat_activity
-    WHERE datname = current_database()
   `) as Row[];
   const r = rows[0];
+  type AppRow = { name: string; count: number };
+  const apps = (await sql`
+    SELECT coalesce(nullif(application_name, ''), '(unset)') AS name, count(*)::int AS count
+    FROM pg_stat_activity
+    GROUP BY 1
+    ORDER BY count DESC
+    LIMIT 20
+  `) as AppRow[];
+  const maxConnections = r?.max_conn ?? 0;
+  const serverWide = r?.server_wide ?? 0;
   return {
     version: r?.version ?? 'unknown',
     totalConnections: r?.total ?? 0,
     activeConnections: r?.active ?? 0,
     idleConnections: r?.idle ?? 0,
+    maxConnections,
+    serverWideConnections: serverWide,
+    saturationPct: maxConnections > 0 ? Math.round((serverWide / maxConnections) * 1000) / 10 : 0,
+    byApplication: apps.map((a) => ({ name: a.name, count: a.count })),
   };
 }
 

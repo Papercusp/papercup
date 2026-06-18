@@ -319,16 +319,16 @@ export default function AgentSettingsPage() {
           label="Backend (sets AGENT_BACKEND)"
           description={"The CLI the orchestrator + " + t('pot', { lower: true }) + " drive. 'omp' is the default (routes through Meridian + Claude Max). 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."}
         >
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div role="radiogroup" aria-label="Agent backend" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {(['auto', 'claude-code', 'omp', 'codex'] as const).map((b) => (
-              <label key={b} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-                <input
-                  type="radio"
-                  name="backend"
-                  value={b}
-                  checked={backend === b}
-                  onChange={() => setBackend(b)}
-                />
+              <button
+                key={b}
+                type="button"
+                role="radio"
+                aria-checked={backend === b}
+                className="pc-settings-choice"
+                onClick={() => setBackend(b)}
+              >
                 <code>{b}</code>
                 {b === 'omp' && !binaries.omp && (
                   <span style={{ color: 'var(--bad)', fontSize: 11 }}>(binary not found)</span>
@@ -336,7 +336,7 @@ export default function AgentSettingsPage() {
                 {b === 'claude-code' && !binaries.claude && (
                   <span style={{ color: 'var(--bad)', fontSize: 11 }}>(binary not found)</span>
                 )}
-              </label>
+              </button>
             ))}
           </div>
         </FormField>

@@ -24506,7 +24506,24 @@ body:has(.operator-panel) {
 .pc-settings-status dd { font-size: 14px; font-weight: 500; margin: 0; }
 .pc-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .pc-settings-radio-group { display: flex; flex-wrap: wrap; gap: 12px; }
-.pc-settings-radio-group label { display: inline-flex; gap: 6px; align-items: center; }
+.pc-settings-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pc-settings-choice[aria-checked="true"] {
+  background: var(--bg-3);
+  border-color: var(--border-strong);
+}
 .pc-settings-row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
 .pc-settings-fieldset { border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px 14px; }
 .pc-settings-fieldset legend { padding: 0 6px; font-size: 12px; color: rgba(255,255,255,0.6); }
@@ -25797,15 +25814,18 @@ body:has(.operator-panel) {
 .pc-radio-card {
   display: flex;
   gap: 10px;
+  width: 100%;
   padding: 10px 14px;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 8px;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   align-items: flex-start;
 }
 .pc-radio-card[data-active="true"] { background: var(--bg-3); border-color: var(--border-strong); }
-.pc-radio-card input { margin-top: 4px; accent-color: var(--accent); }
 .pc-radio-card__title { font-size: 13px; font-weight: 600; color: var(--fg); }
 .pc-radio-card__sub { font-size: 12px; color: var(--fg-mute); line-height: 1.55; margin-top: 2px; }
 

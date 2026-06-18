@@ -1,0 +1,139 @@
+/**
+ * storage.integration.test.ts — persistRunReport, the llm_test_runs /
+ * llm_test_findings writer (schema in baseline, ex-073), against a real Postgres.
+ *
+ * Behaviors a fake-sql unit test can't prove:
+ *  - findings_count aggregates severities across BOTH assert violations AND judge
+ *    findings into one {error,warn,info} jsonb;
+ *  - the transcript is zstd-compressed on write and decompressTranscript round-trips
+ *    it back to the raw SSE array;
+ *  - one llm_test_findings row per violation (source='assert') + per judge finding
+ *    (source='judge');
+ *  - `id`/`run_id` are real uuid columns — runIds must be valid UUIDs (faithfulness).
+ *
+ * The module opens its own pool via getHarnessAdminUrl(); we mock that to the
+ * testcontainer DB.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
+import { randomBytes } from 'node:crypto';
+import { getTestPg } from '@papercusp/test-config';
+
+const h = vi.hoisted(() => ({ url: '' }));
+vi.mock('../embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => h.url }));
+
+const { persistRunReport, decompressTranscript } = await import('./storage');
+
+const RUN_ID = '11111111-1111-1111-1111-111111111111';
+let rootSql: postgres.Sql;
+
+// Minimal RunReport — only the fields persistSingleRun reads (cast past the rich type).
+function makeReport() {
+  const turn = (rawSseTape: unknown[]) => ({
+    rawSseTape, assistantText: 'hi', toolCalls: [], cards: [], controlTags: [],
+    finishReason: 'stop', costUsd: 0.1, latencyMs: 5, error: null,
+  });
+  const summary = {
+    runId: RUN_ID, scenarioId: 'sc-1', scenarioVersion: 1, identityHash: 'idh',
+    matrixIndex: null, sutModel: 'opus', judgeModel: 'sonnet', personaId: 'p1',
+    personaTraits: { tone: 'curt' }, workspaceMode: 'isolated', transportMode: 'sse',
+    startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z',
+    totalCostUsd: 1.25, capBreaches: ['cap-x'],
+    turns: [turn([{ e: 'a' }]), turn([{ e: 'b' }, { e: 'c' }])],
+    toolInvocations: [], continueChainRows: [],
+  };
+  const run = {
+    status: 'passed',
+    summary,
+    violations: [
+      { severity: 'error', assertKind: 'shape', evidenceTurnIdx: 0, claim: 'v-err', suggestion: 's', originatingFindingIds: [] },
+      { severity: 'warn', assertKind: 'tone', evidenceTurnIdx: null, claim: 'v-warn', suggestion: null, originatingFindingIds: [] },
+    ],
+    judge: {
+      findings: [
+        { severity: 'error', axis: 'accuracy', shape: 'missing', evidenceTurnIdx: 1, claim: 'j-err', suggestion: null, copyPrompt: 'cp' },
+        { severity: 'info', axis: 'style', shape: 'nit', evidenceTurnIdx: null, claim: 'j-info', suggestion: 's2', copyPrompt: null },
+      ],
+      scores: { accuracy: 0.9 }, notes: 'n', judgeOverruledAssert: false, costUsd: 0.2,
+    },
+  };
+  return { matrixGroupId: undefined, runs: [run] } as never;
+}
+
+beforeAll(async () => {
+  const adminUri = await getTestPg();
+  const dbName = `llm_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  h.url = u.toString(); // the module's pool will open against this
+  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // FAITHFUL to baseline (ex-073): id/run_id are uuid, findings_count jsonb NOT NULL default, etc.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.llm_test_runs (
+      id uuid DEFAULT gen_random_uuid() NOT NULL,
+      scenario_id text NOT NULL, scenario_version integer NOT NULL,
+      scenario_target text NOT NULL, scenario_hash text NOT NULL, identity_hash text NOT NULL,
+      matrix_group_id uuid, matrix_index integer,
+      rubric_version text NOT NULL, sut_model text NOT NULL, judge_model text NOT NULL,
+      persona_id text NOT NULL, persona_traits_json jsonb NOT NULL,
+      workspace_mode text NOT NULL, transport_mode text NOT NULL,
+      status text NOT NULL,
+      started_at timestamptz DEFAULT now() NOT NULL, finished_at timestamptz,
+      cost_usd numeric(10,6) DEFAULT 0 NOT NULL, cap_breaches text[] DEFAULT '{}'::text[] NOT NULL,
+      scores_json jsonb, findings_count jsonb DEFAULT '{}'::jsonb NOT NULL,
+      transcript_raw_zstd bytea, transcript_norm_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+      telemetry_json jsonb DEFAULT '{}'::jsonb NOT NULL, asserts_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+      judge_json jsonb, metadata_json jsonb DEFAULT '{}'::jsonb NOT NULL
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.llm_test_findings (
+      id uuid DEFAULT gen_random_uuid() NOT NULL,
+      run_id uuid NOT NULL, source text NOT NULL, severity text NOT NULL,
+      axis text, assert_kind text, shape text, evidence_turn_idx integer,
+      claim text NOT NULL, suggestion text, copy_prompt text,
+      promoted_to_assert_id text, promoted_from text[] DEFAULT '{}'::text[] NOT NULL,
+      acknowledged boolean DEFAULT false NOT NULL, acknowledged_by text, acknowledged_at timestamptz
+    )`);
+}, 90_000);
+
+afterAll(async () => {
+  await rootSql?.end({ timeout: 5 });
+});
+
+describe('persistRunReport (PG)', () => {
+  it('inserts the run row with the cross-source findings_count and round-trippable transcript', async () => {
+    await persistRunReport(makeReport(), 'rubric-v3', 'scenhash');
+    const runs = await rootSql<{ status: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer }[]>`
+      SELECT status, findings_count, cost_usd, cap_breaches, rubric_version, transcript_raw_zstd
+        FROM harness_shared.llm_test_runs WHERE id = ${RUN_ID}`;
+    expect(runs).toHaveLength(1);
+    const r = runs[0]!;
+    expect(r.status).toBe('passed');
+    expect(r.findings_count).toEqual({ error: 2, warn: 1, info: 1 }); // 1 violation-err + 1 judge-err; 1 warn; 1 info
+    expect(Number(r.cost_usd)).toBeCloseTo(1.25, 6);
+    expect(r.cap_breaches).toEqual(['cap-x']);
+    expect(r.rubric_version).toBe('rubric-v3');
+    // transcript compressed on write → decompressTranscript restores the flattened rawSseTape.
+    expect(decompressTranscript(r.transcript_raw_zstd)).toEqual([{ e: 'a' }, { e: 'b' }, { e: 'c' }]);
+  });
+
+  it('writes one findings row per violation (assert) + per judge finding (judge)', async () => {
+    const rows = await rootSql<{ source: string; severity: string; claim: string; assert_kind: string | null; axis: string | null }[]>`
+      SELECT source, severity, claim, assert_kind, axis FROM harness_shared.llm_test_findings
+       WHERE run_id = ${RUN_ID} ORDER BY source, severity`;
+    expect(rows).toHaveLength(4);
+    const asserts = rows.filter((x) => x.source === 'assert');
+    const judges = rows.filter((x) => x.source === 'judge');
+    expect(asserts.map((x) => x.claim).sort()).toEqual(['v-err', 'v-warn']);
+    expect(asserts.every((x) => x.assert_kind !== null && x.axis === null)).toBe(true); // asserts carry assert_kind, no axis
+    expect(judges.map((x) => x.claim).sort()).toEqual(['j-err', 'j-info']);
+    expect(judges.every((x) => x.axis !== null && x.assert_kind === null)).toBe(true); // judge findings carry axis
+  });
+});

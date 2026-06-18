@@ -30,6 +30,7 @@
 import { useState, useRef, type FormEvent, type ReactNode } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { Modal } from './Modal';
+import { Select } from './Select';
 import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
 // Pure parser leaf — SPA-bundle-safe (the harness-link-types rule).
@@ -315,21 +316,20 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => vo
       {!hive && (
         <Label>
           <FieldLabel>Learning pack</FieldLabel>
-          <select
-            data-testid="learning-pack-picker"
+          <Select
+            testId="learning-pack-picker"
             value={learningPack}
-            onChange={(e) => setLearningPack(e.target.value)}
-            style={inputStyle}
-          >
-            {availablePacks.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title}
-                {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
-                {p.id === 'papercusp-default' ? ' (default)' : ''}
-              </option>
-            ))}
-            <option value="none">None — start with an empty memory</option>
-          </select>
+            onChange={setLearningPack}
+            ariaLabel="Learning pack"
+            triggerStyle={inputStyle}
+            options={[
+              ...availablePacks.map((p) => ({
+                value: p.id,
+                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === 'papercusp-default' ? ' (default)' : ''}`,
+              })),
+              { value: 'none', label: 'None — start with an empty memory' },
+            ]}
+          />
           <HintText>
             New {hiveLower}s start with a default set of learnings — working wisdom seeded
             into the {hiveLower}&rsquo;s shared memory. Review, edit, or remove them anytime
@@ -484,21 +484,20 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
       {!hive && (
         <Label>
           <FieldLabel>Learning pack</FieldLabel>
-          <select
-            data-testid="learning-pack-picker"
+          <Select
+            testId="learning-pack-picker"
             value={learningPack}
-            onChange={(e) => setLearningPack(e.target.value)}
-            style={inputStyle}
-          >
-            {availablePacks.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title}
-                {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
-                {p.id === 'papercusp-default' ? ' (default)' : ''}
-              </option>
-            ))}
-            <option value="none">None — start with an empty memory</option>
-          </select>
+            onChange={setLearningPack}
+            ariaLabel="Learning pack"
+            triggerStyle={inputStyle}
+            options={[
+              ...availablePacks.map((p) => ({
+                value: p.id,
+                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === 'papercusp-default' ? ' (default)' : ''}`,
+              })),
+              { value: 'none', label: 'None — start with an empty memory' },
+            ]}
+          />
           <HintText>
             New {hiveLower}s start with a default set of learnings — working wisdom seeded
             into the {hiveLower}&rsquo;s shared memory. Review, edit, or remove them anytime

@@ -189,9 +189,15 @@ when green; **release-trigger** (every 15 min) then auto-deploys green `main` to
 the live `:3070` operator (drain → swap → migrate → restart → health-check,
 auto-rollback). Your change being "in the tree" means it reaches `origin/main` +
 the live host as soon as the suite is green — and NOT before. The `/admin/git`
-tab shows the whole pipeline. Pause the routine only via `UPDATE
-harness_shared.routines SET active=false WHERE name='git-sync'`. Design:
-`git-sync-auto-commit-2026-06-03` + `staging-branch-pipeline-2026-06-06`.
+tab shows the whole pipeline. To pause sync for ONE tree, take its scoped
+resource lock — `locks:acquire_resource { resource: 'git-sync:<slug>', mode:
+'exclusive', ttl_sec: 1200 }` (scoped to that tree, TTL-bounded, audited; release
+with `locks:release_resource`). Do **not** `UPDATE harness_shared.routines SET
+active=false WHERE name='git-sync'` — the routine name is identical across every
+install, so it freezes every tree's sync fleet-wide (no TTL/audit/broadcast).
+Design: `git-sync-auto-commit-2026-06-03` + `staging-branch-pipeline-2026-06-06`
+
+* `git-sync-dx-hardening-2026-06-17` (F3).
 
 (Submodules are unchanged: each stays on its own default branch. The
 staging→main gate applies to the superproject; `main` only advances to staging

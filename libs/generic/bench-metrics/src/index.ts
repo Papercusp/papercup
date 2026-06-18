@@ -62,6 +62,7 @@ export {
   DEFAULT_CONTROL_ARM,
   ATTRIBUTION_CAVEATS,
   type AttributionMetric,
+  type ArmCoverage,
   type CapabilityArmAttribution,
   type CapabilityAttributionReport,
   type CapabilityAttributionOpts,

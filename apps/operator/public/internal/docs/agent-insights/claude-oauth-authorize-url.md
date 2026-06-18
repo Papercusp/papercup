@@ -3,6 +3,37 @@ URL: /internal/docs/agent-insights/claude-oauth-authorize-url
 
 Linking a Claude Max account by having the owner click a hand-built claude.ai authorize URL does NOT work — claude.ai returns "Authorization failed Invalid request format" even for a URL byte-for-byte identical to what `claude setup-token` generates. claude.ai requires the claude-code client's own handshake, which a plain browser click can't reproduce. The ONLY working path is `claude setup-token` (the CLI does the handshake) → paste the sk-ant-oat token / .credentials.json. Stop re-attempting the in-app OAuth link.
 
+## CURRENT STATE (2026-06-17, D-016/D-017) — the in-app one-click WORKS; the real stall was the code→token Enter
+
+The hand-built-URL dead-end (below) is HISTORY. **D-016** replaced it: the in-app
+"🔗 One-click (browser login)" now spawns the **real `claude setup-token` in a pty**
+(`deployment/account-link-cli.ts`), relays the URL the CLI itself prints, and pipes the
+owner's pasted `code#state` back into that same held process — so claude.com accepts it (the
+CLI did its own handshake). Authorize works; this is the DEFAULT add-account path now.
+
+**The leg that then stalled** ("Linking…" forever) was the code→token completion — the one
+leg no test could cover (needs a real approval; the plan's `Now`/`Next` flagged exactly this).
+Root cause, proven against **claude CLI v2.1.181** with a node-pty probe:
+
+* `claude setup-token` is now a full **Ink TUI** (animated banner + spinner + a **masked**
+  code input), not a line prompt.
+* Feeding the code as a single ``pty.write(`${code}\r`)`` pastes it but the **trailing CR is
+  absorbed into the paste** — the code is NEVER submitted, no token is minted, and the 60s
+  `readUntil` times out → the stall.
+* **Fix (D-017):** paste the code, then send Enter (`\r`) as a **SEPARATE `pty.write` after a
+  \~300 ms settle**. Then the TUI submits + exchanges. Live-proven: with a deliberately-wrong
+  code the separate Enter produced `OAuth error: Request failed with status code 400` — i.e.
+  the exchange actually fired (a correct code mints `sk-ant-oat…`). Also: settle on the token
+  OR a rejection line so a bad/expired code fails fast instead of hanging the full 60 s.
+  (`completeCliLink` in `account-link-cli.ts`.)
+
+So when **"Add account → One-click" stalls**: it is NOT the authorize URL and NOT claude.ai —
+it is the pty submit. Diagnose by replicating `account-link-cli.ts` in a node-pty probe and
+watching whether the fed code actually submits. The `claude setup-token` paste fallback (below)
+always works regardless.
+
+***
+
 ## The bottom line (this has burned ≥3 agents on `accounts-pool-tab-2026-06-15`)
 
 Do **not** try to let the owner "click a link and OAuth in the browser" to add a Claude

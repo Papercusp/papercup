@@ -749,17 +749,16 @@ export default function AdvSessionsClient() {
               Refresh
             </button>
             {sessionHarnessOptions.length > 1 ? (
-              <select
-                aria-label={`Filter sessions by ${t('pot', { lower: true })}`}
-                className="pc-adv-sessions__harness-filter"
+              <Select
+                ariaLabel={`Filter sessions by ${t('pot', { lower: true })}`}
+                triggerClassName="pc-adv-sessions__harness-filter"
                 value={sessionHarnessFilter ?? ''}
-                onChange={(e) => void setSessionHarnessFilter(e.target.value || null)}
-              >
-                <option value="">All {t('pot', { plural: true })}</option>
-                {sessionHarnessOptions.map((h) => (
-                  <option key={h} value={h}>{h}</option>
-                ))}
-              </select>
+                onChange={(value) => void setSessionHarnessFilter(value === '_all' ? null : value)}
+                options={[
+                  { value: '_all', label: `All ${t('pot', { plural: true })}` },
+                  ...sessionHarnessOptions.map((h) => ({ value: h, label: h })),
+                ]}
+              />
             ) : null}
           </div>
         </div>

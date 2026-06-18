@@ -86,7 +86,7 @@ function StartChatPicker({ slug }: { slug: string }) {
       </span>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', maxWidth: '100%' }}>
         <Select
-          aria-label="Work item to chat about"
+          ariaLabel="Work item to chat about"
           testId="adv-chat-pick"
           value={featureId}
           onChange={setFeatureId}

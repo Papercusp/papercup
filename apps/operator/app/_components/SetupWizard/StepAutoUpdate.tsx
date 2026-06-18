@@ -92,10 +92,17 @@ export function StepAutoUpdate() {
         Which release channel should Papercusp auto-update from? You can change this any time. While
         the app is in alpha, the alpha channel is recommended.
       </p>
-      <div className="pc-radio-grid">
+      <div className="pc-radio-grid" role="radiogroup" aria-label="Release channel">
         {(['alpha', 'beta', 'stable'] as const).map((c) => (
-          <label key={c} className="pc-radio-card" data-active={c === channel ? 'true' : undefined}>
-            <input type="radio" name="channel" value={c} checked={c === channel} onChange={() => void pick(c)} />
+          <button
+            key={c}
+            type="button"
+            role="radio"
+            aria-checked={c === channel}
+            className="pc-radio-card"
+            data-active={c === channel ? 'true' : undefined}
+            onClick={() => void pick(c)}
+          >
             <div>
               <div className="pc-radio-card__title">{c[0].toUpperCase() + c.slice(1)}</div>
               <div className="pc-radio-card__sub">
@@ -104,7 +111,7 @@ export function StepAutoUpdate() {
                 {c === 'stable' && 'Conservative. Updated when a release is ready for everyone.'}
               </div>
             </div>
-          </label>
+          </button>
         ))}
       </div>
 

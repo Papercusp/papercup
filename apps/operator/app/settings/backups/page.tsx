@@ -234,12 +234,18 @@ export default function BackupsSettingsPage() {
 
       <section className="pc-settings-section">
         <h2>Snapshot cadence</h2>
-        <div className="pc-settings-radio-group">
+        <div className="pc-settings-radio-group" role="radiogroup" aria-label="Snapshot cadence">
           {(['event', 'interval', 'both'] as CadenceMode[]).map((m) => (
-            <label key={m}>
-              <input type="radio" checked={settings.cadenceMode === m} onChange={() => set('cadenceMode', m)} />
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={settings.cadenceMode === m}
+              className="pc-settings-choice"
+              onClick={() => set('cadenceMode', m)}
+            >
               <span>{m === 'event' ? 'Event-driven only' : m === 'interval' ? 'Interval timer only' : 'Both (recommended)'}</span>
-            </label>
+            </button>
           ))}
         </div>
         {settings.cadenceMode !== 'event' && (
@@ -282,12 +288,18 @@ export default function BackupsSettingsPage() {
 
       <section className="pc-settings-section">
         <h2>Retention</h2>
-        <div className="pc-settings-radio-group">
+        <div className="pc-settings-radio-group" role="radiogroup" aria-label="Retention preset">
           {(['aggressive', 'default', 'conservative', 'custom'] as RetentionPreset[]).map((p) => (
-            <label key={p}>
-              <input type="radio" checked={settings.retentionPreset === p} onChange={() => set('retentionPreset', p)} />
+            <button
+              key={p}
+              type="button"
+              role="radio"
+              aria-checked={settings.retentionPreset === p}
+              className="pc-settings-choice"
+              onClick={() => set('retentionPreset', p)}
+            >
               <span>{p[0]!.toUpperCase() + p.slice(1)}</span>
-            </label>
+            </button>
           ))}
         </div>
         {settings.retentionPreset === 'custom' ? (

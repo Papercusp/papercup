@@ -26,19 +26,6 @@ const TEST_FILE_RE = /(?:\.test|\.spec)\.tsx$/;
 const LEGACY_NATIVE_SELECT_FILES = new Set([
   // Shared implementation of the design-system wrapper.
   'app/harness/Select.tsx',
-  // P-002 baseline: migrate these to app/harness/Select.
-  'app/admin/plans/PlanActions.tsx',
-  'app/admin/plans/PlansClient.tsx',
-  'app/admin/testing/_components/MemoryTab.tsx',
-  'app/adv/create/PlansListPanel.tsx',
-  'app/adv/harnesses/AdvChatPanel.tsx',
-  'app/adv/harnesses/AdvGitGraphPanel.tsx',
-  'app/adv/sessions/AdvSessionsClient.tsx',
-  'app/gym/GymDashboard.tsx',
-  'app/harness/CreateHarnessPicker.tsx',
-  'app/harness/EntryGithubUrlForm.tsx',
-  'app/harness/PrReviewerSettings.tsx',
-  'app/settings/user/memory/page.tsx',
 ]);
 
 const LEGACY_NATIVE_TABLE_FILES = new Set([
@@ -55,14 +42,6 @@ const LEGACY_NATIVE_TABLE_FILES = new Set([
   'app/harness/insights/BootHistoryTable.tsx',
   'app/harness/insights/ClaimAttemptTimeline.tsx',
   'app/settings/deploy-accounts/page.tsx',
-]);
-
-const DIRECT_CONFIRM_FILES = new Set([
-  // P-002 baseline: migrate to useConfirmDialog/ConfirmModal.
-  'app/admin/plans/PlanDetail.tsx',
-  'app/admin/plans/PlansClient.tsx',
-  'app/adv/create/MainViewPanel.tsx',
-  'app/settings/omp-integration/page.tsx',
 ]);
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
@@ -140,7 +119,11 @@ describe('design primitive lint', () => {
   it('blocks direct window.confirm usage outside the shared confirm primitive and legacy baseline', () => {
     expectNoUnexpected(
       'Direct window.confirm',
-      unexpectedFiles(/window\.confirm\s*\(/g, new Set([...DIRECT_CONFIRM_FILES, ...SHARED_CONFIRM_IMPLEMENTATION_FILES])),
+      unexpectedFiles(/window\.confirm\s*\(/g, SHARED_CONFIRM_IMPLEMENTATION_FILES),
     );
+  });
+
+  it('blocks native radio inputs in app UI', () => {
+    expectNoUnexpected('Native radio input', unexpectedFiles(/<input\b[^>]*\btype=["']radio["']/g, new Set()));
   });
 });

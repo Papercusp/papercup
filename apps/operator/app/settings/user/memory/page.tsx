@@ -5,6 +5,7 @@ import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { Select } from '@/app/harness/Select';
 import { useLexicon } from '@/lib/useLexicon';
 
 interface BrokenAnchor {
@@ -565,17 +566,15 @@ export default function MemoryPage() {
           <label htmlFor="memory-backend-select" style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
             Active store:
           </label>
-          <select
+          <Select
             id="memory-backend-select"
             value={currentBackend}
             disabled={switchingBackend}
-            onChange={(e) => void switchBackend(e.target.value)}
-            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-1)', color: 'var(--fg)', fontSize: 13, cursor: switchingBackend ? 'wait' : 'pointer' }}
-          >
-            {availableBackends.map((b) => (
-              <option key={b} value={b}>{b}</option>
-            ))}
-          </select>
+            onChange={(value) => void switchBackend(value)}
+            ariaLabel="Active memory store"
+            triggerStyle={{ padding: '4px 8px', fontSize: 13, cursor: switchingBackend ? 'wait' : 'pointer' }}
+            options={availableBackends.map((b) => ({ value: b, label: b }))}
+          />
           <span style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
             <code>claude-file</code> = your real Claude Code memory; <code>mem0</code> = the semantic store. Applies live, no restart.
           </span>
@@ -668,15 +667,16 @@ export default function MemoryPage() {
             <datalist id="memory-kind-suggestions">
               {[...new Set([...KIND_SUGGESTIONS, ...kindChips])].map((k) => <option key={k} value={k} />)}
             </datalist>
-            <select
-              value={draftScope}
-              onChange={(e) => setDraftScope(e.target.value)}
-              aria-label="Memory scope"
-              style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', color: 'var(--fg)', fontSize: 13 }}
-            >
-              <option value="">Personal</option>
-              {harnesses.map((h) => <option key={h} value={h}>{t('pot', { lower: true })}: {h}</option>)}
-            </select>
+            <Select
+              value={draftScope || '_personal'}
+              onChange={(value) => setDraftScope(value === '_personal' ? '' : value)}
+              ariaLabel="Memory scope"
+              triggerStyle={{ padding: '6px 10px', fontSize: 13 }}
+              options={[
+                { value: '_personal', label: 'Personal' },
+                ...harnesses.map((h) => ({ value: h, label: `${t('pot', { lower: true })}: ${h}` })),
+              ]}
+            />
             <div style={{ flex: 1 }} />
             <button
               type="button"

@@ -19,6 +19,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ShieldCheck, Trash2, ScrollText, GitMerge } from 'lucide-react';
 import { Modal } from './Modal';
+import { Select } from './Select';
 import type { PrMergeMethod } from '@papercusp/operator-core/lib/pr-host/types';
 
 // ─── Wire shapes (mirror routes/harness/pr-reviewer-settings.ts) ──
@@ -278,16 +279,14 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
                 <span className="pc-prrs__field-label">
                   <GitMerge size={13} aria-hidden /> Merge method
                 </span>
-                <select
-                  className="pc-prrs__select"
+                <Select
+                  triggerClassName="pc-prrs__select"
                   value={settings?.merge_method ?? 'squash'}
                   disabled={!editable || saving}
-                  onChange={(e) => void flip('merge_method', e.target.value as PrMergeMethod)}
-                >
-                  {MERGE_METHOD_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
+                  onChange={(value) => void flip('merge_method', value as PrMergeMethod)}
+                  ariaLabel="Merge method"
+                  options={MERGE_METHOD_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                />
               </label>
             </section>
 

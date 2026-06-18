@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface OmpIntegrationState {
   ompAgentDir: string;
@@ -42,6 +43,7 @@ export default function OmpIntegrationSettingsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [action, setAction] = useState<ActionState>('idle');
   const [actionResult, setActionResult] = useState<{ kind: 'ok' | 'error'; message: string; actions?: string[] } | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const refresh = useCallback(async () => {
     setLoadError(null);
@@ -81,7 +83,12 @@ export default function OmpIntegrationSettingsPage() {
   }, [refresh]);
 
   const uninstall = useCallback(async () => {
-    if (!window.confirm('Uninstall the engineer-collaborator OMP integration? Removes the papercusp-su MCP entry and the omp-su wrapper.')) return;
+    if (!await askConfirm({
+      title: 'Uninstall OMP integration?',
+      body: 'This removes the papercusp-su MCP entry and the omp-su wrapper.',
+      confirmLabel: 'Uninstall',
+      destructive: true,
+    })) return;
     setAction('uninstalling');
     setActionResult(null);
     try {
@@ -100,10 +107,11 @@ export default function OmpIntegrationSettingsPage() {
     } finally {
       setAction('idle');
     }
-  }, [refresh]);
+  }, [askConfirm, refresh]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {confirmEl}
       <header style={{ paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
         <h1>OMP integration</h1>
         <p className="pc-settings-intro" style={{ marginBottom: 0 }}>

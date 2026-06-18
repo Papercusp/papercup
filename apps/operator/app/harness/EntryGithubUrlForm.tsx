@@ -37,6 +37,7 @@ import { parseHarnessLink } from '@papercusp/operator-core/lib/harness/harness-l
 // below remains the fallback, so no provider = exactly the old behavior.
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
+import { Select } from './Select';
 
 // ── Client-side GitHub URL validation ──────────────────────────────────────
 // Mirrors clone-github.ts parseGithubUrl (the server-side source of truth).
@@ -950,16 +951,19 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-dim)', marginBottom: 4, fontWeight: 500 }}>
             Learning pack
           </span>
-          <select value={learningPack} onChange={(e) => setLearningPack(e.target.value)} style={inputStyle}>
-            {availablePacks.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title}
-                {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
-                {p.id === 'papercusp-default' ? ' (default)' : ''}
-              </option>
-            ))}
-            <option value="none">None — start with an empty memory</option>
-          </select>
+          <Select
+            value={learningPack}
+            onChange={setLearningPack}
+            ariaLabel="Learning pack"
+            triggerStyle={inputStyle}
+            options={[
+              ...availablePacks.map((p) => ({
+                value: p.id,
+                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === 'papercusp-default' ? ' (default)' : ''}`,
+              })),
+              { value: 'none', label: 'None — start with an empty memory' },
+            ]}
+          />
           <Hint>
             New {hiveLower}s start with a default set of learnings — working wisdom seeded into the{' '}
             {hiveLower}&rsquo;s shared memory. Your agents inherit them from the first wake; review, edit,

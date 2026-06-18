@@ -1537,6 +1537,22 @@ i.e. the file backend’s *session-start reach* is bounded at roughly **\~115–
 
 > Linking a Claude Max account by having the owner click a hand-built claude.ai authorize URL does NOT work — claude.ai returns "Authorization failed Invalid request format" even for a URL byte-for-byte identical to what `claude setup-token` generates. claude.ai requires the claude-code client's own handshake, which a plain browser click can't reproduce. The ONLY working path is `claude setup-token` (the CLI does the handshake) → paste the sk-ant-oat token / .credentials.json. Stop re-attempting the in-app OAuth link.
 
+## CURRENT STATE (2026-06-17, D-016/D-017) — the in-app one-click WORKS; the real stall was the code→token Enter
+
+[Section titled “CURRENT STATE (2026-06-17, D-016/D-017) — the in-app one-click WORKS; the real stall was the code→token Enter”](#current-state-2026-06-17-d-016d-017--the-in-app-one-click-works-the-real-stall-was-the-codetoken-enter)
+
+The hand-built-URL dead-end (below) is HISTORY. **D-016** replaced it: the in-app ”🔗 One-click (browser login)” now spawns the **real `claude setup-token` in a pty** (`deployment/account-link-cli.ts`), relays the URL the CLI itself prints, and pipes the owner’s pasted `code#state` back into that same held process — so claude.com accepts it (the CLI did its own handshake). Authorize works; this is the DEFAULT add-account path now.
+
+**The leg that then stalled** (“Linking…” forever) was the code→token completion — the one leg no test could cover (needs a real approval; the plan’s `Now`/`Next` flagged exactly this). Root cause, proven against **claude CLI v2.1.181** with a node-pty probe:
+
+* `claude setup-token` is now a full **Ink TUI** (animated banner + spinner + a **masked** code input), not a line prompt.
+* Feeding the code as a single ``pty.write(`${code}\r`)`` pastes it but the **trailing CR is absorbed into the paste** — the code is NEVER submitted, no token is minted, and the 60s `readUntil` times out → the stall.
+* **Fix (D-017):** paste the code, then send Enter (`\r`) as a **SEPARATE `pty.write` after a \~300 ms settle**. Then the TUI submits + exchanges. Live-proven: with a deliberately-wrong code the separate Enter produced `OAuth error: Request failed with status code 400` — i.e. the exchange actually fired (a correct code mints `sk-ant-oat…`). Also: settle on the token OR a rejection line so a bad/expired code fails fast instead of hanging the full 60 s. (`completeCliLink` in `account-link-cli.ts`.)
+
+So when **“Add account → One-click” stalls**: it is NOT the authorize URL and NOT claude.ai — it is the pty submit. Diagnose by replicating `account-link-cli.ts` in a node-pty probe and watching whether the fed code actually submits. The `claude setup-token` paste fallback (below) always works regardless.
+
+***
+
 ## The bottom line (this has burned ≥3 agents on `accounts-pool-tab-2026-06-15`)
 
 [Section titled “The bottom line (this has burned ≥3 agents on accounts-pool-tab-2026-06-15)”](#the-bottom-line-this-has-burned-3-agents-on-accounts-pool-tab-2026-06-15)
@@ -6339,6 +6355,48 @@ The unification collapsed N hardcoded `loopbackFetch(role="literal")` callers in
 * **`BLUEPRINT_ID` scopes the role prompt.** `fireLaunchBlueprint`’s default fire passes `BLUEPRINT_ID=<id>`, so the role resolves `blueprints/<id>/prompts/<role>.md` first, then the global `prompts/<role>.md`. Ship a blueprint-scoped prompt only when the role’s behavior differs (the `scan` blueprint does — it captures `work_items` via `improvements:capture` instead of emitting operator cards); otherwise the global persona is inherited unchanged.
 * **A blueprint-declared role needs caps.** A role spawned by a blueprint has no `system_principals` row, so capability-gated built-ins are denied unless you add it to `BLUEPRINT_ROLE_CAPS` in `role-principal-caps.ts` (least-privilege). The `scan` blueprint’s `scanner` gets `coord:write` (for `improvements:capture`) + the read caps it scans with. Roles that only use native agent tools (merge-resolver’s git ops) need nothing.
 
+# Lazy-import coord/presence into registry-loaded files (avoid load-time cycles)
+
+> A top-level import of a coordination/presence module into a file the system-action or endpoint registry side-effect-imports (e.g. git-sync-action) forms a require cycle that 500s an unrelated route. Use a call-time `await import()`.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+You add a top-level `import { listPresence } from '../../agent-tools/coordination/presence'` (or any coordination/identity module) to a file that the **registry loads as a side effect** — `git-sync-action.ts`, another `*-action.ts`, or a `defineTool` file. Suddenly an **unrelated** route/tool returns **500** instead of 200, even though your code never touches it. The `composed-app-shadowing` / route-shadowing tests catch it (e.g. `/harness/projects must hit the defineTool … expected 500 to be 200`).
+
+## Cause
+
+[Section titled “Cause”](#cause)
+
+A load-time **require cycle**. The registry imports your module to register its handler:
+
+```plaintext
+register-system-actions → git-sync-action → agent-tools/coordination/presence
+  → coordination/identity → … → agent-tools/index → register-system-actions  ← cycle
+```
+
+During the cycle one module’s exports are still partial (`undefined`) when another reads them, so a handler throws at request time → 500. It is intermittent-looking because it depends on import order, but it is deterministic per build.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Import the coordination module **lazily, at call time** — never top-level — in files the registry side-effect-imports:
+
+```ts
+// inside the handler / closure, only when actually needed:
+const { listPresence } = await import('../../agent-tools/coordination/presence');
+```
+
+This defers the import until after every module has finished initializing, so the cycle never forms. It matches the existing idiom in `git-sync-action.ts`, which already lazy-imports `@papercusp/db-org`, `@papercusp/flags/server`, `attention-notify`, etc. for the same reason.
+
+## Rule of thumb
+
+[Section titled “Rule of thumb”](#rule-of-thumb)
+
+In any file the **system-action registry** or an **endpoint `defineTool`** pulls in, import sibling `agent-tools/coordination/*` (and other registry-adjacent) modules with a call-time `await import()`, not a static top-level import. A new static import into one of these files + a fresh 500 in an unrelated tool = suspect a cycle first.
+
 # Pair every schema-ensure module with a live-PG regression sentinel
 
 > Unit tests can't catch CREATE TABLE typos, missing CHECK constraints, or PG-side DDL incompatibilities. A 2-second live verifier (boot embedded PG → call your ensures → assert the resulting schema) catches them all and gives you a one-line pre-commit gate.
@@ -8654,6 +8712,215 @@ Two properties have to coincide, and both are common here: (1) an injectable sea
 
 Unexplained live rows whose `workspace_id` matches a test fixture (`ws-1`, `ws-ledger`, `default`) or whose ids look like fixtures (`EI-LIVE`, `EI-DEAD`, `F-STALE`). Correlate `fired_at`/`created_at` timestamps with test runs — “grows by N per test-file execution” is the signature. The writer is a seam default reachable from a unit test: grep the handler under test for `set...(null)`-style seam resetters and check each seam’s default for `getOrgPg`.
 
+# "too many clients already" is a connection storm or pool overhang — diagnose it at the OS level, don't assume a DB outage
+
+> Papercusp's PG is the native cluster /var/lib/postgresql/18/main on :5432 with max_connections=100 (db harness_admin; users papercusp + papercusp_su). When it exhausts, EVERY MCP/PG call wedges fleet-wide and even a direct psql fails with FATAL 'sorry, too many clients already' — which reads like a DB outage but is almost always (1) a runaway client storming connections or (2) one operator's pool sitting near the 100 ceiling. You can diagnose + fix entirely at the OS level WITHOUT a SQL connection: count the postmaster's backends, map each :5432 socket to its owning PID with ss, find the one PID holding hundreds, and kill that subtree (or restart the offending service). On 2026-06-17 a STRAY manually-launched bin/hono-host.ts (gnome-terminal child, bound to FALLBACK ports 3071/3079/... because the standard ones were taken) was storming PG with 743 ESTAB + 355 SYN-SENT (~1000 conns); killing it unwedged the whole fleet. Separately the legit staging-api.service (:3170) alone held ~70 connections — restart it to reset its pool.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+An agent sees `MCP error -32603: sorry, too many clients already` (or every PG-backed tool failing, or `remaining connection slots are reserved for roles with the SUPERUSER attribute`) and concludes the database is down / broken / needs an admin to restart — and either gives up or reaches for a disruptive full-cluster restart. **It is almost never an outage.** It is connection *exhaustion* — and you can find the culprit and fix it at the OS level without ever getting a SQL connection.
+
+## What’s actually true
+
+[Section titled “What’s actually true”](#whats-actually-true)
+
+Papercusp’s Postgres on the dev box is the **native cluster `/var/lib/postgresql/18/main` on `:5432`**, `max_connections = 100`, db `harness_admin`, roles `papercusp` (the app, NOT superuser) and `papercusp_su` (the MCP, superuser). The box also runs \~18 OTHER PG clusters for unrelated self-hosted apps (bytebot, chatwoot, vikunja, …) — ignore those; only `18/main` is Papercusp’s.
+
+Two things exhaust it:
+
+1. **A connection storm** — a runaway client opening connections faster than it closes. On 2026-06-17 a **stray, manually-launched `bin/hono-host.ts`** from the canonical tree (a `gnome-terminal` child, not systemd-managed) couldn’t bind the standard operator ports so it grabbed **fallback ports (3071/3079/3270/3274)** and sat there storming PG: **743 ESTAB + 355 SYN-SENT** (frantically opening more). One redundant process pegged all 100 slots and wedged the entire fleet.
+
+2. **Pool overhang near the ceiling** — the legit `papercup-staging-api.service` (`:3170`) alone held **\~70 connections** (crash-loop residue after 55 restarts + warm-up growth), while the primary release operator (`:3070`) held a healthy \~18. With 100 total, one oversized pool + everything else sits right at the edge, and the next `papercusp`-role (non-superuser) connection gets refused — while a `papercusp_su` MCP call may still succeed via the superuser-reserved slots (which is why YOUR session works but the fleet doesn’t).
+
+## Diagnose it without SQL (the OS-level recipe)
+
+[Section titled “Diagnose it without SQL (the OS-level recipe)”](#diagnose-it-without-sql-the-os-level-recipe)
+
+```bash
+# postmaster pid for Papercusp's cluster (lowest-PID match)
+PM=$(ps -eo pid,etimes,cmd --sort=etimes | grep '[/]usr/lib/postgresql/18/bin/postgres -D /var/lib/postgresql/18/main' | head -1 | awk '{print $1}')
+
+
+# backend count (against max 100; ~12 of these are bg workers)
+pgrep -P "$PM" | wc -l
+
+
+# which CLIENT process holds the most connections → the storm/leak shows up instantly
+ss -tnp | awk '$5 ~ /:5432$/' | grep -oE 'pid=[0-9]+' | sort | uniq -c | sort -rn | head
+
+
+# identify + classify the top PID: is it systemd-managed or a stray terminal child?
+P=<top-pid>; tr '\0' ' ' < /proc/$P/cmdline; echo; cat /proc/$P/cgroup
+ss -tnp | grep "pid=$P," | awk '{print $1}' | sort | uniq -c   # ESTAB vs SYN-SENT vs CLOSE-WAIT
+```
+
+A single PID holding hundreds (especially with many `SYN-SENT`) is a storm. A `gnome-terminal-server.service` cgroup = a stray manual launch; a `*.service` cgroup = a real service.
+
+## Recover (least-disruptive first)
+
+[Section titled “Recover (least-disruptive first)”](#recover-least-disruptive-first)
+
+* **Storming stray** → `kill -KILL` its whole subtree (the `npm exec` → `sh -c tsx` → `node` chain). It’s redundant (the real operator is elsewhere on the standard ports); killing it frees the slots immediately and it does NOT respawn (it’s not systemd).
+* **Oversized service pool** → restart just that service: `systemctl --user restart papercup-staging-api.service` (playbook-blessed; `:3170` is the non-primary staging operator). Its pool reconnects lazily to baseline (\~18), freeing \~50 slots. Do NOT restart the whole cluster for this.
+* **Terminating idle backends** at the OS level (`kill -TERM <backend-pid>`) is safe (PG treats it like `pg_terminate_backend`) but pools just reopen — only a fix if the client count is genuinely transient; otherwise kill the source.
+
+## Chronic note
+
+[Section titled “Chronic note”](#chronic-note)
+
+`max_connections = 100` is tight for this multi-tenant dev box — the staging operator alone wants \~70. Raising it is a **postmaster-start** parameter (a full cluster restart, NOT a `SIGHUP`/reload), so it’s a coordinated action, not an in-session fix. RAM is not the constraint (the box has 100+ GB free). If storms/overhang recur, raising `max_connections` (or shrinking the staging operator’s pool) is the durable fix — file it rather than band-aiding each wedge.
+
+# "sorry, too many clients already" — PG connection exhaustion under agent load
+
+> When psu / dev:pg_* / the whole MCP surface fail with "sorry, too many clients already", PostgreSQL has hit max_connections. On a big box the cause is stock max_connections=100 + adaptive pool sizing (pgPoolMax up to ~52 PER org pool, ×2 pools, ×N operator processes). Fix is the host autodetector (resource-profile deriveDatabaseTuning), not a concurrency cap. Diagnose at the OS level because the DB tools are themselves locked out.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Every DB-backed tool fails at once:
+
+```plaintext
+MCP error -32603: sorry, too many clients already
+MCP error -32603: remaining connection slots are reserved for roles with the SUPERUSER attribute
+psu: sorry, too many clients already
+```
+
+`papercusp-su`, `dev:pg_*`, the owner’s psu, and most operator routes are all locked out simultaneously. It tends to appear “when lots of agents run at once”, and a `:3070` restart only helps for a while. PostgreSQL has exhausted `max_connections` — including the superuser-reserved slots.
+
+Caution
+
+You usually can’t query PG to diagnose this — the diagnostic tools need a connection too, and there are none. **Diagnose at the OS level.**
+
+## Diagnose (OS level — the DB tools are down)
+
+[Section titled “Diagnose (OS level — the DB tools are down)”](#diagnose-os-level--the-db-tools-are-down)
+
+```bash
+# How many TCP connections are pinned on PG, and which processes hold them?
+ss -tn state established '( dport = :5432 )' | wc -l
+ss -tnp state established '( dport = :5432 )' \
+  | grep -oP '"\w[^"]*",pid=\d+' | sort | uniq -c | sort -rn | head
+
+
+# The ceiling + memory (stock defaults are the tell)
+grep -iE '^\s*(max_connections|shared_buffers)' /etc/postgresql/18/main/postgresql.conf
+
+
+# Superuser can still get in via reserved slots (until those are gone too):
+sudo -n -u postgres psql -p 5432 -tAc \
+  "select count(*), (select setting from pg_settings where name='max_connections') from pg_stat_activity;"
+```
+
+A connect **storm** (not a steady trickle) shows as a big accept-backlog on the listen socket: `ss -ltn | grep :5432` → `Recv-Q` near `Send-Q`.
+
+## Root cause (the arithmetic, on a big box)
+
+[Section titled “Root cause (the arithmetic, on a big box)”](#root-cause-the-arithmetic-on-a-big-box)
+
+Two compounding facts:
+
+1. **Stock `max_connections = 100`** (and `shared_buffers = 128MB`) — the PostgreSQL defaults, sized for a laptop, never raised. On a 128-core / 252 GiB box that is a laptop-sized ceiling and 0.05%-of-RAM buffer cache.
+2. **Adaptive pool sizing applied without raising the ceiling.** The app sizes each org pool to `getResourceProfile().pgPoolMax` (`libs/papercusp/libs/db/src/connection.ts:253`). On this host that derives to **52**, and there are **two** org pools (`getOrgPg` admin + `getOrgPgApp` app/RLS) → **up to \~104 connections from a single operator process**, before per-harness pools, the admin-pg-cache (8), the 5 LISTEN connections, and su-lock (in DB `papercusp_su` but on the **same instance**, so it counts vs the server-wide cap). With ≥2 operator processes (`:3070` release + `:3170` staging) you blow past 100 instantly.
+
+This is the regression trap from `operator-scalability-event-loop-2026-06-16`: P4-3 (size the pool from `resource-profile`) shipped in code while its prerequisite P4-2 (raise the ceiling / front a pooler) did not. The pool grew to fit the beast; the DB ceiling stayed at the laptop default.
+
+Note: **spawned agents do not open their own PG connections** — they call the operator over HTTP/MCP and the operator owns the pools (`packages/agent-mcp/src/server.ts:104` → `withWorkspace` → `getOrgPgApp`). So the operator is the multiplexing point; the fix is at the server, not per-agent.
+
+## Fix — autodetect the limits from the host (do NOT hardcode, do NOT cap concurrency)
+
+[Section titled “Fix — autodetect the limits from the host (do NOT hardcode, do NOT cap concurrency)”](#fix--autodetect-the-limits-from-the-host-do-not-hardcode-do-not-cap-concurrency)
+
+The server knobs are derived from detected cores/RAM in one place — `deriveDatabaseTuning()` / `databaseTuningToSettings()` in `libs/generic/resource-profile/src/index.ts` (exposed as `ResourceProfile.database`). Two apply arms:
+
+* **Native PG** (dev box / dedicated server):
+
+  ```bash
+  npx tsx scripts/pg-autotune.ts            # --print: show derived settings, change nothing
+  npx tsx scripts/pg-autotune.ts --apply    # write conf.d drop-in + restart PG + verify (auto-rollback)
+  ```
+
+  It writes `/etc/postgresql/<v>/main/conf.d/10-papercusp-autotune.conf` and restarts. On this box that takes `max_connections` **100 → 512** and `shared_buffers` **128MB → 64GB**. Delete the drop-in + restart to revert.
+
+* **Embedded PG** (the shipped desktop): `apps/operator/bin/serve.ts` passes `databaseTuningToSettings(deriveDatabaseTuning({ embeddedPg: true }))` to `startEmbeddedPostgresServer({ extraPostgresSettings })`, which merges them into the postmaster `-c` flags — autoadjusts at boot, no config.
+
+Raising the ceiling is the immediate relief and is *correct for the hardware* — not a band-aid. The structural follow-ups (unify per-harness pools onto one shared pool, collapse the 5 LISTEN connections into one, front PG with a transaction-mode pooler for true thousands-of-agents multiplexing) live in plan `backend-connection-scaling-2026-06-17`.
+
+## Gotcha — don’t write a plan as a raw file during the outage
+
+[Section titled “Gotcha — don’t write a plan as a raw file during the outage”](#gotcha--dont-write-a-plan-as-a-raw-file-during-the-outage)
+
+While PG is down the `plans:*` tools fail too. If you write a plan `.md` straight to `apps/operator/docs/plans/` to work around that, it is an **orphan** (not registered in the PG plans table) and a plans reconciler **deletes it** once PG recovers. Code files survive (git-sync commits them); unregistered plan files do not. Re-create the plan via `plans:new` + `plans:set-content-chunk` once the DB is back — and note `set-content` content must include the YAML frontmatter or commit fails with `would_orphan_frontmatter`.
+
+# PG LISTEN/NOTIFY channel name length asymmetry
+
+> pg_notify() raises "channel name too long" for names >63 bytes while LISTEN silently truncates — any string derived from a file path can cross the limit; always hash before using as a channel name.
+
+## What
+
+[Section titled “What”](#what)
+
+PostgreSQL channel names are identifiers capped at **NAMEDATALEN − 1 = 63 bytes**, but the two sides of a pub/sub pair behave differently when you exceed it:
+
+| Call                                          | Behavior on >63-byte name                 |
+| --------------------------------------------- | ----------------------------------------- |
+| `LISTEN` (SQL identifier)                     | **Silently truncates** to 63 bytes        |
+| `pg_notify(channel, payload)` (text function) | **Raises** `ERROR: channel name too long` |
+
+This asymmetry is the trap: LISTEN registers a subscription on the truncated name, pg\_notify aborts with an error, and nobody ever wakes.
+
+## Why it matters here
+
+[Section titled “Why it matters here”](#why-it-matters-here)
+
+The locks subsystem keyed its per-workspace NOTIFY channel as `'ch_coord_' || coordinationDomain`. The coordination domain is the realpath of the repo checkout root, which is typically 40–80 chars on a real machine. `'ch_coord_'` is 9 chars, so any path longer than **54 chars** produces a channel name >63 bytes.
+
+Live incident (2026-06-09): the GREEN release checkout `/home/marsh-office/papercupai-workspace/papercup-release` is 56 chars → channel was 65 bytes. Every `grant_cascade()` call that had a waiting waiter called `pg_notify` on that name, which **aborted the entire release transaction** — rolling back the DELETE from `agent_file_locks` too. The lock stayed held; the waiter eventually timed out (30 s poll ceiling) instead of being woken (bug EI-15). The failing symptom was `locks:acquire { wait: { max_sec } }` returning `ok: false` even though the holder called `locks:release`.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+Hash the domain into the channel name so the total length is always 41 bytes:
+
+```ts
+// workspace-listener.ts (TypeScript LISTEN side)
+export function coordNotifyChannel(coordinationDomain: string): string {
+  return `ch_coord_${createHash('md5').update(coordinationDomain).digest('hex')}`;
+}
+```
+
+```sql
+-- 013-bounded-notify-channel.sql (SQL pg_notify side)
+CREATE OR REPLACE FUNCTION coord_notify_channel(p_coordination_domain text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT 'ch_coord_' || md5(p_coordination_domain)
+$$;
+```
+
+Both sides must use **exactly the same transformation** — any dual-mode “only hash when long” branch will eventually desync. Apply the hash unconditionally.
+
+The migration also adds a `coord_notify_channel_legacy()` function that notifies the old truncated name during the rolling upgrade window (so pre-fix listeners already LISTEN-ing on the truncated name still wake). Drop it once no pre-fix process remains.
+
+## How to avoid it in the future
+
+[Section titled “How to avoid it in the future”](#how-to-avoid-it-in-the-future)
+
+Whenever you derive a PG channel name from a string that originates outside the binary (file paths, workspace ids, slugs, user input), **hash it first**:
+
+```sql
+-- safe: always 41 bytes
+'prefix_' || md5(input)
+
+
+-- unsafe: variable length, will explode for long inputs
+'prefix_' || input
+```
+
+Test with an integration test that uses a coordination domain longer than 54 chars and asserts the waiter wakes promptly (not via the 30 s poll ceiling). The §9 test in `su-locks-http-mcp.integration.test.ts` does exactly this — keep it.
+
 # PG migrations — bash heredocs collapse $body$ tokens
 
 > Migrations using $body$...$body$ for function bodies break when written through bash heredocs. Use a named dollar-quote tag (e.g. $func$) and verify on apply.
@@ -9719,6 +9986,67 @@ The `workflow function from within a step` line + a same-second `hive turn finis
 2. Make the fire-and-forget fallback actually run the turn — today it no-ops under the broken context, so even the fallback doesn’t recover the Queen.
 3. **Config workaround (not a real fix):** guard the autoloop off under DBOS on `:3070` (set `PAPERCUSP_DBOS_AUTOLOOP=0` like staging). Needs a `:3070` restart and has side effects.
 
+# The Queen/Overwatch dock panes tail transcripts under session-claude, not ~/.claude/projects
+
+> The dock's ♛ queen / 👁 overwatch panes are READ-ONLY transcript tails (`pui brain-view`), not interactive psu sessions. They showed "waiting…" because psu-launched agents write their transcript under ~/.papercusp/session-claude/<session>/projects/<munged>/<uuid>.jsonl — NOT ~/.claude/projects/ — and the roster's sessionId was empty for them. Map of all four moving parts.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The desktop chat dock’s `♛ queen` and `👁 overwatch` panes are blank or stuck on `… not running right now — waiting…`, even while the autonomous Queen is clearly alive and doing real work (placements, escalations, wakes). Relaunching the app, or opening a second instance, never shows the same Queen — historically each instance spawned its own parked per-window shell.
+
+## The design (D-003 of `queen-overwatch-live-visibility-2026-06-16`)
+
+[Section titled “The design (D-003 of queen-overwatch-live-visibility-2026-06-16)”](#the-design-d-003-of-queen-overwatch-live-visibility-2026-06-16)
+
+Those two panes are **read-only transcript tails** — `pui brain-view --queen` / `pui brain-view --overwatch` (`apps/tui/src/brain_view.rs`), NOT interactive `psu --brain` / `psu --role=overwatch` sessions. A single Claude session can’t be attached in two places, so the old interactive panes could never render the same agent across instances and blanked when their shell exited. A read-only tail of the **shared backend transcript** renders identically in unlimited instances and survives shell exit. To make a pane show live turns, FOUR things must line up:
+
+### 1. Two transcript roots — psu agents do NOT write to `~/.claude/projects/`
+
+[Section titled “1. Two transcript roots — psu agents do NOT write to \~/.claude/projects/”](#1-two-transcript-roots--psu-agents-do-not-write-to-claudeprojects)
+
+A plain interactive Claude session writes `~/.claude/projects/<munged-cwd>/<uuid>.jsonl`. But a **psu-launched** agent (queen / overwatch / bee) gets a per-session config dir, so its transcript lands at:
+
+```plaintext
+~/.papercusp/session-claude/<session>/projects/<munged-cwd>/<uuid>.jsonl
+```
+
+— one extra `<session>` level, a different root. `locate_session_transcript` (`apps/tui/src/transcript.rs`) must scan **both** roots. Scanning only `~/.claude/projects` (the original bug) finds nothing for any psu agent, so every queen/overwatch/bee pane reads as “waiting” while a 450 KB live transcript sits untouched under `session-claude`.
+
+### 2. The roster `sessionId` comes from the adv row, not `spawned_agents`
+
+[Section titled “2. The roster sessionId comes from the adv row, not spawned\_agents”](#2-the-roster-sessionid-comes-from-the-adv-row-not-spawned_agents)
+
+The pane resolves the agent’s native uuid from the live roster (`/api/adv/roster`). A spawned bee records its uuid in `spawned_agents.session_id`; a psu agent has **no spawned\_agents row** but stamps the uuid on its `adv_sessions` row (mig 115). So `mergeRosterEntries` (`packages/operator-core/lib/adv-roster.ts`) must fall back: `sessionId: sessionsByOwner.get(ownerId) ?? adv?.sessionId ?? null`. Without the fallback the queen/overwatch entries carry `sessionId: null` and the pane filters them all out → “waiting”.
+
+### 3. Resolve the NEWEST wake with a transcript, not the first match
+
+[Section titled “3. Resolve the NEWEST wake with a transcript, not the first match”](#3-resolve-the-newest-wake-with-a-transcript-not-the-first-match)
+
+The Queen is **fresh-per-wake** — every wake is a new session with a new uuid (see \[\[hive-queen-fresh-per-wake]]); the roster accumulates dozens of past wakes (45 active + 24 ended is normal). `resolve_session` sorts by `adv_session_id` (a serial PK — higher = launched later) and returns the most recent wake that has a transcript on disk, so the pane shows her latest activity and rolls forward to each new wake. A `.find(first match)` instead pins to the OLDEST stale wake.
+
+### 4. The pane connects via `endpoint-ipc.json` — that operator must carry the fix
+
+[Section titled “4. The pane connects via endpoint-ipc.json — that operator must carry the fix”](#4-the-pane-connects-via-endpoint-ipcjson--that-operator-must-carry-the-fix)
+
+`OperatorClient::from_discovery()` prefers the local IPC socket resolved from `~/.papercusp/endpoint-ipc.json` (last-writer-wins on a multi-operator dev box). So the pane talks to **whatever operator wrote that file last** — which is NOT necessarily the desktop’s `/api`-pinned build target (`PAPERCUSP_DEV_API_TARGET` only re-points the web content). If that operator lacks the §2 roster fallback (e.g. green `:3070` before the deploy lands), the pane sees `sessionId: null` and shows “waiting” even though a sibling operator (`:3170`/`:3270`, integration tree) returns it fine. Diagnosing “works in one instance, waits in another” starts here: `cat ~/.papercusp/endpoint-ipc.json` → which pid/port → does its `/api/adv/roster` expose the queen’s `sessionId`?
+
+## Shipping it
+
+[Section titled “Shipping it”](#shipping-it)
+
+Two artifacts, two paths:
+
+* **Operator** (`adv-roster.ts`, §2) deploys to `:3070` via the normal staging → green-checkpoint → release pipeline.
+* **pui binary** (`transcript.rs` §1 + `brain_view.rs` §3 + the `layout.rs` dock KDL that makes the panes `pui brain-view`) is a CLIENT binary — `cargo install --path apps/tui --force` to `~/.cargo/bin/pui`, then **relaunch the dock** (a running pane keeps its old binary — see \[\[pui-dock-pane-runs-the-binary-it-launched-with]]).
+
+## Verify without a screenshot
+
+[Section titled “Verify without a screenshot”](#verify-without-a-screenshot)
+
+`pui brain-view --queen` run directly uses the exact pane code path (IPC → operator → resolve → locate → tail). It prints `── attached: Queen <uuid8> ──` then `[user]…/[assistant]…` turns, or `waiting…` if §1–§4 aren’t all satisfied. Two independent runs printing the SAME `attached: …` uuid confirms every instance resolves the same wake (the “same Queen every time” requirement).
+
 # The Queue "waiting on you" count must be a projection, not a pile (operational escalations are alerts)
 
 > Why the queue showed "7060+ waiting on you" when real decisions were ~40 — operational escalations (placement-watchdog cursed placements) tiered as decisions and never resolved. The fix + the derive-don't-store invariant every attention source must hold.
@@ -9875,6 +10203,8 @@ Papercusp routes **all** model calls through an **inference gateway** backed by 
 
 **3. The bare/header-less 429 stuck-loop (a TRANSIENT throttle read as exhaustion).** Anthropic returns two shapes of `429`, and they mean opposite things — read the headers, not just the status. A **quota** wall carries `anthropic-ratelimit-*` (unified util/reset) and/or `retry-after` **and `x-should-retry: false`**: you really are out, wait/route elsewhere. A **bare** 429 — `{"type":"rate_limit_error","message":"Error"}` with **NO `anthropic-ratelimit-*`, NO `retry-after`, and `x-should-retry: true`** — is a **short transient BURST throttle**: capacity exists, Anthropic is literally telling you to retry in a moment. The gateway’s 429 handler used to treat the bare form as a **no-op** (no `penalize`, no failover), so the gateway **stayed on the momentarily-throttled account and 429-looped every caller** — each bee’s `claude` CLI then retry-looped into a **$0 hang** (alive, no model call) while the six other accounts sat idle (the “aviynw10 stuck-loop”, 2026-06-17). Fixed in `gateway.ts`: a bare 429 now gets a SHORT bounded penalty (`BARE_429_FAILOVER_BACKOFF_MS`, \~15 s — tuned to the transient duration, NOT the multi-hour unified reset) **and fails over** (`pool.onExhausted`), so the next request rotates to a fresh account. Tell: `/healthz` `upstream429` climbs while `failovers` stays flat, the active `accountId` never changes, and the 429 body is the bare `message:"Error"` form. **`x-should-retry: true` ⇒ this is not a wall — retry / fail over, don’t conclude exhaustion.**
 
+**4. The PERSISTED penalty false-pause (a transient 429 → a 16-HOUR fleet-wide lockout).** The worst one, and it SURVIVES RESTARTS. The governor’s pause lives in `harness_shared.agent_rate_budget` (one row per `bucket_key`, `paused_until` epoch-ms — `agent-governor-pg-store.ts`), SHARED by every operator + gym process. When a `429` is classified `accountWide && !retryable` (the usage-cap path in `resilience/retry.ts`), the handler calls `governor.penalize({ resetAt })` with `resetAt` = the account’s **rolling-window** reset (Claude Max 5h/**7d**). `recordPenalty` honored that reset FULLY (no `maxPauseMs`), so a single transient 429 pinned the **account-blind** `anthropic:opus` (+ `sonnet` + `haiku`) bucket to a reset boundary **\~16 h out** — locking the WHOLE fleet out of opus with **rpm 0/45, $0, zero in-flight**, while `api.anthropic.com` direct-probes returned **200** (5h util 0.48 *allowed*, 7d 0.79 *allowed*). The tells: `dev:rate_governor_status` shows `paused:true` with `pausedUntil` a round hour many hours out + `usage.calls 0 / $0`; the pause is identical across `:3070` and `:3170` (it’s the shared PG row); and a process restart does **NOT** clear it (the row reloads on boot — this is why “restart the gateway” alone failed on 2026-06-17). A **rolling-utilization** window recovers continuously, so sitting on its multi-hour reset is always wrong — `recordHeaders` already re-probes a rejected unified window at `ROLLING_WINDOW_REPROBE_MS` (2 min); `penalize()` was the gap. **Fixed** (`resilience/governor.ts`): `penalize()` auto-caps the pause at `ROLLING_WINDOW_REPROBE_MS` for a subscription account (detected via `state.unified`), and bakes that cap into `opts` so the cross-process PG write inherits it (the persisted row never carries `unified`, so an in-memory-only cap would still write 16 h). **To CLEAR a live one** (no verb does it — `accounts:reset-rate` explicitly skips live governor buckets, and they otherwise self-expire only at `paused_until`): `UPDATE harness_shared.agent_rate_budget SET paused_until = 0, pace_delay_ms = 0 WHERE paused_until > <now_ms>` — scoped to the future-paused rows; the next `acquire` reads it fresh, fleet-wide, no restart needed.
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 [Section titled “The diagnostic recipe (do this BEFORE concluding a limit)”](#the-diagnostic-recipe-do-this-before-concluding-a-limit)
@@ -9893,7 +10223,7 @@ Papercusp routes **all** model calls through an **inference gateway** backed by 
 There are **two** governor singletons in **two** processes, and they are not the same:
 
 * **Operator** (`:3070`/`:3170`): `initRateLimitConfig()` installs the finite `maxSimultaneousAgents` cap → the **AIMD adaptive concurrency** (rate-limit-layer-v2 D-005: multiplicative-decrease on `penalize`, additive-increase after clean streaks) IS active here.
-* **Gateway** (`:8788`, `bin.ts → startGatewayService`): **never** calls `initRateLimitConfig` / `setGlobalConcurrencyCap`, so its global gate has no finite cap → **AIMD is DORMANT in the gateway.** Only the *static* per-account governor runs there (`maxConcurrent: 3`, `rpm: 45`, `recordResponse` util-pacing, `penalize` pause, + the fault-#3 bare-429 failover). So under sustained transient throttles the gateway pauses-then-resumes at the SAME static rate rather than adaptively settling — predictive per-account pacing is *designed* but only *partly* wired on the egress path. ⚠ You can’t just install the operator’s cap into the gateway: the operator cap is **agent-concurrency**; the gateway gate is **per-request concurrency** — copying `cap=1` would throttle the gateway to one in-flight HTTP request. A true gateway fix is per-account AIMD on the gateway’s own buckets.
+* **Gateway** (`:8788`, `bin.ts → startGatewayService`): **never** calls `initRateLimitConfig` / `setGlobalConcurrencyCap`, so its global gate has no finite cap → fleet-wide **AIMD is DORMANT in the gateway**; only the *static* per-account governor runs there (`maxConcurrent: 3`, `rpm: 45`, `recordResponse` util-pacing, `penalize` pause). ⚠ You can’t just install the operator’s cap into the gateway: the operator cap is **agent-concurrency**; the gateway gate is **per-request concurrency** — copying `cap=1` would throttle the gateway to one in-flight HTTP request. Instead (2026-06-17) the gateway became a **resilient retrying proxy** — the practical fix that matters more than AIMD: on a throttle it doesn’t just forward the error (bees have a tiny CLI retry budget that exhausts → `$0` fail), it **internally retries across the pool before responding** (`INTERNAL_RETRY_MAX_ATTEMPTS`): a transient/bare 429 → pace + rotate + short backoff; a **529** → short backoff; a **usage/session CAP** → `peekBody` the non-200 body (`classifyHttpError` → its meter is invisible in headers, util can read 0 on a capped account) → pause-to-reset + rotate to a healthy account (the bee classifies `usage_limit` as a no-retry wall, so the gateway MUST route around it itself). Net: a bee egresses opus through heavy 429 churn (seen: 497 upstream-429 / 409 failovers on one run) and still completes.
 
 ## The fix levers
 
@@ -9901,6 +10231,9 @@ There are **two** governor singletons in **two** processes, and they are not the
 
 * **Flags ON:** `papercusp-inference-gateway` + `papercusp-inference-gateway-multi-account` must both be enabled for per-account routing + per-account governor keying (fixes #1).
 * **Pool all accounts in the gateway** (not just 1–2) so the `x-papercusp-account` header can route to any of them and it never falls back to one exhausted account (fixes #2).
+* **Gateway resilient retry** (2026-06-17, `gateway.ts`) — internally retries/rotates across the pool on every throttle shape (bare-429, transient-429, 529, usage/session cap via `peekBody`) so a bee never sees a wall it won’t retry (fixes #3 + the session-cap case).
+* **SPAWN-side governor must not veto what the gateway can serve** (`dbos/orchestrator-runner.ts`, 2026-06-17). A SECOND governor gates spawn ADMISSION (per-account bucket, `PAPERCUSP_AGENT_GOVERNOR=1`): when that bucket was paused past `maxWait` it failed the spawn `$0` with **“agent governor: rate-limit pause exceeded max wait”** — even with five idle accounts. Fix: when gateway egress is configured (`extraEnv.ANTHROPIC_BASE_URL` set), **proceed** and let the gateway’s failover route to a healthy account instead of hard-failing. Tell: a bee dies in under 1s, `$0`, that exact `error_message`.
+* **Not every bench `$0` is rate-limit** — the su-independent driver’s `collectTask` (`external-bench/su-independent-backlog.ts`) used to read the diff/cost IMMEDIATELY after `placeFifoBatch` with no wait → empty diff + `$0` + `infra-failed` while the bee was STILL running (orphaning a live opus bee). Fix: poll `spawned_agents.status` to terminal before extracting (the real-Queen arm’s DRIVER polls-until-drained; this arm didn’t). Tell: bee `status=running` with a fresh heartbeat + climbing gateway requests, yet the launcher already recorded `infra-failed`.
 
 ## If you BUILD on the LLM
 
@@ -12211,6 +12544,54 @@ The creds live where the federation harness’s do — see [`hetzner-cross-machi
 * **$0 local parity** — 3 Swarms, real loopback HTTP authority RPC: no-kill ⇒ exactly-once (zero double-claims, no starvation, no fail-open); kill-authority ⇒ fail-open observed, deterministic reconcile, no starvation, no surviving double-completion.
 * **Real Hetzner (paid, 2026-06-09)** — 3 Swarms across 2 cpx31 frames in `ash` (authority isolated on frame 0). The survivors’ claims crossed the real machine boundary to the authority (remote-authority RPCs), the authority was killed mid-run, the survivors failed open, `reconcileAll` resolved every contested item to a single deterministic winner, and the whole backlog was completed (no starvation). **0 leaked VMs** after.
 
+# SwarmBench integration + the gateway's OpenAI-compatible /v1/chat/completions path
+
+> How SwarmBench (decentralized swarm coordination) plugs into external-bench via makePoolBacklogDriver — and the reusable finding that the Max-OAuth gateway exposes an OpenAI chat-completions endpoint, so any OpenAI-SDK harness can drive opus.
+
+Two things the next agent will want — one reusable across suites, one SwarmBench-specific.
+
+## REUSABLE: the gateway speaks OpenAI chat-completions, not just Anthropic
+
+[Section titled “REUSABLE: the gateway speaks OpenAI chat-completions, not just Anthropic”](#reusable-the-gateway-speaks-openai-chat-completions-not-just-anthropic)
+
+The Max-OAuth gateway (`:8788` / `:8799`, key `sk-papercusp-gateway`) exposes **`POST /v1/chat/completions`** in OpenAI format, in addition to the Anthropic `/v1/messages` path. A probe with the OpenAI shape returns a proper `chat.completion` object (`choices[0].message.content`). So **any harness built on the OpenAI SDK** (`AsyncOpenAI`, litellm’s openai provider, etc. — SwarmBench, tau2, many others) can drive opus by simply pointing its `api_base` at `http://127.0.0.1:8788/v1` and `model` at `claude-opus-4-8`. **No openai→anthropic shim is needed.**
+
+The **framing requirement carries over**: the FIRST system message must be the Claude Code identity (`"You are Claude Code, Anthropic's official CLI for Claude."`) or you get the bogus `rate_limit_error` regardless of budget (the same Max-OAuth gotcha as the Anthropic path — [max-oauth-first-system-block-must-be-claude-code-identity](/internal/docs/agent-insights/max-oauth-first-system-block-must-be-claude-code-identity)). For an OpenAI-format call, put the identity in (or prepend it to) the `system` role message. `:8799` is the quiet account (often free); `:8788` is the paced one — either works, both honor the framing.
+
+**Cost/latency caveat:** an opus call through the gateway inside a multi-round sim is *slow* — a SwarmBench scenario at N agents × R rounds is N×R sequential-ish opus calls and a tiny pilot can take many minutes. Budget generously, run small, and treat full sweeps as owner-gated.
+
+## SwarmBench-specific: how it plugs in
+
+[Section titled “SwarmBench-specific: how it plugs in”](#swarmbench-specific-how-it-plugs-in)
+
+Vendored at `~/.papercusp/bench-harnesses/swarmbench` (RUC-GSAI/YuLan-SwarmIntell, MIT) with a `.venv` (`numpy<2 scipy colorama pulp openai`). The integration:
+
+* **`swarmbench_run.py`** (in the vendored repo) runs ONE scenario to its deterministic sim score and prints a single `SWARMBENCH_RESULT_JSON\n{...}` line. Modes = the swarm-control topology = the ARM:
+
+  * `random` — no LLM (deterministic; the mechanics spike + unit-test shape).
+  * `openai` — SwarmBench’s NATIVE decentralized flow: each agent an independent OpenAI-compatible call. This is the **`su-independent`** arm (peer self-organization, local view only).
+  * `queen` / `queen-random` — **control-inversion**: a custom loop gathers all agents’ AGGREGATED LOCAL obs (`env.obs(agent)` per agent — NOT `env.obs(None)`, which is the global grid and would *cheat* the local-only premise, D-001) and one coordinator decides all N actions. This is the **`hive-realqueen`** arm.
+
+* **`swarmbench-live.ts`** = the `RunSwarmSim` port (shells the python, parses the result; injected exec for tests). **`swarmbench-backlog.ts`** = the driver on the generic `makePoolBacklogDriver` (one scenario = one `perTask` → canonical `HiveBacklogResult`, sim score on `attempt.armMeta`) + `buildSwarmBenchReport` (per-(task,arm) mean±SE + the decentralized-vs-centralized **topology delta**). Same pattern as `metr-hcast-backlog.ts` — see [non-diff-bench-arm-via-pool-backlog-driver](/internal/docs/agent-insights/non-diff-bench-arm-via-pool-backlog-driver).
+
+* **Task-set** is programmatic (task × grid × num\_agents × seed × view\_size) — `swarmbench-pilot` (cheap) vs `swarmbench` (the expensive full 5-task × 10-agent × 100-round sweep, gated). Scores are CONTINUOUS, not pass/fail — the headline is the mean score + the arm delta, never a pass-rate.
+
+## Running it: two mandatory robustness fixes + the contention asymmetry
+
+[Section titled “Running it: two mandatory robustness fixes + the contention asymmetry”](#running-it-two-mandatory-robustness-fixes--the-contention-asymmetry)
+
+Live full-sweep findings (plan D-001) — applicable to ANY in-sim, multi-round opus harness:
+
+* **Bound the per-agent retry + add a no-op fallback.** SwarmBench’s upstream `Agent.decision` is `while True: try: to_action(brain.generate()) except: retry` — an UNBOUNDED retry that HANGS the whole sim under gateway rate-limiting. The brain must catch, retry a few times, then return a safe `ACTION: STAY` (degrade, don’t deadlock).
+* **Lower the OpenAI client call timeout.** `framework/llm.py` hardcodes `timeout=3600` — a non-responsive (saturated) gateway then hangs *one hour per call*, stalling the sim. Set \~90s so a hung call fails fast → retry → STAY → the round proceeds.
+* **The decentralized arm is gateway-starved under fleet contention.** The `su-independent` arm fires **N concurrent calls/round** (10 agents × 100 rounds); against a gateway the SWE-Pro xbench fleet has saturated, rounds stall and it banks \~0 real scenarios while flooding the shared gateway. The `hive` queen (**1 aggregated-local call/round**) is gateway-efficient and completed 15/15 with real data. **So run the call-heavy decentralized arm in a QUIET gateway window (low fleet load), not concurrently with the fleet.** This is an infra asymmetry (centralized = fewer calls = robust to shared rate limits), not a SwarmBench-intrinsic result — label it as such. Queen-arm scores from the real run: Flocking 5.0±0.58 (genuine coordination), Pursuit 0.67, Foraging/Synchronization/Transport 0.
+
+## The honest framing (don’t skip)
+
+[Section titled “The honest framing (don’t skip)”](#the-honest-framing-dont-skip)
+
+SwarmBench is coordination-NATIVE (the score *is* collaboration quality; a single agent can’t shortcut it) and unsaturated — so it’s the right suite to demo multi-agent value, unlike metr-hcast (which opus-4.8 saturated). But the “hive” arm is a SwarmBench-specific aggregated-local coordinator, **not** the production Queen-over-backlog (D-005). Report it as a coordination-topology A/B on opus-4.8 — *does centralizing decentralized-local info beat peer self-organization* — not as “our production Queen ran SwarmBench”. Plan: `benchmark-suite-swarmbench-2026-06-17`.
+
 # notifySyncInvalidate's 90-second dedupe window
 
 > Identical (name, args) notifies fired within 90s are silently suppressed at the source. Per-tick / heartbeat notifies will surprise you. Carry distinguishing args or data to bypass.
@@ -13258,6 +13639,57 @@ Some modules naturally span. `contributor-file-types.ts` is **both** a wire type
 Tip
 
 A category-1 (wire) module with no structural predicate isn’t a wire type — it’s a type alias. Add the predicate. Reading “what the wire sends” is the contract; if you trust the wire, you don’t need the type. The predicate is the load-bearing piece.
+
+# Your UI edit "isn't showing up" in the desktop — suspect a stale/duplicated operator-vite watcher (and don't trust grep on the bundle)
+
+> A correct, tested UI change appeared to make ZERO difference in the Tauri app. Root cause was the operator-vite `vite build --watch`, not the code — a 4-day-old degraded watcher plus a second one racing into the same dist/. How to diagnose it reliably (python, not grep) and fix it (kill all, clean build, restart ONE singleton).
+
+## What
+
+[Section titled “What”](#what)
+
+You edit `apps/operator/app/**` (the SPA’s source, imported by operator-vite), the unit tests pass, `tsc` is clean — and the running desktop shows **zero change** after a reload. The instinct is “my code is wrong.” Usually it isn’t: the served `apps/operator-vite/dist` bundle simply doesn’t contain your code, because the **`vite build --watch` that feeds dist is broken**, not your edit.
+
+Two failure modes seen together (2026-06-17, the Queue redesign):
+
+1. **A long-lived, degraded watcher.** The `vite build --watch` had been up \~4 days (≈5.9 GB RSS). Its in-memory module graph went stale: it kept emitting new `index-*.js` + rewriting `index.html` (so mtimes looked fresh) **without re-reading the changed source** — your new string literals never landed.
+2. **Two watchers racing into one `dist/`.** A second watcher got spawned (the `bin/vite-watch-singleton` `VITE_WATCH_REPLACE=1` path could NOT kill the original, because that original was started outside the singleton lock — `sh -c vite build --watch …` from a `beforeDevCommand`, so it never held the lock fd). Both wrote `dist/` → **hundreds of orphan `index-*.js` chunks** and an `index.html` whose lazy-chunk hashes pointed at a *different* build than the one with your code.
+
+## The trap that wastes the most time
+
+[Section titled “The trap that wastes the most time”](#the-trap-that-wastes-the-most-time)
+
+**`grep` silently false-negatives on the bundle.** A production `index-*.js` is one \~2.5 MB single line; GNU grep’s line handling makes `grep -l "myString" dist/assets/*.js` report **nothing even when the string is present**. We concluded “my code isn’t built” off a lying grep. Verify bundle contents with **python** (`'needle' in open(f).read()`), never `grep`, on minified single-line files.
+
+## Fix (and the steady state to leave behind)
+
+[Section titled “Fix (and the steady state to leave behind)”](#fix-and-the-steady-state-to-leave-behind)
+
+```bash
+cd apps/operator-vite
+# 1. kill ALL build watchers — self-exclude regex so you don't kill your own shell
+pkill -f 'vite build --[w]atch'
+# 2. clean + one-shot build (this app builds in ~3s); confirms a CONSISTENT dist
+rm -rf dist && npx vite build
+# 3. python-verify index.html's referenced chunk actually contains your code
+python3 - <<'PY'
+import glob, re, os
+html = open('dist/index.html').read()
+refs = re.findall(r'assets/(index-[A-Za-z0-9_-]+\.js)', html)
+print([r for r in refs if 'YOUR_NEW_STRING' in open(f'dist/assets/{r}').read()])
+PY
+# 4. restart exactly ONE watcher for ongoing dev
+VITE_WATCH_REPLACE=1 setsid nohup npm run dev:nohmr >/tmp/vite.log 2>&1 &
+# 5. pgrep -af 'vite build --[w]atch'  → expect ONE node process
+```
+
+Then the owner does a **hard reload** (Ctrl-R) in the Tauri window — the desktop serves a static dist and only changes on rebuild + reload (no HMR on the nohmr path). See \[\[reference-desktop-dev-nohmr-3070-dist]].
+
+## Why “I see 0 changes” specifically
+
+[Section titled “Why “I see 0 changes” specifically”](#why-i-see-0-changes-specifically)
+
+The user’s URL also carried a lingering `?plan=…` alongside `?view=queue`. The *old* served code honored `?plan=` and rendered a full-width `PlanDetail` — so they weren’t even looking at the Queue. (The redesign’s nav-fix gates the full editor on `view==='plans'`, but that fix was in the un-served bundle.) When a UI change “does nothing,” check **what the served bundle actually contains** and **what URL state the user is in** before doubting the diff. Related: \[\[queue-waiting-on-you-derive-dont-store]].
 
 # Unbounded LLM/IO on a tool's response path drops the MCP transport
 
@@ -17890,6 +18322,193 @@ Pick run **A** (baseline) and **B** (treatment). The headline comparison is **hi
 
 * Unit/integration: `run-store`, `run-launcher` (incl. the kill-mid-run hard gate), `grade-runner`, `live-state`, `validity`, `export-bundle`, `AdvEvalsTab`.
 * A full **live** walkthrough (launch → monitor → grade → compare → export with a real opus run) is **owner-gated** — it spends real budget and needs the `papercusp-external-bench` flag on. Drive it through the Tauri shell.
+
+# Benchmark Fairness Criteria
+
+> The binding conditions a benchmark comparison between agent systems (su-agent / hive vs a reference like mini-swe-agent) MUST meet to be a fair, defensible measurement. Every benchmark run is audited against this checklist BEFORE any result is claimed.
+
+Binding
+
+This is the standard for **every** agent-system benchmark we run. Before reporting *any* number, produce a **fairness-audit table** (one row per criterion below, PASS/FAIL/N-A with evidence). A claim of “system A beats system B” is only valid when **every applicable criterion passes**. If a criterion fails, either fix it and re-run, or state the claim is provisional and name exactly which criteria failed. No exceptions, no “directional” hand-waving.
+
+## Why this exists
+
+[Section titled “Why this exists”](#why-this-exists)
+
+We compare our multi-agent systems (the **su-agent spine** and the **hive/Queen coordination** path) against external references (mini-swe-agent, SEAL, etc.) on coding benchmarks (SWE-bench-Pro, etc.). It is very easy to produce a number that *looks* like a win but isn’t a fair measurement — different denominators, different compute, different models, or (worst) not even exercising the capability being claimed. This document is the checklist that makes a comparison real.
+
+The 2026-06-17 su-vs-mini-swe Opus-4.6 run **failed several of these** (audited at the bottom). That run is the cautionary example, not the template.
+
+## The criteria
+
+[Section titled “The criteria”](#the-criteria)
+
+### C1 — Identical task set AND identical scoring denominator
+
+[Section titled “C1 — Identical task set AND identical scoring denominator”](#c1--identical-task-set-and-identical-scoring-denominator)
+
+* Both arms run the **exact same instance\_ids** (same source file, same N). ✔ is necessary but **not sufficient**.
+* Both arms are **scored on the same set**: `resolved / N` with the **same N** for both. An arm that produces no patch on a task **scores `false` on that task** — it is **never silently excluded**. Excluding one arm’s failures-to-produce (empty diff, infra-fail, timeout) while the other attempted all N is the single most common way to fake a win.
+* Report the **full per-instance result matrix** (instance\_id × arm × resolved), so the denominator is auditable.
+* “Real-diff intersection” or “graded-subset” numbers are **secondary, clearly-labelled** views — never the headline, because they drop the tasks one arm couldn’t attempt (which flatters the weaker-coverage arm).
+
+### C2 — Identical model, verified from telemetry (not config)
+
+[Section titled “C2 — Identical model, verified from telemetry (not config)”](#c2--identical-model-verified-from-telemetry-not-config)
+
+* Same model **and** reasoning effort for every model call each system makes.
+* **Verify from usage telemetry per arm** (`agent_usage_samples.model` / the run’s `usage.json`), not just the launch config — a tier/route remap can silently serve a different model (this has happened: a pin to opus-4-6 silently served opus-4-8).
+* A system that internally **escalates** some calls to a stronger model (or falls back to a weaker floor) is **not** on the same model — detect and disclose it.
+
+### C3 — Compute parity (iso-budget) — REQUIRED for any capability claim
+
+[Section titled “C3 — Compute parity (iso-budget) — REQUIRED for any capability claim”](#c3--compute-parity-iso-budget--required-for-any-capability-claim)
+
+* A multi-role spine or a multi-agent hive spends **far more inference per task** than a single-agent loop. Winning by spending 3–4× the compute is **not** “a better agent” — it’s “more compute.”
+
+* The comparison MUST be **one** of:
+
+  1. **Iso-budget**: both arms capped to the **same per-task budget** — same token budget, same `$/task`, or same model-call count — and the cap reported; **or**
+  2. **Explicitly labelled “best-effort, NOT compute-matched”**, with **per-task compute disclosed for both arms** (calls, tokens, `$`), and **no capability claim** drawn from it.
+
+* The fair headline is **score at equal budget** (or a score-vs-budget curve). Report `$/task` and `calls/task` for both arms always.
+
+### C4 — Test what you claim (the capability must actually be exercised)
+
+[Section titled “C4 — Test what you claim (the capability must actually be exercised)”](#c4--test-what-you-claim-the-capability-must-actually-be-exercised)
+
+* **The benchmark config must exercise the feature whose advantage you are claiming.**
+* Our differentiator is **multi-agent coordination**: multiple workers coordinating + correcting each other on overlapping work. That advantage **only** appears when workers **coordinate** — two workers on two *different* tasks with no communication get **zero** coordination benefit (just parallelism).
+* **The real research question is COORDINATION TOPOLOGY: central coordinator (Queen) vs totally-distributed (peer-to-peer) coordination — which collaborates better?** Both topologies use MULTIPLE coordinating agents; they differ only in *how* coordination happens.
+
+**Arm taxonomy (name the topology, don’t conflate):**
+
+| Arm                     | Agents                                                                                                                | Coordination                            | Exists today?                                          |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------ |
+| mini-swe-agent          | 1                                                                                                                     | none (baseline floor)                   | ✅ external                                             |
+| `su-independent` (code) | N, **one task each**                                                                                                  | **NONE** — isolated, no comms           | ✅ but it’s the *no-coordination* pole, NOT distributed |
+| `fifo-noqueen`          | N over a backlog                                                                                                      | none (scripted FIFO, Queen never wakes) | ✅ also a no-coordination pole                          |
+| **distributed / peer**  | **N, coordinating peer-to-peer** (coord:claim / declare-intent / messages / correct each other), **NO central Queen** | **distributed**                         | ❌ **MUST BE BUILT**                                    |
+| `hive-realqueen`        | N, central Queen places/evicts/re-places/briefs/wakes                                                                 | **central**                             | ✅ (currently reliability-degraded — EI-1293)           |
+
+Caution
+
+The code’s `su-independent` is the **NO-coordination** pole (“N independent agents, one task each, NO Queen and NO hive orchestration” — per its own header), **not** distributed coordination. A central-vs-distributed comparison therefore **cannot be run until a distributed/peer-coordination arm is built**. Do not label a no-coordination run as “distributed.”
+
+* State explicitly which topology each arm tests. The 2026-06-17 run used `su-independent` = **no coordination** → it tested neither topology, so it says nothing about central-vs-distributed.
+
+### C5 — Identical grader, environment, and exclusion policy
+
+[Section titled “C5 — Identical grader, environment, and exclusion policy”](#c5--identical-grader-environment-and-exclusion-policy)
+
+* Same grading harness (e.g. `swe_bench_pro_eval.py --use_local_docker`), same `FAIL_TO_PASS`/`PASS_TO_PASS`, same docker images, same per-task timeouts, same repo base commit.
+* The grader’s **omission/exclusion policy is applied identically** to both arms, and any omission is **reconciled into the C1 denominator** (an omitted row is a `false`, not a vanished row).
+* Run both arms through the **same grader code path** (don’t grade arm A one way and arm B another).
+
+### C6 — Reliability / coverage parity (infra must not differentially penalize)
+
+[Section titled “C6 — Reliability / coverage parity (infra must not differentially penalize)”](#c6--reliability--coverage-parity-infra-must-not-differentially-penalize)
+
+* Infra faults (rate-limit false-pause, heartbeat-reclaim of slow-but-alive workers, gateway wedges, OOM, timeouts) must **not** hit one arm harder than the other.
+* If an arm has infra-induced non-completions, you MUST either (a) **fix the infra and re-run**, or (b) **count them as `false`** in the shared denominator and **disclose** them — never silently drop. A coverage gap caused by *our* infra is still a real result, but it must be visible and not asymmetric.
+* Track per-arm: attempted, produced-output, infra-failed, capability-failed — separately.
+
+### C7 — No contamination / leakage
+
+[Section titled “C7 — No contamination / leakage”](#c7--no-contamination--leakage)
+
+* No solution/test-patch leakage into any agent’s context. Same context budget and same allowed tools class (modulo the capability under test).
+* Same retrieval/hints available to both arms.
+
+### C8 — Statistical validity
+
+[Section titled “C8 — Statistical validity”](#c8--statistical-validity)
+
+* N large enough and **stratified** (e.g. easy/medium/hard); report **per-tier**.
+* For a headline claim, **≥ 2 seeds/repeats** per arm to expose variance (agent runs are stochastic); report mean ± spread, not a single run.
+* Don’t claim a win inside the noise band (a 53% vs 50% single-run gap on N=30 is \~1.5 tasks — almost certainly not significant).
+
+### C9 — Reference validation
+
+[Section titled “C9 — Reference validation”](#c9--reference-validation)
+
+* The **reference arm’s score must reproduce its published number** (within noise). If mini-swe-agent scores far from its SEAL-published \~52%, the harness is miscalibrated — fix before comparing.
+
+### C10 — Transparent reporting
+
+[Section titled “C10 — Transparent reporting”](#c10--transparent-reporting)
+
+* Every report includes: N (and the shared denominator), the per-instance matrix, per-arm model (telemetry-verified), per-arm `$/task` + `calls/task`, the budget regime (iso-budget or best-effort), which capability each arm tests, infra-failure counts, seeds, and **this fairness-audit table**.
+
+## The mandatory pre-claim audit table
+
+[Section titled “The mandatory pre-claim audit table”](#the-mandatory-pre-claim-audit-table)
+
+Produce this for every run; fill PASS/FAIL/N-A with evidence:
+
+| #   | Criterion                                 | Status | Evidence |
+| --- | ----------------------------------------- | ------ | -------- |
+| C1  | Same task set + same scoring denominator  |        |          |
+| C2  | Same model (telemetry-verified)           |        |          |
+| C3  | Compute parity (iso-budget) or disclosed  |        |          |
+| C4  | Capability-under-claim actually exercised |        |          |
+| C5  | Same grader/env/exclusion                 |        |          |
+| C6  | Reliability/coverage parity               |        |          |
+| C7  | No contamination                          |        |          |
+| C8  | Statistical validity (N, tiers, seeds)    |        |          |
+| C9  | Reference reproduces published number     |        |          |
+| C10 | Transparent reporting                     |        |          |
+
+## Worked audit — 2026-06-17 su-independent vs mini-swe-agent (Opus 4.6, stratified-30)
+
+[Section titled “Worked audit — 2026-06-17 su-independent vs mini-swe-agent (Opus 4.6, stratified-30)”](#worked-audit--2026-06-17-su-independent-vs-mini-swe-agent-opus-46-stratified-30)
+
+| #   | Criterion              | Status             | Evidence                                                                                                                                                                                                   |
+| --- | ---------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | Same set + denominator | **FAIL**           | Same 30 input, but su **scored on 22**, mini-swe on **30** (su produced no diff on 8 huge repos). Headline leaned on the 72.7% real-diff-22 view, which drops su’s 8 non-attempts.                         |
+| C2  | Same model             | **PASS**           | Per-arm telemetry verified `claude-opus-4-6` (su `agent_usage_samples`; mini-swe litellm).                                                                                                                 |
+| C3  | Compute parity         | **FAIL**           | Not iso-budget. mini-swe 14.5 calls / $1.13 per task; su \~$4.97/task (≥2–4× even excluding retries). No budget cap.                                                                                       |
+| C4  | Capability exercised   | **FAIL**           | Ran `su-independent` = **one bee per task, no coordination**. The coordination/communication advantage was **never tested**. cap=2 was 2 *different* tasks (no overlap).                                   |
+| C5  | Same grader/env        | **PASS**           | Both via the same `_xbench_grade.py` → `swe_bench_pro_eval.py --use_local_docker`.                                                                                                                         |
+| C6  | Reliability parity     | **FAIL**           | su’s 8 non-attempts were largely infra (heartbeat-reclaim of slow bees on huge repos, \[EI-1293]); the run was also repeatedly degraded by a governor false-pause. Asymmetric vs mini-swe (0 infra-fails). |
+| C7  | No contamination       | **PASS** (assumed) | Same task inputs; no leakage identified.                                                                                                                                                                   |
+| C8  | Statistical validity   | **FAIL**           | Single seed; 53% vs 50% on N=30 is \~1.5 tasks — inside noise.                                                                                                                                             |
+| C9  | Reference validation   | **PASS**           | mini-swe 50% ≈ SEAL-published \~52%.                                                                                                                                                                       |
+| C10 | Transparent reporting  | **PARTIAL**        | Initial report over-led with 72.7%; corrected after audit.                                                                                                                                                 |
+
+**Verdict:** that run is **not a fair comparison** and supports **no** capability claim. The only mildly-robust signal (su solved 2 hard tasks, mini-swe 0) is single-seed and not compute-matched.
+
+## Coordination-topology roster (the study)
+
+[Section titled “Coordination-topology roster (the study)”](#coordination-topology-roster-the-study)
+
+The benchmark is a **coordination-topology comparison**, all arms on the same tasks, same model, **same per-task model-call budget (iso-call-budget)**, same denominator. Each arm is a pluggable **topology strategy** over one shared pool driver (so adding/removing an arm is a small config, not a new driver). Axes: *locus* (none / central / distributed-flat / hierarchical) × *mechanism* (none / direct-message / shared-artifact / review / aggregation) × *granularity* (per-backlog / per-task).
+
+| Arm                           | Locus                        | Mechanism                                        | Status                             |
+| ----------------------------- | ---------------------------- | ------------------------------------------------ | ---------------------------------- |
+| `mini-swe`                    | none (1 agent)               | —                                                | ✅ baseline floor                   |
+| `su-independent`              | none (N isolated)            | —                                                | ✅ no-coordination pole             |
+| `dist-broadcast`              | distributed-flat             | self-claim + declare-intent + broadcast findings | ❌ build                            |
+| `dist-peer-review`            | distributed-flat             | self-claim + peer-review diffs before submit     | ❌ build                            |
+| `dist-repo-huddle`            | distributed (per-repo group) | same-repo agents share understanding + co-edit   | ❌ build                            |
+| `dist-blackboard`             | distributed-flat             | indirect via shared scratchpad (stigmergic)      | ❌ build                            |
+| `ensemble-vote`               | none-during, aggregate-after | solve-N-independently → judge picks/merges       | ❌ build (key control)              |
+| `hier-lead-worker` (opt)      | hierarchical                 | elected lead decomposes + delegates              | ❌ build                            |
+| `pair-driver-navigator` (opt) | per-task pair                | continuous review                                | ❌ build                            |
+| `hive-realqueen`              | central                      | Queen places/evicts/re-places/briefs/wakes       | ✅ (reliability-degraded — EI-1293) |
+
+**Framework:** one `CoordinationStrategy` seam over `makePoolBacklogDriver` — hooks for `claimNext` (how an agent gets work), `onProgress` (what it shares/writes), `beforeSubmit` (review/aggregate), `teamShape` (per-task vs per-backlog vs per-repo). Iso-call-budget + same-denominator grading live in the shared driver, applied identically to every strategy.
+
+## What a fair run requires (the build target)
+
+[Section titled “What a fair run requires (the build target)”](#what-a-fair-run-requires-the-build-target)
+
+1. **Same denominator**: score both arms on all N; an empty/infra-failed task is `false`, not excluded.
+2. **Iso-budget**: cap both arms to the same per-task budget (token or `$` or call-count); report score-at-budget.
+3. **Fix the infra** so coverage is symmetric (\[EI-1293]: don’t reclaim slow-but-alive workers; the governor false-pause fix; gateway resilience) — then re-run; a coverage gap must be capability, not infra.
+4. **Run the arm that tests the claim**: for the coordination advantage, the **hive/Queen multi-worker-per-task** config — multiple workers overlapping + communicating on the same task — against the same reference.
+5. **≥ 2 seeds**, per-tier, full per-instance matrix.
+6. **Audit table above, all PASS**, before any claim.
 
 # Methodology — the controlled comparison
 
@@ -48375,7 +48994,9 @@ We deliberately run one shared tree rather than many diverging worktrees: it’s
 
 **git-sync owns commit + push.** A background routine commits the whole shared tree (every agent’s work) and merges + pushes it to **`origin/staging`** on a schedule — the superproject **and** every submodule (each to its own default branch). You never `git add` / `git commit` / `git push`; just leave your work in the tree and it lands on origin within a few minutes. Don’t stash, branch, or scope pathspecs to isolate “your” diff — there are no per-agent commits; the routine packages whatever’s in the tree. An auto-merge conflict it can’t take is resolved by a `merge-resolver` agent, not you. The per-edit file-lock hook still serializes concurrent edits to the same file.
 
-From `staging`, work reaches `main` automatically: **green-checkpoint** (hourly) runs the suite on staging HEAD in an isolated checkout and fast-forwards `main` when green; **release-trigger** (every 15 min) then auto-deploys green `main` to the live `:3070` operator (drain → swap → migrate → restart → health-check, auto-rollback). Your change being “in the tree” means it reaches `origin/main` + the live host as soon as the suite is green — and NOT before. The `/admin/git` tab shows the whole pipeline. Pause the routine only via `UPDATE harness_shared.routines SET active=false WHERE name='git-sync'`. Design: `git-sync-auto-commit-2026-06-03` + `staging-branch-pipeline-2026-06-06`.
+From `staging`, work reaches `main` automatically: **green-checkpoint** (hourly) runs the suite on staging HEAD in an isolated checkout and fast-forwards `main` when green; **release-trigger** (every 15 min) then auto-deploys green `main` to the live `:3070` operator (drain → swap → migrate → restart → health-check, auto-rollback). Your change being “in the tree” means it reaches `origin/main` + the live host as soon as the suite is green — and NOT before. The `/admin/git` tab shows the whole pipeline. To pause sync for ONE tree, take its scoped resource lock — `locks:acquire_resource { resource: 'git-sync:<slug>', mode: 'exclusive', ttl_sec: 1200 }` (scoped to that tree, TTL-bounded, audited; release with `locks:release_resource`). Do **not** `UPDATE harness_shared.routines SET active=false WHERE name='git-sync'` — the routine name is identical across every install, so it freezes every tree’s sync fleet-wide (no TTL/audit/broadcast). Design: `git-sync-auto-commit-2026-06-03` + `staging-branch-pipeline-2026-06-06`
+
+* `git-sync-dx-hardening-2026-06-17` (F3).
 
 (Submodules are unchanged: each stays on its own default branch. The staging→main gate applies to the superproject; `main` only advances to staging commits whose pinned submodule SHAs passed the suite, so green `main` always resolves to a tested combination.)
 
