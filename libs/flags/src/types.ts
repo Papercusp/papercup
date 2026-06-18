@@ -741,8 +741,8 @@ export const FLAGS = {
   UI_WORKSPACE_GUARD: "papercusp-ui-workspace-guard",
   // domain-generic-agent-personas-2026-06-17 P-006: resolve the `su` role's persona via the
   // blueprint prompt-resolve chain (blueprints/base/prompts/su.md) instead of the hardcoded
-  // papercusp-su playbook. DEFAULT OFF — DARK pending P-008 instance-override content (see
-  // FLAG_DEFAULTS). OFF = legacy renderSuPlaybook, byte-identical. KNOWN_DARK_FLAGS.
+  // papercusp-su playbook. DEFAULT ON (owner-authorized 2026-06-18; the papercup-hive su instance
+  // override is seeded — P-008 met). OFF = legacy renderSuPlaybook, byte-identical.
   SU_BLUEPRINT_PERSONA: "papercusp-su-blueprint-persona",
   // domain-generic-agent-personas-2026-06-17 P-013/P-014: deliver the agent prompt by REPLACING
   // the Claude Code base (--system-prompt-file / --system-prompt) instead of append/stdin, so OUR
@@ -774,13 +774,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (P-009): the watchdog auto-close sweep. OFF ⇒ escalate-only (today's
   // behavior, byte-identical). Owner flips ON after reviewing the guards. KNOWN_DARK_FLAGS.
   [FLAGS.WATCHDOG_AUTO_CLOSE]: false,
-  // DEFAULT OFF (domain-generic-agent-personas P-006) — DARK pending P-008. Flag-ON resolves the
-  // neutral base/su.md, but the papercup-hive su INSTANCE-OVERRIDE content (the Papercusp operational
-  // specifics — workspace map / :3070-:3170 / tool surface / named workflows — that base/su.md defers)
-  // was NEVER written (hive_settings has zero promptOverride rows), so flag-ON regresses su launches to
-  // the lean 104-line base vs the 584-line playbook (code audit 2026-06-18, su-146bf). OFF ⇒ legacy
-  // renderSuPlaybook (byte-identical). Re-default-ON only after the owner writes that instance override.
-  [FLAGS.SU_BLUEPRINT_PERSONA]: false,
+  // DEFAULT ON — owner-authorized 2026-06-18 (re-flipped once the P-008 prerequisite was MET).
+  // su persona via the blueprint prompt-resolve chain (P-006): base/su.md + client overlay + the
+  // spliced CLAUDE.md + the papercup-hive su INSTANCE OVERRIDE (source: apps/operator/prompts/
+  // hive-instances/papercup-hive.su.md, seeded to hive_settings promptOverride.su) carrying the
+  // Papercusp operational specifics (workspace map / :3070-:3170 / tool surface / named workflows).
+  // OFF ⇒ legacy renderSuPlaybook (byte-identical). The seeded instance override is what makes default-ON safe.
+  [FLAGS.SU_BLUEPRINT_PERSONA]: true,
   // DEFAULT ON — owner-authorized 2026-06-18 (runtime-flipped + "proceed with all deferred items").
   // Replace the Claude base via --system-prompt-file (P-013/P-014); resolveReplacementSystemPrompt
   // composition-tested + validated by live runtime spawns (a queen ran a 224s real turn with it on).

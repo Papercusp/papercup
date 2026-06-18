@@ -61,7 +61,7 @@ export async function ensureBenchSchema(client: Client, schema: string = BENCH_S
       last_validated_at timestamptz,
       last_surfaced_at timestamptz,
       state text NOT NULL DEFAULT 'active'
-        CHECK (state IN ('active','broken_anchor','superseded','contradicted','forgotten'))
+        CHECK (state IN ('active','broken_anchor','superseded','contradicted','forgotten','archived'))
     )
   `);
   await client.query(`

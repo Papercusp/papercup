@@ -26,6 +26,7 @@ import { getMemoryBackend, type MemoryEntry } from './backend';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
 import { memoryTierOf } from './two-tier';
+import { isEphemeralBenchmarkHarnessSlug } from '../harness/improvements/watchdog';
 
 /**
  * Memory injection is a best-effort enhancement — never load-bearing —
@@ -189,7 +190,11 @@ export async function buildMemoryContextBlock(
 
   const userLimit = input.limit ?? 6;
 
-  let harnessSlugs = (input.harnessSlugs ?? []).filter((s) => typeof s === 'string' && s.length > 0);
+  // P-016: exclude ephemeral/benchmark harness scopes from production recall
+  // injection so benchmark memories don't pollute the pre-turn prompt.
+  let harnessSlugs = (input.harnessSlugs ?? [])
+    .filter((s) => typeof s === 'string' && s.length > 0)
+    .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
   if (harnessSlugs.length > MAX_HARNESS_FANOUT) {
     console.warn(
       `[memory-injection] harnessSlugs (${harnessSlugs.length}) exceeds MAX_HARNESS_FANOUT (${MAX_HARNESS_FANOUT}); slicing.`,

@@ -3191,3 +3191,17 @@ export function knownQueryNamesV2(): string[] {
 export function isRegisteredV2(name: string): boolean {
   return name in REGISTRY;
 }
+
+/**
+ * Test-only — return one registry entry by name (or undefined) so tests can
+ * assert each entry is STRUCTURALLY well-shaped (a callable `resolve`, an
+ * optional `.parse`-bearing `argsSchema`) WITHOUT executing the resolver. The
+ * old breadth check dispatched every entry against real PG/FS, so its runtime
+ * scaled with (entry count × I/O latency) and repeatedly tripped the green gate
+ * under load (timeout bumped 10s→30s→120s, then blown past 120s at ~123 entries
+ * / load-90). Structural inspection catches the same bug class — a typo'd
+ * `resolves:` key leaves `resolve` undefined — in O(1) per entry, no I/O.
+ */
+export function getRegistryEntryV2(name: string): QueryEntry<unknown> | undefined {
+  return REGISTRY[name] as QueryEntry<unknown> | undefined;
+}

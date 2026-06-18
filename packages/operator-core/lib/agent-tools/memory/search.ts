@@ -18,6 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
+import { isEphemeralBenchmarkHarnessSlug } from '../../harness/improvements/watchdog';
 
 /** Map a neutral entry onto the stable wire row the surfaces consume.
  *  `kind` is materialized into `metadata.kind` — the TUI Memory tab reads
@@ -97,7 +98,12 @@ export default defineTool({
         // `ctx.workspaceId` read was never populated on principal-gated
         // handlers, so the fan-out silently degraded to user-pool-only (P-004).
         const reg = await loadHarnessRegistry(ctx.principal?.workspaceId ?? '');
-        harnessSlugs = reg.projects.map((p) => p.slug);
+        // P-016: exclude ephemeral/benchmark harness scopes from unscoped
+        // production recall so benchmark memories don't pollute results.
+        // Explicit harness_slug (above) bypasses this filter intentionally.
+        harnessSlugs = reg.projects
+          .map((p) => p.slug)
+          .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
       } catch {
         harnessSlugs = [];
       }

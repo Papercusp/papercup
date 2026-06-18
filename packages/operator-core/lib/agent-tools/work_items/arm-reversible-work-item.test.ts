@@ -110,15 +110,25 @@ describe('arm-reversible-work-item — P-114 work_items wiring', () => {
       ).toBeNull();
     });
 
-    it('threads the declared per-item risk so a sub-critical ceiling still arms (vs fail-safe `critical`, which gates)', async () => {
+    it('arms at the category ceiling when riskTier is absent (EI-570: bees never pass riskTier, ceiling used as proxy so tripwires actually fire)', async () => {
       // declared `low` risk @ a `low` ceiling → within ceiling → auto → a plan.
-      const armed = await planWorkItemArm(autonomousCtx, 'work_items:set_state', 'state', 'WI-1', 'papercup', { riskTier: 'low' }, io({ arm: armedAt('low') }));
-      expect(armed).not.toBeNull();
-      expect(armed!.decision.posture).toBe('auto');
-      expect(armed!.decision.riskTier).toBe('low');
-      // NO declared risk → fail-safe `critical` @ the same `low` ceiling → above ceiling → gated → null.
-      const gated = await planWorkItemArm(autonomousCtx, 'work_items:set_state', 'state', 'WI-1', 'papercup', undefined, io({ arm: armedAt('low') }));
-      expect(gated).toBeNull();
+      const withDeclared = await planWorkItemArm(autonomousCtx, 'work_items:set_state', 'state', 'WI-1', 'papercup', { riskTier: 'low' }, io({ arm: armedAt('low') }));
+      expect(withDeclared).not.toBeNull();
+      expect(withDeclared!.decision.posture).toBe('auto');
+      expect(withDeclared!.decision.riskTier).toBe('low');
+      // NO declared risk @ a `low` ceiling → ceiling used as proxy → low ≤ low → auto → plan (not null).
+      // Before the EI-570 fix this returned null (fail-safe critical > low → gated), so 0 tripwires fired.
+      const noDeclared = await planWorkItemArm(autonomousCtx, 'work_items:set_state', 'state', 'WI-1', 'papercup', undefined, io({ arm: armedAt('low') }));
+      expect(noDeclared).not.toBeNull();
+      expect(noDeclared!.decision.posture).toBe('auto');
+      expect(noDeclared!.decision.riskTier).toBe('low');
+    });
+
+    it('returns null when ceiling is never-auto even for an autonomous caller (no ceiling proxy → still gated)', async () => {
+      const arm = armDeps({ isArmed: async () => true, isFullAutonomy: async () => false, getPolicy: policy('never-auto') });
+      expect(
+        await planWorkItemArm(autonomousCtx, 'work_items:set_state', 'state', 'WI-1', 'papercup', undefined, io({ arm })),
+      ).toBeNull();
     });
   });
 

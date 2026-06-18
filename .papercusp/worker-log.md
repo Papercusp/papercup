@@ -1,3 +1,27 @@
+# Worker log — EI-570 (implement / self-improvement auto-fix)
+
+## EI-570: Tripwire arm-call-site never fires
+
+**Bug**: `planReversibleArm` called `resolveAutonomyDecision` without `riskTier` when bees
+don't pass `decision.riskTier`. Decider defaulted to `'critical'`. For `work-prioritization`
+(ceiling=`low`), `critical > low` → gated → planWorkItemArm returned null → 0 tripwires armed.
+
+**Fix** (arm-reversible-action.ts): Added imports for `categoryForAction` and
+`effectiveCeiling`. In `planReversibleArm`, when `input.riskTier` is null, look up the
+category's effective ceiling and use it as the risk proxy (if `!= 'never-auto'`). This makes
+the arm gate agree with the chokepoint: both see `low ≤ low` → auto → tripwire arms.
+
+**Files changed**:
+1. `packages/operator-core/lib/autonomy/arm-reversible-action.ts`
+2. `packages/operator-core/lib/autonomy/arm-reversible-action.test.ts`
+3. `packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.test.ts`
+
+**Tests**: `npx vitest run arm-reversible-action.test.ts arm-reversible-work-item.test.ts`
+→ 17 passed. `npm run test:affected` → 354 test files, 3392 passed (2 pre-existing failures
+in launch-blueprint.test.ts, unrelated to this change).
+
+---
+
 # Worker log — EI-402 (implement / self-improvement auto-fix)
 
 **Item:** EI-402 (kind=bug) — "Latitude VM creates platform-broken: correct
