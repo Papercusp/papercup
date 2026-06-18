@@ -145,11 +145,18 @@ export interface ResourceProfile {
    *  no-op. Independent of {@link ResourceSignals.hostRole}, which is what THIS
    *  process is *configured* to do; this is what the *hardware* recommends.) */
   readonly backgroundInProcess: boolean;
-  /** HTTP worker processes. **1 until a cluster actually exists** — wiring this
-   *  >1 is a separate change (the app is single-process today). */
+  /** HTTP worker processes for a clustered deploy (P3-2). >1 ONLY on a server-class
+   *  host with a dedicated PG (same gate as {@link backgroundInProcess} = false);
+   *  laptop / workstation / any embedded-PG (desktop) host stays 1. The RECOMMENDED
+   *  count — the operator actually forks it only when clustering is explicitly
+   *  enabled (default-off). `clamp(cores - 1, 1, 32)` (reserve a core for the
+   *  background primary; cap so fd/connection pressure stays sane). */
   readonly httpWorkers: number;
-  /** Alias of {@link httpWorkers} for consumers that think in "process count".
-   *  Also 1 until clustering lands. */
+  /** Total operator processes: clustered ⇒ {@link httpWorkers} request workers + 1
+   *  background primary; otherwise 1 (a single process serves + runs background).
+   *  **Feed this into PG pool sizing (boundedOrgPoolMax `expectedProcesses`)** so a
+   *  clustered host's per-process pools can't multiply past PG `max_connections` —
+   *  the exact 2026-06-17 connection-exhaustion this whole effort started from. */
   readonly processCount: number;
   /** Recommended PostgreSQL server knobs for THIS host (see {@link DatabaseTuning}).
    *  The desktop's embedded PG reads these at boot; a native PG is tuned from them
@@ -315,7 +322,7 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
  * | serializationWorkers | cores - 2  (0 ⇒ inline; only earned past ~4 cores)   |   0   |    8    |
  * | embedBatchSize       | 32 * 2^hostClassTier (laptop 32 / wkstn 64 / srv 128)|  16   |  256    |
  * | backgroundInProcess  | false only on a server-class host w/ native PG; else true | — | — |
- * | httpWorkers          | 1 (no cluster yet)                                   |   1   |    1    |
+ * | httpWorkers          | (server & native PG) ? cores-1 : 1                  |   1   |   32    |
  */
 export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile {
   // Normalize cores to a finite >=1 integer. A non-finite signal (NaN from a
@@ -366,8 +373,20 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   // in-process — the split would buy nothing and cost a second process.
   const backgroundInProcess = !(hostClass === 'server' && !embeddedPg);
 
-  // No cluster yet — pinned to 1 (floor === ceiling).
-  const httpWorkers = clamp(1, 1, 1);
+  // HTTP worker processes for a clustered deploy (P3-2). >1 ONLY on a server-class
+  // host with a DEDICATED PG (same gate as backgroundInProcess=false): a big
+  // multi-tenant box that benefits from spreading request serving across cores. A
+  // laptop/workstation — or any embedded-PG/desktop host — stays 1 (clustering buys
+  // nothing for one user, and the desktop owns the single-socket PTY/IPC servers a
+  // round-robin cluster can't share). Reserve 1 core for the background primary; cap
+  // 32 (past that, fd/connection pressure + diminishing returns). RECOMMENDED count
+  // only — the operator forks it when clustering is explicitly enabled (default-off),
+  // and whoever wires the cluster MUST feed processCount into PG pool sizing.
+  const clusterable = hostClass === 'server' && !embeddedPg;
+  const httpWorkers = clusterable ? clamp(cores - 1, 1, 32) : 1;
+  // Total operator processes: clustered ⇒ N request workers + 1 background primary;
+  // otherwise a single process that both serves requests + runs background work.
+  const processCount = httpWorkers > 1 ? httpWorkers + 1 : 1;
 
   // P5-3: widen background cadences 3x on battery so periodic work runs less often.
   const backgroundCadenceMultiplier = onBattery ? 3 : 1;
@@ -385,7 +404,7 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
     embedBatchSize,
     backgroundInProcess,
     httpWorkers,
-    processCount: httpWorkers,
+    processCount,
     database,
     backgroundCadenceMultiplier,
   };

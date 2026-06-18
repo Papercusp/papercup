@@ -19,6 +19,7 @@ const SPEC: CoordinationSpec = {
   disciplineForbid: [],
   central: false,
   aggregate: 'none',
+  coordinator: 'none',
 };
 
 const ROW_META = { version: 'fs@test', modelId: 'claude-opus-4-8', harnessVersion: 'h1', preregHash: 'p1', rolloutId: 'r1' };

@@ -16,7 +16,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { Drawer } from 'vaul';
 import { useSyncQuery } from '@papercusp/sync';
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -896,25 +896,31 @@ function PlanActivityFeed({
 }) {
   const { data: revisions, loading } = usePlanRevisions(open ? slug : null);
 
-  // Portal to <body> so the fixed drawer anchors to the VIEWPORT, not to a
-  // dockview ancestor. In the Create dock the panel content box is transformed
-  // + `overflow:hidden`, which re-anchored `position:fixed` to the panel and
-  // clipped the right-edge "Activity" tab. Rendering through a body portal makes
-  // it a true viewport overlay in both the standalone /admin/plans route and the
-  // dock, immune to ancestor transform/overflow.
-  const drawer = (
-    <div
-      style={{
-        position: 'fixed', right: open ? 0 : -280, top: 0, bottom: 0, zIndex: 35,
-        width: 280, background: 'var(--surface-1)',
-        borderLeft: '1px solid var(--border)',
-        transition: 'right 0.2s ease',
-        display: 'flex', flexDirection: 'column',
+  return (
+    <Drawer.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
-      aria-label="Activity feed"
+      direction="right"
+      modal={false}
     >
+      <Drawer.Portal>
+        <Drawer.Overlay style={{ position: 'fixed', inset: 0, zIndex: 34, background: 'transparent', pointerEvents: 'none' }} />
+        <Drawer.Content
+          aria-label="Activity feed"
+          style={{
+            position: 'fixed', right: 0, top: 0, bottom: 0, zIndex: 35,
+            width: 280, background: 'var(--surface-1)',
+            borderLeft: '1px solid var(--border)',
+            display: 'flex', flexDirection: 'column',
+            outline: 'none',
+          }}
+        >
       <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h4 style={{ margin: 0, fontSize: '0.8em', fontWeight: 600 }}>Activity</h4>
+        <Drawer.Title asChild>
+          <h4 style={{ margin: 0, fontSize: '0.8em', fontWeight: 600 }}>Activity</h4>
+        </Drawer.Title>
         <Tooltip label="Close"><button
           type="button"
           onClick={onClose}
@@ -954,10 +960,10 @@ function PlanActivityFeed({
           </div>
         ))}
       </div>
-    </div>
+        </Drawer.Content>
+      </Drawer.Portal>
+    </Drawer.Root>
   );
-
-  return typeof document !== 'undefined' ? createPortal(drawer, document.body) : drawer;
 }
 
 // P-025 — Kanban view: extracted to ./PlanKanbanView (dnd-kit + @papercusp/sync).
@@ -1004,23 +1010,23 @@ function FeatureSlideOver({
   const color = statusMeta[featureStatus ?? '']?.color ?? 'var(--fg-mute)';
 
   return (
-    <>
-      <div
-        className="pc-feature-overlay"
-        aria-hidden
-        onClick={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }}
-      />
-      <aside
-        className="pc-feature-drawer"
-        aria-label={`Feature ${featureId}`}
-        style={{
-          position: 'fixed', right: 0, top: 0, bottom: 0, zIndex: 41,
-          width: 'min(480px, 100vw)', background: 'var(--surface-1)',
-          borderLeft: '1px solid var(--border)', display: 'flex',
-          flexDirection: 'column', overflow: 'hidden',
-        }}
-      >
+    <Drawer.Root open onOpenChange={(next) => { if (!next) onClose(); }} direction="right">
+      <Drawer.Portal>
+        <Drawer.Overlay
+          className="pc-feature-overlay"
+          onClick={onClose}
+          style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }}
+        />
+        <Drawer.Content
+          className="pc-feature-drawer"
+          aria-label={`Feature ${featureId}`}
+          style={{
+            position: 'fixed', right: 0, top: 0, bottom: 0, zIndex: 41,
+            width: 'min(480px, 100vw)', background: 'var(--surface-1)',
+            borderLeft: '1px solid var(--border)', display: 'flex',
+            flexDirection: 'column', overflow: 'hidden', outline: 'none',
+          }}
+        >
         <header style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
@@ -1031,7 +1037,9 @@ function FeatureSlideOver({
                 </span>
               ) : null}
             </div>
-            {featureTitle ? <p style={{ margin: 0, fontWeight: 500, fontSize: '0.9em' }}>{featureTitle}</p> : null}
+            <Drawer.Title asChild>
+              {featureTitle ? <p style={{ margin: 0, fontWeight: 500, fontSize: '0.9em' }}>{featureTitle}</p> : <p style={{ margin: 0, fontWeight: 500, fontSize: '0.9em' }}>{featureId}</p>}
+            </Drawer.Title>
           </div>
           <button
             type="button"
@@ -1069,7 +1077,8 @@ function FeatureSlideOver({
             Open in feature queue ↗
           </a>
         </footer>
-      </aside>
-    </>
+        </Drawer.Content>
+      </Drawer.Portal>
+    </Drawer.Root>
   );
 }

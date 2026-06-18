@@ -116,9 +116,9 @@ describe('deriveResourceProfile — server (128 cores, native PG)', () => {
     expect(p.embedBatchSize).toBe(128);
   });
 
-  it('still pins httpWorkers to 1 (no cluster yet)', () => {
-    expect(p.httpWorkers).toBe(1);
-    expect(p.processCount).toBe(1);
+  it('scales httpWorkers to cores-1 capped at 32, + 1 background primary (P3-2)', () => {
+    expect(p.httpWorkers).toBe(32); // clamp(128 - 1, 1, 32)
+    expect(p.processCount).toBe(33); // 32 request workers + 1 background primary
   });
 
   it('recommends splitting background work to its own process', () => {

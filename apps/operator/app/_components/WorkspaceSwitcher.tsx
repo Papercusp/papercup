@@ -7,8 +7,7 @@
 // one (write to registry.json + reload), and surfaces create / rename /
 // delete actions.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useProgress } from '@bprogress/react';
@@ -24,6 +23,7 @@ import {
 } from '@papercusp/operator-core/lib/workspaces-tauri';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import { usePromptDialog } from '../harness/usePromptDialog';
+import { Popover } from '../harness/Popover';
 import { Tooltip } from '../harness/Tooltip';
 import { useLexicon } from '@/lib/useLexicon';
 import { getBrowserWorkspaceId, resolveActiveWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
@@ -35,11 +35,8 @@ export default function WorkspaceSwitcher() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const wrapRef = useRef<HTMLSpanElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const { prompt: askPrompt, element: promptEl } = usePromptDialog();
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   const [, setWsParam] = useQueryState('ws', parseAsString);
   const progress = useProgress();
@@ -60,49 +57,6 @@ export default function WorkspaceSwitcher() {
       })
       .catch((e) => toast.error(`workspaces: ${e?.message ?? e}`));
   }, [setWsParam]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (ev: MouseEvent) => {
-      const target = ev.target as Node;
-      if (wrapRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key !== 'Escape') return;
-      // The rename input handles its own Escape (cancel rename) — keep the menu open.
-      const target = ev.target as HTMLElement | null;
-      if (target && menuRef.current?.contains(target) && target.tagName === 'INPUT') return;
-      setOpen(false);
-      buttonRef.current?.focus();
-    };
-    document.addEventListener('mousedown', onClick);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onClick);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
-
-  // Anchor the portaled menu to the trigger button. Recompute on resize/scroll
-  // so the dropdown tracks the button if the layout shifts.
-  useLayoutEffect(() => {
-    if (!open) return;
-    const update = () => {
-      const btn = buttonRef.current;
-      if (!btn) return;
-      const r = btn.getBoundingClientRect();
-      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [open]);
 
   if (!reg || reg.workspaces.length === 0) return null;
 
@@ -217,16 +171,39 @@ export default function WorkspaceSwitcher() {
     <span ref={wrapRef} className="pc-workspace-switcher" style={{ position: 'relative', fontSize: 13 }}>
       {confirmEl}
       {promptEl}
-      <Tooltip label="Switch or manage workspaces">
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setRenamingId(null);
+        }}
+        side="bottom"
+        align="end"
+        sideOffset={4}
+        zIndex={200}
+        ariaLabel="Switch or manage workspaces"
+        closeOnEscape={renamingId === null}
+        contentClassName="pc-workspace-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
+        contentStyle={{
+          minWidth: 240,
+          // Solid tokenized surface; Popover portals to <body> so the
+          // dropdown escapes `.pc-header`'s sticky stacking context.
+          background: 'var(--bg-popover)',
+          backdropFilter: 'none',
+          WebkitBackdropFilter: 'none',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: 4,
+          boxShadow: '0 12px 32px color-mix(in oklab, black, transparent 40%), 0 0 0 1px color-mix(in oklab, var(--fg), transparent 96%)',
+        }}
+        trigger={
         <button
-          ref={buttonRef}
           type="button"
-          onClick={() => setOpen((v) => !v)}
           className="pc-workspace-trigger"
           style={{
             background: 'transparent',
-            border: '1px solid var(--border, #2a2a2a)',
-            color: 'var(--fg-dim, #aaa)',
+            border: '1px solid var(--border)',
+            color: 'var(--fg-dim)',
             padding: '3px 8px',
             borderRadius: 4,
             cursor: 'pointer',
@@ -238,32 +215,10 @@ export default function WorkspaceSwitcher() {
         >
           {current?.name ?? 'workspace'} <span className="pc-workspace-trigger-caret" style={{ opacity: 0.6 }}>▾</span>
         </button>
-      </Tooltip>
-      {open && menuPos && typeof document !== 'undefined' && createPortal(
-        <div
-          ref={menuRef}
-          role="menu"
-          className="pc-workspace-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
-          style={{
-            position: 'fixed',
-            top: menuPos.top,
-            right: menuPos.right,
-            minWidth: 240,
-            // Solid hex + backdrop-filter:none. Portaled to <body> so the
-            // dropdown escapes `.pc-header`'s sticky stacking context (z:50)
-            // — otherwise the OracleDock (z:80) paints over it. zIndex sits
-            // above the dock and above the harness modal default (100).
-            background: '#0f1319',
-            backdropFilter: 'none',
-            WebkitBackdropFilter: 'none',
-            border: '1px solid #2a3344',
-            borderRadius: 6,
-            padding: 4,
-            zIndex: 200,
-            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
-          }}
-        >
-          <div className="pc-workspace-menu-title" style={{ padding: '4px 8px', color: 'var(--fg-mute, #777)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        }
+      >
+        <div role="menu">
+          <div className="pc-workspace-menu-title" style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             Workspaces
           </div>
           {reg.workspaces.map((ws) => {
@@ -293,7 +248,7 @@ export default function WorkspaceSwitcher() {
                       if (e.key === 'Escape') setRenamingId(null);
                     }}
                     className="pc-workspace-menu-input"
-                    style={{ flex: 1, font: 'inherit', background: 'var(--bg, #111)', border: '1px solid var(--border, #2a2a2a)', color: 'inherit', padding: '2px 6px', borderRadius: 3 }}
+                    style={{ flex: 1, font: 'inherit', background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'inherit', padding: '2px 6px', borderRadius: 3 }}
                   />
                 ) : (
                   <Tooltip label={isCurrent ? 'current workspace' : `switch to ${ws.name}`}><button
@@ -314,7 +269,7 @@ export default function WorkspaceSwitcher() {
                   >
                     {ws.name}
                     {isCurrent && (
-                      <span className="pc-workspace-menu-current" style={{ marginLeft: 6, color: 'var(--fg-mute, #777)', fontSize: 11 }}>
+                      <span className="pc-workspace-menu-current" style={{ marginLeft: 6, color: 'var(--fg-mute)', fontSize: 11 }}>
                         active
                       </span>
                     )}
@@ -328,7 +283,7 @@ export default function WorkspaceSwitcher() {
 
                       aria-label={`Open ${ws.name} in a new window`}
                       className="pc-workspace-menu-action"
-                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: 'pointer', padding: '0 4px' }}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute)', cursor: 'pointer', padding: '0 4px' }}
                     >
                       ⧉
                     </button></Tooltip>
@@ -338,7 +293,7 @@ export default function WorkspaceSwitcher() {
 
                       aria-label={`Rename ${ws.name}`}
                       className="pc-workspace-menu-action"
-                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: 'pointer', padding: '0 4px' }}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute)', cursor: 'pointer', padding: '0 4px' }}
                     >
                       ✎
                     </button></Tooltip>
@@ -349,7 +304,7 @@ export default function WorkspaceSwitcher() {
                       aria-label={`Delete ${ws.name}`}
                       disabled={undeletable(ws.id) || reg.workspaces.length <= 1}
                       className="pc-workspace-menu-action"
-                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: undeletable(ws.id) || reg.workspaces.length <= 1 ? 'not-allowed' : 'pointer', padding: '0 4px', opacity: undeletable(ws.id) || reg.workspaces.length <= 1 ? 0.3 : 1 }}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute)', cursor: undeletable(ws.id) || reg.workspaces.length <= 1 ? 'not-allowed' : 'pointer', padding: '0 4px', opacity: undeletable(ws.id) || reg.workspaces.length <= 1 ? 0.3 : 1 }}
                     >
                       ✕
                     </button></Tooltip>
@@ -358,7 +313,7 @@ export default function WorkspaceSwitcher() {
               </div>
             );
           })}
-          <div className="pc-workspace-menu-divider" style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />
+          <div className="pc-workspace-menu-divider" style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
           <button
             type="button"
             onClick={onCreate}
@@ -377,9 +332,8 @@ export default function WorkspaceSwitcher() {
           >
             + New workspace…
           </button>
-        </div>,
-        document.body,
-      )}
+        </div>
+      </Popover>
     </span>
   );
 }

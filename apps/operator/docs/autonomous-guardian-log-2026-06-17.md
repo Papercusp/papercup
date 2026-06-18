@@ -39,8 +39,11 @@ no-op / disabled-when-omitted / respects floor / outranks idle / friction still 
 but the decisive finding: the @singleton scout already fired 49 times and produced **0 ideas every single
 time, $0 spent** — dead since the 06-14 re-scope. Root cause: scout's in-process ideator/critic llmCalls
 are `anthropic-direct` and never pass the spawn chokepoint that routes bees through the inference gateway,
-so they hit `api.anthropic.com` DIRECTLY on a single account → that account is perpetually rate-limited by
-the busy fleet → every ideator `429`s → `no-ideas`/$0. The corpus is RICH (digest: 20 friction / 20 spend
+so they hit `api.anthropic.com` DIRECTLY with the Max subscription OAuth token but WITHOUT the required
+`anthropic-beta: oauth-2025-04-20` header → every ideator fails INSTANTLY with `403 "OAuth not allowed for
+this organization"` → `no-ideas`/$0. **[CORRECTION 03:10: it's a 403 OAuth-beta gap, NOT 429/rate as the
+lines just below originally said — instrumented `runIdeators` to read the swallowed error. 7am does NOT fix
+it; fix is the gateway's oauth-beta injection (su-224c6080) or an `ANTHROPIC_API_KEY`. Insight corrected.]** The corpus is RICH (digest: 20 friction / 20 spend
 sinks $68k / 20 deferrals / 20 capability gaps / 18 reverts over 499 completions) — so this was purely the
 LLM egress, not missing observations. **Same bug class as the gym's FB-16** (`gym-cycle-inprocess-llm-
 bypasses-gateway`) — scout just never got the fix. **Fix:** `register-scout-action.ts` `productionScoutRunner`
