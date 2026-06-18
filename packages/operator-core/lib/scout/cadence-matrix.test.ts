@@ -31,11 +31,16 @@ import type { ScoutTickRecord } from './tick-ledger';
 const NOW = Date.parse('2026-06-08T12:00:00Z');
 
 // Defaults under test (cadence.ts DEFAULTS): minInterval 3600s, friction floor
-// min(minInterval, 900) = 900s, heartbeat ceiling 86400s, idleThreshold 0.5,
-// frictionThreshold 3.
+// min(minInterval, 900) = 900s, heartbeat ceiling 3600s (== minInterval, owner-set
+// hourly 2026-06-18), idleThreshold 0.5, frictionThreshold 3.
 const MIN = 3600;
 const FRICTION_FLOOR = 900;
+// An EXPLICIT long ceiling (the pre-2026-06-18 default). Rows that isolate the
+// "below the heartbeat ceiling → no-trigger" window opt into it so they test the
+// gate LOGIC independent of the now-hourly default. The default's own hourly
+// heartbeat is pinned by the "default heartbeat is hourly" rows below.
 const MAX = 86400;
+const LONG = { maxIntervalSec: MAX } as const;
 
 function cadenceState(idle: number, friction: number, elapsedSec: number | null): ScoutCadenceState {
   return {
@@ -70,14 +75,21 @@ const CADENCE_MATRIX: CadenceRow[] = [
   // ── idle × min-interval floor boundaries ───────────────────────────────────
   { name: 'idle 1 × elapsed one second shy of the floor → min-interval, retry 1', idle: 1, friction: 0, elapsedSec: MIN - 1, fire: false, reason: 'min-interval', retryAfterSec: 1 },
   { name: 'idle EXACTLY at threshold × elapsed EXACTLY at the floor → idle-capacity (double boundary)', idle: 0.5, friction: 0, elapsedSec: MIN, fire: true, reason: 'idle-capacity' },
-  { name: 'idle a hair under threshold × elapsed at the floor → no-trigger', idle: 0.49999, friction: 0, elapsedSec: MIN, fire: false, reason: 'no-trigger' },
-  { name: 'floor passed but nothing to fire (idle 0, friction 0) → no-trigger', idle: 0, friction: 0, elapsedSec: MIN, fire: false, reason: 'no-trigger' },
+  // (LONG ceiling so "at the floor but below the heartbeat" is a real window —
+  //  under the default hourly ceiling MIN==MAX, so these would heartbeat-fire.)
+  { name: 'idle a hair under threshold × elapsed at the floor (long ceiling) → no-trigger', idle: 0.49999, friction: 0, elapsedSec: MIN, opts: LONG, fire: false, reason: 'no-trigger' },
+  { name: 'floor passed but nothing to fire (idle 0, friction 0, long ceiling) → no-trigger', idle: 0, friction: 0, elapsedSec: MIN, opts: LONG, fire: false, reason: 'no-trigger' },
 
-  // ── heartbeat ceiling boundaries ───────────────────────────────────────────
-  { name: 'one second shy of the heartbeat ceiling → no-trigger', idle: 0.49999, friction: 2, elapsedSec: MAX - 1, fire: false, reason: 'no-trigger' },
-  { name: 'elapsed EXACTLY at the heartbeat ceiling → heartbeat (>= boundary)', idle: 0.49999, friction: 2, elapsedSec: MAX, fire: true, reason: 'heartbeat' },
-  { name: 'past the ceiling × idle at threshold → idle-capacity outranks heartbeat', idle: 0.5, friction: 0, elapsedSec: MAX + 3600, fire: true, reason: 'idle-capacity' },
-  { name: 'past the ceiling × friction at threshold → friction outranks heartbeat', idle: 0, friction: 3, elapsedSec: MAX + 3600, fire: true, reason: 'friction-triggered' },
+  // ── DEFAULT hourly heartbeat (owner-set 2026-06-18: maxInterval == minInterval) ──
+  { name: 'DEFAULT hourly: idle below threshold × elapsed at the floor → heartbeat (no blind dark)', idle: 0.49999, friction: 0, elapsedSec: MIN, fire: true, reason: 'heartbeat' },
+  { name: 'DEFAULT hourly: quiet hive × elapsed at the floor → heartbeat', idle: 0, friction: 0, elapsedSec: MIN, fire: true, reason: 'heartbeat' },
+  { name: 'DEFAULT hourly: one second shy of the floor/ceiling → min-interval (still ~hourly, not every tick)', idle: 0, friction: 0, elapsedSec: MIN - 1, fire: false, reason: 'min-interval', retryAfterSec: 1 },
+
+  // ── heartbeat ceiling boundaries (explicit LONG ceiling) ─────────────────────
+  { name: 'one second shy of the heartbeat ceiling → no-trigger', idle: 0.49999, friction: 2, elapsedSec: MAX - 1, opts: LONG, fire: false, reason: 'no-trigger' },
+  { name: 'elapsed EXACTLY at the heartbeat ceiling → heartbeat (>= boundary)', idle: 0.49999, friction: 2, elapsedSec: MAX, opts: LONG, fire: true, reason: 'heartbeat' },
+  { name: 'past the ceiling × idle at threshold → idle-capacity outranks heartbeat', idle: 0.5, friction: 0, elapsedSec: MAX + 3600, opts: LONG, fire: true, reason: 'idle-capacity' },
+  { name: 'past the ceiling × friction at threshold → friction outranks heartbeat', idle: 0, friction: 3, elapsedSec: MAX + 3600, opts: LONG, fire: true, reason: 'friction-triggered' },
 
   // ── friction floor boundaries + priority ───────────────────────────────────
   { name: 'friction at threshold × one second shy of the friction floor → min-interval, retry 1', idle: 0, friction: 3, elapsedSec: FRICTION_FLOOR - 1, fire: false, reason: 'min-interval', retryAfterSec: 1 },
@@ -85,12 +97,12 @@ const CADENCE_MATRIX: CadenceRow[] = [
   { name: 'friction inside the NORMAL floor but past the friction floor → friction-triggered (bypass)', idle: 0, friction: 3, elapsedSec: 1800, fire: true, reason: 'friction-triggered' },
   { name: 'huge friction does NOT bypass the friction floor (magnitude is not urgency)', idle: 0, friction: 1000, elapsedSec: FRICTION_FLOOR - 1, fire: false, reason: 'min-interval', retryAfterSec: 1 },
   { name: 'friction-shaped tick at zero elapsed → withheld by the FRICTION floor (900s, not 3600s)', idle: 1, friction: 3, elapsedSec: 0, fire: false, reason: 'min-interval', retryAfterSec: FRICTION_FLOOR },
-  { name: 'sub-threshold friction is no trigger even with a huge backlog window', idle: 0.2, friction: 2, elapsedSec: 7200, fire: false, reason: 'no-trigger' },
+  { name: 'sub-threshold friction is no trigger even with a huge backlog window (long ceiling)', idle: 0.2, friction: 2, elapsedSec: 7200, opts: LONG, fire: false, reason: 'no-trigger' },
 
   // ── custom-option edges ────────────────────────────────────────────────────
   { name: 'frictionThreshold 0 makes EVERY tick friction-shaped (outranks idle)', idle: 1, friction: 0, elapsedSec: 1000, opts: { frictionThreshold: 0 }, fire: true, reason: 'friction-triggered' },
   { name: 'idleThreshold 0 → a fully-saturated fleet still idle-fires past the floor', idle: 0, friction: 0, elapsedSec: MIN, opts: { idleThreshold: 0 }, fire: true, reason: 'idle-capacity' },
-  { name: 'idleThreshold above 1 can never idle-fire (falls to no-trigger)', idle: 1, friction: 0, elapsedSec: 7200, opts: { idleThreshold: 1.1 }, fire: false, reason: 'no-trigger' },
+  { name: 'idleThreshold above 1 can never idle-fire (falls to no-trigger, long ceiling)', idle: 1, friction: 0, elapsedSec: 7200, opts: { idleThreshold: 1.1, maxIntervalSec: MAX }, fire: false, reason: 'no-trigger' },
   { name: 'floor DOMINATES a shorter ceiling (max < min): inside the floor → min-interval', idle: 0, friction: 0, elapsedSec: 1800, opts: { maxIntervalSec: 600 }, fire: false, reason: 'min-interval', retryAfterSec: 1800 },
   { name: 'floor dominates a shorter ceiling: heartbeat only fires once past the FLOOR', idle: 0, friction: 0, elapsedSec: MIN, opts: { maxIntervalSec: 600 }, fire: true, reason: 'heartbeat' },
 ];

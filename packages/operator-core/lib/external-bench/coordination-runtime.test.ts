@@ -31,6 +31,7 @@ const spec = (over: Partial<CoordinationSpec>): CoordinationSpec => ({
   review: 'none',
   sharedState: 'both',
   team: 'per-backlog',
+  aggregate: 'none',
   disciplineForbid: [],
   central: false,
   ...over,

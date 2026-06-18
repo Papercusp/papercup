@@ -186,6 +186,13 @@ export interface SuIndependentBacklogOpts {
   onEnrolled?: (enrolled: SuIndependentEnrolled) => void | Promise<void>;
   onTaskCollected?: (result: FleetTaskResult) => void | Promise<void>;
   /**
+   * Fires once, right after this run's temporary hive is created, with its slug (a random
+   * `xbench-su-<nanoid>`). The launcher captures it so a signal-kill — which exits BEFORE the driver's
+   * finalize/dissolveHive runs — can still retire THIS run's work-items (scoped {@link retireBenchDebris}),
+   * never a concurrent peer's. Best-effort: a hook throw must never abort the drive.
+   */
+  onHiveCreated?: (hiveSlug: string) => void | Promise<void>;
+  /**
    * GAIA arm seam (plan benchmark-suite-gaia-2026-06-17). When present, the REAL ops binding
    * ({@link suIndependentBacklogOps}) runs the GAIA general-assistant path instead of the SWE-bench coding
    * path — the THREE SWAPS: GAIA scratch-dir clone (no repo), member blueprint `gaia-agent` + the
@@ -268,6 +275,8 @@ export function suIndependentBacklogDriver(
         } catch (e) {
           return finalize(`createHive failed: ${msg(e)}`);
         }
+        // Surface the run's hive slug so the launcher can scope a signal-kill debris retire to THIS run.
+        await fireHook(opts.onHiveCreated, hiveSlug);
 
         const cap = Math.max(1, Math.floor(await ops.concurrencyCap()) || 1);
         const deadline = startedAtMs + fleetTimeoutMs;

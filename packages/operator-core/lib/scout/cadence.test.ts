@@ -24,9 +24,22 @@ describe('shouldRunScoutCycle (P-008 cadence)', () => {
   });
 
   it('does NOT fire on a blind clock — idle below threshold, no friction, within heartbeat', () => {
-    const v = shouldRunScoutCycle(state({ idleRatio: 0.2, frictionSignals: 0, lastRunAtMs: minutesAgo(120) }));
+    // Explicit 24h ceiling so 2h elapsed is WITHIN it (the DEFAULT heartbeat is now
+    // 1h, owner-set — under the default this case would heartbeat-fire, which is the
+    // intended hourly behavior; here we isolate the no-trigger path with a long ceiling).
+    const v = shouldRunScoutCycle(state({ idleRatio: 0.2, frictionSignals: 0, lastRunAtMs: minutesAgo(120) }), { maxIntervalSec: 86400 });
     expect(v.fire).toBe(false);
     expect(v.reason).toBe('no-trigger');
+  });
+
+  it('the DEFAULT heartbeat is hourly — fires once ~1h elapses even on a busy/non-idle hive (owner-set 2026-06-18)', () => {
+    // idle below threshold + no friction + past the 1h default ceiling → heartbeat.
+    const v = shouldRunScoutCycle(state({ idleRatio: 0.1, frictionSignals: 0, lastRunAtMs: minutesAgo(61) }));
+    expect(v).toEqual({ fire: true, reason: 'heartbeat' });
+    // …and still WITHIN the 1h floor it withholds (so it's ~hourly, not every tick).
+    const w = shouldRunScoutCycle(state({ idleRatio: 0.1, frictionSignals: 0, lastRunAtMs: minutesAgo(40) }));
+    expect(w.fire).toBe(false);
+    expect(w.reason).toBe('min-interval');
   });
 
   it('withholds within the min-interval floor (idle path) with a retryAfter', () => {
@@ -52,7 +65,7 @@ describe('shouldRunScoutCycle (P-008 cadence)', () => {
 
   it('fires heartbeat when the max-interval ceiling elapses with no trigger', () => {
     const v = shouldRunScoutCycle(
-      state({ idleRatio: 0.1, frictionSignals: 0, lastRunAtMs: minutesAgo(60 * 25) }), // 25h > 24h ceiling
+      state({ idleRatio: 0.1, frictionSignals: 0, lastRunAtMs: minutesAgo(90) }), // 90m > 60m (1h) default ceiling
     );
     expect(v).toEqual({ fire: true, reason: 'heartbeat' });
   });
@@ -79,6 +92,56 @@ describe('shouldRunScoutCycle (P-008 cadence)', () => {
   it('fires heartbeat on the very first tick (never run, no idle/friction)', () => {
     const v = shouldRunScoutCycle(state({ idleRatio: 0, frictionSignals: 0, lastRunAtMs: null }));
     expect(v).toEqual({ fire: true, reason: 'heartbeat' });
+  });
+});
+
+describe('shouldRunScoutCycle — ideas-drained trigger (owner-set 2026-06-18)', () => {
+  // Past the 1h floor, idle below threshold, no friction — so the drain trigger
+  // (when armed) is what decides, isolated from idle/friction/heartbeat.
+  const drained = (over: Partial<ScoutCadenceState> = {}) =>
+    state({ idleRatio: 0.1, frictionSignals: 0, lastRunAtMs: minutesAgo(90), ...over });
+
+  it('fires when every prior idea is resolved (total > 0, pending 0)', () => {
+    const v = shouldRunScoutCycle(drained({ routedIdeaTotal: 8, pendingIdeaCount: 0 }), { maxIntervalSec: 86400 });
+    expect(v).toEqual({ fire: true, reason: 'ideas-drained' });
+  });
+
+  it('does NOT fire while any idea is still pending (falls through to no-trigger under a long ceiling)', () => {
+    const v = shouldRunScoutCycle(drained({ routedIdeaTotal: 8, pendingIdeaCount: 3 }), { maxIntervalSec: 86400 });
+    expect(v).toEqual({ fire: false, reason: 'no-trigger' });
+  });
+
+  it('does NOT fire for a never-routed scout (total 0 — no spurious drain fire; heartbeat covers first runs)', () => {
+    const v = shouldRunScoutCycle(drained({ routedIdeaTotal: 0, pendingIdeaCount: 0 }), { maxIntervalSec: 86400 });
+    expect(v).toEqual({ fire: false, reason: 'no-trigger' });
+  });
+
+  it('is DISABLED when the scheduler omits the counts (pure-gate default, back-compat)', () => {
+    const v = shouldRunScoutCycle(drained(), { maxIntervalSec: 86400 }); // no routedIdeaTotal/pendingIdeaCount
+    expect(v).toEqual({ fire: false, reason: 'no-trigger' });
+  });
+
+  it('respects the min-interval floor — a drained queue still waits out the hour', () => {
+    const v = shouldRunScoutCycle(
+      drained({ lastRunAtMs: minutesAgo(20), routedIdeaTotal: 8, pendingIdeaCount: 0 }),
+    );
+    expect(v.fire).toBe(false);
+    expect(v.reason).toBe('min-interval');
+  });
+
+  it('outranks idle-capacity for the reason when both apply (drain is the more specific signal)', () => {
+    const v = shouldRunScoutCycle(
+      drained({ idleRatio: 0.9, routedIdeaTotal: 8, pendingIdeaCount: 0 }),
+      { maxIntervalSec: 86400 },
+    );
+    expect(v).toEqual({ fire: true, reason: 'ideas-drained' });
+  });
+
+  it('friction still outranks a drained queue (a stuck colony leaps first)', () => {
+    const v = shouldRunScoutCycle(
+      drained({ frictionSignals: 9, routedIdeaTotal: 8, pendingIdeaCount: 0 }),
+    );
+    expect(v).toEqual({ fire: true, reason: 'friction-triggered' });
   });
 });
 
@@ -120,7 +183,8 @@ describe('shouldRunScoutCycle — clock edges (scout-loop-test-plan P-005)', () 
   });
 
   it('a NaN idleRatio never idle-fires (fails safe to no-trigger inside the ceiling)', () => {
-    const v = shouldRunScoutCycle(state({ idleRatio: Number.NaN, lastRunAtMs: minutesAgo(120) }));
+    // Explicit long ceiling so 2h is within it (the default heartbeat is now 1h).
+    const v = shouldRunScoutCycle(state({ idleRatio: Number.NaN, lastRunAtMs: minutesAgo(120) }), { maxIntervalSec: 86400 });
     expect(v).toEqual({ fire: false, reason: 'no-trigger' });
   });
 

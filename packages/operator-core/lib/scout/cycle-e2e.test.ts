@@ -185,10 +185,23 @@ describe('P-014 — autonomous cadence (no human prompt triggers a cycle)', () =
 
   it('withholds when no trigger is met (busy, interval elapsed, below heartbeat)', () => {
     const now = 2_000_000_000_000;
-    // 2h since last run: past the 1h min-interval, below the 24h heartbeat, idle below threshold.
-    const v = shouldRunScoutCycle(baseState({ idleRatio: 0.1, lastRunAtMs: now - 7_200_000, nowMs: now }));
+    // 2h since last run: past the 1h min-interval, idle below threshold. The DEFAULT
+    // heartbeat is now hourly (owner-set 2026-06-18), so to isolate the no-trigger
+    // path we opt into an explicit long (24h) ceiling — 2h is below it.
+    const v = shouldRunScoutCycle(
+      baseState({ idleRatio: 0.1, lastRunAtMs: now - 7_200_000, nowMs: now }),
+      { maxIntervalSec: 86400 },
+    );
     expect(v.fire).toBe(false);
     expect(v.reason).toBe('no-trigger');
+  });
+
+  it('the DEFAULT heartbeat is hourly — withheld busy tick fires once ~1h elapses (owner-set 2026-06-18)', () => {
+    const now = 2_000_000_000_000;
+    // Same busy/idle-below-threshold tick, default ceiling: past 1h → heartbeat (no blind dark).
+    const v = shouldRunScoutCycle(baseState({ idleRatio: 0.1, lastRunAtMs: now - 3_660_000, nowMs: now }));
+    expect(v.fire).toBe(true);
+    expect(v.reason).toBe('heartbeat');
   });
 });
 

@@ -38,18 +38,39 @@ export type DebrisSql = <R = unknown>(strings: TemplateStringsArray, ...vals: un
 
 /**
  * Retire stale benchmark work-items (→ `deprecated`) so a finished OR crashed bench run leaves no
- * debris in the frontier. Idempotent + guarded (never touches `papercup*`). Call at run end + on
- * signal-teardown. Returns the count retired. Never throws into the caller — a best-effort cleanup.
+ * debris in the frontier. Idempotent + guarded (never touches `papercup*`). Returns the count retired.
+ * Never throws into the caller — a best-effort cleanup. Two forms:
+ *
+ *   - SCOPED (`opts.slugPrefix`): retire ONLY one run's hive — its slug + members `${prefix}-…`. This is
+ *     the SAFE form a LIVE launcher calls at its own run-end / signal-teardown: the per-run hive prefix is
+ *     a random `xbench-su-<nanoid>`, so a scoped retire can NEVER touch a concurrent PEER benchmark run.
+ *     Always prefer this when a benchmark may be running elsewhere on the box.
+ *   - UNSCOPED (no prefix): the workspace-wide recovery sweep over every benchmark slug family
+ *     (`xbench`/`xbq`/`extbench`/`*instance_*`/`F-INSTANCE*`). Run DELIBERATELY for abandoned-debris
+ *     cleanup — NOT while a peer benchmark is live (it would deprecate the peer's in-flight items).
  */
-export async function retireBenchDebris(sql: DebrisSql, nowMs: number): Promise<number> {
+export async function retireBenchDebris(
+  sql: DebrisSql,
+  nowMs: number,
+  opts: { slugPrefix?: string } = {},
+): Promise<number> {
   try {
-    const rows = await sql<{ feature_id: string }>`
-      UPDATE harness_shared.harness_features_consolidated
-         SET status = 'deprecated', updated_ts = ${nowMs}
-       WHERE (harness_slug LIKE 'xbench%' OR harness_slug LIKE '%instance\\_%' OR feature_id LIKE 'F-INSTANCE%')
-         AND harness_slug NOT LIKE 'papercup%'
-         AND status IN ('todo', 'failing', 'in_progress', 'validating', 'pending', 'failed')
-      RETURNING feature_id`;
+    const rows = opts.slugPrefix
+      ? await sql<{ feature_id: string }>`
+          UPDATE harness_shared.harness_features_consolidated
+             SET status = 'deprecated', updated_ts = ${nowMs}
+           WHERE harness_slug LIKE ${opts.slugPrefix + '%'}
+             AND harness_slug NOT LIKE 'papercup%'
+             AND status IN ('todo', 'failing', 'in_progress', 'validating', 'pending', 'failed')
+          RETURNING feature_id`
+      : await sql<{ feature_id: string }>`
+          UPDATE harness_shared.harness_features_consolidated
+             SET status = 'deprecated', updated_ts = ${nowMs}
+           WHERE (harness_slug LIKE 'xbench%' OR harness_slug LIKE 'xbq%' OR harness_slug LIKE 'extbench%'
+                  OR harness_slug LIKE '%instance\\_%' OR feature_id LIKE 'F-INSTANCE%')
+             AND harness_slug NOT LIKE 'papercup%'
+             AND status IN ('todo', 'failing', 'in_progress', 'validating', 'pending', 'failed')
+          RETURNING feature_id`;
     return rows.length;
   } catch {
     return 0; // teardown is best-effort — never wedge a run on a cleanup failure

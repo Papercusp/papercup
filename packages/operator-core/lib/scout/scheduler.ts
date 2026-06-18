@@ -29,6 +29,7 @@ import {
 } from './cadence';
 import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
+import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, type ScoutTickRecord } from './tick-ledger';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
@@ -241,16 +242,25 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     async readCadenceState(): Promise<ScoutCadenceState> {
       // Lazy import to keep this module's pure core free of the autoloop/PG edge.
       const { readFireState } = await import('../autoloop');
-      const [idleRatio, frictionSignals, fire] = await Promise.all([
+      const [idleRatio, frictionSignals, fire, ideaQueue] = await Promise.all([
         opts.readIdleRatio().catch(() => 0),
         opts.readFrictionSignals().catch(() => 0),
         readFireState(harnessSlug, SCOUT_CYCLE_ROLE).catch(() => null),
+        // Idea-pipeline status powers the `ideas-drained` trigger (owner-set
+        // 2026-06-18). Best-effort: a read failure falls back to total 0, which
+        // disables the drain trigger for that tick (heartbeat still fires).
+        readIdeaQueueStatus({
+          harnessSlug,
+          ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+        }).catch(() => ({ total: 0, pending: 0 })),
       ]);
       return {
         idleRatio,
         frictionSignals,
         lastRunAtMs: fire?.lastFiredAt ? fire.lastFiredAt.getTime() : null,
         nowMs: now(),
+        routedIdeaTotal: ideaQueue.total,
+        pendingIdeaCount: ideaQueue.pending,
       };
     },
     runCycle: opts.runCycle,

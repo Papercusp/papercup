@@ -9,11 +9,60 @@ close calls (did / didn't implement) to review on waking. Maintained by su-fc2fd
 
 ## CHANGES IMPLEMENTED (autonomous)
 
-_(none yet — see close calls below; scout fix in progress)_
+### CI-1 · Scout cadence → HOURLY heartbeat (owner-directed 2026-06-18) — SHIPPED to tree
+**What:** `packages/operator-core/lib/scout/cadence.ts` `DEFAULTS.maxIntervalSec` 86400 (24h) → **3600 (1h)**.
+**Why:** root-cause from CC-1: the @singleton scout (driven by routine `bp-singleton-scout-0`, a
+30-min `system:blueprint-run` cron) runs the cadence gate on the DEFAULTS — no per-routine cadence
+payload exists, so the global default IS the only lever. On a busy hive idleRatio stays low, so scout
+only ever had the 24h heartbeat → effectively dark. Now it heartbeat-fires ~once an hour regardless of
+load. CC-1's fleet-cost worry was overblown: the per-install `scout-cycle` routines are all
+`active=false`, so only the one live @singleton scout actually ticks → this changes one scout, not 135.
+**Tests:** updated the 24h-default assumptions across `cadence.test.ts`, `cadence-matrix.test.ts`,
+`cycle-e2e.test.ts` (rows that isolate the "below-ceiling no-trigger" window now opt into an explicit
+24h ceiling; added rows pinning the new hourly default). Full scout suite green (495 tests).
+
+### CI-2 · Scout `ideas-drained` trigger — "run when all their ideas are implemented" (owner #1) — SHIPPED to tree
+**What:** new cadence trigger fires a cycle when `routedIdeaTotal > 0 && pendingIdeaCount === 0`
+(every prior routed idea resolved won/lost → the idea pipeline drained). Files:
+`cadence.ts` (new `ideas-drained` reason + 2 optional `ScoutCadenceState` fields + the gate step,
+priority friction > floor > **drain** > idle > heartbeat), `routed-ledger.ts` (new
+`readIdeaQueueStatus()` counting total + pending off the cached `outcome` column),
+`scheduler.ts` (`readCadenceState` supplies the counts, scoped to the scout's install).
+**Safety:** the trigger sits BELOW the 1h min-interval floor, so worst-case it fires no more often
+than the hourly heartbeat (zero extra cost ceiling); disabled when counts are omitted (pure-gate
+default). Stale pre-06-14 pending ideas simply keep it from early-firing — the heartbeat backstops.
+**Tests:** 7 new focused tests in `cadence.test.ts` (drained fires / pending blocks / never-routed
+no-op / disabled-when-omitted / respects floor / outranks idle / friction still wins). Suite green.
+
+**Deploy status:** both land on the live @singleton scout via the staging→green pipeline (server-side,
+no hot-reload; the scout runs in the :3070 green operator). NOT manually deployed — letting the pipeline
+carry it. Owner #3 (dedup): YES confirmed — scout's critics read a novelty corpus (`readNoveltyCorpus`,
+cycle.ts:96 — prior plans/decisions/ideas/dropped-improvements) and a novelty critic drops near-dups, so
+it does not re-propose its prior ideas. Owner #4 (overwatch cadence): adaptive, ~3–31 min between wakes
+(declares its own next wake, quantized to the 30-min wake-brain heartbeat; 1800s watchdog floor).
 
 ---
 
 ## CLOSE CALLS (did NOT implement, with reasoning)
+
+### CC-2 · Observations/auto-implement system: env-aware dispatch backoff — did NOT implement (system healthy; account constraint, not a bug) — 2026-06-18 ~01:00. Filed as **EI-1404** (durable record).
+**Finding (owner #5 — observations system health):** the improvement watchdog is **healthy**. Last tick
+00:34, **all 22 collectors green** (`failingCollectors: []`), capturing (EI-1391…1404), dedup working
+(declinedDuplicates + 200 known-open prefiltered), triage + ranking + auto-dispatch all functioning.
+Agent-filed observations (improvements:capture — EI-1376 coord-pagination, EI-1400 file-lock coarse
+block) flow through the SAME pipeline as system-collector signals; both work.
+**The one alarming number is benign:** dispatch ledger orphaned 132 / 168, but the rows explain it —
+nearly all are `host restarted mid-dispatch` (EI-403 Option-B auto-recovery) or `worker exit 1 … weekly
+limit · resets 7am` (env-failure, classified `worker-exit-backedge-env`, **attempt NOT charged**,
+re-dispatched). The system behaves CORRECTLY under an account/env constraint. Fixed this window: 29.
+**Close call:** env-aware backoff (hold re-dispatch until the parsed reset time instead of bouncing
+hourly off a known-closed weekly-limit window). **Did NOT blind-implement** — system already classifies
++ doesn't charge these; only cost is minor ~hourly spawn churn; it's the auto-implement DISPATCH loop
+(distinct from scout); rewriting its retry policy unsupervised at ~5am on a WORKING subsystem is
+overreach, not the warned-against timidity (the mandate is to fix what's BROKEN); the limit self-clears
+at 7am. **Filed EI-1404** (change, scope operator) as the proper durable channel + owner flag. The real
+overnight throughput blocker is the account weekly-limit (env), not code. Also re-surfaced: stale
+operator pid 3413663 (Jun-9, 7.8d, old code) — benign, owner-cleanup candidate.
 
 ### CC-1 · Scout: did NOT blind-activate it (investigating root cause first) — 2026-06-17 ~22:35
 **Finding:** The papercup-hive Scout (the negative-space idea-scanner, peer to Queen/Overwatch)
@@ -79,3 +128,21 @@ produces); Queen/Overwatch healthy.
   channel targets a dead per-wake session id → her nudges bounce.
 - **System loop working:** Queen places → bees cursed by the slow-bee-reaper (EI-865) → Overwatch
   flags → su-37e53 shipped F-FIX-038 (PASSED). Watch: does the curse storm subside post-fix.
+
+### POST-LANDING VERIFICATION (guardian task #13 — 2026-06-18 ~01:00) — colony GREEN
+The two watched Queen-affecting plans have LANDED and the colony is healthy on the other side:
+- **domain-generic-agent-personas** — COMPLETE (su-146bf). The riskiest part (Phase-5 replace-the-base
+  spawn-path change) is verified intact INDIRECTLY but decisively: the Queen is actively placing +
+  spawning bees on substantive wakes, and bees are running to terminal (WI-204/209/220 passed,
+  F-FIX-038 passed, stale-claim sweeps freeing completed holders). If the base-replacement had broken
+  spawning, none of that could happen. So spawn path = intact.
+- **benchmark-capability-injection-redesign** — most plan items delivered (su-a2b66); remainder gated
+  on the steward's topology runtime, not on anything Queen-breaking.
+- **Queen** — `hive_queen_efficiency`: 30 wakes, **0.90 cache-hit**, avg 5.4 turns, $25 total. Mix of
+  substantive placement wakes (13/20/8-turn) and turns=1/$0 pacing stubs — as designed.
+- **Overwatch + bees** — the full curse-storm loop RESOLVED: Overwatch flagged → F-FIX-038
+  (placement-watchdog liveness exemption) shipped + green post-reboot → all 14 cursed cleared and the
+  clear HELD (no treadmill) → benchmark debris retired (frontier drained). Loop works end-to-end.
+- **Scout** — fix shipped to tree (CI-1 hourly cadence + CI-2 ideas-drained), pending the staging→green
+  deploy that carries it to the :3070 operator the @singleton scout runs in. Ship-gate clean (the one
+  red test, registry-residuals/EI-1402, is pre-existing + unrelated, already auto-captured).

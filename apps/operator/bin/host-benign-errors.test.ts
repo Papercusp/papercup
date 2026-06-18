@@ -9,7 +9,25 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { isBenignHostError, isBenignRequestParse, isBenignStreamClose } from './host-benign-errors';
+import {
+  isBenignHostError,
+  isBenignRequestParse,
+  isBenignStreamClose,
+  isTransientPgConnectionError,
+} from './host-benign-errors';
+
+/** Build the exact postgres-js null-socket-write TypeError that crash-looped
+ *  :3070 (2026-06-18): the message Node throws + a stack inside postgres-js's
+ *  connection module. */
+function pgNullWriteError(): TypeError {
+  const e = new TypeError("Cannot read properties of null (reading 'write')");
+  e.stack = [
+    "TypeError: Cannot read properties of null (reading 'write')",
+    '    at Immediate.nextWrite (file:///home/x/papercup-release/node_modules/postgres/src/connection.js:255:22)',
+    '    at process.processImmediate (node:internal/timers:504:21)',
+  ].join('\n');
+  return e;
+}
 
 /** Produce a REAL JSON.parse SyntaxError (not a hand-built one) so the message
  *  matched is exactly what Node throws on the wire. */
@@ -66,10 +84,36 @@ describe('isBenignStreamClose (EI-12 — mid-stream client disconnect must not c
   });
 });
 
+describe('isTransientPgConnectionError (2026-06-18 — torn-down PG connection must not crash-loop the host)', () => {
+  it('classifies the exact postgres-js null-socket-write crash as transient', () => {
+    expect(isTransientPgConnectionError(pgNullWriteError())).toBe(true);
+  });
+
+  it('classifies postgres-js CONNECTION_CLOSED (code or message) as transient', () => {
+    expect(isTransientPgConnectionError(Object.assign(new Error('x'), { code: 'CONNECTION_CLOSED' }))).toBe(true);
+    expect(isTransientPgConnectionError(new Error('write CONNECTION_CLOSED localhost:5432'))).toBe(true);
+  });
+
+  it('does NOT swallow a null-`write` TypeError from OUTSIDE postgres-js (real bugs still fail fast)', () => {
+    // Same message, but the stack is in our own code — must stay fatal so a genuine
+    // null-deref isn't masked.
+    const e = new TypeError("Cannot read properties of null (reading 'write')");
+    e.stack = "TypeError: ...\n    at writeThing (file:///app/packages/operator-core/lib/foo.ts:10:5)";
+    expect(isTransientPgConnectionError(e)).toBe(false);
+  });
+
+  it('does NOT swallow unrelated errors', () => {
+    expect(isTransientPgConnectionError(new TypeError("Cannot read properties of undefined (reading 'foo')"))).toBe(false);
+    expect(isTransientPgConnectionError(new Error('boom'))).toBe(false);
+    expect(isTransientPgConnectionError(null)).toBe(false);
+  });
+});
+
 describe('isBenignHostError (the combined fail-fast boundary)', () => {
-  it('is true for either benign class', () => {
+  it('is true for every benign class', () => {
     expect(isBenignHostError(realJsonParseError('{bad'))).toBe(true);
     expect(isBenignHostError(Object.assign(new Error('x'), { code: 'ERR_INVALID_STATE' }))).toBe(true);
+    expect(isBenignHostError(pgNullWriteError())).toBe(true); // the 2026-06-18 crash-loop fix
   });
 
   it('is FALSE for a real host bug — the guard must still exit on these', () => {

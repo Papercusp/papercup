@@ -56,6 +56,7 @@
 import { readFileSync } from 'node:fs';
 import { bindSuIndependentBacklogDriver, SU_INDEPENDENT_ARM } from './su-independent-backlog';
 import { runHiveBacklog } from './hive-backlog';
+import { retireBenchDebris, type DebrisSql } from './bench-teardown';
 import type { BenchTask } from './types';
 
 const WORKSPACE_ID = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
@@ -90,24 +91,56 @@ process.env.PAPERCUSP_OPERATOR_BASE ??= 'http://localhost:3170';
 // the conventional code; the OS reaps the scratch dirs under /tmp on the next boot, and no opus respins
 // because there is no Queen/wake/autoloop to respin it. (Confirmed from the driver: no per-launcher cleanup
 // surface beyond the checkout the driver owns.)
+// This run's temporary hive slug (a random `xbench-su-<nanoid>`), captured via the driver's onHiveCreated
+// hook so a signal-kill — which exits BEFORE the driver's finalize/dissolveHive runs — can still retire
+// THIS run's work-items. The retire is SCOPED to the slug, so it can NEVER touch a concurrent peer run.
+let runHiveSlug: string | null = null;
+let debrisRetired = false;
+
+/**
+ * Retire THIS run's benchmark work-items (→ `deprecated`, scoped to {@link runHiveSlug}) so a kill or exit
+ * never leaves frontier debris for the papercup-hive's workspace-wide survey to trip on (the ~13k-aging-
+ * escalation-storm recurrence fix). Idempotent + best-effort; scoped → safe under concurrent peer runs.
+ */
+async function retireRunDebris(reason: string): Promise<void> {
+  if (debrisRetired) return;
+  if (!runHiveSlug) {
+    console.warn(`[su-independent] debris retire (${reason}): no hive created yet — nothing to retire.`);
+    return;
+  }
+  debrisRetired = true;
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const n = await retireBenchDebris(getOrgPg().sql as unknown as DebrisSql, Date.now(), { slugPrefix: runHiveSlug });
+    console.warn(`[su-independent] retired ${n} work-item(s) for hive '${runHiveSlug}' at ${reason} (scoped frontier-debris guard).`);
+  } catch (e) {
+    console.warn(`[su-independent] debris retire (${reason}) failed (best-effort): ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 let tearingDown = false;
 function installTeardownHandlers(): void {
+  // A signal-kill (e.g. an Anthropic rate-limit kill) exits BEFORE the driver's finalize/dissolveHive —
+  // so we retire this run's work-items here (scoped), with a 5s belt so a slow PG never blocks the exit.
   const onSignal = (sig: string) => {
     if (tearingDown) return;
     tearingDown = true;
-    console.warn(`[su-independent] teardown (signal ${sig}): hive-less arm — no hive to dissolve; the driver`
-      + ` owns + cleans each per-task clone. Exiting.`);
-    process.exit(sig === 'SIGINT' ? 130 : 143);
+    const code = sig === 'SIGINT' ? 130 : 143;
+    console.warn(`[su-independent] teardown (signal ${sig}): retiring this run's work-items (scoped) then exiting.`);
+    const belt = setTimeout(() => process.exit(code), 5_000);
+    void retireRunDebris(`signal ${sig}`).finally(() => { clearTimeout(belt); process.exit(code); });
   };
   process.on('SIGTERM', () => onSignal('SIGTERM'));
   process.on('SIGINT', () => onSignal('SIGINT'));
   process.on('uncaughtException', (e) => {
     console.error('[su-independent] uncaughtException', e);
-    process.exit(1);
+    const belt = setTimeout(() => process.exit(1), 5_000);
+    void retireRunDebris('uncaughtException').finally(() => { clearTimeout(belt); process.exit(1); });
   });
   process.on('unhandledRejection', (e) => {
     console.error('[su-independent] unhandledRejection', e);
-    process.exit(1);
+    const belt = setTimeout(() => process.exit(1), 5_000);
+    void retireRunDebris('unhandledRejection').finally(() => { clearTimeout(belt); process.exit(1); });
   });
 }
 
@@ -239,6 +272,8 @@ async function main() {
     workspaceId: WORKSPACE_ID,
     fleetTimeoutMs: Number(process.env.XBENCH_FLEET_TIMEOUT_MS ?? 120 * 60 * 1000),
     sampleIntervalMs: Number(process.env.XBENCH_SAMPLE_MS ?? 5_000),
+    // Capture the run's hive slug so a signal-kill can scope its debris retire to THIS run (never a peer's).
+    onHiveCreated: (slug) => { runHiveSlug = slug; },
     onEnrolled: (e) => {
       const row = {
         arm: ARM,
@@ -332,6 +367,9 @@ async function main() {
   }, null, 2));
   console.log(`\n[su-independent] wrote ${OUT_DIR}/${ARM}.json + ${perTask.length} diffs under diffs-${ARM}/`);
   console.log(`[su-independent] grade with:  XBENCH_OUT_DIR=${OUT_DIR} XBENCH_SAMPLE=${SAMPLE} python3 _xbench_grade.py ${ARM}`);
+  // The driver already dissolved its hive at finalize; this scoped retire is the idempotent belt that
+  // guarantees this run's work-items are deprecated (never debris) even if dissolveHive left them.
+  await retireRunDebris('run-end');
   process.exit(0);
 }
 

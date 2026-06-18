@@ -22,6 +22,9 @@
 export type ScoutCadenceReason =
   /** Accumulated friction crossed the threshold — the colony is stuck, leap now. */
   | 'friction-triggered'
+  /** Scout's prior routed ideas are ALL resolved (none pending) — the idea
+   *  pipeline has drained, so generate fresh ideas now (owner-set 2026-06-18). */
+  | 'ideas-drained'
   /** The fleet has spare capacity to explore. */
   | 'idle-capacity'
   /** Nothing triggered, but the max-interval ceiling elapsed — don't stall. */
@@ -41,6 +44,16 @@ export interface ScoutCadenceState {
   lastRunAtMs: number | null;
   /** Now (epoch ms). */
   nowMs: number;
+  /**
+   * Total Scout-routed ideas ever recorded for this scope (cached outcome ledger),
+   * and how many are still pending (unresolved). When `routedIdeaTotal > 0` AND
+   * `pendingIdeaCount === 0` the idea pipeline has DRAINED — every prior idea is
+   * resolved (won or lost) — so the gate fires `ideas-drained` to generate more
+   * (owner-set 2026-06-18). Both optional: omit (the pure-gate default) to disable
+   * the drain trigger entirely — the scheduler supplies them from the ledger.
+   */
+  routedIdeaTotal?: number;
+  pendingIdeaCount?: number;
 }
 
 export interface ScoutCadenceOptions {
@@ -48,7 +61,11 @@ export interface ScoutCadenceOptions {
   minIntervalSec?: number;
   /** Shorter floor for friction-triggered fires (so friction is responsive). Default min(minInterval, 900s). */
   minFrictionIntervalSec?: number;
-  /** Heartbeat ceiling — fire at least this often regardless of triggers. Default 86400s (24h); 0 disables. */
+  /** Heartbeat ceiling — fire at least this often regardless of triggers (the
+   *  "configurable cadence" knob; owner-set 2026-06-18). Default 3600s (1h) so
+   *  Scout runs on a steady hourly clock even while the hive is busy/healthy (it
+   *  used to be a 24h backstop, which left Scout effectively dark on a never-idle
+   *  hive). Override per-routine via the cadence payload; 0 disables. */
   maxIntervalSec?: number;
   /** idleRatio at/above which idle-capacity fires. Default 0.5. */
   idleThreshold?: number;
@@ -65,7 +82,11 @@ export interface ScoutCadenceVerdict {
 
 const DEFAULTS = {
   minIntervalSec: 3600,
-  maxIntervalSec: 86400,
+  // Owner-set 2026-06-18: an HOURLY heartbeat (was 86400 = 24h). With minInterval
+  // also 3600, Scout fires ~once an hour even on a never-idle hive (friction can
+  // still fire it sooner, down to the 15-min friction floor). Configurable per
+  // routine via the cadence payload.
+  maxIntervalSec: 3600,
   idleThreshold: 0.5,
   frictionThreshold: 3,
 } as const;
@@ -93,15 +114,27 @@ export function shouldRunScoutCycle(
     return { fire: false, reason: 'min-interval', retryAfterSec: Math.ceil(minFrictionInterval - elapsedSec) };
   }
 
-  // 2. The normal floor guards idle/heartbeat fires.
+  // 2. The normal floor guards idle/heartbeat/drain fires.
   if (elapsedSec < minInterval) {
     return { fire: false, reason: 'min-interval', retryAfterSec: Math.ceil(minInterval - elapsedSec) };
   }
 
-  // 3. Idle capacity — the fleet has room to explore.
+  // 3. Idea pipeline drained — every prior routed idea is resolved (none pending),
+  //    so generate fresh ideas now instead of waiting out the heartbeat. Bounded by
+  //    the min-interval floor above ⇒ never fires more often than the heartbeat
+  //    (same hourly cost ceiling). Disabled when the scheduler omits the counts.
+  if (
+    typeof state.routedIdeaTotal === 'number' &&
+    state.routedIdeaTotal > 0 &&
+    state.pendingIdeaCount === 0
+  ) {
+    return { fire: true, reason: 'ideas-drained' };
+  }
+
+  // 4. Idle capacity — the fleet has room to explore.
   if (state.idleRatio >= idleThreshold) return { fire: true, reason: 'idle-capacity' };
 
-  // 4. Heartbeat ceiling — don't let the loop stall forever under sustained load.
+  // 5. Heartbeat ceiling — don't let the loop stall forever under sustained load.
   if (maxInterval > 0 && elapsedSec >= maxInterval) return { fire: true, reason: 'heartbeat' };
 
   return { fire: false, reason: 'no-trigger' };

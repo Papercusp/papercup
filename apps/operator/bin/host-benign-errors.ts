@@ -50,9 +50,42 @@ export function isBenignRequestParse(e: unknown): boolean {
 }
 
 /**
- * Any process-level error that is client-caused + request-scoped → the host
- * guards log it and KEEP RUNNING. Everything else stays fail-fast (exit).
+ * A TRANSIENT postgres-js connection failure that escaped to the process level.
+ * Under sustained event-loop saturation the main thread can block long enough
+ * (observed: p99 ~103s on a CPU-bound box) that Postgres/the OS tears down the
+ * operator's backend; postgres-js's DETACHED `nextWrite()` flush then fires
+ * against the now-null socket and throws
+ * `TypeError: Cannot read properties of null (reading 'write')` from
+ * `postgres/src/connection.js` — an UNCAUGHT exception that crash-looped :3070
+ * for the whole fleet (2026-06-18). The pool reconnects on the next query, so
+ * this is recoverable + must not down the multi-tenant host.
+ *
+ * Scoped tightly: the null-`write` TypeError is matched ONLY when the stack is
+ * inside postgres-js's connection module, so a genuine null-deref elsewhere still
+ * fails fast. `CONNECTION_CLOSED` (postgres-js's closed-mid-write code) is also
+ * treated as recoverable — if one ever escapes as an unhandled rejection, keep
+ * serving rather than crash-loop. (backend-connection-scaling-2026-06-17.)
+ */
+export function isTransientPgConnectionError(e: unknown): boolean {
+  const x = e as { code?: string; message?: string; stack?: string } | null;
+  if (!x) return false;
+  const msg = x.message ?? '';
+  const stack = x.stack ?? '';
+  if (
+    e instanceof TypeError &&
+    /Cannot read properties of null \(reading 'write'\)/.test(msg) &&
+    /postgres[\\/](?:cjs[\\/])?src[\\/]connection\.js/.test(stack)
+  ) {
+    return true;
+  }
+  return x.code === 'CONNECTION_CLOSED' || /\bCONNECTION_CLOSED\b/.test(msg);
+}
+
+/**
+ * Any process-level error that is client-caused + request-scoped, OR a transient
+ * recoverable infra blip (a torn-down PG connection) → the host guards log it and
+ * KEEP RUNNING. Everything else stays fail-fast (exit).
  */
 export function isBenignHostError(e: unknown): boolean {
-  return isBenignStreamClose(e) || isBenignRequestParse(e);
+  return isBenignStreamClose(e) || isBenignRequestParse(e) || isTransientPgConnectionError(e);
 }

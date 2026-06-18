@@ -254,6 +254,29 @@ export async function readScoutPlanRefs(): Promise<Set<string>> {
   return new Set(rows.map((r) => r.routed_ref));
 }
 
+/**
+ * Count routed ideas for a scope by resolution: `total` ever routed + how many are
+ * still `pending` (the cached `outcome` column is NULL or 'pending'). Powers the
+ * cadence `ideas-drained` trigger — `total > 0 && pending === 0` ⇒ the idea
+ * pipeline has fully resolved, so Scout regenerates (owner-set 2026-06-18). Reads
+ * the cached `outcome` (refreshed each cycle by {@link refreshScoutOutcomes}); a
+ * slightly-stale count is fine — the hourly heartbeat is the backstop.
+ */
+export async function readIdeaQueueStatus(
+  opts: ScoutLedgerOpts = {},
+): Promise<{ total: number; pending: number }> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ total: string; pending: string }[]>`
+    SELECT count(*) AS total,
+           count(*) FILTER (WHERE outcome IS NULL OR outcome = 'pending') AS pending
+      FROM harness_shared.scout_routed_ideas
+     WHERE workspace_id = ${ws}
+       ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}`;
+  const row = rows[0] ?? { total: '0', pending: '0' };
+  return { total: Number(row.total), pending: Number(row.pending) };
+}
+
 /** Read routed-idea provenance for (workspace[, harness][, cycle]), newest-first. */
 export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<RoutedIdeaProvenance[]> {
   const { sql } = getOrgPg();
