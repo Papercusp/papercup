@@ -43,6 +43,19 @@ call ever succeeded.
   (re-reads disk when the cached token passes `expiresAt`) plus an
   invalidate-and-retry on 401/403 when the on-disk token has rotated.
   Auto-deploy restarts refresh the cache, which made this look intermittent.
+  * **The self-heal lives in the SHARED path only — a HAND-ROLLED loop doesn't
+    inherit it.** The cache + invalidate-on-401 above is in `chat-stream.ts`
+    (`readClaudeOauthToken` / `invalidateClaudeTokenCache`, used by `runAgentChat`
+    * the one-shot `llmCall`). A hand-rolled in-process Anthropic loop that reads
+      `~/.claude/.credentials.json` itself — e.g. the `su` llm-test target's tool
+      loop (`llm-testing/targets/su.ts`), which can't use the one-shot `llmCall`
+      because it needs tool-calling — does NOT get it. Under fleet load the shared
+      credential rotates often, so such a loop **401-cascades** the instant a rotation
+      lands mid-run (every later call uses the stale cached token — observed
+      2026-06-18: a su-target run died at scenario 3, all 9 remaining scenarios 401).
+      Fix: on a 401/403, re-read the file + rebuild the client + retry (its own
+      budget, separate from the 429 backoff). The su target's `callWithRetry` does
+      this since 2026-06-18.
 * **Raw-OAuth bucket 429 saturation.** The stateless anthropic-direct path has
   its own rate bucket, separate from claude-CLI clients on the same Max
   account — see

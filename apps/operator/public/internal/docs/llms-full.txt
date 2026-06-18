@@ -841,6 +841,64 @@ Wake re-invokes a *sleeping* agent; **`turn:interrupt`** ends a *running* one’
 
 **Known gaps (2026-06-08):** the managed-pty typing-parity feel-check and the default-on flip (`PAPERCUSP_PSU_PTY` is opt-in today), and a full live interactive force-interrupt-mid-thinking e2e, are not yet run — the transport and the logic are each covered separately (`turn:interrupt` unit tests 8/8 + the Phase-3 control-socket e2e). Where it lives: `packages/operator-core/lib/agent-tools/turn/interrupt.ts` (`performInterrupt` is the dep-injected, testable core).
 
+# Arm-call-site risk tier — use the ceiling, not fail-safe critical
+
+> When planReversibleArm runs without a declared riskTier (the common case — bees never pass decision.riskTier), deriving the risk from the category's effective ceiling is what makes tripwires actually arm. Defaulting to 'critical' silently prevents every tripwire from firing.
+
+## What
+
+[Section titled “What”](#what)
+
+The autonomy system has two separate decider-gate calls for a reversible action:
+
+1. **The chokepoint** — `resolveAutonomyDecision` run by the Queen before dispatching. It has the action’s `riskTier` (from the ranked item’s economics) so it can correctly decide `auto` for a `low`-risk action in `work-prioritization` (ceiling=`low`).
+
+2. **The arm-call-site** — `planReversibleArm` run inside the verb handler after the chokepoint already said `auto`. It calls `resolveAutonomyDecision` **again** — but bees never pass `decision.riskTier`, so the decider’s D-002 fail-safe fires: `critical`. With ceiling=`low`, `critical > low` → gated → `planReversibleArm` returns null → **no tripwire is ever armed** (EI-570: `harness_shared.autonomy_tripwires` was empty for the entire fleet despite 39 policy auto-takes).
+
+## The fix (landed 2026-06-18)
+
+[Section titled “The fix (landed 2026-06-18)”](#the-fix-landed-2026-06-18)
+
+`planReversibleArm` now derives a risk proxy from the category’s effective ceiling when no `riskTier` is declared:
+
+```ts
+let riskTier = input.riskTier;
+if (riskTier == null) {
+  const category = categoryForAction(input.action ?? '');
+  if (category != null) {
+    const policy = await d.decider.getPolicy(category);
+    const ceiling = computeEffectiveCeiling(policy);
+    if (ceiling !== 'never-auto') {
+      riskTier = ceiling; // Exclude<AutonomyCeiling, 'never-auto'> = RiskTier
+    }
+  }
+}
+```
+
+This makes the arm gate agree with the chokepoint: if the policy would auto-decide the action (risk ≤ ceiling), the arm gate uses the same ceiling as the risk and also says `auto` → tripwire arms. Falls through to `critical` only for unmapped actions or `never-auto` ceiling (still correctly gates).
+
+## When you hit this
+
+[Section titled “When you hit this”](#when-you-hit-this)
+
+* You’re adding a new reversible verb to the arm seam (new `planWorkItemArm`-style wiring).
+* You see `autonomy_tripwires` empty despite policy being armed and auto-takes happening.
+* You’re debugging a caller that doesn’t pass `decision.riskTier` and wonder why no tripwires fire.
+
+## What NOT to do
+
+[Section titled “What NOT to do”](#what-not-to-do)
+
+* **Don’t change `decider.ts`** to fix this — the D-002 fail-safe to `critical` is correct for the chokepoint (where an undeclared risk should be conservatively refused). Only the arm-call-site needs the ceiling-as-proxy logic, because it’s called *after* the chokepoint already approved the action.
+* **Don’t assume callers will pass `decision.riskTier`** — the arm seam must work correctly even when they don’t.
+
+## Files
+
+[Section titled “Files”](#files)
+
+* `packages/operator-core/lib/autonomy/arm-reversible-action.ts` — the fix lives here
+* `packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts` — the work\_items wiring that calls it
+
 # The attention/importance system (Planning tab)
 
 > How plan-item importance + the unified AttentionItem feed fit together, and two non-obvious gotchas — parseWarnings become lint ERRORS, and the Plans tab has no in-app chat host.
@@ -11524,6 +11582,8 @@ The papercup Learning tab’s Scout view sat empty after the scout-cycle routine
 [Section titled “The two proven causes”](#the-two-proven-causes)
 
 * **Stale in-process Claude token (EI-281, fixed 2026-06-11).** Claude OAuth tokens rotate \~2-hourly on disk (`~/.claude/.credentials.json`, `claudeAiOauth.expiresAt`), but `readClaudeOauthToken` in `libs/papercup-shared/src/agent/chat-stream.ts` cached the boot-time token forever. Any operator host older than the token 401’d on every anthropic-direct call. Fixed with an expiry-aware self-healing cache (re-reads disk when the cached token passes `expiresAt`) plus an invalidate-and-retry on 401/403 when the on-disk token has rotated. Auto-deploy restarts refresh the cache, which made this look intermittent.
+  * **The self-heal lives in the SHARED path only — a HAND-ROLLED loop doesn’t inherit it.** The cache + invalidate-on-401 above is in `chat-stream.ts` (`readClaudeOauthToken` / `invalidateClaudeTokenCache`, used by `runAgentChat`
+    * the one-shot `llmCall`). A hand-rolled in-process Anthropic loop that reads `~/.claude/.credentials.json` itself — e.g. the `su` llm-test target’s tool loop (`llm-testing/targets/su.ts`), which can’t use the one-shot `llmCall` because it needs tool-calling — does NOT get it. Under fleet load the shared credential rotates often, so such a loop **401-cascades** the instant a rotation lands mid-run (every later call uses the stale cached token — observed 2026-06-18: a su-target run died at scenario 3, all 9 remaining scenarios 401). Fix: on a 401/403, re-read the file + rebuild the client + retry (its own budget, separate from the 429 backoff). The su target’s `callWithRetry` does this since 2026-06-18.
 * **Raw-OAuth bucket 429 saturation.** The stateless anthropic-direct path has its own rate bucket, separate from claude-CLI clients on the same Max account — see [llm-429-check-the-transport-not-the-account](/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account). Escape for a manual cycle: `LLM_TEST_BACKEND=claude-code`.
 
 ## Operational notes
@@ -13820,6 +13880,79 @@ With `origin='local'` the claim propagates peer→peer in a few seconds (and the
 * The federated set is the tables carrying `capture_substrate_outbox_trg`, not just the consolidated ones. Confirmed live (2026-06-16): `harness_features_consolidated`, `harness_issues_consolidated`, **`harness_plans`** (plan sharing), and **`plan_item_assignments`** (collaborative-plan item assignments) all cross. The other `*_consolidated` tables (messages, agent\_chats, supervisor\_notes, …) and most `plan_*` / `work_item_*` tables (`harness_plan_parts`, `plan_item_claims`, `work_item_claims`, …) are local-only by design — don’t expect them to cross. Check `pg_trigger` for the table before assuming.
 * `harness_plans` carries a `version` column that is a **local CAS counter** (INSERT sets `0`, `ON CONFLICT DO UPDATE SET version = version + 1`), so it legitimately differs across peers even when the plan’s `content` / `content_hash` are byte-identical. Compare `content_hash`, not `version`, to judge plan convergence.
 * `author_pubkey` is empty on the author’s own local row and stamped with the author’s device pubkey on the receiver (provenance, P-002) — that asymmetry is correct, not a mismatch.
+
+# A Tests-tab red under high box load is usually a flake, not a defect — how to triage
+
+> When you're asked to 'get the Tests tab green', most reds you see under a loaded box (load avg 30–90, fleet + benchmarks running) are load-induced flakes that self-green, NOT product/test defects. Two flake classes dominate operator-core/operator-vite: (1) TIMEOUT-under-load — a heavy module-import-graph transform (or real PG/FS I/O) counted against a per-test timeout tips over 60s/15s under CPU starvation (a 43-line test can take 50s purely from transforming its `await import(...)` graph); (2) MODULE-REGISTRY-RACE — 'sql is not a function' / 'Cannot read properties of undefined' from a parallel mock-bleed between vi.mock-heavy files. A GENUINE red is deterministic (fails the same way in an isolated re-run) and PERSISTS as the file's latest row. Triage with the latest-per-file query + an isolated re-run before touching anything. Also covers: the breadth-test-with-real-I/O anti-pattern, the green-checkpoint code-143 gate-stall, and why a manual `--reporter=dot` run never records a green row.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+You’re told “test the app / get the Tests tab green.” You query `harness_shared.test_runs`, see a pile of `fail` rows, and start “fixing” tests — bumping timeouts, loosening assertions, or rewriting passing tests. Under a loaded box, **most of those reds are flakes that have already self-greened**, and mutating them is both wasted work and exactly the “don’t game the tests” failure mode.
+
+The Tests tab (`/admin/testing`, `/adv` → Tests) is a **viewer** over `test_runs`, not a runner — a chip is red only when a **file that still exists on disk** has a **latest matching row** of `fail`/`error`. See [the tab status model](/internal/docs/agent-insights/) memory `reference_testing_tab_status_model` for the exact query. Deleted probe/scratch files and `papercupai-workspace/papercup-checkpoint/**` mirror paths are NOT shown — filter them out.
+
+## Step 1 — get the REAL red set (not raw fail rows)
+
+[Section titled “Step 1 — get the REAL red set (not raw fail rows)”](#step-1--get-the-real-red-set-not-raw-fail-rows)
+
+Latest-row-per-file, existing-on-disk, excluding the checkpoint tree:
+
+```sql
+SELECT file_path, status, branch, finished_at FROM (
+  SELECT DISTINCT ON (file_path) file_path, status, branch, finished_at
+  FROM harness_shared.test_runs
+  WHERE finished_at > now() - interval '24 h'
+  ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+) z WHERE status IN ('fail','error') ORDER BY finished_at DESC;
+```
+
+Then drop any `papercupai-workspace/%` path and any path that no longer exists (`test -f`). What’s left is what the tab actually shows red. Read each one’s `output_tail` — it carries the failing test name + assertion (or the timeout message).
+
+## Step 2 — classify each red: flake vs genuine
+
+[Section titled “Step 2 — classify each red: flake vs genuine”](#step-2--classify-each-red-flake-vs-genuine)
+
+**Genuine defect** — fix it (the code, or a bad test, legitimately):
+
+* `output_tail` is a concrete assertion (`expected 6 to be 5`, `expected 404 to be 400`).
+* It’s **deterministic**: re-run the file *in isolation* and it fails the same way.
+* It **persists** as the file’s latest row across the fleet’s re-runs.
+
+**Load-induced flake** — leave it, note it, do NOT mutate:
+
+* **Timeout class:** `output_tail` is `Test timed out in 60000ms` (or 15000ms). Check the file’s run history — if it alternates pass/fail with passes near the timeout ceiling (e.g. passes 47–59s against a 60s timeout), it’s tipping over under load. A trivial 43-line test (e.g. `hive/guard.test.ts`) can take 50s purely transforming the `await import('./create')` module graph under CPU starvation — the cost is vitest transform, not the test body. Bumping the timeout is a losing treadmill (proven on `sync-resolver/index.test.ts`: 10s→30s→120s, still timed out at load 90).
+* **Module-registry-race class:** `output_tail` is `sql is not a function` / `Cannot read properties of undefined` from a `vi.mock`/`vi.doMock` bleed across parallel files. The failing test is often correctly written (e.g. `overwatch/liveness.test.ts` passes a fake `sql` directly and clears mocks in `beforeEach`) — it just ran in a worker a sibling polluted. Passes in isolation; self-greens on the next fleet run.
+
+Both classes correlate with **box load** (fleet + benchmark containers; saw load avg 33–90, 180 vitest procs). They are test-INFRA fragility, not defects — the fix is lower load, not a code/test change. A bare `tsx -e "import('./file')"` returning in under 2s while `npx vitest run <file>` hangs for minutes confirms it’s CPU starvation, not a real hang.
+
+## Step 3 — the green-checkpoint code-143 gate-stall
+
+[Section titled “Step 3 — the green-checkpoint code-143 gate-stall”](#step-3--the-green-checkpoint-code-143-gate-stall)
+
+If deploys to `:3070` have stopped, check `harness_shared.pipeline_events`:
+
+```sql
+SELECT to_char(created_at,'HH24:MI') t, (detail->>'green') green, (detail->>'code') code,
+       detail->'failingTests'
+FROM harness_shared.pipeline_events WHERE kind='green_checkpoint'
+ORDER BY created_at DESC LIMIT 6;
+```
+
+A `code: 143` (SIGTERM) row with no `green` value = the green-checkpoint was **killed under load before it could finish `test:affected`** — the gate can’t *certify* green even when the tests ARE green. This self-heals when load drops (a checkpoint completes, sees green, fast-forwards `main`, deploys). `failingTests` is reported at the **workspace** level (`@papercusp/operator-core`); the actual failing FILES are recorded under the `papercup-checkpoint/` mirror paths around that run’s timestamp — read those `output_tail`s, then confirm the **canonical** versions’ latest rows are green (they usually already are).
+
+## The breadth-test-with-real-I/O anti-pattern (and its fix)
+
+[Section titled “The breadth-test-with-real-I/O anti-pattern (and its fix)”](#the-breadth-test-with-real-io-anti-pattern-and-its-fix)
+
+A test that DISPATCHES every registry entry for real (`for (const name of names) await resolve(name, ...)`) does real PG/FS I/O per entry, so its runtime scales with `entry-count × I/O-latency` and chronically trips the gate as entries grow. `sync-resolver/ index.test.ts`’s “every registered name dispatches without TypeError” did exactly this (51→123 entries; froze `main` \~8h on 2026-06-14). Its real INTENT was only to catch a mis-wired entry (a typo’d `resolves:` leaving `resolve` undefined). **Fix: validate the registry STRUCTURALLY** — iterate entries and assert `typeof entry.resolve === 'function'` (+ optional `argsSchema.parse`) via a test-only `getRegistryEntryV2(name)` export. O(1) per entry, zero I/O, deterministic, no timeout ever. General rule: a “dispatch every entry” breadth scan that does real I/O is the wrong implementation of a structural-wiring check.
+
+## Manually greening a chip: the `--reporter` trap
+
+[Section titled “Manually greening a chip: the --reporter trap”](#manually-greening-a-chip-the---reporter-trap)
+
+To record a green row you must run **without** a CLI `--reporter` override. `defineVitestConfig` auto-wires `admin-test-runs-reporter` into the config’s `reporters` array; passing `npx vitest run <f> --reporter=dot` REPLACES that array, so the run records NOTHING and the chip stays red even though it passed. Run with default reporters (no `--reporter` flag), or just let the green-checkpoint/fleet re-run the file. The reporter is also fire-and-forget with 1s pg connect+insert timeouts that swallow on failure — under load a legit row can silently drop; re-run when load eases.
 
 # The universal experiment API — run + add tests over eval-battery
 
