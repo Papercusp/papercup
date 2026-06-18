@@ -49,6 +49,15 @@ const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
 
+// ── Embedder retry budget (watchdog-embed-resilience-and-dedup-2026-06-17 P-001) ──
+// A sustained org-wide TPM 429 on text-embedding-3-small (1M TPM) hard-failed
+// memory:remember/search FLEET-WIDE on 2026-06-17. We ride the spikes out on the
+// SAME embedder (no fallback) with a header-aware, jittered, budget-capped retry.
+export const EMBED_MAX_ATTEMPTS = 8; // 1 try + 7 retries
+const EMBED_MAX_TOTAL_WAIT_MS = 30_000; // never block ONE embed call longer than this
+const EMBED_BACKOFF_BASE_MS = 500;
+const EMBED_BACKOFF_CAP_MS = 8_000; // per-attempt ceiling
+
 // Dodge bundler static analysis — @huggingface/transformers is an
 // optional, lazily-resolved dependency (only present when local mode is
 // in play).
@@ -70,23 +79,105 @@ export async function resolveOpenAiKey(): Promise<string> {
   return key;
 }
 
+/** Tunable seams for the embedder retry loop (watchdog-embed-resilience-and-dedup
+ *  -2026-06-17 P-001). Production passes none (defaults); tests inject a no-op
+ *  `sleep` + deterministic `rand` to assert attempt counts without real delays. */
+export interface OpenAiEmbedderOpts {
+  maxAttempts?: number;
+  maxTotalWaitMs?: number;
+  baseMs?: number;
+  capMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  rand?: () => number;
+}
+
+const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+
+/** "2m59.56s" / "1.5s" / "6ms" / "150" (bare = seconds) → ms; null if unparseable.
+ *  OpenAI's `x-ratelimit-reset-tokens`/`-requests` use the compact-duration form;
+ *  `Retry-After` uses bare integer seconds. */
+export function parseOpenAiDurationMs(v: string | null | undefined): number | null {
+  if (!v) return null;
+  const s = v.trim();
+  if (s === '') return null;
+  if (/^\d+(\.\d+)?$/.test(s)) return Math.round(Number(s) * 1000); // bare seconds
+  const re = /(\d+(?:\.\d+)?)\s*(ms|s|m|h)/g;
+  let total = 0;
+  let matched = false;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    matched = true;
+    const n = Number(m[1]);
+    total += m[2] === 'ms' ? n : m[2] === 's' ? n * 1000 : m[2] === 'm' ? n * 60_000 : n * 3_600_000;
+  }
+  return matched ? Math.round(total) : null;
+}
+
+/** The server's own "try again in N" hint from a 429/5xx response, in ms, or null.
+ *  Prefers `Retry-After` (HTTP secs or an HTTP-date), then OpenAI's
+ *  `x-ratelimit-reset-tokens`/`-requests` reset windows. */
+export function retryDelayFromHeaders(headers: Headers): number | null {
+  const retryAfter = headers.get('retry-after');
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
+    const dateMs = Date.parse(retryAfter);
+    if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  }
+  return (
+    parseOpenAiDurationMs(headers.get('x-ratelimit-reset-tokens')) ??
+    parseOpenAiDurationMs(headers.get('x-ratelimit-reset-requests'))
+  );
+}
+
+/** Next backoff wait (ms) for `attempt` (0-based), honoring a server hint when
+ *  present, with FULL jitter, clamped to the per-attempt cap AND the remaining
+ *  total-wait budget. Returns null when the budget is spent → stop retrying. */
+export function nextEmbedBackoffMs(
+  attempt: number,
+  serverHintMs: number | null,
+  waitedMs: number,
+  opts: Pick<OpenAiEmbedderOpts, 'maxTotalWaitMs' | 'baseMs' | 'capMs' | 'rand'> = {},
+): number | null {
+  const maxTotal = opts.maxTotalWaitMs ?? EMBED_MAX_TOTAL_WAIT_MS;
+  const base = opts.baseMs ?? EMBED_BACKOFF_BASE_MS;
+  const cap = opts.capMs ?? EMBED_BACKOFF_CAP_MS;
+  const rand = opts.rand ?? Math.random;
+  const remaining = maxTotal - waitedMs;
+  if (remaining <= 0) return null;
+  let wait: number;
+  if (serverHintMs != null && serverHintMs > 0) {
+    // Honor the server's reset window + a little jitter so the herd doesn't resync.
+    wait = Math.min(serverHintMs + Math.floor(rand() * base), cap * 2);
+  } else {
+    // Full jitter over an exponential window, with a small floor.
+    const window = Math.min(cap, base * 2 ** attempt);
+    wait = Math.max(base, Math.floor(rand() * window));
+  }
+  return Math.min(wait, remaining);
+}
+
 /** OpenAI text-embedding-3-small, truncated to 384 dims via the API.
  *
  * Resilient: a TRANSIENT failure (429 rate-limit, 5xx, network/fetch error) is
- * retried with exponential backoff before giving up — a burst of writes (e.g.
- * learning-pack seeding fires items in concurrent batches) used to fail wholesale
- * the moment OpenAI rate-limited or hiccupped, surfacing as "N write(s) failed".
- * A NON-retryable client error (401 bad/expired key, 400, 403) fails fast with a
- * clear message — retrying won't help, and the caller should fix the key. */
-export function buildOpenAiEmbedder(apiKey: string): EmbedFn {
-  const MAX_ATTEMPTS = 4; // 1 try + 3 retries
+ * retried with HEADER-AWARE, jittered exponential backoff before giving up. A
+ * burst of writes (learning-pack seeding fires concurrent batches) — or a
+ * sustained org-wide TPM saturation (text-embedding-3-small, 1M TPM, which
+ * hard-failed memory:remember/search FLEET-WIDE on 2026-06-17) — no longer fails
+ * the moment OpenAI rate-limits. We ride it out on the SAME embedder (no
+ * fallback): up to `maxAttempts` (8) across a capped ~30s budget, honoring the
+ * server's own Retry-After / x-ratelimit-reset-tokens hint when present, with
+ * full jitter to de-sync the post-unjam herd. A NON-retryable client error (401
+ * bad/expired key, 400, 403) still fails fast — retrying won't help, fix the key.
+ * (watchdog-embed-resilience-and-dedup-2026-06-17 P-001.) */
+export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {}): EmbedFn {
+  const maxAttempts = opts.maxAttempts ?? EMBED_MAX_ATTEMPTS;
+  const sleep = opts.sleep ?? realSleep;
   return async (text: string): Promise<number[]> => {
     let lastErr: Error | null = null;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      if (attempt > 0) {
-        // 300ms, 600ms, 1200ms backoff — rides out a transient rate-limit/blip.
-        await new Promise((res) => setTimeout(res, 300 * 2 ** (attempt - 1)));
-      }
+    let waitedMs = 0;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let serverHintMs: number | null = null;
       try {
         const r = await fetch('https://api.openai.com/v1/embeddings', {
           method: 'POST',
@@ -105,17 +196,20 @@ export function buildOpenAiEmbedder(apiKey: string): EmbedFn {
         const err = new Error(`openai_embed_failed_${r.status}: ${body}`);
         // 429 (rate limit) + 5xx are transient → retry; other 4xx (401/400/403)
         // are a config/auth problem → fail fast (no point retrying a bad key).
-        if (r.status === 429 || r.status >= 500) {
-          lastErr = err;
-          continue;
-        }
-        throw err;
+        if (r.status !== 429 && r.status < 500) throw err;
+        lastErr = err;
+        serverHintMs = retryDelayFromHeaders(r.headers);
       } catch (e) {
         // A non-retryable openai_embed_failed_4xx (thrown above) propagates; a
-        // network/fetch error is transient → retry until attempts are exhausted.
+        // network/fetch error is transient → retry until attempts/budget run out.
         if (e instanceof Error && /^openai_embed_failed_4(?!29)/.test(e.message)) throw e;
         lastErr = e instanceof Error ? e : new Error(String(e));
       }
+      if (attempt >= maxAttempts - 1) break; // out of attempts — surface the failure now
+      const waitMs = nextEmbedBackoffMs(attempt, serverHintMs, waitedMs, opts);
+      if (waitMs == null) break; // total-wait budget spent — surface the failure now
+      waitedMs += waitMs;
+      await sleep(waitMs);
     }
     throw lastErr ?? new Error('openai_embed_failed: retries exhausted');
   };
