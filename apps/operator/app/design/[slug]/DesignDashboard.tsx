@@ -3,9 +3,9 @@
 /**
  * Design tab — v0.1.
  *
- * Reads features with `needs_design=true` from
- * /api/design/features and groups them by `design_status`. Embeds
- * the registry browser and memo backlog via the design-phase plugin.
+ * Reads features with `needs_design=true` through @papercusp/sync and
+ * groups them by `design_status`. Embeds the registry browser and memo
+ * backlog through sync-backed design-phase query names.
  *
  * Plan §6 — apps/operator/content/internal-docs/design/design-phase-plan.mdx.
  *
@@ -17,7 +17,7 @@
 import { useState, useMemo } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import type React from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import SketchPane from './SketchPane';
 import RegressionPane from './RegressionPane';
@@ -56,6 +56,13 @@ interface DtcgToken {
   group: string | null;
 }
 
+interface DtcgTokenList {
+  source: string | null;
+  error: string | null;
+  count: number;
+  tokens: DtcgToken[];
+}
+
 type Pane = 'features' | 'memos' | 'registry' | 'tokens' | 'sketch' | 'regressions';
 
 type Bucket = 'all' | 'pending' | 'accepted' | 'ignored';
@@ -72,74 +79,31 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   const [selectedFeatureId, setSelectedFeatureId] = useQueryState('feature', parseAsString);
   const [registryQuery, setRegistryQuery] = useState('');
 
-  const featuresQ = useQuery({
-    queryKey: ['design-features', slug, workspaceId],
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/design/features?harness=${encodeURIComponent(slug)}&workspace=${encodeURIComponent(workspaceId ?? 'default')}`,
-      );
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      return (d.features as DesignFeature[]) ?? [];
-    },
-    refetchInterval: 30_000,
+  const featuresQ = useSyncQuery<DesignFeature>({
+    queryName: 'designFeatures.byHarness',
+    args: { harnessSlug: slug, workspaceId: workspaceId ?? 'default' },
+    enabled: Boolean(slug),
   });
 
-  const memosQ = useQuery({
-    queryKey: ['design-memos', slug, workspaceId],
+  const memosQ = useSyncQuery<MemoEntry>({
+    queryName: 'designMemos.list',
+    args: { status: 'any' },
     enabled: activePane === 'memos',
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/plugins/design-phase/list_memos?harness=${encodeURIComponent(slug)}&workspace=${encodeURIComponent(workspaceId ?? 'default')}&role=operator&run=design-tab&spawn=design-tab`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
-      );
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      const text = d?.content?.[0]?.text ?? '[]';
-      return JSON.parse(text) as MemoEntry[];
-    },
-    refetchInterval: 60_000,
   });
 
-  const registryQ = useQuery({
-    queryKey: ['design-registry', slug, workspaceId, registryQuery],
+  const registryQ = useSyncQuery<RegistryEntry>({
+    queryName: 'designRegistry.search',
+    args: { ecosystem: 'react-tailwind', query: registryQuery },
     enabled: activePane === 'registry',
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/plugins/design-phase/search_registry?harness=${encodeURIComponent(slug)}&workspace=${encodeURIComponent(workspaceId ?? 'default')}&role=operator&run=design-tab&spawn=design-tab`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: registryQuery }),
-        },
-      );
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      const text = d?.content?.[0]?.text ?? '{}';
-      const parsed = JSON.parse(text) as { ecosystem: string; results: RegistryEntry[] };
-      return parsed.results;
-    },
-    refetchInterval: 60_000,
   });
 
-  const tokensQ = useQuery({
-    queryKey: ['design-tokens', slug, workspaceId],
+  const tokensQ = useSyncQuery<DtcgToken>({
+    queryName: 'designTokens.list',
     enabled: activePane === 'tokens',
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/plugins/design-phase/list_tokens?harness=${encodeURIComponent(slug)}&workspace=${encodeURIComponent(workspaceId ?? 'default')}&role=operator&run=design-tab&spawn=design-tab`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
-      );
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      const text = d?.content?.[0]?.text ?? '{}';
-      const parsed = JSON.parse(text) as { source: string | null; error: string | null; count: number; tokens: DtcgToken[] };
-      return parsed;
-    },
-    refetchInterval: 60_000,
   });
 
   const features = featuresQ.data ?? [];
+  const tokenRows = tokensQ.data ?? [];
   const counts = useMemo(() => {
     const c = { all: 0, pending: 0, accepted: 0, ignored: 0 };
     for (const f of features) {
@@ -221,10 +185,10 @@ export default function DesignDashboard({ slug }: { slug: string }) {
             ))}
           </div>
           <ul className="d-feature-list">
-            {featuresQ.isLoading ? (
+            {featuresQ.loading ? (
               <StateRow tone="info">Loading design features…</StateRow>
-            ) : featuresQ.isError ? (
-              <StateRow tone="bad">Failed to load: {String(featuresQ.error)}</StateRow>
+            ) : featuresQ.error ? (
+              <StateRow tone="bad">Failed to load: {featuresQ.error.message}</StateRow>
             ) : filteredFeatures.length === 0 ? (
               <StateRow tone="muted">No features {bucket === 'all' ? '' : `with design_status=${bucket}`}.</StateRow>
             ) : (
@@ -253,24 +217,24 @@ export default function DesignDashboard({ slug }: { slug: string }) {
           {activePane === 'memos' && (
             <MemosPane
               memos={memosQ.data ?? []}
-              loading={memosQ.isLoading}
-              error={memosQ.isError ? String(memosQ.error) : null}
+              loading={memosQ.loading}
+              error={memosQ.error ? memosQ.error.message : null}
             />
           )}
           {activePane === 'registry' && (
             <RegistryPane
               entries={registryQ.data ?? []}
-              loading={registryQ.isLoading}
-              error={registryQ.isError ? String(registryQ.error) : null}
+              loading={registryQ.loading}
+              error={registryQ.error ? registryQ.error.message : null}
               query={registryQuery}
               onQueryChange={setRegistryQuery}
             />
           )}
           {activePane === 'tokens' && (
             <TokensPane
-              data={tokensQ.data ?? null}
-              loading={tokensQ.isLoading}
-              error={tokensQ.isError ? String(tokensQ.error) : null}
+              data={{ source: 'design/tokens/base.json', error: null, count: tokenRows.length, tokens: tokenRows } satisfies DtcgTokenList}
+              loading={tokensQ.loading}
+              error={tokensQ.error ? tokensQ.error.message : null}
             />
           )}
           {activePane === 'sketch' && <SketchPane slug={slug} featureId={selectedFeatureId} />}

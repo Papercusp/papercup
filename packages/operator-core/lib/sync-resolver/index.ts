@@ -161,6 +161,191 @@ async function resolveRunsWithOutcome(harnessSlug: string, limit?: number): Prom
   return (limit != null ? await q.limit(limit) : await q) as unknown[];
 }
 
+async function resolveDesignFeatures(args: { harnessSlug: string; workspaceId: string }): Promise<unknown[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { harnessSlug, workspaceId } = args;
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT
+      feature_id, title, summary, status, needs_design,
+      design_status, design_spec_id, discarded_design_work, updated_ts
+    FROM harness_shared.harness_features_consolidated
+    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND needs_design = TRUE
+    ORDER BY updated_ts DESC NULLS LAST
+    LIMIT 500
+  `;
+  return rows.map((r) => ({
+    featureId: r.feature_id,
+    title: r.title,
+    summary: r.summary,
+    status: r.status,
+    needsDesign: r.needs_design,
+    designStatus: r.design_status,
+    designSpecId: r.design_spec_id,
+    discardedDesignWork: r.discarded_design_work,
+    updatedTs: r.updated_ts == null ? null : Number(r.updated_ts),
+  })) as unknown[];
+}
+
+async function resolveDesignSketches(args: { harnessSlug: string; featureId: string; workspaceId: string }): Promise<unknown[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { harnessSlug, featureId, workspaceId } = args;
+  const { sql } = getOrgPg();
+  const rows = await sql.begin(async (tx) => {
+    await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
+    return await tx`
+      SELECT id, payload, metadata, created_ts
+        FROM harness_shared.harness_design_artifacts
+       WHERE harness_slug = ${harnessSlug}
+         AND feature_id   = ${featureId}
+         AND kind         = 'sketch'
+       ORDER BY created_ts DESC
+       LIMIT 100
+    `;
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    label: (r.payload as { label?: string } | null)?.label ?? null,
+    png: (r.payload as { png?: string } | null)?.png ?? null,
+    createdTs: r.created_ts == null ? null : Number(r.created_ts),
+    metadata: r.metadata ?? {},
+  })) as unknown[];
+}
+
+async function resolveDesignRegressions(): Promise<unknown[]> {
+  const { promises: fs } = await import('node:fs');
+  const { join } = await import('node:path');
+  const roots = {
+    baseline: 'lostpixel-baseline',
+    current: 'lostpixel-current',
+    diff: 'lostpixel-diff',
+  } as const;
+  type Bucket = keyof typeof roots;
+  async function listDir(absDir: string) {
+    try {
+      const entries = await fs.readdir(absDir, { withFileTypes: true });
+      const out = new Map<string, { mtime: number; size: number }>();
+      for (const e of entries) {
+        if (!e.isFile() || !e.name.endsWith('.png')) continue;
+        const stat = await fs.stat(join(absDir, e.name));
+        out.set(e.name, { mtime: stat.mtimeMs, size: stat.size });
+      }
+      return out;
+    } catch {
+      return new Map<string, { mtime: number; size: number }>();
+    }
+  }
+  const cwd = process.cwd();
+  const buckets: Record<Bucket, Awaited<ReturnType<typeof listDir>>> = {
+    baseline: await listDir(join(cwd, roots.baseline)),
+    current: await listDir(join(cwd, roots.current)),
+    diff: await listDir(join(cwd, roots.diff)),
+  };
+  const allNames = new Set<string>();
+  for (const m of Object.values(buckets)) for (const n of m.keys()) allNames.add(n);
+  const items = [...allNames].sort().map((name) => {
+    const b = buckets.baseline.get(name);
+    const c = buckets.current.get(name);
+    const d = buckets.diff.get(name);
+    return {
+      name,
+      hasBaseline: !!b,
+      hasCurrent: !!c,
+      hasDiff: !!d,
+      baselineMtime: b?.mtime ?? null,
+      currentMtime: c?.mtime ?? null,
+      diffMtime: d?.mtime ?? null,
+      baselineSize: b?.size ?? null,
+      currentSize: c?.size ?? null,
+      diffSize: d?.size ?? null,
+      hasRegression: !!d && d.size > 200,
+    };
+  });
+  return [{
+    counts: {
+      baseline: buckets.baseline.size,
+      current: buckets.current.size,
+      diff: buckets.diff.size,
+      regressions: items.filter((i) => i.hasRegression).length,
+    },
+    items,
+  }];
+}
+
+async function resolveDesignMemos(args: { status?: string }): Promise<unknown[]> {
+  const { promises: fs } = await import('node:fs');
+  const { join, resolve } = await import('node:path');
+  const dir = resolve(process.cwd(), 'apps/operator-docs/src/content/docs/design');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: unknown[] = [];
+  for (const file of entries) {
+    if (!file.endsWith('.mdx')) continue;
+    const slug = file.slice(0, -4);
+    const raw = await fs.readFile(join(dir, file), 'utf-8');
+    const frontmatter = /^---\n([\s\S]*?)\n---/.exec(raw)?.[1] ?? '';
+    const title = /^title:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim().replace(/^["']|["']$/g, '') || slug;
+    const status = /^status:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim().replace(/^["']|["']$/g, '') || 'open';
+    if (args.status && args.status !== 'any' && status !== args.status) continue;
+    out.push({ slug, title, status, source: join(dir, file) });
+  }
+  return out;
+}
+
+async function resolveDesignRegistry(args: { ecosystem?: string; query?: string }): Promise<unknown[]> {
+  const { makeReactTailwindRegistry } = await import('../design-adapter-react-tailwind/registry');
+  const ecosystem = args.ecosystem || 'react-tailwind';
+  if (ecosystem !== 'react-tailwind') return [];
+  const query = (args.query || '').trim().toLowerCase();
+  const registry = makeReactTailwindRegistry({ sourcePaths: ['apps/operator/app/harness', 'libs/generic/papergrid/grid-core/src'] });
+  const entries = await registry.listPrimitives();
+  if (!query) return entries as unknown[];
+  return entries.filter((entry) => {
+    const haystack = [
+      entry.id,
+      entry.summary,
+      ...(entry.inputs ?? []).map((input) => `${input.name} ${input.type}`),
+      ...(entry.variants ?? []),
+      ...(entry.states ?? []),
+    ].join(' ').toLowerCase();
+    return haystack.includes(query);
+  }) as unknown[];
+}
+
+async function resolveDesignTokens(args: { category?: string }): Promise<unknown[]> {
+  const { promises: fs } = await import('node:fs');
+  const { resolve } = await import('node:path');
+  const doc = JSON.parse(await fs.readFile(resolve(process.cwd(), 'design/tokens/base.json'), 'utf-8')) as unknown;
+  const out: Array<{ id: string; type: string; value: unknown; description: string | null; group: string | null }> = [];
+  function walk(node: unknown, prefix: string[]): void {
+    if (!node || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key.startsWith('$')) continue;
+      if (value && typeof value === 'object' && '$type' in value && '$value' in value) {
+        const leaf = value as { $type: string; $value: unknown; $description?: string };
+        out.push({
+          id: [...prefix, key].join('.'),
+          type: leaf.$type,
+          value: leaf.$value,
+          description: leaf.$description ?? null,
+          group: prefix.join('.') || null,
+        });
+      } else {
+        walk(value, [...prefix, key]);
+      }
+    }
+  }
+  walk(doc, []);
+  const category = args.category?.toLowerCase();
+  return category
+    ? out.filter((token) => token.id.toLowerCase().startsWith(`${category}.`) || token.type === category)
+    : out;
+}
+
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // toastLog.recent — first migration. Mirrors the original ZQL:
   //   zql.toastLog.orderBy('createdAt', 'desc').limit(limit)
@@ -176,6 +361,43 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { toasts } = await listToasts({ limit });
       return toasts;
     },
+  },
+
+  // design.* — Design tab reads. These are query data and therefore ride
+  // @papercusp/sync; byte/image fetches and sketch writes stay on explicit
+  // HTTP endpoints.
+  'designFeatures.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string().min(1),
+      workspaceId: z.string().default('default'),
+    }),
+    resolve: async (args) => resolveDesignFeatures(args as { harnessSlug: string; workspaceId: string }),
+  },
+  'designSketches.byFeature': {
+    argsSchema: z.object({
+      harnessSlug: z.string().min(1),
+      featureId: z.string().min(1),
+      workspaceId: z.string().default('default'),
+    }),
+    resolve: async (args) => resolveDesignSketches(args as { harnessSlug: string; featureId: string; workspaceId: string }),
+  },
+  'designRegressions.list': {
+    resolve: async () => resolveDesignRegressions(),
+  },
+  'designMemos.list': {
+    argsSchema: z.object({ status: z.string().optional() }).optional(),
+    resolve: async (args) => resolveDesignMemos((args ?? {}) as { status?: string }),
+  },
+  'designRegistry.search': {
+    argsSchema: z.object({
+      ecosystem: z.string().default('react-tailwind'),
+      query: z.string().optional(),
+    }),
+    resolve: async (args) => resolveDesignRegistry(args as { ecosystem?: string; query?: string }),
+  },
+  'designTokens.list': {
+    argsSchema: z.object({ category: z.string().optional() }).optional(),
+    resolve: async (args) => resolveDesignTokens((args ?? {}) as { category?: string }),
   },
 
   // ── Batch 2: drizzle-backed simple selects (audit/scan/state) ────────

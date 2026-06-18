@@ -13,7 +13,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 interface PriorSketch {
@@ -45,7 +45,6 @@ export default function SketchPane({
   featureId: string | null;
 }) {
   const workspaceId = useWorkspaceId();
-  const queryClient = useQueryClient();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [tool, setTool] = useQueryState('sketchTool', parseAsStringEnum<'pen' | 'eraser'>(['pen', 'eraser']).withDefault('pen'));
   const [color, setColor] = useState('#111827');
@@ -68,18 +67,10 @@ export default function SketchPane({
     setHistory([]);
   }, [featureId]);
 
-  const sketchesQ = useQuery({
-    queryKey: ['design-sketches', slug, workspaceId, featureId],
+  const sketchesQ = useSyncQuery<PriorSketch>({
+    queryName: 'designSketches.byFeature',
+    args: { harnessSlug: slug, featureId: featureId ?? '', workspaceId: workspaceId ?? 'default' },
     enabled: !!featureId,
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/design/sketches?harness=${encodeURIComponent(slug)}&feature=${encodeURIComponent(featureId!)}&workspace=${encodeURIComponent(workspaceId ?? 'default')}`,
-      );
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      return (d.sketches as PriorSketch[]) ?? [];
-    },
-    refetchInterval: 60_000,
   });
 
   function pushHistory() {
@@ -184,7 +175,7 @@ export default function SketchPane({
       const d = await r.json();
       if (!r.ok || !d.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
       setLabel('');
-      queryClient.invalidateQueries({ queryKey: ['design-sketches', slug, workspaceId, featureId] });
+      sketchesQ.invalidate();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -333,13 +324,13 @@ export default function SketchPane({
           Prior sketches{' '}
           <span style={{ color: token.fgMuted, fontWeight: 400 }}>({priors.length})</span>
         </h3>
-        {sketchesQ.isLoading && <p style={{ color: token.fgMuted, fontSize: 12 }}>Loading…</p>}
-        {sketchesQ.isError && (
+        {sketchesQ.loading && <p style={{ color: token.fgMuted, fontSize: 12 }}>Loading…</p>}
+        {sketchesQ.error && (
           <p style={{ color: token.danger, fontSize: 12 }}>
-            {String(sketchesQ.error)}
+            {sketchesQ.error.message}
           </p>
         )}
-        {priors.length === 0 && !sketchesQ.isLoading && (
+        {priors.length === 0 && !sketchesQ.loading && (
           <p style={{ color: token.fgMuted, fontSize: 12 }}>None yet.</p>
         )}
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
