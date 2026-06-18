@@ -1,5 +1,6 @@
 'use client';
 
+
 /**
  * Navbar branding switcher — a compact dropdown (mirrors ThemeSelector's
  * hand-rolled, portaled menu) that flips the entire brand bundle in one switch:
@@ -181,8 +182,8 @@ export default function BrandSwitcher() {
             const isCurrent = b.id === activeId;
             const Icon = b.icon;
             return (
-              <button
-                key={b.id}
+              <Tooltip key={b.id} label={isCurrent ? 'current branding' : `switch to ${b.label}`}><button
+
                 type="button"
                 role="menuitemradio"
                 aria-checked={isCurrent}
@@ -202,7 +203,7 @@ export default function BrandSwitcher() {
                   padding: '6px 8px',
                   borderRadius: 3,
                 }}
-                title={isCurrent ? 'current branding' : `switch to ${b.label}`}
+
               >
                 <Icon size={14} aria-hidden />
                 <span style={{ flex: 1, minWidth: 0 }}>
@@ -212,7 +213,7 @@ export default function BrandSwitcher() {
                   </span>
                 </span>
                 {isCurrent && <span aria-hidden style={{ fontSize: 11, lineHeight: 1 }}>●</span>}
-              </button>
+              </button></Tooltip>
             );
           })}
           <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />
