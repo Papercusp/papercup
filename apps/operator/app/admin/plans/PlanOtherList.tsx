@@ -286,11 +286,11 @@ export default function PlanOtherList({
                     const why = groupByAuthorizer ? whyLine(it) : null;
                     return (
                       <li key={it.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
-                        <button
+                        <Tooltip label={it.title}><button
                           type="button"
                           className="pc-items__row"
                           aria-current={isSel ? 'true' : undefined}
-                          title={it.title}
+
                           onClick={() =>
                             itemKey ? selectPlanItem(it.planSlug!, it.itemRef!) : selectOther(it.id)
                           }
@@ -327,7 +327,7 @@ export default function PlanOtherList({
                               <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
                             ) : null}
                           </span>
-                        </button>
+                        </button></Tooltip>
                       </li>
                     );
                   })}
