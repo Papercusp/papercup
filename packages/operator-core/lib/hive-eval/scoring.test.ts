@@ -45,11 +45,17 @@ function eff(over: Partial<EfficiencyMetrics> = {}): EfficiencyMetrics {
     tokensPerWake: 0,
     avgQueenTurns: null,
     queenWakes: 0,
+    // Base has NO bee warm-inject data (beeWarmInjects 0) so the bee carry sub-score is SKIPPED too;
+    // the bee-scoring tests below opt in via eff({ beeWarmInjects, beeCarryShare }).
+    beeCarryShare: 0,
+    beeAvgCarriedPerWarmInject: null,
+    beeWarmInjects: 0,
     pairings: {
       lowCommunication: { metric: 2, pairedFailure: 0, pairName: 'collisionRate' },
       highParallelism: { metric: 0.9, pairedFailure: 0, pairName: 'uselessBeeRate' },
       cacheEfficiency: { metric: 0, pairedFailure: 0, pairName: 'reworkRate' },
       roundTrip: { metric: 0, pairedFailure: 0, pairName: 'reworkRate' },
+      beeCarry: { metric: 0, pairedFailure: 0, pairName: 'reworkRate' },
     },
   };
   return { ...base, ...over };
@@ -175,6 +181,39 @@ describe('computeHiveScore — Queen per-wake efficiency is a scored metric (B-0
   });
 });
 
+describe('computeHiveScore — bee warm-inject carry is a scored metric (P-015 — bee-context-efficiency)', () => {
+  it('SKIPS the bee carry sub-score when the run had no warm-inject (beeWarmInjects 0)', () => {
+    const s = computeHiveScore(outcome(), eff(), speed()); // base = no bee warm-inject data
+    expect(s.efficiency.components.map((c) => c.name)).not.toContain('beeCarry');
+  });
+
+  it('adds a beeCarry component when the run warm-injected bees', () => {
+    const s = computeHiveScore(outcome(), eff({ beeWarmInjects: 4, beeCarryShare: 0.2 }), speed());
+    expect(s.efficiency.components.map((c) => c.name)).toContain('beeCarry');
+    expect(comp(s.efficiency, 'beeCarry').score).toBeGreaterThan(7); // low carry (0.2) → 8/10, rework 0 → full credit
+  });
+
+  it('a high carry share scores low on beeCarry (lower = better) — the long-lived-bee anti-pattern (D-011)', () => {
+    const fresh = computeHiveScore(outcome(), eff({ beeWarmInjects: 4, beeCarryShare: 0.05 }), speed());
+    const carried = computeHiveScore(outcome(), eff({ beeWarmInjects: 4, beeCarryShare: 0.97 }), speed());
+    expect(comp(fresh.efficiency, 'beeCarry').score).toBeGreaterThan(9); // fresh-context bee ⇒ ~9.5
+    expect(comp(carried.efficiency, 'beeCarry').score).toBeLessThan(1); // 97% carry ⇒ ~0.3 — the win is the gap
+    expect(comp(fresh.efficiency, 'beeCarry').score).toBeGreaterThan(comp(carried.efficiency, 'beeCarry').score);
+  });
+
+  it('D-003: a low carry bought by dropping live working state (high rework) earns no bee-carry credit', () => {
+    const clean = computeHiveScore(outcome(), eff({ beeWarmInjects: 4, beeCarryShare: 0.05, reworkRate: 0 }), speed());
+    const churned = computeHiveScore(outcome(), eff({ beeWarmInjects: 4, beeCarryShare: 0.05, reworkRate: 2 }), speed());
+    expect(comp(clean.efficiency, 'beeCarry').score).toBeGreaterThan(9);
+    expect(comp(churned.efficiency, 'beeCarry').score).toBe(0); // rework at ceiling → credit ×0
+  });
+
+  it('the outcome gate still governs: bee carry efficiency earns nothing if the run failed acceptance', () => {
+    const s = computeHiveScore(outcome({ acceptancePass: false }), eff({ beeWarmInjects: 4, beeCarryShare: 0.05 }), speed());
+    expect(s.composite).toBe(0);
+  });
+});
+
 describe('computeHiveScore — the critical-path ratio is the speed discriminator (D-004)', () => {
   it('a well-parallelized run (ratio ≈ 1) scores near 10 on criticalPath', () => {
     const s = computeHiveScore(outcome(), eff(), speed({ criticalPathRatio: 1 }));
@@ -242,7 +281,7 @@ describe('hiveScoreRubricHash — idempotent rubric-hash (cache key)', () => {
   it('the score carries the rubric hash + version (the score-store PK component)', () => {
     const s = computeHiveScore(outcome(), eff(), speed());
     expect(s.rubricHash).toBe(hiveScoreRubricHash(DEFAULT_HIVE_SCORE_RUBRIC_V1));
-    expect(s.rubricVersion).toBe('hive-score-v2');
+    expect(s.rubricVersion).toBe('hive-score-v3');
   });
 });
 

@@ -624,6 +624,15 @@ export const FLAGS = {
   // unverified HOT-PATH change to live bee re-invocation; flip ON after P-006 live
   // verification (kill-switch: OFF ⇒ legacy `--resume`, behavior-neutral).
   BEE_FRESH_CONTEXT_WARM_INJECT: "papercusp-bee-fresh-context-warm-inject",
+  // bee-context-efficiency Phase 2 (P-008/P-009, D-004): inject the precomputed
+  // work-item DOSSIER (computeBeeWakeDossier — item text + linked plan item + outgoing
+  // `blocks` edges + topics + recent comments + hive-roster snapshot) into the spawn/
+  // wake-hydration VOLATILE TAIL, so a (re)spawned agent opens already-briefed and skips
+  // the work_items:get / plans:get / coord:presence round-trips. Rides the volatile tail
+  // ONLY (never the cacheable preamble, D-004); a sub-feature of SPAWN_HANDOFF_HYDRATION.
+  // DEFAULT ON (alpha flags-default-on) — additive, bounded, fail-soft; OFF ⇒ no dossier
+  // (the agent falls back to its read tools), behavior otherwise unchanged.
+  BEE_WAKE_DOSSIER: "papercusp-bee-wake-dossier",
   // plan-implementation-framework P-003 (compiled-briefs): when on, plan_items:convert
   // COMPILES the work-item brief from the plan item + plan focus (## Now) + the decisions
   // bearing on the item, instead of leaving payload.brief to a hand-authored overlay.
@@ -717,6 +726,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
   // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.
   [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: false,
+  // DEFAULT ON (alpha flags-default-on) — additive precomputed work-item dossier in the
+  // spawn/wake-hydration volatile tail (P-008/P-009). Bounded + fail-soft; OFF ⇒ no
+  // dossier section (the agent uses its read tools), otherwise behavior-neutral.
+  [FLAGS.BEE_WAKE_DOSSIER]: true,
   // DEFAULT OFF (P-009): the watchdog auto-close sweep. OFF ⇒ escalate-only (today's
   // behavior, byte-identical). Owner flips ON after reviewing the guards. KNOWN_DARK_FLAGS.
   [FLAGS.WATCHDOG_AUTO_CLOSE]: false,

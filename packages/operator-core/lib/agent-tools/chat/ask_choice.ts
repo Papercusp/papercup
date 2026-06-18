@@ -47,8 +47,23 @@ const optionSchema = z.object({
 });
 
 const argsSchema = z.object({
-  question: z.string().min(1).max(MAX_QUESTION_LEN),
-  options: z.array(optionSchema).min(1).max(MAX_OPTIONS),
+  // Caller-DX (watchdog P-006): actionable validation messages — an empty
+  // `options` array previously failed with a bare "Array must contain at least
+  // 1 element(s)" that gave the agent no idea what to supply.
+  question: z
+    .string({ required_error: 'chat:ask_choice needs a `question` — the prompt shown to the user.' })
+    .min(1, '`question` must be a non-empty prompt.')
+    .max(MAX_QUESTION_LEN),
+  options: z
+    .array(optionSchema, {
+      required_error:
+        'chat:ask_choice needs `options`: 1-6 clickable choices, each { id, label }. For an OPEN-ENDED question (describe / paste), use plain text instead.',
+    })
+    .min(
+      1,
+      'chat:ask_choice needs at least one option (each { id, label }) — provide 2-3 for a yes/no or pick-one decision.',
+    )
+    .max(MAX_OPTIONS, `chat:ask_choice accepts at most ${MAX_OPTIONS} options.`),
   /** Multi-select. Default false (radio: one pick commits). */
   multi: z.boolean().optional(),
   /** Show Skip affordance. Default true. */

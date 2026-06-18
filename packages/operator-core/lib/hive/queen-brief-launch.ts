@@ -28,7 +28,7 @@ import { runWithWorkspace } from '../workspace-als';
 import { getOrgPg } from '@papercusp/db-org';
 import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee, type BriefInboxItem } from './queen-brief';
 import { overwatchAliveForQueen } from '../overwatch/cross-monitor';
-import { getOwnerSteering, isPausedNow, type OwnerSteering } from '../owner-steering';
+import { getOwnerSteering, isPausedNow, hasActiveThrottle, type OwnerSteering } from '../owner-steering';
 
 /** Live hive bees → the floor's bee load + liveness (warm-inject-vs-spawn signal).
  *  gatherLiveBees already excludes non-bees + joins load/liveness; fail-soft. */
@@ -130,7 +130,12 @@ async function gatherOwnerSteering(
   try {
     const s = await getOwnerSteering(workspaceId, installSlug);
     const pausedNow = isPausedNow(s, Date.now());
-    const active = !!s.directive || s.eligiblePlans.length > 0 || s.eligibleHives.length > 0 || pausedNow;
+    const active =
+      !!s.directive ||
+      s.eligiblePlans.length > 0 ||
+      s.eligibleHives.length > 0 ||
+      pausedNow ||
+      hasActiveThrottle(s); // P-006/P-009: a throttle-only steering still surfaces in the brief
     if (!active) return undefined;
     return pausedNow ? s : { ...s, pauseNewWork: false, pausedUntil: null };
   } catch {

@@ -393,6 +393,7 @@ import './improvements/digest';
 import './improvements/triage';
 import './improvements/resolve';
 import './improvements/watchdog-status';
+import './improvements/keyless-digest';
 import './improvements/learning-loops';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
@@ -433,6 +434,7 @@ import './work_items/link';
 import './work_items/tag';
 import './work_items/subscribe';
 import './work_items/comment';
+import './work_items/checkpoint';
 import './work_items/amend';
 import './work_items/expand';
 import './work_items/promote';

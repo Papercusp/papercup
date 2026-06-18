@@ -122,6 +122,14 @@ export type BehaviorEkgFields = Partial<
     | 'queenWakes'
     | 'queenTurns'
     | 'queenWakesWithTurns'
+    // Per-bee warm-inject carry efficiency (P-015), sourced from beeWakeEfficiency() over
+    // agent_usage_samples role='bee' grouped by session_id, scoped to the throwaway MEMBER clone
+    // (where the bees work — live-ops.readBeeEkg). Unique per run ⇒ exact attribution.
+    | 'beeCarriedReadTokens'
+    | 'beeCacheReadTokens'
+    | 'beeCacheCreationTokens'
+    | 'beeInputTokens'
+    | 'beeWarmInjects'
   >
 >;
 
@@ -186,6 +194,11 @@ export function behaviorFromSpawnRows(rows: readonly SpawnRunRow[], input: Behav
     queenWakes: ekg.queenWakes ?? 0,
     queenTurns: ekg.queenTurns ?? 0,
     queenWakesWithTurns: ekg.queenWakesWithTurns ?? 0,
+    beeCarriedReadTokens: ekg.beeCarriedReadTokens ?? 0,
+    beeCacheReadTokens: ekg.beeCacheReadTokens ?? 0,
+    beeCacheCreationTokens: ekg.beeCacheCreationTokens ?? 0,
+    beeInputTokens: ekg.beeInputTokens ?? 0,
+    beeWarmInjects: ekg.beeWarmInjects ?? 0,
   };
 }
 

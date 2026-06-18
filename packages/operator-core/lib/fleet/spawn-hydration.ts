@@ -88,6 +88,20 @@ export interface SpawnHydrationDeps {
     workItemId: string;
     workspaceId?: string;
   }) => Promise<string | null>;
+  /**
+   * The precomputed work-item DOSSIER (bee-context-efficiency P-008,
+   * `computeBeeWakeDossier`): item text + linked plan item + outgoing `blocks` edges +
+   * topics + recent comments + the hive-roster snapshot — a self-contained
+   * `## Your work-item dossier` block (it carries its OWN `##`/`###` headings).
+   * Absent/null ⇒ no dossier. It already includes the roster (D-008), so when a
+   * dossier is present the standalone `getRoster` section below is SUPPRESSED — never
+   * a double roster (D-009 anti-bloat). Flag-gated (BEE_WAKE_DOSSIER) at the binding.
+   */
+  getDossier?: (q: {
+    harness: string;
+    workItemId: string;
+    workspaceId?: string;
+  }) => Promise<string | null>;
 }
 
 export interface SpawnHydrationInput {
@@ -149,7 +163,7 @@ export async function assembleSpawnHydration(input: SpawnHydrationInput): Promis
     }
   };
 
-  const [handoff, roster, checkpoint] = await Promise.all([
+  const [handoff, roster, checkpoint, dossier] = await Promise.all([
     safe(
       'handoff',
       deps.getHandoff &&
@@ -160,6 +174,12 @@ export async function assembleSpawnHydration(input: SpawnHydrationInput): Promis
       'checkpoint',
       deps.getCheckpoint && workItemId
         ? () => deps.getCheckpoint!({ harness, workItemId, workspaceId })
+        : undefined,
+    ),
+    safe(
+      'dossier',
+      deps.getDossier && workItemId
+        ? () => deps.getDossier!({ harness, workItemId, workspaceId })
         : undefined,
     ),
   ]);
@@ -207,21 +227,42 @@ export async function assembleSpawnHydration(input: SpawnHydrationInput): Promis
     if (dropped > 0) truncated = true;
   };
 
+  // The precomputed work-item DOSSIER (P-008) rides as its OWN sibling block BEFORE
+  // `## Handoff` — it carries its own `## Your work-item dossier` heading, so it is not
+  // a `###` sub-section of the handoff. It gets its OWN char budget (the headline
+  // precompute the bee opens on), independent of the handoff budget. Trusted raw text ⇒
+  // truncatable at its boundary. It already includes the hive-roster snapshot (D-008),
+  // so when present the standalone roster below is SUPPRESSED (no double roster, D-009).
+  let dossierBlock = '';
+  if (dossier && dossier.trim()) {
+    const clamped = clampRaw(dossier.trim(), maxChars);
+    dossierBlock = clamped.text;
+    if (clamped.truncated) {
+      truncated = true;
+      log('spawn-hydration: truncated work-item dossier to fit its budget');
+    }
+  }
+
   // Priority order (most load-bearing first, so the budget protects what matters):
   //   1. your own carry-note (checkpoint) — continuity after eviction
   //   2. direct predecessor completion summaries — what the upstream finished
   //   3. the plan slice — Now + decisions for this lane
   //   4. feature handoff messages — explicit notes addressed to this feature
-  //   5. hive-roster snapshot — who else is around (cheapest to lose)
+  //   5. hive-roster snapshot — who else is around (cheapest to lose; SUPPRESSED when
+  //      the dossier carries its own roster snapshot — D-008/D-009 anti-duplication)
   pushRaw('### Carry-note (your last checkpoint)', checkpoint);
   pushEntries('### Upstream completions', handoff?.predecessorSummaries);
   pushRaw(null, handoff?.planSlice);
   pushEntries('### Handoff messages', handoff?.messages);
-  pushRaw('### Hive peers', roster);
+  if (!dossierBlock) pushRaw('### Hive peers', roster);
 
-  if (parts.length === 0) {
+  const handoffBlock = parts.length > 0 ? `${HANDOFF_HEADING}\n\n${parts.join('\n\n')}` : '';
+  const blocks = [dossierBlock, handoffBlock].filter(Boolean);
+  if (blocks.length === 0) {
     if (dropped > 0) log(`spawn-hydration: all ${dropped} handoff entries dropped — block omitted`);
     return { text: '', dropped, truncated };
   }
-  return { text: `${HANDOFF_HEADING}\n\n${parts.join('\n\n')}`, dropped, truncated };
+  // Dossier first (the headline precompute), then the `## Handoff` block — both ride
+  // the volatile tail verbatim (prompt-build §8b), never the cacheable preamble (D-004).
+  return { text: blocks.join('\n\n'), dropped, truncated };
 }

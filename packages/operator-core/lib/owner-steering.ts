@@ -21,6 +21,24 @@
  *   owner-steering:pause-new-work  — bool; pause starting NEW work (HARD in survey)
  *   owner-steering:paused-until    — epoch ms; the pause auto-expires at this time
  *
+ * Phase 2 keys (throttle knobs — queen-steering-panel B-08 / P-006, D-005/D-006):
+ * each a SESSION override of a live operator seam, surfaced in the wake brief so
+ * the Queen self-governs. Precedence everywhere: session override (here) >
+ * workspace default (Settings / rate-limit-config) > committed default.
+ *   owner-steering:cadence-floor-sec — number; min seconds between Queen wakes
+ *                                      (effective floor = MAX(system 60s, this);
+ *                                      a FLOOR — the owner can only RAISE it).
+ *   owner-steering:max-bees          — int; concurrency ceiling for running agents
+ *                                      (effective = MIN(system ceiling, this)).
+ *   owner-steering:idle-activities   — { gym?, scout?, curation? } booleans; each
+ *                                      defaults ON, `false` suppresses that idle
+ *                                      activity (gym/Scout/curation spend).
+ *   owner-steering:auto-scale-out    — bool; `false` disables account-pool
+ *                                      auto-scale-out (default = enabled).
+ *   owner-steering:model-tiers       — SESSION model-tier MENU override (D-006).
+ *   owner-steering:tier-ceilings     — SESSION per-role tier CEILINGS override
+ *                                      (D-006; e.g. {bee:'opus:xhigh'} pins bees).
+ *
  * Defaults (a missing/cleared key) reproduce today's pre-steering behaviour, so the
  * feature is purely additive — an un-steered Hive reads `DEFAULT_OWNER_STEERING`.
  */
@@ -41,7 +59,26 @@ export const OWNER_STEERING_KEYS = {
   // absent ⇒ use the workspace default (no override).
   modelTiers: 'owner-steering:model-tiers',
   tierCeilings: 'owner-steering:tier-ceilings',
+  // queen-steering-panel P-006 (throttle knobs, D-005): each wires to a live seam.
+  cadenceFloorSec: 'owner-steering:cadence-floor-sec',
+  maxBees: 'owner-steering:max-bees',
+  idleActivities: 'owner-steering:idle-activities',
+  autoScaleOut: 'owner-steering:auto-scale-out',
+  // queen-steering-panel P-009 (decomposition-aggressiveness hint): ADVISORY —
+  // surfaced in the wake brief, no hard seam (the Queen self-governs decomposition).
+  decomposition: 'owner-steering:decomposition',
 } as const;
+
+/** The idle background activities the owner can gate per-Hive (P-006, D-005). Each
+ *  defaults ON; only an explicit `false` suppresses it. */
+export const IDLE_ACTIVITY_KINDS = ['gym', 'scout', 'curation'] as const;
+export type IdleActivityKind = (typeof IDLE_ACTIVITY_KINDS)[number];
+export type IdleActivityToggles = Partial<Record<IdleActivityKind, boolean>>;
+
+/** Decomposition-aggressiveness hint (P-009): serial ↔ max-parallel lanes. Advisory
+ *  — the Queen reads it in her wake brief; there is no hard enforcement seam. */
+export const DECOMPOSITION_MODES = ['serial', 'balanced', 'parallel'] as const;
+export type DecompositionMode = (typeof DECOMPOSITION_MODES)[number];
 
 /**
  * The decoded owner-steering state — the C-1 payload the `hive.steering` resolver
@@ -66,6 +103,23 @@ export interface OwnerSteering {
   modelTiers?: ModelTier[] | null;
   /** SESSION override of the per-role tier CEILINGS (D-006). null ⇒ no override. */
   tierCeilings?: Record<string, string> | null;
+  /** SESSION wake-cadence FLOOR (P-006) — min seconds between Queen wakes. The
+   *  effective floor is MAX(system floor, this), so the owner can only RAISE the
+   *  interval (slow the loop), never drop below the system minimum. null ⇒ no override. */
+  cadenceFloorSec?: number | null;
+  /** SESSION concurrency CEILING (P-006) — max concurrently-running agents/bees.
+   *  Effective = MIN(system ceiling, this). null ⇒ no override (use the system ceiling). */
+  maxBees?: number | null;
+  /** SESSION idle-activity gates (P-006) — gym/Scout/curation. Each defaults ON;
+   *  an explicit `false` suppresses that idle activity. null ⇒ all default ON. */
+  idleActivities?: IdleActivityToggles | null;
+  /** SESSION auto-scale-out toggle (P-006) — `false` disables automatic account-pool
+   *  scale-out on sustained rate-limit exhaustion. null ⇒ default (enabled). */
+  autoScaleOut?: boolean | null;
+  /** SESSION decomposition-aggressiveness hint (P-009) — serial ↔ max-parallel lanes.
+   *  ADVISORY: surfaced in the wake brief so the Queen self-governs; no hard seam.
+   *  null ⇒ default (the Queen's own judgement). */
+  decomposition?: DecompositionMode | null;
 }
 
 export const DEFAULT_OWNER_STEERING: OwnerSteering = {
@@ -76,6 +130,11 @@ export const DEFAULT_OWNER_STEERING: OwnerSteering = {
   pausedUntil: null,
   modelTiers: null,
   tierCeilings: null,
+  cadenceFloorSec: null,
+  maxBees: null,
+  idleActivities: null,
+  autoScaleOut: null,
+  decomposition: null,
 };
 
 function asStringArray(v: unknown): string[] {
@@ -106,6 +165,44 @@ function asFiniteNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/** Decode a wake-cadence floor (seconds). A positive finite number, else null —
+ *  0/negative round-trips to null (no override) since the effective floor is a MAX. */
+function asCadenceFloorSec(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/** Decode a concurrency ceiling — a finite integer ≥ 1, else null (no override).
+ *  A 0/negative max would wedge the fleet, so it falls back to "no override". */
+function asMaxBees(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  const n = Math.floor(v);
+  return n >= 1 ? n : null;
+}
+
+/** Decode the idle-activity toggle object — only the known kinds, only booleans.
+ *  null when absent/empty (⇒ all default ON). */
+function asIdleActivities(v: unknown): IdleActivityToggles | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out: IdleActivityToggles = {};
+  for (const kind of IDLE_ACTIVITY_KINDS) {
+    const val = (v as Record<string, unknown>)[kind];
+    if (typeof val === 'boolean') out[kind] = val;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Decode the auto-scale-out toggle — a boolean, else null (⇒ default enabled). */
+function asBoolOrNull(v: unknown): boolean | null {
+  return typeof v === 'boolean' ? v : null;
+}
+
+/** Decode the decomposition hint — one of the known modes, else null (no hint). */
+function asDecomposition(v: unknown): DecompositionMode | null {
+  return typeof v === 'string' && (DECOMPOSITION_MODES as readonly string[]).includes(v)
+    ? (v as DecompositionMode)
+    : null;
+}
+
 /**
  * Read the owner-steering state for a Hive in ONE query (listHiveSettings), with
  * every missing key defaulting per {@link DEFAULT_OWNER_STEERING}. Fail-soft by
@@ -128,6 +225,11 @@ export async function getOwnerSteering(
     pausedUntil: asFiniteNumber(byKey.get(OWNER_STEERING_KEYS.pausedUntil)),
     modelTiers: asModelTiers(byKey.get(OWNER_STEERING_KEYS.modelTiers)),
     tierCeilings: asCeilings(byKey.get(OWNER_STEERING_KEYS.tierCeilings)),
+    cadenceFloorSec: asCadenceFloorSec(byKey.get(OWNER_STEERING_KEYS.cadenceFloorSec)),
+    maxBees: asMaxBees(byKey.get(OWNER_STEERING_KEYS.maxBees)),
+    idleActivities: asIdleActivities(byKey.get(OWNER_STEERING_KEYS.idleActivities)),
+    autoScaleOut: asBoolOrNull(byKey.get(OWNER_STEERING_KEYS.autoScaleOut)),
+    decomposition: asDecomposition(byKey.get(OWNER_STEERING_KEYS.decomposition)),
   };
 }
 
@@ -142,6 +244,16 @@ export interface OwnerSteeringPatch {
   modelTiers?: ModelTier[] | null;
   /** Session per-role tier-ceilings override (D-006); null / {} clears it. */
   tierCeilings?: Record<string, string> | null;
+  /** Session wake-cadence floor in seconds (P-006); null / 0 clears it. */
+  cadenceFloorSec?: number | null;
+  /** Session concurrency ceiling (P-006); null / <1 clears it. */
+  maxBees?: number | null;
+  /** Session idle-activity toggles (P-006); null / {} clears it (⇒ all default ON). */
+  idleActivities?: IdleActivityToggles | null;
+  /** Session auto-scale-out toggle (P-006); null clears it (⇒ default enabled). */
+  autoScaleOut?: boolean | null;
+  /** Session decomposition hint (P-009); null clears it. */
+  decomposition?: DecompositionMode | null;
   /** Wipe ALL steering keys back to {@link DEFAULT_OWNER_STEERING}. */
   clear?: boolean;
 }
@@ -181,6 +293,21 @@ export async function setOwnerSteering(
   if (patch.tierCeilings !== undefined) {
     writes.push([OWNER_STEERING_KEYS.tierCeilings, asCeilings(patch.tierCeilings)]);
   }
+  if (patch.cadenceFloorSec !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.cadenceFloorSec, asCadenceFloorSec(patch.cadenceFloorSec)]);
+  }
+  if (patch.maxBees !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.maxBees, asMaxBees(patch.maxBees)]);
+  }
+  if (patch.idleActivities !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.idleActivities, asIdleActivities(patch.idleActivities)]);
+  }
+  if (patch.autoScaleOut !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.autoScaleOut, asBoolOrNull(patch.autoScaleOut)]);
+  }
+  if (patch.decomposition !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.decomposition, asDecomposition(patch.decomposition)]);
+  }
   if (patch.pauseNewWork !== undefined) {
     writes.push([OWNER_STEERING_KEYS.pauseNewWork, patch.pauseNewWork === true]);
   }
@@ -201,4 +328,49 @@ export async function setOwnerSteering(
 export function isPausedNow(s: OwnerSteering, nowMs: number): boolean {
   if (s.pauseNewWork) return true;
   return s.pausedUntil != null && nowMs < s.pausedUntil;
+}
+
+// ─── Throttle-knob accessors (P-006) ────────────────────────────────────────
+// Shared so every live seam + the wake-brief + the tests apply the SAME
+// resolution. Each is pure; all default to "no override" (today's behaviour).
+
+/** The effective wake-cadence floor in seconds: MAX(system floor, owner override).
+ *  A floor — the owner can only RAISE the min interval, never drop below `systemFloorSec`. */
+export function effectiveCadenceFloorSec(s: OwnerSteering, systemFloorSec: number): number {
+  return Math.max(systemFloorSec, s.cadenceFloorSec ?? 0);
+}
+
+/** The effective concurrency ceiling: MIN(system ceiling, owner override). No
+ *  override ⇒ the system ceiling unchanged. Never returns below 1 when an owner
+ *  cap is set (the decoder already clamps maxBees ≥ 1). */
+export function effectiveMaxBees(s: OwnerSteering, systemCeiling: number): number {
+  return s.maxBees != null ? Math.min(systemCeiling, s.maxBees) : systemCeiling;
+}
+
+/** Whether an idle activity (gym / Scout / curation) may run. Default ON — only an
+ *  explicit `false` toggle suppresses it. */
+export function idleActivityEnabled(s: OwnerSteering, kind: IdleActivityKind): boolean {
+  const t = s.idleActivities;
+  return !t || t[kind] !== false;
+}
+
+/** Whether automatic account-pool scale-out is enabled. Default ON — only an
+ *  explicit `false` disables it (manual `accounts:scale_out` still works). */
+export function isAutoScaleOutEnabled(s: OwnerSteering): boolean {
+  return s.autoScaleOut !== false;
+}
+
+/** True when ANY throttle knob is set away from its default — drives whether the
+ *  wake brief renders a throttle section (P-006) and the resolver/UI "overriding"
+ *  badge. Model-tier overrides count (they're surfaced as a throttle knob too). */
+export function hasActiveThrottle(s: OwnerSteering): boolean {
+  return (
+    s.cadenceFloorSec != null ||
+    s.maxBees != null ||
+    s.autoScaleOut === false ||
+    s.decomposition != null ||
+    (!!s.idleActivities && IDLE_ACTIVITY_KINDS.some((k) => s.idleActivities?.[k] === false)) ||
+    (!!s.modelTiers && s.modelTiers.length > 0) ||
+    (!!s.tierCeilings && Object.keys(s.tierCeilings).length > 0)
+  );
 }

@@ -52,6 +52,10 @@ const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
  *  This caps that wait so a request can never hang on a hard/long reset (a multi-hour usage cap is
  *  forwarded, not waited on). Sized to cover a bare-429 burst penalty + slack. */
 const ALL_THROTTLED_RECOVERY_WAIT_CAP_MS = 20 * 1000;
+/** Total time a single client request may spend WAITING out short transient throttles (budget #2,
+ *  separate from the rotation-attempt budget) before forwarding. Bounds the wait so a fleet-wide
+ *  transient burst is absorbed but a request can never hang. */
+const TRANSIENT_TOTAL_WAIT_BUDGET_MS = 30 * 1000;
 /** Inspect a NON-200 upstream body up to this many bytes for a usage/session-limit signature (the
  *  Claude-Code subscription cap — "You've hit your session limit · resets 10:50am" — a WALL the bee
  *  classifies as usage_limit + WON'T retry). Such error bodies are tiny; this just bounds the read.
@@ -485,6 +489,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // owner flags: a $0 bee while idle accounts sit unused). A transient/bare 429 is NOT looped here —
       // the bee's CLI retries those, and the next request lands on the failover-rotated active().
       let attempt = 0;
+      let transientWaitedMs = 0; // total time spent WAITING out short transient throttles (budget #2)
       for (;;) {
         const token = await active.token();
         const headers: Record<string, string> = { ...baseHeaders, authorization: `Bearer ${token}` };
@@ -595,47 +600,65 @@ export function createInferenceGateway(deps: GatewayDeps) {
           active.invalidateToken?.();
         }
 
-        // Bounded INTERNAL retry: absorb a transient throttle / route past a usage cap so the bee gets a
-        // GOOD response instead of exhausting its own small CLI retry budget (or hitting a no-retry wall).
-        // If no fresh account remains to rotate to, stop + forward the error (genuinely out of capacity).
-        if (internalRetry && attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
-          let proceed = true;
-          if (internalRetry.rotate) {
-            const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
-            if (next && next.accountId !== active.accountId) {
-              failovers++;
-              active = next;
-              gov = governorForAccount(model, active.accountId);
-            } else {
-              // No OTHER account has budget — EVERY pool account is throttled. For a SHORT TRANSIENT
-              // throttle (x-should-retry:true burst / bare-429 — `exhaustResetAt` is seconds away,
-              // capacity exists), forwarding the retryable 429 makes an in-process caller (scout/gym,
-              // no CLI retry budget) fail with $0 — which is exactly the "the gateway should absorb
-              // this" gap. So WAIT OUT the soonest account's short penalty and retry it, instead of
-              // giving up. Bounded: only for a genuinely transient reset (NOT a multi-hour usage cap)
-              // and to ALL_THROTTLED_RECOVERY_WAIT_CAP_MS, with the attempt counter still capping total
-              // iterations — so a request can never hang unbounded.
-              const waitMs = internalRetry.exhaustResetAt - Date.now();
-              if (internalRetry.exhaustResetAt > 0 && waitMs > 0 && waitMs <= ALL_THROTTLED_RECOVERY_WAIT_CAP_MS) {
-                internalRetry.backoffMs = Math.max(internalRetry.backoffMs, waitMs);
-                // `active` is unchanged (onExhausted didn't rotate); its penalty expires during the
-                // wait, so the retry re-hits the now-recovered account. proceed stays true.
-                log('warn', `inference-gateway: all accounts transiently throttled on ${model} → waiting ${waitMs}ms for soonest recovery + retry (not forwarding a retryable 429)`);
-              } else {
-                proceed = false; // hard cap / multi-hour reset → genuinely out of capacity; forward.
+        // Internal retry with TWO SEPARATE budgets, so a fleet-wide transient burst is waited out without
+        // burning the rotation budget:
+        //   (1) INTERNAL_RETRY_MAX_ATTEMPTS bounds ROTATIONS across accounts (+ 529 server-overload back-offs).
+        //   (2) TRANSIENT_TOTAL_WAIT_BUDGET_MS bounds WAITING for a SHORT transient throttle to clear.
+        // The bug this fixes (owner-reported, 2026-06-18): with N accounts ALL transiently throttled on
+        // opus at once (x-should-retry:true — capacity exists), the old single-budget loop rotated through
+        // a few accounts, hit the attempt cap BEFORE exhausting the pool, and forwarded the retryable 429
+        // — which an in-process caller (scout/gym, no CLI retry budget) can't absorb → $0 no-ideas.
+        // Now: rotate while fresh accounts remain AND the rotation budget holds; otherwise, if the throttle
+        // is SHORT (exhaustResetAt within the recovery cap — NOT a multi-hour usage cap) and the wait budget
+        // holds, WAIT the soonest account's penalty out + retry the recovered `active`. Both budgets bound
+        // total latency, so a request can never hang. A usage cap / multi-hour reset is forwarded, not waited.
+        if (internalRetry) {
+          let proceed = false;
+          let backoff = internalRetry.backoffMs;
+          // A genuinely transient throttle resets within the recovery cap; a usage cap / org pause is hours out.
+          const transient =
+            internalRetry.exhaustResetAt > 0 &&
+            internalRetry.exhaustResetAt - Date.now() <= ALL_THROTTLED_RECOVERY_WAIT_CAP_MS;
+          if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
+            if (internalRetry.rotate) {
+              const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
+              if (next && next.accountId !== active.accountId) {
+                failovers++;
+                active = next;
+                gov = governorForAccount(model, active.accountId);
+                attempt++;
+                proceed = true;
               }
+            } else {
+              // 529 server-overload: back off + retry the SAME account (no penalty/rotation).
+              attempt++;
+              proceed = true;
+            }
+          }
+          if (!proceed && transient) {
+            // Rotation can't help (no fresh account, or rotation budget spent) but the throttle is SHORT
+            // and capacity exists — wait the soonest account's penalty out + retry. `active`'s penalty
+            // expires during the wait, so the retry re-hits the recovered account. Bounded by the wait budget.
+            const waitMs = Math.min(
+              Math.max(0, internalRetry.exhaustResetAt - Date.now()),
+              ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+            );
+            if (waitMs > 0 && transientWaitedMs + waitMs <= TRANSIENT_TOTAL_WAIT_BUDGET_MS) {
+              transientWaitedMs += waitMs;
+              backoff = waitMs;
+              proceed = true;
+              log('warn', `inference-gateway: all accounts transiently throttled on ${model} → wait ${waitMs}ms + retry (wait-budget ${transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`);
             }
           }
           if (proceed) {
             peekedRest?.destroy(); // discard the throttled/capped account's body
-            attempt++;
-            if (internalRetry.backoffMs > 0) {
+            if (backoff > 0) {
               await new Promise<void>((r) => {
-                const t = setTimeout(r, internalRetry!.backoffMs);
+                const t = setTimeout(r, backoff);
                 t.unref?.();
               });
             }
-            log('warn', `inference-gateway: upstream ${up.status} → internal retry ${attempt} on '${active.accountId}'`);
+            log('warn', `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${active.accountId}'`);
             continue;
           }
         }

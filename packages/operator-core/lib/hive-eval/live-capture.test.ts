@@ -124,6 +124,9 @@ describe('behaviorFromSpawnRows (pure)', () => {
         queenWakes: 4,
         queenTurns: 8,
         queenWakesWithTurns: 4,
+        beeCarriedReadTokens: 80_000,
+        beeCacheReadTokens: 90_000,
+        beeWarmInjects: 4,
       },
     });
     expect(withEkg.coordMessages).toBe(12);
@@ -134,6 +137,9 @@ describe('behaviorFromSpawnRows (pure)', () => {
     expect(withEkg.queenWakes).toBe(4);
     expect(withEkg.queenTurns).toBe(8);
     expect(withEkg.queenWakesWithTurns).toBe(4);
+    expect(withEkg.beeCarriedReadTokens).toBe(80_000);
+    expect(withEkg.beeCacheReadTokens).toBe(90_000);
+    expect(withEkg.beeWarmInjects).toBe(4);
 
     const noEkg = behaviorFromSpawnRows(rows, { beeCap: 2, completedFeatureIds: new Set(['w1']) });
     expect(noEkg.coordMessages).toBe(0);
@@ -144,6 +150,11 @@ describe('behaviorFromSpawnRows (pure)', () => {
     expect(noEkg.queenWakes).toBe(0);
     expect(noEkg.queenTurns).toBe(0);
     expect(noEkg.queenWakesWithTurns).toBe(0);
+    expect(noEkg.beeCarriedReadTokens).toBe(0);
+    expect(noEkg.beeCacheReadTokens).toBe(0);
+    expect(noEkg.beeCacheCreationTokens).toBe(0);
+    expect(noEkg.beeInputTokens).toBe(0);
+    expect(noEkg.beeWarmInjects).toBe(0);
   });
 });
 

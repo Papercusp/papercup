@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
-import { readMemberSpawnRows, readMemberRunStats, countHivePlacementsInFlight, readQueenEkg } from './live-ops';
+import { readMemberSpawnRows, readMemberRunStats, countHivePlacementsInFlight, readQueenEkg, readBeeEkg } from './live-ops';
 
 describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
   let sql: postgres.Sql;

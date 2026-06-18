@@ -69,6 +69,11 @@ function goodBehavior(over: Partial<RunBehavior> = {}): RunBehavior {
     queenWakes: N,
     queenTurns: 2 * N, // ~2 turns/wake — the precomputed brief eliminated the survey round-trips
     queenWakesWithTurns: N,
+    beeCarriedReadTokens: 0,
+    beeCacheReadTokens: 0,
+    beeCacheCreationTokens: 0,
+    beeInputTokens: 0,
+    beeWarmInjects: 0, // no bee warm-inject in the base fixture ⇒ the carry sub-score is skipped
     ...over,
   };
 }

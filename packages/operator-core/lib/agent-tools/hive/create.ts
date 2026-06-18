@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { DeploymentConfigSchema } from '../../deployment/config-schema';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { createHiveHarness } from './_create';
@@ -73,7 +73,26 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     // Root-only enforcement (D-002): hives are peers, never nested.
-    const actor = resolveAgentIdentity(ctx);
+    // Caller-DX (watchdog P-007b): an MCP client connecting without a resolvable
+    // session identity (no uiClientId / Mcp-Session-Id / ?client=) made
+    // resolveAgentIdentity THROW an opaque `missing uiClientId`, which surfaced as a
+    // raw tool error. Catch it and return a structured, actionable error in the same
+    // shape as the root-only guard below — the security invariant (attributable
+    // coordination writes) is preserved; only the message is made legible.
+    let actor: AgentIdentity;
+    try {
+      actor = resolveAgentIdentity(ctx);
+    } catch (err) {
+      return text({
+        ok: false,
+        error: 'identity_unresolved',
+        message:
+          'hive:create could not attribute the caller — the MCP client is missing a session identity ' +
+          '(uiClientId / Mcp-Session-Id / ?client=). Re-run install-standalone-mcp.sh to mint a ?client= id ' +
+          '(superuser), or connect with a power-user / principal session. hive:create is operator/user-only.',
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
     if (actor.source === 'fleet-spawn') {
       return text({
         ok: false,

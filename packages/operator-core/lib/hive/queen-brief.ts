@@ -29,7 +29,7 @@ import type { Ranked } from '../queue-ranker';
 import type { PlacementCandidate } from './placement-ranker';
 import type { HiveSurvey } from './survey';
 import type { OpenPlacementSummary } from './placement-watchdog';
-import type { OwnerSteering } from '../owner-steering';
+import { IDLE_ACTIVITY_KINDS, type OwnerSteering } from '../owner-steering';
 
 /** A live bee's load + liveness, from `fleet:assignments`. */
 export interface BriefBee {
@@ -259,6 +259,58 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     }
     if (os.directive && os.directive.trim()) {
       out.push(os.directive.trim());
+    }
+
+    // Throttle + self-governance knobs (queen-steering-panel P-006/P-009). Most are
+    // HARD-enforced at their live seams (cadence clamp, spawn ceiling, idle-action
+    // gates, scale-out gate) — surfaced here so the Queen plans WITHIN the envelope
+    // instead of fighting it (e.g. don't request a tighter wake, don't plan 20 bees
+    // when capped at 5, don't run a gym cycle when gym is gated off). Decomposition
+    // is purely advisory (no seam) — a steer on how aggressively to parallelize.
+    const throttle: string[] = [];
+    if (os.cadenceFloorSec != null) {
+      throttle.push(
+        `- Wake-cadence floor: **≥${os.cadenceFloorSec}s between wakes** — pace yourself; a tighter self-wake is clamped up to this.`,
+      );
+    }
+    if (os.maxBees != null) {
+      throttle.push(
+        `- Concurrency ceiling: **≤${os.maxBees} bees** running at once — plan within it; spawns past it queue, they do not run.`,
+      );
+    }
+    if (os.tierCeilings && Object.keys(os.tierCeilings).length > 0) {
+      throttle.push(
+        `- Model-tier ceilings (this session): ${Object.entries(os.tierCeilings)
+          .map(([role, tier]) => `${role}→${tier}`)
+          .join(', ')} — spawns are pinned/clamped to these.`,
+      );
+    } else if (os.modelTiers && os.modelTiers.length > 0) {
+      throttle.push('- Model-tier menu overridden for this session (spawns resolve against the session menu).');
+    }
+    if (os.idleActivities) {
+      const off = IDLE_ACTIVITY_KINDS.filter((k) => os.idleActivities?.[k] === false);
+      if (off.length > 0) {
+        throttle.push(`- Idle activities OFF: **${off.join(', ')}** — do NOT run these when idle (the seam already skips them).`);
+      }
+    }
+    if (os.autoScaleOut === false) {
+      throttle.push(
+        '- Auto-scale-out DISABLED — no new accounts will be auto-deployed on rate-limit exhaustion; throttle the loop instead of expecting more capacity.',
+      );
+    }
+    if (os.decomposition) {
+      const hint =
+        os.decomposition === 'serial'
+          ? 'one lane at a time — minimize parallel bees'
+          : os.decomposition === 'parallel'
+            ? 'maximize independent parallel lanes'
+            : 'moderate parallelism — balance throughput and coordination';
+      throttle.push(`- Decomposition (advisory): prefer **${os.decomposition}** — ${hint}.`);
+    }
+    if (throttle.length > 0) {
+      out.push('');
+      out.push('**Throttle + self-governance (owner-set — work within this envelope):**');
+      out.push(...throttle);
     }
   }
 

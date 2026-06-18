@@ -35,6 +35,11 @@ apps/operator-mobile/src-tauri/target/
 # operator-docs (Astro+Starlight)
 apps/operator-docs/dist/
 apps/operator-docs/.astro/
+# DOCS_PREVIEW (P-005 projection site): preview build out-dir + the generated
+# lib-API markdown starlight-typedoc writes into the content tree. Both are
+# projected from code on demand — never committed.
+apps/operator-docs/dist-preview/
+apps/operator-docs/src/content/docs/preview/
 
 # papercusp-docs (Astro+Starlight)
 apps/papercusp-docs/dist/

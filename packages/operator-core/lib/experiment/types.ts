@@ -73,6 +73,14 @@ export interface ExperimentRunCtx {
   /** Live gym AbDeps (createGymRunnerPorts) — present only when the gym tier is armed.
    *  Absent ⇒ the gym descriptor stays staged (run refuses). */
   gym?: { abDeps?: import('../gym/ab-runner').AbDeps };
+  /** Live iq-battery deps (the InstanceSubject boot) — present only when the
+   *  whole-instance tier is armed by its own infra/loop. Absent ⇒ the instance
+   *  descriptor stays staged (run refuses) — its apiary loop drives it (D-002/D-017). */
+  instance?: { deps?: import('../iq-battery/beekeeper-runner').BeekeeperDeps };
+  /** Live hive-eval ports (the whole-Hive runner) — present only when the whole-Hive
+   *  tier is armed by its own infra/loop. Absent ⇒ the hive descriptor stays staged
+   *  (run refuses) — its hive-eval loop drives it (D-002/D-017). */
+  hive?: { ports?: import('../hive-eval/run-harness').HiveRunPorts };
   /** Injected for the rate-pause wait (defaults to real setTimeout in the runner). */
   sleep?(ms: number): Promise<void>;
 }

@@ -53,6 +53,9 @@ export interface EfficiencyWeights {
   queenCache: number;
   /** Queen turns-per-wake (Win-2 round-trips). Lower weight — a narrower, prompt-assembly signal. */
   queenRoundTrip: number;
+  /** Bee warm-inject carry share (P-015 — lower=fresher). Scored only when the run warm-injected bees.
+   *  Lower weight — a narrow, per-bee context-hygiene signal (the bee analog of the two queen wins). */
+  beeCarry: number;
 }
 
 /** Relative weights of the speed sub-metrics (criticalPath is primary). */
@@ -82,6 +85,11 @@ export interface HiveScoreThresholds {
    *  brief (B-03) should keep the Queen's turns/wake well under this; a wake that re-fetches the
    *  whole survey family by hand burns many round-trips. */
   queenTurnsPerWakeCeiling: number;
+  /** Bee warm-inject carry-share at which the carry sub-score is 0 (carry share 0 ⇒ 10). 1.0 is the
+   *  physical max (the whole bee prompt is resumed-transcript carry — the long-lived-bee anti-pattern
+   *  D-011 measured at ~0.97). A fresh-context bee carries ~0 ⇒ ~10; the before/after fork win is the
+   *  jump from a near-0 sub-score to a high one. */
+  beeCarryShareCeiling: number;
   /** Critical-path ratio at which the speed sub-score is 0 (1.0 ⇒ 10; the D-004 discriminator). */
   criticalPathRatioCeiling: number;
   /** Time-to-first-placement (ms) considered maximally slow-to-start → 0. */
@@ -113,11 +121,13 @@ export interface HiveScoreRubric {
  */
 export const DEFAULT_HIVE_SCORE_RUBRIC_V1: Readonly<HiveScoreRubric> = Object.freeze({
   // v2 (2026-06-14): B-06 added the two queen per-wake efficiency sub-metrics (queenCache,
-  // queenRoundTrip). The constant name is kept (its many importers) — the version string is the
-  // human-legible cache-basis key; the rubric hash changes regardless, so old scores never mix.
-  version: 'hive-score-v2',
+  // queenRoundTrip). v3 (2026-06-15): P-015 added the bee warm-inject carry sub-metric (beeCarry) —
+  // the bee analog of the queen wins. The constant name is kept (its many importers) — the version
+  // string is the human-legible cache-basis key; the rubric hash changes regardless, so old scores
+  // never mix.
+  version: 'hive-score-v3',
   axisWeights: { efficiency: 1, speed: 1 },
-  efficiencyWeights: { parallelism: 1, communication: 1, rework: 1, cost: 1, queenCache: 0.5, queenRoundTrip: 0.5 },
+  efficiencyWeights: { parallelism: 1, communication: 1, rework: 1, cost: 1, queenCache: 0.5, queenRoundTrip: 0.5, beeCarry: 0.5 },
   speedWeights: { criticalPath: 3, firstPlacement: 1, stuck: 1 },
   thresholds: {
     communicationOverheadCeiling: 12, // ≥12 coord msgs per completed item ⇒ no comms credit
@@ -126,6 +136,7 @@ export const DEFAULT_HIVE_SCORE_RUBRIC_V1: Readonly<HiveScoreRubric> = Object.fr
     reworkRateCeiling: 2, // ≥2 rework events/item ⇒ no rework credit
     costPerItemUsdCeiling: 5, // ≥$5/item ⇒ no cost credit
     queenTurnsPerWakeCeiling: 12, // ≥12 turns/wake ⇒ no round-trip credit (survey re-fetched by hand)
+    beeCarryShareCeiling: 1, // carry = 100% of bee prompt ⇒ no carry credit (the long-bee anti-pattern)
     criticalPathRatioCeiling: 3, // ≥3× the ideal makespan ⇒ no speed credit (badly serialized)
     timeToFirstPlacementMsCeiling: 120_000, // ≥2 min to first placement ⇒ no start-latency credit
     maxStuckMsCeiling: 300_000, // ≥5 min stuck-while-ready ⇒ no stuck credit
@@ -221,6 +232,7 @@ export function hiveScoreRubricHash(r: HiveScoreRubric): string {
       cost: r.efficiencyWeights.cost,
       queenCache: r.efficiencyWeights.queenCache,
       queenRoundTrip: r.efficiencyWeights.queenRoundTrip,
+      beeCarry: r.efficiencyWeights.beeCarry,
     },
     speedWeights: {
       criticalPath: r.speedWeights.criticalPath,
@@ -234,6 +246,7 @@ export function hiveScoreRubricHash(r: HiveScoreRubric): string {
       reworkRateCeiling: t.reworkRateCeiling,
       costPerItemUsdCeiling: t.costPerItemUsdCeiling,
       queenTurnsPerWakeCeiling: t.queenTurnsPerWakeCeiling,
+      beeCarryShareCeiling: t.beeCarryShareCeiling,
       criticalPathRatioCeiling: t.criticalPathRatioCeiling,
       timeToFirstPlacementMsCeiling: t.timeToFirstPlacementMsCeiling,
       maxStuckMsCeiling: t.maxStuckMsCeiling,
@@ -342,12 +355,16 @@ function scoreEfficiency(eff: EfficiencyMetrics, r: HiveScoreRubric): HiveAxisSc
     r.efficiencyWeights.cost,
   ];
 
+  // The D-003 rework credit, shared by the queen AND bee per-wake wins below: each is discounted by
+  // it because a cache/round-trip/carry "win" bought by reusing or dropping STALE working state
+  // (not re-deriving / preserving the current frontier) surfaces as re-placements/bounces.
+  const reworkCredit = pairCredit(eff.reworkRate, t.reworkRateCeiling);
+
   // Queen per-wake efficiency (B-06) — scored ONLY when the run carried Queen-wake samples, so a run
   // without them keeps the original four-component axis (no false 0 for a cache ratio never earned).
   // Both queen wins are D-003-paired with rework: a cache/round-trip "win" bought by reusing STALE
   // state (not re-deriving the current frontier) surfaces as re-placements/bounces, which zeros it.
   if (eff.queenWakes > 0) {
-    const reworkCredit = pairCredit(eff.reworkRate, t.reworkRateCeiling);
     // Win-1: frozen-prefix cache-hit ratio (higher = better), discounted by rework.
     components.push({
       name: 'queenCache',
@@ -366,6 +383,22 @@ function scoreEfficiency(eff: EfficiencyMetrics, r: HiveScoreRubric): HiveAxisSc
       });
       weights.push(r.efficiencyWeights.queenRoundTrip);
     }
+  }
+
+  // Bee warm-inject carry efficiency (P-015 — the bee analog of the queen per-wake wins) — scored
+  // ONLY when the run actually warm-injected bees (beeWarmInjects > 0), so a run with no warm-inject
+  // carry keeps its prior axis (no false 0 for carry it never incurred). LOWER carry share is better:
+  // the carry is dead prior-task transcript re-read every turn (D-011); the Phase-1 fresh-context
+  // fork drops it → this sub-score RISES, making the before/after win VISIBLE (D-006). D-003-paired
+  // with rework — a carry drop bought by dropping live working state mid-task shows up as redo.
+  if (eff.beeWarmInjects > 0) {
+    components.push({
+      name: 'beeCarry',
+      raw: eff.beeCarryShare,
+      score: scoreLowerBetter(eff.beeCarryShare, t.beeCarryShareCeiling) * reworkCredit,
+      note: `×${reworkCredit.toFixed(2)} rework credit (bee warm-inject carry share, lower=fresher)`,
+    });
+    weights.push(r.efficiencyWeights.beeCarry);
   }
 
   return {

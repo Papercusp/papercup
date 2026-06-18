@@ -2795,10 +2795,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const ws = activeWorkspaceId();
       const hives = await listHives(ws).catch(() => []);
+      // Throttle defaults (queen-steering-panel P-006, D-006): the SYSTEM defaults
+      // the 👑-tab shows beside each session override for its default-vs-override
+      // badge — so the UI never hardcodes them. Same numbers the live seams clamp
+      // against (cadence = wake floor, maxBees = the spawn-concurrency ceiling).
+      // Fail-soft: a read failure degrades each default to null (UI shows "—").
+      const throttleDefaults = await (async () => {
+        try {
+          const [{ hiveWakeFloorSec }, { getCachedRateLimitConfig }, { placementConfig }] = await Promise.all([
+            import('../hive/wake'),
+            import('../rate-limit-config'),
+            import('../hive/placement-watchdog'),
+          ]);
+          return {
+            cadenceFloorSec: hiveWakeFloorSec(),
+            maxBees: getCachedRateLimitConfig().maxSimultaneousAgents,
+            // P-009 read-through (su-4d71b): the live cursed-item breaker threshold
+            // the autonomy-surfacing UI shows read-only (PAPERCUSP_HIVE_PLACEMENT_BREAKER).
+            breakerThreshold: placementConfig().breakerThreshold,
+          };
+        } catch {
+          return { cadenceFloorSec: null, maxBees: null, breakerThreshold: null };
+        }
+      })();
       return Promise.all(
         hives.map(async (hv) => ({
           slug: hv.slug,
           ...(await getOwnerSteering(ws, hv.slug).catch(() => DEFAULT_OWNER_STEERING)),
+          throttleDefaults,
         })),
       );
     },

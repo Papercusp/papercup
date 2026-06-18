@@ -1,10 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { shouldPushNeedsHuman, itemImportance, flipStatusInBody } from './set-status';
+import { shouldPushNeedsHuman, itemImportance, flipStatusInBody, truncateInlineNote } from './set-status';
 
 // P-020 (planning-attention-importance): plans:set-status pushes a
 // notification when an item transitions INTO needs-human at importance
 // >= high. These cover the two pure pieces of that gate; the push itself
 // (notifyWorkspace) is the proven mobile-delivery path exercised elsewhere.
+
+// Caller-DX (watchdog P-006): an over-long inline note is truncated-with-marker,
+// not rejected — the agent never bounces; the long form belongs in `rationale`.
+describe('truncateInlineNote (P-006)', () => {
+  it('passes a short note through untouched', () => {
+    expect(truncateInlineNote('short note')).toEqual({ note: 'short note', truncated: false });
+  });
+  it('passes undefined through (no note)', () => {
+    expect(truncateInlineNote(undefined)).toEqual({ note: undefined, truncated: false });
+  });
+  it('keeps a note exactly at the 1000-char cap', () => {
+    const exact = 'x'.repeat(1000);
+    expect(truncateInlineNote(exact)).toEqual({ note: exact, truncated: false });
+  });
+  it('truncates an over-cap note to 1000 chars with an ellipsis marker', () => {
+    const out = truncateInlineNote('y'.repeat(1500));
+    expect(out.truncated).toBe(true);
+    expect(out.note).toHaveLength(1000);
+    expect(out.note!.endsWith('…')).toBe(true);
+    expect(out.note!.slice(0, 999)).toBe('y'.repeat(999));
+  });
+});
 
 describe('shouldPushNeedsHuman', () => {
   it('fires on a fresh needs-human flip at urgent/high', () => {

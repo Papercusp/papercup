@@ -589,90 +589,26 @@ export async function collectSmokeFailSignals(sql: Sql, workspaceId: string, opt
  *     a sustained OpenAI embed-429 used to fall through to `structural` and file
  *     as a deterministic tool bug, masked under an unrelated scoping EI.)
  */
-export type ToolErrorClass = 'structural' | 'transient' | 'caller' | 'rate-limit';
-
-/**
- * Pure: classify one tool failure. Prefers the first-class dispatcher `error_code`
- * (P-007); for LEGACY rows written before that landed (error_code NULL) it falls
- * back to status + an error_message pattern. Keep in sync with the SQL CASE in
- * `collectToolErrorSignals` — this fn is the documented source of truth.
- */
-/**
- * Shared-infra failures that recur identically in SHAPE but are transient LOAD, not a tool
- * bug — chiefly PG connection-exhaustion (max_connections hit / superuser-reserved slots) and
- * brief DB unavailability. These surface (often as `handler_error`) across EVERY PG-backed
- * tool at once during a wedge, so the low-bar structural signal mis-files each tool as broken
- * (the 2026-06-17 PG-wedge collateral: EI-1331/1332/1323/1337/1342/1344/1333). Treating them as
- * `transient` defers to the volume-gated bar (n≥15), so a brief wedge is ignored while a
- * SUSTAINED infra problem still fires. Pattern-only (no false-positive risk on real tool bugs:
- * a tool bug doesn't say "too many clients"). MIRROR of the SQL `~*` clause in
- * `collectToolErrorSignals`. Runbook: agent-insights/pg-connection-exhaustion-fleet-wedge.
- */
-export const INFRA_TRANSIENT_ERROR_RE =
-  /too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|connection terminated|could not connect to server/i;
-
-/**
- * An EXTERNAL provider rate-limit / quota error (watchdog-embed-resilience-and-dedup
- * -2026-06-17 P-002). A sustained OpenAI embedding TPM 429 ("Request too large …
- * tokens per min (TPM)", "Rate limit reached", surfaced as `openai_embed_failed_429`)
- * is CAPACITY, not a code bug — it used to fall through to `structural` and file as
- * a deterministic tool bug (then get masked under an unrelated open structural EI).
- * Pattern-only, like INFRA_TRANSIENT_ERROR_RE. MIRROR of the SQL `~*` clause in
- * `collectToolErrorSignals`. Keep the two in sync.
- */
-export const EXTERNAL_RATE_LIMIT_ERROR_RE =
-  /openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests/i;
-
-/**
- * Caller-side ARG errors that surface with a NON-`invalid_args` code (usually
- * `handler_error`/`harness_required`): the caller omitted or named an unregistered
- * harness. These are DX/caller problems (kind=change), NOT tool bugs — without this
- * they fall through to `structural` and flood the auto-implement bug lane with
- * un-fixable "the caller passed the wrong harness arg" EIs
- * (watchdog-embed-resilience-and-dedup-2026-06-17 P-007). MIRROR of the SQL clause.
- * NB: a missing WORKSPACE-scope ("requires a workspace-scoped call") is deliberately
- * NOT here — the collector design treats a workspace-scoping gap as `structural` (a
- * wiring gap worth catching at the low bar), and P-003's fingerprint already separates
- * it from the embed-429 it used to mask.
- */
-export const CALLER_SCOPE_ERROR_RE =
-  /No harness specified|harness_required|not registered in (any workspace|harness_shared)/i;
-
-export function classifyToolError(
-  errorCode: string | null | undefined,
-  status: string,
-  errorMessage: string | null | undefined,
-): ToolErrorClass {
-  const m = errorMessage ?? '';
-  if (errorCode) {
-    if (errorCode === 'timeout') return 'transient';
-    // A timeout that surfaced as handler_error ("exceeded timeout … handler returned but
-    // signal had aborted" — interactive chat:ask_choice, slow plans:attention) is still a
-    // timeout, not a structural bug (P-009). The message form previously ran only in the
-    // no-errorCode branch, so these mis-filed as structural.
-    if (/exceeded timeout|timed?\s*out/i.test(m)) return 'transient';
-    if (
-      errorCode === 'invalid_args' || errorCode === 'invalid_input' ||
-      errorCode === 'role_not_allowed' || errorCode === 'missing_capability' ||
-      errorCode === 'quota_exceeded' || errorCode === 'harness_required'
-    ) return 'caller';
-    // Caller-side scope/arg error carrying a non-invalid_args code (P-007, mirrors SQL).
-    if (CALLER_SCOPE_ERROR_RE.test(m)) return 'caller';
-    // EXTERNAL provider rate-limit (OpenAI embed TPM 429) — capacity, not a code bug.
-    // Checked before the structural fallback so a sustained embed-429 is not mis-filed
-    // as a deterministic tool defect (mirrors SQL).
-    if (EXTERNAL_RATE_LIMIT_ERROR_RE.test(m)) return 'rate-limit';
-    // INFRA-transient takes precedence over the structural fallback: a PG max_connections /
-    // DB-unavailable failure is shared-infra load, not this tool's bug (mirrors SQL).
-    if (INFRA_TRANSIENT_ERROR_RE.test(m)) return 'transient';
-    return 'structural'; // unauthorized / handler_error / harness_required / any other deterministic code
-  }
-  if (status === 'timeout' || /exceeded timeout|timed?\s*out/i.test(m)) return 'transient';
-  if (status === 'role-not-allowed' || /^invalid_args:/i.test(m) || CALLER_SCOPE_ERROR_RE.test(m)) return 'caller';
-  if (EXTERNAL_RATE_LIMIT_ERROR_RE.test(m)) return 'rate-limit'; // external provider rate-limit / quota
-  if (INFRA_TRANSIENT_ERROR_RE.test(m)) return 'transient'; // shared-infra exhaustion, not a tool bug
-  return 'structural'; // unclassified error → structural; the per-class FIRE bar gates noise
-}
+// The ToolErrorClass type, the classifier (TS fn + the SQL CASE generator), the
+// error-shape patterns, and the fingerprint helpers all moved to
+// ./tool-error-classifier (watchdog-and-exposed-systems-improvement-2026-06-18
+// P-011) so the TS fn and the SQL CASE are GENERATED from one ordered rule table
+// and can no longer drift. Re-exported here for the existing import sites + tests.
+export {
+  classifyToolError,
+  toolErrorFingerprint,
+  toolErrorSignalKey,
+  toolErrorClassSqlCase,
+  toolErrorFingerprintSqlCase,
+  FINGERPRINTED_TOOL_ERROR_CLASSES,
+  TOOL_ERROR_RULES,
+  TIMEOUT_MESSAGE_PATTERN,
+  CALLER_MESSAGE_PATTERN,
+  RATE_LIMIT_MESSAGE_PATTERN,
+  INFRA_TRANSIENT_MESSAGE_PATTERN,
+  type ToolErrorClass,
+  type ToolErrorRule,
+} from './tool-error-classifier';
 
 interface ClassifiedToolErrorRow {
   tool_name: string;

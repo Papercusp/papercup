@@ -56,6 +56,11 @@ function fakeExtractor(outcomeFor: () => OutcomeMetrics): HiveEvalScoreExtractor
           queenWakes: n,
           queenTurns: 2 * n,
           queenWakesWithTurns: n,
+          beeCarriedReadTokens: 0,
+          beeCacheReadTokens: 0,
+          beeCacheCreationTokens: 0,
+          beeInputTokens: 0,
+          beeWarmInjects: 0, // no bee warm-inject in this fixture ⇒ the carry sub-score is skipped
         }),
         speed: computeSpeedMetrics(scenario, {
           wallClockMs: ideal, // ratio ~1.0 — optimally parallel

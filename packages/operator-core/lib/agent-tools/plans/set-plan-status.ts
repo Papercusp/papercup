@@ -27,18 +27,39 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 
-/** Settable plan-level lifecycle targets. `active` is intentionally
- *  excluded — it is the legacy synonym for `ready` (bucketOf treats it
- *  as approved); new transitions write `ready`. */
+/** Canonical settable plan-level lifecycle targets — what we WRITE. */
 const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
 /** Statuses a caller may guard on via `expectedCurrent` — the full set,
  *  since existing plans can still carry the legacy `active`. */
 const GUARDABLE = ['draft', 'ready', 'active', 'shipped', 'superseded'] as const;
+/** Caller-DX (watchdog P-006): aliases agents reach for, mapped to the
+ *  canonical settable status instead of being zod-rejected. `active` is the
+ *  legacy synonym for `ready` (bucketOf treats it as approved). `done` is the
+ *  ITEM-status word — at PLAN level a "done" plan is `shipped`. Accept + map
+ *  (echo `mappedFrom`) so the confusing reject (vs plans:set-status) stops
+ *  recurring. */
+const STATUS_ALIASES: Record<string, (typeof SETTABLE)[number]> = {
+  active: 'ready',
+  done: 'shipped',
+};
+/** Accepted on the wire = canonical + the mapped aliases. */
+const ACCEPTED = ['draft', 'ready', 'shipped', 'superseded', 'active', 'done'] as const;
+
+/** Pure (watchdog P-006): map an accepted status to its canonical settable form,
+ *  reporting the alias that was mapped (for the `mappedFrom` echo). */
+export function normalizePlanStatus(status: string): { status: string; mappedFrom?: string } {
+  const mapped = STATUS_ALIASES[status];
+  return mapped ? { status: mapped, mappedFrom: status } : { status };
+}
 
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
-  status: z.enum(SETTABLE).describe('Target plan-level status to flip the frontmatter to.'),
+  status: z
+    .enum(ACCEPTED)
+    .describe(
+      "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped (the item-status words agents reach for). For a P-NNN item's status use plans:set-status instead.",
+    ),
   expectedCurrent: z
     .enum(GUARDABLE)
     .optional()
@@ -112,6 +133,8 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
+    // Caller-DX (P-006): map a friendly alias (active→ready, done→shipped) to canonical.
+    const { status, mappedFrom } = normalizePlanStatus(args.status);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,
@@ -122,7 +145,7 @@ export default defineTool({
       ctx as never,
       {
         slug: args.slug,
-        intent: `plans:set-plan-status → ${args.status}`,
+        intent: `plans:set-plan-status → ${status}`,
         ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
@@ -130,7 +153,7 @@ export default defineTool({
         if (current === null) {
           return { newBody: null, value: { ok: false, code: 'not_found' } };
         }
-        const flip = flipPlanFrontmatterStatus(current, args.status, args.expectedCurrent);
+        const flip = flipPlanFrontmatterStatus(current, status, args.expectedCurrent);
         if (flip.code === 'no_status_line') {
           return { newBody: null, value: { ok: false, code: 'no_status_line' } };
         }
@@ -144,12 +167,12 @@ export default defineTool({
           // Already at the target — success, nothing written.
           return {
             newBody: null,
-            value: { ok: true, oldStatus: flip.oldStatus, newStatus: args.status, changed: false },
+            value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: false },
           };
         }
         return {
           newBody: bumpUpdatedDate(flip.newBody),
-          value: { ok: true, oldStatus: flip.oldStatus, newStatus: args.status, changed: true },
+          value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: true },
         };
       },
     );
@@ -181,7 +204,7 @@ export default defineTool({
         planSlug: args.slug,
         event: 'status_changed',
         before: result.value.oldStatus,
-        after: args.status,
+        after: status,
       });
     }
 
@@ -195,7 +218,7 @@ export default defineTool({
     // it to `changed` left that violating row uncleared. Idempotent + best-
     // effort: clearStartedForTerminalPlan only touches an active (started/
     // paused) row, and plans:list self-heals on read if this misses.
-    if (result.value.ok && isTerminalPlanStatus(args.status)) {
+    if (result.value.ok && isTerminalPlanStatus(status)) {
       try {
         await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
       } catch {

@@ -41,6 +41,7 @@ import { collectGroundTruth, runBaselineSuite, type GroundTruthCtx } from './gro
 import { liveGroundTruthPortsFromSql } from './ground-truth-live';
 import { SEED_APP_DIR } from './scenarios';
 import { queenWakeEfficiency, queenWakeSampleRows, type QueenWakeEfficiency } from '../hive/queen-wake-efficiency';
+import { beeWakeEfficiency, beeWakeSampleRows, type BeeWakeEfficiency } from '../hive/bee-wake-efficiency';
 import type { HiveScenario } from './scenario';
 import type { LiveHiveOps, LiveRunStats } from './live-ports';
 import { packLiveRunCapture, type BehaviorEkgFields, type LiveRunCapture, type SpawnRunRow } from './live-capture';
@@ -129,6 +130,44 @@ export async function readQueenEkg(sql: postgres.Sql, input: { workspaceId: stri
   return queenEkgFromEfficiency(eff);
 }
 
+/** The bee subset of {@link BehaviorEkgFields} — the eval RunBehavior's per-bee warm-inject carry fields. */
+type BeeEkg = Pick<
+  BehaviorEkgFields,
+  'beeCarriedReadTokens' | 'beeCacheReadTokens' | 'beeCacheCreationTokens' | 'beeInputTokens' | 'beeWarmInjects'
+>;
+
+/** Map a {@link BeeWakeEfficiency} aggregate onto the eval's bee EKG fields. Pure. */
+export function beeEkgFromEfficiency(eff: BeeWakeEfficiency): BeeEkg {
+  return {
+    beeCarriedReadTokens: eff.totalCarriedReadTokens,
+    beeCacheReadTokens: eff.totalCacheReadTokens,
+    beeCacheCreationTokens: eff.totalCacheCreationTokens,
+    beeInputTokens: eff.totalInputTokens,
+    // Warm-injects = non-first wakes across all bee sessions = totalWakes − sessions (each session's
+    // FIRST wake is the spawn, not a warm-inject). This is the gate (>0) that decides whether the
+    // bee carry sub-score is scored at all (scoring.ts), so a run with no warm-inject carry isn't
+    // scored on a 0 it never earned.
+    beeWarmInjects: eff.totalWakes - eff.sessions,
+  };
+}
+
+/**
+ * Read the per-bee warm-inject carry efficiency for a throwaway run (P-015): the `role='bee'`
+ * agent_usage_samples grouped by session_id, scoped to the MEMBER clone slug (where the bees work —
+ * a bee's sample carries `harness_slug = harnessSlugFromProjectDir(projectDir)` = the member), so
+ * attribution is exact (the slug is unique per run). Aggregated by {@link beeWakeEfficiency} over the
+ * passed `sql` and mapped to the eval's bee EKG fields. Exported so the integration test exercises
+ * the real SQL.
+ */
+export async function readBeeEkg(sql: postgres.Sql, input: { workspaceId: string; member: string }): Promise<BeeEkg> {
+  const eff = await beeWakeEfficiency(input.workspaceId, {
+    harnessSlug: input.member,
+    limit: 500, // a whole run's bee wakes across the member-clone sessions (above the default 200)
+    deps: { fetchSamples: (q) => beeWakeSampleRows(sql, q) },
+  });
+  return beeEkgFromEfficiency(eff);
+}
+
 export interface CaptureRunDataInput {
   member: string;
   /** The Queen-seat hive home slug — scopes the per-wake Queen efficiency read (unique per run). */
@@ -164,10 +203,15 @@ export async function captureRunData(
 
   const spawnRows = await readMemberSpawnRows(sql, member, workspaceId);
 
-  // Per-wake Queen efficiency for THIS run (B-06): role='queen' usage samples scoped to the unique
-  // home slug. A non-LLM read of already-persisted rows; fail-soft (a read error leaves ekg absent →
-  // the eval's queen fields default to 0, the same conservative floor as the other EKG fields).
-  const ekg: BehaviorEkgFields | undefined = await readQueenEkg(sql, { workspaceId, hiveHome }).catch(() => undefined);
+  // Per-wake Queen efficiency (B-06, scoped to the unique home slug, role='queen') + per-bee
+  // warm-inject carry (P-015, scoped to the member clone, role='bee' grouped by session_id) for THIS
+  // run. Both are non-LLM reads of already-persisted rows; each fail-soft (a read error leaves its
+  // half absent → those fields default to 0, the same conservative floor as the other EKG fields).
+  const [queenEkg, beeEkg] = await Promise.all([
+    readQueenEkg(sql, { workspaceId, hiveHome }).catch(() => undefined),
+    readBeeEkg(sql, { workspaceId, member }).catch(() => undefined),
+  ]);
+  const ekg: BehaviorEkgFields | undefined = queenEkg || beeEkg ? { ...queenEkg, ...beeEkg } : undefined;
 
   const capture: LiveRunCapture = { acceptance, groundTruth, spawnRows, ...(ekg ? { ekg } : {}) };
 

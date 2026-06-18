@@ -19,6 +19,10 @@ import {
   type DispatchStats,
   type ImprovementDispatchRow,
 } from '../../harness/improvements/dispatch-ledger';
+import {
+  readOpenKeylessIssues,
+  summarizeKeylessBacklog,
+} from '../../harness/improvements/keyless-ei-policy';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
@@ -54,6 +58,18 @@ export default defineTool({
     } catch (e) {
       console.warn('[improvements:watchdog-status] dispatch ledger read failed:', e instanceof Error ? e.message : e);
     }
+    // P-014: split the backlog headline into managed (keyed) vs UN-MANAGED (keyless).
+    // Keyless EIs (no payload.watchdogKey) never dedup/age/auto-close, so they accrete
+    // and dominate the headline; surfacing the rollup here makes the un-managed pile
+    // visible (drain it via improvements:keyless-digest). Best-effort — fail-soft like
+    // the dispatch read above, never 500s the status surface.
+    let keyless: ReturnType<typeof summarizeKeylessBacklog> | null = null;
+    try {
+      const k = await readOpenKeylessIssues(500);
+      keyless = summarizeKeylessBacklog(k.rows, k.total, Date.now());
+    } catch (e) {
+      console.warn('[improvements:watchdog-status] keyless backlog read failed:', e instanceof Error ? e.message : e);
+    }
     const summary = {
       workspaceId,
       ticks: ticks.length,
@@ -70,6 +86,8 @@ export default defineTool({
       // (P-006/P-008) + the per-class repeated-tool-error spread, so a classification
       // regression or noise spike is visible at a glance, not buried in the raw ticks.
       rollup: rollupWatchdogTicks(ticks),
+      // P-014: the un-managed (keyless) backlog headline split — null if the read failed.
+      keyless,
     };
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, summary, dispatches, ticks }) }] };
   },

@@ -184,6 +184,9 @@ export function computeEfficiencyMetrics(b: RunBehavior): EfficiencyMetrics {
     tokensPerWake,
     avgQueenTurns,
     queenWakes: b.queenWakes,
+    beeCarryShare,
+    beeAvgCarriedPerWarmInject,
+    beeWarmInjects: b.beeWarmInjects,
     pairings: {
       lowCommunication: { metric: communicationOverhead, pairedFailure: collisionRate, pairName: 'collisionRate' },
       highParallelism: { metric: parallelismUtilization, pairedFailure: uselessBeeRate, pairName: 'uselessBeeRate' },
@@ -193,6 +196,9 @@ export function computeEfficiencyMetrics(b: RunBehavior): EfficiencyMetrics {
       // Same staleness failure mode for the round-trip win: fewer turns by SKIPPING work, not by
       // being briefed, shows up as rework. `metric` 0 when no wake reported a turn count.
       roundTrip: { metric: avgQueenTurns ?? 0, pairedFailure: reworkRate, pairName: 'reworkRate' },
+      // Low bee carry is only credited if rework stays low — a carry drop bought by dropping live
+      // working state mid-task (not preserving it across a clean re-spawn) surfaces as redo (D-003).
+      beeCarry: { metric: beeCarryShare, pairedFailure: reworkRate, pairName: 'reworkRate' },
     },
   };
 }

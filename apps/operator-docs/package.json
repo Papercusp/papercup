@@ -7,7 +7,9 @@
     "dev": "astro dev",
     "start": "astro dev",
     "build": "astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh",
+    "build:preview": "DOCS_PREVIEW=1 astro build",
     "preview": "astro preview",
+    "serve:preview": "DOCS_PREVIEW=1 astro preview",
     "astro": "astro",
     "check": "astro check",
     "test": "astro check"

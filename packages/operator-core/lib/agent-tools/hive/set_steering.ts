@@ -27,7 +27,7 @@ export default defineTool({
   name: 'hive:set-steering',
   profile: 'engineer',
   description:
-    'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` (the plans she may pick up NOW — eligibility, DISTINCT from a plan\'s lifecycle status), `eligibleHives` (the placement SCOPE — hives/harnesses she may place into, → survey allowedHarnesses), `pauseNewWork` / `pausedUntil` (pause starting new work, immediately or until an epoch-ms timestamp). Writes the owner-steering:* hive_settings, refreshes the panel (sync), AND wakes the Queen so she honours the change immediately. `clear:true` wipes ALL steering back to the default (no restriction); omitted fields are left unchanged (a null/[] value clears that one field).',
+    'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` (the plans she may pick up NOW — eligibility, DISTINCT from a plan\'s lifecycle status), `eligibleHives` (the placement SCOPE — hives/harnesses she may place into, → survey allowedHarnesses), `pauseNewWork` / `pausedUntil` (pause starting new work, immediately or until an epoch-ms timestamp), and the THROTTLE knobs (P-006) `cadenceFloorSec` (min seconds between Queen wakes), `maxBees` (concurrency ceiling), `idleActivities` (gate gym/Scout/curation), `autoScaleOut` (disable account-pool auto-scale-out), `modelTiers`/`tierCeilings` (session model-tier override). Each throttle knob is a SESSION override of a live operator seam (effective floor/ceiling vs. the system default). Writes the owner-steering:* hive_settings, refreshes the panel (sync), AND wakes the Queen so she honours the change immediately. `clear:true` wipes ALL steering back to the default (no restriction); omitted fields are left unchanged (a null/[] value clears that one field).',
   guidance: {
     when: 'Steering the Queen from the owner surface — focus her on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Queen tab is the UI for this.',
     notWhen:
@@ -77,7 +77,38 @@ export default defineTool({
       .record(z.string().max(60))
       .nullable()
       .optional()
-      .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it.'),
+      .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it. e.g. {"bee":"opus:xhigh"} pins every bee.'),
+    cadenceFloorSec: z
+      .number()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .describe('THROTTLE (P-006): min seconds between Queen wakes — effective floor = MAX(system 60s, this). Raises the interval to slow the loop. null / 0 clears it.'),
+    maxBees: z
+      .number()
+      .int()
+      .nullable()
+      .optional()
+      .describe('THROTTLE (P-006): concurrency ceiling — max concurrently-running agents/bees. Effective = MIN(system ceiling, this). null / <1 clears it.'),
+    idleActivities: z
+      .object({
+        gym: z.boolean().optional(),
+        scout: z.boolean().optional(),
+        curation: z.boolean().optional(),
+      })
+      .nullable()
+      .optional()
+      .describe('THROTTLE (P-006): gate idle background activities. Each defaults ON; false suppresses that activity (gym cycles / Scout grading / doc-curation). null / {} clears it.'),
+    autoScaleOut: z
+      .boolean()
+      .nullable()
+      .optional()
+      .describe('THROTTLE (P-006): false disables automatic account-pool scale-out on sustained rate-limit exhaustion (manual accounts:scale_out still works). null clears it (⇒ default enabled).'),
+    decomposition: z
+      .enum(['serial', 'balanced', 'parallel'])
+      .nullable()
+      .optional()
+      .describe('P-009 (ADVISORY): decomposition-aggressiveness hint the Queen reads in her wake brief — serial ↔ balanced ↔ max-parallel lanes. null clears it (Queen\'s own judgement).'),
     pauseNewWork: z
       .boolean()
       .optional()
@@ -107,6 +138,11 @@ export default defineTool({
     if (args.eligibleHives !== undefined) patch.eligibleHives = args.eligibleHives;
     if (args.modelTiers !== undefined) patch.modelTiers = args.modelTiers;
     if (args.tierCeilings !== undefined) patch.tierCeilings = args.tierCeilings;
+    if (args.cadenceFloorSec !== undefined) patch.cadenceFloorSec = args.cadenceFloorSec;
+    if (args.maxBees !== undefined) patch.maxBees = args.maxBees;
+    if (args.idleActivities !== undefined) patch.idleActivities = args.idleActivities;
+    if (args.autoScaleOut !== undefined) patch.autoScaleOut = args.autoScaleOut;
+    if (args.decomposition !== undefined) patch.decomposition = args.decomposition;
     if (args.pauseNewWork !== undefined) patch.pauseNewWork = args.pauseNewWork;
     if (args.pausedUntil !== undefined) patch.pausedUntil = args.pausedUntil;
     if (args.clear !== undefined) patch.clear = args.clear;
