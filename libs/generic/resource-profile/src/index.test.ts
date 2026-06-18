@@ -116,9 +116,22 @@ describe('deriveResourceProfile — server (128 cores, native PG)', () => {
     expect(p.embedBatchSize).toBe(128);
   });
 
-  it('scales httpWorkers to cores-1 capped at 32, + 1 background primary (P3-2)', () => {
-    expect(p.httpWorkers).toBe(32); // clamp(128 - 1, 1, 32)
-    expect(p.processCount).toBe(33); // 32 request workers + 1 background primary
+  it('recommends clustering but BOUNDS httpWorkers by the PG connection budget (P3-2)', () => {
+    // Clustering is recommended on a server, but NOT the raw cores-1 (=127, cap 32):
+    // the connection budget caps it lower so the clustered per-process pools stay
+    // healthy and can't over-subscribe max_connections (the 2026-06-17 exhaustion).
+    expect(p.httpWorkers).toBeGreaterThan(1); // clustering on
+    expect(p.httpWorkers).toBeLessThan(32); // conn-budget bound it below the core cap
+    expect(p.processCount).toBe(p.httpWorkers + 1); // workers + background primary
+    // The invariant that makes enabling the cluster safe: each of processCount
+    // processes keeps a HEALTHY pool (>= 8) under the host's max_connections.
+    const perPool = boundedOrgPoolMax({
+      desired: p.pgPoolMax,
+      maxConnections: p.database.maxConnections,
+      superuserReserved: p.database.superuserReservedConnections,
+      expectedProcesses: p.processCount,
+    });
+    expect(perPool).toBeGreaterThanOrEqual(8);
   });
 
   it('recommends splitting background work to its own process', () => {

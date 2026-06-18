@@ -101,9 +101,17 @@ function startRequestServers(): void {
   // fleet shed effective agent concurrency (AIMD multiplicative-decrease), ramping
   // back as the loop clears. Bounded under the user's cap + self-recovering.
   // Gated by LOOP_PRESSURE_GOVERNOR (default ON) — the operator's kill-switch.
-  if (getFlag(FLAGS.LOOP_PRESSURE_GOVERNOR)) {
-    startLoopPressureGovernor();
-  }
+  // getFlag is async (env override + PG-stored /admin/features override + default);
+  // start the governor when it resolves true. Fire-and-forget — a few ms of start
+  // latency at boot is harmless. Fail-OPEN to the default-on behavior if the flag
+  // read fails (e.g. PG not ready yet): the governor is safe always-on (bounded
+  // under the user's cap, self-recovering), so a read error must not silently
+  // disable it.
+  void getFlag(FLAGS.LOOP_PRESSURE_GOVERNOR, 'operator-host')
+    .then((on) => {
+      if (on) startLoopPressureGovernor();
+    })
+    .catch(() => startLoopPressureGovernor());
 
   const server = serve({ fetch: handler, port, hostname }, (info) => {
     console.log(`[hono-host] listening on http://${hostname}:${info.port} (pid=${process.pid})`);

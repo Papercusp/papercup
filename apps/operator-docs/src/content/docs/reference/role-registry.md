@@ -12,7 +12,7 @@ sidebar:
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/blueprints/<id>/prompts/<role>.md` (the `base` library is the universal one). Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (50 built-in roles) + `libs/papercusp/packages/harness/blueprints/*/prompts/*.md` (51 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (50 built-in roles) + `libs/papercusp/packages/harness/blueprints/*/prompts/*.md` (55 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -80,4 +80,8 @@ These have a spawn persona but are not `AGENT_ROLES` entries — blueprint decid
 | Role | Summary |
 |---|---|
 | `advocate` | Advocate — argue against the lead — You are the **advocate** (devil's advocate) in a `vote` deliberation |
+| `agent-base-overlay` | Software engineering — This hive does software engineering. The task that follows is a coding task in a real |
+| `agent-base-preamble` | Agent base preamble (domain-neutral system prompt) — You are an agent that completes tasks as part of a coordinated hive. Your specific role, |
+| `gaia-worker` | You are a **single autonomous general-assistant agent** answering **one real question** |
+| `su` | Superuser engineer-collaborator (su) — domain-neutral base persona — You are a **senior engineer-collaborator** with **operator + admin** authority across |
 | `voter` | Voter — one lens of a `vote` deliberation — You are a **voter** in a `vote` deliberation (coordination-ops-as-blueprint-primitives). |

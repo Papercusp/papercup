@@ -20,6 +20,7 @@ import {
   toolErrorFingerprintSqlCase,
   FINGERPRINTED_TOOL_ERROR_CLASSES,
 } from './tool-error-classifier';
+import { collectToolErrorSignals } from './watchdog';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
 
 let db: OrgTestDb;
@@ -101,5 +102,39 @@ describe('generated SQL fingerprint ↔ toolErrorFingerprint parity (P-012)', ()
        WHERE class = 'rate-limit'`;
     expect(rows.length).toBeGreaterThan(0); // the corpus has rate-limit rows
     expect(rows.every((r) => r.fingerprint === null)).toBe(true);
+  });
+});
+
+describe('the FULL collectToolErrorSignals query embeds the generated fragments validly (P-011)', () => {
+  it('runs against real PG without a syntax error and emits new-shape fingerprinted keys', async () => {
+    const sql = db.adminSql;
+    // Two distinct caller modes + a timeout under the SAME tool — pre-P-012 these
+    // collapsed onto one `:caller` / `:transient` key; the generated SQL must now
+    // split the caller modes apart by fingerprint and run the whole CTE cleanly.
+    // Counts are above the per-class FIRE bars (caller ≥10, transient ≥15) so the
+    // signals actually fire; the two caller modes share the SAME tool so only the
+    // fingerprint splits them (the P-012 win).
+    const seed: { tool: string; status: string; code: string | null; msg: string; n: number }[] = [
+      { tool: 'plans:new', status: 'error', code: null, msg: 'invalid_args: note: Too big: expected string to have <=400 characters', n: 11 },
+      { tool: 'plans:new', status: 'error', code: 'handler_error', msg: 'invalid_args: status: Invalid option: expected one of "draft"|"ready"', n: 11 },
+      { tool: 'plans:list', status: 'timeout', code: null, msg: 'tool "plans:list" exceeded timeout of 60s (handler returned but signal had aborted)', n: 16 },
+    ];
+    for (const s of seed) {
+      for (let k = 0; k < s.n; k++) {
+        await sql`
+          INSERT INTO harness_shared.tool_invocations
+            (workspace_id, tool_name, status, error_code, error_message, invoked_at)
+          VALUES ('*', ${s.tool}, ${s.status}, ${s.code}, ${s.msg}, now())`;
+      }
+    }
+
+    const signals = await collectToolErrorSignals(sql);
+    expect(Array.isArray(signals)).toBe(true);
+    const keys = signals.map((s) => s.key);
+    // the two caller modes split into distinct fingerprinted keys (P-012)…
+    expect(keys).toContain('plans:new:caller:invalid-args-note-too-big-expected');
+    expect(keys).toContain('plans:new:caller:invalid-args-status-invalid-option-expected');
+    // …and the timeout is a fingerprinted transient key.
+    expect(keys.some((k) => k.startsWith('plans:list:transient:'))).toBe(true);
   });
 });

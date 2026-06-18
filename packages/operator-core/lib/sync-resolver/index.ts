@@ -2162,10 +2162,99 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       try {
         const { getOrgPg } = await import('@papercusp/db-org');
         memory = await readMemoryHealth(getOrgPg().sql);
+        // Attach the memory-precision trend (relight P-033) — best-effort, and a
+        // not-yet-applied migration 312 (42P01) degrades to the empty snapshot so
+        // the MemoryHealthCard renders its nothing-benchmarked state, never a 500.
+        try {
+          const { readMemoryPrecision } = await import('../memory/bench/precision-read');
+          const { activeWorkspaceId } = await import('../workspace-registry');
+          memory.precision = await readMemoryPrecision(getOrgPg().sql, activeWorkspaceId());
+        } catch (err) {
+          if ((err as { code?: string }).code !== '42P01') {
+            console.warn('[learning.knowledge] memory precision read failed:', err instanceof Error ? err.message : err);
+          }
+          const { EMPTY_PRECISION_SNAPSHOT } = await import('../memory/bench/precision-read');
+          memory.precision = EMPTY_PRECISION_SNAPSHOT;
+        }
       } catch (err) {
         console.warn('[learning.knowledge] memory health read failed:', err instanceof Error ? err.message : err);
       }
       return [{ insights, memory }];
+    },
+  },
+
+  // ── learning.efficacy — the Learning tab's "is the system actually learning" panel ──
+  //
+  // The complement to the flow strip's THROUGHPUT (in/out/recurring/watchdog): four
+  // EFFICACY metrics that say whether the learning HELD (relight-self-learning-edges
+  // P-020) — auto-fix survival (matured fix-survival bets), champion score-delta vs
+  // the gen-0 baseline (the beekeeper IQ-battery trend), recurrence-decay (verified
+  // vs recurred lifecycle), and memory FP@5 (the P-033 bench). Every metric degrades
+  // honestly (ok / warming / none) — most of this data is YOUNG. Each read is
+  // best-effort and independent: one source failing leaves the others intact.
+  // Returns a 1-element array (client reads data[0]); the producers fire
+  // notifySyncInvalidate('learning.efficacy') as their data lands.
+  'learning.efficacy': {
+    resolve: async () => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const {
+        EMPTY_EFFICACY,
+        GEN0_BASELINE,
+        readAutoFixSurvival,
+        readRecurrenceDecay,
+        championDeltaMetric,
+        memoryFpAt5Metric,
+      } = await import('../learning/efficacy-read');
+
+      let ws: string;
+      let sql: ReturnType<typeof getOrgPg>['sql'];
+      try {
+        ws = activeWorkspaceId();
+        sql = getOrgPg().sql;
+      } catch (err) {
+        console.warn('[learning.efficacy] no workspace/PG:', err instanceof Error ? err.message : err);
+        return [EMPTY_EFFICACY];
+      }
+
+      const result = { ...EMPTY_EFFICACY, gen0Baseline: { ...GEN0_BASELINE } };
+
+      try {
+        result.autoFixSurvival = await readAutoFixSurvival(sql, ws);
+      } catch (err) {
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.efficacy] auto-fix survival read failed:', err instanceof Error ? err.message : err);
+        }
+      }
+      try {
+        result.recurrenceDecay = await readRecurrenceDecay(sql, ws);
+      } catch (err) {
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.efficacy] recurrence-decay read failed:', err instanceof Error ? err.message : err);
+        }
+      }
+      try {
+        const { readApiaryInstanceSummaries } = await import('../iq-battery/benchmark-read');
+        const { routeWithWorkspace } = await import('../route-workspace');
+        const summaries = await routeWithWorkspace(async (tx) =>
+          readApiaryInstanceSummaries(tx, { workspaceId: ws, limit: 20 }),
+        );
+        result.championDelta = championDeltaMetric(summaries, GEN0_BASELINE.composite);
+      } catch (err) {
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.efficacy] champion-delta read failed:', err instanceof Error ? err.message : err);
+        }
+      }
+      try {
+        const { readMemoryPrecision } = await import('../memory/bench/precision-read');
+        result.memoryFpAt5 = memoryFpAt5Metric(await readMemoryPrecision(sql, ws));
+      } catch (err) {
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.efficacy] memory FP@5 read failed:', err instanceof Error ? err.message : err);
+        }
+      }
+
+      return [result];
     },
   },
 

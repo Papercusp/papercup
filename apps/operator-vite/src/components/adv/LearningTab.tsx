@@ -60,6 +60,7 @@ import { Select } from '@/app/harness/Select';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
+import LearningEfficacyPanel from './LearningEfficacyPanel';
 import HumanQueueDrain from './HumanQueueDrain';
 import LearningPackCandidates from './LearningPackCandidates';
 
@@ -429,6 +430,7 @@ function ImprovementsView({ hive }: { hive: string }) {
   return (
     <section className="pc-learning__section">
       {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
+      <LearningEfficacyPanel />
 
       <div className="pc-learning__scoreboard" aria-label="Improvements summary">
         <Stat label="captured" value={digest?.total ?? '—'} hint="Everything ever filed — problems, friction, and ideas, open or not." />

@@ -953,13 +953,17 @@ function PickerStep({
 
 interface CreateHarnessPickerProps {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
+  // May return a promise (nuqs setter): the picker AWAITS close/create writes so
+  // they serialize over the custom nuqs adapter (which clobbers same-tick writes).
+  onOpenChange: (open: boolean) => void | Promise<unknown>;
   /**
    * Called after a harness is successfully created/added. `opts.hive` names the
    * hive the new harness was added INTO (add-into-hive mode, P-011) so the caller
    * can land it as the focused member; absent ⇒ a standalone / new-hive root.
+   * May return a promise (nuqs writes) — the picker awaits it before closing so
+   * the focus-write and the close-write don't race on the URL.
    */
-  onCreated?: (slug: string, opts?: { hive?: string }) => void;
+  onCreated?: (slug: string, opts?: { hive?: string }) => void | Promise<unknown>;
   /**
    * The currently-selected hive scope (`?slug=`), if any (harnesses-tab-hive-model
    * P-010/P-011). When set, the picker offers "Add to <hive>" and defaults to it;
@@ -998,28 +1002,37 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   const t = useLexicon();
   const combLabel = t('cupboard');
 
-  const handleClose = () => {
-    setStep('picker');
+  const handleClose = async () => {
     setMode(hiveScope ? 'into-hive' : 'standalone');
     setCreatedSlug(null);
     setCreatedHiveSlug(null);
-    onOpenChange(false);
+    // SERIALIZE the two URL writes: the custom nuqs adapter clobbers same-tick
+    // writes (the later flush wins), so a synchronous reset-step + close raced —
+    // ?picker=null landed but ?create=false was dropped, leaving the modal stuck
+    // OPEN on the picker grid (the "can't dismiss Add a Hive" report). Awaiting
+    // each write composes it over the previous result; ?create=false goes LAST so
+    // it is authoritative.
+    await setPickerParam(null);
+    await onOpenChange(false);
   };
 
   // The membership scope passed to a create when adding into the selected hive.
   const memberHive = mode === 'into-hive' && hiveScope ? hiveScope : undefined;
 
-  const handleSuccess = (slug: string) => {
+  const handleSuccess = async (slug: string) => {
     // A new top-level hive (no membership scope) is a root; an into-hive create
     // carries the scope so the caller can focus the new member (P-011). Keep the
     // single-arg call for the root path (back-compat with existing callers).
     const createdInto = memberHive;
-    if (createdInto) onCreated?.(slug, { hive: createdInto });
-    else onCreated?.(slug);
+    // AWAIT the parent's focus-write before our own step write — same nuqs
+    // same-tick-clobber hazard as handleClose: an unawaited onCreated (?slug) +
+    // setStep('share-offer') (?picker) raced, and the loser was dropped.
+    if (createdInto) await onCreated?.(slug, { hive: createdInto });
+    else await onCreated?.(slug);
     setCreatedSlug(slug);
     // A root hive publishes itself; a member publishes its parent hive.
     setCreatedHiveSlug(memberHive ?? slug);
-    setStep('share-offer');
+    await setPickerParam('share-offer');
   };
 
   const goBack = () => setStep('picker');

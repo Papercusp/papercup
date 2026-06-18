@@ -91,6 +91,11 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__search:fulltext',
   'mcp__agentmcp__search:semantic',
 
+  // Storage usage (read) — answer "what's using disk / what's safe to trim".
+  // The destructive storage:prune is owner-driven via Settings → Storage, not the
+  // brain surface.
+  'mcp__agentmcp__storage:usage',
+
   // Persistent memory layer (hybrid claude-file + mem0 store).
   // 4-kind schema: user / feedback / project / reference
   // (memory-taxonomy-and-debt-followups D-001).

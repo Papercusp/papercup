@@ -288,6 +288,32 @@ export function boundedOrgPoolMax(opts: {
 }
 
 /**
+ * P3-2: the largest cluster request-worker count whose per-process PG pools stay
+ * HEALTHY (≥ `MIN_HEALTHY_POOL`) given the host's connection budget — so enabling the
+ * cluster can never over-subscribe `max_connections` (the 2026-06-17 exhaustion) or
+ * starve a worker's pool to the floor. Without this, `httpWorkers = cores-1` on a
+ * 128-core/512-conn box would fork 32 workers (33 procs) and force `boundedOrgPoolMax`
+ * to the floor of 1 — ~539 connections against a 512 ceiling. Uses the SAME bound the
+ * pool sizing applies at runtime, over `processCount = workers + 1` (the background
+ * primary). Exported for tests.
+ */
+export function maxClusterWorkersForConnBudget(
+  db: Pick<DatabaseTuning, 'maxConnections' | 'superuserReservedConnections'>,
+): number {
+  const MIN_HEALTHY_POOL = 8;
+  for (let workers = 32; workers >= 1; workers--) {
+    const perPool = boundedOrgPoolMax({
+      desired: 64,
+      maxConnections: db.maxConnections,
+      superuserReserved: db.superuserReservedConnections,
+      expectedProcesses: workers + 1,
+    });
+    if (perPool >= MIN_HEALTHY_POOL) return workers;
+  }
+  return 1;
+}
+
+/**
  * Render a {@link DatabaseTuning} into a map of Postgres GUC name → value string
  * (with MB units where the knob is a size). Feed to a `conf.d` file
  * (`${k} = ${v}`) or to embedded-postgres `-c` flags
@@ -322,7 +348,7 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
  * | serializationWorkers | cores - 2  (0 ⇒ inline; only earned past ~4 cores)   |   0   |    8    |
  * | embedBatchSize       | 32 * 2^hostClassTier (laptop 32 / wkstn 64 / srv 128)|  16   |  256    |
  * | backgroundInProcess  | false only on a server-class host w/ native PG; else true | — | — |
- * | httpWorkers          | (server & native PG) ? cores-1 : 1                  |   1   |   32    |
+ * | httpWorkers          | (server & native PG) ? min(cores-1, connBudget) : 1 |   1   |   32    |
  */
 export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile {
   // Normalize cores to a finite >=1 integer. A non-finite signal (NaN from a
@@ -373,26 +399,33 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   // in-process — the split would buy nothing and cost a second process.
   const backgroundInProcess = !(hostClass === 'server' && !embeddedPg);
 
+  // PostgreSQL server knobs scaled to the same host (see deriveDatabaseTuning).
+  // Computed BEFORE httpWorkers — the cluster worker count is co-bounded by the DB
+  // connection budget below.
+  const database = deriveDatabaseTuning(signals);
+
   // HTTP worker processes for a clustered deploy (P3-2). >1 ONLY on a server-class
   // host with a DEDICATED PG (same gate as backgroundInProcess=false): a big
   // multi-tenant box that benefits from spreading request serving across cores. A
   // laptop/workstation — or any embedded-PG/desktop host — stays 1 (clustering buys
   // nothing for one user, and the desktop owns the single-socket PTY/IPC servers a
-  // round-robin cluster can't share). Reserve 1 core for the background primary; cap
-  // 32 (past that, fd/connection pressure + diminishing returns). RECOMMENDED count
-  // only — the operator forks it when clustering is explicitly enabled (default-off),
-  // and whoever wires the cluster MUST feed processCount into PG pool sizing.
+  // round-robin cluster can't share). The count is the MIN of two ceilings: cores-1
+  // (reserve a core for the background primary), capped at 32; AND the PG CONNECTION
+  // BUDGET (maxClusterWorkersForConnBudget) — without that second cap, cores-1 on a
+  // 128-core/512-conn box forks 32 workers and over-subscribes max_connections,
+  // re-creating the 2026-06-17 exhaustion. RECOMMENDED count only — forked only when
+  // clustering is explicitly enabled (default-off); the operator feeds processCount
+  // into PG pool sizing.
   const clusterable = hostClass === 'server' && !embeddedPg;
-  const httpWorkers = clusterable ? clamp(cores - 1, 1, 32) : 1;
+  const httpWorkers = clusterable
+    ? clamp(Math.min(cores - 1, maxClusterWorkersForConnBudget(database)), 1, 32)
+    : 1;
   // Total operator processes: clustered ⇒ N request workers + 1 background primary;
   // otherwise a single process that both serves requests + runs background work.
   const processCount = httpWorkers > 1 ? httpWorkers + 1 : 1;
 
   // P5-3: widen background cadences 3x on battery so periodic work runs less often.
   const backgroundCadenceMultiplier = onBattery ? 3 : 1;
-
-  // PostgreSQL server knobs scaled to the same host (see deriveDatabaseTuning).
-  const database = deriveDatabaseTuning(signals);
 
   return {
     signals: Object.freeze({ ...signals, cores }),
