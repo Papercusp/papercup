@@ -36,10 +36,12 @@ describe('makeSweProCloneGradeSeam', () => {
     expect(await seamFail.grade(task(), fakeCheckout(async () => {}))).toEqual({ resolved: false, graderStatus: 'failed' });
   });
 
-  it('an EMPTY diff is a capability-fail (resolved false, empty-diff) — no grader run', async () => {
+  it('an EMPTY diff is a SCORED capability-fail (resolved false, canonical "failed" — not infra) — no grader run', async () => {
     const gradeDiff = vi.fn(async () => true);
     const seam = makeSweProCloneGradeSeam({ extractDiff: async () => '   \n  ', gradeDiff });
-    expect(await seam.grade(task(), fakeCheckout(async () => {}))).toEqual({ resolved: false, graderStatus: 'empty-diff' });
+    // 'failed' (canonical, scored) NOT 'empty-diff' (would coerce to 'error' = infra and drop the fail from
+    // the exclude-infra denominator — the C1 flatter-the-arm trap). detail keeps the diagnostic distinction.
+    expect(await seam.grade(task(), fakeCheckout(async () => {}))).toEqual({ resolved: false, graderStatus: 'failed', detail: { reason: 'empty-diff' } });
     expect(gradeDiff).not.toHaveBeenCalled(); // an empty diff can't pass — never wastes a grader run
   });
 

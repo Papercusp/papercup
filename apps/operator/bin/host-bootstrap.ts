@@ -40,6 +40,24 @@ export function runBootstrap(): void {
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
 
+  // [power] P5-3 of operator-scalability-event-loop-2026-06-16 — detect the power
+  // source ONCE and fold onBattery into the resource profile BEFORE the background
+  // machinery reads it. Fire-and-forget + first thing at boot so it (a few fast fs
+  // reads) almost always wins the race against the first getResourceProfile()
+  // consumer; if it loses, or on a server we can't read, the profile defaults to
+  // AC = full power — battery state never wrongly throttles a plugged-in host.
+  void (async () => {
+    try {
+      const { primePowerSource } = await import('@papercusp/operator-core/lib/resource-profile');
+      const source = await primePowerSource();
+      if (source !== 'unknown') {
+        console.log(`[power] source=${source} — P5-3 cadence/concurrency adjusted accordingly`);
+      }
+    } catch {
+      /* non-fatal — defaults to AC / full power */
+    }
+  })();
+
   // [pg-budget] C0-4 of backend-connection-scaling-2026-06-17 — log this
   // process's worst-case PG connection ceiling vs the live max_connections, so a
   // future pool-sizing change can't silently re-create the 2026-06-17 connection

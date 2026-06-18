@@ -25,8 +25,10 @@
  */
 import {
   configureResourceProfile,
+  detectPowerSource,
   getResourceProfile as getGenericResourceProfile,
   type HostRole,
+  type PowerSource,
   type ResourceProfile,
 } from '@papercusp/resource-profile';
 import { getHarnessAdminUrlWithSource } from './embedded-pg-discovery';
@@ -45,15 +47,35 @@ function detectHostRole(env: NodeJS.ProcessEnv = process.env): HostRole {
 }
 
 let configured = false;
+let detectedOnBattery = false;
+
+/**
+ * P5-3: prime the power signal BEFORE the first {@link getResourceProfile}. Power
+ * detection is async I/O so it can't ride the lazy-sync config path; call this
+ * once early at boot (awaited) and the derived profile reflects battery state
+ * (quieter caps + a wider background-tick cadence). Best-effort: a host we can't
+ * read resolves 'unknown' ⇒ full power. If the profile was ALREADY read before
+ * this runs (a race), the caps are memoized as AC and this is a no-op — so the
+ * worst case is "never wrongly throttled", and a server is never throttled at all.
+ */
+export async function primePowerSource(): Promise<PowerSource> {
+  const source = await detectPowerSource();
+  detectedOnBattery = source === 'battery';
+  return source;
+}
 
 /** The memoized Papercusp resource profile. Configures the injected signals on
  *  first access (idempotent), then delegates to the generic memoized singleton. */
 export function getResourceProfile(): ResourceProfile {
   if (!configured) {
     configured = true;
-    configureResourceProfile({ embeddedPg: detectEmbeddedPg(), hostRole: detectHostRole() });
+    configureResourceProfile({
+      embeddedPg: detectEmbeddedPg(),
+      hostRole: detectHostRole(),
+      onBattery: detectedOnBattery,
+    });
   }
   return getGenericResourceProfile();
 }
 
-export type { ResourceProfile, HostClass, HostRole } from '@papercusp/resource-profile';
+export type { ResourceProfile, HostClass, HostRole, PowerSource } from '@papercusp/resource-profile';

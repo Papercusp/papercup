@@ -4,13 +4,12 @@
 // exercised: the "pick a feature" guard (featureId null), and the toolbar +
 // prior-sketches surface once a feature is selected (tool select via the
 // ?sketchTool nuqs param, Undo disabled with an empty history, prior-sketch
-// list from a mocked query). The canvas 2d drawing itself needs a real canvas
-// backend, so it's left to e2e. fetch is mocked; react-query client per render.
+// list from a mocked sync query). The canvas 2d drawing itself needs a real
+// canvas backend, so it's left to e2e.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // jsdom has no real canvas backend; the component guards `if (!ctx) return`, so
 // a null-returning getContext is a faithful stand-in — and it keeps jsdom from
@@ -22,34 +21,36 @@ beforeAll(() => {
   }
 });
 
-const { feed } = vi.hoisted(() => ({ feed: { sketches: [] as unknown[] } }));
+const { syncRows, invalidateMock } = vi.hoisted(() => ({
+  syncRows: { sketches: [] as unknown[] },
+  invalidateMock: vi.fn(),
+}));
 
-function stubSketches() {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => ({ ok: true, json: async () => feed })) as unknown as typeof fetch,
-  );
-}
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({
+    data: syncRows.sketches,
+    loading: false,
+    fetching: false,
+    error: null,
+    transport: 'SSE',
+    invalidate: invalidateMock,
+  }),
+}));
 
 import SketchPane from './SketchPane';
 
 function renderPane(featureId: string | null, searchParams = '') {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <SketchPane slug="my-harness" featureId={featureId} />
-    </QueryClientProvider>,
-    { wrapper: withNuqsTestingAdapter({ searchParams }) },
-  );
+  return render(<SketchPane slug="my-harness" featureId={featureId} />, {
+    wrapper: withNuqsTestingAdapter({ searchParams }),
+  });
 }
 
 beforeEach(() => {
-  feed.sketches = [];
-  stubSketches();
+  syncRows.sketches = [];
+  invalidateMock.mockClear();
 });
 afterEach(() => {
   cleanup();
-  vi.unstubAllGlobals();
 });
 
 describe('<SketchPane />', () => {
@@ -83,7 +84,7 @@ describe('<SketchPane />', () => {
   });
 
   it('lists prior sketches returned by the query', async () => {
-    feed.sketches = [{ id: 's1', label: 'first idea', png: null, createdTs: 1_700_000_000_000 }];
+    syncRows.sketches = [{ id: 's1', label: 'first idea', png: null, createdTs: 1_700_000_000_000 }];
     renderPane('F-1');
     await waitFor(() => expect(screen.getByText('first idea')).toBeTruthy());
   });

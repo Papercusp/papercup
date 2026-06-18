@@ -32,7 +32,7 @@
  */
 import type { BenchSuite, GenerationStatus, GraderStatus, TaskRunResult } from '@papercusp/bench-metrics';
 import type { CloneGradeSeam, CoordinationSpec, IsoBudget } from './coordination-topology';
-import { coordinationSpawnPlans, teamTopic, type TeamSpawnPlan } from './coordination-runtime';
+import { coordinationSpawnPlans, leadDirective, teamTopic, type TeamSpawnPlan } from './coordination-runtime';
 import type { BenchTask } from './types';
 
 /** The role an agent plays in a topology. `worker` = a plain distributed/huddle/central bee; `solver`/
@@ -345,32 +345,73 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     return runWorker(task, plan, now());
   }
 
-  // ── flatten spawn plans → task units, run through a bounded budget-gated pool ──
-  const units = coordinationSpawnPlans(spec, deps.backlog).flatMap((plan) => plan.tasks.map((task) => ({ task, plan })));
+  // ── the bounded budget-gated pool: drain a unit list, decorate + collect each row ──
   const rows: TaskRunResult[] = [];
   const attemptedTaskIds: string[] = [];
   const skippedTaskIds: string[] = [];
-  let cursor = 0;
 
-  const poolWorker = async (): Promise<void> => {
-    for (;;) {
-      const i = cursor++;
-      if (i >= units.length) return;
-      const { task, plan } = units[i];
-      if (exhausted()) { skippedTaskIds.push(task.instanceId); continue; }
-      attemptedTaskIds.push(task.instanceId);
-      let row: TaskRunResult;
-      try {
-        row = await runUnit(task, plan);
-      } catch (e) {
-        row = buildRow({ task, usage: ZERO, grade: infraGrade, status: 'error', capped: false, generationError: errMsg(e), wallClockMs: 0 });
+  const drainUnits = async (
+    units: Array<{ task: BenchTask; plan: TeamSpawnPlan }>,
+    decorate: (r: TaskRunResult) => TaskRunResult,
+  ): Promise<void> => {
+    let cursor = 0;
+    const poolWorker = async (): Promise<void> => {
+      for (;;) {
+        const i = cursor++;
+        if (i >= units.length) return;
+        const { task, plan } = units[i];
+        if (exhausted()) { skippedTaskIds.push(task.instanceId); continue; }
+        attemptedTaskIds.push(task.instanceId);
+        let row: TaskRunResult;
+        try {
+          row = await runUnit(task, plan);
+        } catch (e) {
+          row = buildRow({ task, usage: ZERO, grade: infraGrade, status: 'error', capped: false, generationError: errMsg(e), wallClockMs: 0 });
+        }
+        row = decorate(row);
+        rows.push(row);
+        await Promise.resolve(deps.onResult?.(row)).catch(() => {});
       }
-      rows.push(row);
-      await Promise.resolve(deps.onResult?.(row)).catch(() => {});
-    }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(cap, units.length || 1)) }, poolWorker));
   };
 
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(cap, units.length || 1)) }, poolWorker));
+  const identity = (r: TaskRunResult): TaskRunResult => r;
+
+  if (spec.coordinator === 'elected-lead') {
+    // HIERARCHICAL: per team, a LEAD runs ONE coordination pass (charged to the iso-budget), then the
+    // workers execute under it. The lead's coordCalls are attached to the team's rows as `leadCoordCalls`
+    // (the C4 evidence that the in-team coordinator actually coordinated).
+    for (const plan of coordinationSpawnPlans(spec, deps.backlog)) {
+      let leadCoordCalls = 0;
+      if (!exhausted() && plan.tasks.length > 0) {
+        let leadHandle: H | undefined;
+        try { leadHandle = await seam.clone(plan.tasks[0]); } catch { leadHandle = undefined; }
+        if (leadHandle !== undefined) {
+          try {
+            const lead = await deps.runAgent({
+              task: plan.tasks[0], handle: leadHandle, role: 'lead', arm: spec.arm, teamKey: plan.teamKey,
+              topic: teamTopic(spec, plan.teamKey), directive: leadDirective(spec, plan.teamKey, plan.tasks.length),
+              forbidTools: plan.forbidTools, attemptBudget: remaining(),
+              candidates: plan.tasks.map((t, i) => ({ index: i, submission: t.instanceId })),
+            });
+            addUsage(lead);
+            leadCoordCalls = lead.coordCalls ?? 0;
+          } finally {
+            await safeTeardown(leadHandle);
+          }
+        }
+      }
+      await drainUnits(
+        plan.tasks.map((task) => ({ task, plan })),
+        (r) => ({ ...r, armMeta: { ...(r.armMeta ?? {}), leadCoordCalls } }),
+      );
+    }
+  } else {
+    // flat: every team's tasks in one shared pool (workers self-organize via the directive).
+    const units = coordinationSpawnPlans(spec, deps.backlog).flatMap((plan) => plan.tasks.map((task) => ({ task, plan })));
+    await drainUnits(units, identity);
+  }
 
   return {
     arm: spec.arm,

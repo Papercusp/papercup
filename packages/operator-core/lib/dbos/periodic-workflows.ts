@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { isLoopSaturated } from '../event-loop-lag-monitor';
+import { getResourceProfile } from '../resource-profile';
 
 // P5-1 (operator-scalability-event-loop-2026-06-16): Layer-2 load-shedding. When
 // the request event loop is CRITICALLY saturated, skip this cycle of a HEAVY
@@ -45,6 +46,31 @@ function shedUnderLoopPressure(tickName: string): boolean {
     return true;
   }
   return false;
+}
+
+// P5-3 (operator-scalability-event-loop-2026-06-16): power-aware cadence throttle.
+// On battery the resource profile widens the background cadence
+// (backgroundCadenceMultiplier > 1). DBOS schedules are fixed crontabs, so we
+// approximate the wider cadence by SKIPPING (mult-1)/mult of a heavy tick's
+// invocations — a 1-min tick at multiplier 3 effectively fires ~every 3 min.
+// Deterministic per-tick counter (no Math.random); AC ⇒ multiplier 1 ⇒ never skips.
+const powerSaveCounters = new Map<string, number>();
+function shedUnderPowerSave(tickName: string): boolean {
+  const mult = getResourceProfile().backgroundCadenceMultiplier;
+  if (mult <= 1) return false;
+  const n = (powerSaveCounters.get(tickName) ?? 0) + 1;
+  powerSaveCounters.set(tickName, n);
+  if (n % mult !== 0) {
+    console.warn(`[power-save] skipped ${tickName} — on battery (cadence x${mult}, P5-3)`);
+    return true;
+  }
+  return false;
+}
+
+// A heavy background tick sheds this cycle under EITHER acute loop pressure (P5-1,
+// recover the serving loop) OR chronic power-save (P5-3, battery life).
+function shouldShedHeavyTick(tickName: string): boolean {
+  return shedUnderLoopPressure(tickName) || shedUnderPowerSave(tickName);
 }
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
@@ -90,7 +116,7 @@ DBOS.registerScheduled(completionRefWorkflow, { name: 'completionRefVerify', cro
 // is the rate limit on the embedding API (P-010).
 async function embedBackfillTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    if (shedUnderLoopPressure('embed-backfill')) return;
+    if (shouldShedHeavyTick('embed-backfill')) return;
     await runEmbedBackfillOnce();
   }, { name: 'embed-backfill' });
 }
@@ -129,7 +155,7 @@ DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: 
 // P-012 / operator-memory-and-psu-resilience-2026-06-14 D-016.
 async function outboxBackstopGcTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    if (shedUnderLoopPressure('substrate-outbox-backstop-gc')) return;
+    if (shouldShedHeavyTick('substrate-outbox-backstop-gc')) return;
     await runSubstrateOutboxBackstopGc();
   }, { name: 'substrate-outbox-backstop-gc' });
 }
@@ -148,7 +174,7 @@ DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', cro
 // burst. queue-pending-accuracy-and-drift P-003/P-005.
 async function attentionReconcileTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    if (shedUnderLoopPressure('attention-reconcile')) return;
+    if (shouldShedHeavyTick('attention-reconcile')) return;
     await reconcileStaleEscalationsOnce();
   }, { name: 'attention-reconcile' });
 }
@@ -200,7 +226,7 @@ DBOS.registerScheduled(learningInfraHealthWorkflow, { name: 'learningInfraHealth
 // is the correctness floor, so this tick is the liveness bonus, not the engine.
 async function systemHealthTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    if (shedUnderLoopPressure('system-health')) return;
+    if (shouldShedHeavyTick('system-health')) return;
     const { FLAGS } = await import('@papercusp/flags');
     const { getFlag } = await import('@papercusp/flags/server');
     if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return;
@@ -260,7 +286,7 @@ DBOS.registerScheduled(connectionPressureWorkflow, {
 // stands down on dbosTimersActive).
 async function harnessStatusSweepTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    if (shedUnderLoopPressure('harness-status-sweep')) return;
+    if (shouldShedHeavyTick('harness-status-sweep')) return;
     await runHarnessStatusSweepOnce();
   }, { name: 'harness-status-sweep' });
 }

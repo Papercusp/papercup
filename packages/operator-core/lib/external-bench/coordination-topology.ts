@@ -64,6 +64,10 @@ export interface CoordinationSpec {
    *  meaningful with team:'per-task'; 'none' = no after-the-fact aggregation (pair, all distributed
    *  arms). The runtime fans N solvers + runs the judge when this is 'judge-best'. */
   aggregate: 'none' | 'judge-best';
+  /** Intra-team coordinator (hierarchical pole). 'none' = flat (no lead); 'elected-lead' = a lead agent
+   *  runs a coordination pass over the team backlog (charged to the iso-budget), then workers execute
+   *  under it. A peer WITHIN the team, NOT the system Queen (`central`). */
+  coordinator: 'none' | 'elected-lead';
   /** coord/* tools an agent in this topology may NOT use (e.g. ['coord:send'] enforces blackboard-only). */
   disciplineForbid: string[];
   /** Central orchestrator present (a `kind:'hive'` Queen blueprint) vs distributed/none. */
@@ -82,6 +86,7 @@ export interface TopologyBlueprintView {
     sharedState?: 'messages' | 'blackboard' | 'both';
     team?: 'per-backlog' | 'per-repo' | 'per-task';
     aggregate?: 'none' | 'judge-best';
+    coordinator?: 'none' | 'elected-lead';
     discipline?: { allow?: string[]; forbid?: string[] };
   };
 }
@@ -98,6 +103,7 @@ export function resolveCoordinationSpec(bp: TopologyBlueprintView): Coordination
     sharedState: c?.sharedState ?? 'both',
     team: c?.team ?? 'per-backlog',
     aggregate: c?.aggregate ?? 'none',
+    coordinator: c?.coordinator ?? 'none',
     disciplineForbid: c?.discipline?.forbid ?? [],
     central: bp.kind === 'hive',
   };

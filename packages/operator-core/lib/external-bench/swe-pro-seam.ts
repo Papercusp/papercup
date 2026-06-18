@@ -15,8 +15,13 @@
  * ROW CONTRACT (steward-confirmed 2026-06-18, matches buildCapabilityAttribution's C1 same-denominator):
  *   - clone/extract/grade INFRA crash → `{ resolved: null, graderStatus: 'error' }` (an infra non-completion;
  *     bench-metrics reconciles null→false in the C1 headline, never silently dropped).
- *   - EMPTY diff (the agent produced nothing) → `{ resolved: false, graderStatus: 'empty-diff' }` (a genuine
- *     capability-fail — an empty diff cannot pass; no wasted grader run).
+ *   - EMPTY diff (the agent produced nothing) → `{ resolved: false, graderStatus: 'failed' }` (a genuine,
+ *     SCORED capability-fail — an empty patch cannot pass, the SWE-bench convention; `detail.reason:
+ *     'empty-diff'` keeps the distinction for diagnostics; no wasted grader run). It must be a CANONICAL
+ *     scored status (`failed`), NOT a bespoke `'empty-diff'`: the topology row-builder coerces any
+ *     non-canonical status to `'error'`, and bench-metrics' `isScored` treats `graderStatus:'error'` as
+ *     INFRA — which would wrongly DROP the empty-diff fail from the exclude-infra denominator (flattering
+ *     the arm, the exact C1 trap). `failed` ⇒ isScored=true ⇒ counted under both denominators.
  *   - graded → `{ resolved, graderStatus: resolved ? 'passed' : 'failed' }`.
  * `teardown` is NEVER-THROW + ALWAYS run (success / capability-fail / infra) so a run never leaks worktrees.
  */
@@ -66,8 +71,11 @@ export function makeSweProCloneGradeSeam(deps: SweProSeamDeps): CloneGradeSeam<T
         return { resolved: null, graderStatus: 'error', detail: { stage: 'extract', error: errMsg(e) } };
       }
       if (!diff.trim()) {
-        // The agent produced no diff → a genuine capability-fail (an empty diff cannot pass); skip the grader.
-        return { resolved: false, graderStatus: 'empty-diff' };
+        // The agent produced no diff → a genuine, SCORED capability-fail (an empty patch cannot pass; skip
+        // the grader). MUST be canonical 'failed' (not 'empty-diff'): a non-canonical status coerces to
+        // 'error' in the row, which bench-metrics counts as INFRA and would drop this fail from the
+        // exclude-infra denominator (the C1 flatter-the-arm trap). detail keeps the empty-diff distinction.
+        return { resolved: false, graderStatus: 'failed', detail: { reason: 'empty-diff' } };
       }
       try {
         const resolved = await gradeDiff(task, diff);

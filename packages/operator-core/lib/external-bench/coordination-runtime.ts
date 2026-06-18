@@ -97,7 +97,28 @@ export function coordinationDirective(spec: CoordinationSpec, teamKey: string): 
   } else if (spec.team === 'per-task') {
     lines.push(`You and your teammate(s) collaborate on the SAME task — split/cross-check the work continuously.`);
   }
+  if (spec.coordinator === 'elected-lead') {
+    lines.push(
+      `UNDER A LEAD: a team LEAD has run a coordination pass and recorded the plan/assignment + shared strategy` +
+        ` in shared state (and topic "${teamTopic(spec, teamKey)}") — read it before you start, align your work with it,` +
+        ` and report progress/blockers back so the lead can re-coordinate.`,
+    );
+  }
   return lines.join('\n');
+}
+
+/**
+ * The directive for the elected LEAD of a hierarchical team ({@link CoordinationSpec.coordinator} =
+ * 'elected-lead'). The lead runs ONE coordination pass over the team's backlog — plan/assign/strategize,
+ * recording the plan in shared state for the workers — and does NOT solve tasks itself. A PEER coordinator
+ * within the team, not the system Queen. Its calls are charged to the arm's iso-budget (coordination cost).
+ */
+export function leadDirective(spec: CoordinationSpec, teamKey: string, taskCount: number): string {
+  return [
+    `You are the elected LEAD of a DISTRIBUTED team (arm "${spec.arm}", ${taskCount} task(s)) — a PEER coordinator, NOT a central authority and NOT a solver.`,
+    `Run ONE coordination pass: review the team's ${taskCount} task(s); decide a strategy + an assignment/ordering; surface shared context that helps every worker (repo structure, common pitfalls, ordering).`,
+    `Record the plan in shared work-item state AND broadcast it to topic "${teamTopic(spec, teamKey)}" so the workers execute under it. You do NOT write the solutions — the workers do; your only value is coordination.`,
+  ].join('\n');
 }
 
 /** The per-team spawn plan the pool driver applies: which tasks the team owns + its workers' directive

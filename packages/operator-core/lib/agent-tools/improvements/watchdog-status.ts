@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { readWatchdogStatus } from '../../harness/improvements/watchdog';
+import { readWatchdogStatus, rollupWatchdogTicks } from '../../harness/improvements/watchdog';
 import {
   computeDispatchStats,
   readRecentDispatches,
@@ -66,6 +66,10 @@ export default defineTool({
       staleResolvedPrefiltered: ticks.reduce((n, t) => n + t.staleResolvedKeys.length, 0),
       deferred: ticks.reduce((n, t) => n + t.deferred, 0),
       selfEscalations: ticks.flatMap((t) => t.selfEscalations),
+      // P-013: signal-to-noise rollup — how much the ephemeral-benchmark filter dropped
+      // (P-006/P-008) + the per-class repeated-tool-error spread, so a classification
+      // regression or noise spike is visible at a glance, not buried in the raw ticks.
+      rollup: rollupWatchdogTicks(ticks),
     };
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, summary, dispatches, ticks }) }] };
   },

@@ -54,6 +54,7 @@ test('resolveCoordinationSpec — defaults (no coordination section) = central-p
   assert.equal(spec.sharedState, 'both');
   assert.equal(spec.team, 'per-backlog');
   assert.equal(spec.aggregate, 'none');
+  assert.equal(spec.coordinator, 'none');
   assert.deepEqual(spec.disciplineForbid, []);
   assert.equal(spec.central, false);
 });

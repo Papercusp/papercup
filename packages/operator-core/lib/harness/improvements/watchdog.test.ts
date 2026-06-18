@@ -10,6 +10,7 @@ import {
   isEphemeralBenchmarkSignal,
   ephemeralSignalSlug,
   isEphemeralSignal,
+  rollupWatchdogTicks,
   collectMigrationDriftSignals,
   routineFailureSignalsFromRows,
   stuckPlanSignalsFromRows,
@@ -338,6 +339,34 @@ describe('ephemeral-benchmark signal filter (P-006)', () => {
     // ephemeralSignalSlug extracts the harness slug; null for a global (non-per-harness) source.
     expect(ephemeralSignalSlug(flaggedSig)).toBe('some-real-looking-slug');
     expect(ephemeralSignalSlug({ source: 'repeated-tool-error' as const, key: 'memory:search:rate-limit', title: 't', body: '', severity: 'minor' as const })).toBeNull();
+  });
+});
+
+describe('rollupWatchdogTicks (P-013 observability)', () => {
+  it('sums benchmark-filter drops + buckets repeated-tool-error keys by class', () => {
+    const r = rollupWatchdogTicks([
+      {
+        collectors: [
+          { name: 'ephemeral-benchmark-filter', note: 'dropped 12 ephemeral-benchmark harness signal(s) — debris' },
+          { name: 'papercusp-red-test' },
+        ],
+        knownOpenKeys: [
+          'repeated-tool-error:memory:search:rate-limit',
+          'repeated-tool-error:plans:list:caller',
+          'repeated-tool-error:coord:wake-queue:transient',
+          'repeated-tool-error:memory:search:structural',
+          'repeated-tool-error:memory:search:structural:built-in-tool-foo', // fingerprinted structural
+          'red-test:foo.test.ts', // not a tool-error → ignored
+        ],
+      },
+      { collectors: [{ name: 'ephemeral-benchmark-filter', note: 'dropped 8 debris' }], knownOpenKeys: ['repeated-tool-error:plans:get:caller'] },
+    ]);
+    expect(r.benchmarkDropped).toBe(20);
+    expect(r.toolErrorByClass).toEqual({ 'rate-limit': 1, caller: 2, transient: 1, structural: 2 });
+  });
+
+  it('is empty-safe', () => {
+    expect(rollupWatchdogTicks([])).toEqual({ benchmarkDropped: 0, toolErrorByClass: {} });
   });
 });
 

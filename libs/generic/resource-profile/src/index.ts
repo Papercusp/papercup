@@ -326,6 +326,7 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   const rawCores = Math.floor(signals.cores);
   const cores = Number.isFinite(rawCores) ? Math.max(1, rawCores) : 1;
   const { embeddedPg, hostRole } = signals;
+  const onBattery = signals.onBattery === true;
   const freeGib = Math.max(0, signals.freeMemBytes) / GIB;
 
   const hostClass: HostClass = cores <= 4 ? 'laptop' : cores <= 16 ? 'workstation' : 'server';
@@ -335,7 +336,9 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   // low-memory host doesn't oversubscribe RAM.
   const agentsByCore = Math.round(cores * (embeddedPg ? 0.25 : 0.5));
   const agentsByRam = Math.floor(freeGib / 0.5);
-  const maxSimultaneousAgents = clamp(Math.min(agentsByCore, agentsByRam), 1, 16);
+  // P5-3: on battery, halve concurrency too (extends battery life, cuts heat/fan).
+  const agentsBudget = Math.min(agentsByCore, agentsByRam);
+  const maxSimultaneousAgents = clamp(onBattery ? Math.round(agentsBudget / 2) : agentsBudget, 1, 16);
 
   // DBOS queue: a request-only / utility host isn't the queue drainer, so it gets
   // half the depth a full host would.
@@ -348,8 +351,9 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   const pgPoolMax = clamp(maxSimultaneousAgents + dbosQueueConcurrency + 4, 4, 64);
 
   // Serialization threads are only worth their overhead once there are spare cores;
-  // 0 means run inline on the main thread.
-  const serializationWorkers = clamp(cores - 2, 0, 8);
+  // 0 means run inline on the main thread. P5-3: on battery, force inline (0) — a
+  // busy thread pool keeps cores clocked up and drains the battery.
+  const serializationWorkers = onBattery ? 0 : clamp(cores - 2, 0, 8);
 
   // Embedding batch grows by host class tier.
   const tier = hostClass === 'laptop' ? 0 : hostClass === 'workstation' ? 1 : 2;
@@ -364,6 +368,9 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
 
   // No cluster yet — pinned to 1 (floor === ceiling).
   const httpWorkers = clamp(1, 1, 1);
+
+  // P5-3: widen background cadences 3x on battery so periodic work runs less often.
+  const backgroundCadenceMultiplier = onBattery ? 3 : 1;
 
   // PostgreSQL server knobs scaled to the same host (see deriveDatabaseTuning).
   const database = deriveDatabaseTuning(signals);
@@ -380,6 +387,7 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
     httpWorkers,
     processCount: httpWorkers,
     database,
+    backgroundCadenceMultiplier,
   };
 }
 
@@ -407,8 +415,83 @@ export function detectResourceSignals(overrides?: ResourceProfileConfig): Resour
     freeMemBytes: os.freemem(),
     embeddedPg: false,
     hostRole: 'full',
+    onBattery: false,
     ...overrides,
   };
+}
+
+/** A host's current power source. 'unknown' for a host with no battery (a server,
+ *  a container) or where detection fails — consumers treat it as 'ac' (full power). */
+export type PowerSource = 'ac' | 'battery' | 'unknown';
+
+type NodeRequireFn = ReturnType<typeof createRequire>;
+
+/**
+ * Best-effort power-source detection (P5-3). I/O + platform-specific, so it lives
+ * OUTSIDE the pure derivation: Linux reads `/sys/class/power_supply`, macOS shells
+ * `pmset -g batt`. Anything else — or any failure, or a host with no battery —
+ * resolves `'unknown'`, which consumers treat as AC (a server we can't read is
+ * never throttled). Wire the result into the profile BEFORE the first read via
+ * `configureResourceProfile({ onBattery: source === 'battery' })`.
+ */
+export async function detectPowerSource(): Promise<PowerSource> {
+  let req: NodeRequireFn;
+  let platform: NodeJS.Platform;
+  try {
+    req = createRequire(import.meta.url);
+    platform = (req('node:os') as typeof import('node:os')).platform();
+  } catch {
+    return 'unknown';
+  }
+  try {
+    if (platform === 'linux') return await detectPowerSourceLinux(req);
+    if (platform === 'darwin') return await detectPowerSourceDarwin(req);
+  } catch {
+    /* fall through to unknown — best-effort only */
+  }
+  return 'unknown';
+}
+
+async function detectPowerSourceLinux(req: NodeRequireFn): Promise<PowerSource> {
+  const fsp = (req('node:fs') as typeof import('node:fs')).promises;
+  const base = '/sys/class/power_supply';
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(base);
+  } catch {
+    return 'unknown'; // no power-supply class (a container / VM / headless server)
+  }
+  const read = async (rel: string): Promise<string | null> => {
+    try {
+      return (await fsp.readFile(`${base}/${rel}`, 'utf8')).trim();
+    } catch {
+      return null;
+    }
+  };
+  // Prefer the AC adapter's 'online' flag — the most direct signal.
+  for (const name of entries) {
+    if ((await read(`${name}/type`)) !== 'Mains') continue;
+    const online = await read(`${name}/online`);
+    if (online === '1') return 'ac';
+    if (online === '0') return 'battery';
+  }
+  // Fall back to a battery's charge status.
+  for (const name of entries) {
+    if ((await read(`${name}/type`)) !== 'Battery') continue;
+    const status = await read(`${name}/status`);
+    if (status === 'Discharging') return 'battery';
+    if (status === 'Charging' || status === 'Full') return 'ac';
+  }
+  return 'unknown';
+}
+
+async function detectPowerSourceDarwin(req: NodeRequireFn): Promise<PowerSource> {
+  const { execFile } = req('node:child_process') as typeof import('node:child_process');
+  const { promisify } = req('node:util') as typeof import('node:util');
+  const { stdout } = await promisify(execFile)('pmset', ['-g', 'batt'], { timeout: 2000 });
+  if (/AC Power/i.test(stdout)) return 'ac';
+  if (/Battery Power/i.test(stdout)) return 'battery';
+  return 'unknown';
 }
 
 let memoized: ResourceProfile | null = null;
