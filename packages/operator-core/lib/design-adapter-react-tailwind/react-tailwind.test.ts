@@ -21,6 +21,10 @@ describe('react-tailwind adapter — conformance', () => {
     expect(adapter.ecosystem).toBe('react-tailwind');
     expect(adapter.irVersionsSupported).toContain('0.x');
   });
+
+  it('defaults registry scans to live operator harness paths', () => {
+    expect(adapter.registry?.sourcePaths).toEqual(['apps/operator/app/harness/']);
+  });
 });
 
 describe('registry surface', () => {
@@ -135,6 +139,8 @@ describe('codeEmit surface', () => {
     const code = out[0].contents;
     expect(code).toContain('items.length === 0');
     expect(code).toContain('<Icon name="inbox" />');
+    expect(code).toContain("import * as LucideIcons from 'lucide-react';");
+    expect(code).toContain('function Icon({ name }');
     expect(code).toContain('items.map');
   });
 
@@ -169,7 +175,8 @@ describe('codeEmit surface', () => {
     });
     const code = out[0].contents;
     expect(code).toContain('<ActionPrimary label="Accept" />');
-    expect(code).toContain("import { ActionPrimary } from '@papercusp/ui';");
+    expect(code).toContain('TODO: import ActionPrimary via the react-tailwind registry importHints');
+    expect(code).not.toContain('@papercusp/ui');
   });
 
   it('renders kind="chart" with an inlined Plotly spec', async () => {
@@ -209,5 +216,24 @@ describe('codeEmit surface', () => {
 
   it('deriveComponentName converts kebab to PascalSurface suffix', () => {
     expect(codeInternal.deriveComponentName('operator-panel')).toBe('OperatorPanelSurface');
+  });
+
+  it('does not emit retired package or source references', async () => {
+    const out = await emit({
+      irVersion: IR_VERSION,
+      surface: 'd',
+      ecosystem: 'react-tailwind',
+      layout: {
+        kind: 'stack',
+        direction: 'vertical',
+        children: [
+          { kind: 'component', ref: 'btn' },
+          { kind: 'icon', icon: 'inbox' },
+        ],
+      },
+      components: [{ id: 'btn', registry: 'action.primary', props: { label: 'Accept' } }],
+    });
+    expect(out[0].contents).not.toContain('@papercusp/ui');
+    expect(out[0].contents).not.toContain('_retired');
   });
 });

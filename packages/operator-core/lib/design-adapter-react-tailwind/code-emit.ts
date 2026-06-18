@@ -195,17 +195,7 @@ function formatProps(props: Record<string, unknown> | undefined): string {
   return parts.length ? ' ' + parts.join(' ') : '';
 }
 
-function emitImports(ir: UiIr): string {
-  // Naive: collect bindings + kinds and emit a single import. Real adapter
-  // would use the registry's importHints to dedupe + canonicalize.
-  const tags = new Set<string>();
-  for (const c of ir.components ?? []) tags.add(registryIdToJsxTag(c.registry));
-  const lines = ["import * as React from 'react';"];
-  if (tags.size > 0) {
-    lines.push(`// TODO: wire these to their registry importHints`);
-    lines.push(`import { ${[...tags].join(', ')} } from '@papercusp/ui';`);
-  }
-  // Walk for icon / chart usage (decorative; OK if duplicated).
+function usageFor(ir: UiIr): { hasIcon: boolean; hasChart: boolean } {
   let hasIcon = false;
   let hasChart = false;
   const walk = (n: UiNode | undefined) => {
@@ -218,9 +208,35 @@ function emitImports(ir: UiIr): string {
     if (n.emptyState) walk(n.emptyState);
   };
   walk(ir.layout);
-  if (hasIcon) lines.push("import { Icon } from '@papercusp/ui';");
+  return { hasIcon, hasChart };
+}
+
+function emitImports(ir: UiIr): string {
+  const tags = new Set<string>();
+  for (const c of ir.components ?? []) tags.add(registryIdToJsxTag(c.registry));
+  const { hasIcon, hasChart } = usageFor(ir);
+  const lines = ["import * as React from 'react';"];
+  if (tags.size > 0) {
+    lines.push(
+      `// TODO: import ${[...tags].join(', ')} via the react-tailwind registry importHints before using this preview.`,
+    );
+  }
+  if (hasIcon) lines.push("import * as LucideIcons from 'lucide-react';");
   if (hasChart) lines.push("import { PlotlyChart } from '@papercusp/charts';");
   return lines.join('\n');
+}
+
+function emitHelpers(ir: UiIr): string {
+  const { hasIcon } = usageFor(ir);
+  if (!hasIcon) return '';
+  return [
+    'function Icon({ name }: { name: string }) {',
+    "  const key = name.replace(/(^|[-_\\s]+)([a-z])/g, (_match, _sep, char) => char.toUpperCase());",
+    "  const icons = LucideIcons as unknown as Record<string, React.ComponentType<{ 'aria-hidden'?: boolean }>>;",
+    '  const Component = icons[key] ?? icons.Circle;',
+    '  return <Component aria-hidden />;',
+    '}',
+  ].join('\n');
 }
 
 function deriveComponentName(surface: string): string {
@@ -245,6 +261,7 @@ function emitSurface(ir: UiIr): string {
     `// surface=${ir.surface}  irVersion=${ir.irVersion}`,
     '// Do not edit; regenerate from the design spec.',
     emitImports(ir),
+    emitHelpers(ir),
     '',
     `export interface ${compName}Props {`,
     '  items?: unknown[];',
@@ -275,4 +292,4 @@ export function makeReactTailwindCodeEmit(): CodeEmitSurface {
   };
 }
 
-export const _internal = { emitNode, emitSurface, registryIdToJsxTag, deriveComponentName };
+export const _internal = { emitNode, emitSurface, registryIdToJsxTag, deriveComponentName, usageFor };

@@ -200,6 +200,8 @@ The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operat
 
 **If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from `design-tokens/` via `npm run tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don't add it to the runtime allowlist unless a framework genuinely sets it at runtime.
 
+**Raw color carve-out:** user-authored media values are not UI chrome. A sketch canvas's persisted paper color or a color-picker's current ink value can be a literal CSS color because it is saved drawing content, not app styling. Keep that carve-out narrow: if the color affects a panel, button, label, border, status badge, or layout surface, it must be a semantic token.
+
 ## Migration anti-patterns
 
 Things we did wrong during the migration and had to back out — don't repeat:
