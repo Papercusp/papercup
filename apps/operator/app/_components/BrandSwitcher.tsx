@@ -24,14 +24,14 @@
  * dropdown is agent-driveable and survives reloads.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useRef, useState } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { Hexagon, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
 import { getFlagSnapshot, setFlagPayload } from '@papercusp/flags/client';
 import { useFlag } from '@/lib/flag-hooks';
+import { Popover } from '../harness/Popover';
 import { Tooltip } from '../harness/Tooltip';
 
 type BrandId = 'classic' | 'the-hive';
@@ -47,47 +47,6 @@ export default function BrandSwitcher() {
   const activeId: BrandId = hiveOn ? 'the-hive' : 'classic';
   const [busy, setBusy] = useState(false);
   const wrapRef = useRef<HTMLSpanElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
-
-  // Outside-click / Escape close (mirrors ThemeSelector / WorkspaceSwitcher).
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (ev: MouseEvent) => {
-      const target = ev.target as Node;
-      if (wrapRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open, setOpen]);
-
-  // Anchor the portaled menu to the trigger; track layout shifts.
-  useLayoutEffect(() => {
-    if (!open) return;
-    const update = () => {
-      const btn = buttonRef.current;
-      if (!btn) return;
-      const r = btn.getBoundingClientRect();
-      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [open]);
 
   const active = BRANDS.find((b) => b.id === activeId) ?? BRANDS[0];
   const ActiveIcon = active.icon;
@@ -123,11 +82,28 @@ export default function BrandSwitcher() {
 
   return (
     <span ref={wrapRef} className="pc-brand-switcher" style={{ position: 'relative', fontSize: 13 }}>
-      <Tooltip label="Switch branding">
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        side="bottom"
+        align="end"
+        sideOffset={4}
+        zIndex={200}
+        ariaLabel="Switch branding"
+        contentClassName="pc-brand-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
+        contentStyle={{
+          minWidth: 220,
+          background: 'var(--bg-popover)',
+          backdropFilter: 'none',
+          WebkitBackdropFilter: 'none',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: 4,
+          boxShadow: '0 12px 32px color-mix(in oklab, black, transparent 40%), 0 0 0 1px color-mix(in oklab, var(--fg), transparent 96%)',
+        }}
+        trigger={
         <button
-          ref={buttonRef}
           type="button"
-          onClick={() => setOpen((v) => !v)}
           className="pc-brand-trigger"
           disabled={busy}
           style={{
@@ -135,8 +111,8 @@ export default function BrandSwitcher() {
             alignItems: 'center',
             gap: 6,
             background: 'transparent',
-            border: '1px solid var(--border, #2a2a2a)',
-            color: 'var(--fg-dim, #aaa)',
+            border: '1px solid var(--border)',
+            color: 'var(--fg-dim)',
             padding: '3px 8px',
             borderRadius: 4,
             cursor: busy ? 'default' : 'pointer',
@@ -153,29 +129,10 @@ export default function BrandSwitcher() {
           </span>
           <span className="pc-brand-trigger-caret" style={{ opacity: 0.6 }}>▾</span>
         </button>
-      </Tooltip>
-      {open && menuPos && typeof document !== 'undefined' && createPortal(
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="Branding"
-          className="pc-brand-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
-          style={{
-            position: 'fixed',
-            top: menuPos.top,
-            right: menuPos.right,
-            minWidth: 220,
-            background: '#0f1319',
-            backdropFilter: 'none',
-            WebkitBackdropFilter: 'none',
-            border: '1px solid #2a3344',
-            borderRadius: 6,
-            padding: 4,
-            zIndex: 200,
-            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
-          }}
-        >
-          <div style={{ padding: '4px 8px', color: 'var(--fg-mute, #777)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        }
+      >
+        <div role="menu" aria-label="Branding">
+          <div style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             Branding
           </div>
           {BRANDS.map((b) => {
@@ -197,7 +154,7 @@ export default function BrandSwitcher() {
                   textAlign: 'left',
                   background: isCurrent ? 'var(--accent)' : 'transparent',
                   border: 'none',
-                  color: isCurrent ? 'var(--accent-ink, #06121c)' : 'inherit',
+                  color: isCurrent ? 'var(--accent-ink)' : 'inherit',
                   cursor: 'pointer',
                   font: 'inherit',
                   padding: '6px 8px',
@@ -216,13 +173,12 @@ export default function BrandSwitcher() {
               </button></Tooltip>
             );
           })}
-          <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />
-          <div style={{ padding: '4px 8px', color: 'var(--fg-mute, #777)', fontSize: 10.5, lineHeight: 1.4 }}>
+          <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+          <div style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 10.5, lineHeight: 1.4 }}>
             Applies to the whole workspace. Hive mode uses the honeycomb theme.
           </div>
-        </div>,
-        document.body,
-      )}
+        </div>
+      </Popover>
     </span>
   );
 }
