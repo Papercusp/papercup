@@ -40,6 +40,8 @@ const h = vi.hoisted(() => {
   return {
     fakeTx,
     fakeSql,
+    /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
+    scopedClampFlag: { value: false },
     /** Every workspace id the (mocked) withWorkspace opened a tx for. */
     withWorkspaceCalls: [] as string[],
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
@@ -127,6 +129,19 @@ vi.mock('../../resolve-harness-paths', async (importOriginal) => {
     }),
   };
 });
+// scoped-superuser-workspace-clamp: toggle ONLY this flag via h.scopedClampFlag;
+// every other flag defers to the real resolver (PG is stubbed → FLAG_DEFAULTS),
+// so existing cases see unchanged flag behavior.
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    getFlag: async (key: string, scope?: string) =>
+      key === 'papercusp-scoped-superuser-clamp'
+        ? h.scopedClampFlag.value
+        : (actual.getFlag as (k: string, s?: string) => Promise<boolean>)(key, scope),
+  };
+});
 
 // _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
 // schemas; under vite-node's ESM transform there is no module-scope require,
@@ -177,6 +192,16 @@ registerProjectedTool({
   profile: 'engineer',
   expose: { mcp: { name: 'gatingtest:engineer' } },
   fn: probeFn('gatingtest:engineer'),
+});
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: crossWorkspace (spans workspaces)',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['operator'],
+  crossWorkspace: true,
+  expose: { mcp: { name: 'gatingtest:crossworkspace' } },
+  fn: probeFn('gatingtest:crossworkspace'),
 });
 
 afterAll(() => {
@@ -251,7 +276,57 @@ beforeEach(() => {
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
   seen.length = 0;
   h.withWorkspaceCalls.length = 0;
+  h.scopedClampFlag.value = false;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
+});
+
+/* ─── scoped-superuser-workspace-clamp (P-006 / P-007) ───────────────── */
+
+describe('scoped-superuser-workspace-clamp', () => {
+  // A scoped superuser session = ?superuser=1 + a concrete ?workspace=.
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+
+  it('flag OFF: a scoped superuser may call a crossWorkspace tool (today’s behavior)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool('gatingtest:crossworkspace', {}, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:crossworkspace-ok');
+  });
+
+  it('flag ON: a scoped superuser is DENIED a crossWorkspace tool (workspace_forbidden)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:crossworkspace', {}, scoped('ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('workspace_forbidden');
+  });
+
+  it('flag ON: an UNSCOPED (?workspace=*) superuser may still call a crossWorkspace tool', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:crossworkspace', {}, scoped('*'));
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:crossworkspace-ok');
+  });
+
+  it('flag ON: a scoped superuser’s foreign `workspace` ARG is overwritten with its own workspace', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { workspace: 'other-ws' }, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(seen.at(-1)?.args).toMatchObject({ workspace: 'ws-test' });
+  });
+
+  it('flag ON: a superuser with an UNRESOLVED workspace is rejected (no silent god-mode)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra()); // no ?workspace=, no header
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('scoped_superuser_workspace_unresolved');
+  });
+
+  it('flag OFF: an unresolved-workspace superuser still gets unscoped god-mode (unchanged)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool('gatingtest:crossworkspace', {}, superuserExtra());
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:crossworkspace-ok');
+  });
 });
 
 /* ─── tools/list ─────────────────────────────────────────────────────── */
