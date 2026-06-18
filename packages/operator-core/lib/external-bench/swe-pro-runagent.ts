@@ -10,18 +10,23 @@
  * the agent actually made; the driver sums it onto armMeta.coordCalls so the fairness audit can flag a
  * coordination arm whose agents never coordinated — the C4 trap that sank the tau2 +memory "lift", D-022).
  *
- * It wraps the EXISTING single-agent solver {@link runSingleAgentAttempt} (no re-roll), overriding
- * `GenerationPorts.clone` to return the already-prepared handle (runTopology owns the clone). The live spawn
- * binding (instantiate = spinRunAndCost; directive via env per D-020; coordCalls from agent_usage_samples)
- * cannot be unit-tested without docker+opus, so it is a SEPARATE injected `spawn` seam: the mapping +
- * structure here are fully unit-tested with a fake spawn; the live binding is exercised on the proof run.
+ * It wraps the shared generation primitive (`runArmGeneration`), overriding `GenerationPorts.clone` to
+ * return the already-prepared handle (runTopology owns the clone). The SOLVER blueprint is chosen by
+ * {@link sweProSolverBlueprint}(input.arm) per su-37e53's P-013 decision — `external-bench` (the FULL su
+ * spine) for EVERY su-system arm so per-task solving capability is CONSTANT (coordination is the only
+ * variable), `coding-solo` for the bare baseline floor; NEVER coding-solo for a su arm and NEVER a
+ * place_batch bee. The live spawn binding (instantiate = spinRunAndCost; directive via env per D-020;
+ * coordCalls from agent_usage_samples) cannot be unit-tested without docker+opus, so it is a SEPARATE
+ * injected `spawn` seam: the mapping + structure here are fully unit-tested with a fake spawn; the live
+ * binding is exercised on the proof run.
  */
 import type { GenerationStatus } from '@papercusp/bench-metrics';
 import type { AgentRunOutput, RunAgentInput } from './run-topology';
 import type { ArmAttempt, BenchTask, GenerationBudget, TaskCheckout } from './types';
 
 /** The injected spawn-on-an-existing-worktree seam → an {@link ArmAttempt} (+ optional model-call/coord
- *  counts the live binding reads from telemetry). Default = the live binding over `runSingleAgentAttempt`. */
+ *  counts the live binding reads from telemetry). Default = the live binding spinning
+ *  {@link sweProSolverBlueprint}(arm) — the su spine for su-system arms, coding-solo for the baseline. */
 export type SweProSpawn = (input: {
   task: BenchTask;
   /** The already-prepared worktree (from the seam's clone) the agent edits in place. */

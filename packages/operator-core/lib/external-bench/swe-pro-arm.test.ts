@@ -139,22 +139,24 @@ describe('sweProRowMeta', () => {
   });
 });
 
-describe('resolveSweProFrameworkSpec (P-012 framework-arm selection)', () => {
+describe('resolveSweProFrameworkSpec (P-012 framework selection, P-013 2-axis)', () => {
   const BLUEPRINTS: Record<string, TopologyBlueprintView> = {
     'su-independent': { id: 'su-independent', kind: 'harness', spine: { claimModel: 'self-claim-fifo' }, coordination: { broadcast: 'none' } },
-    'dist-broadcast': { id: 'dist-broadcast', kind: 'harness', spine: { claimModel: 'self-claim-priority' }, coordination: { broadcast: 'topic' } },
     hive: { id: 'hive', kind: 'hive', spine: { claimModel: 'decider-dispatch' } },
   };
   const lookup = (id: string): TopologyBlueprintView => BLUEPRINTS[id];
 
-  it('maps the plan vocabulary (vanilla/su/hive) → the topology blueprint id → a resolved CoordinationSpec', () => {
+  it('resolves BOTH axes: topology spec + per-task solver; vanilla & su share topology, differ ONLY in solver', () => {
     const vanilla = resolveSweProFrameworkSpec('vanilla', lookup);
-    expect(vanilla).toMatchObject({ arm: 'su-independent', broadcast: 'none', central: false });
+    expect(vanilla.spec).toMatchObject({ arm: 'su-independent', broadcast: 'none', central: false });
+    expect(vanilla.solverBlueprint).toBe('coding-solo'); // the bare floor
 
     const su = resolveSweProFrameworkSpec('su', lookup);
-    expect(su).toMatchObject({ arm: 'dist-broadcast', broadcast: 'topic', claimModel: 'self-claim-priority', central: false });
+    expect(su.spec).toMatchObject({ arm: 'su-independent', broadcast: 'none', central: false }); // SAME topology as vanilla
+    expect(su.solverBlueprint).toBe('external-bench'); // su spine — the ONLY delta vs vanilla ⇒ isolates the su capability
 
     const hive = resolveSweProFrameworkSpec('hive', lookup);
-    expect(hive).toMatchObject({ arm: 'hive', central: true }); // kind:'hive' ⇒ central orchestrator
+    expect(hive.spec).toMatchObject({ arm: 'hive', central: true }); // kind:'hive' ⇒ central orchestrator
+    expect(hive.solverBlueprint).toBe('external-bench'); // SAME solver as su — the ONLY delta vs su is topology ⇒ isolates coordination
   });
 });

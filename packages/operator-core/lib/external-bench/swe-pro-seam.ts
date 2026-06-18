@@ -94,16 +94,41 @@ export function makeSweProCloneGradeSeam(deps: SweProSeamDeps): CloneGradeSeam<T
 }
 
 /**
- * The plan's framework arms → the steward's topology BLUEPRINT ids (resolved via `resolveCoordinationSpec`).
- * Per the steward's directive (2026-06-18): vanilla = the no-coordination pole; `su` = a flat-distributed
- * self-claim topology; `hive` = the central Queen. The exact `su` distributed variant is a study knob
- * (dist-broadcast / dist-peer-review / dist-blackboard / dist-repo-huddle) — `dist-broadcast` is the default
- * single-capability coord arm; confirm the variant with the steward when the runtime pilot runs.
+ * The plan's framework arms (P-012) → their TWO axes, per su-37e53's runTopology + P-013 decision
+ * (2026-06-18, benchmark-arms-su-vs-queen-expansion):
+ *   - `topology` — the coordination structure (a topology blueprint runTopology's `resolveCoordinationSpec`
+ *     reads).
+ *   - `solver`   — the per-task SOLVER blueprint each agent spawns. Every su-system arm solves with the
+ *     FULL su spine (`external-bench`) held CONSTANT; the bare baseline is the floor (`coding-solo`).
+ *
+ * Holding the SOLVER constant (external-bench) makes `su`-vs-`hive` isolate COORDINATION; holding the
+ * TOPOLOGY constant (`su-independent`) makes `vanilla`-vs-`su` isolate the SU-SPINE capability. So
+ * `vanilla` is the no-coord FLOOR (su-independent topology + coding-solo solver) — NOT the su-system
+ * no-coord pole, which is `su` (su-independent topology + external-bench solver). Reconciled with the
+ * steward: vanilla ≠ su-independent.
  */
-export const SWE_PRO_TOPOLOGY_ARMS = {
-  vanilla: 'su-independent',
-  su: 'dist-broadcast',
-  hive: 'hive',
+export const SWE_PRO_FRAMEWORK_ARMS = {
+  vanilla: { topology: 'su-independent', solver: 'coding-solo' },
+  su: { topology: 'su-independent', solver: 'external-bench' },
+  hive: { topology: 'hive', solver: 'external-bench' },
 } as const;
 
-export type SweProFrameworkArm = keyof typeof SWE_PRO_TOPOLOGY_ARMS;
+export type SweProFrameworkArm = keyof typeof SWE_PRO_FRAMEWORK_ARMS;
+
+/** Coordination-study topology arm ids (+ baseline ids) whose per-task SOLVER is the bare floor — not the
+ *  su system. Everything else resolves to the su spine. */
+const SWE_PRO_BASELINE_ARMS = new Set<string>(['mini-swe', 'mini-swe-agent', 'baseline', 'vanilla', 'coding-solo']);
+
+/**
+ * P-013 (su-37e53's runTopology decision): the per-task SOLVER blueprint a SWE-Pro topology agent spawns,
+ * by arm. EVERY su-system arm — su-independent / dist-broadcast / dist-peer-review / dist-blackboard /
+ * dist-repo-huddle / hier-lead-worker / pair / ensemble-solve / hive — solves with the FULL su spine
+ * (`external-bench`), so per-task solving capability is CONSTANT and the coordination topology is the ONLY
+ * variable (the fairness core). The bare baseline is the floor (`coding-solo`). Every su-system role
+ * (worker / solver / driver / navigator / lead / judge) is an su-ROLE agent on this spine — NEVER a
+ * place_batch bee — which is exactly what P-013 requires. The topology STRUCTURE (1 solver vs ensemble vs
+ * pair vs lead+workers) is runTopology's job; the SOLVER blueprint is held constant here.
+ */
+export function sweProSolverBlueprint(arm: string): string {
+  return SWE_PRO_BASELINE_ARMS.has(arm) ? 'coding-solo' : 'external-bench';
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { makeSweProCloneGradeSeam, SWE_PRO_TOPOLOGY_ARMS } from './swe-pro-seam';
+import { makeSweProCloneGradeSeam, SWE_PRO_FRAMEWORK_ARMS, sweProSolverBlueprint } from './swe-pro-seam';
 import type { BenchTask, TaskCheckout } from './types';
 
 function task(id = 't1'): BenchTask {
@@ -81,7 +81,22 @@ describe('makeSweProCloneGradeSeam', () => {
     await expect(seam2.teardown(fakeCheckout(async () => { throw new Error('rm failed'); }))).resolves.toBeUndefined();
   });
 
-  it('maps the plan framework arms → the steward topology blueprint ids', () => {
-    expect(SWE_PRO_TOPOLOGY_ARMS).toEqual({ vanilla: 'su-independent', su: 'dist-broadcast', hive: 'hive' });
+  it('maps the plan framework arms → (topology, solver) per the P-013 2-axis decision', () => {
+    expect(SWE_PRO_FRAMEWORK_ARMS).toEqual({
+      vanilla: { topology: 'su-independent', solver: 'coding-solo' }, // the no-coord FLOOR (≠ su-independent arm)
+      su: { topology: 'su-independent', solver: 'external-bench' }, // the su-system no-coord pole
+      hive: { topology: 'hive', solver: 'external-bench' },
+    });
+  });
+
+  it('sweProSolverBlueprint: every su-system arm solves with the full su spine (constant); baseline = the floor', () => {
+    // su-system arms (su-37e53's P-013: per-task solving capability CONSTANT = external-bench across topologies)
+    for (const arm of ['su-independent', 'dist-broadcast', 'dist-peer-review', 'dist-blackboard', 'dist-repo-huddle', 'hier-lead-worker', 'pair', 'ensemble-solve', 'hive']) {
+      expect(sweProSolverBlueprint(arm)).toBe('external-bench');
+    }
+    // the bare floor — NEVER the su system
+    for (const arm of ['vanilla', 'mini-swe', 'mini-swe-agent', 'baseline', 'coding-solo']) {
+      expect(sweProSolverBlueprint(arm)).toBe('coding-solo');
+    }
   });
 });

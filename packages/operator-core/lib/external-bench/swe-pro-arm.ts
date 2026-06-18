@@ -13,10 +13,11 @@
  * clean su-vs-hive run.
  *
  * `resolveSweProFrameworkSpec` is the P-012 framework-arm = blueprint-selection mechanism for SWE-Pro: a
- * caller names the arm by the PLAN's vocabulary (`vanilla` / `su` / `hive`, {@link SWE_PRO_TOPOLOGY_ARMS}),
- * we map it to the steward's topology BLUEPRINT id and resolve it → a {@link CoordinationSpec} via an
- * injected blueprint-view lookup (live: reads `blueprint:catalog`; a static map in tests). So the framework
- * axis threads through the SAME shared dispatch the coordination study uses — no parallel selection path.
+ * caller names the arm by the PLAN's vocabulary (`vanilla` / `su` / `hive`, {@link SWE_PRO_FRAMEWORK_ARMS}),
+ * and we resolve BOTH its topology → a {@link CoordinationSpec} AND its per-task SOLVER blueprint
+ * (`external-bench` su spine vs `coding-solo` floor, P-013) via an injected blueprint-view lookup (live:
+ * reads `blueprint:catalog`; a static map in tests). So the framework axis threads through the SAME shared
+ * dispatch the coordination study uses — no parallel selection path.
  */
 import {
   resolveCoordinationSpec,
@@ -27,7 +28,7 @@ import {
 import type { AgentRunOutput, RunAgentInput, TopologyRowMeta, TopologyRunResult } from './run-topology';
 import { runTopology } from './run-topology';
 import type { TaskRunResult } from '@papercusp/bench-metrics';
-import { makeSweProCloneGradeSeam, SWE_PRO_TOPOLOGY_ARMS, type SweProFrameworkArm, type SweProGradeDiff } from './swe-pro-seam';
+import { makeSweProCloneGradeSeam, SWE_PRO_FRAMEWORK_ARMS, type SweProFrameworkArm, type SweProGradeDiff } from './swe-pro-seam';
 import { loadBenchTaskSet } from './task-sets';
 import type { CloneTaskRepo, ExtractDiff, TaskCheckout } from './types';
 
@@ -116,17 +117,21 @@ export async function runSweProArm(deps: SweProArmDeps): Promise<TopologyRunResu
 }
 
 /**
- * P-012 framework-arm = blueprint-selection mechanism (SWE-Pro). Map the plan's framework arm
- * (`vanilla` / `su` / `hive`) → its topology BLUEPRINT id ({@link SWE_PRO_TOPOLOGY_ARMS}) → a resolved
- * {@link CoordinationSpec}, via an injected `lookupBlueprint` (live: `blueprint:catalog` →
- * {@link TopologyBlueprintView}; a static map in tests). So a caller selects an arm by the plan's
- * vocabulary and threads it through the steward's shared coordination dispatch — one selection path for
- * the framework axis AND the coordination-topology study.
+ * P-012 framework-arm = blueprint-selection mechanism (SWE-Pro), resolving BOTH axes of a framework arm
+ * (`vanilla` / `su` / `hive`, {@link SWE_PRO_FRAMEWORK_ARMS}) per su-37e53's P-013 decision:
+ *   - `spec` — the {@link CoordinationSpec} resolved from the arm's TOPOLOGY blueprint (via the injected
+ *     `lookupBlueprint`: live `blueprint:catalog` → {@link TopologyBlueprintView}; a static map in tests).
+ *   - `solverBlueprint` — the per-task SOLVER blueprint (`external-bench` su spine for the su system,
+ *     `coding-solo` for the vanilla floor) the runAgent's spawn drives.
+ *
+ * Two axes, one selection path: holding `solverBlueprint` constant isolates coordination (su-vs-hive);
+ * holding the topology constant isolates the su spine (vanilla-vs-su). Threads through the steward's shared
+ * coordination dispatch — no parallel mechanism.
  */
 export function resolveSweProFrameworkSpec(
   frameworkArm: SweProFrameworkArm,
   lookupBlueprint: (blueprintId: string) => TopologyBlueprintView,
-): CoordinationSpec {
-  const blueprintId = SWE_PRO_TOPOLOGY_ARMS[frameworkArm];
-  return resolveCoordinationSpec(lookupBlueprint(blueprintId));
+): { spec: CoordinationSpec; solverBlueprint: string } {
+  const { topology, solver } = SWE_PRO_FRAMEWORK_ARMS[frameworkArm];
+  return { spec: resolveCoordinationSpec(lookupBlueprint(topology)), solverBlueprint: solver };
 }

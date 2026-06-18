@@ -6,6 +6,7 @@ import { Toaster } from 'sonner';
 // search params (?dock, ?switch) on every nuqs write. Ours merges over the full
 // current search. See ../lib/nuqs-tanstack-router-adapter.
 import { NuqsAdapter } from '../lib/nuqs-tanstack-router-adapter';
+import { useFlagStreamSync } from '../lib/use-flag-stream-sync';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { RootSyncProvider } from '@/app/_components/RootSyncProvider';
 import { OperatorConversationProvider } from '@/app/_components/OperatorConversationProvider';
@@ -132,6 +133,12 @@ export const Route = createRootRoute({
 });
 
 function RootComponent() {
+  // Keep the shared flag store live so a flag toggle (dev-rail FlagsPanel, or
+  // anywhere) re-renders gated UI immediately instead of going stale until a
+  // reload (flag-reactivity 2026-06-18). Called here at the root parent so its
+  // effect runs after RootSyncProvider installs the desktop IPC EventSource
+  // polyfill (React fires child effects before parent effects).
+  useFlagStreamSync();
   return (
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
