@@ -12,6 +12,7 @@
  * shape.
  */
 import { createRequire } from 'node:module';
+import { DateTime } from 'luxon';
 import { computeNextFireAt } from './cron';
 
 // `rrule` is a CommonJS package: under the ESM/tsx host its classes are exposed on the
@@ -22,6 +23,39 @@ import { computeNextFireAt } from './cron';
 // placement. Load it via createRequire (the repo's ESM-safe CJS pattern; cf.
 // libs/generic/resource-profile) so the named classes resolve at runtime.
 const { RRule, RRuleSet } = createRequire(import.meta.url)('rrule') as typeof import('rrule');
+
+/**
+ * tzid handling (EI-1370). The `rrule` lib's own `opts.tzid` mis-handles a calendar-time rule
+ * anchored on an absolute-instant DTSTART — `BYHOUR=9` came out at 09:00 UTC, not 09:00 in the
+ * zone. So when a `tzid` is set we instead run the rule in a FLOATING frame (a Date's UTC
+ * components ARE the wall-clock in `tzid`, per RFC 5545 DTSTART;TZID semantics), converting the
+ * query bound IN and each result OUT with luxon. luxon resolves DST correctly (9am ET = 13:00 UTC
+ * in summer, 14:00 UTC in winter). Non-tz schedules keep the prior UTC-floating behavior untouched.
+ */
+/** Real absolute instant → floating Date whose UTC components equal the wall-clock in `tzid`. */
+function realToFloating(real: Date, tzid: string): Date {
+  const z = DateTime.fromJSDate(real, { zone: 'utc' }).setZone(tzid);
+  return new Date(Date.UTC(z.year, z.month - 1, z.day, z.hour, z.minute, z.second, z.millisecond));
+}
+/** Floating Date (UTC components = wall-clock in `tzid`) → the real absolute instant. */
+function floatingToReal(floating: Date, tzid: string): Date {
+  return DateTime.fromObject(
+    {
+      year: floating.getUTCFullYear(),
+      month: floating.getUTCMonth() + 1,
+      day: floating.getUTCDate(),
+      hour: floating.getUTCHours(),
+      minute: floating.getUTCMinutes(),
+      second: floating.getUTCSeconds(),
+      millisecond: floating.getUTCMilliseconds(),
+    },
+    { zone: tzid },
+  ).toJSDate();
+}
+/** Normalized non-empty tzid, or null. */
+function normTzid(tzid: string | undefined): string | null {
+  return tzid && tzid.trim() ? tzid.trim() : null;
+}
 
 /**
  * The recurrence config stored on a routine's `trigger_config` (and authored on
@@ -56,9 +90,8 @@ export function computeNextFireFromRrule(cfg: ScheduleTrigger, from: Date): Date
     const opts = RRule.parseString(cfg.rrule);
     const dt = cfg.dtstart ? new Date(cfg.dtstart) : undefined;
     if (dt && Number.isFinite(dt.getTime())) opts.dtstart = dt;
-    // tzid governs floating-vs-zoned semantics so calendar-time rules survive DST
-    // (D-013). Full tz correctness is hardened at the integration layer.
-    if (cfg.tzid) opts.tzid = cfg.tzid;
+    // NB: we do NOT set opts.tzid — the zone is applied via the floating-frame conversion below
+    // (EI-1370); rrule's own tzid path mis-handles an absolute-instant DTSTART.
 
     const set = new RRuleSet();
     set.rrule(new RRule(opts));
@@ -71,6 +104,13 @@ export function computeNextFireFromRrule(cfg: ScheduleTrigger, from: Date): Date
       if (Number.isFinite(d.getTime())) set.exdate(d);
     }
 
+    const tzid = normTzid(cfg.tzid);
+    if (tzid) {
+      // Calendar-time in `tzid`: convert the query bound IN (real→floating) and the result OUT
+      // (floating→real) so BYHOUR/BYMINUTE mean wall-clock in the zone, DST-correct.
+      const next = set.after(realToFloating(from, tzid), false);
+      return next ? floatingToReal(next, tzid) : null;
+    }
     const next = set.after(from, false); // exclusive — strictly after `from`
     return next ?? null;
   } catch {
@@ -113,7 +153,7 @@ export function expandOccurrences(
       const opts = RRule.parseString(cfg.rrule);
       const dt = cfg.dtstart ? new Date(cfg.dtstart) : undefined;
       if (dt && Number.isFinite(dt.getTime())) opts.dtstart = dt;
-      if (cfg.tzid) opts.tzid = cfg.tzid;
+      // NB: zone applied via the floating-frame conversion below, not opts.tzid (EI-1370).
       const set = new RRuleSet();
       set.rrule(new RRule(opts));
       for (const iso of cfg.rdate ?? []) {
@@ -123,6 +163,12 @@ export function expandOccurrences(
       for (const iso of cfg.exdate ?? []) {
         const d = new Date(iso);
         if (Number.isFinite(d.getTime())) set.exdate(d);
+      }
+      const tzid = normTzid(cfg.tzid);
+      if (tzid) {
+        // Expand in the zone: bounds IN (real→floating), each occurrence OUT (floating→real).
+        const occ = set.between(realToFloating(rangeStart, tzid), realToFloating(rangeEnd, tzid), true);
+        return occ.slice(0, limit).map((d) => floatingToReal(d, tzid));
       }
       return set.between(rangeStart, rangeEnd, true).slice(0, limit); // inclusive bounds
     } catch {
