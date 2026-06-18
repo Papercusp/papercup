@@ -62,7 +62,7 @@ describe('buildRunCapabilityAttribution', () => {
     expect(res!.crossSuite.cells).toHaveLength(2);
     const mem = res!.crossSuite.rollup.find((r) => r.capability === '+memory')!;
     expect(mem.suites).toBe(1);
-    expect(mem.meanAccuracyDelta).toBeCloseTo(1, 6);
+    expect(mem.meanValueDelta).toBeCloseTo(1, 6);
     const coord = res!.crossSuite.rollup.find((r) => r.capability === '+coord')!;
     expect(coord.suites).toBe(1);
     expect(coord.totalUnlocked).toBe(2);
@@ -100,6 +100,6 @@ describe('buildRunCapabilityAttribution', () => {
     });
     expect(res!.control).toBe('baseline-b-native');
     expect(res!.perSuite[0].capabilities.map((c) => c.capability)).toEqual(['papercusp']);
-    expect(res!.perSuite[0].capabilities[0].accuracyDelta).toBeCloseTo(1, 6);
+    expect(res!.perSuite[0].capabilities[0].valueDelta).toBeCloseTo(1, 6);
   });
 });

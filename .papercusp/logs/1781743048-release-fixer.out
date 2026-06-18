@@ -1,0 +1,2 @@
+Sidebar **test files did not change** in the range — only the components were refactored (styles extracted). If rendered output shifted, those unchanged tests are now stale (deterministic). Let me reproduce them at HEAD. First, a quick check whether `.papercusp` is a symlink (explains the earlier in-tree write block) and a confirmation I can run vitest.
+`.papercusp/scratch` is a real in-tree dir — the earlier block was tri

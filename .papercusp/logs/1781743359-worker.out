@@ -1,0 +1,16 @@
+The analysis is fully confirmed. The bug's exact nature and complete fix:
+
+**Root cause**: `liveBeeRunDeps.spawn()` in `bee-instance.ts` (line 241) calls `spawnAgentInHarness()` without forwarding `timeoutMs`. The `timeoutMs` from `cfg` (= `--timeout-ms` flag) is available inside `makeBeeRunInstance` at line 100, but at line 94 the spawn call only passes `{brief, runInput}` — not `timeoutMs`. So the subprocess hard-kill always falls through to `invokeTimeoutMs()` (45 min default).
+
+**The three-line fix required** in `packages/operator-core/lib/iq-battery/bee-instance.ts`:
+1. Line 49: add `timeoutMs?: number` to spawn input type  
+2. Line 94: pass `timeoutMs: cfg.timeoutMs` in the `deps.spawn(...)` call  
+3. Line 241: destructure `timeoutMs` in `liveBeeRunDeps.spawn` and pass it to `spawnAgentInHarness`
+
+The `OperatorSpawnInput.timeoutMs` field (operator-spawn.ts line 333) and the forwarding to `spawnInvokeOnce` (line 955) already exist — only the IQ battery spawn path is missing the connection.
+
+**Blocker preventing implementation**: This session cannot make file edits. The `.claude/settings.json` is empty (no pre-granted permissions), all file write operations (Edit/Write tools) and Bash write/network operations require interactive approval that isn't coming in this automated context. The `improvements:resolve` MCP tool is also unavailable because the session's `.mcp.json` has `role=planner` which lacks `coord:write` capability.
+
+The fix is trivial (3-line change + 1 regression test) but blocked by session configuration.
+
+ESCALATE: cannot implement EI-172 fix — session lacks file write permissions (empty .claude/settings.json, no pre-granted allowlist) and MCP write tools are unavailable (role=planner in .mcp.json excludes coord:write). Root cause + exact fix documented above; fix is unambiguous and uncontroversial.

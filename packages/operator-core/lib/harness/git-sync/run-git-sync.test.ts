@@ -64,6 +64,26 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('P-004 flag-ON (loadRoster supplied): peels a per-agent commit (intent + Co-Authored-By) before the catch-all', async () => {
+    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed to bee-7
+    writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      loadRoster: async () => [{ agent: 'bee-7', agentLabel: 'Bee Seven', intent: 'wire the parser', files: ['mine.txt'] }],
+    });
+    expect(out.status).toBe('synced');
+    // origin received BOTH the per-agent commit (intent subject) AND the catch-all auto-commit.
+    const subjects = originLog();
+    expect(subjects).toMatch(/wire the parser \(Bee Seven\)/);
+    expect(subjects).toMatch(/auto-commit test/);
+    // the per-agent commit carries a Co-Authored-By trailer crediting the agent (DERIVED attribution).
+    const bodies = git(originDir, 'log', '--format=%B', 'main');
+    expect(bodies).toContain('Co-Authored-By: Bee Seven <bee-7@agents.papercusp>');
+    // both files landed; the tree is clean.
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('returns "nothing" on a clean, up-to-date tree', async () => {
     const out = await runGitSync('test', { repoPath: repo, config: cfg });
     expect(out.status).toBe('nothing');

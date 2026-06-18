@@ -1,0 +1,28 @@
+**I need your help to proceed.** The file writes are blocked waiting for permission approval in your Claude Code UI. You should be seeing a permission prompt asking to allow writes to `packages/operator-core/lib/iq-battery/bee-instance.ts`.
+
+If you can approve that (or set the permission mode to "Accept all edits" / update `.claude/settings.json`), I'll apply the 3-file fix immediately. Here's exactly what needs to change:
+
+**`bee-instance.ts` line 233** — add `timeoutMs?: number | null` to `liveBeeRunDeps` args:
+```typescript
+export function liveBeeRunDeps(args: {
+  sql: postgres.Sql;
+  workspaceId: string;
+  harness: string;
+  parentSpawnId?: string | null;
+  planSlug?: string | null;
+  timeoutMs?: number | null;   // ← ADD
+}): BeeRunDeps {
+```
+
+**`bee-instance.ts` line 251** — pass it to `spawnAgentInHarness`:
+```typescript
+        extras: [`APIARY_CASE=${runInput.case.id}`, `APIARY_REPEAT=${runInput.repeat}`],
+        ...(args.timeoutMs != null ? { timeoutMs: args.timeoutMs } : {}),  // ← ADD
+```
+
+**`beekeeper-gen0-runner.ts` line 355** — thread `timeoutMs` into the call:
+```typescript
+      ...liveBeeRunDeps({ sql, workspaceId, harness: args.harness, planSlug: 'apiary-generation-0-battery-2026-06-08', timeoutMs: args.timeoutMs }),
+```
+
+Once you grant write permission (or approve the prompt), I'll apply all three changes plus the regression test and run `npm run test:affected`.

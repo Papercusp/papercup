@@ -146,3 +146,29 @@ export function attributionMapForRepo(
   }
   return map;
 }
+
+/**
+ * P-006: the set of agent ids to ASSIGN a git-sync escalation to — the agents who declared
+ * the quarantined/failing files — instead of a fleet broadcast (the F5 "assigns to no one").
+ * `scope` is 'superproject' or a submodule path (matching ScopedContentError/ScopedOversized);
+ * each file is resolved through the right per-repo map. Returns the deduped agent ids (empty
+ * when nothing is attributable → the caller falls back to a broadcast). Pure + testable.
+ */
+export function agentsForScopedFiles(
+  roster: AttributionRosterEntry[],
+  scopedFiles: Array<{ scope: string; file: string }>,
+): string[] {
+  const agents = new Set<string>();
+  const cache = new Map<string, Map<string, FileAttribution>>();
+  for (const { scope, file } of scopedFiles) {
+    const prefix = scope === 'superproject' ? '' : scope;
+    let m = cache.get(prefix);
+    if (!m) {
+      m = attributionMapForRepo(roster, prefix);
+      cache.set(prefix, m);
+    }
+    const hit = m.get(file);
+    if (hit) agents.add(hit.agent);
+  }
+  return [...agents];
+}

@@ -86,7 +86,7 @@ describe('agent-names registry (PG)', () => {
     const first = await registerAgentName(WS, 'builder-1', 'alice');
     expect(first).toMatchObject({ agentName: 'builder-1', ownerUser: 'alice' });
     const second = await registerAgentName(WS, 'builder-1', 'alice');
-    expect(second.createdAt).toBe(first.createdAt); // not recreated — same row
+    expect(second.createdAt).toEqual(first.createdAt); // not recreated — same created_at (Date value-equal)
     const mine = await listNamesForOwner(WS, 'alice');
     expect(mine.filter((n) => n.agentName === 'builder-1')).toHaveLength(1); // upsert, not duplicate
     expect(await agentNameOwner(WS, 'builder-1')).toBe('alice');

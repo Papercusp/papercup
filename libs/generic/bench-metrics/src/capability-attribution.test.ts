@@ -40,7 +40,7 @@ function mk(over: Partial<TaskRunResult> = {}): TaskRunResult {
   };
 }
 
-/** One scored attempt: task, arm, resolved, tokens (1M Opus input ≈ $5). */
+/** One scored boolean attempt: task, arm, resolved, tokens (1M Opus input ≈ $5). */
 function attempt(taskId: string, arm: ArmId, resolved: boolean, tokensIn: number, suite: BenchSuite = 'swe-bench-pro'): TaskRunResult {
   return mk({
     taskId,
@@ -53,12 +53,17 @@ function attempt(taskId: string, arm: ArmId, resolved: boolean, tokensIn: number
   });
 }
 
-/** N tasks for one arm, each with a single seed of the given resolved value + token cost. */
+/** One scored CONTINUOUS attempt: resolved=null, a numeric score ∈ [0,1] (SwarmBench / rubric suites). */
+function scoreAttempt(taskId: string, arm: ArmId, score: number, suite: BenchSuite = 'swarmbench'): TaskRunResult {
+  return mk({ taskId, arm, suite, resolved: null, score, graderStatus: 'passed', tokensIn: 1_000_000, tokensTotal: 1_000_000 });
+}
+
+/** N tasks for one arm, each a single seed of the given resolved value + token cost. */
 function tasks(arm: ArmId, ids: string[], resolved: boolean, tokensIn: number, suite: BenchSuite = 'swe-bench-pro'): TaskRunResult[] {
   return ids.map((id) => attempt(id, arm, resolved, tokensIn, suite));
 }
 
-describe('buildCapabilityAttribution', () => {
+describe('buildCapabilityAttribution (pass@1)', () => {
   it('holds the control fixed and reports each capability arm lift over it (D-011 inverse view)', () => {
     const ids = ['t1', 't2', 't3', 't4'];
     const rows = [
@@ -69,105 +74,108 @@ describe('buildCapabilityAttribution', () => {
     ];
     const rep = buildCapabilityAttribution(rows);
     expect(rep.control).toBe('vanilla');
+    expect(rep.metric).toBe('passAt1');
     expect(rep.suite).toBe('swe-bench-pro');
-    // capability order is first-seen, control removed
     expect(rep.capabilities.map((c) => c.capability)).toEqual(['+memory', '+coord']);
 
     const mem = rep.capabilities.find((c) => c.capability === '+memory')!;
-    expect(mem.controlPassAt1).toBeCloseTo(0, 6);
-    expect(mem.capabilityPassAt1).toBeCloseTo(1, 6);
-    expect(mem.accuracyDelta).toBeCloseTo(1, 6);
+    expect(mem.controlValue).toBeCloseTo(0, 6);
+    expect(mem.capabilityValue).toBeCloseTo(1, 6);
+    expect(mem.valueDelta).toBeCloseTo(1, 6);
     expect(mem.unlockedTasks).toEqual(['t1', 't2', 't3', 't4']);
     expect(mem.regressedTasks).toEqual([]);
     expect(mem.tasksCompared).toBe(4);
 
     const coord = rep.capabilities.find((c) => c.capability === '+coord')!;
-    expect(coord.capabilityPassAt1).toBeCloseTo(0.5, 6);
-    expect(coord.accuracyDelta).toBeCloseTo(0.5, 6);
+    expect(coord.capabilityValue).toBeCloseTo(0.5, 6);
+    expect(coord.valueDelta).toBeCloseTo(0.5, 6);
     expect(coord.unlockedTasks).toEqual(['t1', 't2']);
     expect(coord.neutralTasks).toEqual(['t3', 't4']); // both fail t3/t4 → neutral
   });
 
-  it('flags significance via CI non-overlap on pass@1 (conservative)', () => {
+  it('matches buildSuiteReport pass@1 numbers (delegates to aggregateArm)', () => {
+    const ids = ['t1', 't2', 't3'];
+    const rows = [
+      ...tasks('vanilla', ids, false, 1_000_000),
+      // +memory resolves t1,t2 but not t3 → pass@1 = 2/3
+      attempt('t1', '+memory', true, 1_000_000),
+      attempt('t2', '+memory', true, 1_000_000),
+      attempt('t3', '+memory', false, 1_000_000),
+    ];
+    const c = buildCapabilityAttribution(rows).capabilities[0];
+    expect(c.capabilityValue).toBeCloseTo(2 / 3, 6);
+  });
+
+  it('flags significance via CI non-overlap on the value (conservative)', () => {
     const ids = ['t1', 't2', 't3', 't4', 't5', 't6'];
-    // control all-fail (CI collapses to [0,0]); +memory all-pass (CI [1,1]) → disjoint → significant.
-    const rows = [...tasks('vanilla', ids, false, 1_000_000), ...tasks('+memory', ids, true, 1_000_000)];
-    const sig = buildCapabilityAttribution(rows).capabilities[0];
+    const sig = buildCapabilityAttribution([...tasks('vanilla', ids, false, 1_000_000), ...tasks('+memory', ids, true, 1_000_000)]).capabilities[0];
     expect(sig.significant).toBe(true);
 
-    // Both arms identical per-task rate (0.5 each task) → CIs equal → NOT disjoint → not significant.
     const half = (arm: ArmId): TaskRunResult[] =>
       ids.flatMap((id) => [attempt(id, arm, true, 1_000_000), attempt(id, arm, false, 1_000_000)]);
     const overlap = buildCapabilityAttribution([...half('vanilla'), ...half('+memory')]).capabilities[0];
     expect(overlap.significant).toBe(false);
-    expect(overlap.accuracyDelta).toBeCloseTo(0, 6);
+    expect(overlap.valueDelta).toBeCloseTo(0, 6);
   });
 
   it('cost-normalizes the lift (D-008): paretoDominates only when better AND no costlier', () => {
     const ids = ['t1', 't2', 't3', 't4'];
-    // +memory: better accuracy (all pass) AND cheaper per attempt (100k vs control 1M) → strictly dominates.
     const cheaperBetter = buildCapabilityAttribution([
       ...tasks('vanilla', ids, false, 1_000_000),
       ...tasks('+memory', ids, true, 100_000),
     ]).capabilities[0];
     expect(cheaperBetter.paretoDominates).toBe(true);
-    expect(cheaperBetter.costFraction).toBeCloseTo(0.1, 6); // 100k / 1M mean $/attempt
+    expect(cheaperBetter.costFraction).toBeCloseTo(0.1, 6);
 
-    // +memory: better accuracy but MORE expensive (1M vs control 100k) → not strictly Pareto-better.
     const pricierBetter = buildCapabilityAttribution([
       ...tasks('vanilla', ids, false, 100_000),
       ...tasks('+memory', ids, true, 1_000_000),
     ]).capabilities[0];
-    expect(pricierBetter.accuracyDelta).toBeGreaterThan(0);
+    expect(pricierBetter.valueDelta).toBeGreaterThan(0);
     expect(pricierBetter.paretoDominates).toBe(false);
   });
 
   it('costRatio is costPerResolved(cap)/control, null when the control resolves nothing', () => {
     const ids = ['t1', 't2', 't3', 't4'];
-    // control resolves nothing → control.costPerResolved is null → costRatio null.
     const noCtrlResolved = buildCapabilityAttribution([
       ...tasks('vanilla', ids, false, 1_000_000),
       ...tasks('+memory', ids, true, 1_000_000),
     ]).capabilities[0];
     expect(noCtrlResolved.costRatio).toBeNull();
 
-    // control 2/4 @1M ($5/row), +memory 4/4 @1M → cpr_ctrl = (4·5)/2 = 10; cpr_mem = (4·5)/4 = 5 → ratio 0.5.
     const ratio = buildCapabilityAttribution([
       ...tasks('vanilla', ['t1', 't2'], true, 1_000_000),
       ...tasks('vanilla', ['t3', 't4'], false, 1_000_000),
       ...tasks('+memory', ids, true, 1_000_000),
     ]).capabilities[0];
-    expect(ratio.costRatio).toBeCloseTo(0.5, 6); // cheaper per resolved task
+    expect(ratio.costRatio).toBeCloseTo(0.5, 6);
   });
 
   it('classifies per-task unlocked / regressed / neutral over commonly-scored tasks', () => {
     const rows = [
-      // control: t1 pass, t2 fail, t3 pass
       attempt('t1', 'vanilla', true, 1_000_000),
       attempt('t2', 'vanilla', false, 1_000_000),
       attempt('t3', 'vanilla', true, 1_000_000),
-      // +coord: t1 fail (regressed), t2 pass (unlocked), t3 pass (neutral), t4 pass (no control row → ignored)
-      attempt('t1', '+coord', false, 1_000_000),
-      attempt('t2', '+coord', true, 1_000_000),
-      attempt('t3', '+coord', true, 1_000_000),
-      attempt('t4', '+coord', true, 1_000_000),
+      attempt('t1', '+coord', false, 1_000_000), // regressed
+      attempt('t2', '+coord', true, 1_000_000), // unlocked
+      attempt('t3', '+coord', true, 1_000_000), // neutral
+      attempt('t4', '+coord', true, 1_000_000), // no control row → ignored
     ];
     const c = buildCapabilityAttribution(rows).capabilities[0];
     expect(c.unlockedTasks).toEqual(['t2']);
     expect(c.regressedTasks).toEqual(['t1']);
     expect(c.neutralTasks).toEqual(['t3']);
-    expect(c.tasksCompared).toBe(3); // t4 excluded (not scored in control)
+    expect(c.tasksCompared).toBe(3);
   });
 
   it('excludes infra-error rows from the per-task rate and the headline', () => {
     const rows = [
       attempt('t1', 'vanilla', false, 1_000_000),
       attempt('t1', '+memory', true, 1_000_000),
-      // a generation-infra row on +memory — must not count as a resolved/fail
       mk({ taskId: 't2', arm: '+memory', generationStatus: 'error', resolved: null, tokensIn: 1_000_000, tokensTotal: 1_000_000 }),
     ];
     const c = buildCapabilityAttribution(rows).capabilities[0];
-    expect(c.tasksCompared).toBe(1); // only t1 scored in both
+    expect(c.tasksCompared).toBe(1);
     expect(c.unlockedTasks).toEqual(['t1']);
   });
 
@@ -188,7 +196,7 @@ describe('buildCapabilityAttribution', () => {
     const rows = [...tasks('baseline-b-native', ids, false, 1_000_000), ...tasks('+memory', ids, true, 1_000_000)];
     const rep = buildCapabilityAttribution(rows, { control: 'baseline-b-native' });
     expect(rep.control).toBe('baseline-b-native');
-    expect(rep.capabilities[0].accuracyDelta).toBeCloseTo(1, 6);
+    expect(rep.capabilities[0].valueDelta).toBeCloseTo(1, 6);
   });
 
   it('throws on empty rows and on a missing control arm', () => {
@@ -204,28 +212,75 @@ describe('buildCapabilityAttribution', () => {
   });
 });
 
+describe('buildCapabilityAttribution (meanScore — continuous / partial-credit suites)', () => {
+  it('attributes on the continuous score when metric=meanScore (resolved=null rows)', () => {
+    const rows = [
+      // vanilla: scores 0.2, 0.4 → meanScore 0.3
+      scoreAttempt('s1', 'vanilla', 0.2),
+      scoreAttempt('s2', 'vanilla', 0.4),
+      // +coord: scores 0.6, 0.8 → meanScore 0.7
+      scoreAttempt('s1', '+coord', 0.6),
+      scoreAttempt('s2', '+coord', 0.8),
+    ];
+    const rep = buildCapabilityAttribution(rows, { metric: 'meanScore' });
+    expect(rep.metric).toBe('meanScore');
+    const c = rep.capabilities[0];
+    expect(c.controlValue).toBeCloseTo(0.3, 6);
+    expect(c.capabilityValue).toBeCloseTo(0.7, 6);
+    expect(c.valueDelta).toBeCloseTo(0.4, 6);
+    // per-task: +coord scores strictly higher on both → both unlocked
+    expect(c.unlockedTasks).toEqual(['s1', 's2']);
+    expect(c.regressedTasks).toEqual([]);
+  });
+
+  it('pass@1 (default) would read continuous rows as fails — meanScore is the right metric', () => {
+    const rows = [scoreAttempt('s1', 'vanilla', 0.2), scoreAttempt('s1', '+coord', 0.9)];
+    // default metric=passAt1: resolved=null → 0 for both → no lift seen (the degeneracy meanScore fixes)
+    const passAt1 = buildCapabilityAttribution(rows).capabilities[0];
+    expect(passAt1.valueDelta).toBeCloseTo(0, 6);
+    // meanScore: the real lift surfaces
+    const meanScore = buildCapabilityAttribution(rows, { metric: 'meanScore' }).capabilities[0];
+    expect(meanScore.valueDelta).toBeCloseTo(0.7, 6);
+    expect(meanScore.unlockedTasks).toEqual(['s1']);
+  });
+
+  it('a continuous regression is bucketed as regressed', () => {
+    const rows = [
+      scoreAttempt('s1', 'vanilla', 0.8),
+      scoreAttempt('s1', '+coord', 0.3), // lower → regressed
+    ];
+    const c = buildCapabilityAttribution(rows, { metric: 'meanScore' }).capabilities[0];
+    expect(c.valueDelta).toBeLessThan(0);
+    expect(c.regressedTasks).toEqual(['s1']);
+  });
+});
+
 describe('buildCrossSuiteAttribution', () => {
-  it('folds per-suite reports into cells + a per-capability roll-up', () => {
+  it('folds boolean + continuous suite reports into one matrix + per-capability roll-up', () => {
     const swe = buildCapabilityAttribution([
       ...tasks('vanilla', ['a1', 'a2', 'a3', 'a4'], false, 1_000_000, 'swe-bench-pro'),
-      ...tasks('+memory', ['a1', 'a2', 'a3', 'a4'], true, 100_000, 'swe-bench-pro'), // sig + cheaper + better
+      ...tasks('+memory', ['a1', 'a2', 'a3', 'a4'], true, 100_000, 'swe-bench-pro'), // sig + cheaper + better (pass@1)
     ]);
-    const term = buildCapabilityAttribution([
-      ...tasks('vanilla', ['b1', 'b2'], true, 1_000_000, 'terminal-bench'),
-      ...tasks('+memory', ['b1', 'b2'], false, 1_000_000, 'terminal-bench'), // a regression on terminal-bench
-    ]);
-    const cross = buildCrossSuiteAttribution([swe, term]);
+    const swarm = buildCapabilityAttribution(
+      [
+        scoreAttempt('s1', 'vanilla', 0.1),
+        scoreAttempt('s2', 'vanilla', 0.1),
+        scoreAttempt('s1', '+memory', 0.9),
+        scoreAttempt('s2', '+memory', 0.9),
+      ],
+      { metric: 'meanScore' },
+    );
+    const cross = buildCrossSuiteAttribution([swe, swarm]);
 
     expect(cross.cells).toHaveLength(2);
-    expect(cross.cells.map((c) => c.suite)).toEqual(['swe-bench-pro', 'terminal-bench']);
+    expect(cross.cells.map((c) => c.suite)).toEqual(['swe-bench-pro', 'swarmbench']);
+    expect(cross.cells.map((c) => c.metric)).toEqual(['passAt1', 'meanScore']);
 
     const roll = cross.rollup.find((r) => r.capability === '+memory')!;
     expect(roll.suites).toBe(2);
-    expect(roll.meanAccuracyDelta).toBeCloseTo((1 + -1) / 2, 6); // +1 on swe, -1 on terminal
-    expect(roll.suitesSignificant).toBe(2); // both CIs collapse (all-pass vs all-fail) → disjoint
-    expect(roll.suitesParetoBetter).toBe(1); // only swe (cheaper+better); terminal regressed
-    expect(roll.totalUnlocked).toBe(4); // 4 on swe, 0 on terminal
-    expect(roll.totalRegressed).toBe(2); // 0 on swe, 2 on terminal
+    expect(roll.suitesSignificant).toBe(2);
+    expect(roll.totalUnlocked).toBe(6); // 4 on swe + 2 on swarm
+    expect(roll.totalRegressed).toBe(0);
     expect(cross.caveats).toEqual(ATTRIBUTION_CAVEATS);
   });
 
@@ -245,16 +300,25 @@ describe('buildCrossSuiteAttribution', () => {
 });
 
 describe('formatAttributionLines', () => {
-  it('marks a significant Pareto-better lift ✓, a regression ✗', () => {
+  it('marks a significant Pareto-better pass@1 lift ✓, a no-lift ·', () => {
     const rep = buildCapabilityAttribution([
       ...tasks('vanilla', ['t1', 't2', 't3', 't4'], false, 1_000_000),
-      ...tasks('+memory', ['t1', 't2', 't3', 't4'], true, 100_000), // sig + cheaper + better
-      ...tasks('+coord', ['t1', 't2', 't3', 't4'], false, 1_000_000), // no lift
+      ...tasks('+memory', ['t1', 't2', 't3', 't4'], true, 100_000),
+      ...tasks('+coord', ['t1', 't2', 't3', 't4'], false, 1_000_000),
     ]);
     const lines = formatAttributionLines(rep);
     expect(lines[0]).toMatch(/^✓ \+memory vs vanilla on swe-bench-pro: \+100\.0pp pass@1 \(sig\)/);
-    expect(lines[0]).toContain('cost n/a'); // control resolved nothing → costPerResolved null → ratio n/a
-    // +coord: 0 delta → neutral mark '·'
+    expect(lines[0]).toContain('cost n/a');
     expect(lines[1].startsWith('·')).toBe(true);
+  });
+
+  it('formats a meanScore lift with the score delta (not pp)', () => {
+    const rep = buildCapabilityAttribution(
+      [scoreAttempt('s1', 'vanilla', 0.2), scoreAttempt('s2', 'vanilla', 0.2), scoreAttempt('s1', '+coord', 0.7), scoreAttempt('s2', '+coord', 0.7)],
+      { metric: 'meanScore' },
+    );
+    const line = formatAttributionLines(rep)[0];
+    expect(line).toContain('+0.500 meanScore');
+    expect(line).not.toContain('pp');
   });
 });

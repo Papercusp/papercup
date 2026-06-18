@@ -61,6 +61,7 @@ export {
   formatAttributionLines,
   DEFAULT_CONTROL_ARM,
   ATTRIBUTION_CAVEATS,
+  type AttributionMetric,
   type CapabilityArmAttribution,
   type CapabilityAttributionReport,
   type CapabilityAttributionOpts,

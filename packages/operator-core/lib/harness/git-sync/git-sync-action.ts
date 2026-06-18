@@ -28,6 +28,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
+import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
@@ -691,6 +692,48 @@ async function gitSyncRuntimeGate(slug: string): Promise<GitSyncEligibility> {
   return gitSyncEligibility(entry);
 }
 
+/** P-004/P-006: build the live attribution roster (active agents + their declared files) from
+ *  coord presence. Best-effort — a presence-read failure degrades to [] (no attribution). The lazy
+ *  import breaks a load-time cycle (git-sync-action is loaded by the system-action registry). */
+async function loadAttributionRoster(workspaceId: string | null): Promise<AttributionRosterEntry[]> {
+  try {
+    const { listPresence } = await import('../../agent-tools/coordination/presence');
+    const recs = await listPresence({ workspaceId });
+    return recs
+      .map((r) => ({
+        agent: r.ownerId,
+        agentLabel: r.ownerLabel ?? undefined,
+        intent: r.intent ?? undefined,
+        files: Array.isArray(r.currentFiles) ? r.currentFiles : [],
+      }))
+      .filter((e) => e.files.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** P-006 (assign-don't-broadcast / F5): recipients for a content-guard escalation — the agents who
+ *  declared the quarantined files (ASSIGNED, not a fleet broadcast). Returns ['*'] when derived
+ *  attribution is OFF or nothing matched, so it degrades to today's broadcast. Gated on the same
+ *  GIT_SYNC_DERIVED_ATTRIBUTION flag as P-004 (both DERIVE who from presence). */
+async function assigneesForContentErrors(
+  slug: string,
+  workspaceId: string | null,
+  contentErrors: ScopedContentError[],
+): Promise<string[]> {
+  try {
+    if (!(await getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug))) return ['*'];
+    const roster = await loadAttributionRoster(workspaceId);
+    const agents = agentsForScopedFiles(
+      roster,
+      contentErrors.map((c) => ({ scope: c.scope, file: c.file })),
+    );
+    return agents.length ? agents : ['*'];
+  } catch {
+    return ['*'];
+  }
+}
+
 /** The registered `system:git-sync` handler. */
 async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   const { installSlug: slug, workspaceId } = ctx;
@@ -753,28 +796,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     outcome = await runGitSync(slug, {
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
-      loadRoster: attributionOn
-        ? async () => {
-            try {
-              // Lazy import: git-sync-action is loaded by the system-action registry, and the
-              // presence module pulls in identity → … → the registry — a top-level import would
-              // close that cycle and leave a partial export at load. Deferring to call-time (only
-              // when the flag is ON) breaks the cycle. Matches the lazy-import idiom used here.
-              const { listPresence } = await import('../../agent-tools/coordination/presence');
-              const recs = await listPresence({ workspaceId });
-              return recs
-                .map((r) => ({
-                  agent: r.ownerId,
-                  agentLabel: r.ownerLabel ?? undefined,
-                  intent: r.intent ?? undefined,
-                  files: Array.isArray(r.currentFiles) ? r.currentFiles : [],
-                }))
-                .filter((e) => e.files.length > 0);
-            } catch {
-              return [];
-            }
-          }
-        : undefined,
+      loadRoster: attributionOn ? () => loadAttributionRoster(workspaceId) : undefined,
     });
   } finally {
     if (lock.state === 'acquired') await releaseAll(cd, acquired);
@@ -847,7 +869,10 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
           `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
           contentErrors.map((c) => `${c.scope}/${c.file}`).join(', ');
         console.warn(`[git-sync] ${slug}: ${summary}`);
-        await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary, category: 'git-sync' }).catch(() => {});
+        // P-006: ASSIGN to the agents who edited the quarantined files (derived from presence),
+        // not a fleet broadcast. Falls back to ['*'] when attribution is off / unattributable.
+        const to = await assigneesForContentErrors(slug, workspaceId, contentErrors);
+        await sendMessage(GIT_SYNC_IDENTITY, { to, summary, category: 'git-sync' }).catch(() => {});
       }
     } else if (!(await contentFixerInFlight(slug))) {
       console.warn(`[git-sync] ${slug}: ${contentErrors.length} content error(s) quarantined — dispatching content-fixer`);

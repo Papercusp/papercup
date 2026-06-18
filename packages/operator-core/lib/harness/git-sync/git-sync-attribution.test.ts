@@ -2,11 +2,30 @@ import { describe, it, expect } from 'vitest';
 import {
   groupFilesForAttribution,
   attributionMapForRepo,
+  agentsForScopedFiles,
   intentToSubject,
   coAuthorTrailer,
   DEFAULT_GIT_SYNC_SUBJECT,
   type FileAttribution,
 } from './git-sync-attribution';
+
+describe('agentsForScopedFiles (P-006 assign-don\'t-broadcast)', () => {
+  const roster = [
+    { agent: 'ag1', files: ['apps/operator/x.ts'] },
+    { agent: 'ag2', files: ['libs/papercusp/packages/y.ts'] },
+  ];
+  it('maps superproject + submodule-scoped files to their declaring agents (deduped)', () => {
+    const agents = agentsForScopedFiles(roster, [
+      { scope: 'superproject', file: 'apps/operator/x.ts' },
+      { scope: 'libs/papercusp', file: 'packages/y.ts' }, // submodule-relative
+      { scope: 'libs/papercusp', file: 'packages/y.ts' }, // dup → deduped
+    ]);
+    expect(agents.sort()).toEqual(['ag1', 'ag2']);
+  });
+  it('returns [] when nothing is attributable (caller falls back to broadcast)', () => {
+    expect(agentsForScopedFiles(roster, [{ scope: 'superproject', file: 'unowned.ts' }])).toEqual([]);
+  });
+});
 
 describe('groupFilesForAttribution (P-004)', () => {
   it('groups attributed files per agent + a catch-all remainder LAST', () => {

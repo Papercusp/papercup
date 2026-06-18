@@ -161,6 +161,9 @@ export interface GaiaAgentConfig {
   maxToolResultChars?: number;
   /** Truncate a trajectory step summary to this many chars. Default 280. */
   trajectorySummaryChars?: number;
+  /** Override the system prompt (default the GAIA FINAL-ANSWER prompt). Sibling suites (GDPval) reuse this
+   *  ReAct loop + the run_python-in-scratch toolset with a different output discipline (produce a deliverable). */
+  systemPrompt?: string;
 }
 
 const DEFAULTS = {
@@ -272,7 +275,7 @@ export async function runGaiaAgent(
   try {
     for (turn = 1; turn <= cfg.maxTurns; turn++) {
       const res = await deps.llm({
-        system: GAIA_SYSTEM_PROMPT,
+        system: cfg.systemPrompt ?? GAIA_SYSTEM_PROMPT,
         messages,
         tools: deps.tools.specs,
         maxTokens: cfg.maxTokensPerTurn,
