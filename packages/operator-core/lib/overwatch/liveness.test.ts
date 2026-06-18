@@ -9,9 +9,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const upsertRoutine = vi.fn();
 const setRoutineActive = vi.fn();
+const deleteRoutine = vi.fn();
 vi.mock('@papercusp/db-org', () => ({
   upsertRoutine: (...a: unknown[]) => upsertRoutine(...a),
   setRoutineActive: (...a: unknown[]) => setRoutineActive(...a),
+  deleteRoutine: (...a: unknown[]) => deleteRoutine(...a),
 }));
 
 import {
@@ -38,6 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   upsertRoutine.mockResolvedValue({});
   setRoutineActive.mockResolvedValue(true);
+  deleteRoutine.mockResolvedValue(true);
 });
 
 describe('clampOverwatchWakeAt (the anti-spin floor)', () => {
@@ -127,9 +130,9 @@ describe('declareOverwatchTimeWake (the shared declare-next-wake seam)', () => {
 });
 
 describe('clearOverwatchTimeWake', () => {
-  it('deactivates the overwatch wake routine', async () => {
+  it('clears the overwatch wake routine by DELETING the row (EI-1477: avoids stale-row dup-key on re-arm)', async () => {
     await clearOverwatchTimeWake({} as never, SLUG);
-    expect(setRoutineActive).toHaveBeenCalledWith({}, SLUG, OVERWATCH_WAKE_ROUTINE_NAME, false);
+    expect(deleteRoutine).toHaveBeenCalledWith({}, SLUG, OVERWATCH_WAKE_ROUTINE_NAME);
   });
 });
 

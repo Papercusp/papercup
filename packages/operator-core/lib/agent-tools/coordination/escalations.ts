@@ -89,6 +89,99 @@ export async function listEscalations(
   return foldEscalations(opens, resolves, opts);
 }
 
+/**
+ * List escalation records with pagination to prevent unbounded response sizes.
+ * Loads up to maxRecords events, folds them, and returns with a truncated flag.
+ * WI-239: bounds coord:escalations so one call never returns ~9M chars.
+ */
+export async function listEscalationsPaginated(
+  opts: { status?: 'open' | 'resolved'; maxRecords?: number } = {},
+): Promise<{ escalations: EscalationRecord[]; truncated: boolean; total: number }> {
+  const all = await coordLog.readEvents('escalations');
+  const maxRecords = opts.maxRecords ?? 1000; // Default 1000 per call
+  const truncated = all.length > maxRecords;
+  
+  const opens: EscalationRecord[] = [];
+  const resolves: EscalationResolvedEvent[] = [];
+  
+  // Load up to maxRecords events, split into opens + resolves
+  for (let i = 0; i < Math.min(all.length, maxRecords); i++) {
+    const rec = all[i];
+    if (rec.kind === 'escalation') opens.push(rec as EscalationRecord);
+    else if (rec.kind === 'escalation_resolved') {
+      const ev = rec as EscalationResolvedEvent;
+      if (typeof ev.related_msg_id === 'string') resolves.push(ev);
+    }
+  }
+  
+  const escalations = foldEscalations(opens, resolves, opts);
+  return { escalations, truncated, total: all.length };
+}
+
+/**
+ * Close/archive escalations older than TTL that have been resolved.
+ * GC for both operational (system) and user escalations to prevent unbounded growth.
+ * WI-239: implement escalation lifecycle GC.
+ */
+export interface ArchiveEscalationOpts {
+  resolvedOlderThanMs?: number; // Default 14 days (14 * 24 * 60 * 60 * 1000)
+  limit?: number; // Max escalations to archive per call (batch limit, default 200)
+}
+
+export interface ArchiveResult {
+  scanned: number;
+  archived: number;
+  truncated: boolean; // True if more remain beyond the batch limit
+}
+
+export async function archiveResolvedEscalations(
+  opts: ArchiveEscalationOpts = {},
+): Promise<ArchiveResult> {
+  const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+  const ttlMs = opts.resolvedOlderThanMs ?? DEFAULT_TTL_MS;
+  const limit = opts.limit ?? 200;
+  const nowMs = Date.now();
+  
+  const { opens, resolves } = await loadEscalations();
+  const resolveMap = indexResolves(resolves);
+  
+  // Find resolved escalations older than TTL
+  const toArchive: string[] = [];
+  for (const open of opens) {
+    const resolved = resolveMap.get(open.msg_id);
+    if (!resolved) continue; // Not resolved yet
+    
+    const resolvedMs = Date.parse(resolved.ts);
+    if (!Number.isFinite(resolvedMs)) continue;
+    
+    const ageMs = nowMs - resolvedMs;
+    if (ageMs >= ttlMs) {
+      toArchive.push(open.msg_id);
+      if (toArchive.length >= limit) break;
+    }
+  }
+  
+  // Archive by creating a special "archived" resolution event
+  // (idempotent: if already archived, this is a no-op from the fold perspective)
+  let archived = 0;
+  for (const msgId of toArchive) {
+    const archiveEv: EscalationResolvedEvent = {
+      ts: new Date().toISOString(),
+      msg_id: newMsgId(),
+      from: 'system:escalation-gc',
+      to: ['human'],
+      kind: 'escalation_resolved',
+      related_msg_id: msgId,
+      summary: 'auto-archived: resolved escalation aged beyond retention',
+      choice: 'auto-archived',
+    };
+    await coordLog.putEvent('escalations', archiveEv.msg_id, archiveEv);
+    archived += 1;
+  }
+  
+  return { scanned: opens.length, archived, truncated: toArchive.length >= limit };
+}
+
 /** Read one escalation by msg_id (with folded resolution), or null. */
 export async function getEscalation(
   msg_id: string,

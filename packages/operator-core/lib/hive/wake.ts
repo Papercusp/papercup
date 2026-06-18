@@ -28,7 +28,7 @@
 import type { Sql } from 'postgres';
 import type { DataCondition } from '@papercusp/rules';
 import { clampToFloor, withinFloor } from '@papercusp/debounce-coalesce';
-import { getOrgPg, upsertRoutine, setRoutineActive } from '@papercusp/db-org';
+import { getOrgPg, upsertRoutine, setRoutineActive, deleteRoutine } from '@papercusp/db-org';
 import { computeNextFireAt } from '../harness/routines/cron';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -185,9 +185,11 @@ export async function declareHiveTimeWake(
   return { at, clamped };
 }
 
-/** Clear the hive's time wake (mode 'none', or a declare with no time). */
+/** Clear the hive's time wake (mode 'none', or a declare with no time).
+ *  EI-1477: DELETE the row (not just deactivate) to avoid duplicate-key conflicts
+ *  under concurrency when a stale/orphaned row would collide with a new UPSERT. */
 export async function clearHiveTimeWake(sql: Sql, installSlug: string): Promise<void> {
-  await setRoutineActive(sql, installSlug, HIVE_WAKE_ROUTINE_NAME, false);
+  await deleteRoutine(sql, installSlug, HIVE_WAKE_ROUTINE_NAME);
 }
 
 /** timestamptz arrives as Date or ISO string depending on the pool's type

@@ -203,7 +203,7 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
     expect(new Date(after[0].next_fire_at!).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('re-declaring reactivates (upsert) and clearHiveTimeWake deactivates', async () => {
+  it('re-declaring reactivates (upsert) and clearHiveTimeWake deletes the row (EI-1477)', async () => {
     const r = await declareHiveTimeWake(rootSql, {
       workspaceId: WS,
       installSlug: SLUG,
@@ -213,9 +213,41 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
     let state = await getHiveTimeWake(rootSql, SLUG);
     expect(state?.active).toBe(true);
 
+    // EI-1477: clearHiveTimeWake now DELETEs the row (not just deactivates) to avoid
+    // zombie rows that collide with a subsequent UPSERT under concurrency.
     await clearHiveTimeWake(rootSql, SLUG);
     state = await getHiveTimeWake(rootSql, SLUG);
-    expect(state?.active).toBe(false);
+    expect(state).toBeNull(); // row is fully deleted, not just set inactive
+
+    // Re-declaring after clear must succeed (no stale row to collide with).
+    const r2 = await declareHiveTimeWake(rootSql, {
+      workspaceId: WS,
+      installSlug: SLUG,
+      at: new Date(Date.now() + 3600_000),
+    });
+    state = await getHiveTimeWake(rootSql, SLUG);
+    expect(state?.active).toBe(true);
+    expect(r2.clamped).toBe(false);
+  });
+
+  it('EI-1477: repeat-declare in the same turn UPSERTs in place (no duplicate-key collision)', async () => {
+    const t1 = new Date(Date.now() + 3600_000);
+    await declareHiveTimeWake(rootSql, { workspaceId: WS, installSlug: SLUG, at: t1 });
+
+    // Immediately re-declare with a later time — must UPSERT, not INSERT+collide.
+    const t2 = new Date(Date.now() + 7200_000);
+    const r2 = await declareHiveTimeWake(rootSql, { workspaceId: WS, installSlug: SLUG, at: t2 });
+    expect(r2.at.getTime()).toBe(t2.getTime());
+
+    // Exactly ONE routine row must exist (no duplicates from the second declare).
+    const rows = await rootSql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.routines
+       WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
+    expect(rows[0].n).toBe(1);
+
+    // The stored nextFireAt must reflect the SECOND (later) declare.
+    const finalState = await getHiveTimeWake(rootSql, SLUG);
+    expect(new Date(finalState!.nextFireAt!).getTime()).toBe(t2.getTime());
   });
 });
 

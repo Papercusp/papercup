@@ -1,9 +1,34 @@
-import { describe, it, expect } from 'vitest';
-import { effectiveBackend, parseSurfaceModels, parseBackends, parseTiers, parseTierCeilings, type AgentConfig } from './agent-config';
+import { describe, it, expect, vi } from 'vitest';
+import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseTiers, parseTierCeilings, type AgentConfig } from './agent-config';
+
+// Mock the PG-backed operator-state read so readAgentConfig exercises the
+// no-row fallback without touching a database.
+const { readOperatorStateMock } = vi.hoisted(() => ({ readOperatorStateMock: vi.fn() }));
+vi.mock('./operator-state-pg', () => ({
+  readOperatorState: readOperatorStateMock,
+  writeOperatorState: vi.fn(async () => {}),
+}));
 
 function cfg(partial: Partial<AgentConfig>): AgentConfig {
   return { backend: 'auto', cmd: '', models: {}, ...partial };
 }
+
+describe('readAgentConfig default backend (no stored row)', () => {
+  it('defaults an unconfigured workspace to claude-code, NOT omp', async () => {
+    // A freshly-created workspace (e.g. generic-test) has no operator_agent_config
+    // row. It must inherit claude-code — the repo's canonical backend — so the
+    // New-Plan button launches a claude planner, not omp. (Owner bug 2026-06-18.)
+    readOperatorStateMock.mockResolvedValueOnce(null);
+    const c = await readAgentConfig();
+    expect(c.backend).toBe('claude-code');
+    expect(effectiveBackend(c)).toBe('claude-code');
+  });
+
+  it('an invalid stored backend falls back to the claude-code default', async () => {
+    readOperatorStateMock.mockResolvedValueOnce({ backend: 'gemini' });
+    expect((await readAgentConfig()).backend).toBe('claude-code');
+  });
+});
 
 describe('effectiveBackend', () => {
   it('returns an explicit backend verbatim (no inference)', () => {

@@ -84,7 +84,13 @@ export interface AgentConfig {
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
-  backend: 'omp',
+  // A workspace with no saved agent-config row inherits this. claude-code is
+  // the repo's canonical backend (CLAUDE.md) and the host's boot default
+  // ($AGENT_BACKEND=claude-code); defaulting to 'omp' here silently launched
+  // omp agents in any freshly-created workspace (e.g. the New-Plan button —
+  // launch-su.ts resolves an agent-less launch via effectiveBackend(readAgentConfig())),
+  // ignoring the configured/boot backend. Owner ask 2026-06-18.
+  backend: 'claude-code',
   cmd: '',
   models: {},
   backends: {},
