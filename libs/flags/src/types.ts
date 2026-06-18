@@ -475,6 +475,11 @@ export const FLAGS = {
   // the kill-switch that hides the nav entry (the page's auto-decisions feed +
   // graduation prompts are still stubbed pending B-16).
   QUEEN_AUTONOMY_SETTINGS: "papercusp-queen-autonomy-settings",
+  // storage-settings-page-2026-06-15 (P-002): the Settings → Storage owner
+  // surface — live usage by category + user-controlled trim-by-age. ON by default
+  // (alpha flags-default-on); keep-all is the default behavior regardless. OFF
+  // hides the nav entry (the page never auto-prunes — only an explicit trim runs).
+  STORAGE_SETTINGS: "papercusp-storage-settings",
   // agent-capability-confinement-2026-06-13 B-18 (P-020/P-021): the FLEET CUTOVER —
   // when ON, autonomous-fleet (bee/pipeline) claude-code spawns drop the native
   // WRITE/exec tools (Bash/Edit/Write/WebFetch) from `--allowed-tools` and route
@@ -1044,6 +1049,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // pure presentation over the whyGated/authorizer fields + the decision.ledger read;
   // no new writes. OFF = the prior tier-grouped queue (safe rollback).
   [FLAGS.QUEUE_AUTHORIZATION_VIEW]: true,
+  // ON by default (alpha flags-default-on) — storage-settings-page-2026-06-15:
+  // exposes the Settings → Storage page. Keep-all stays the default behavior; the
+  // page only prunes on an explicit user trim. OFF hides the nav entry.
+  [FLAGS.STORAGE_SETTINGS]: true,
   // OFF by default — DELIBERATE (capability-confinement B-06 / P-012): envelope ENFORCEMENT
   // would deny fleet tool calls before the B-18 cutover + B-05 capability tools exist. OFF =
   // observe-only/shadow (evaluate + annotate, never block). The B-18 flip is the arming act.

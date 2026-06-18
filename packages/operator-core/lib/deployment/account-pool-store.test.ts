@@ -150,6 +150,7 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
         return { scaledOut: true, account: 'acct-2', members: [] };
       },
       emitExhausted: (id) => emitCalls.push(id),
+      autoScaleOutAllowed: async () => true, // P-006 gate isolated (its own test covers OFF)
       log: () => {},
     });
     // A SUSTAINED burst of real account-keyed governor pauses for acct-1 (threshold = 3 in-window).
@@ -163,6 +164,30 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
     expect(emitCalls).toEqual(['acct-1']);
     expect(scaleCalls).toEqual(['acct-1']);
     expect(getAccount(pool, 'acct-1')!.rate.penaltyCount).toBe(3);
+  });
+
+  it('owner auto-scale-out toggle OFF (P-006): exhaustion still emits, but does NOT scale out', async () => {
+    let pool = bindAccount(poolOf('acct-1', 'acct-2'), 'acct-1', 'h1');
+    const scaleCalls: string[] = [];
+    const emitCalls: string[] = [];
+    initAccountScaleObserver({
+      workspaceId: () => 'ws',
+      updatePool: async (m) => (pool = m(pool)),
+      scaleOut: async (id) => {
+        scaleCalls.push(id);
+        return { scaledOut: true, account: 'acct-2', members: [] };
+      },
+      emitExhausted: (id) => emitCalls.push(id),
+      autoScaleOutAllowed: async () => false, // owner disabled auto-scale-out
+      log: () => {},
+    });
+    const g = getGovernor('anthropic', 'opus', undefined, 'acct-1');
+    g.penalize({ retryAfterMs: 5 * MIN });
+    g.penalize({ retryAfterMs: 10 * MIN });
+    g.penalize({ retryAfterMs: 15 * MIN });
+    await flush();
+    expect(emitCalls).toEqual(['acct-1']); // observability fires regardless of the toggle
+    expect(scaleCalls).toEqual([]); // ...but no auto-scale-out
   });
 
   it('a short (non-sustained) account pause records but does NOT scale out', async () => {

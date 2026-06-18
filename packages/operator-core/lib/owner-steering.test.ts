@@ -186,3 +186,153 @@ describe('isPausedNow', () => {
     expect(isPausedNow(base, 9_999)).toBe(false);
   });
 });
+
+// ── Throttle knobs (queen-steering-panel P-006 / P-009) ──────────────────────
+
+describe('throttle-knob decode (P-006)', () => {
+  it('decodes a fully-set throttle steering state', async () => {
+    listHiveSettings.mockResolvedValue(
+      rows({
+        [OWNER_STEERING_KEYS.cadenceFloorSec]: 420,
+        [OWNER_STEERING_KEYS.maxBees]: 5,
+        [OWNER_STEERING_KEYS.idleActivities]: { gym: false, scout: true, curation: false },
+        [OWNER_STEERING_KEYS.autoScaleOut]: false,
+        [OWNER_STEERING_KEYS.decomposition]: 'parallel',
+      }),
+    );
+    const s = await getOwnerSteering('ws', 'hive');
+    expect(s.cadenceFloorSec).toBe(420);
+    expect(s.maxBees).toBe(5);
+    expect(s.idleActivities).toEqual({ gym: false, scout: true, curation: false });
+    expect(s.autoScaleOut).toBe(false);
+    expect(s.decomposition).toBe('parallel');
+  });
+
+  it('cadenceFloorSec: a positive number decodes; 0 / negative / NaN ⇒ null', async () => {
+    const read = async (v: unknown) => {
+      listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.cadenceFloorSec]: v }));
+      return (await getOwnerSteering('ws', 'hive')).cadenceFloorSec;
+    };
+    expect(await read(420)).toBe(420);
+    expect(await read(0)).toBeNull();
+    expect(await read(-5)).toBeNull();
+    expect(await read('420')).toBeNull();
+  });
+
+  it('maxBees: a finite int ≥1 decodes (floored); <1 / non-finite ⇒ null', async () => {
+    const read = async (v: unknown) => {
+      listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.maxBees]: v }));
+      return (await getOwnerSteering('ws', 'hive')).maxBees;
+    };
+    expect(await read(5)).toBe(5);
+    expect(await read(5.9)).toBe(5); // floored
+    expect(await read(0)).toBeNull();
+    expect(await read(-3)).toBeNull();
+    expect(await read('5')).toBeNull();
+  });
+
+  it('idleActivities: keeps only boolean known-kind entries; empty/junk ⇒ null', async () => {
+    const read = async (v: unknown) => {
+      listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.idleActivities]: v }));
+      return (await getOwnerSteering('ws', 'hive')).idleActivities;
+    };
+    expect(await read({ gym: false, scout: 'yes', other: true })).toEqual({ gym: false });
+    expect(await read({})).toBeNull();
+    expect(await read([])).toBeNull();
+    expect(await read('nope')).toBeNull();
+  });
+
+  it('autoScaleOut: a boolean decodes; anything else ⇒ null (default enabled)', async () => {
+    const read = async (v: unknown) => {
+      listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.autoScaleOut]: v }));
+      return (await getOwnerSteering('ws', 'hive')).autoScaleOut;
+    };
+    expect(await read(false)).toBe(false);
+    expect(await read(true)).toBe(true);
+    expect(await read('false')).toBeNull();
+  });
+
+  it('decomposition: a known mode decodes; junk ⇒ null', async () => {
+    const read = async (v: unknown) => {
+      listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.decomposition]: v }));
+      return (await getOwnerSteering('ws', 'hive')).decomposition;
+    };
+    expect(await read('serial')).toBe('serial');
+    expect(await read('balanced')).toBe('balanced');
+    expect(await read('parallel')).toBe('parallel');
+    expect(await read('aggressive')).toBeNull();
+    expect(await read(3)).toBeNull();
+  });
+});
+
+describe('throttle-knob write fan-out (P-006)', () => {
+  it('writes the throttle knobs with normalized values', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    await setOwnerSteering('ws', 'hive', {
+      cadenceFloorSec: 420,
+      maxBees: 5,
+      idleActivities: { gym: false },
+      autoScaleOut: false,
+      decomposition: 'serial',
+    });
+    const wrote = Object.fromEntries(
+      setHiveSetting.mock.calls.map((c) => [(c[0] as { settingKey: string }).settingKey, (c[0] as { value: unknown }).value]),
+    );
+    expect(wrote[OWNER_STEERING_KEYS.cadenceFloorSec]).toBe(420);
+    expect(wrote[OWNER_STEERING_KEYS.maxBees]).toBe(5);
+    expect(wrote[OWNER_STEERING_KEYS.idleActivities]).toEqual({ gym: false });
+    expect(wrote[OWNER_STEERING_KEYS.autoScaleOut]).toBe(false);
+    expect(wrote[OWNER_STEERING_KEYS.decomposition]).toBe('serial');
+  });
+
+  it('normalizes a bad maxBees (0) + bad cadence (-1) to cleared (null) on write', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    await setOwnerSteering('ws', 'hive', { maxBees: 0, cadenceFloorSec: -1 });
+    const wrote = Object.fromEntries(
+      setHiveSetting.mock.calls.map((c) => [(c[0] as { settingKey: string }).settingKey, (c[0] as { value: unknown }).value]),
+    );
+    expect(wrote[OWNER_STEERING_KEYS.maxBees]).toBeNull();
+    expect(wrote[OWNER_STEERING_KEYS.cadenceFloorSec]).toBeNull();
+  });
+});
+
+describe('throttle accessors (P-006)', () => {
+  const base = DEFAULT_OWNER_STEERING;
+
+  it('effectiveCadenceFloorSec is MAX(system, owner) — owner only RAISES', () => {
+    expect(effectiveCadenceFloorSec(base, 60)).toBe(60); // no override
+    expect(effectiveCadenceFloorSec({ ...base, cadenceFloorSec: 420 }, 60)).toBe(420); // raised
+    expect(effectiveCadenceFloorSec({ ...base, cadenceFloorSec: 30 }, 60)).toBe(60); // can't drop below system
+  });
+
+  it('effectiveMaxBees is MIN(system, owner) — owner only LOWERS', () => {
+    expect(effectiveMaxBees(base, 16)).toBe(16); // no override
+    expect(effectiveMaxBees({ ...base, maxBees: 5 }, 16)).toBe(5); // lowered
+    expect(effectiveMaxBees({ ...base, maxBees: 99 }, 16)).toBe(16); // can't exceed system
+  });
+
+  it('idleActivityEnabled defaults ON; only explicit false suppresses', () => {
+    expect(idleActivityEnabled(base, 'gym')).toBe(true);
+    expect(idleActivityEnabled({ ...base, idleActivities: { gym: false } }, 'gym')).toBe(false);
+    expect(idleActivityEnabled({ ...base, idleActivities: { gym: false } }, 'scout')).toBe(true);
+    expect(idleActivityEnabled({ ...base, idleActivities: { scout: true } }, 'scout')).toBe(true);
+  });
+
+  it('isAutoScaleOutEnabled defaults ON; only explicit false disables', () => {
+    expect(isAutoScaleOutEnabled(base)).toBe(true);
+    expect(isAutoScaleOutEnabled({ ...base, autoScaleOut: true })).toBe(true);
+    expect(isAutoScaleOutEnabled({ ...base, autoScaleOut: false })).toBe(false);
+  });
+
+  it('hasActiveThrottle is false at default, true when any knob is set', () => {
+    expect(hasActiveThrottle(base)).toBe(false);
+    expect(hasActiveThrottle({ ...base, cadenceFloorSec: 120 })).toBe(true);
+    expect(hasActiveThrottle({ ...base, maxBees: 4 })).toBe(true);
+    expect(hasActiveThrottle({ ...base, autoScaleOut: false })).toBe(true);
+    expect(hasActiveThrottle({ ...base, autoScaleOut: true })).toBe(false); // ON is the default — not "active"
+    expect(hasActiveThrottle({ ...base, idleActivities: { gym: false } })).toBe(true);
+    expect(hasActiveThrottle({ ...base, idleActivities: { gym: true } })).toBe(false); // ON is default
+    expect(hasActiveThrottle({ ...base, decomposition: 'parallel' })).toBe(true);
+    expect(hasActiveThrottle({ ...base, tierCeilings: { bee: 'opus:xhigh' } })).toBe(true);
+  });
+});

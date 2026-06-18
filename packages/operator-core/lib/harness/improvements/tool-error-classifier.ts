@@ -184,8 +184,14 @@ export function classifyToolError(
 /** A postgres.js tagged-template fn. Typed structurally + generically so this
  *  module needn't import `@papercusp/db-org` (keeps it unit-testable without PG):
  *  the caller passes the real `getOrgPg().sql`, and the value-binding / fragment
- *  composition is what postgres.js already does throughout watchdog.ts. */
-export type SqlTag<T> = (strings: TemplateStringsArray, ...values: unknown[]) => T;
+ *  composition is what postgres.js already does throughout watchdog.ts.
+ *
+ *  The values are `any[]` (not `unknown[]`) deliberately: this one type must
+ *  accept BOTH the real postgres `Sql` (whose params are the stricter
+ *  `Serializable`) AND the test's debug tag — `any` is the bivariant form both
+ *  satisfy; `unknown[]` would make the real `Sql` non-assignable. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type SqlTag<T> = (strings: TemplateStringsArray, ...values: any[]) => T;
 
 /** OR together one rule's predicates into a single SQL boolean fragment. */
 function ruleConditionSql<T>(sql: SqlTag<T>, rule: ToolErrorRule): T {

@@ -12,6 +12,7 @@ const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/oracle':     FLAGS.TESTING,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
   '/settings/autonomy':   FLAGS.QUEEN_AUTONOMY_SETTINGS,
+  '/settings/storage':    FLAGS.STORAGE_SETTINGS,
 };
 
 interface SettingsLink {
@@ -76,6 +77,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/meridian', label: 'Meridian', keywords: ['meridian', 'telemetry', 'profiles', 'iframe'], advanced: true },
       { href: '/settings/plugin-runtime', label: 'Plugin runtime', keywords: ['plugin', 'runtime', 'hooks', 'load errors', 'cache'], advanced: true },
       { href: '/settings/backups', label: 'Backups', keywords: ['backup', 'backups', 'kopia', 'snapshot', 'restore', 'retention', 'dedup'], advanced: true },
+      { href: '/settings/storage', label: 'Storage', keywords: ['storage', 'disk', 'trim', 'prune', 'reclaim', 'cleanup', 'cache', 'usage', 'space', 'vacuum', 'transcripts', 'telemetry'], advanced: true },
       { href: '/settings/prompt-studio', label: 'Prompt Studio', keywords: ['prompt', 'studio', 'playbook', 'system prompt', 'psu', 'agent prompt', 'overlay', 'project guide', 'preview', 'collaborator'], advanced: true },
     ],
   },
@@ -124,12 +126,14 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const testingEnabled = useFlag(FLAGS.TESTING);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
   const autonomySettingsEnabled = useFlag(FLAGS.QUEEN_AUTONOMY_SETTINGS);
+  const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
 
   const flagEnabled: Record<FlagKey, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.TESTING]: testingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
     [FLAGS.QUEEN_AUTONOMY_SETTINGS]: autonomySettingsEnabled,
+    [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,
     [FLAGS.HARNESS_PHASES]: true,
   };
 

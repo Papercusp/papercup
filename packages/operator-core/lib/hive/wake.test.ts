@@ -65,6 +65,21 @@ describe('clampWakeAt (the D-002 self-wake floor)', () => {
     expect(r.clamped).toBe(false);
     expect(r.at).toEqual(later);
   });
+
+  it('owner cadence-floor (P-006) RAISES the clamp — MAX(system, owner)', () => {
+    // System floor is 60s; the owner set a 7-min (420s) floor. A wake 2 min out is
+    // clamped UP to now + 420s; the owner can only raise the interval.
+    const twoMinOut = new Date('2026-06-05T12:02:00Z');
+    const r = clampWakeAt(twoMinOut, now, 420);
+    expect(r.clamped).toBe(true);
+    expect(r.at.toISOString()).toBe('2026-06-05T12:07:00.000Z');
+  });
+
+  it('owner cadence-floor below the system floor is a no-op (never drops below system)', () => {
+    const past = new Date('2026-06-05T11:59:00Z');
+    const r = clampWakeAt(past, now, 30); // 30s < system 60s
+    expect(r.at.toISOString()).toBe('2026-06-05T12:01:00.000Z'); // still now + system 60s
+  });
 });
 
 describe('withinWakeFloor (the fire-side debounce)', () => {
@@ -73,6 +88,16 @@ describe('withinWakeFloor (the fire-side debounce)', () => {
     expect(withinWakeFloor({ subscriptions: [] }, now)).toBe(false);
     expect(withinWakeFloor({ subscriptions: [], lastWakeAt: now - 30_000 }, now)).toBe(true);
     expect(withinWakeFloor({ subscriptions: [], lastWakeAt: now - 61_000 }, now)).toBe(false);
+  });
+
+  it('owner cadence-floor (P-006) widens the debounce window — MAX(system, owner)', () => {
+    const now = Date.parse('2026-06-05T12:00:00Z');
+    // 90s since the last wake: past the 60s system floor (would fire), but inside a
+    // 420s owner floor (still debounced).
+    expect(withinWakeFloor({ subscriptions: [], lastWakeAt: now - 90_000 }, now)).toBe(false);
+    expect(withinWakeFloor({ subscriptions: [], lastWakeAt: now - 90_000 }, now, 420)).toBe(true);
+    // Past even the owner floor ⇒ fires.
+    expect(withinWakeFloor({ subscriptions: [], lastWakeAt: now - 421_000 }, now, 420)).toBe(false);
   });
 });
 

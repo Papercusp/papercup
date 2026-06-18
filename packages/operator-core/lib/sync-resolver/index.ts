@@ -347,6 +347,16 @@ async function resolveDesignTokens(args: { category?: string }): Promise<unknown
 }
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  // storage.usage — live storage usage by category for Settings → Storage
+  // (storage-settings-page-2026-06-15 P-003). Reuses the audit introspection
+  // (pg table sizes + age distribution + on-disk du). No args.
+  'storage.usage': {
+    resolve: async () => {
+      const { computeStorageUsage } = await import('../storage/usage');
+      return computeStorageUsage();
+    },
+  },
+
   // toastLog.recent — first migration. Mirrors the original ZQL:
   //   zql.toastLog.orderBy('createdAt', 'desc').limit(limit)
   // The flat-row return matches what useSyncQuery's SSEAdapter

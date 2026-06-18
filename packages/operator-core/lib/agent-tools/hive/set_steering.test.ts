@@ -73,6 +73,27 @@ describe('hive:set-steering', () => {
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { eligibleHives: ['hive-a', 'hive-b'] });
   });
 
+  it('forwards the throttle knobs (P-006/P-009) into the patch', async () => {
+    await setTool.handler(
+      {
+        hive: 'acme',
+        cadenceFloorSec: 420,
+        maxBees: 5,
+        idleActivities: { gym: false },
+        autoScaleOut: false,
+        decomposition: 'serial',
+      },
+      ctx(),
+    );
+    expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', {
+      cadenceFloorSec: 420,
+      maxBees: 5,
+      idleActivities: { gym: false },
+      autoScaleOut: false,
+      decomposition: 'serial',
+    });
+  });
+
   it('honors an explicit workspace override', async () => {
     await setTool.handler({ hive: 'acme', pauseNewWork: true, workspace: 'ws-other' }, ctx());
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-other', 'acme', { pauseNewWork: true });

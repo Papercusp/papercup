@@ -168,6 +168,54 @@ test('renderQueenBrief — no ownerSteering ⇒ NO steering section (un-steered 
   assert.doesNotMatch(out, /### Owner steering directive/);
 });
 
+test('renderQueenBrief — throttle knobs (P-006/P-009) render a self-governance envelope', () => {
+  const out = renderQueenBrief({
+    floor: {
+      frontier: frontier3,
+      ownerSteering: {
+        directive: null,
+        eligiblePlans: [],
+        eligibleHives: [],
+        pauseNewWork: false,
+        pausedUntil: null,
+        cadenceFloorSec: 420,
+        maxBees: 5,
+        tierCeilings: { bee: 'opus:xhigh' },
+        idleActivities: { gym: false, curation: false },
+        autoScaleOut: false,
+        decomposition: 'serial',
+      },
+    },
+  });
+  assert.match(out, /Throttle \+ self-governance \(owner-set/);
+  assert.match(out, /≥420s between wakes/);
+  assert.match(out, /≤5 bees/);
+  assert.match(out, /bee→opus:xhigh/);
+  assert.match(out, /Idle activities OFF: \*\*gym, curation\*\*/);
+  assert.match(out, /Auto-scale-out DISABLED/);
+  assert.match(out, /Decomposition \(advisory\): prefer \*\*serial\*\*/);
+});
+
+test('renderQueenBrief — a throttle-only steering still renders the section (no directive/pause needed)', () => {
+  const out = renderQueenBrief({
+    floor: {
+      frontier: frontier3,
+      ownerSteering: {
+        directive: null,
+        eligiblePlans: [],
+        eligibleHives: [],
+        pauseNewWork: false,
+        pausedUntil: null,
+        maxBees: 3,
+      },
+    },
+  });
+  assert.match(out, /Throttle \+ self-governance/);
+  assert.match(out, /≤3 bees/);
+  // No directive/pause/plans ⇒ those lines are absent, but the throttle section is present.
+  assert.doesNotMatch(out, /PAUSED/);
+});
+
 test('renderQueenBrief — deterministic: same floor renders byte-identical output (no clock/random leakage)', () => {
   const floor: QueenBriefFloor = { wokeBy: 'timer', frontier: frontier3, bees: [{ id: 'b1', load: 0, alive: true }] };
   const a = renderQueenBrief({ floor, carryNote: 'note' });

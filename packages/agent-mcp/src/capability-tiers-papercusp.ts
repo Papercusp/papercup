@@ -47,6 +47,10 @@ const EXACT: Record<string, CapabilityTier> = {
   'pending_events:read': 'low',
   'routines:read': 'low',
   'storage:plugin-private': 'low',
+  // Storage settings page (storage-settings-page-2026-06-15). Read is a usage
+  // introspection; write is a destructive prune-by-age (+ VACUUM FULL) → high.
+  'storage:read': 'low',
+  'storage:write': 'high',
   'db:plugin-schema': 'low',
   'ui:dashboard-tab': 'low',
   'ui:sidebar-item': 'low',

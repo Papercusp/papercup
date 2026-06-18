@@ -204,6 +204,10 @@ import './session-dir-gc-action';
 // reaper — marks dead-process open adv_sessions ended (reclaims roster +
 // unblocks session-dir-gc). Flag-gated DEFAULT-OFF + seeded INACTIVE.
 import './idle-session-reaper-action';
+// bee-context-efficiency-2026-06-14 P-013 (D-007): the bee transcript-cap backstop —
+// recycles a bee whose session transcript grew past the cap (idle-only, D-005) so its
+// next task spawns fresh. Flag-gated DEFAULT-OFF + seeded INACTIVE (double-gated).
+import './bee-transcript-cap-action';
 import './claim-discipline-action';
 import './wake-brain-action';
 import './gym-actions';
