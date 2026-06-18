@@ -35,6 +35,54 @@ export interface LagMonitorHandle {
   sample(): { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number };
 }
 
+export type LoopPressure = 'ok' | 'elevated' | 'critical';
+
+// P5-1 (operator-scalability-event-loop-2026-06-16): the running monitor's live
+// read fn, published module-globally so the Layer-2 feedback governor (background
+// load-shedding + spawn admission) can read loop pressure WITHOUT its own probe.
+// Null until the host boots the monitor (e.g. a request-only worker that never
+// started one) — callers treat null as 'ok' (no signal ⇒ don't shed).
+let _liveRead: (() => { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number }) | null = null;
+
+/** p95 loop-delay (ms) thresholds for the pressure bands. Env-tunable so a small
+ *  host can be stricter. elevated ⇒ start widening cadences; critical ⇒ shed. */
+const ELEVATED_P95_MS = Math.max(1, Number(process.env.PAPERCUSP_LOOP_ELEVATED_MS) || 120);
+const CRITICAL_P95_MS = Math.max(
+  ELEVATED_P95_MS + 1,
+  Number(process.env.PAPERCUSP_LOOP_CRITICAL_MS) || 600,
+);
+
+/** The live loop-delay sample (current partial window), or null if no monitor. */
+export function currentLoopLag(): { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number } | null {
+  return _liveRead ? _liveRead() : null;
+}
+
+/** Pure band classification from a p95 loop-delay (ms). Exported for tests. */
+export function classifyLoopPressure(
+  p95Ms: number,
+  elevatedMs: number = ELEVATED_P95_MS,
+  criticalMs: number = CRITICAL_P95_MS,
+): LoopPressure {
+  if (!Number.isFinite(p95Ms)) return 'ok';
+  if (p95Ms >= criticalMs) return 'critical';
+  if (p95Ms >= elevatedMs) return 'elevated';
+  return 'ok';
+}
+
+/** Current loop pressure band from the live p95. 'ok' when no monitor is running
+ *  (absence of signal must never cause shedding). */
+export function loopPressure(): LoopPressure {
+  const s = _liveRead?.();
+  if (!s) return 'ok';
+  return classifyLoopPressure(s.p95Ms);
+}
+
+/** True when the request loop is critically saturated — admission gates + heavy
+ *  background ticks should back off this cycle. */
+export function isLoopSaturated(): boolean {
+  return loopPressure() === 'critical';
+}
+
 /**
  * Start the event-loop-lag monitor. Returns a handle; the underlying timer is
  * `unref`'d so it never keeps the process alive on its own. Idempotent enough
@@ -61,6 +109,8 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     p99Ms: ns2ms(h.percentile(99)),
     maxMs: ns2ms(h.max),
   });
+  // P5-1: publish the live read so loopPressure()/isLoopSaturated() work fleet-wide.
+  _liveRead = read;
 
   const timer = setInterval(() => {
     const s = read();
@@ -85,6 +135,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     stop() {
       clearInterval(timer);
       h.disable();
+      if (_liveRead === read) _liveRead = null;
     },
     sample: read,
   };

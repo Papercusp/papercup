@@ -264,6 +264,12 @@ export function watchdogSourceOf(watchdogKey: string | undefined): string {
 export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' | 'paths'>): string | null {
   const source = watchdogSourceOf(c.watchdogKey);
   if (INFRA_SIGNAL_SOURCES.includes(source)) return `watchdog signal class "${source}"`;
+  // An EXTERNAL provider rate-limit (the `:rate-limit` tool-error class — OpenAI embed TPM
+  // 429, etc.) is CAPACITY, not a code bug: route to infra-environment (owner-escalate,
+  // never the auto-implement lane), since a worker cannot fix a provider quota
+  // (watchdog-and-exposed-systems-improvement-2026-06-18 P-010). The class is the
+  // watchdogKey SUFFIX, not its source segment, so INFRA_SIGNAL_SOURCES misses it.
+  if (c.watchdogKey && /:rate-limit$/.test(c.watchdogKey)) return 'external provider rate-limit (capacity)';
   const infraPath = (c.paths ?? []).find((p) => INFRA_PATH_PATTERNS.some((pat) => matchGlob(pat, p)));
   if (infraPath) return `path "${infraPath}"`;
   return null;

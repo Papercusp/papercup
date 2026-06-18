@@ -79,6 +79,15 @@ describe('classifyIdeaType — D-005 taxonomy', () => {
     ).toBe('code-bug');
   });
 
+  it('classifies the external rate-limit class as infra-environment (P-010)', () => {
+    // The `:rate-limit` class (OpenAI embed TPM 429) is capacity, not a code bug → owner-escalate.
+    const r = classifyIdeaType({ scope: 'operator', watchdogKey: 'repeated-tool-error:memory:search:rate-limit' });
+    expect(r.type).toBe('infra-environment');
+    expect(r.reason).toMatch(/rate-limit/);
+    // The structural class of the SAME tool stays code-bug — only :rate-limit reroutes.
+    expect(classifyIdeaType({ scope: 'operator', watchdogKey: 'repeated-tool-error:memory:search:structural' }).type).toBe('code-bug');
+  });
+
   it('classifies environment paths as infra-environment', () => {
     expect(classifyIdeaType({ scope: 'operator', paths: ['docker-compose.yml'] }).type).toBe('infra-environment');
     expect(classifyIdeaType({ scope: 'operator', paths: ['ops/docker-compose.dev.yml'] }).type).toBe('infra-environment');

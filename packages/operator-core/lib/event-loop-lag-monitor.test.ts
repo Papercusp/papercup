@@ -9,7 +9,13 @@
  * fake it — we induce it).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { startEventLoopLagMonitor, type LagMonitorHandle } from './event-loop-lag-monitor';
+import {
+  classifyLoopPressure,
+  isLoopSaturated,
+  loopPressure,
+  startEventLoopLagMonitor,
+  type LagMonitorHandle,
+} from './event-loop-lag-monitor';
 
 function blockFor(ms: number): void {
   const end = Date.now() + ms;
@@ -55,5 +61,40 @@ describe('event-loop-lag-monitor', () => {
     expect(typeof s.p95Ms).toBe('number');
     expect(typeof s.maxMs).toBe('number');
     expect(() => handle?.stop()).not.toThrow();
+  });
+});
+
+describe('loop-pressure signal (P5-1)', () => {
+  it('classifyLoopPressure bands by p95 (default thresholds 120/600ms)', () => {
+    expect(classifyLoopPressure(0)).toBe('ok');
+    expect(classifyLoopPressure(50)).toBe('ok');
+    expect(classifyLoopPressure(120)).toBe('elevated');
+    expect(classifyLoopPressure(599)).toBe('elevated');
+    expect(classifyLoopPressure(600)).toBe('critical');
+    expect(classifyLoopPressure(5000)).toBe('critical');
+  });
+
+  it('classifyLoopPressure honors custom thresholds + is NaN-safe', () => {
+    expect(classifyLoopPressure(50, 40, 100)).toBe('elevated');
+    expect(classifyLoopPressure(200, 40, 100)).toBe('critical');
+    expect(classifyLoopPressure(NaN)).toBe('ok'); // no signal ⇒ never shed
+  });
+
+  it('loopPressure() is "ok" / isLoopSaturated() false when NO monitor is running', () => {
+    // No monitor started in this test ⇒ absence of signal must read as ok.
+    expect(loopPressure()).toBe('ok');
+    expect(isLoopSaturated()).toBe(false);
+  });
+
+  it('an idle monitored loop reads "ok" (not saturated)', () => {
+    const h = startEventLoopLagMonitor({ intervalMs: 10_000, warnP95Ms: 1000 });
+    try {
+      expect(loopPressure()).toBe('ok');
+      expect(isLoopSaturated()).toBe(false);
+    } finally {
+      h.stop();
+    }
+    // After stop the published signal is cleared back to ok.
+    expect(loopPressure()).toBe('ok');
   });
 });

@@ -1,0 +1,79 @@
+# The Scout cycle's in-process ideators/critics bypass the inference gateway (same class as the gym's FB-16)
+URL: /internal/docs/agent-insights/scout-cycle-inprocess-llm-bypasses-gateway
+
+>-
+
+## Symptom
+
+The Scout loop looks like it's running but produces nothing. In
+`harness_shared.scout_ticks` you see, over and over:
+
+```
+status=ran   ideas_generated=0   ideas_routed=0   budget_used_usd=0
+detail = {"stop":"no-ideas","reason":"idle-capacity",...}
+```
+
+`stop:"no-ideas"` (not `empty-digest`) means the corpus digest was **non-empty**
+— the cycle got past `digestIsEmpty(digest)` — but `ideate()` returned an empty
+array. Combined with **`budget_used_usd = 0`**, that means the ideators ran but
+**every ideator LLM call failed before charging** (the per-ideator `try/catch` in
+`ideators.ts` isolates the throw, records `ok:false`, and the error never reaches
+`scout_ticks`). Real-world incidence: the `@singleton` Scout produced 0 ideas
+across **49/49** ran-ticks for \~4 days after the 2026-06-14 re-scope, $0 every
+time, while the old `papercup`-scoped Scout had spent \~$2/cycle for 24 ideas.
+
+## Root cause
+
+Scout's ideator/critic/recombine calls are **in-process** `anthropic-direct`
+`llmCall`s (`register-scout-action.ts` → `cycle-deps.ts` → `ideators.ts`). The
+inference gateway is only wired onto **spawned subprocesses**: `operator-spawn.ts`
+merges `gatewaySpawnEnv()` (`ANTHROPIC_BASE_URL=http://127.0.0.1:<gatewayPort>`)
+at the spawn chokepoint, and bees egress through the gateway's load-balanced,
+paced, multi-account pool. An in-process call **never passes that chokepoint**, so
+Scout hits `api.anthropic.com` **directly on a single account**. Under a busy
+fleet that one account sits at its Anthropic rate/usage limit → every ideator gets
+`429 rate_limit_error` → `no-ideas`, `$0`.
+
+This is **the same bug class** the gym hit (see
+[gym-cycle-inprocess-llm-bypasses-gateway](/agent-insights/gym-cycle-inprocess-llm-bypasses-gateway),
+FB-16) — there it surfaced as a 401 (org-blocked OAuth) instead of a 429, but the
+mechanism is identical: in-process anthropic-direct egress bypassing the gateway.
+
+Why it's easy to misdiagnose: the rate-governor buckets show opus with headroom
+and `accounts_status` shows several available accounts — because *those* reflect
+the **gateway** pool the fleet uses. Scout isn't in that pool, so its single
+direct account can be pinned while the pool looks healthy. Don't trust the
+governor/accounts view to explain a *direct* caller's 429.
+
+## Fix
+
+Mirror the gym (`autoloop-cycle.ts`): when `FLAGS.INFERENCE_GATEWAY` is on, point
+the in-process SDK at the localhost gateway before the cycle's LLM calls. In
+`productionScoutRunner` (`register-scout-action.ts`):
+
+```ts
+const { FLAGS } = await import('@papercusp/flags');
+const { getFlag } = await import('@papercusp/flags/server');
+if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
+  const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
+  for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
+    if (!process.env[k]) process.env[k] = v; // respect a pre-set override
+  }
+}
+```
+
+Key detail: the in-process `anthropic-direct` transport
+(`chat-stream.ts` `resolveAnthropicBaseUrl()`) reads **`PAPERCUSP_ANTHROPIC_URL`**,
+NOT the standard `ANTHROPIC_BASE_URL` (which only the `claude` CLI honors).
+`gatewayLlmEnv(true)` sets both, so subprocess + in-process egress both route
+through the gateway.
+
+## Caveat — routing ≠ capacity
+
+Routing Scout through the gateway fixes the *bypass* (single un-paced account), but
+Scout still competes with the whole fleet for the **same opus-4-8 pool**, and it's
+the lowest-priority consumer. If every pooled account is at its weekly limit (e.g.
+the pre-reset window), a Scout call still 429s — now from the gateway instead of
+direct. The cadence `idle-capacity` trigger mitigates this (Scout fires when the
+fleet is idle and there's pool headroom). If Scout stays starved even post-fix,
+the next levers are a less-contended ideator model or a reserved account.

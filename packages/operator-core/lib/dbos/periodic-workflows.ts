@@ -30,6 +30,22 @@ import { refreshAll as refreshPushCredentials } from '../device-push-credentials
 import { getOrgPg } from '@papercusp/db-org';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
+import { isLoopSaturated } from '../event-loop-lag-monitor';
+
+// P5-1 (operator-scalability-event-loop-2026-06-16): Layer-2 load-shedding. When
+// the request event loop is CRITICALLY saturated, skip this cycle of a HEAVY
+// background tick so the serving loop recovers — instead of piling background CPU
+// onto an already-wedged loop (the exact failure that crash-looped :3070). Safe to
+// skip: each of these has an on-demand / next-cycle correctness floor. Light ticks
+// (single-query sweeps, the connection-pressure + service-health probes) are NOT
+// shed — they're cheap and we want their signal precisely under load.
+function shedUnderLoopPressure(tickName: string): boolean {
+  if (isLoopSaturated()) {
+    console.warn(`[loop-shed] skipped ${tickName} — event loop critically saturated (P5-1)`);
+    return true;
+  }
+  return false;
+}
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
 // enforce retention. A transient PostHog failure already degrades to retry-next,
@@ -73,7 +89,10 @@ DBOS.registerScheduled(completionRefWorkflow, { name: 'completionRefVerify', cro
 // Every 5min: embed-backfill sweep (battery-aware). The sweep's own batching
 // is the rate limit on the embedding API (P-010).
 async function embedBackfillTick(): Promise<void> {
-  await DBOS.runStep(() => runEmbedBackfillOnce(), { name: 'embed-backfill' });
+  await DBOS.runStep(async () => {
+    if (shedUnderLoopPressure('embed-backfill')) return;
+    await runEmbedBackfillOnce();
+  }, { name: 'embed-backfill' });
 }
 const embedBackfillWorkflow = DBOS.registerWorkflow(embedBackfillTick, {
   name: 'embedBackfill', maxRecoveryAttempts: 5,
@@ -109,7 +128,10 @@ DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: 
 // conservative 48h-undrained / 24h-drained windows preserve every in-flight row.
 // P-012 / operator-memory-and-psu-resilience-2026-06-14 D-016.
 async function outboxBackstopGcTick(): Promise<void> {
-  await DBOS.runStep(() => runSubstrateOutboxBackstopGc(), { name: 'substrate-outbox-backstop-gc' });
+  await DBOS.runStep(async () => {
+    if (shedUnderLoopPressure('substrate-outbox-backstop-gc')) return;
+    await runSubstrateOutboxBackstopGc();
+  }, { name: 'substrate-outbox-backstop-gc' });
 }
 const outboxBackstopGcWorkflow = DBOS.registerWorkflow(outboxBackstopGcTick, {
   name: 'outboxBackstopGc', maxRecoveryAttempts: 5,
@@ -125,7 +147,10 @@ DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', cro
 // Batch-limited (500/tick) to drain a large backlog without a coord-log write
 // burst. queue-pending-accuracy-and-drift P-003/P-005.
 async function attentionReconcileTick(): Promise<void> {
-  await DBOS.runStep(() => reconcileStaleEscalationsOnce(), { name: 'attention-reconcile' });
+  await DBOS.runStep(async () => {
+    if (shedUnderLoopPressure('attention-reconcile')) return;
+    await reconcileStaleEscalationsOnce();
+  }, { name: 'attention-reconcile' });
 }
 const attentionReconcileWorkflow = DBOS.registerWorkflow(attentionReconcileTick, {
   name: 'attentionReconcile', maxRecoveryAttempts: 5,
@@ -175,6 +200,7 @@ DBOS.registerScheduled(learningInfraHealthWorkflow, { name: 'learningInfraHealth
 // is the correctness floor, so this tick is the liveness bonus, not the engine.
 async function systemHealthTick(): Promise<void> {
   await DBOS.runStep(async () => {
+    if (shedUnderLoopPressure('system-health')) return;
     const { FLAGS } = await import('@papercusp/flags');
     const { getFlag } = await import('@papercusp/flags/server');
     if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return;
@@ -233,7 +259,10 @@ DBOS.registerScheduled(connectionPressureWorkflow, {
 // P-001). Replaces the legacy setInterval in harness-status-sweep.ts (which
 // stands down on dbosTimersActive).
 async function harnessStatusSweepTick(): Promise<void> {
-  await DBOS.runStep(() => runHarnessStatusSweepOnce(), { name: 'harness-status-sweep' });
+  await DBOS.runStep(async () => {
+    if (shedUnderLoopPressure('harness-status-sweep')) return;
+    await runHarnessStatusSweepOnce();
+  }, { name: 'harness-status-sweep' });
 }
 const harnessStatusSweepWorkflow = DBOS.registerWorkflow(harnessStatusSweepTick, {
   name: 'harnessStatusSweep', maxRecoveryAttempts: 5,

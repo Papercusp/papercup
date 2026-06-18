@@ -149,6 +149,9 @@ describe('classifyImprovement — infra-environment never auto (EI-408 / D-002 /
   it('fire-circuit-open + migration-drift signal classes are infra too', () => {
     expect(classifyImprovement(cand({ id: 'i3', kind: 'bug', title: 'gym backoff', watchdogKey: 'fire-circuit-open:gym' })).tier).toBe('human');
     expect(classifyImprovement(cand({ id: 'i4', kind: 'bug', title: 'drift', watchdogKey: 'migration-drift:live' })).tier).toBe('human');
+    // P-010: the external rate-limit class is infra too → never auto (a worker can't fix a provider quota).
+    expect(classifyImprovement(cand({ id: 'i5', kind: 'bug', title: 'embed 429', watchdogKey: 'repeated-tool-error:memory:search:rate-limit' })).tier).toBe('human');
+    expect(infraEnvironmentHit({ watchdogKey: 'repeated-tool-error:memory:search:rate-limit' })).toMatch(/rate-limit/);
   });
   it('infra beats graduation — even with every kind graduated, an infra item stays human', () => {
     const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change', 'feature'] };
