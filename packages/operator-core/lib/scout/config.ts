@@ -106,9 +106,9 @@ export function resolveScoutConfig(override?: ScoutConfigOverride | null): Scout
       override.lenses && override.lenses.length > 0
         ? [...override.lenses]
         : DEFAULT_SCOUT_CONFIG.lenses,
-    novelty: mergeDefined(DEFAULT_SCOUT_CONFIG.novelty, override.novelty),
-    buckets: mergeDefined(DEFAULT_SCOUT_CONFIG.buckets, override.buckets),
-    routing: mergeDefined(DEFAULT_SCOUT_CONFIG.routing, override.routing),
+    novelty: mergeDefined<Required<CorpusNoveltyOptions>>(DEFAULT_SCOUT_CONFIG.novelty, override.novelty),
+    buckets: mergeDefined<Required<BucketOptions>>(DEFAULT_SCOUT_CONFIG.buckets, override.buckets),
+    routing: mergeDefined<ScoutRoutingConfig>(DEFAULT_SCOUT_CONFIG.routing, override.routing),
   };
 }
 
