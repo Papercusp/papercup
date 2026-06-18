@@ -40,6 +40,34 @@ then restore real scout production with a targeted fix (will move to CHANGES IMP
 
 ---
 
+### CC-1 FINAL (2026-06-17 ~23:20) — diagnosis SETTLED; recommend a decision before a fix
+- Scout's cycle MACHINERY WORKS — the scout-live integration test passed (EXIT:0) under a
+  real model. So scout is NOT broken and NOT a missing budget (defaults apply).
+- The real problem is **cadence-starvation**: scout fires only on `idle-capacity`
+  (`idleRatio ≥ 0.5`, cadence.ts) OR the ~24h `heartbeat`. The papercup hive is busy (Queen
+  placing), so idleRatio stays low → scout almost never fires → effectively dark. When it last
+  fired (19:30, mid-throttle) the LLM was paused → `no-ideas`.
+- LLM is now HEALTHY (opus 3/45 rpm, $23/hr spent) — so a fire NOW would likely produce.
+- Topology is multi-component (scout-service:3350 + bp-singleton-* blueprint routines +
+  scout-cycle routines + the scout_ticks scheduler) and the EXACT per-scout cadence-config
+  lever for @singleton is non-obvious.
+
+**Two fix options, both with a real tradeoff → flagging rather than blind-applying:**
+  (A) Lower scout's heartbeat ceiling / idle threshold so it fires regularly. The clean lever is
+      the cadence DEFAULT (cadence.ts maxIntervalSec 86400→~3600) BUT that's GLOBAL — it makes
+      scout fire hourly across ALL ~135 installs (xbench etc.) = a large fleet-wide LLM-spend
+      increase on an already strained box (PG 'too many clients', recent rate pauses). Too blunt.
+  (B) Per-hive scout cadence override (just papercup-hive) — the targeted, correct fix, but the
+      per-hive scout cadence-config mechanism isn't confirmed + papercup-hive has no scout-cycle
+      routine of its own (would need creating one).
+
+**DID NOT implement either:** (A) is too expensive/blunt on a strained box; (B) needs confirming
+the intended scout scope (workspace `@singleton` vs per-hive `papercup-hive`) — a design call.
+**RECOMMENDATION for owner:** confirm (1) should scout be per-hive (papercup) or workspace
+singleton, and (2) OK to raise fleet-wide scout firing (cost). Then the fix is ~1 cadence change.
+Meanwhile: watching for scout's next natural fire under the healthy LLM (would confirm it
+produces); Queen/Overwatch healthy.
+
 ## FINDINGS / BASELINE (no action needed)
 
 - **Queen** — performing as designed: places aggressively (4-7 `place_batch` + 4-5 `fleet_spawn`

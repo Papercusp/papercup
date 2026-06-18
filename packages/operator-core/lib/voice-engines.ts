@@ -106,10 +106,17 @@ async function probeHealth(base: string): Promise<string | null> {
 
 export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
   const { whisperBase, kokoroBase } = await resolveVoicemodeEndpoints();
-  const elevenlabsApiKey = readElevenLabsKey();
-  const openaiApiKey = readOpenAiKey();
-  const cartesiaApiKey = readCartesiaKey();
-  const deepgramApiKey = readDeepgramKey();
+  // BUGFIX: these reads are async (Promise<string|null>); they were assigned WITHOUT await, so
+  // every key was a (truthy) Promise — engine selection picked key-requiring engines even with no
+  // key, and passed the Promise itself as `apiKey`. EnginesContext expects `string|null`, so the
+  // missing await was both a type error and a real runtime bug. Await them (Promise.all keeps the
+  // reads parallel). (Surfaced by the operator-core lint:tsc cleanup — EI-1341.)
+  const [elevenlabsApiKey, openaiApiKey, cartesiaApiKey, deepgramApiKey] = await Promise.all([
+    readElevenLabsKey(),
+    readOpenAiKey(),
+    readCartesiaKey(),
+    readDeepgramKey(),
+  ]);
   const ctx: EnginesContext = { whisperBase, kokoroBase, elevenlabsApiKey, openaiApiKey, cartesiaApiKey, deepgramApiKey };
 
   // STT selection (per v4 §1.1)

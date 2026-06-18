@@ -283,7 +283,7 @@ DBOS.registerScheduled(spawnReclaimSweepWorkflow, { name: 'spawnReclaimSweep', c
 // above: that frees the dead spawn's CONCURRENCY slot, this frees its CLAIMS.
 async function staleClaimSweepTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    const { reclaimStaleWorkItemClaims } = await import('../work-items-stale-claims');
+    const { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims } = await import('../work-items-stale-claims');
     const r = await reclaimStaleWorkItemClaims(getOrgPg().sql);
     if (r.released.length > 0) {
       const byAction = r.released.reduce<Record<string, number>>((acc, c) => {
@@ -323,6 +323,19 @@ async function staleClaimSweepTick(): Promise<void> {
           );
         } catch { /* best-effort — the console.warn above is the floor */ }
       }
+    }
+
+    // GAP 2 (P-005 / D-009): the issue-family reaper — clear dead holders off OPEN
+    // bug/change issues (same alias-aware liveness), returning them to the open
+    // pool. `task` (delegate) issues are excluded — assignee is a durable
+    // conversational binding, not a heartbeating work-claim.
+    const ir = await reclaimStaleIssueClaims(getOrgPg().sql);
+    if (ir.released.length > 0) {
+      console.warn(
+        `[stale-claims] reaped ${ir.released.length} issue-family claim(s) from dead holders ` +
+          `(returned to the open pool): ` +
+          ir.released.map((c) => `${c.issue_id}[${c.kind}]<-${c.former_assignee}`).join(', '),
+      );
     }
   }, { name: 'stale-claim-sweep' });
 

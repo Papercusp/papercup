@@ -120,20 +120,14 @@ function classify(row: ReleasedRow, cap: number): StaleClaimAction {
 }
 
 /**
- * Release every work-item claim whose holder is dead per the alias-aware
- * liveness rule, and requeue the mid-flight ones (bounded by the requeue cap).
- * One atomic statement; returns the released rows (with former/new status,
- * counter, and a derived action) for logging/broadcast.
+ * The mig-225 alias-aware "live holder" set as an embeddable postgres fragment —
+ * owners with a FRESH coord_presence heartbeat, UNION every alias (spawn_id /
+ * session_owner / run_id) of a RUNNING/RESTARTING nursery row with a fresh
+ * heartbeat. Shared by BOTH the feature reaper and the issue reaper (P-005) so
+ * their liveness rule can NEVER diverge — embed it in a `WITH live_holder AS (…)`.
  */
-export async function reclaimStaleWorkItemClaims(
-  sql: Db,
-  opts: { graceMs?: number; requeueCap?: number } = {},
-): Promise<StaleClaimSweepResult> {
-  const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
-  const cap = opts.requeueCap ?? staleReclaimRequeueCap();
-  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
-  const rows = await sql<ReleasedRow[]>`
-    WITH live_holder AS (
+function liveHolderFragment(sql: Db, graceSec: number) {
+  return sql`
       -- Mig-225 alias-aware liveness: presence rows…
       SELECT owner_id AS alias
         FROM harness_shared.coord_presence
@@ -147,8 +141,24 @@ export async function reclaimStaleWorkItemClaims(
        WHERE n.status IN ('running', 'restarting')
          AND n.heartbeat_at IS NOT NULL
          AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
-         AND a.alias IS NOT NULL AND a.alias <> ''
-    ),
+         AND a.alias IS NOT NULL AND a.alias <> ''`;
+}
+
+/**
+ * Release every work-item claim whose holder is dead per the alias-aware
+ * liveness rule, and requeue the mid-flight ones (bounded by the requeue cap).
+ * One atomic statement; returns the released rows (with former/new status,
+ * counter, and a derived action) for logging/broadcast.
+ */
+export async function reclaimStaleWorkItemClaims(
+  sql: Db,
+  opts: { graceMs?: number; requeueCap?: number } = {},
+): Promise<StaleClaimSweepResult> {
+  const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const cap = opts.requeueCap ?? staleReclaimRequeueCap();
+  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
+  const rows = await sql<ReleasedRow[]>`
+    WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
     dead AS (
       SELECT f.workspace_id, f.harness_slug, f.feature_id, f.item_kind,
              f.taken_by AS former_taken_by, f.status AS former_status,
@@ -195,4 +205,59 @@ export async function reclaimStaleWorkItemClaims(
       action: classify(r, cap),
     })),
   };
+}
+
+/** An issue-family (bug/change) claim freed from a dead holder. */
+export interface ReleasedIssueClaim {
+  workspace_id: string;
+  issue_id: string;
+  kind: string;
+  /** The dead holder the issue was unassigned from. */
+  former_assignee: string;
+  /** The delegator (assigned_by), if any — carried for symmetry/logging; bug/change
+   *  are self-selected so this is usually null. */
+  assigned_by: string | null;
+}
+
+export interface StaleIssueSweepResult {
+  released: ReleasedIssueClaim[];
+}
+
+/**
+ * Issue-family stale-claim reaper (GAP 2, P-005 / D-009). Clears `assignee`/
+ * `assigned_at` on OPEN `bug`/`change` issues whose holder is dead per the SAME
+ * alias-aware liveness rule as the feature reaper (shared {@link liveHolderFragment}),
+ * returning them to the `open` claimable pool.
+ *
+ * `task` (delegate) issues are DELIBERATELY EXCLUDED (D-009): a delegate's
+ * `assignee = 'delegate:<agentSessionId>'` is a durable CONVERSATIONAL binding
+ * (runId == agentSessionId, dormant between turns, `assigned_at` stamped once at
+ * creation), NOT a heartbeating work-claim — so staleness reaping would strand a
+ * resumable owner conversation. One atomic statement; returns the reaped rows.
+ */
+export async function reclaimStaleIssueClaims(
+  sql: Db,
+  opts: { graceMs?: number } = {},
+): Promise<StaleIssueSweepResult> {
+  const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const released = await sql<ReleasedIssueClaim[]>`
+    WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+    dead AS (
+      SELECT e.workspace_id, e.issue_id, e.kind,
+             e.assignee AS former_assignee, e.assigned_by
+        FROM harness_shared.engineer_issues e
+       WHERE e.assignee IS NOT NULL AND e.assignee <> ''
+         AND e.assigned_at IS NOT NULL
+         AND (now() - e.assigned_at) > make_interval(secs => ${graceSec})
+         AND e.state = 'open'
+         AND e.kind IN ('bug', 'change')   -- D-009: exclude task (delegate binding)
+         AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = e.assignee)
+         FOR UPDATE OF e SKIP LOCKED
+    )
+    UPDATE harness_shared.engineer_issues e
+       SET assignee = NULL, assigned_at = NULL, origin = 'local'
+      FROM dead d
+     WHERE e.workspace_id = d.workspace_id AND e.issue_id = d.issue_id
+    RETURNING d.workspace_id, d.issue_id, d.kind, d.former_assignee, d.assigned_by`;
+  return { released };
 }

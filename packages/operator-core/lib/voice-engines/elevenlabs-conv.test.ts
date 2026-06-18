@@ -10,8 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // askOperatorViaSse suite below doesn't touch the registry, so mocking it is
 // inert there. `../commands/defs` (a side-effect import in the SUT that would
 // register real defs) is stubbed empty so only our mock defs exist.
-const runCommand = vi.fn(async () => ({ ok: true, ran: 'cmd' }));
-const runQuery = vi.fn(async () => ({ ok: true, ran: 'query' }));
+// `...args` so `.mock.calls[N][i]` indexing in the assertions type-checks (bare `()=>` inferred a 0-arg empty tuple).
+const runCommand = vi.fn(async (..._args: unknown[]) => ({ ok: true, ran: 'cmd' }));
+const runQuery = vi.fn(async (..._args: unknown[]) => ({ ok: true, ran: 'query' }));
 // Only consumed by startElevenLabsConv (not under test). Stub it so the SUT
 // module graph resolves cleanly under the mock pipeline.
 vi.mock('../browser-workspace', () => ({ wsLocalKey: (k: string) => k }));

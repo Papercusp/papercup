@@ -14,7 +14,7 @@ import { createVoicemodeWhisper, transcribeChunk } from './whisper';
 import { createKokoroTts } from './kokoro';
 
 function stubFetch(opts: { status?: number; body?: unknown; throws?: Error }) {
-  const mock = vi.fn(async () => {
+  const mock = vi.fn(async (..._args: unknown[]) => {
     if (opts.throws) throw opts.throws;
     return new Response(
       opts.body === undefined ? '' : JSON.stringify(opts.body),

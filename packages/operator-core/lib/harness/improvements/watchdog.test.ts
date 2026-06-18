@@ -248,7 +248,7 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
   });
 
   it('falls back to status + message for legacy rows (error_code NULL, pre-P-007 deploy)', () => {
-    expect(classifyToolError(null, 'error', 'built-in tool requires a workspace-scoped call')).toBe('caller'); // P-007: caller scope, not a tool bug
+    expect(classifyToolError(null, 'error', 'built-in tool requires a workspace-scoped call')).toBe('structural'); // workspace-scope gap stays structural (design intent)
     expect(classifyToolError(null, 'timeout', 'exceeded timeout of 60s')).toBe('transient');
     expect(classifyToolError(null, 'error', 'exceeded timeout of 60s')).toBe('transient');
     expect(classifyToolError(null, 'role-not-allowed', '')).toBe('caller');
@@ -293,8 +293,9 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
     expect(classifyToolError('handler_error', 'error', 'No harness specified. `harness` is a per-call arg')).toBe('caller');
     expect(classifyToolError('harness_required', 'error', 'x')).toBe('caller');
     expect(classifyToolError('handler_error', 'error', "resolvePlanScope: harness 'papercup-hive' is not registered in harness_shared.projects in any workspace")).toBe('caller');
-    expect(classifyToolError('handler_error', 'error', 'built-in tool "memory:search" requires a workspace-scoped call')).toBe('caller');
     expect(classifyToolError(null, 'error', 'No harness specified')).toBe('caller');
+    // A missing WORKSPACE-scope deliberately stays structural (a wiring gap, not a caller arg).
+    expect(classifyToolError('unauthorized', 'error', 'built-in tool "memory:search" requires a workspace-scoped call')).toBe('structural');
   });
 
   it('classifies a timeout that surfaced as handler_error as transient, not structural (P-009)', () => {

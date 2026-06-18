@@ -68,8 +68,9 @@ vi.mock('@openai/agents-realtime', () => ({
 }));
 
 // ── command registry mock (drives buildRegistryTools) ──────────────────────
-const runCommand = vi.fn(async () => ({ ok: true, ran: 'command' }));
-const runQuery = vi.fn(async () => ({ ok: true, ran: 'query' }));
+// `...args` so the `.mock.calls[N][i]` assertions type-check (bare `()=>` inferred a 0-arg empty tuple).
+const runCommand = vi.fn(async (..._args: unknown[]) => ({ ok: true, ran: 'command' }));
+const runQuery = vi.fn(async (..._args: unknown[]) => ({ ok: true, ran: 'query' }));
 vi.mock('../commands/registry', () => ({
   list: vi.fn((sel: { kind: string }) =>
     sel.kind === 'command'
@@ -233,7 +234,7 @@ describe('startRealtimeSession — connect, events, lifecycle', () => {
 
 describe('testRealtimeConnection', () => {
   it('POSTs the realtime sessions endpoint with Bearer + beta header and maps ok', async () => {
-    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     expect(await testRealtimeConnection('sk-abc')).toEqual({ ok: true });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];

@@ -14,9 +14,12 @@ vi.mock('./voice-credentials', () => ({
 
 import { detectEngines } from './voice-engines';
 import * as creds from './voice-credentials';
-import type { VoicePrefs } from './voice-prefs';
+import { DEFAULT_VOICE_PREFS, type VoicePrefs } from './voice-prefs';
 
 const basePrefs: VoicePrefs = {
+  // Spread the canonical defaults so this stays complete as VoicePrefs grows (it had drifted
+  // 37 fields behind the type); the explicit values below are the test's intended overrides.
+  ...DEFAULT_VOICE_PREFS,
   speakSuggestions: true,
   speakBackgroundToasts: true,
   speakReceivingFlips: false,
@@ -42,10 +45,10 @@ const basePrefs: VoicePrefs = {
 
 beforeEach(() => {
   mockFetch.mockReset();
-  vi.mocked(creds.readElevenLabsKey).mockReturnValue(null);
-  vi.mocked(creds.readOpenAiKey).mockReturnValue(null);
-  vi.mocked(creds.readCartesiaKey).mockReturnValue(null);
-  vi.mocked(creds.readDeepgramKey).mockReturnValue(null);
+  vi.mocked(creds.readElevenLabsKey).mockResolvedValue(null);
+  vi.mocked(creds.readOpenAiKey).mockResolvedValue(null);
+  vi.mocked(creds.readCartesiaKey).mockResolvedValue(null);
+  vi.mocked(creds.readDeepgramKey).mockResolvedValue(null);
 });
 
 afterEach(() => { vi.clearAllMocks(); });
@@ -72,7 +75,7 @@ describe('detectEngines', () => {
 
   it('selects elevenlabs when configured + requested', async () => {
     mockFetch.mockImplementation(okHealth);
-    vi.mocked(creds.readElevenLabsKey).mockReturnValue('sk_test');
+    vi.mocked(creds.readElevenLabsKey).mockResolvedValue('sk_test');
     const r = await detectEngines({ ...basePrefs, ttsEngine: 'elevenlabs' });
     expect(r.ttsKind).toBe('elevenlabs');
     expect(r.ctx.elevenlabsApiKey).toBe('sk_test');
@@ -86,14 +89,14 @@ describe('detectEngines', () => {
 
   it('selects openai when configured + requested', async () => {
     mockFetch.mockImplementation(okHealth);
-    vi.mocked(creds.readOpenAiKey).mockReturnValue('sk-openai');
+    vi.mocked(creds.readOpenAiKey).mockResolvedValue('sk-openai');
     const r = await detectEngines({ ...basePrefs, ttsEngine: 'openai' });
     expect(r.ttsKind).toBe('openai');
   });
 
   it('selects cartesia when configured + requested', async () => {
     mockFetch.mockImplementation(okHealth);
-    vi.mocked(creds.readCartesiaKey).mockReturnValue('sk-cartesia');
+    vi.mocked(creds.readCartesiaKey).mockResolvedValue('sk-cartesia');
     const r = await detectEngines({ ...basePrefs, ttsEngine: 'cartesia' });
     expect(r.ttsKind).toBe('cartesia');
   });
@@ -126,10 +129,10 @@ describe('detectEngines', () => {
 
   it('exposes all four cloud key fields in context', async () => {
     mockFetch.mockImplementation(okHealth);
-    vi.mocked(creds.readElevenLabsKey).mockReturnValue('e');
-    vi.mocked(creds.readOpenAiKey).mockReturnValue('o');
-    vi.mocked(creds.readCartesiaKey).mockReturnValue('c');
-    vi.mocked(creds.readDeepgramKey).mockReturnValue('d');
+    vi.mocked(creds.readElevenLabsKey).mockResolvedValue('e');
+    vi.mocked(creds.readOpenAiKey).mockResolvedValue('o');
+    vi.mocked(creds.readCartesiaKey).mockResolvedValue('c');
+    vi.mocked(creds.readDeepgramKey).mockResolvedValue('d');
     const r = await detectEngines(basePrefs);
     expect(r.ctx.elevenlabsApiKey).toBe('e');
     expect(r.ctx.openaiApiKey).toBe('o');
@@ -139,7 +142,7 @@ describe('detectEngines', () => {
 
   it('does NOT select deepgram without leak acknowledgement', async () => {
     mockFetch.mockImplementation(okHealth);
-    vi.mocked(creds.readDeepgramKey).mockReturnValue('dg-key');
+    vi.mocked(creds.readDeepgramKey).mockResolvedValue('dg-key');
     const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: false });
     expect(r.sttKind).toBe('off');
   });
@@ -152,7 +155,7 @@ describe('detectEngines', () => {
 
   it('selects deepgram when key + leak ack present', async () => {
     mockFetch.mockImplementation(okHealth);
-    vi.mocked(creds.readDeepgramKey).mockReturnValue('dg-key');
+    vi.mocked(creds.readDeepgramKey).mockResolvedValue('dg-key');
     const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: true });
     expect(r.sttKind).toBe('deepgram');
   });

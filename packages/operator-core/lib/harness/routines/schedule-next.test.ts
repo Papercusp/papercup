@@ -65,6 +65,40 @@ describe('computeNextFireFromRrule', () => {
   });
 });
 
+describe('computeNextFireFromRrule — tzid wall-clock + DST (EI-1370)', () => {
+  // A 9am America/New_York daily rule. The ABSOLUTE instant must track the zone's DST offset:
+  // 13:00 UTC in summer (EDT, UTC-4), 14:00 UTC in winter (EST, UTC-5).
+  const cfg: ScheduleTrigger = {
+    rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0',
+    dtstart: '2026-01-01T00:00:00.000Z',
+    tzid: 'America/New_York',
+  };
+
+  it('fires at 9am wall-clock in the zone, not 9am UTC (summer → 13:00 UTC)', () => {
+    const next = computeNextFireFromRrule(cfg, new Date('2026-06-15T00:00:00.000Z'));
+    expect(next!.toISOString()).toBe('2026-06-15T13:00:00.000Z'); // 09:00 EDT
+  });
+
+  it('honors DST: the same 9am rule is 14:00 UTC in winter (EST)', () => {
+    const next = computeNextFireFromRrule(cfg, new Date('2026-12-15T00:00:00.000Z'));
+    expect(next!.toISOString()).toBe('2026-12-15T14:00:00.000Z'); // 09:00 EST
+  });
+
+  it('without tzid the same rule stays 9am UTC (unchanged legacy behavior)', () => {
+    const utc: ScheduleTrigger = { rrule: cfg.rrule, dtstart: cfg.dtstart };
+    const next = computeNextFireFromRrule(utc, new Date('2026-06-15T00:00:00.000Z'));
+    expect(next!.toISOString()).toBe('2026-06-15T09:00:00.000Z');
+  });
+
+  it('expandOccurrences emits zone-correct instants across the spring-forward boundary', () => {
+    // US spring-forward 2026 = Mar 8. A 9am rule: Mar 7 is EST (14:00Z), Mar 9 is EDT (13:00Z).
+    const occ = expandOccurrences(cfg, new Date('2026-03-07T00:00:00.000Z'), new Date('2026-03-10T00:00:00.000Z'));
+    const iso = occ.map((d) => d.toISOString());
+    expect(iso).toContain('2026-03-07T14:00:00.000Z'); // EST
+    expect(iso).toContain('2026-03-09T13:00:00.000Z'); // EDT
+  });
+});
+
 describe('computeNextFire (dispatcher)', () => {
   it('routes RRULE configs to the rrule branch', () => {
     const from = new Date('2026-06-16T08:00:00.000Z');
