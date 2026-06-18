@@ -115,6 +115,25 @@ Produce this for every run; fill PASS/FAIL/N-A with evidence:
 
 **Verdict:** that run is **not a fair comparison** and supports **no** capability claim. The only mildly-robust signal (su solved 2 hard tasks, mini-swe 0) is single-seed and not compute-matched.
 
+## Coordination-topology roster (the study)
+
+The benchmark is a **coordination-topology comparison**, all arms on the same tasks, same model, **same per-task model-call budget (iso-call-budget)**, same denominator. Each arm is a pluggable **topology strategy** over one shared pool driver (so adding/removing an arm is a small config, not a new driver). Axes: *locus* (none / central / distributed-flat / hierarchical) × *mechanism* (none / direct-message / shared-artifact / review / aggregation) × *granularity* (per-backlog / per-task).
+
+| Arm | Locus | Mechanism | Status |
+|---|---|---|---|
+| `mini-swe` | none (1 agent) | — | ✅ baseline floor |
+| `su-independent` | none (N isolated) | — | ✅ no-coordination pole |
+| `dist-broadcast` | distributed-flat | self-claim + declare-intent + broadcast findings | ❌ build |
+| `dist-peer-review` | distributed-flat | self-claim + peer-review diffs before submit | ❌ build |
+| `dist-repo-huddle` | distributed (per-repo group) | same-repo agents share understanding + co-edit | ❌ build |
+| `dist-blackboard` | distributed-flat | indirect via shared scratchpad (stigmergic) | ❌ build |
+| `ensemble-vote` | none-during, aggregate-after | solve-N-independently → judge picks/merges | ❌ build (key control) |
+| `hier-lead-worker` (opt) | hierarchical | elected lead decomposes + delegates | ❌ build |
+| `pair-driver-navigator` (opt) | per-task pair | continuous review | ❌ build |
+| `hive-realqueen` | central | Queen places/evicts/re-places/briefs/wakes | ✅ (reliability-degraded — EI-1293) |
+
+**Framework:** one `CoordinationStrategy` seam over `makePoolBacklogDriver` — hooks for `claimNext` (how an agent gets work), `onProgress` (what it shares/writes), `beforeSubmit` (review/aggregate), `teamShape` (per-task vs per-backlog vs per-repo). Iso-call-budget + same-denominator grading live in the shared driver, applied identically to every strategy.
+
 ## What a fair run requires (the build target)
 
 1. **Same denominator**: score both arms on all N; an empty/infra-failed task is `false`, not excluded.

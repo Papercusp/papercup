@@ -121,12 +121,18 @@ export interface AttributionRosterEntry {
 export function attributionMapForRepo(
   roster: AttributionRosterEntry[],
   repoRelPrefix: string,
+  superRoot?: string,
 ): Map<string, FileAttribution> {
   const prefix = repoRelPrefix ? repoRelPrefix.replace(/\/?$/, '/') : '';
+  // P-004 review: tolerate ABSOLUTE current_files (an agent may declare full paths — the Edit
+  // tool + lock hook key on absolute paths) by stripping the superproject root to recover the
+  // superproject-relative path the map keys on. A no-op when files are already repo-relative.
+  const sr = superRoot ? superRoot.replace(/\/?$/, '/') : '';
   const map = new Map<string, FileAttribution>();
   for (const a of roster) {
     for (const raw of a.files ?? []) {
-      const f = raw.replace(/^\.?\//, '');
+      const abs = sr && raw.startsWith(sr) ? raw.slice(sr.length) : raw;
+      const f = abs.replace(/^\.?\//, '');
       let rel: string | null;
       if (!prefix) {
         // Superproject: keep the path as-is. A submodule's INNER file (libs/x/foo.ts) simply
@@ -157,6 +163,7 @@ export function attributionMapForRepo(
 export function agentsForScopedFiles(
   roster: AttributionRosterEntry[],
   scopedFiles: Array<{ scope: string; file: string }>,
+  superRoot?: string,
 ): string[] {
   const agents = new Set<string>();
   const cache = new Map<string, Map<string, FileAttribution>>();
@@ -164,7 +171,7 @@ export function agentsForScopedFiles(
     const prefix = scope === 'superproject' ? '' : scope;
     let m = cache.get(prefix);
     if (!m) {
-      m = attributionMapForRepo(roster, prefix);
+      m = attributionMapForRepo(roster, prefix, superRoot);
       cache.set(prefix, m);
     }
     const hit = m.get(file);

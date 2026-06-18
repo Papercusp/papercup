@@ -105,6 +105,17 @@ describe('attributionMapForRepo', () => {
     expect(m.has('apps/operator/x.ts')).toBe(false);
   });
 
+  it('tolerates ABSOLUTE current_files by stripping the superproject root (P-004 review)', () => {
+    const absRoster = [{ agent: 'ag1', files: ['/home/u/papercup/apps/operator/x.ts'] }];
+    // without superRoot: the absolute path doesn't match the repo-relative key.
+    expect(attributionMapForRepo(absRoster, '').has('apps/operator/x.ts')).toBe(false);
+    // with superRoot: stripped to the repo-relative key → matches.
+    expect(attributionMapForRepo(absRoster, '', '/home/u/papercup').get('apps/operator/x.ts')?.agent).toBe('ag1');
+    // submodule + absolute also works (strip super root, then the submodule prefix).
+    const absSub = [{ agent: 'ag2', files: ['/home/u/papercup/libs/papercusp/packages/z.ts'] }];
+    expect(attributionMapForRepo(absSub, 'libs/papercusp', '/home/u/papercup').get('packages/z.ts')?.agent).toBe('ag2');
+  });
+
   it('first-declared wins when two agents claim the same path (locks serialize edits)', () => {
     const dup = [
       { agent: 'first', files: ['a.ts'] },

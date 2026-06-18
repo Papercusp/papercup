@@ -172,8 +172,14 @@ export function makePythonOfficeExtract(opts: {
     '  sys.stdout.write(s or "")',
     'try:',
     '  if name.endswith((".xlsx",".xlsm",".xls",".ods")):',
-    '    import openpyxl; wb=openpyxl.load_workbook(io.BytesIO(data),data_only=True,read_only=True)',
-    '    out("\\n".join("\\t".join("" if c is None else str(c) for c in r) for ws in wb.worksheets for r in ws.iter_rows(values_only=True)))',
+    '    import openpyxl',  // merge computed values (data_only) with formulas — agent-written sheets have no
+    '    wbv=openpyxl.load_workbook(io.BytesIO(data),data_only=True,read_only=True)',  // cached formula values,
+    '    wbf=openpyxl.load_workbook(io.BytesIO(data),data_only=False,read_only=True)',  // so fall back to the formula text
+    '    rows=[]',
+    '    for wsv,wsf in zip(wbv.worksheets,wbf.worksheets):',
+    '      for rv,rf in zip(wsv.iter_rows(values_only=True),wsf.iter_rows(values_only=True)):',
+    '        rows.append("\\t".join((("" if v is None else str(v)) or ("" if f is None else str(f))) for v,f in zip(rv,rf)))',
+    '    out("\\n".join(rows))',
     '  elif name.endswith((".docx",".odt")):',
     '    import docx; d=docx.Document(io.BytesIO(data))',
     '    parts=[p.text for p in d.paragraphs]',  // body paragraphs

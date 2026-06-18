@@ -724,9 +724,14 @@ async function assigneesForContentErrors(
   try {
     if (!(await getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug))) return ['*'];
     const roster = await loadAttributionRoster(workspaceId);
+    // Resolve the superproject root so absolute current_files normalize to repo-relative (lazy
+    // import to keep the registry load-graph acyclic, like loadAttributionRoster's presence read).
+    const { projectDirForSlug } = await import('../../operator-notes');
+    const superRoot = (await projectDirForSlug(slug)) ?? undefined;
     const agents = agentsForScopedFiles(
       roster,
       contentErrors.map((c) => ({ scope: c.scope, file: c.file })),
+      superRoot,
     );
     return agents.length ? agents : ['*'];
   } catch {

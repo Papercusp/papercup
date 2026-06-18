@@ -577,7 +577,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   for (const sub of subPaths) {
     // P-004: a submodule's last-resort default is its own 'main' (resolved via
     // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
-    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { ...repoO, defaultBranch: 'main', attribution: attributionMapForRepo(roster, sub) }));
+    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { ...repoO, defaultBranch: 'main', attribution: attributionMapForRepo(roster, sub, repo) }));
   }
 
   // Superproject last — ONLY when every submodule reconciled (else its bumped pointers
@@ -586,7 +586,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // file — IS on its origin, so the parent gitlink resolves fine.)
   const blocked = conflicts.length > 0 || errors.length > 0;
   if (!blocked) {
-    absorb('superproject', await syncOneRepo(runGit, repo, { ...repoO, defaultBranch: branch, attribution: attributionMapForRepo(roster, '') }));
+    absorb('superproject', await syncOneRepo(runGit, repo, { ...repoO, defaultBranch: branch, attribution: attributionMapForRepo(roster, '', repo) }));
   } else {
     log(`[git-sync] ${conflicts.length} conflict(s) + ${errors.length} error(s) in submodules — deferring superproject push (${slug})`);
   }

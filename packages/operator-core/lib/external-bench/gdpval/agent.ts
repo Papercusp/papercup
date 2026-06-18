@@ -26,10 +26,13 @@ export const GDPVAL_AGENT_SYSTEM = [
   'How to work:',
   '- Read any provided input files first (read_file, or run_python to parse spreadsheets/PDFs).',
   '- Research with web_search + fetch_url when the task needs external facts.',
-  '- PRODUCE THE ACTUAL DELIVERABLE AS FILE(S) in your current working directory. Use run_python to create them:',
-  '  openpyxl for .xlsx, python-docx for .docx, python-pptx for .pptx; or write .md / .csv / .txt / .html directly.',
-  '  Match the format the task asks for; a clear, complete .md or .txt is acceptable when no binary format is required.',
-  '- Do NOT merely describe the deliverable — write the files. An empty working directory scores as no deliverable.',
+  '- PRODUCE THE ACTUAL DELIVERABLE AS FILE(S) in your current working directory using run_python or direct writes.',
+  '- ALWAYS write a COMPLETE deliverable as a markdown file named "deliverable.md" containing the FULL content —',
+  '  every section, table (as markdown tables), figure, number, and recommendation. This markdown is what gets graded,',
+  '  so it must stand entirely on its own. You MAY ALSO produce a native file (.xlsx via openpyxl, .docx via',
+  '  python-docx, .pptx via python-pptx) when the task asks for that format — but never put content ONLY in a binary',
+  '  file; the markdown must always carry the complete deliverable content.',
+  '- Do NOT merely describe the deliverable — write its full content. An empty or contentless deliverable scores as none.',
   '- When the deliverable is finished and saved, briefly list the file(s) you created, then stop.',
 ].join('\n');
 
