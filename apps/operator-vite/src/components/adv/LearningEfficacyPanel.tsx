@@ -44,10 +44,12 @@ function Chip({
   m: EfficacyMetric;
   fmt: (v: number | null) => string;
 }): ReactNode {
-  const muted = m.state !== 'ok';
-  const valueText = m.state === 'ok' ? fmt(m.value) : m.state === 'warming' ? 'warming' : '—';
+  // A metric can be entirely absent (no machinery/data yet) — render the honest "—"
+  // no-data state rather than crashing on `m.state` (the LearningTab 13-test crash, EI-1454).
+  const muted = m?.state !== 'ok';
+  const valueText = m?.state === 'ok' ? fmt(m.value) : m?.state === 'warming' ? 'warming' : '—';
   return (
-    <span className="pc-learning__flowchip" title={m.detail ?? label} style={muted ? { opacity: 0.55 } : undefined}>
+    <span className="pc-learning__flowchip" title={m?.detail ?? label} style={muted ? { opacity: 0.55 } : undefined}>
       {icon}
       {label} <strong>{valueText}</strong>
     </span>
@@ -76,7 +78,9 @@ export default function LearningEfficacyPanel(): ReactNode {
       />
       <Chip
         icon={<GraduationCap size={11} aria-hidden />}
-        label={`champion Δ vs gen-0 (${eff.gen0Baseline.composite.toFixed(2)})`}
+        label={`champion Δ vs gen-0${
+          eff.gen0Baseline?.composite != null ? ` (${eff.gen0Baseline.composite.toFixed(2)})` : ''
+        }`}
         m={eff.championDelta}
         fmt={signed}
       />

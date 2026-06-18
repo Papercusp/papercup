@@ -26,6 +26,13 @@ export interface InstanceBootSpec {
   manifest: InstanceManifest;
   /** How to reach this instance (localhost:3055, remote URL, etc). */
   instanceUrl: string;
+  /**
+   * Spawn-time per-role model overrides (`model.<role>` → model id) — the model-per-role
+   * axis the experiment knob space varies (experiment-registry-invocation-api D-003/P-063).
+   * The live `runInstance` applies these as the boot's AGENT_MODELS-style override. Kept OFF
+   * the manifest deliberately, so it never changes the genome/content-address fairness key.
+   */
+  modelOverrides?: Record<string, string>;
 }
 
 export interface InstanceRunHandle {

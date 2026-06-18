@@ -41,7 +41,7 @@ if (PREVIEW) {
         base: 'preview/api',
         schema: openapiSpec,
         sidebar: {
-          label: 'Operator API (preview)',
+          label: 'Operator API (generated)',
           collapsed: true,
           operations: { badges: true, labels: 'summary', sort: 'alphabetical' },
           tags: { sort: 'alphabetical' },

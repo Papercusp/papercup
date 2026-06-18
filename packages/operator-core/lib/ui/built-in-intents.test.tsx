@@ -10,6 +10,10 @@ import { registerBuiltInIntents } from './built-in-intents';
 import { lookupIntent } from './intent-registry';
 
 beforeAll(() => {
+  // jsdom does not implement scrollIntoView; stub it so the scroll_into_view
+  // found-branch does not emit a "Not implemented" console error (fail-on-console).
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = () => {};
   registerBuiltInIntents();
 });
 
@@ -76,5 +80,76 @@ describe('click / focus intents', () => {
   it('throws when a required selector is missing', () => {
     // The built-in handlers are synchronous, so the throw is synchronous too.
     expect(() => call('click', {})).toThrow(/selector required/);
+  });
+
+  it('click returns found:false for a selector that matches nothing', async () => {
+    const res = (await call('click', { selector: '#gone' })) as { found: boolean };
+    expect(res.found).toBe(false);
+  });
+});
+
+describe('snapshot depth branches', () => {
+  beforeAll(() => {
+    document.body.innerHTML = '<div id="t">hello world</div>';
+  });
+
+  it('returns found:false (text:null) for a selector that matches nothing', async () => {
+    const res = (await call('snapshot', { selector: '#nope' })) as { found: boolean; text: unknown };
+    expect(res.found).toBe(false);
+    expect(res.text).toBeNull();
+  });
+
+  it('truncates with a marker past maxLength', async () => {
+    const res = (await call('snapshot', { selector: '#t', mode: 'textContent', maxLength: 5 })) as { text: string };
+    expect(res.text.startsWith('hello')).toBe(true);
+    expect(res.text).toContain('…truncated at 5 chars');
+  });
+
+  it('returns markup in outerHTML mode', async () => {
+    const res = (await call('snapshot', { selector: '#t', mode: 'outerHTML' })) as { text: string };
+    expect(res.text).toContain('<div');
+    expect(res.text).toContain('id="t"');
+  });
+
+  it('read_visible_text returns found:true with a string for a present element', async () => {
+    document.body.innerHTML = '<p id="p">visible</p>';
+    const res = (await call('read_visible_text', { selector: '#p' })) as { found: boolean; text: unknown };
+    expect(res.found).toBe(true);
+    expect(typeof res.text).toBe('string');
+  });
+});
+
+describe('focus intent', () => {
+  it('throws when no selector is given', () => {
+    expect(() => call('focus', {})).toThrow(/selector required/);
+  });
+
+  it('returns found:false for a missing element', async () => {
+    const res = (await call('focus', { selector: '#gone' })) as { found: boolean };
+    expect(res.found).toBe(false);
+  });
+
+  it('focuses a present focusable element', async () => {
+    document.body.innerHTML = '<button id="fb">go</button>';
+    const res = (await call('focus', { selector: '#fb' })) as { found: boolean; activeElementMatches: unknown };
+    expect(res.found).toBe(true);
+    expect(typeof res.activeElementMatches).toBe('boolean');
+  });
+});
+
+describe('scroll_into_view intent', () => {
+  it('throws when no selector is given', () => {
+    expect(() => call('scroll_into_view', {})).toThrow(/selector required/);
+  });
+
+  it('returns found:false for a missing element', async () => {
+    const res = (await call('scroll_into_view', { selector: '#gone' })) as { found: boolean };
+    expect(res.found).toBe(false);
+  });
+
+  it('returns found:true for a present element', async () => {
+    document.body.innerHTML = '<div id="s">x</div>';
+    const res = (await call('scroll_into_view', { selector: '#s' })) as { found: boolean };
+    expect(res.found).toBe(true);
   });
 });
