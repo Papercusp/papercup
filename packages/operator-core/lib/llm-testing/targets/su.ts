@@ -385,13 +385,21 @@ class SuSession implements ChatSession {
       return errorTurn(`su target: failed to load @anthropic-ai/sdk: ${(err as Error).message}`, performance.now() - startMs);
     }
 
-    const client = new Anthropic({
-      ...(transport.baseURL ? { baseURL: transport.baseURL } : {}),
-      ...(transport.apiKey ? { apiKey: transport.apiKey } : {}),
-      ...(transport.authToken ? { authToken: transport.authToken } : {}),
-      defaultHeaders: transport.headers,
-      maxRetries: 2,
-    });
+    // Rebuild the client per (re)try so a mid-run OAuth-token rotation is picked up
+    // (EI-281): the shared ~/.claude/.credentials.json refreshes under fleet load, so
+    // resolveTransport() is re-read on each build rather than frozen at turn start. The
+    // upfront `transport` check above still gives a clean error turn when creds are absent.
+    const makeClient = (): AnthropicClient => {
+      const t = resolveTransport();
+      if ('error' in t) throw new Error(t.error);
+      return new Anthropic({
+        ...(t.baseURL ? { baseURL: t.baseURL } : {}),
+        ...(t.apiKey ? { apiKey: t.apiKey } : {}),
+        ...(t.authToken ? { authToken: t.authToken } : {}),
+        defaultHeaders: t.headers,
+        maxRetries: 2,
+      });
+    };
 
     const model = this.state.modelOverride ?? sutModel();
     const price = priceFor(model);
@@ -417,7 +425,7 @@ class SuSession implements ChatSession {
       for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
         let resp: AnthropicResponse;
         try {
-          resp = await callWithRetry(client, {
+          resp = await callWithRetry(makeClient, {
             model,
             max_tokens: 4096,
             system,
@@ -566,6 +574,20 @@ function isTransient(err: unknown): boolean {
   );
 }
 
+/** Auth rejection (401/403) — under fleet load this is almost always a ROTATED OAuth
+ *  token, NOT a dead credential: the SUT shares one Claude-Max session with the whole
+ *  fleet, which refreshes `~/.claude/.credentials.json` frequently, so a token read at
+ *  turn-start can be invalidated by the next call. Classified SEPARATELY from
+ *  `isTransient` so `callWithRetry` re-reads the credential + rebuilds the client (the
+ *  hand-rolled-loop half of the shared chat-stream EI-281 invalidate-on-401 fix) rather
+ *  than blindly backing off on a stale token (which never recovers). */
+export function isAuthFailure(err: unknown): boolean {
+  const status = errStatus(err);
+  if (status === 401 || status === 403) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /^\s*40[13]\b/.test(msg) || /authentication_error|permission_error|invalid authentication/i.test(msg);
+}
+
 /** Seconds from a `retry-after` header (plain seconds or an HTTP date), if the
  *  SDK error exposed headers. */
 function retryAfterMs(err: unknown): number | undefined {
@@ -583,27 +605,47 @@ function retryAfterMs(err: unknown): number | undefined {
   return Number.isFinite(at) ? Math.min(120_000, Math.max(0, at - Date.now())) : undefined;
 }
 
-async function callWithRetry(
-  client: AnthropicClient,
+export async function callWithRetry(
+  makeClient: () => AnthropicClient,
   params: Record<string, unknown>,
   signal: AbortSignal,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<AnthropicResponse> {
   // Patient retry — the SUT shares one Claude-Max OAuth session with the whole
   // fleet, so a transient 429 is expected under contention. Honor Retry-After
   // when present, else exponential backoff capped at 60s.
-  const RETRY_MAX = 7;
+  // EI-281 (rotated-token half): the shared credential ALSO rotates mid-run, so a
+  // 401/403 means our token went stale — re-read `~/.claude/.credentials.json` +
+  // rebuild the client + retry (its OWN budget, since the file settles to a fresh
+  // token within a few seconds), instead of failing the whole scenario on a 401.
+  const RETRY_MAX = 7; // transient (429 / 5xx) budget
+  const AUTH_REREAD_MAX = 4; // rotated-token re-read budget
+  let client = makeClient();
+  let transientAttempts = 0;
+  let authReReads = 0;
   let lastErr: unknown;
-  for (let attempt = 1; attempt <= RETRY_MAX; attempt++) {
+  for (;;) {
     if (signal.aborted) throw new Error('su target: aborted');
     try {
       return await client.messages.create(params, { signal });
     } catch (err) {
       lastErr = err;
-      if (!isTransient(err) || attempt === RETRY_MAX) throw err;
+      if (isAuthFailure(err) && authReReads < AUTH_REREAD_MAX) {
+        authReReads++;
+        // Let a concurrent credential rotation settle, then re-read the file + rebuild.
+        await sleep(1500 + Math.random() * 1000);
+        try {
+          client = makeClient(); // re-reads ~/.claude/.credentials.json for the rotated token
+        } catch {
+          throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+        }
+        continue;
+      }
+      transientAttempts++;
+      if (!isTransient(err) || transientAttempts >= RETRY_MAX) throw err;
       const backoffMs =
-        retryAfterMs(err) ?? Math.min(60_000, 1000 * 2 ** attempt) + Math.random() * 500;
-      await new Promise((r) => setTimeout(r, backoffMs));
+        retryAfterMs(err) ?? Math.min(60_000, 1000 * 2 ** transientAttempts) + Math.random() * 500;
+      await sleep(backoffMs);
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }

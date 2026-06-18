@@ -331,6 +331,15 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
   beforeEach(() => {
     savedKey = process.env[KEY];
     savedModel = process.env[MODEL];
+    // Hermetic guard (EI-1459): the "does NOT pin" cases assert the Queen gets NO
+    // model override, but the queen own-model path (launch-blueprint.ts ~490) reads
+    // `process.env.AGENT_MODELS` via model-tiers. A sibling test file that sets
+    // AGENT_MODELS (e.g. queen→opus:high) without cleanup leaks into this worker and
+    // fires a spurious pin → flaky cross-file red that only reproduces in the full
+    // suite (passes 21/21 in isolation). Clear it per-case, matching the same idiom
+    // the queen-own-model tests above already use; the file-level afterEach
+    // `vi.unstubAllEnvs()` restores it.
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
   });
   afterEach(() => {
     if (savedKey === undefined) delete process.env[KEY]; else process.env[KEY] = savedKey;

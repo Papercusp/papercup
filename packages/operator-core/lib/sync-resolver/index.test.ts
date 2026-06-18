@@ -264,74 +264,56 @@ describe('sync-resolver v2 registry', () => {
   });
 
   describe('structural — every registered entry is well-shaped', () => {
-    // Sentinel: walk every registered name and call resolveNamedQueryV2
-    // with null/undefined args. The expected outcome is one of:
-    //   (a) zod throws with a ZodError (resolver shape: argsSchema +
-    //       valid schema, args required → throws on null)
-    //   (b) resolve runs (resolver shape: no argsSchema, OR schema with
-    //       all-defaulted fields). Result of that call hits PG, which
-    //       we DON'T want in unit tests — so we wrap in a timeout/abort.
+    // INTENT: catch a registry entry that's mis-wired — the classic bug is a
+    // typo'd key (`resolves:` instead of `resolve:`) which leaves `resolve`
+    // undefined, so the dispatcher throws "entry.resolve is not a function" the
+    // first time that name is requested in production. The shared dispatcher
+    // (createResolver) is pure routing: `entry.argsSchema?.parse(args)` then
+    // `entry.resolve(validated)` — so "is this entry safe to dispatch?" reduces
+    // to "is `resolve` a function and is `argsSchema` (if present) a validator?"
     //
-    // Either way, what we MUST see for every entry is: the call goes
-    // through the dispatcher without a TypeError ("not a function")
-    // or "Cannot read properties of undefined" — those signal a
-    // typo'd registry entry (e.g., 'resolves:' instead of 'resolve:').
-    it('every registered name dispatches without TypeError', async () => {
-      const { knownQueryNamesV2: known, resolveNamedQueryV2: r } =
+    // We assert that STRUCTURALLY, by inspecting each entry, rather than by
+    // dispatching it. The previous version called the real resolver for every
+    // null-accepting name, hitting PG/FS — so its runtime scaled with
+    // (entry count × I/O latency under load) and repeatedly froze the green
+    // gate (the per-test timeout escalated 10s→30s→120s and STILL timed out at
+    // ~123 entries under load-90, 2026-06-18). Structural inspection is O(1) per
+    // entry, does zero I/O, and catches the exact same bug class
+    // deterministically. The per-resolver dispatch tests below (with mocked
+    // data) cover routing + arg-validation behavior for the entries that matter.
+    it('every registered entry has a callable resolve and a valid argsSchema', async () => {
+      const { knownQueryNamesV2: known, getRegistryEntryV2: entryOf } =
         await import('./index');
       const names = known();
-      expect(names.length).toBeGreaterThan(40); // sanity: we have ~54 today
+      expect(names.length).toBeGreaterThan(40); // sanity: we have ~123 today
 
-      // Resolvers legitimately console.warn/error when their PG read fails in
-      // this no-PG structural dispatch (e.g. learning.hiveEvalTrend's catch).
-      // This test only cares about TypeErrors, so silence console during the
-      // loop — otherwise vitest-fail-on-console reddens the whole operator-core
-      // suite (a recurring green-gate trip) on an EXPECTED read-failure warn.
-      // Class-level fix: protects every current + future resolver's catch-warn.
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const typeErrors: Array<{ name: string; msg: string }> = [];
-      try {
-        for (const name of names) {
-          try {
-            // Pass null — zod argsSchema will throw "Expected object,
-            // received null" for entries with required schemas. Entries that
-            // accept null/undefined go on to call PG (a fast connection-failure
-            // / empty read in the unit env).
-            //
-            // AWAIT to completion — do NOT abandon the in-flight promise. A
-            // prior version raced each call against a 50ms timeout and dropped
-            // the still-running promise; those dangling resolvers kept executing
-            // real dynamic imports into the shared module registry and (under
-            // gate load) raced the vi.resetModules()+vi.doMock blocks later in
-            // this file, intermittently reddening the green-checkpoint
-            // (plansDrafts.bySlug saw a stale mock → "Cannot read properties of
-            // undefined", release-fixer 2026-06-14). Draining every dispatch
-            // keeps the registry clean for the mock-based blocks below. A truly
-            // hanging resolver still trips this test's own timeout — a real
-            // signal, not a silent leak. The bound is generous headroom over the
-            // legitimate ~10s drain: every null-accepting resolver does a real PG
-            // round-trip here (~54 × ~180ms). 10s sat on the edge; 30s then tipped
-            // over too as fleet/green-checkpoint contention grew (it froze main
-            // ~8h on 2026-06-14 — passes in ~10s isolated but blew past 30s under
-            // full-suite parallel load). Bumped to 120s: ~12x the isolated drain,
-            // still finite enough to catch a genuine never-resolving hang.
-            await r(name, null);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            if (/is not a function|Cannot read properties|undefined is not/i.test(msg)) {
-              typeErrors.push({ name, msg: msg.slice(0, 120) });
-            }
-            // Other errors (zod, PG connection failure, etc.) are fine —
-            // they prove the dispatcher walked through to the resolve.
-          }
+      const malformed: Array<{ name: string; reason: string }> = [];
+      for (const name of names) {
+        const entry = entryOf(name);
+        if (!entry) {
+          malformed.push({ name, reason: 'no entry for a known name' });
+          continue;
         }
-      } finally {
-        warnSpy.mockRestore();
-        errorSpy.mockRestore();
+        if (typeof entry.resolve !== 'function') {
+          malformed.push({
+            name,
+            reason: `resolve is ${typeof entry.resolve} (typo'd 'resolves:'?)`,
+          });
+        }
+        // argsSchema is optional; when present it must be an ArgsValidator
+        // (a zod schema, or anything exposing a `.parse(input)` method).
+        if (
+          entry.argsSchema !== undefined &&
+          typeof (entry.argsSchema as { parse?: unknown }).parse !== 'function'
+        ) {
+          malformed.push({
+            name,
+            reason: 'argsSchema present but has no .parse() (not a validator)',
+          });
+        }
       }
-      expect(typeErrors).toEqual([]);
-    }, 120_000);
+      expect(malformed).toEqual([]);
+    });
   });
 });
 

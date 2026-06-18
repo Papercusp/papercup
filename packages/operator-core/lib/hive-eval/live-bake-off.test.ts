@@ -77,6 +77,26 @@ describe('liveBakeoffDeps', () => {
     expect(h.runGen.mock.calls[0][0].instance.instanceId).toBe('bakeoff-x-treatment');
   });
 
+  it('runBattery scopes the instanceId per arm: baseline gets its own suffix', async () => {
+    h.runGen.mockResolvedValue({ scores: [] });
+    const armed = { ...cfg, battery: { ...cfg.battery, instance: { instanceId: 'bakeoff-x' } } };
+    await liveBakeoffDeps(armed).runBattery({ arm: 'baseline' });
+    expect(h.runGen.mock.calls[0][0].instance.instanceId).toBe('bakeoff-x-baseline');
+  });
+
+  it('baseline and treatment arms produce distinct instanceIds so their run_ids cannot collide', async () => {
+    h.runGen.mockResolvedValue({ scores: [] });
+    const armed = { ...cfg, battery: { ...cfg.battery, instance: { instanceId: 'bakeoff-x' } } };
+    const deps = liveBakeoffDeps(armed);
+    await deps.runBattery({ arm: 'baseline' });
+    await deps.runBattery({ arm: 'treatment' });
+    const baselineId = h.runGen.mock.calls[0][0].instance.instanceId as string;
+    const treatmentId = h.runGen.mock.calls[1][0].instance.instanceId as string;
+    expect(baselineId).not.toBe(treatmentId);
+    // run_id = instanceId::scenarioId::rRepeat — distinct instanceIds guarantee no PG row collision
+    expect(`${baselineId}::serial-pipeline::r0`).not.toBe(`${treatmentId}::serial-pipeline::r0`);
+  });
+
   it('runBattery leaves the instanceId untouched when no arm is given', async () => {
     h.runGen.mockResolvedValue({ scores: [] });
     const armed = { ...cfg, battery: { ...cfg.battery, instance: { instanceId: 'bakeoff-x' } } };

@@ -26,7 +26,12 @@ import { getMemoryBackend, type MemoryEntry } from './backend';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
 import { memoryTierOf } from './two-tier';
-import { isEphemeralBenchmarkHarnessSlug } from '../harness/improvements/watchdog';
+
+// P-016: Mirrors EPHEMERAL_BENCHMARK_SLUG_RE in harness/improvements/watchdog.ts.
+// Inlined here to avoid pulling that module's heavy @papercusp/db-org transitive
+// imports into injection.ts (which is mocked with a partial db-org stub in tests).
+const EPHEMERAL_SLUG_RE =
+  /(^|[^a-z0-9])(xbench|xbq[a-z0-9]{6}|hiveloop|memcap|memrun)|-instance[_-]|_instance[_-]|deleteme|^e2e-imp|^sb-gym|gym-eval|^bench-|smoke-p[0-9]/i;
 
 /**
  * Memory injection is a best-effort enhancement — never load-bearing —
@@ -194,7 +199,7 @@ export async function buildMemoryContextBlock(
   // injection so benchmark memories don't pollute the pre-turn prompt.
   let harnessSlugs = (input.harnessSlugs ?? [])
     .filter((s) => typeof s === 'string' && s.length > 0)
-    .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
+    .filter((s) => !EPHEMERAL_SLUG_RE.test(s));
   if (harnessSlugs.length > MAX_HARNESS_FANOUT) {
     console.warn(
       `[memory-injection] harnessSlugs (${harnessSlugs.length}) exceeds MAX_HARNESS_FANOUT (${MAX_HARNESS_FANOUT}); slicing.`,

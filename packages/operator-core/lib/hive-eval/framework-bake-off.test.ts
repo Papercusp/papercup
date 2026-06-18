@@ -86,6 +86,20 @@ describe('runFrameworkBakeOff', () => {
     expect(flagState).toBe(true); // restored
   });
 
+  it('passes arm=baseline to the first runBattery call and arm=treatment to the second', async () => {
+    const deps: BakeoffDeps = {
+      getFlag: vi.fn(async () => false),
+      setFlag: vi.fn(async () => {}),
+      runBattery: vi
+        .fn()
+        .mockResolvedValueOnce([s('a', 0.6)])
+        .mockResolvedValueOnce([s('a', 0.8)]),
+    };
+    await runFrameworkBakeOff({ flagKey: 'papercusp-x' }, deps);
+    expect(deps.runBattery).toHaveBeenNthCalledWith(1, expect.objectContaining({ arm: 'baseline' }));
+    expect(deps.runBattery).toHaveBeenNthCalledWith(2, expect.objectContaining({ arm: 'treatment' }));
+  });
+
   it('restores the flag even when a battery run throws', async () => {
     let flagState = false;
     const deps: BakeoffDeps = {

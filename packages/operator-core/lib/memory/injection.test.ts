@@ -152,6 +152,19 @@ describe('buildMemoryContextBlock', () => {
     ]);
   });
 
+  it('filters ephemeral/benchmark harness slugs from the fan-out (P-016)', async () => {
+    const b = mockBackend([{ id: 'i7', text: 'real fact', kind: 'reference' }]);
+    useBackend(b);
+    // Mix of production and ephemeral slugs; only papercup should survive.
+    await buildMemoryContextBlock({
+      userId: null, workspaceId: 'ws',
+      harnessSlugs: ['papercup', 'hiveloop-hive', 'xbq72ugvazs', 'bench-memcap-probe-DELETEME'],
+      queryContext: 'storage?',
+    });
+    const scopes = b.search.mock.calls.map((c: unknown[]) => (c[1] as { scope: unknown }).scope);
+    expect(scopes).toEqual([['harness:papercup']]);
+  });
+
   it('dedups a memory surfaced within the watermark window (D-006)', async () => {
     const stale = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const fresh = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
