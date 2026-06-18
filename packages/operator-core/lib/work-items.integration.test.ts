@@ -159,21 +159,35 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
     expect(caught!.message).not.toMatch(/engineer_issues_state_check/); // never leaks the PG constraint
   });
 
-  it('feature-family does NOT reject an arbitrary state — hfc.status has no CHECK; it passes through', async () => {
-    // The pipeline owns the feature vocabulary (no DB CHECK), so a never-seen status is accepted
-    // verbatim. This is the OTHER half of the asymmetry: the issue refusal above has no feature analog.
+  // P-011 / D-010 (GAP 5): the feature family now VALIDATES agent-set states against the
+  // canonical set — a truly-unknown status is rejected (was silently accepted, dropping the
+  // item out of dispatch). The pipeline's raw-SQL phase writes still bypass this path.
+  it('feature-family REJECTS a truly-unknown agent-set state with the valid set (GAP 5 typo guard)', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
-    const after = await wi.setWorkItemState(feat.id, 'some-novel-pipeline-phase', { harness: 'papercup' });
-    expect(after?.state).toBe('some-novel-pipeline-phase');
+    await expect(wi.setWorkItemState(feat.id, 'some-novel-pipeline-phase', { harness: 'papercup' }))
+      .rejects.toThrow(/cannot take state 'some-novel-pipeline-phase' — valid: .*in_progress/);
+    // unchanged in the DB (still todo) — not dropped into a non-dispatchable limbo.
     expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status)
-      .toBe('some-novel-pipeline-phase');
+      .toBe('todo');
   });
 
-  it('the two families’ responses to the SAME invalid state DIFFER (issue throws; feature accepts)', async () => {
+  it('feature-family NORMALIZES a separator/case drift typo to canonical (in-progress → in_progress)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    const after = await wi.setWorkItemState(feat.id, 'In-Progress', { harness: 'papercup' });
+    expect(after?.state).toBe('in_progress');
+  });
+
+  it('a trusted restore (allowNonCanonical) bypasses the guard — feature only', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    const after = await wi.setWorkItemState(feat.id, 'some-raw-pipeline-phase', { harness: 'papercup', allowNonCanonical: true });
+    expect(after?.state).toBe('some-raw-pipeline-phase');
+  });
+
+  it('both families now reject gibberish (issue via its CHECK dialect, feature via the canonical set)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await expect(wi.setWorkItemState(bug.id, 'gibberish')).rejects.toThrow(/cannot take state 'gibberish'/);
-    await expect(wi.setWorkItemState(feat.id, 'gibberish', { harness: 'papercup' })).resolves.toMatchObject({ state: 'gibberish' });
+    await expect(wi.setWorkItemState(feat.id, 'gibberish', { harness: 'papercup' })).rejects.toThrow(/cannot take state 'gibberish'/);
   });
 });
 

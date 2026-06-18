@@ -53,8 +53,9 @@ describe('normalizeWorkItemState — issue family', () => {
 });
 
 describe('normalizeWorkItemState — feature family', () => {
-  // Feature-family passes through un-restricted beyond its aliases (hfc.status
-  // carries no CHECK) — so blocked/in_progress survive verbatim there.
+  // P-011 / D-010 (GAP 5): the feature family now validates agent-set states against a
+  // canonical set, folding the canonical lifecycle dialect AND known separator/case drift
+  // variants to canonical. A truly-unknown state is rejected (the typo guard).
   it.each([
     ['done', 'passed'],
     ['resolved', 'passed'],
@@ -64,7 +65,21 @@ describe('normalizeWorkItemState — feature family', () => {
     ['blocked', 'blocked'],
     ['in_progress', 'in_progress'],
     ['validating', 'validating'],
+    ['failing', 'failing'],
+    ['wip', 'wip'],
+    ['needs-human', 'needs-human'],
+    // drift-variant + case normalization
+    ['in-progress', 'in_progress'],
+    ['In_Progress', 'in_progress'],
+    ['needs_human', 'needs-human'],
+    ['TODO', 'todo'],
   ])('maps %s → %s', (state, expected) => {
     expect(normalizeWorkItemState('feature', state)).toEqual({ ok: true, state: expected });
+  });
+
+  it('rejects a truly-unknown feature state with the canonical valid set', () => {
+    const res = normalizeWorkItemState('feature', 'some-novel-pipeline-phase');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.valid).toContain('in_progress');
   });
 });
