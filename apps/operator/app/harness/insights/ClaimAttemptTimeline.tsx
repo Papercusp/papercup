@@ -18,6 +18,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 export interface ClaimAttemptDisplayRow {
   id: number;
@@ -63,29 +64,7 @@ const COUNT_PILL: CSSProperties = {
   color: 'var(--fg-dim, #888)',
 };
 
-const TABLE: CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-};
-
-const TH: CSSProperties = {
-  textAlign: 'left',
-  padding: '6px 12px',
-  borderBottom: '1px solid var(--border, #2a2a2a)',
-  fontWeight: 500,
-  color: 'var(--fg-dim, #aaa)',
-  fontSize: 11,
-};
-
-const TD: CSSProperties = {
-  padding: '6px 12px',
-  borderBottom: '1px solid var(--border-dim, #2222)',
-  verticalAlign: 'top',
-  fontFamily: 'inherit',
-};
-
-const TD_MONO: CSSProperties = {
-  ...TD,
+const MONO: CSSProperties = {
   fontFamily: 'ui-monospace, SF Mono, Menlo, monospace',
   fontSize: 11,
   color: 'var(--fg-dim, #aaa)',
@@ -133,6 +112,42 @@ function outcomeStyle(outcome: string): CSSProperties {
   return OUTCOME_STYLES[outcome] ?? OUTCOME_PILL_BASE;
 }
 
+const columns: ColumnDef<ClaimAttemptDisplayRow>[] = [
+  {
+    key: 'feature',
+    header: 'Feature',
+    width: 1.1,
+    toCopyText: (row) => row.feature_id,
+    render: ({ row }) => <span style={MONO}>{row.feature_id}</span>,
+  },
+  {
+    key: 'claimer',
+    header: 'Claimer',
+    width: 1.4,
+    toCopyText: (row) => `@${row.claimer_github_user_id || '?'} · ${row.claimer_pubkey}`,
+    render: ({ row }) => (
+      <span style={MONO} title={row.claimer_pubkey}>
+        @{row.claimer_github_user_id || '?'} · {shortPubkey(row.claimer_pubkey)}
+      </span>
+    ),
+  },
+  {
+    key: 'outcome',
+    header: 'Outcome',
+    width: 0.9,
+    toCopyText: (row) => row.outcome,
+    render: ({ row }) => <span style={outcomeStyle(row.outcome)}>{row.outcome}</span>,
+  },
+  {
+    key: 'when',
+    header: 'When',
+    width: 0.9,
+    toCopyText: (row) => fmtTime(row.ts),
+    render: ({ row }) => <span style={MONO}>{fmtTime(row.ts)}</span>,
+  },
+  { key: 'detail', header: 'Detail', width: 2, toCopyText: (row) => row.detail ?? '', render: ({ row }) => row.detail ?? '' },
+];
+
 export function ClaimAttemptTimeline(props: ClaimAttemptTimelineProps): ReactNode {
   const attempts = props.attempts ?? [];
   return (
@@ -148,47 +163,20 @@ export function ClaimAttemptTimeline(props: ClaimAttemptTimelineProps): ReactNod
             : 'No claim attempts recorded yet. Substrate may be off, or the orchestrator has not dispatched a worker on a feature claim this run.'}
         </div>
       ) : (
-        <table style={TABLE}>
-          <thead>
-            <tr>
-              <th style={TH}>Feature</th>
-              <th style={TH}>Claimer</th>
-              <th style={TH}>Outcome</th>
-              <th style={TH}>When</th>
-              <th style={TH}>Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {attempts.map((row) => {
-              const highlighted =
-                props.highlightOutcome !== undefined &&
-                row.outcome === props.highlightOutcome;
-              return (
-                <tr
-                  key={row.id}
-                  data-testid={`claim-attempt-row-${row.id}`}
-                  data-outcome={row.outcome}
-                  style={
-                    highlighted
-                      ? { background: 'rgba(80, 120, 200, 0.06)' }
-                      : undefined
-                  }
-                >
-                  <td style={TD_MONO}>{row.feature_id}</td>
-                  <td style={TD_MONO} title={row.claimer_pubkey}>
-                    @{row.claimer_github_user_id || '?'} ·{' '}
-                    {shortPubkey(row.claimer_pubkey)}
-                  </td>
-                  <td style={TD}>
-                    <span style={outcomeStyle(row.outcome)}>{row.outcome}</span>
-                  </td>
-                  <td style={TD_MONO}>{fmtTime(row.ts)}</td>
-                  <td style={TD}>{row.detail ?? ''}</td>
-                </tr>
-              );
+        <div style={{ height: Math.min(520, 32 + attempts.length * 32 + 4) }}>
+          <RichGrid<ClaimAttemptDisplayRow>
+            columns={columns}
+            rows={attempts}
+            getRowId={(row) => String(row.id)}
+            rowMinHeight={32}
+            headerHeight={32}
+            getRowBg={(row) => props.highlightOutcome !== undefined && row.outcome === props.highlightOutcome ? 'rgba(80, 120, 200, 0.06)' : undefined}
+            rowProps={({ row }) => ({
+              'data-testid': `claim-attempt-row-${row.id}`,
+              'data-outcome': row.outcome,
             })}
-          </tbody>
-        </table>
+          />
+        </div>
       )}
     </div>
   );

@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   deriveBeeLiveness,
   evaluatePlacement,
+  isReaperReclaim,
   isUnitTerminal,
   isStuckBlockerState,
   placementConfig,
@@ -189,6 +190,85 @@ describe('evaluatePlacement — EI-865 the breaker LATCHES (it does NOT re-fire)
     // The reconcile writes status='cursed'; the NEXT sweep then latches (no second breaker).
     const after = evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3 }), CFG);
     expect(after.kind).toBe('latched');
+  });
+});
+
+describe('isReaperReclaim — reaper reclaim vs genuine bee exit (WI-233)', () => {
+  it('a wedge-reap (status reaped) is a reaper reclaim', () => {
+    expect(isReaperReclaim('reaped', null)).toBe(true);
+  });
+  it('a P-011 reclaim (status failed + a `reclaimed:` error_message) is a reaper reclaim', () => {
+    expect(isReaperReclaim('failed', 'reclaimed: spawn heartbeat stale > 300s (host presumed dead)')).toBe(true);
+    expect(isReaperReclaim('failed', 'reclaimed: child process (pid 42) confirmed dead on host-7')).toBe(true);
+  });
+  it('a GENUINE non-zero exit (status failed carrying the bee\'s OWN error) is NOT a reaper reclaim', () => {
+    // This is the case that MUST still count toward the curse — a real bee failure.
+    expect(isReaperReclaim('failed', 'Error: tsc exited 2')).toBe(false);
+    expect(isReaperReclaim('failed', null)).toBe(false);
+  });
+  it('a clean finish / a running bee is not a reaper reclaim', () => {
+    expect(isReaperReclaim('done', null)).toBe(false);
+    expect(isReaperReclaim('running', null)).toBe(false);
+    expect(isReaperReclaim('cancelled', null)).toBe(false);
+  });
+});
+
+describe('evaluatePlacement — WI-233 a reaper-reclaim of a STILL-ALIVE bee does NOT count toward the curse', () => {
+  it('a slow-but-alive false reclaim → recover with the fail count held FLAT (no progress toward the curse)', () => {
+    const d = evaluatePlacement(obs({ servingBeeReclaimedWhileActive: true, failCount: 0 }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextFailCount).toBe(0); // FLAT — a normal failure would be 1
+  });
+
+  it('the fail count NEVER reaches the breaker for a string of false reclaims (the false-curse bug)', () => {
+    // failCount 2 + a NORMAL failure trips the breaker (== threshold 3); a false reclaim
+    // at the SAME count must instead recover flat — the whole point of the relaxation.
+    const normal = evaluatePlacement(
+      obs({ placementStatus: 'working', failCount: 2 }),
+      CFG,
+    );
+    expect(normal.kind).toBe('breaker');
+    const falseReclaim = evaluatePlacement(
+      obs({ placementStatus: 'working', failCount: 2, servingBeeReclaimedWhileActive: true }),
+      CFG,
+    );
+    expect(falseReclaim.kind).toBe('recover');
+    if (falseReclaim.kind === 'recover') expect(falseReclaim.nextFailCount).toBe(2); // held, never 3
+  });
+
+  it('the latch holds across MANY false-reclaim sweeps — fail count stays put, item never curses', () => {
+    let storedFailCount = 0;
+    for (let i = 0; i < 100; i++) {
+      const d = evaluatePlacement(
+        obs({ placementStatus: 'working', failCount: storedFailCount, servingBeeReclaimedWhileActive: true }),
+        CFG,
+      );
+      expect(d.kind).toBe('recover');
+      if (d.kind === 'recover') storedFailCount = d.nextFailCount;
+    }
+    expect(storedFailCount).toBe(0); // never climbed → never cursed
+  });
+
+  it('a GENUINE failure (flag false) still climbs toward the curse — the breaker is intact', () => {
+    const d = evaluatePlacement(obs({ placementStatus: 'working', failCount: 1, servingBeeReclaimedWhileActive: false }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextFailCount).toBe(2);
+  });
+
+  it('a live holder still wins over the flag (healthy, hands-off — the flag only matters with no live holder)', () => {
+    expect(evaluatePlacement(obs({ hasLiveHolder: true, servingBeeReclaimedWhileActive: true }), CFG).kind).toBe('healthy');
+  });
+
+  it('an already-cursed item stays LATCHED even with the flag (the latch is checked first — no thrash)', () => {
+    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, servingBeeReclaimedWhileActive: true }), CFG).kind).toBe('latched');
+  });
+
+  it('the recovery debounce still applies to a false reclaim (no re-wake spam mid-recovery)', () => {
+    const d = evaluatePlacement(
+      obs({ placementStatus: 'recovering', failCount: 0, lastRecoveryAtMs: NOW - 60_000, servingBeeReclaimedWhileActive: true }),
+      CFG,
+    );
+    expect(d.kind).toBe('debounced');
   });
 });
 

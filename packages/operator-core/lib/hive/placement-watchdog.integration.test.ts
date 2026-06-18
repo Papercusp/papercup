@@ -55,17 +55,27 @@ async function seedBee(opts: {
   status: string;
   heartbeatAtMs?: number;
   lastOutputAtMs?: number | null;
+  errorMessage?: string | null;
 }): Promise<void> {
   await sql`
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, harness_slug, parent_spawn_id, parent_role, child_role,
-       session_owner, feature_id, run_id, status, heartbeat_at, last_output_at, started_at)
+       session_owner, feature_id, run_id, status, error_message, heartbeat_at, last_output_at, started_at)
     VALUES (
       ${opts.owner}, ${WS}, ${HIVE}, ${QUEEN}, 'queen', 'bee',
-      ${opts.owner}, ${opts.featureId}, ${'run-' + opts.owner}, ${opts.status},
+      ${opts.owner}, ${opts.featureId}, ${'run-' + opts.owner}, ${opts.status}, ${opts.errorMessage ?? null},
       ${new Date(opts.heartbeatAtMs ?? NOW)},
       ${opts.lastOutputAtMs == null ? null : new Date(opts.lastOutputAtMs)},
       now())`;
+}
+
+/** A governed model call (agent_usage_samples row) for a bee's run — the WI-233
+ *  liveness signal that a heartbeat-stale / reclaimed bee was actually SLOW-BUT-ALIVE. */
+async function seedUsageSample(owner: string, tsMs: number): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, bucket_key, provider, model_class, source, run_id, harness_slug)
+    VALUES (${WS}, ${tsMs}, 'anthropic:opus', 'anthropic', 'opus', 'headers', ${'run-' + owner}, ${HIVE})`;
 }
 
 async function seedUnit(opts: {
@@ -103,7 +113,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     mocks.resolveEscalation.mockClear();
     await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents,
                        harness_shared.harness_features_consolidated, harness_shared.coord_links,
-                       harness_shared.adv_sessions`;
+                       harness_shared.adv_sessions, harness_shared.agent_usage_samples`;
     await seedQueenSession();
   });
 
@@ -172,6 +182,64 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(out.find((r) => r.workItemId === 'F-200')?.decision).toBe('breaker');
     expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
     expect(mocks.wakeRecipients).not.toHaveBeenCalled(); // breaker STOPS re-placing
+  });
+
+  it('WI-233: a reaper-reclaim of a STILL-ALIVE bee at the breaker threshold → recovers, does NOT curse (fail_count held)', async () => {
+    // Same shape as the P-021 breaker test (fail_count 2, past the debounce) — but the
+    // serving bee was REAPER-reclaimed (error `reclaimed: …`) AND made a governed model
+    // call within the activity window (a slow-but-alive false reclaim, the papercup
+    // owner-focus cascade). It must re-place WITHOUT counting toward the curse.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-ALIVE', ${HIVE}, ${QUEEN},
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), now(), now())`;
+    await seedBee({
+      owner: 'bee-alive',
+      featureId: 'F-ALIVE',
+      status: 'failed',
+      errorMessage: 'reclaimed: spawn heartbeat stale > 300s (launching operator host presumed dead)',
+    });
+    await seedUsageSample('bee-alive', NOW - 60_000); // a model call 1 min ago → demonstrably alive
+    await seedUnit({ id: 'F-ALIVE', status: 'in_progress', takenBy: 'bee-alive' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-ALIVE');
+    expect(p?.status).toBe('recovering'); // NOT cursed
+    expect(p?.fail_count).toBe(2); // HELD FLAT — the false reclaim did not climb to 3
+    expect(out.find((r) => r.workItemId === 'F-ALIVE')?.decision).toBe('recover');
+    expect(mocks.openEscalation).not.toHaveBeenCalled(); // no curse → no escalation
+    expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1); // re-placement wake still fires
+  });
+
+  it('WI-233: a reaper-reclaim of a bee with NO recent activity (genuinely wedged/dead) STILL curses — the breaker is intact', async () => {
+    // The discriminator: same reclaimed bee, but no agent_usage_samples row → not alive →
+    // counts toward the curse as before. Proves the relaxation is liveness-gated, not a
+    // blanket "reclaims never curse" (which would let a truly bee-wedging item retry forever).
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-DEAD', ${HIVE}, ${QUEEN},
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), now(), now())`;
+    await seedBee({
+      owner: 'bee-dead',
+      featureId: 'F-DEAD',
+      status: 'failed',
+      errorMessage: 'reclaimed: spawn heartbeat stale > 300s (launching operator host presumed dead)',
+    });
+    // NO seedUsageSample → no recent model call → genuinely gone.
+    await seedUnit({ id: 'F-DEAD', status: 'in_progress', takenBy: 'bee-dead' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-DEAD');
+    expect(p?.status).toBe('cursed'); // breaker still trips for a genuinely-gone bee
+    expect(p?.fail_count).toBe(3);
+    expect(out.find((r) => r.workItemId === 'F-DEAD')?.decision).toBe('breaker');
+    expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
   });
 
   it('EI-865: an already-cursed item is LATCHED on re-sweep — failCount frozen, no re-escalation, no wake', async () => {

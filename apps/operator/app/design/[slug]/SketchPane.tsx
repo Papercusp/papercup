@@ -25,6 +25,17 @@ interface PriorSketch {
 
 const CANVAS_W = 720;
 const CANVAS_H = 480;
+const SKETCH_PAPER = '#ffffff';
+const token = {
+  fgMuted: 'var(--fg-mute)',
+  fgDim: 'var(--fg-dim)',
+  border: 'var(--border)',
+  bg2: 'var(--bg-2)',
+  bgDeep: 'var(--bg-deeper)',
+  accentFill: 'color-mix(in srgb, var(--accent), transparent 84%)',
+  accentBorder: 'color-mix(in srgb, var(--accent-strong), transparent 58%)',
+  danger: 'var(--bad)',
+} as const;
 
 export default function SketchPane({
   slug,
@@ -52,7 +63,7 @@ export default function SketchPane({
     if (!c) return;
     const ctx = c.getContext('2d');
     if (!ctx) return;
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = SKETCH_PAPER;
     ctx.fillRect(0, 0, c.width, c.height);
     setHistory([]);
   }, [featureId]);
@@ -113,8 +124,8 @@ export default function SketchPane({
       ctx.lineWidth = lineWidth;
       ctx.globalCompositeOperation = 'source-over';
     } else {
-      // eraser: paint white
-      ctx.strokeStyle = '#ffffff';
+      // Eraser paints the sketch paper color, not the app chrome.
+      ctx.strokeStyle = SKETCH_PAPER;
       ctx.lineWidth = lineWidth * 4;
       ctx.globalCompositeOperation = 'source-over';
     }
@@ -147,7 +158,7 @@ export default function SketchPane({
     const ctx = c?.getContext('2d');
     if (!c || !ctx) return;
     pushHistory();
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = SKETCH_PAPER;
     ctx.fillRect(0, 0, c.width, c.height);
   }
 
@@ -189,7 +200,7 @@ export default function SketchPane({
 
   if (!featureId) {
     return (
-      <p style={{ color: '#6b7280' }}>
+      <p style={{ color: token.fgMuted }}>
         Pick a feature on the left to sketch against it. Sketches are stored as
         artifacts on the feature.
       </p>
@@ -201,7 +212,7 @@ export default function SketchPane({
       <div style={{ flex: 1, minWidth: 0 }}>
         <header style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Sketch</h2>
-          <span style={{ color: '#9ca3af', fontSize: 12 }}>
+          <span style={{ color: token.fgMuted, fontSize: 12 }}>
             feature: <code>{featureId}</code>
           </span>
         </header>
@@ -211,10 +222,10 @@ export default function SketchPane({
             gap: 6,
             alignItems: 'center',
             padding: 6,
-            border: '1px solid #e5e7eb',
-            borderTop: '1px solid #e5e7eb',
+            border: `1px solid ${token.border}`,
+            borderTop: `1px solid ${token.border}`,
             borderBottom: 'none',
-            background: '#f9fafb',
+            background: token.bg2,
             fontSize: 12,
           }}
         >
@@ -234,16 +245,16 @@ export default function SketchPane({
           >
             ◯ Eraser
           </button>
-          <span style={{ width: 1, alignSelf: 'stretch', background: '#e5e7eb', margin: '0 4px' }} />
+          <span style={{ width: 1, alignSelf: 'stretch', background: token.border, margin: '0 4px' }} />
           <input
             type="color"
             value={color}
             onChange={(e) => setColor(e.target.value)}
             disabled={tool === 'eraser'}
             aria-label="Stroke color"
-            style={{ width: 28, height: 24, padding: 0, border: '1px solid #e5e7eb', borderRadius: 3 }}
+            style={{ width: 28, height: 24, padding: 0, border: `1px solid ${token.border}`, borderRadius: 3 }}
           />
-          <label style={{ color: '#6b7280' }}>
+          <label style={{ color: token.fgMuted }}>
             Width
             <input
               type="range"
@@ -254,7 +265,7 @@ export default function SketchPane({
               style={{ marginLeft: 4, verticalAlign: 'middle' }}
             />
           </label>
-          <span style={{ width: 1, alignSelf: 'stretch', background: '#e5e7eb', margin: '0 4px' }} />
+          <span style={{ width: 1, alignSelf: 'stretch', background: token.border, margin: '0 4px' }} />
           <button type="button" onClick={undo} disabled={history.length === 0} style={toolBtn(false)}>
             ↶ Undo
           </button>
@@ -265,7 +276,7 @@ export default function SketchPane({
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="Optional label…"
-              style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #e5e7eb', fontSize: 12 }}
+              style={{ padding: '4px 8px', borderRadius: 4, border: `1px solid ${token.border}`, background: token.bgDeep, color: 'var(--fg)', fontSize: 12 }}
             />
             <button
               type="button"
@@ -273,9 +284,9 @@ export default function SketchPane({
               disabled={saving}
               style={{
                 padding: '4px 10px',
-                background: '#1d4ed8',
-                color: '#fff',
-                border: 'none',
+                background: token.accentFill,
+                color: 'var(--accent-soft)',
+                border: `1px solid ${token.accentBorder}`,
                 borderRadius: 4,
                 fontSize: 12,
                 cursor: saving ? 'wait' : 'pointer',
@@ -295,9 +306,9 @@ export default function SketchPane({
           onPointerCancel={onPointerUp}
           style={{
             display: 'block',
-            border: '1px solid #e5e7eb',
+            border: `1px solid ${token.border}`,
             borderRadius: '0 0 4px 4px',
-            background: '#ffffff',
+            background: SKETCH_PAPER,
             touchAction: 'none',
             cursor: tool === 'eraser' ? 'cell' : 'crosshair',
             maxWidth: '100%',
@@ -305,31 +316,31 @@ export default function SketchPane({
           }}
         />
         {saveError && (
-          <p style={{ color: '#b91c1c', fontSize: 12, marginTop: 8 }}>save failed: {saveError}</p>
+          <p style={{ color: token.danger, fontSize: 12, marginTop: 8 }}>save failed: {saveError}</p>
         )}
       </div>
       <aside
         style={{
           width: 240,
           flexShrink: 0,
-          borderLeft: '1px solid #e5e7eb',
+          borderLeft: `1px solid ${token.border}`,
           paddingLeft: 12,
           maxHeight: CANVAS_H + 48,
           overflowY: 'auto',
         }}
       >
-        <h3 style={{ fontSize: 12, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        <h3 style={{ fontSize: 12, fontWeight: 600, color: token.fgDim, textTransform: 'uppercase', letterSpacing: 0.5 }}>
           Prior sketches{' '}
-          <span style={{ color: '#9ca3af', fontWeight: 400 }}>({priors.length})</span>
+          <span style={{ color: token.fgMuted, fontWeight: 400 }}>({priors.length})</span>
         </h3>
-        {sketchesQ.isLoading && <p style={{ color: '#6b7280', fontSize: 12 }}>Loading…</p>}
+        {sketchesQ.isLoading && <p style={{ color: token.fgMuted, fontSize: 12 }}>Loading…</p>}
         {sketchesQ.isError && (
-          <p style={{ color: '#b91c1c', fontSize: 12 }}>
+          <p style={{ color: token.danger, fontSize: 12 }}>
             {String(sketchesQ.error)}
           </p>
         )}
         {priors.length === 0 && !sketchesQ.isLoading && (
-          <p style={{ color: '#6b7280', fontSize: 12 }}>None yet.</p>
+          <p style={{ color: token.fgMuted, fontSize: 12 }}>None yet.</p>
         )}
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {priors.map((s, i) => (
@@ -338,11 +349,11 @@ export default function SketchPane({
                 <img
                   src={s.png}
                   alt={s.label || `sketch ${i + 1}`}
-                  style={{ width: '100%', border: '1px solid #e5e7eb', borderRadius: 4, display: 'block' }}
+                  style={{ width: '100%', border: `1px solid ${token.border}`, borderRadius: 4, display: 'block', background: SKETCH_PAPER }}
                 />
               )}
-              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
-                {s.label && <strong style={{ color: '#374151' }}>{s.label}</strong>}
+              <div style={{ fontSize: 11, color: token.fgMuted, marginTop: 2 }}>
+                {s.label && <strong style={{ color: token.fgDim }}>{s.label}</strong>}
                 {s.label && ' · '}
                 {priorTimes[i]}
               </div>
@@ -357,10 +368,10 @@ export default function SketchPane({
 function toolBtn(active: boolean): React.CSSProperties {
   return {
     padding: '3px 8px',
-    border: '1px solid #e5e7eb',
+    border: `1px solid ${token.border}`,
     borderRadius: 4,
-    background: active ? '#dbeafe' : '#ffffff',
-    color: active ? '#1e40af' : '#374151',
+    background: active ? token.accentFill : token.bg2,
+    color: active ? 'var(--accent-soft)' : token.fgDim,
     cursor: 'pointer',
   };
 }

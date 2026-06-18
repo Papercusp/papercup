@@ -82,3 +82,16 @@ wants ~70. Raising it is a **postmaster-start** parameter (a full cluster restar
 constraint (the box has 100+ GB free). If storms/overhang recur, raising `max_connections`
 (or shrinking the staging operator's pool) is the durable fix — file it rather than
 band-aiding each wedge.
+
+## Watchdog no longer mis-files a wedge as tool bugs (fixed 2026-06-17)
+
+The improvement-watchdog used to classify these exhaustion errors as **per-tool structural
+bugs** (low-bar, fires at n≥2) because the error *shape* recurs identically — so a single
+wedge spammed `Tool X returns a structural error` EIs across every PG-backed tool
+(EI-1331/1332/1323/1337/1342/1344 + the coord-probe canary EI-1333), several of which the
+Queen then triaged to the auto-implement fix queue (which would "fix" working tools).
+Fixed in `packages/operator-core/lib/harness/improvements/watchdog.ts`:
+`classifyToolError` + the SQL `CASE` in `collectToolErrorSignals` now classify
+connection-exhaustion / DB-unavailable messages (`INFRA_TRANSIENT_ERROR_RE`) as **transient**
+(volume-gated at n≥15), so a brief wedge is ignored while a sustained infra problem still
+fires. So a future wedge won't recreate that false-positive EI cluster.

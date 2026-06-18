@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { loadRuns, type RunSummary, type RouteRollup } from '../_lib/recorder-channel';
 import { getEvents, rateINP, type PerfEvent } from '../_lib/vitals-recorder';
 
@@ -54,6 +55,36 @@ export function mergeRouteRollups(runs: RunSummary[], live: PerfEvent[]): Merged
   );
 }
 
+const routeColumns: ColumnDef<MergedRollup>[] = [
+  { key: 'route', header: 'Route', width: 2, toCopyText: (r) => r.route, render: ({ row }) => <code>{row.route}</code> },
+  { key: 'clicks', header: 'Chaos clicks', width: 1, toCopyText: (r) => String(r.clicks), render: ({ row }) => row.clicks },
+  { key: 'p50', header: 'Chaos p50', width: 1, toCopyText: (r) => r.p50inp ? `${r.p50inp}ms` : '—', render: ({ row }) => row.p50inp ? `${row.p50inp}ms` : '—' },
+  {
+    key: 'p95',
+    header: 'Chaos p95',
+    width: 1,
+    toCopyText: (r) => r.p95inp ? `${r.p95inp}ms` : '—',
+    render: ({ row }) => {
+      const rating = rateINP(Math.max(row.p95inp, row.liveMaxInp));
+      const cls = rating === 'good' ? 'is-good' : rating === 'needs-improvement' ? 'is-needs' : 'is-poor';
+      return row.p95inp ? <span className={`pc-test-badge ${cls}`}>{row.p95inp}ms</span> : '—';
+    },
+  },
+  { key: 'max', header: 'Chaos max', width: 1, toCopyText: (r) => r.maxInp ? `${r.maxInp}ms` : '—', render: ({ row }) => row.maxInp ? `${row.maxInp}ms` : '—' },
+  { key: 'liveCount', header: 'Live count', width: 1, toCopyText: (r) => String(r.liveCount || '—'), render: ({ row }) => row.liveCount || '—' },
+  { key: 'liveMax', header: 'Live max', width: 1, toCopyText: (r) => r.liveMaxInp ? `${r.liveMaxInp}ms` : '—', render: ({ row }) => row.liveMaxInp ? `${row.liveMaxInp}ms` : '—' },
+  {
+    key: 'errors',
+    header: 'Errors',
+    width: 0.85,
+    toCopyText: (r) => String(r.errors + r.liveErrors),
+    render: ({ row }) => {
+      const totalErrors = row.errors + row.liveErrors;
+      return <span className={`pc-test-badge ${totalErrors ? 'is-poor' : 'is-good'}`}>{totalErrors}</span>;
+    },
+  },
+];
+
 export default function RoutesTab() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [live, setLive] = useState<PerfEvent[]>([]);
@@ -79,44 +110,21 @@ export default function RoutesTab() {
       </header>
 
       <div className="pc-test-card">
-        <table className="pc-test-metric-table">
-          <thead>
-            <tr>
-              <th>Route</th>
-              <th style={{ width: 90 }}>Chaos clicks</th>
-              <th style={{ width: 90 }}>Chaos p50</th>
-              <th style={{ width: 90 }}>Chaos p95</th>
-              <th style={{ width: 90 }}>Chaos max</th>
-              <th style={{ width: 90 }}>Live count</th>
-              <th style={{ width: 90 }}>Live max</th>
-              <th style={{ width: 80 }}>Errors</th>
-            </tr>
-          </thead>
-          <tbody>
-            {merged.length === 0 ? (
-              <tr><td colSpan={8} style={{ padding: 16, color: 'var(--fg-mute)' }}>
-                No data yet — run a chaos test or use the app to populate.
-              </td></tr>
-            ) : merged.map((r) => {
-              const worst = Math.max(r.p95inp, r.liveMaxInp);
-              const rating = rateINP(worst);
-              const cls = rating === 'good' ? 'is-good' : rating === 'needs-improvement' ? 'is-needs' : 'is-poor';
-              const totalErrors = r.errors + r.liveErrors;
-              return (
-                <tr key={r.route}>
-                  <td><code>{r.route}</code></td>
-                  <td>{r.clicks}</td>
-                  <td>{r.p50inp ? `${r.p50inp}ms` : '—'}</td>
-                  <td>{r.p95inp ? <span className={`pc-test-badge ${cls}`}>{r.p95inp}ms</span> : '—'}</td>
-                  <td>{r.maxInp ? `${r.maxInp}ms` : '—'}</td>
-                  <td>{r.liveCount || '—'}</td>
-                  <td>{r.liveMaxInp ? `${r.liveMaxInp}ms` : '—'}</td>
-                  <td><span className={`pc-test-badge ${totalErrors ? 'is-poor' : 'is-good'}`}>{totalErrors}</span></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        {merged.length === 0 ? (
+          <div style={{ padding: 16, color: 'var(--fg-mute)' }}>
+            No data yet — run a chaos test or use the app to populate.
+          </div>
+        ) : (
+          <div style={{ height: Math.min(620, 32 + merged.length * 32 + 4) }}>
+            <RichGrid<MergedRollup>
+              columns={routeColumns}
+              rows={merged}
+              getRowId={(r) => r.route}
+              rowMinHeight={32}
+              headerHeight={32}
+            />
+          </div>
+        )}
       </div>
     </>
   );

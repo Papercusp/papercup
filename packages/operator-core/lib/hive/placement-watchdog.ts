@@ -87,6 +87,35 @@ export function placementConfig(): PlacementConfig {
   };
 }
 
+/**
+ * EI-865 / WI-233 — a heartbeat-stale / reaper-reclaimed bee that made a governed
+ * model call within this window of `now` was demonstrably ALIVE when it went stale
+ * or was reclaimed: a SLOW-BUT-ALIVE false reclaim. Generously larger than the
+ * reaper's RECLAIM_STALE_MS (5m) so a single long opus:xhigh call (or the WI-204
+ * per-call PG overhead in a tight capability:bash loop) that starved the heartbeat
+ * past the stale threshold still reads as active. A long model call emits NO stdout,
+ * so `last_output_at` is no signal here — `agent_usage_samples` (one row per governed
+ * model call) is. The reclaim of such a bee re-places the unit but does NOT count
+ * toward the placement curse. Env-overridable like the other watchdog tunables. */
+export const ACTIVE_RECLAIM_WINDOW_MS = (() => {
+  const v = Number(process.env.PAPERCUSP_HIVE_ACTIVE_RECLAIM_WINDOW_MS ?? 15 * 60_000);
+  return Number.isFinite(v) && v >= 0 ? v : 15 * 60_000;
+})();
+
+/**
+ * Did this spawn land in a terminal state via a REAPER RECLAIM (the P-011
+ * orphan-reclaim sweep, or a wedge-reap) rather than a genuine non-zero EXIT? The
+ * P-011 reaper stamps an `error_message` of `reclaimed: …` with status 'failed'; a
+ * wedge-reap sets status 'reaped'. A genuine bee crash is status 'failed' carrying
+ * the bee's OWN error (never a `reclaimed:` prefix); a clean finish is 'done'. Only
+ * a reaper reclaim of a still-ALIVE bee is exempt from the placement curse (WI-233)
+ * — a genuine crash still counts, so a truly bee-WEDGING item still trips the
+ * breaker. Pure; exported for the decider unit tests. */
+export function isReaperReclaim(status: string, errorMessage: string | null): boolean {
+  if (status === 'reaped') return true;
+  return status === 'failed' && errorMessage != null && errorMessage.startsWith('reclaimed:');
+}
+
 // ── P-020 pure decider 1: bee liveness from the durable spawn row ─────────────
 
 export type BeeLiveness = 'live' | 'wedged' | 'dead';
@@ -133,6 +162,13 @@ export interface PlacementObservation {
   placementStatus: string | null;
   /** When the last recovery wake fired (debounce), ms epoch, or null. */
   lastRecoveryAtMs: number | null;
+  /** EI-865 / WI-233 — the serving bee is a slow-but-ALIVE false reclaim: the
+   *  watchdog reads it `dead` (heartbeat-stale, or P-011 reaper-reclaimed) yet it made
+   *  a governed model call within {@link ACTIVE_RECLAIM_WINDOW_MS}, so it was
+   *  demonstrably alive when it went stale / was reaped. A reclaim of such a bee
+   *  re-places the unit but does NOT count toward the curse — only a genuine bee
+   *  failure / wedge (no recent activity, or a non-zero exit) does. Default false. */
+  servingBeeReclaimedWhileActive?: boolean;
   now: number;
 }
 
@@ -187,6 +223,25 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   ) {
     return { kind: 'debounced' };
   }
+
+  // EI-865 / WI-233 — a reaper-reclaim of a STILL-ALIVE bee does NOT count toward the
+  // curse. A slow-but-alive bee (a long opus:xhigh call, or WI-204's per-call PG
+  // overhead in a tight capability:bash loop) goes heartbeat-stale and the P-011 reaper
+  // reclaims it (spawn → failed), so this placement reads "no live holder + failed" —
+  // but it was an INFRASTRUCTURE reclaim, not evidence the work-item is ill-specified or
+  // wedges bees. Re-place it (it genuinely has no holder now), but keep fail_count FLAT
+  // so a run of false reclaims never trips the breaker. Only a genuine failure — a
+  // non-zero exit, or a reclaimed bee with NO recent model-call activity (actually
+  // wedged/dead) — climbs toward the curse. Without this the whole papercup owner-focus
+  // frontier (WI-214/217/218/219/220/231/232, F-FIX-*) false-cursed out of placement.
+  if (obs.servingBeeReclaimedWhileActive) {
+    return {
+      kind: 'recover',
+      nextFailCount: obs.failCount, // FLAT — a false reclaim never progresses the breaker
+      reason: 'serving bee reaper-reclaimed while still active (slow-but-alive) — re-placing, not counting toward the curse',
+    };
+  }
+
   const nextFailCount = obs.failCount + 1;
   if (nextFailCount >= cfg.breakerThreshold) {
     return {
@@ -217,6 +272,10 @@ interface BeeLite {
   ownerId: string; // coord owner == work-item taken_by
   featureId: string | null;
   liveness: BeeLiveness;
+  /** EI-865 / WI-233 — a slow-but-alive false reclaim (see ACTIVE_RECLAIM_WINDOW_MS):
+   *  read `dead` (heartbeat-stale / reaper-reclaimed) but made a governed model call
+   *  within the activity window, so it was alive when reclaimed. */
+  reclaimedWhileActive: boolean;
 }
 
 interface UnitRow {
@@ -395,9 +454,11 @@ export async function reconcileOneHive(
       status: string;
       heartbeat_ms: number | null;
       last_output_ms: number | null;
+      run_id: string | null;
+      error_message: string | null;
     }[]
   >`
-    SELECT spawn_id, session_owner, feature_id, status,
+    SELECT spawn_id, session_owner, feature_id, status, run_id, error_message,
            extract(epoch from heartbeat_at) * 1000 AS heartbeat_ms,
            extract(epoch from last_output_at) * 1000 AS last_output_ms
       FROM harness_shared.spawned_agents
@@ -405,9 +466,28 @@ export async function reconcileOneHive(
        AND child_role = 'bee'
        AND parent_spawn_id = ANY(${queenOwners})`;
 
+  // EI-865 / WI-233 — which bees made a governed model call within ACTIVE_RECLAIM_WINDOW_MS
+  // (agent_usage_samples, keyed by the spawn's run_id). This is the liveness signal that a
+  // heartbeat-stale / reaper-reclaimed bee was actually SLOW-BUT-ALIVE: a long model call
+  // emits no stdout (so last_output_at is useless) but DOES write a usage sample. A reclaim
+  // of such a bee must not count toward the placement curse. The `ts >= now - window` bound
+  // keeps this on the (workspace_id, ts DESC) index — a few minutes of recent samples.
+  const beeRunIds = [...new Set(beeRows.map((b) => b.run_id).filter((r): r is string => !!r))];
+  const activeRunIds = new Set<string>();
+  if (beeRunIds.length > 0) {
+    const activeRows = await sql<{ run_id: string }[]>`
+      SELECT DISTINCT run_id
+        FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${workspaceId}
+         AND run_id = ANY(${beeRunIds})
+         AND ts >= ${now - ACTIVE_RECLAIM_WINDOW_MS}`;
+    for (const r of activeRows) if (r.run_id) activeRunIds.add(r.run_id);
+  }
+
   const beeByOwner = new Map<string, BeeLite>();
   for (const b of beeRows) {
     const ownerId = b.session_owner || b.spawn_id;
+    const recentlyActive = b.run_id != null && activeRunIds.has(b.run_id);
     const bee: BeeLite = {
       spawnId: b.spawn_id,
       ownerId,
@@ -418,6 +498,13 @@ export async function reconcileOneHive(
         lastOutputAtMs: num(b.last_output_ms),
         now,
       }),
+      // Slow-but-alive false reclaim: recent model-call activity AND the bee is either
+      // only heartbeat-stale (still running/restarting, the reaper has not run yet) or
+      // was reaper-reclaimed (not a genuine crash). A genuine non-zero exit (status
+      // 'failed' with the bee's OWN error) is excluded, so a bee-wedging item still curses.
+      reclaimedWhileActive:
+        recentlyActive &&
+        (b.status === 'running' || b.status === 'restarting' || isReaperReclaim(b.status, b.error_message)),
     };
     // Index by both owner and spawn id so a unit's taken_by resolves either way.
     beeByOwner.set(ownerId, bee);
@@ -463,6 +550,10 @@ export async function reconcileOneHive(
       const anchorBee = anchor ? beeByOwner.get(anchor.session_owner || anchor.spawn_id) : undefined;
       const servingBee = holder ?? anchorBee;
       const hasLiveHolder = holder?.liveness === 'live' || anchorBee?.liveness === 'live';
+      // WI-233 — only meaningful when there is no live holder (the failed path): was the
+      // serving bee a slow-but-alive false reclaim rather than a genuine failure?
+      const servingBeeReclaimedWhileActive =
+        !hasLiveHolder && (holder?.reclaimedWhileActive === true || anchorBee?.reclaimedWhileActive === true);
 
       const obs: PlacementObservation = {
         workItemId: unitId,
@@ -472,6 +563,7 @@ export async function reconcileOneHive(
         failCount: existing?.fail_count ?? 0,
         placementStatus: existing?.status ?? null,
         lastRecoveryAtMs: existing?.last_recovery_ms ?? null,
+        servingBeeReclaimedWhileActive,
         now,
       };
       const decision = evaluatePlacement(obs, cfg);

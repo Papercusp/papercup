@@ -49,14 +49,14 @@ const TITLE = {
   fontWeight: 600,
 } as const;
 
-const TABLE = {
-  width: '100%',
-  borderCollapse: 'collapse' as const,
+const GRID = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(120px, 1fr) minmax(120px, 1fr) minmax(160px, 1.3fr) minmax(140px, 1fr) minmax(140px, 1fr)',
   fontSize: 13,
+  overflowX: 'auto' as const,
 };
 
-const TH = {
-  textAlign: 'left' as const,
+const GRID_HEADER = {
   borderBottom: '1px solid var(--border, #2a2a2a)',
   padding: '8px 12px',
   fontWeight: 600,
@@ -66,7 +66,7 @@ const TH = {
   letterSpacing: '0.04em',
 };
 
-const TD = {
+const GRID_CELL = {
   padding: '10px 12px',
   borderBottom: '1px solid var(--border-subtle, #222)',
 };
@@ -169,74 +169,70 @@ export default async function DogfoodSubstratePage() {
           its own.
         </div>
       ) : (
-        <table style={TABLE} data-testid="dogfood-substrate-table">
-          <thead>
-            <tr>
-              <th style={TH}>Workspace</th>
-              <th style={TH}>{term('pot')}</th>
-              <th style={TH}>Health</th>
-              <th style={TH}>Bootstrap</th>
-              <th style={TH}>Claim audit</th>
-            </tr>
-          </thead>
-          <tbody>
-            {booted.map((h) => {
-              const key = `${h.workspaceId}::${h.harnessSlug}`;
-              const stats = statsBySlug.get(key);
-              const progress = progressBySlug.get(key);
-              const health = assessHarnessSubstrateHealth({
-                flagEnabled: enabled,
-                handlePresent: true,
-                claimStats: stats,
-                bootstrapProgress: progress ?? null,
-              });
-              return (
-                <tr
-                  key={key}
-                  data-testid={`dogfood-substrate-row-${h.harnessSlug}`}
-                >
-                  <td style={TD}>
-                    <code>{h.workspaceId}</code>
-                  </td>
-                  <td style={TD}>
-                    <code>{h.harnessSlug}</code>
-                  </td>
-                  <td style={TD}>
-                    <SubstrateHealthPill
-                      verdict={health.verdict}
-                      reasons={health.reasons}
+        <div style={GRID} data-testid="dogfood-substrate-table" role="grid">
+          <div style={GRID_HEADER} role="columnheader">Workspace</div>
+          <div style={GRID_HEADER} role="columnheader">{term('pot')}</div>
+          <div style={GRID_HEADER} role="columnheader">Health</div>
+          <div style={GRID_HEADER} role="columnheader">Bootstrap</div>
+          <div style={GRID_HEADER} role="columnheader">Claim audit</div>
+          {booted.map((h) => {
+            const key = `${h.workspaceId}::${h.harnessSlug}`;
+            const stats = statsBySlug.get(key);
+            const progress = progressBySlug.get(key);
+            const health = assessHarnessSubstrateHealth({
+              flagEnabled: enabled,
+              handlePresent: true,
+              claimStats: stats,
+              bootstrapProgress: progress ?? null,
+            });
+            return (
+              <div
+                key={key}
+                data-testid={`dogfood-substrate-row-${h.harnessSlug}`}
+                role="row"
+                style={{ display: 'contents' }}
+              >
+                <div style={GRID_CELL} role="gridcell">
+                  <code>{h.workspaceId}</code>
+                </div>
+                <div style={GRID_CELL} role="gridcell">
+                  <code>{h.harnessSlug}</code>
+                </div>
+                <div style={GRID_CELL} role="gridcell">
+                  <SubstrateHealthPill
+                    verdict={health.verdict}
+                    reasons={health.reasons}
+                  />
+                </div>
+                <div style={GRID_CELL} role="gridcell">
+                  {progress ? (
+                    <BootstrapProgressIndicator
+                      totalOps={Math.max(
+                        progress.highestSeen,
+                        progress.mergedOps,
+                      )}
+                      mergedOps={progress.mergedOps}
                     />
-                  </td>
-                  <td style={TD}>
-                    {progress ? (
-                      <BootstrapProgressIndicator
-                        totalOps={Math.max(
-                          progress.highestSeen,
-                          progress.mergedOps,
-                        )}
-                        mergedOps={progress.mergedOps}
-                      />
-                    ) : (
-                      <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>
-                    )}
-                  </td>
-                  <td style={TD}>
-                    {stats && stats.total > 0 ? (
-                      <ClaimAttemptStatsPill
-                        total={stats.total}
-                        won={stats.won}
-                        lost={stats.lost}
-                        error={stats.error}
-                      />
-                    ) : (
-                      <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  ) : (
+                    <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>
+                  )}
+                </div>
+                <div style={GRID_CELL} role="gridcell">
+                  {stats && stats.total > 0 ? (
+                    <ClaimAttemptStatsPill
+                      total={stats.total}
+                      won={stats.won}
+                      lost={stats.lost}
+                      error={stats.error}
+                    />
+                  ) : (
+                    <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
 
       <div style={{ marginTop: 28 }}>

@@ -95,7 +95,7 @@ const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }
   blueprint: { fg: 'var(--success)', bg: 'color-mix(in srgb, var(--success), transparent 86%)', border: 'color-mix(in srgb, var(--success), transparent 74%)' },
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
-  'learning-pack': { fg: '#f59e0b', bg: 'color-mix(in srgb, #f59e0b, transparent 88%)', border: 'color-mix(in srgb, #f59e0b, transparent 76%)' },
+  'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
 };
 
 const filterButtonStyle = (active: boolean): React.CSSProperties => ({
@@ -104,18 +104,18 @@ const filterButtonStyle = (active: boolean): React.CSSProperties => ({
   justifyContent: 'center',
   gap: 6,
   background: active
-    ? 'linear-gradient(135deg, var(--accent), var(--accent-strong))'
+    ? 'color-mix(in srgb, var(--accent), transparent 78%)'
     : 'var(--bg-2)',
-  color: active ? 'var(--accent-ink)' : 'var(--fg-mute)',
+  color: active ? 'var(--accent-soft)' : 'var(--fg-mute)',
   border: active
     ? '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)'
     : '1px solid var(--border)',
-  borderRadius: 999,
+  borderRadius: RADIUS.sm,
   padding: '7px 13px',
   cursor: 'pointer',
   fontSize: 12,
   fontFamily: FONTS.ui,
-  boxShadow: active ? '0 12px 26px color-mix(in srgb, var(--accent), transparent 78%)' : 'none',
+  boxShadow: 'none',
 });
 
 const ghostButtonStyle: React.CSSProperties = {
@@ -125,7 +125,7 @@ const ghostButtonStyle: React.CSSProperties = {
   gap: 6,
   background: 'var(--bg-2)',
   border: '1px solid var(--border)',
-  borderRadius: 999,
+  borderRadius: RADIUS.sm,
   padding: '7px 12px',
   cursor: 'pointer',
   color: 'var(--fg-mute)',
@@ -469,7 +469,7 @@ export default function CupboardClient() {
           border: `1px solid ${COLORS.border}`,
           borderRadius: RADIUS.lg,
           background: 'var(--bg-2)',
-          boxShadow: '0 14px 40px rgba(0,0,0,0.20)',
+          boxShadow: 'none',
         }}
       >
         <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>

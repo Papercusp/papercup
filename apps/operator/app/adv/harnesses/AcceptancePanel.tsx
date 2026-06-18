@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { Checkbox } from '@/app/harness/Checkbox';
 
 /**
  * <AcceptancePanel> — the harness Tests tab's "Acceptance" (Project) view.
@@ -85,6 +87,40 @@ export default function AcceptancePanel({ slug }: { slug: string }) {
     );
   }
 
+  const columns: ColumnDef<Assertion>[] = [
+    {
+      key: 'val',
+      header: 'VAL',
+      width: 1,
+      toCopyText: (a) => a.val_id,
+      render: ({ row }) => <span style={{ fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>{row.val_id}</span>,
+    },
+    { key: 'verify', header: 'Verify', width: 3, toCopyText: (a) => a.verify_text, render: ({ row }) => <span style={{ color: 'var(--fg-dim)' }}>{row.verify_text}</span> },
+    {
+      key: 'status',
+      header: 'Status',
+      width: 1,
+      toCopyText: (a) => a.status,
+      render: ({ row }) => <span style={{ color: STATUS_TONE[row.status] ?? 'var(--fg-mute)', fontWeight: 700 }}>{row.status}</span>,
+    },
+    {
+      key: 'requires',
+      header: 'Requires test',
+      width: 1.2,
+      toCopyText: (a) => a.requires_test ? 'required' : 'exempt',
+      render: ({ row }) => (
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+          <Checkbox
+            checked={row.requires_test}
+            disabled={saving === row.val_id}
+            onChange={() => void toggle(row)}
+          />
+          <span style={{ fontSize: 12, color: 'var(--fg-mute)' }}>{row.requires_test ? 'required' : 'exempt'}</span>
+        </label>
+      ),
+    },
+  ];
+
   return (
     <div style={{ padding: '16px 20px' }}>
       <h3 style={{ margin: '0 0 4px', fontSize: 15 }}>Acceptance criteria</h3>
@@ -92,38 +128,15 @@ export default function AcceptancePanel({ slug }: { slug: string }) {
         VAL assertions from this harness's plans. Turn <strong>Requires test</strong> off for non-testable
         claims (copy, design-spec, judgement) — the tester / validator gate skips those.
       </p>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead>
-          <tr style={{ textAlign: 'left', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={{ padding: '6px 8px' }}>VAL</th>
-            <th style={{ padding: '6px 8px' }}>Verify</th>
-            <th style={{ padding: '6px 8px' }}>Status</th>
-            <th style={{ padding: '6px 8px' }}>Requires test</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((a) => (
-            <tr key={a.val_id} style={{ borderTop: '1px solid var(--border)' }}>
-              <td style={{ padding: '8px', fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>{a.val_id}</td>
-              <td style={{ padding: '8px', color: 'var(--fg-dim)' }}>{a.verify_text}</td>
-              <td style={{ padding: '8px' }}>
-                <span style={{ color: STATUS_TONE[a.status] ?? 'var(--fg-mute)', fontWeight: 700 }}>{a.status}</span>
-              </td>
-              <td style={{ padding: '8px' }}>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={a.requires_test}
-                    disabled={saving === a.val_id}
-                    onChange={() => void toggle(a)}
-                  />
-                  <span style={{ fontSize: 12, color: 'var(--fg-mute)' }}>{a.requires_test ? 'required' : 'exempt'}</span>
-                </label>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div style={{ height: Math.min(680, 32 + rows.length * 42 + 4) }}>
+        <RichGrid<Assertion>
+          columns={columns}
+          rows={rows}
+          getRowId={(a) => a.val_id}
+          rowMinHeight={42}
+          headerHeight={32}
+        />
+      </div>
     </div>
   );
 }

@@ -3702,6 +3702,41 @@ registerAuthorityOp(PEER_PROBE_OP_KIND, handler, { authorityExempt: true });
 
 Both traps fail SILENTLY — no error, just “eviction never fires” (trap 2) or “eviction fires constantly when we’re blind” (trap 1). The keep-by-default safety policy (trap 1) is also what keeps the feature non-regressing: single box / no transport → no eviction → byte-identical to staleness-only selection. The LIVE cross-machine proof is real-hardware-gated (D-003); the deterministic path is proven in `authority/__tests__/peer-eviction.test.ts` + `peer-probe-op.test.ts`.
 
+# Fair cross-arm benchmark reporting — use the bench-metrics tooling, mind the same-denominator trap
+
+> Before reporting any benchmark arm comparison, use buildCapabilityAttribution + buildFairnessAudit (@papercusp/bench-metrics) — they encode the binding fairness criteria so you don't hand-roll them and hit the C1 denominator trap.
+
+When you compare benchmark arms (capability injection, coordination topology, or a system-vs-reference run), **do not hand-roll the scoring + the audit table** — two tested, domain-free helpers in `@papercusp/bench-metrics` encode the [binding fairness standard](/internal/docs/benchmarks/fairness-criteria) so every benchmark reports identically.
+
+## The two helpers
+
+[Section titled “The two helpers”](#the-two-helpers)
+
+* **`buildCapabilityAttribution(rows, opts)`** — fixed-control per-arm lift (pass\@1 for boolean suites, `metric:'meanScore'` for continuous suites like SwarmBench/AgentsNet/rubric), cost-normalized (`costRatio` + `paretoDominates`, D-008/C3), CI-non-overlap significance, and per-task unlocked/regressed buckets. `buildCrossSuiteAttribution` rolls many suites into the headline matrix. `formatRunAttributionMarkdown` (operator-core) renders the owner-facing artifact; `report-cli <runId> --attribution` writes it.
+* **`buildFairnessAudit(rows, {referenceArm?})`** — auto-fills the mandatory **C1–C10 pre-claim audit table** from the run’s `TaskRunResult` rows: C1 same task-set + same-denominator, C3 iso-budget-or-disclosed (with `$/task` + `calls/task`), C6 per-arm coverage parity (flags ASYMMETRIC infra), C8 N + seeds; C2/C5 are config-consistency → `NEEDS-EVIDENCE` (telemetry/env are manual); C4/C7/C9 are manual. `allClear` is true only when every criterion is PASS/N-A. `formatFairnessAuditMarkdown` renders the table.
+
+Both consume any arm’s stored `TaskRunResult` rows, so topology arms and capability-injection arms report through the same path. Plug in your suite; don’t re-derive the statistics.
+
+## The trap they save you from (C1 same-denominator)
+
+[Section titled “The trap they save you from (C1 same-denominator)”](#the-trap-they-save-you-from-c1-same-denominator)
+
+An infra/empty/absent task is a \`false\`, never a vanished row
+
+The single most common way to fake a benchmark win is to score each arm only on the tasks **it** produced output for. If arm A infra-fails 8 of 30 tasks and you score it `resolved/22` while arm B is scored `resolved/30`, A’s denominator silently shrank — an unfair comparison (the 2026-06-17 su-vs-mini-swe run did exactly this and over-claimed).
+
+`buildCapabilityAttribution` **defaults to `sameDenominator: true`**: both arms scored over the **union-N**, where a task an arm did not resolve (empty output, infra-failed, or absent) counts as `false`. The familiar exclude-infra view (what `aggregateArm`/`buildSuiteReport` compute — the METR “an infra error is not a capability failure” discipline) is correct for **one** arm’s capability headline but is only the **labelled secondary** view here (`sameDenominator: false`); it flatters the weaker-coverage arm in a cross-arm comparison. The per-arm `ArmCoverage` (produced / infraOnly / absent) is the C6 audit evidence.
+
+So: a clean run with no infra failures reads identically under both modes; the modes only diverge when coverage is asymmetric — exactly when fairness matters.
+
+## Pointers
+
+[Section titled “Pointers”](#pointers)
+
+* Standard: [benchmarks/fairness-criteria](/internal/docs/benchmarks/fairness-criteria) (C1–C10 + the worked cautionary audit).
+* Code: `libs/generic/bench-metrics/src/{capability-attribution,fairness-audit}.ts`; operator-core `lib/external-bench/report/capability-attribution-report.ts`.
+* Design rationale: plan `benchmark-capability-injection-redesign-2026-06-17` D-014/D-016/D-017.
+
 # False exhaustion — a Max rolling-window rejection must NOT pause to the full reset
 
 > Claude Max 5h/7d budgets are ROLLING-utilization windows that recover continuously — the `*-reset` is when the window fully clears, NOT when you can next send. Pausing a rejection (or a usage_limit) to that full multi-hour reset goes stale ("opus paused until 09:10 with zero pressure") and cascades into the account-pool reporting FALSE exhaustion + arming a paid scale-out. Fix = bounded re-probe + utilization-based exhaustion, both self-healing.
@@ -8771,6 +8806,12 @@ A single PID holding hundreds (especially with many `SYN-SENT`) is a storm. A `g
 [Section titled “Chronic note”](#chronic-note)
 
 `max_connections = 100` is tight for this multi-tenant dev box — the staging operator alone wants \~70. Raising it is a **postmaster-start** parameter (a full cluster restart, NOT a `SIGHUP`/reload), so it’s a coordinated action, not an in-session fix. RAM is not the constraint (the box has 100+ GB free). If storms/overhang recur, raising `max_connections` (or shrinking the staging operator’s pool) is the durable fix — file it rather than band-aiding each wedge.
+
+## Watchdog no longer mis-files a wedge as tool bugs (fixed 2026-06-17)
+
+[Section titled “Watchdog no longer mis-files a wedge as tool bugs (fixed 2026-06-17)”](#watchdog-no-longer-mis-files-a-wedge-as-tool-bugs-fixed-2026-06-17)
+
+The improvement-watchdog used to classify these exhaustion errors as **per-tool structural bugs** (low-bar, fires at n≥2) because the error *shape* recurs identically — so a single wedge spammed `Tool X returns a structural error` EIs across every PG-backed tool (EI-1331/1332/1323/1337/1342/1344 + the coord-probe canary EI-1333), several of which the Queen then triaged to the auto-implement fix queue (which would “fix” working tools). Fixed in `packages/operator-core/lib/harness/improvements/watchdog.ts`: `classifyToolError` + the SQL `CASE` in `collectToolErrorSignals` now classify connection-exhaustion / DB-unavailable messages (`INFRA_TRANSIENT_ERROR_RE`) as **transient** (volume-gated at n≥15), so a brief wedge is ignored while a sustained infra problem still fires. So a future wedge won’t recreate that false-positive EI cluster.
 
 # "sorry, too many clients already" — PG connection exhaustion under agent load
 
@@ -18368,10 +18409,10 @@ The 2026-06-17 su-vs-mini-swe Opus-4.6 run **failed several of these** (audited 
 
 * The comparison MUST be **one** of:
 
-  1. **Iso-budget**: both arms capped to the **same per-task budget** — same token budget, same `$/task`, or same model-call count — and the cap reported; **or**
-  2. **Explicitly labelled “best-effort, NOT compute-matched”**, with **per-task compute disclosed for both arms** (calls, tokens, `$`), and **no capability claim** drawn from it.
+  1. **Iso-budget**: both arms capped to the **same per-task budget** and the cap reported; **or**
+  2. **Explicitly labelled “best-effort, NOT compute-matched”**, with **per-task compute disclosed for both arms**, and **no capability claim** drawn from it.
 
-* The fair headline is **score at equal budget** (or a score-vs-budget curve). Report `$/task` and `calls/task` for both arms always.
+* **The budget is multi-dimensional — report ALL of: `calls/task`, `$/task`, tokens/task, AND `wall-clock/task`.** Wall-clock is load-bearing for long-horizon benchmarks (FrontierSWE tasks run hours): a topology that finishes in 1h vs 5h at the same call-count is a different result, and a multi-agent arm can trade wall-clock for parallelism. The default headline is **score at equal model-call budget** (call-count is the cleanest cross-topology unit), but a long-horizon benchmark MUST also report the **score-vs-wall-clock** curve. Never claim a win without disclosing all four budget axes for every arm.
 
 ### C4 — Test what you claim (the capability must actually be exercised)
 
@@ -18401,7 +18442,8 @@ The code’s `su-independent` is the **NO-coordination** pole (“N independent 
 
 [Section titled “C5 — Identical grader, environment, and exclusion policy”](#c5--identical-grader-environment-and-exclusion-policy)
 
-* Same grading harness (e.g. `swe_bench_pro_eval.py --use_local_docker`), same `FAIL_TO_PASS`/`PASS_TO_PASS`, same docker images, same per-task timeouts, same repo base commit.
+* Same grading harness, same `FAIL_TO_PASS`/`PASS_TO_PASS` (or the benchmark’s own scorer), same docker images, same per-task timeouts, same repo base commit.
+* **The clone/grade mechanism is PER-BENCHMARK (pluggable), but identical across ARMS within a benchmark.** Two grading models exist and the shared driver supports both via a `clone/grade` seam: (a) **diff-extraction** — clone repo → agent edits → extract `git diff` → score the patch out-of-band (SWE-bench-Pro: `swe_bench_pro_eval.py --use_local_docker`); (b) **in-container / own-scorer** — the task runs inside its own container and the benchmark’s *own* scorer judges the end state, never a diff (FrontierSWE, TheAgentCompany). A benchmark picks one; every arm in that benchmark uses it identically. Fairness is across arms, not across benchmarks.
 * The grader’s **omission/exclusion policy is applied identically** to both arms, and any omission is **reconciled into the C1 denominator** (an omitted row is a `false`, not a vanished row).
 * Run both arms through the **same grader code path** (don’t grade arm A one way and arm B another).
 

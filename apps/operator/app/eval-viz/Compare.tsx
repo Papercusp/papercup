@@ -19,6 +19,7 @@
  * (`summarizeDeltas`) for tests + self-carried `pc-compare__*` styles.
  */
 import { useMemo } from 'react';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { armLabel } from './arms';
 
 export interface ComparePerTaskRow {
@@ -119,58 +120,88 @@ export function Compare({
   );
   const baseHdr = armLabel(baseline);
   const treatHdr = armLabel(treatment);
+  const columns = useMemo<ColumnDef<ComparePerTaskRow>[]>(() => [
+    {
+      key: 'task',
+      header: 'task',
+      width: 2,
+      toCopyText: (r) => r.label,
+      render: ({ row }) => <span className="pc-compare__task" title={row.label}>{row.label}</span>,
+    },
+    {
+      key: 'baseline',
+      header: baseHdr,
+      width: 1,
+      toCopyText: (r) => format(r.baseline),
+      render: ({ row }) => <span className="pc-compare__num">{format(row.baseline)}</span>,
+    },
+    {
+      key: 'treatment',
+      header: treatHdr,
+      width: 1,
+      toCopyText: (r) => format(r.treatment),
+      render: ({ row }) => <span className="pc-compare__num">{format(row.treatment)}</span>,
+    },
+    {
+      key: 'delta',
+      header: 'Δ',
+      width: 1,
+      toCopyText: (r) => deltaText(deltaOf(r), format),
+      render: ({ row }) => {
+        const d = deltaOf(row);
+        return <span className={`pc-compare__num ${deltaClass(d)}`}>{deltaText(d, format)}</span>;
+      },
+    },
+    {
+      key: 'bar',
+      header: '',
+      width: '110px',
+      render: ({ row }) => {
+        const d = deltaOf(row);
+        const w = d == null ? 0 : (Math.abs(d) / maxAbs) * 100;
+        return (
+          <span className="pc-compare__barcell">
+            <span
+              className={d != null && d < 0 ? 'pc-compare__bar pc-compare__bar--down' : 'pc-compare__bar pc-compare__bar--up'}
+              style={{ width: `${w}%` }}
+              aria-hidden="true"
+            />
+          </span>
+        );
+      },
+    },
+  ], [baseHdr, format, maxAbs, treatHdr]);
 
   return (
     <figure className="pc-compare" aria-label={caption ?? `Score delta of ${treatHdr} versus ${baseHdr} across ${perTask.length} tasks`}>
       {caption && <figcaption className="pc-compare__caption">{caption}</figcaption>}
-      <table className="pc-compare__table">
-        <thead>
-          <tr>
-            <th className="pc-compare__th">task</th>
-            <th className="pc-compare__th pc-compare__num">{baseHdr}</th>
-            <th className="pc-compare__th pc-compare__num">{treatHdr}</th>
-            <th className="pc-compare__th pc-compare__num">Δ</th>
-            <th className="pc-compare__th" aria-hidden="true" />
-          </tr>
-        </thead>
-        <tbody>
-          {perTask.map((r) => {
-            const d = deltaOf(r);
-            const w = d == null ? 0 : (Math.abs(d) / maxAbs) * 100;
-            return (
-              <tr key={r.label} data-testid="compare-row">
-                <td className="pc-compare__task" title={r.label}>{r.label}</td>
-                <td className="pc-compare__num">{format(r.baseline)}</td>
-                <td className="pc-compare__num">{format(r.treatment)}</td>
-                <td className={`pc-compare__num ${deltaClass(d)}`}>{deltaText(d, format)}</td>
-                <td className="pc-compare__barcell">
-                  <span
-                    className={d != null && d < 0 ? 'pc-compare__bar pc-compare__bar--down' : 'pc-compare__bar pc-compare__bar--up'}
-                    style={{ width: `${w}%` }}
-                    aria-hidden="true"
-                  />
-                </td>
-              </tr>
-            );
-          })}
-          {perTask.length === 0 && (
-            <tr><td colSpan={5} className="pc-compare__empty" data-testid="compare-empty">{emptyHint}</td></tr>
-          )}
-        </tbody>
-        {summary && perTask.length > 0 && (
-          <tfoot>
-            <tr className="pc-compare__summary" data-testid="compare-summary">
-              <td>mean ({sum.n})</td>
-              <td className="pc-compare__num">{format(sum.meanBaseline)}</td>
-              <td className="pc-compare__num">{format(sum.meanTreatment)}</td>
-              <td className={`pc-compare__num ${deltaClass(sum.meanDelta)}`}>{deltaText(sum.meanDelta, format)}</td>
-              <td className="pc-compare__wl">
+      {perTask.length === 0 ? (
+        <div className="pc-compare__empty" data-testid="compare-empty">{emptyHint}</div>
+      ) : (
+        <>
+          <div style={{ height: Math.min(620, 32 + perTask.length * 30 + 4) }}>
+            <RichGrid<ComparePerTaskRow>
+              columns={columns}
+              rows={perTask}
+              getRowId={(r) => r.label}
+              rowMinHeight={30}
+              headerHeight={32}
+              rowProps={() => ({ 'data-testid': 'compare-row' })}
+            />
+          </div>
+          {summary && (
+            <div className="pc-compare__summary" data-testid="compare-summary">
+              <span>mean ({sum.n})</span>
+              <span className="pc-compare__num">{format(sum.meanBaseline)}</span>
+              <span className="pc-compare__num">{format(sum.meanTreatment)}</span>
+              <span className={`pc-compare__num ${deltaClass(sum.meanDelta)}`}>{deltaText(sum.meanDelta, format)}</span>
+              <span className="pc-compare__wl">
                 <span className="pc-compare__delta--up">{sum.wins}W</span>·{sum.ties}T·<span className="pc-compare__delta--down">{sum.losses}L</span>
-              </td>
-            </tr>
-          </tfoot>
-        )}
-      </table>
+              </span>
+            </div>
+          )}
+        </>
+      )}
       <CompareStyles />
     </figure>
   );
@@ -181,19 +212,17 @@ function CompareStyles() {
     <style>{`
       .pc-compare { margin: 0; padding: 0; }
       .pc-compare__caption { margin: 0 0 6px; font-size: 11px; font-weight: 650; color: var(--fg-mute, #7f9bb4); }
-      .pc-compare__table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--fg-dim, #b9d4e8); }
-      .pc-compare__th { text-align: left; padding: 4px 8px; font-size: 10.5px; font-weight: 600; color: var(--fg-mute, #7f9bb4); border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.18)); }
-      .pc-compare__num { text-align: right; padding: 4px 8px; white-space: nowrap; }
-      .pc-compare__table tbody tr { border-top: 1px solid var(--border, rgba(125, 211, 252, 0.1)); }
-      .pc-compare__task { padding: 4px 8px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-compare__num { display: block; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .pc-compare__task { display: block; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pc-compare__delta--up { color: var(--good, #34d399); }
       .pc-compare__delta--down { color: var(--bad, #fb7185); }
-      .pc-compare__barcell { width: 90px; padding: 4px 8px 4px 0; }
+      .pc-compare__barcell { display: block; width: 90px; padding-right: 8px; }
       .pc-compare__bar { display: block; height: 6px; border-radius: 3px; min-width: 1px; }
       .pc-compare__bar--up { background: var(--good, #34d399); }
       .pc-compare__bar--down { background: var(--bad, #fb7185); }
       .pc-compare__empty { padding: 12px 8px; color: var(--fg-mute, #7f9bb4); opacity: 0.8; }
-      .pc-compare__summary td { padding: 6px 8px; border-top: 2px solid var(--border-strong, rgba(125, 211, 252, 0.3)); font-weight: 650; color: var(--fg, #e7f7ff); }
+      .pc-compare__summary { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 110px; gap: 0; padding: 6px 0; border-top: 2px solid var(--border-strong, rgba(125, 211, 252, 0.3)); font-size: 12px; font-weight: 650; color: var(--fg, #e7f7ff); }
+      .pc-compare__summary > span { padding: 0 8px; }
       .pc-compare__wl { font-size: 11px; color: var(--fg-mute, #7f9bb4); }
     `}</style>
   );

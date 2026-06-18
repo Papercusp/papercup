@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Button } from '../../../harness/Button';
 import { Select } from '../../../harness/Select';
 import { subscribe, clearEvents, rateINP, type PerfEvent, type PerfEventKind } from '../_lib/vitals-recorder';
@@ -34,6 +35,47 @@ export function countEventsByKind(events: PerfEvent[]): Record<string, number> {
   for (const e of events) c[e.kind] = (c[e.kind] ?? 0) + 1;
   return c;
 }
+
+const eventColumns: ColumnDef<PerfEvent>[] = [
+  {
+    key: 'kind',
+    header: 'Kind',
+    width: '120px',
+    toCopyText: (e) => e.kind,
+    render: ({ row }) => {
+      const rating = row.kind === 'interaction' ? rateINP(row.duration) : null;
+      const badgeCls = rating === 'good' ? 'is-good' : rating === 'needs-improvement' ? 'is-needs' : rating === 'poor' ? 'is-poor' : 'is-muted';
+      return <span className={`pc-test-badge ${badgeCls}`}>{row.kind}</span>;
+    },
+  },
+  {
+    key: 'duration',
+    header: 'Duration',
+    width: '100px',
+    toCopyText: (e) => e.kind === 'layout-shift' ? (e.duration / 1000).toFixed(3) : `${e.duration}ms`,
+    render: ({ row }) => row.kind === 'layout-shift' ? (row.duration / 1000).toFixed(3) : `${row.duration}ms`,
+  },
+  { key: 'route', header: 'Route', width: 1.6, toCopyText: (e) => e.route, render: ({ row }) => <code>{row.route}</code> },
+  {
+    key: 'target',
+    header: 'Target',
+    width: 1.8,
+    toCopyText: (e) => `${e.target}${e.detail ? ` ${e.detail}` : ''}`,
+    render: ({ row }) => (
+      <>
+        {row.target}
+        {row.detail ? <div style={{ fontSize: 11, color: 'var(--fg-mute)' }}>{row.detail}</div> : null}
+      </>
+    ),
+  },
+  {
+    key: 'when',
+    header: 'When',
+    width: '100px',
+    toCopyText: (e) => `${Math.round((Date.now() - e.ts) / 1000)}s ago`,
+    render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{Math.round((Date.now() - row.ts) / 1000)}s ago</span>,
+  },
+];
 
 export default function LiveMetricsTab() {
   const [events, setEvents] = useState<PerfEvent[]>([]);
@@ -125,45 +167,21 @@ export default function LiveMetricsTab() {
       </div>
 
       <div className="pc-test-card">
-        <table className="pc-test-metric-table">
-          <thead>
-            <tr>
-              <th style={{ width: 90 }}>Kind</th>
-              <th style={{ width: 80 }}>Duration</th>
-              <th>Route</th>
-              <th>Target</th>
-              <th style={{ width: 100 }}>When</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr><td colSpan={5} style={{ padding: 16, color: 'var(--fg-mute)' }}>
-                No events yet — use the app and slow interactions will appear here.
-              </td></tr>
-            ) : filtered.map((e, i) => {
-              const rating = e.kind === 'interaction' ? rateINP(e.duration) : null;
-              const badgeCls = rating === 'good' ? 'is-good' : rating === 'needs-improvement' ? 'is-needs' : rating === 'poor' ? 'is-poor' : 'is-muted';
-              return (
-                <tr key={`${e.id}#${i}`}>
-                  <td><span className={`pc-test-badge ${badgeCls}`}>{e.kind}</span></td>
-                  <td>
-                    {e.kind === 'layout-shift'
-                      ? (e.duration / 1000).toFixed(3)
-                      : `${e.duration}ms`}
-                  </td>
-                  <td><code>{e.route}</code></td>
-                  <td>
-                    {e.target}
-                    {e.detail ? <div style={{ fontSize: 11, color: 'var(--fg-mute)' }}>{e.detail}</div> : null}
-                  </td>
-                  <td style={{ color: 'var(--fg-mute)' }}>
-                    {Math.round((Date.now() - e.ts) / 1000)}s ago
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        {filtered.length === 0 ? (
+          <div style={{ padding: 16, color: 'var(--fg-mute)' }}>
+            No events yet — use the app and slow interactions will appear here.
+          </div>
+        ) : (
+          <div style={{ height: Math.min(620, 32 + filtered.length * 36 + 4) }}>
+            <RichGrid<PerfEvent>
+              columns={eventColumns}
+              rows={filtered}
+              getRowId={(e) => e.id}
+              rowMinHeight={36}
+              headerHeight={32}
+            />
+          </div>
+        )}
       </div>
     </>
   );

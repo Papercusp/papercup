@@ -380,10 +380,10 @@ export default function DeployAccountsPage() {
         .pc-da { padding: 16px 18px; color: var(--fg); }
         .pc-da__bar { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; margin-bottom: 14px; }
         .pc-da__lede { margin: 0; max-width: 70ch; font-size: 13px; color: var(--fg-dim); line-height: 1.5; }
-        .pc-da__btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%); background: var(--bg-2); color: var(--fg); font-size: 12px; font-weight: 650; cursor: pointer; }
+        .pc-da__btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%); background: var(--bg-2); color: var(--fg); font-size: 12px; font-weight: 650; cursor: pointer; }
         .pc-da__btn:hover { background: color-mix(in srgb, var(--bg-popover), transparent 4%); border-color: color-mix(in srgb, var(--accent-strong), transparent 60%); }
         .pc-da__btn:disabled { opacity: 0.5; cursor: default; }
-        .pc-da__btn--primary { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 2%), color-mix(in srgb, var(--bg-1), transparent 1%)); border-color: color-mix(in srgb, var(--accent-strong), transparent 55%); }
+        .pc-da__btn--primary { background: color-mix(in srgb, var(--accent), transparent 82%); color: var(--accent-soft); border-color: color-mix(in srgb, var(--accent-strong), transparent 55%); }
         .pc-da__btn--ghost { background: transparent; }
         .pc-da__wizard { border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 72%); border-radius: 12px; background: color-mix(in srgb, var(--bg), transparent 30%); padding: 14px; margin-bottom: 18px; max-width: 680px; }
         .pc-da__wizard-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }

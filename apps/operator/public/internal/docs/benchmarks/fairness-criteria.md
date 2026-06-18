@@ -32,9 +32,9 @@ The 2026-06-17 su-vs-mini-swe Opus-4.6 run **failed several of these** (audited 
 
 * A multi-role spine or a multi-agent hive spends **far more inference per task** than a single-agent loop. Winning by spending 3–4× the compute is **not** "a better agent" — it's "more compute."
 * The comparison MUST be **one** of:
-  1. **Iso-budget**: both arms capped to the **same per-task budget** — same token budget, same `$/task`, or same model-call count — and the cap reported; **or**
-  2. **Explicitly labelled "best-effort, NOT compute-matched"**, with **per-task compute disclosed for both arms** (calls, tokens, `$`), and **no capability claim** drawn from it.
-* The fair headline is **score at equal budget** (or a score-vs-budget curve). Report `$/task` and `calls/task` for both arms always.
+  1. **Iso-budget**: both arms capped to the **same per-task budget** and the cap reported; **or**
+  2. **Explicitly labelled "best-effort, NOT compute-matched"**, with **per-task compute disclosed for both arms**, and **no capability claim** drawn from it.
+* **The budget is multi-dimensional — report ALL of: `calls/task`, `$/task`, tokens/task, AND `wall-clock/task`.** Wall-clock is load-bearing for long-horizon benchmarks (FrontierSWE tasks run hours): a topology that finishes in 1h vs 5h at the same call-count is a different result, and a multi-agent arm can trade wall-clock for parallelism. The default headline is **score at equal model-call budget** (call-count is the cleanest cross-topology unit), but a long-horizon benchmark MUST also report the **score-vs-wall-clock** curve. Never claim a win without disclosing all four budget axes for every arm.
 
 ### C4 — Test what you claim (the capability must actually be exercised)
 
@@ -58,7 +58,8 @@ The code's `su-independent` is the **NO-coordination** pole ("N independent agen
 
 ### C5 — Identical grader, environment, and exclusion policy
 
-* Same grading harness (e.g. `swe_bench_pro_eval.py --use_local_docker`), same `FAIL_TO_PASS`/`PASS_TO_PASS`, same docker images, same per-task timeouts, same repo base commit.
+* Same grading harness, same `FAIL_TO_PASS`/`PASS_TO_PASS` (or the benchmark's own scorer), same docker images, same per-task timeouts, same repo base commit.
+* **The clone/grade mechanism is PER-BENCHMARK (pluggable), but identical across ARMS within a benchmark.** Two grading models exist and the shared driver supports both via a `clone/grade` seam: (a) **diff-extraction** — clone repo → agent edits → extract `git diff` → score the patch out-of-band (SWE-bench-Pro: `swe_bench_pro_eval.py --use_local_docker`); (b) **in-container / own-scorer** — the task runs inside its own container and the benchmark's *own* scorer judges the end state, never a diff (FrontierSWE, TheAgentCompany). A benchmark picks one; every arm in that benchmark uses it identically. Fairness is across arms, not across benchmarks.
 * The grader's **omission/exclusion policy is applied identically** to both arms, and any omission is **reconciled into the C1 denominator** (an omitted row is a `false`, not a vanished row).
 * Run both arms through the **same grader code path** (don't grade arm A one way and arm B another).
 

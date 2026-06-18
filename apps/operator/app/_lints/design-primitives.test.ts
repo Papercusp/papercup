@@ -28,16 +28,7 @@ const LEGACY_NATIVE_SELECT_FILES = new Set([
   'app/harness/Select.tsx',
 ]);
 
-const LEGACY_NATIVE_TABLE_FILES = new Set([
-  // P-004 baseline: migrate these to RichGrid/grid-core or a local grid wrapper.
-  'app/admin/dogfood-substrate/page.tsx',
-  'app/admin/testing/_components/LiveMetricsTab.tsx',
-  'app/admin/testing/_components/RoutesTab.tsx',
-  'app/adv/harnesses/AcceptancePanel.tsx',
-  'app/dev/_components/IpcTab.tsx',
-  'app/eval-viz/Compare.tsx',
-  'app/harness/insights/ClaimAttemptTimeline.tsx',
-]);
+const LEGACY_NATIVE_TABLE_FILES = new Set<string>();
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
   'app/harness/ConfirmModal.tsx',

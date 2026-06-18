@@ -57,6 +57,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 const card: React.CSSProperties = { border: '1px solid var(--border, #2a2a33)', borderRadius: 8, padding: 12, background: 'var(--bg-2, #16161c)' };
 const mono: React.CSSProperties = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 };
+const subtleInput: React.CSSProperties = { background: 'var(--bg-deeper)', color: 'inherit', border: '1px solid var(--border)', borderRadius: 6 };
+const dangerText = 'var(--bad)';
+const goodText = 'var(--good)';
 
 const cycleColumns: ColumnDef<CycleRow>[] = [
   { key: 'cycle', header: '#', width: 0.6, toCopyText: (c) => String(c.cycle), render: ({ row }) => row.cycle },
@@ -67,7 +70,7 @@ const cycleColumns: ColumnDef<CycleRow>[] = [
     header: 'Decision',
     width: 1,
     toCopyText: (c) => c.decision ?? '—',
-    render: ({ row }) => <span style={{ color: row.decision === 'accept' ? '#9ae6a4' : '#ff9a8a' }}>{row.decision ?? '—'}</span>,
+    render: ({ row }) => <span style={{ color: row.decision === 'accept' ? goodText : dangerText }}>{row.decision ?? '—'}</span>,
   },
 ];
 
@@ -113,7 +116,7 @@ export default function GymDashboard() {
             placeholder="select"
           />
         </label>
-        {harnessErr && <span style={{ color: '#ff6b6b', ...mono }} data-testid="gym-harness-error">{harnessErr}</span>}
+        {harnessErr && <span style={{ color: dangerText, ...mono }} data-testid="gym-harness-error">{harnessErr}</span>}
       </header>
 
       <nav role="tablist" style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -126,9 +129,9 @@ export default function GymDashboard() {
             onClick={() => void setTab(t)}
             style={{
               ...mono, cursor: 'pointer', padding: '4px 10px', borderRadius: 6,
-              border: '1px solid ' + (tab === t ? 'var(--accent, #5b8cff)' : '#2a2a33'),
-              background: tab === t ? 'var(--accent, #5b8cff)' : 'transparent',
-              color: tab === t ? '#0b0b0f' : 'inherit',
+              border: '1px solid ' + (tab === t ? 'var(--accent-strong)' : 'var(--border)'),
+              background: tab === t ? 'color-mix(in srgb, var(--accent), transparent 82%)' : 'transparent',
+              color: tab === t ? 'var(--accent-soft)' : 'inherit',
             }}
           >
             {t}
@@ -187,14 +190,14 @@ function ProposalsTab({ slug }: { slug: string }) {
         {proposals.map((p) => (
           <button key={p.id} onClick={() => void setSelId(p.id)} data-testid="gym-proposal-row"
             style={{ ...mono, display: 'block', width: '100%', textAlign: 'left', padding: 6, marginBottom: 4, borderRadius: 6, cursor: 'pointer',
-              border: '1px solid ' + (sel?.id === p.id ? 'var(--accent,#5b8cff)' : '#2a2a33'), background: sel?.id === p.id ? '#1d2433' : 'transparent', color: 'inherit' }}>
+              border: '1px solid ' + (sel?.id === p.id ? 'var(--accent-strong)' : 'var(--border)'), background: sel?.id === p.id ? 'color-mix(in srgb, var(--accent), transparent 88%)' : 'transparent', color: 'inherit' }}>
             <div>cycle {p.cycle} · <b>{p.role}</b></div>
             <div style={{ opacity: 0.7 }}>devΔ {fmt(p.devAnchorDelta)} · costΔ {fmt(p.costDelta)} · probe {p.probeStatus ?? '—'}</div>
           </button>
         ))}
       </div>
       <div style={card}>
-        {err && <div style={{ color: '#ff6b6b', ...mono, marginBottom: 8 }} data-testid="gym-proposal-error">{err}</div>}
+        {err && <div style={{ color: dangerText, ...mono, marginBottom: 8 }} data-testid="gym-proposal-error">{err}</div>}
         {!sel ? (
           <div style={{ ...mono, opacity: 0.6 }}>Select a proposal to review its diff.</div>
         ) : (
@@ -206,11 +209,11 @@ function ProposalsTab({ slug }: { slug: string }) {
             <ProposalDiff original={sel.originalMd ?? ''} proposed={sel.proposedMd} />
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <button disabled={busy} onClick={() => decide('accept')} data-testid="gym-accept"
-                style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: 'none', background: '#2e7d32', color: '#fff' }}>
+                style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--good), transparent 55%)', background: 'color-mix(in srgb, var(--good), transparent 84%)', color: 'var(--good)' }}>
                 Accept → promote
               </button>
               <button disabled={busy} onClick={() => decide('reject')} data-testid="gym-reject"
-                style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid #b3402f', background: 'transparent', color: '#ff8a7a' }}>
+                style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--bad), transparent 55%)', background: 'transparent', color: 'var(--bad)' }}>
                 Reject
               </button>
             </div>
@@ -225,9 +228,9 @@ function ProposalsTab({ slug }: { slug: string }) {
 function DiffView({ original, proposed }: { original: string; proposed: string }) {
   const parts = useMemo(() => diffLines(original, proposed), [original, proposed]);
   return (
-    <pre data-testid="gym-diff" style={{ ...mono, margin: 0, padding: 10, borderRadius: 6, background: '#0b0b0f', overflowX: 'auto', maxHeight: 320 }}>
+    <pre data-testid="gym-diff" style={{ ...mono, margin: 0, padding: 10, borderRadius: 6, background: 'var(--bg-deeper)', overflowX: 'auto', maxHeight: 320 }}>
       {parts.map((p, i) => (
-        <div key={i} style={{ background: p.added ? 'rgba(46,125,50,0.25)' : p.removed ? 'rgba(179,64,47,0.25)' : 'transparent', color: p.added ? '#9ae6a4' : p.removed ? '#ff9a8a' : 'inherit', whiteSpace: 'pre-wrap' }}>
+        <div key={i} style={{ background: p.added ? 'color-mix(in srgb, var(--good), transparent 86%)' : p.removed ? 'color-mix(in srgb, var(--bad), transparent 86%)' : 'transparent', color: p.added ? goodText : p.removed ? dangerText : 'inherit', whiteSpace: 'pre-wrap' }}>
           {p.value.replace(/\n$/, '').split('\n').map((l, j) => <div key={j}>{p.added ? '+ ' : p.removed ? '- ' : '  '}{l}</div>)}
         </div>
       ))}

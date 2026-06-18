@@ -22,6 +22,7 @@ import {
   dispatchEndpointStream,
   type EndpointStreamEvent,
 } from '@papercusp/operator-core/lib/transport-adapters';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Checkbox } from '@/app/harness/Checkbox';
 import type { IpcInspectorApi } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
 
@@ -32,6 +33,8 @@ interface LogEntry {
 }
 
 type TrafficView = 'churn' | 'summary' | 'events';
+type ChurnRow = ReturnType<IpcInspectorApi['churn']>[number];
+type SummaryRow = ReturnType<IpcInspectorApi['summary']>[number];
 
 function getInspector(): IpcInspectorApi | null {
   if (typeof window === 'undefined') return null;
@@ -44,7 +47,40 @@ const cellStyle: React.CSSProperties = {
   borderBottom: '1px solid rgba(0,0,0,0.06)',
   whiteSpace: 'nowrap',
 };
-const numCell: React.CSSProperties = { ...cellStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+
+const churnColumns: ColumnDef<ChurnRow>[] = [
+  {
+    key: 'path',
+    header: 'EventSource URL',
+    width: 2.8,
+    toCopyText: (r) => r.path,
+    render: ({ row }) => <span style={{ whiteSpace: 'normal', wordBreak: 'break-all' }}>{row.path}</span>,
+  },
+  { key: 'constructions', header: 'constr', width: 0.7, toCopyText: (r) => String(r.constructions), render: ({ row }) => <strong>{row.constructions}</strong> },
+  { key: 'connects', header: 'connects', width: 0.75, toCopyText: (r) => String(r.connects), render: ({ row }) => row.connects },
+  { key: 'drops', header: 'drops', width: 0.65, toCopyText: (r) => String(r.drops), render: ({ row }) => row.drops },
+  {
+    key: 'verdict',
+    header: 'verdict',
+    width: 1.6,
+    toCopyText: (r) => r.verdict,
+    render: ({ row }) => <span style={{ whiteSpace: 'normal' }}>{row.verdict}</span>,
+  },
+];
+
+const summaryColumns: ColumnDef<SummaryRow>[] = [
+  {
+    key: 'key',
+    header: 'tool / route',
+    width: 2.4,
+    toCopyText: (r) => r.key,
+    render: ({ row }) => <span style={{ whiteSpace: 'normal', wordBreak: 'break-all' }}>{row.key}</span>,
+  },
+  { key: 'started', header: 'started', width: 0.7, toCopyText: (r) => String(r.started), render: ({ row }) => row.started },
+  { key: 'done', header: 'done', width: 0.65, toCopyText: (r) => String(r.done), render: ({ row }) => row.done },
+  { key: 'error', header: 'error', width: 0.65, toCopyText: (r) => String(r.error), render: ({ row }) => row.error },
+  { key: 'open', header: 'open', width: 0.65, toCopyText: (r) => String(r.open), render: ({ row }) => row.open },
+];
 
 export default function IpcTab(): JSX.Element {
   const [transport, setTransport] = useState<'ipc' | 'http' | 'unknown'>('unknown');
@@ -238,61 +274,37 @@ export default function IpcTab(): JSX.Element {
             </div>
 
             {trafficView === 'churn' && (
-              <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
-                <thead>
-                  <tr>
-                    <th style={cellStyle}>EventSource URL</th>
-                    <th style={numCell}>constr</th>
-                    <th style={numCell}>connects</th>
-                    <th style={numCell}>drops</th>
-                    <th style={cellStyle}>verdict</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {churn.length === 0 ? (
-                    <tr><td style={cellStyle} colSpan={5}>(no EventSource traffic yet)</td></tr>
-                  ) : (
-                    churn.map((r) => (
-                      <tr key={r.path} style={{ background: r.constructions > 1 ? 'rgba(255,80,0,0.07)' : undefined }}>
-                        <td style={{ ...cellStyle, whiteSpace: 'normal', wordBreak: 'break-all' }}>{r.path}</td>
-                        <td style={numCell}><strong>{r.constructions}</strong></td>
-                        <td style={numCell}>{r.connects}</td>
-                        <td style={numCell}>{r.drops}</td>
-                        <td style={{ ...cellStyle, whiteSpace: 'normal' }}>{r.verdict}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+              churn.length === 0 ? (
+                <div style={cellStyle}>(no EventSource traffic yet)</div>
+              ) : (
+                <div style={{ height: Math.min(520, 32 + churn.length * 36 + 4) }}>
+                  <RichGrid<ChurnRow>
+                    columns={churnColumns}
+                    rows={churn}
+                    getRowId={(r) => r.path}
+                    rowMinHeight={36}
+                    headerHeight={32}
+                    getRowBg={(row) => row.constructions > 1 ? 'rgba(255,80,0,0.07)' : undefined}
+                  />
+                </div>
+              )
             )}
 
             {trafficView === 'summary' && (
-              <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
-                <thead>
-                  <tr>
-                    <th style={cellStyle}>tool / route</th>
-                    <th style={numCell}>started</th>
-                    <th style={numCell}>done</th>
-                    <th style={numCell}>error</th>
-                    <th style={numCell}>open</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.length === 0 ? (
-                    <tr><td style={cellStyle} colSpan={5}>(no invoke traffic yet)</td></tr>
-                  ) : (
-                    summary.map((r) => (
-                      <tr key={r.key} style={{ background: r.error > 0 ? 'rgba(255,80,0,0.07)' : undefined }}>
-                        <td style={{ ...cellStyle, whiteSpace: 'normal', wordBreak: 'break-all' }}>{r.key}</td>
-                        <td style={numCell}>{r.started}</td>
-                        <td style={numCell}>{r.done}</td>
-                        <td style={numCell}>{r.error}</td>
-                        <td style={numCell}>{r.open}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+              summary.length === 0 ? (
+                <div style={cellStyle}>(no invoke traffic yet)</div>
+              ) : (
+                <div style={{ height: Math.min(520, 32 + summary.length * 32 + 4) }}>
+                  <RichGrid<SummaryRow>
+                    columns={summaryColumns}
+                    rows={summary}
+                    getRowId={(r) => r.key}
+                    rowMinHeight={32}
+                    headerHeight={32}
+                    getRowBg={(row) => row.error > 0 ? 'rgba(255,80,0,0.07)' : undefined}
+                  />
+                </div>
+              )
             )}
 
             {trafficView === 'events' && (
