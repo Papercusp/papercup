@@ -83,10 +83,24 @@ export async function declareOverwatchTimeWake(
   opts: { workspaceId: string; installSlug: string; at: Date; kickoff?: string; now?: Date },
 ): Promise<{ at: Date; clamped: boolean }> {
   const { at, clamped } = clampOverwatchWakeAt(opts.at, opts.now);
+  // EI-1472: the overwatch wake is a SINGLETON keyed by (install_slug, name) — the
+  // global routines_install_slug_name_key enforces ONE row per install regardless of
+  // workspace. When the per-workspace conflict (workspace-data-isolation-leaks F-E1) is
+  // ON, upsertRoutine conflicts on (workspace_id, install_slug, name); if the existing
+  // singleton lives under a DIFFERENT workspace_id than the caller's ctx, that conflict
+  // target misses and the INSERT collides with the global constraint → duplicate-key
+  // throw, so the overwatch can't re-arm (forced onto the liveness backstop). Pin the
+  // upsert to the EXISTING row's workspace so it always UPDATEs the singleton in place
+  // (harmless under the legacy (install_slug, name) conflict, which updates regardless).
+  const existing = await sql<Array<{ workspace_id: string }>>`
+    SELECT workspace_id FROM harness_shared.routines
+     WHERE install_slug = ${opts.installSlug} AND name = ${OVERWATCH_WAKE_ROUTINE_NAME}
+     LIMIT 1
+  `;
   await upsertRoutine(
     sql,
     {
-      workspaceId: opts.workspaceId,
+      workspaceId: existing[0]?.workspace_id ?? opts.workspaceId,
       installSlug: opts.installSlug,
       name: OVERWATCH_WAKE_ROUTINE_NAME,
       triggerKind: 'cron',

@@ -147,10 +147,23 @@ export async function declareHiveTimeWake(
   // tool — is owner-aware with no call-site change) unless the caller pre-resolved it.
   const floorSec = opts.floorSec ?? (await effectiveHiveWakeFloorSec(opts.workspaceId, opts.installSlug));
   const { at, clamped } = clampWakeAt(opts.at, opts.now, floorSec);
+  // EI-1477 (sibling of EI-1472): the hive wake is a SINGLETON keyed by (install_slug,
+  // name) — the global routines_install_slug_name_key enforces ONE row per install
+  // regardless of workspace. With per-workspace ON CONFLICT (F-E1) on, upsertRoutine
+  // conflicts on (workspace_id, install_slug, name); if the existing singleton lives
+  // under a DIFFERENT workspace_id than the caller's ctx, that target misses and the
+  // INSERT collides with the global constraint → duplicate-key throw, so the Queen
+  // can't re-arm her wake. Pin the upsert to the EXISTING row's workspace (UPDATE in
+  // place; harmless under the legacy (install_slug, name) conflict).
+  const existing = await sql<Array<{ workspace_id: string }>>`
+    SELECT workspace_id FROM harness_shared.routines
+     WHERE install_slug = ${opts.installSlug} AND name = ${HIVE_WAKE_ROUTINE_NAME}
+     LIMIT 1
+  `;
   await upsertRoutine(
     sql,
     {
-      workspaceId: opts.workspaceId,
+      workspaceId: existing[0]?.workspace_id ?? opts.workspaceId,
       installSlug: opts.installSlug,
       name: HIVE_WAKE_ROUTINE_NAME,
       triggerKind: 'cron',

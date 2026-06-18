@@ -30,6 +30,10 @@ const NOW = 1_750_000_000_000;
 const WS = 'ws-1';
 const SLUG = 'papercup-hive';
 
+/** A callable tagged-template stub that resolves to `rows` (the routine reads). */
+const fakeSqlReturning = (rows: unknown[]) =>
+  ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve(rows)) as never;
+
 beforeEach(() => {
   vi.clearAllMocks();
   upsertRoutine.mockResolvedValue({});
@@ -55,7 +59,7 @@ describe('clampOverwatchWakeAt (the anti-spin floor)', () => {
 
 describe('declareOverwatchTimeWake (the shared declare-next-wake seam)', () => {
   it('upserts a one-shot routine on the dedicated overwatch wake channel', async () => {
-    await declareOverwatchTimeWake({} as never, {
+    await declareOverwatchTimeWake(fakeSqlReturning([]), {
       workspaceId: WS,
       installSlug: SLUG,
       at: new Date(NOW + 600_000),
@@ -84,7 +88,7 @@ describe('declareOverwatchTimeWake (the shared declare-next-wake seam)', () => {
   });
 
   it('a custom kickoff overrides the default self-announcement', async () => {
-    await declareOverwatchTimeWake({} as never, {
+    await declareOverwatchTimeWake(fakeSqlReturning([]), {
       workspaceId: WS,
       installSlug: SLUG,
       at: new Date(NOW + 600_000),
@@ -93,6 +97,32 @@ describe('declareOverwatchTimeWake (the shared declare-next-wake seam)', () => {
     });
     const input = upsertRoutine.mock.calls[0][1] as { payloadTemplate: { kickoff: string } };
     expect(input.payloadTemplate.kickoff).toBe('custom kickoff');
+  });
+
+  // EI-1472: the wake is a singleton keyed by (install_slug, name). When per-workspace
+  // ON CONFLICT (F-E1) is on, the upsert must target the EXISTING row's workspace so it
+  // UPDATEs in place — otherwise a declare under a different ctx workspace misses the
+  // composite conflict and collides with the global routines_install_slug_name_key.
+  it('pins the upsert to the EXISTING singleton row workspace, not the caller ctx', async () => {
+    await declareOverwatchTimeWake(fakeSqlReturning([{ workspace_id: 'ws-owner' }]), {
+      workspaceId: 'ws-different-caller',
+      installSlug: SLUG,
+      at: new Date(NOW + 600_000),
+      now: new Date(NOW),
+    });
+    const input = upsertRoutine.mock.calls[0][1] as { workspaceId: string };
+    expect(input.workspaceId).toBe('ws-owner');
+  });
+
+  it('falls back to the caller workspace when no singleton row exists yet', async () => {
+    await declareOverwatchTimeWake(fakeSqlReturning([]), {
+      workspaceId: WS,
+      installSlug: SLUG,
+      at: new Date(NOW + 600_000),
+      now: new Date(NOW),
+    });
+    const input = upsertRoutine.mock.calls[0][1] as { workspaceId: string };
+    expect(input.workspaceId).toBe(WS);
   });
 });
 
@@ -104,9 +134,6 @@ describe('clearOverwatchTimeWake', () => {
 });
 
 describe('getOverwatchTimeWake + overwatchLivenessCheck', () => {
-  const fakeSqlReturning = (rows: unknown[]) =>
-    ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve(rows)) as never;
-
   it('null when no routine row exists', async () => {
     expect(await getOverwatchTimeWake(fakeSqlReturning([]), SLUG)).toBeNull();
   });

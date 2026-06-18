@@ -11,7 +11,9 @@
  *      webview, visible the moment it fires);
  *   2. in the Tauri desktop only, a native OS notification via the
  *      `show_attention_notification` Rust command (tauri-plugin-notification),
- *      so the human is pinged even when the window is backgrounded.
+ *      so the human is pinged even when the window is backgrounded — DISABLED
+ *      BY DEFAULT (owner request 2026-06-18; opt in via
+ *      localStorage['papercusp:desktopOsNotifications']='1').
  *
  * Rides the sync transport's OWN stream via `onSyncBusEvent` — it must NOT
  * open a second EventSource against /api/zero-harness/sse: in the browser
@@ -57,10 +59,17 @@ export default function DesktopAttentionNotifier() {
       if (a.importance === 'urgent') toast.error(title, { description: body });
       else toast(title, { description: body });
 
-      // 2. Native OS notification — desktop only, fail-safe. The Rust command
-      // is absent until the desktop is rebuilt with tauri-plugin-notification;
-      // the catch keeps that a no-op (the toast already fired).
-      if (isTauri()) {
+      // 2. Native OS notification — DISABLED BY DEFAULT (owner request
+      // 2026-06-18: the OS popups were noisy and there was no toggle). The
+      // in-app toast above already surfaces every attention push, so nothing
+      // is lost — we just don't raise an OS-level popup. Opt back in per
+      // webview by setting localStorage['papercusp:desktopOsNotifications']='1'.
+      // (The Rust command is also absent until the desktop is rebuilt with
+      // tauri-plugin-notification; the catch keeps that a no-op.)
+      const osNotificationsEnabled =
+        typeof localStorage !== 'undefined' &&
+        localStorage.getItem('papercusp:desktopOsNotifications') === '1';
+      if (osNotificationsEnabled && isTauri()) {
         void (async () => {
           const { invoke } = await import('@tauri-apps/api/core');
           await invoke('show_attention_notification', { title, body });
