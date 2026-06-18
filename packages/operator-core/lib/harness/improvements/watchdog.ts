@@ -1608,6 +1608,42 @@ export function isEphemeralBenchmarkSignal(s: WatchdogSignal): boolean {
   return [slugFromScope, s.key, s.title].some((c) => isEphemeralBenchmarkHarnessSlug(c));
 }
 
+// ── P-008: the FIRST-CLASS ephemeral flag (harness_shared.projects.ephemeral) ──────
+// The principled successor to the P-006 slug-regex: a harness explicitly marked
+// ephemeral (set at creation / backfilled by migration 309) is debris regardless of
+// its slug. The regex stays as the fallback for un-flagged rows.
+
+/** The harness slug a per-harness signal is about (from scope `harness:<slug>`), or null. */
+export function ephemeralSignalSlug(s: WatchdogSignal): string | null {
+  if (!HARNESS_SCOPED_WATCHDOG_SOURCES.has(s.source)) return null;
+  return s.scope?.startsWith('harness:') ? s.scope.slice('harness:'.length) : null;
+}
+
+/** Pure: a signal is ephemeral when the slug-regex matches (P-006) OR its harness slug is
+ *  FLAGGED ephemeral in projects (P-008). The flag is authoritative; the regex is fallback. */
+export function isEphemeralSignal(s: WatchdogSignal, ephemeralSlugs: ReadonlySet<string>): boolean {
+  if (isEphemeralBenchmarkSignal(s)) return true;
+  const slug = ephemeralSignalSlug(s);
+  return slug != null && ephemeralSlugs.has(slug);
+}
+
+/** P-008 fail-soft IO: which of the candidate harness slugs are flagged ephemeral in PG.
+ *  Returns empty on ANY error (incl. the `ephemeral` column not existing before migration
+ *  309 lands) — so the filter degrades to the regex (P-006 behavior) until then. */
+export async function readEphemeralFlaggedSlugs(slugs: string[]): Promise<Set<string>> {
+  const unique = [...new Set(slugs.filter(Boolean))];
+  if (unique.length === 0) return new Set();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ slug: string }[]>`
+      SELECT slug FROM harness_shared.projects
+       WHERE ephemeral = true AND slug = ANY(${unique}::text[])`;
+    return new Set(rows.map((r) => r.slug));
+  } catch {
+    return new Set(); // pre-migration column-missing / DB blip → regex-only fallback
+  }
+}
+
 export async function collectWatchdogSignalsDetailed(
   workspaceId: string,
   opts: CollectOptions = {},
@@ -1633,13 +1669,18 @@ export async function collectWatchdogSignalsDetailed(
       statuses.push({ name, ok: false, signalCount: 0, error });
     }
   }
-  // P-006: drop ephemeral benchmark-instance debris (xbench / *-DELETEME / gym-eval /
-  // hive-loop) from the per-harness sources — torn-down test churn, not improvements.
-  // Counted into a synthetic collector status so the drop is visible, never silent.
+  // P-006/P-008: drop ephemeral benchmark-instance debris (xbench / *-DELETEME / gym-eval /
+  // hive-loop) from the per-harness sources — torn-down test churn, not improvements. The
+  // first-class projects.ephemeral flag (P-008) is authoritative; the slug-regex (P-006) is
+  // the fallback. Fail-soft: a missing column (pre-migration-309) / DB blip degrades to the
+  // regex. Counted into a synthetic collector status so the drop is visible, never silent.
+  const ephemeralFlagged = await readEphemeralFlaggedSlugs(
+    signals.map(ephemeralSignalSlug).filter((s): s is string => s != null),
+  );
   const kept: WatchdogSignal[] = [];
   let benchmarkDropped = 0;
   for (const sig of signals) {
-    if (isEphemeralBenchmarkSignal(sig)) benchmarkDropped++;
+    if (isEphemeralSignal(sig, ephemeralFlagged)) benchmarkDropped++;
     else kept.push(sig);
   }
   if (benchmarkDropped > 0) {
@@ -1647,7 +1688,7 @@ export async function collectWatchdogSignalsDetailed(
       name: 'ephemeral-benchmark-filter',
       ok: true,
       signalCount: 0,
-      note: `dropped ${benchmarkDropped} ephemeral-benchmark harness signal(s) — xbench/DELETEME/gym-eval/hive-loop debris (P-006)`,
+      note: `dropped ${benchmarkDropped} ephemeral-benchmark harness signal(s) — projects.ephemeral flag (P-008) + slug-regex (P-006) debris`,
     });
   }
   return { signals: kept, collectors: statuses };
