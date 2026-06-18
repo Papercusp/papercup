@@ -43,6 +43,13 @@ import {
   type KnownOpenAgingTickTunables,
 } from './known-open-aging';
 import { processAutoClose as runAutoCloseSweep, type AutoCloseOutcome } from './auto-close';
+import {
+  classifyToolError,
+  toolErrorSignalKey,
+  toolErrorClassSqlCase,
+  toolErrorFingerprintSqlCase,
+  type ToolErrorClass,
+} from './tool-error-classifier';
 import type { ImprovementSeverity } from './policy';
 import type { LearningSloOptions } from './learning-slo';
 
@@ -593,22 +600,10 @@ export async function collectSmokeFailSignals(sql: Sql, workspaceId: string, opt
 // error-shape patterns, and the fingerprint helpers all moved to
 // ./tool-error-classifier (watchdog-and-exposed-systems-improvement-2026-06-18
 // P-011) so the TS fn and the SQL CASE are GENERATED from one ordered rule table
-// and can no longer drift. Re-exported here for the existing import sites + tests.
-export {
-  classifyToolError,
-  toolErrorFingerprint,
-  toolErrorSignalKey,
-  toolErrorClassSqlCase,
-  toolErrorFingerprintSqlCase,
-  FINGERPRINTED_TOOL_ERROR_CLASSES,
-  TOOL_ERROR_RULES,
-  TIMEOUT_MESSAGE_PATTERN,
-  CALLER_MESSAGE_PATTERN,
-  RATE_LIMIT_MESSAGE_PATTERN,
-  INFRA_TRANSIENT_MESSAGE_PATTERN,
-  type ToolErrorClass,
-  type ToolErrorRule,
-} from './tool-error-classifier';
+// and can no longer drift. `classifyToolError` + `ToolErrorClass` are re-exported
+// for the existing import sites (watchdog.test.ts); the rest is imported above
+// for internal use, or imported directly from the module by new callers.
+export { classifyToolError, type ToolErrorClass };
 
 interface ClassifiedToolErrorRow {
   tool_name: string;
@@ -667,11 +662,15 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
     const pct = Math.round(rate * 100);
     const sample = (r.sample ?? '').slice(0, 800) || '(no message)';
     const latestAt = toIsoOrUndefined(r.latest_at);
-    // P-003: a fingerprint sharpens ONLY the structural key (so two DIFFERENT
-    // deterministic modes under one tool don't collapse onto one key, masking each
-    // other). Load classes (transient/caller/rate-limit) stay keyed by tool:class.
-    const fp = r.class === 'structural' && r.fingerprint ? r.fingerprint : null;
-    const key = fp ? `${r.tool_name}:${r.class}:${fp}` : `${r.tool_name}:${r.class}`;
+    // The dedup key: tool:class[:fingerprint]. The fingerprint sharpens the key for
+    // the FINGERPRINTED classes — structural + caller + transient (P-003 + P-012) —
+    // so two genuinely DIFFERENT same-class modes under one tool don't collapse onto
+    // one key and mask each other; rate-limit stays COARSE (one capacity concern).
+    // toolErrorSignalKey is the single source (tool-error-classifier.ts), also used by
+    // the post-deploy key-migration backfill so a migrated key matches this exactly.
+    // `fp` (title display) tracks r.fingerprint, which the SQL already nulls for rate-limit.
+    const fp = r.fingerprint ?? null;
+    const key = toolErrorSignalKey(r.tool_name, r.class, r.fingerprint);
 
     if (r.class === 'structural') {
       if (!(r.n >= structuralMin || (r.total >= structuralRateCalls && rate >= structuralRate))) continue;
@@ -692,7 +691,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
       out.push({
         source: 'repeated-tool-error',
         key,
-        title: `Tool ${r.tool_name} timing out repeatedly`,
+        title: `Tool ${r.tool_name} timing out repeatedly${fp ? ` (${fp})` : ''}`,
         body:
           `Watchdog signal (transient tool-error): ${r.tool_name} timed out / errored transiently ${r.n}× ` +
           `(${pct}% of ${r.total} calls) recently.\n\nSample: ${sample}`,
@@ -725,7 +724,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
       out.push({
         source: 'repeated-tool-error',
         key,
-        title: `Tool ${r.tool_name} repeatedly rejecting caller input`,
+        title: `Tool ${r.tool_name} repeatedly rejecting caller input${fp ? ` (${fp})` : ''}`,
         body:
           `Watchdog signal (caller/DX tool-error): ${r.tool_name} rejected caller input ${r.n}× ` +
           `(${pct}% of ${r.total} calls) — a sustained pattern suggests a confusing schema or a ` +
@@ -758,29 +757,11 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
   const rows = await sql<ClassifiedToolErrorRow[]>`
     WITH fail AS (
       SELECT tool_name,
-        CASE
-          -- A timeout (incl. one that surfaced as handler_error: "exceeded timeout …
-          -- handler returned but signal had aborted") is transient, not a tool bug (P-009).
-          WHEN error_code = 'timeout' OR status = 'timeout'
-               OR error_message ~* 'exceeded timeout|timed out' THEN 'transient'
-          -- Caller-side arg/scope errors (incl. handler_error/harness_required: missing or
-          -- unregistered harness, un-scoped session) are DX, not tool bugs (P-007, mirrors
-          -- classifyToolError / CALLER_SCOPE_ERROR_RE).
-          WHEN error_code IN ('invalid_args','invalid_input','role_not_allowed','missing_capability','quota_exceeded','harness_required')
-               OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%'
-               OR error_message ~* 'No harness specified|not registered in (any workspace|harness_shared)' THEN 'caller'
-          -- EXTERNAL provider rate-limit (mirrors classifyToolError / EXTERNAL_RATE_LIMIT_ERROR_RE):
-          -- an OpenAI embedding TPM 429 ("Rate limit reached" / "tokens per min" / openai_embed_failed_429)
-          -- is CAPACITY, not a code bug. Checked before the structural fallback so a sustained
-          -- embed-429 isn't mis-filed as a deterministic tool defect (and masked under a scoping EI).
-          WHEN error_message ~* 'openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests' THEN 'rate-limit'
-          -- INFRA-transient (mirrors classifyToolError / INFRA_TRANSIENT_ERROR_RE): PG
-          -- connection-exhaustion + DB-unavailability recur identically in SHAPE across every
-          -- tool during a wedge, but are shared-infra LOAD, not a per-tool bug. Defer to the
-          -- volume bar so a brief wedge stops mis-filing structural tool-bug EIs.
-          WHEN error_message ~* 'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|connection terminated|could not connect to server' THEN 'transient'
-          ELSE 'structural'
-        END AS class,
+        -- Classified by the GENERATED CASE from the shared TOOL_ERROR_RULES table
+        -- (tool-error-classifier.ts) — the SAME ordered table classifyToolError walks,
+        -- so the in-DB SQL and the TS fn CANNOT drift (P-011). The per-class FIRE bars
+        -- live in toolErrorSignalsFromRows; the loop's own tools are excluded below.
+        ${toolErrorClassSqlCase(sql)} AS class,
         error_message,
         invoked_at
         FROM harness_shared.tool_invocations
@@ -799,19 +780,16 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
          AND tool_name NOT LIKE 'system:improvement-%'
        GROUP BY tool_name
     ),
-    -- P-003 fingerprint: a normalized error-shape skeleton (first 6 alpha tokens of
-    -- the digit/punct-stripped message), computed for the STRUCTURAL class only, so
-    -- two genuinely DIFFERENT deterministic modes under one tool group (and key) apart
-    -- instead of collapsing onto one structural key that masks the other. This is the
-    -- single source of truth for the fingerprint — the EI backfill mirrors this exact
-    -- expression (watchdog-embed-resilience-and-dedup-2026-06-17 P-003).
+    -- P-003 + P-012 fingerprint: the normalized error-shape skeleton (first 6 alpha
+    -- tokens of the digit/punct-stripped message), computed by the GENERATED CASE from
+    -- FINGERPRINTED_TOOL_ERROR_CLASSES (tool-error-classifier.ts). structural + caller +
+    -- transient are fingerprinted, so distinct same-class modes under one tool split into
+    -- separate keys instead of masking each other; rate-limit stays coarse (one capacity
+    -- concern). toolErrorFingerprint() mirrors this exact arithmetic in TS for the
+    -- key-migration backfill — parity proven by the integration test.
     tagged AS (
       SELECT tool_name, class, error_message, invoked_at,
-        CASE WHEN class = 'structural' THEN
-          nullif(array_to_string((string_to_array(
-            trim(regexp_replace(regexp_replace(lower(coalesce(error_message, '')), '[0-9]+', '', 'g'), '[^a-z]+', ' ', 'g')),
-          ' '))[1:6], '-'), '')
-        ELSE NULL END AS fingerprint
+        ${toolErrorFingerprintSqlCase(sql)} AS fingerprint
         FROM fail
     )
     SELECT tagged.tool_name, tagged.class, tagged.fingerprint, count(*)::int AS n,

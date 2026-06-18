@@ -53,15 +53,50 @@ describe('no registered test can expose a safety-excluded knob', () => {
   });
 });
 
-describe('the live tiers never execute in v1 (staged, not stubbed-on)', () => {
-  it('gym/instance/hive descriptors refuse to run', async () => {
+describe('the live tiers never execute without their bound deps (staged, not stubbed-on)', () => {
+  it('gym/instance/hive descriptors refuse to run with no live deps', async () => {
     const ctx = { workspaceId: 'ws' } as never;
     const req = { batteryId: 'b', arms: [], repeats: 1, payload: {} } as never;
     for (const d of [gymDescriptor(), instanceDescriptor(), hiveDescriptor()]) {
-      // gym is mapped+wired but refuses without live abDeps; instance/hive are staged
-      // metadata. Either way: no live execution / no spend in v1.
-      await expect(d.run(req, ctx), d.id).rejects.toThrow(/not yet executable|STAGED until the owner arms it/);
+      // gym is mapped+wired but refuses without live abDeps; instance/hive are the gated
+      // cost-exception, staged behind their own infra. Either way: no spend in v1.
+      await expect(d.run(req, ctx), d.id).rejects.toThrow(/STAGED|gated cost-exception/);
     }
+  });
+});
+
+describe('the fidelity-tier escalation discipline gates spend (P-041)', () => {
+  function deps(over: Partial<RunExperimentDeps> = {}): RunExperimentDeps {
+    return {
+      runGovernedReplay: vi.fn(async () => ({ verdict: { allow: true, remainingUsd: null }, result: null })) as unknown as RunExperimentDeps['runGovernedReplay'],
+      replayRunner: (async () => ({ outputText: '', costUsd: 0, inputTokens: 0, outputTokens: 0, replayed: true })) as unknown as RunExperimentDeps['replayRunner'],
+      judge: (async () => ({ text: '', costUsd: 0, inputTokens: 0, outputTokens: 0 })) as unknown as RunExperimentDeps['judge'],
+      now: () => 0,
+      ...over,
+    };
+  }
+
+  it('a spending tier with NO escalation justification refuses BEFORE the governor (no spend)', async () => {
+    const governorPreflight = vi.fn(async () => ({ allow: true, remainingUsd: null }));
+    const out = await runExperiment(
+      { testId: 'gym', tier: 'live', batteryId: 'b', arms: [], cases: [{ caseId: 'c', context: 'x', intent: 'y' }], repeats: 1 },
+      { workspaceId: 'ws' },
+      deps({ governorPreflight }),
+    );
+    expect(out.ok).toBe(false);
+    expect(out.refused?.reason).toMatch(/offline signal|couldn.t-isolate/i);
+    expect(governorPreflight).not.toHaveBeenCalled();
+  });
+
+  it('a live tier fails CLOSED on the governor even with valid escalation (no armed budget ⇒ no spend)', async () => {
+    const governorPreflight = vi.fn(async () => ({ allow: false, reason: 'governor-unbudgeted', remainingUsd: 0 }));
+    const out = await runExperiment(
+      { testId: 'gym', tier: 'live', batteryId: 'b', arms: [], cases: [{ caseId: 'c', context: 'x', intent: 'y' }], repeats: 1, escalation: { couldntIsolate: 'needs real pipeline contention to surface' } },
+      { workspaceId: 'ws' },
+      deps({ governorPreflight }),
+    );
+    expect(out.ok).toBe(false);
+    expect(out.refused?.reason).toBe('governor-unbudgeted');
   });
 });
 

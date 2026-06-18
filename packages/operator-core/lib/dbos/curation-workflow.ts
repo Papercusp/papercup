@@ -40,6 +40,11 @@ async function curationTickImpl(): Promise<void> {
         const state = await readCurationState();
         if (!shouldRunTick(state.lastRunAtMs, state.currentIntervalSeconds, now)) return;
 
+        // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate
+        // doc/memory curation OFF for the home hive. Fail-soft → runs (default ON).
+        const { idleActivityAllowed } = await import('../owner-steering');
+        if (!(await idleActivityAllowed(ws, 'curation'))) return;
+
         const deps = buildCurationDeps();
         const result = await runCurationTick(deps, {
           canEmitDigest: (size) => canEmitDigestNow(state.lastDigestAtMs, size, now),

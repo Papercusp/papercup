@@ -246,8 +246,11 @@ describe('blueprint:validate — program-mode spine summary', () => {
       'spine:',
       '  decider: voter',
       '  steps:',
-      '    - { id: s1, op: spawn-roles }',
-      '    - { id: s2, op: collect-votes }',
+      // P-001: the authoring path now enforces op-liveness against the live coord-op
+      // registry, so a valid program must name REAL registered ops (these fixtures
+      // previously used placeholder `spawn-roles`/`collect-votes` that nothing caught).
+      '    - { id: s1, op: orchestrator:spawn-roles }',
+      '    - { id: s2, op: coord:collect }',
       '  gate:',
       '    - { op: resolve, else: true }',
     ].join('\n');
@@ -265,7 +268,7 @@ describe('blueprint:validate — program-mode spine summary', () => {
       'spine:',
       '  decider: voter',
       '  steps:',
-      '    - { id: s1, op: spawn-roles }',
+      '    - { id: s1, op: orchestrator:spawn-roles }',
       '  gate:',
       "    - { op: resolve, when: { '==': [{ var: tally.winner }, yes] } }",
     ].join('\n');

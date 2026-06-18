@@ -45,6 +45,16 @@ import './ops/iq-battery-gen.js';
 // whole-Hive runs over the seeded scenario corpus (internal to the op) → HE-06 score +
 // persist to its OWN tables. Also gated on the owner-set budgetUsd; live runner P-051.
 import './ops/hive-eval-gen.js';
+// relight-self-learning-edges-2026-06-14 (P-033): the memory-precision monitoring bench —
+// det cadence → floored hybrid gold-set replay (isolated bench schema, embeddings, no LLM) →
+// record FP@5/R@10/precision. Flag-only (no governor, like change-ledger); always-on monitoring.
+import './ops/memory-precision-bench.js';
+// worker-chunk-loop-operator-hosted-2026-06-14 (P-002/P-003, = deterministic-blueprints
+// P-142): the coding WORKER's chunk loop as an operator-hosted deterministic step — a
+// near-PORT of runWorkerChunkLoop() (the heavy ctx-construction runner is dynamic-imported
+// by the op, so registering it here stays light). DARK behind the DEFAULT-OFF
+// papercusp-worker-chunk-loop-blueprint flag (the coding HOT PATH staged-rollout gate, D-003).
+import './ops/worker-chunk-loop.js';
 // NOTE: the impartial benchmark suite (impartial-benchmark-suite-2026-06-15, P-019) is NOT
 // a deterministic step-op. `external-bench` is a decider-edges `coding`-spine blueprint
 // (the full-spine generation arm) SPUN as a throwaway harness by the `instantiateBenchHarness`

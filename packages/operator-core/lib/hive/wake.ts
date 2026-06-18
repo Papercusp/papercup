@@ -77,16 +77,49 @@ export function hiveWakeFloorSec(): number {
   return Number.isFinite(n) && n >= 5 ? n : 60;
 }
 
+/**
+ * The effective wake floor in seconds: MAX(system floor, owner override). The owner
+ * cadence-floor knob (queen-steering-panel P-006) can only RAISE the interval (slow
+ * the loop) — never drop below the system minimum. `ownerFloorSec` undefined/≤0 ⇒
+ * the system floor unchanged (today's behaviour). Pure; the async resolver below
+ * reads the owner value and calls this.
+ */
+function effectiveWakeFloorSec(ownerFloorSec?: number): number {
+  return Math.max(hiveWakeFloorSec(), ownerFloorSec && ownerFloorSec > 0 ? ownerFloorSec : 0);
+}
+
 /** Clamp a requested wake time to ≥ now + the floor. Delegates the floor math to the
  *  shared `@papercusp/debounce-coalesce` core (the hive is no longer a special case —
- *  unify-watch-primitive-2026-06-06 P-006/D-009). */
-export function clampWakeAt(requested: Date, now: Date = new Date()): { at: Date; clamped: boolean } {
+ *  unify-watch-primitive-2026-06-06 P-006/D-009). `ownerFloorSec` (queen-steering-panel
+ *  P-006) RAISES the floor when the owner set a wake-cadence floor — MAX(system, owner). */
+export function clampWakeAt(
+  requested: Date,
+  now: Date = new Date(),
+  ownerFloorSec?: number,
+): { at: Date; clamped: boolean } {
   const { at, clamped } = clampToFloor({
     requestedAt: requested.getTime(),
-    minSleepMs: hiveWakeFloorSec() * 1_000,
+    minSleepMs: effectiveWakeFloorSec(ownerFloorSec) * 1_000,
     now: now.getTime(),
   });
   return { at: new Date(at), clamped };
+}
+
+/**
+ * Resolve the EFFECTIVE wake floor for a Hive — MAX(system floor, the owner's
+ * `cadence-floor-sec` steering knob), fail-soft to the system floor (P-006, D-005).
+ * The single async read the cadence-aware seams (declareHiveTimeWake, urgent-wake,
+ * the hive:wake debounce) call once, then thread the number into the pure
+ * clampWakeAt / withinWakeFloor below.
+ */
+export async function effectiveHiveWakeFloorSec(workspaceId: string, installSlug: string): Promise<number> {
+  try {
+    const { getOwnerSteering, effectiveCadenceFloorSec } = await import('../owner-steering');
+    const s = await getOwnerSteering(workspaceId, installSlug);
+    return effectiveCadenceFloorSec(s, hiveWakeFloorSec());
+  } catch {
+    return hiveWakeFloorSec();
+  }
 }
 
 /**
@@ -96,9 +129,24 @@ export function clampWakeAt(requested: Date, now: Date = new Date()): { at: Date
  */
 export async function declareHiveTimeWake(
   sql: Sql,
-  opts: { workspaceId: string; installSlug: string; at: Date; kickoff?: string; now?: Date; blueprintId?: string },
+  opts: {
+    workspaceId: string;
+    installSlug: string;
+    at: Date;
+    kickoff?: string;
+    now?: Date;
+    blueprintId?: string;
+    /** Pre-resolved effective wake floor (seconds) — pass it when the caller
+     *  already read owner-steering (urgent-wake) to avoid a second read; omitted ⇒
+     *  resolved here via effectiveHiveWakeFloorSec (queen-steering-panel P-006). */
+    floorSec?: number;
+  },
 ): Promise<{ at: Date; clamped: boolean }> {
-  const { at, clamped } = clampWakeAt(opts.at, opts.now);
+  // Owner cadence-floor (P-006): the Queen's self-declared wake is clamped up to the
+  // owner's floor. Resolve it here (so every declare-wake path — incl. the hive:declare-wake
+  // tool — is owner-aware with no call-site change) unless the caller pre-resolved it.
+  const floorSec = opts.floorSec ?? (await effectiveHiveWakeFloorSec(opts.workspaceId, opts.installSlug));
+  const { at, clamped } = clampWakeAt(opts.at, opts.now, floorSec);
   await upsertRoutine(
     sql,
     {
@@ -271,10 +319,10 @@ export async function registerHiveWakeRules(workspaceId?: string): Promise<numbe
 /** Whether a hive fire at `now` falls inside the floor window of the last one. Delegates
  *  to the shared `@papercusp/debounce-coalesce` floor (P-006/D-009): the hive consumes the
  *  SAME core every other wake-subscription now uses, rather than a bespoke comparison. */
-export function withinWakeFloor(state: HiveWakeState, now: number = Date.now()): boolean {
+export function withinWakeFloor(state: HiveWakeState, now: number = Date.now(), ownerFloorSec?: number): boolean {
   return withinFloor({
     lastWokenAt: state.lastWakeAt ?? null,
-    minSleepMs: hiveWakeFloorSec() * 1_000,
+    minSleepMs: effectiveWakeFloorSec(ownerFloorSec) * 1_000,
     now,
   });
 }

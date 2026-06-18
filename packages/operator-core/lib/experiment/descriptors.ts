@@ -131,16 +131,44 @@ export function replayDescriptor(deps: ExperimentDescriptorDeps = defaultDeps): 
 // the live-spend tiers — registered + discoverable, run staged until bound
 // --------------------------------------------------------------------------
 
-function stagedLiveDescriptor(
+/**
+ * The whole-instance / whole-Hive tiers (the gated cost-exception, D-002). Their live
+ * runners (the iq-battery boot / hive-eval ports) are heavy infra `experiment:run`
+ * cannot provision, and their OWN loops (apiary / hive-eval) already drive them — so
+ * binding a live runner-config here would be speculative, unverifiable, and redundant
+ * (D-017). They are therefore BOUND TO THE CONTRACT but STAGED: the run validates the
+ * arm against the test's `['genome','model']` slice + the safety set (P-021) and
+ * PARTITIONS it — threading the `genome.*` delta + the `model.<role>` axis exactly like
+ * the reachable replay/gym tiers — then refuses with NO spend, pointing at the ctx dep
+ * slot that un-stages it (the gym worked example, P-066/P-068). Wiring the live
+ * runner-config + the spawn-time model override is purely additive when that infra is
+ * supplied. (P-063 end-state: "discoverable-but-staged — run() refuses".)
+ */
+function stagedGenomeModelDescriptor(
   meta: Omit<ExperimentDescriptor, 'run'> & { fidelityTier: 'live' },
+  ctxSlot: 'instance' | 'hive',
+  liveDepHint: string,
 ): ExperimentDescriptor {
   return {
     ...meta,
-    async run() {
+    async run(request, ctx) {
+      // Validate + partition every arm — proves the genome/model slice gate + that the
+      // genome delta and model.<role> overrides fold cleanly, even while staged.
+      for (const arm of request.arms) {
+        const v = validateArm(arm, meta.knobSlice);
+        if (!v.ok) {
+          const bad = [...v.outOfSlice, ...v.excluded.map((e) => `${e} (safety-excluded)`)].join(', ');
+          throw new Error(`${meta.id} arm "${arm.id}" has knobs outside its slice: ${bad}`);
+        }
+        partitionArm(arm); // throws on a malformed genome/model knob (defense in depth)
+      }
+      const bound = ctxSlot === 'instance' ? ctx.instance?.deps : ctx.hive?.ports;
       throw new Error(
-        `the "${meta.id}" test (${meta.fidelityTier} tier) is registered for discovery but not yet executable in v1 — ` +
-          `offline replay is the only fully-wired tier (D-004). Live binding is the P-011 follow-on ` +
-          `(experiment-registry-invocation-api).`,
+        `the "${meta.id}" test (${meta.kind}, ${meta.fidelityTier} tier) is the gated cost-exception (D-002) and stays STAGED — ` +
+          (bound
+            ? `its live runner-config + spawn-time model.<role> binding is deferred to the ${liveDepHint} that owns it (D-017).`
+            : `it requires ctx.${ctxSlot}.${ctxSlot === 'instance' ? 'deps' : 'ports'} (the ${liveDepHint}), which experiment:run does not provision — its own loop drives it (D-017). `) +
+          `Screen the knob change on the offline replay tier instead (P-040/D-004).`,
       );
     },
   };
@@ -181,29 +209,37 @@ export function gymDescriptor(): ExperimentDescriptor {
 }
 
 export function instanceDescriptor(): ExperimentDescriptor {
-  return stagedLiveDescriptor({
-    id: 'instance',
-    summary:
-      'Whole-instance eval — boot a config-varied instance from a genome delta (the iq-battery InstanceSubject) and score it. The gated cost-exception, used when a component eval cannot isolate the variable (D-002).',
-    kind: 'whole-instance',
-    fidelityTier: 'live',
-    costClass: 'high',
-    knobSlice: ['genome', 'model'],
-    metrics: { signals: ['status', 'tokens', 'escalation'], rubricDimensions: ['composite'] },
-  });
+  return stagedGenomeModelDescriptor(
+    {
+      id: 'instance',
+      summary:
+        'Whole-instance eval — boot a config-varied instance from a genome delta (the iq-battery InstanceSubject) and score it. The gated cost-exception, used when a component eval cannot isolate the variable (D-002).',
+      kind: 'whole-instance',
+      fidelityTier: 'live',
+      costClass: 'high',
+      knobSlice: ['genome', 'model'],
+      metrics: { signals: ['status', 'tokens', 'escalation'], rubricDimensions: ['composite'] },
+    },
+    'instance',
+    'iq-battery boot (the apiary loop)',
+  );
 }
 
 export function hiveDescriptor(): ExperimentDescriptor {
-  return stagedLiveDescriptor({
-    id: 'hive',
-    summary:
-      'Whole-hive eval — run a seeded Hive scenario end-to-end (the hive-eval Subject) and score outcome × efficiency × speed. Live agent spend.',
-    kind: 'whole-hive',
-    fidelityTier: 'live',
-    costClass: 'high',
-    knobSlice: ['genome', 'model'],
-    metrics: { signals: ['outcome', 'efficiency', 'speed'], rubricDimensions: ['outcome', 'efficiency', 'speed'] },
-  });
+  return stagedGenomeModelDescriptor(
+    {
+      id: 'hive',
+      summary:
+        'Whole-hive eval — run a seeded Hive scenario end-to-end (the hive-eval Subject) and score outcome × efficiency × speed. Live agent spend.',
+      kind: 'whole-hive',
+      fidelityTier: 'live',
+      costClass: 'high',
+      knobSlice: ['genome', 'model'],
+      metrics: { signals: ['outcome', 'efficiency', 'speed'], rubricDimensions: ['outcome', 'efficiency', 'speed'] },
+    },
+    'hive',
+    'hive-eval ports (the hive-eval loop)',
+  );
 }
 
 // --------------------------------------------------------------------------

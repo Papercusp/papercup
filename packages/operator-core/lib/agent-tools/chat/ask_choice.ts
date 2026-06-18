@@ -51,12 +51,12 @@ const argsSchema = z.object({
   // `options` array previously failed with a bare "Array must contain at least
   // 1 element(s)" that gave the agent no idea what to supply.
   question: z
-    .string({ required_error: 'chat:ask_choice needs a `question` — the prompt shown to the user.' })
+    .string({ error: 'chat:ask_choice needs a `question` — the prompt shown to the user.' })
     .min(1, '`question` must be a non-empty prompt.')
     .max(MAX_QUESTION_LEN),
   options: z
     .array(optionSchema, {
-      required_error:
+      error:
         'chat:ask_choice needs `options`: 1-6 clickable choices, each { id, label }. For an OPEN-ENDED question (describe / paste), use plain text instead.',
     })
     .min(

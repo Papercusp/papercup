@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
-    "build": "astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh",
-    "build:preview": "DOCS_PREVIEW=1 astro build",
+    "clean:preview": "rm -rf src/content/docs/preview dist-preview",
+    "build": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh",
+    "build:preview": "rm -rf src/content/docs/preview && DOCS_PREVIEW=1 astro build",
     "preview": "astro preview",
     "serve:preview": "DOCS_PREVIEW=1 astro preview",
     "astro": "astro",

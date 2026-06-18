@@ -32,6 +32,7 @@ import {
   type BlueprintDependencyValidation,
   type DependencyHostSets,
 } from '@papercusp/blueprint-distribution';
+import { blueprintRegistrySets } from '../blueprint/registry-sets';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -185,7 +186,11 @@ export async function installBlueprintFromCupboardCore(
       blueprints: [],
     };
     if (!abstract) {
-      const res = resolveAndValidateBlueprint(raw, deps.resolveExtends);
+      // P-001: validate the installed blueprint's ops/roles against THIS host's
+      // live registries — a marketplace blueprint that names an op the host hasn't
+      // registered fails the import with a clear `unknown-op` (422), not a runtime
+      // throw after it lands in the installed tier.
+      const res = resolveAndValidateBlueprint(raw, deps.resolveExtends, blueprintRegistrySets());
       if (res.parseError) {
         throw new InstallBlueprintError(`blueprint "${id}" failed to resolve: ${res.parseError}`, 422);
       }

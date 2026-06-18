@@ -18,7 +18,7 @@ import { PgExperimentLedger } from '../../experiment/ledger';
 export default defineTool({
   name: 'experiment:run',
   description:
-    'Run an experiment: A/B a knob change against a battery via the eval-battery engine and get per-arm judge scores + the compareArms verdict. v1 runs the OFFLINE replay tier — re-run each synthetic case under each arm’s policy overlay and score outcome/process/divergence. Rides frontier:replay-harness (flag + governor budget; origin-tagged spend); refuses with NO spend if the replay flag is off or the budget is exhausted. Arms must address only the test’s knobSlice (experiment:catalog). A winner is a PROPOSAL — applying it rides commit→reproject + graduation, never this tool.',
+    'Run an experiment: A/B a knob change against a battery via the eval-battery engine and get per-arm judge scores + the compareArms verdict. OFFLINE replay is the default front door (tier defaults to "offline", ~$0 deterministic) — re-run each synthetic case under each arm’s policy/model overlay and score outcome/process/divergence; rides frontier:replay-harness (flag + governor budget; origin-tagged spend), refusing with NO spend if dark/exhausted. Escalating to a spending tier (set tier:"live") requires escalation justification (a positive offline signal or a written couldn’t-isolate trigger; +costException for whole-instance/whole-Hive) and an armed governor budget — it fails closed. The gym live tier is reachable when its AbDeps are armed; instance/hive stay staged (their own loops drive them). Arms must address only the test’s knobSlice (experiment:catalog). A winner is a PROPOSAL — applying it rides commit→reproject + graduation, never this tool.',
   guidance: {
     when: 'Testing how a knob change performs before adopting it — screen a policy/prompt overlay against a battery on the cheap offline replay tier; the result ranks arms vs the baseline.',
     notWhen: 'Discovery (experiment:catalog). Scoring one gym run (gym:judge/gym:signals). Applying a winner to live prompts — that rides commit→reproject + graduation (D-006), never here.',
@@ -54,6 +54,33 @@ export default defineTool({
       .min(1)
       .describe('Synthetic battery cases (v1) — each judged per arm.'),
     repeats: z.number().int().positive().max(10).default(1),
+    tier: z
+      .enum(['offline', 'shadow', 'live'])
+      .optional()
+      .describe(
+        'The fidelity tier to run at — defaults to "offline" (the ~$0 deterministic replay screen, the default front door). MUST match the test\'s own tier: a spending tier (shadow/live) cannot be reached by naming a testId alone, you must consciously set tier here — and then it requires `escalation` justification.',
+      ),
+    escalation: z
+      .object({
+        offlineSignalRunId: z
+          .string()
+          .optional()
+          .describe('A prior OFFLINE experiment run (experiment:results runId/batteryId) whose result is the positive signal that justifies spending.'),
+        couldntIsolate: z
+          .string()
+          .optional()
+          .describe('A written reason the cheap offline tier cannot isolate the variable (the couldn\'t-isolate trigger, D-005/D-007).'),
+        costException: z
+          .boolean()
+          .optional()
+          .describe('Explicit acknowledgment of the whole-instance / whole-Hive cost exception (D-002) — required for those two kinds.'),
+      })
+      .optional()
+      .describe('Required to escalate off the offline tier (P-041): a positive offline signal OR a written couldn\'t-isolate trigger; +costException for whole-instance/whole-Hive.'),
+    payload: z
+      .unknown()
+      .optional()
+      .describe('Subject-specific battery input for the LIVE tiers (gym tasks / instance baseSpec+corpus / hive scenario). The offline tier builds its battery from `cases` and ignores this.'),
     budgetUsd: z.number().positive().optional().describe('Per-run spend cap; the frontier:replay-harness governor budget is the upstream gate.'),
     maxDistillChars: z.number().int().positive().optional(),
     replayModel: z.string().optional().describe('Model for the replayed continuation (default claude-sonnet-4-6).'),
@@ -73,6 +100,9 @@ export default defineTool({
         arms: args.arms,
         cases: args.cases,
         repeats: args.repeats,
+        ...(args.tier !== undefined ? { tier: args.tier } : {}),
+        ...(args.escalation !== undefined ? { escalation: args.escalation } : {}),
+        ...(args.payload !== undefined ? { payload: args.payload } : {}),
         budgetUsd: args.budgetUsd,
         maxDistillChars: args.maxDistillChars,
         dryRun: args.dryRun,

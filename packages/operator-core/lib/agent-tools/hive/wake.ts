@@ -12,7 +12,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import {
   HIVE_BLUEPRINT_ID,
-  hiveWakeFloorSec,
+  effectiveHiveWakeFloorSec,
   readHiveWakeState,
   recordHiveWake,
   resolveHiveHomeSlug,
@@ -56,9 +56,11 @@ export default defineTool({
       };
     }
 
+    // Owner cadence-floor (queen-steering-panel P-006): the event-burst debounce
+    // honours the owner's raised wake-cadence floor (MAX of system + owner knob).
+    const floorSec = await effectiveHiveWakeFloorSec(workspaceId, installSlug);
     const state = await readHiveWakeState(workspaceId);
-    if (!args.force && withinWakeFloor(state)) {
-      const floorSec = hiveWakeFloorSec();
+    if (!args.force && withinWakeFloor(state, Date.now(), floorSec)) {
       const nextAllowedAt = new Date((state.lastWakeAt ?? 0) + floorSec * 1_000).toISOString();
       return {
         content: [

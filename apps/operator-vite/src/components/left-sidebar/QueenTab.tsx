@@ -45,6 +45,8 @@ import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
 import QueenHeartbeat from './QueenHeartbeat';
 import ModelTiersOverride from './ModelTiersOverride';
+import ThrottleSection, { type IdleKind, type IdleToggles, type ThrottleDefaults } from './ThrottleSection';
+import AutonomySurfacing, { type DecompMode } from './AutonomySurfacing';
 import HiveSteeringTree from './HiveSteeringTree';
 import {
   buildSteeringTree,
@@ -68,6 +70,18 @@ export interface HiveSteeringRow {
   pausedUntil: number | null;
   /** Session model-tier override (D-006); null ⇒ workspace default. */
   modelTiers?: ModelTier[] | null;
+  /** Session per-role tier ceilings (D-006); null ⇒ no override. The throttle
+   *  "Cap bees at tier" control manages the `bee` key here. */
+  tierCeilings?: Record<string, string> | null;
+  /** Throttle knobs (P-006 backend / P-007 UI). null ⇒ use the system default. */
+  cadenceFloorSec?: number | null;
+  maxBees?: number | null;
+  idleActivities?: IdleToggles | null;
+  autoScaleOut?: boolean | null;
+  /** Decomposition aggressiveness (P-009, advisory); null ⇒ default. */
+  decomposition?: DecompMode | null;
+  /** Read-only system defaults the resolver supplies for the throttle badges (P-006). */
+  throttleDefaults?: ThrottleDefaults | null;
 }
 
 const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
@@ -77,6 +91,13 @@ const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
   pauseNewWork: false,
   pausedUntil: null,
   modelTiers: null,
+  tierCeilings: null,
+  cadenceFloorSec: null,
+  maxBees: null,
+  idleActivities: null,
+  autoScaleOut: null,
+  decomposition: null,
+  throttleDefaults: null,
 };
 
 const EMPTY_PLANS: readonly PlanListRow[] = [];
@@ -344,13 +365,62 @@ export default function QueenTab({ active }: { active: boolean }) {
     overlay({ modelTiers: mt });
     enqueue({ modelTiers: mt });
   };
+  // ── Throttle knobs (P-007) — each writes through hive:set-steering like the
+  // other steering fields; reads from the LIVE selection so back-to-back edits
+  // accumulate (the overlay-ref pattern). ──
+  const setCadenceFloor = (sec: number | null) => {
+    overlay({ cadenceFloorSec: sec });
+    enqueue({ cadenceFloorSec: sec });
+  };
+  const setMaxBees = (n: number | null) => {
+    overlay({ maxBees: n });
+    enqueue({ maxBees: n });
+  };
+  /** Cap the `bee` role's tier ceiling (tierCeilings.bee), preserving other roles. */
+  const setBeeTierCap = (tierName: string | null) => {
+    const next = { ...(live().tierCeilings ?? {}) };
+    if (tierName) next.bee = tierName;
+    else delete next.bee;
+    const value = Object.keys(next).length > 0 ? next : null;
+    overlay({ tierCeilings: value });
+    enqueue({ tierCeilings: value });
+  };
+  const toggleIdle = (kind: IdleKind, enabled: boolean) => {
+    const next: IdleToggles = { ...(live().idleActivities ?? {}), [kind]: enabled };
+    overlay({ idleActivities: next });
+    enqueue({ idleActivities: next });
+  };
+  /** Default ON; enabling clears the override (null), disabling stores `false`. */
+  const setAutoScaleOut = (enabled: boolean) => {
+    const value = enabled ? null : false;
+    overlay({ autoScaleOut: value });
+    enqueue({ autoScaleOut: value });
+  };
+  const setDecomposition = (mode: DecompMode | null) => {
+    overlay({ decomposition: mode });
+    enqueue({ decomposition: mode });
+  };
+  const onManageAutonomy = () => void navigate({ to: '/settings/autonomy' });
   const onSaveDirective = (text: string) => {
     const directive = text.trim() ? text : null;
     overlay({ directive });
     enqueue({ directive });
   };
   const clearAll = () => {
-    overlay({ directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null, modelTiers: null });
+    overlay({
+      directive: null,
+      eligiblePlans: [],
+      eligibleHives: [],
+      pauseNewWork: false,
+      pausedUntil: null,
+      modelTiers: null,
+      tierCeilings: null,
+      cadenceFloorSec: null,
+      maxBees: null,
+      idleActivities: null,
+      autoScaleOut: null,
+      decomposition: null,
+    });
     enqueue({ clear: true });
   };
 
@@ -554,7 +624,36 @@ export default function QueenTab({ active }: { active: boolean }) {
         </>
       )}
 
-      {/* 6 — Scheduled routines (the ops glance, scheduled-recurring-plans P-026).
+      {/* 6 — Throttle knobs (P-007): cadence floor, max bees, model-tier pin (the
+          bee role's tier ceiling), idle-activity gates, auto-scale-out. The live
+          seams + the system throttleDefaults come from P-006 (su-41a5e). */}
+      <ThrottleSection
+        cadenceFloorSec={view.cadenceFloorSec ?? null}
+        maxBees={view.maxBees ?? null}
+        tierCeilings={view.tierCeilings ?? null}
+        idleActivities={view.idleActivities ?? null}
+        autoScaleOut={view.autoScaleOut ?? null}
+        defaults={view.throttleDefaults ?? null}
+        busy={saving}
+        onSetCadenceFloor={setCadenceFloor}
+        onSetMaxBees={setMaxBees}
+        onSetBeeTierCap={setBeeTierCap}
+        onToggleIdle={toggleIdle}
+        onSetAutoScaleOut={setAutoScaleOut}
+      />
+
+      {/* 7 — Autonomy + decomposition surfacing (P-009): a read-through to the
+          autonomy:policy ceilings (+ deep link), the cursed-item breaker threshold
+          (read-only), and the advisory decomposition-aggressiveness knob. */}
+      <AutonomySurfacing
+        decomposition={view.decomposition ?? null}
+        breakerThreshold={view.throttleDefaults?.breakerThreshold ?? null}
+        busy={saving}
+        onSetDecomposition={setDecomposition}
+        onManageAutonomy={onManageAutonomy}
+      />
+
+      {/* 8 — Scheduled routines (the ops glance, scheduled-recurring-plans P-026).
           Reads the same plans.scheduledOccurrences ledger the Calendar does; a row
           per scheduled plan with next-fire + armed/paused + last-run outcome. Click
           jumps to the Calendar focused on that plan. */}

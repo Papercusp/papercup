@@ -98,6 +98,13 @@ export function gymBudgetFloorUsd(): number {
 
 registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
   const { sql } = getOrgPg();
+  // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate gym
+  // spend OFF for the home hive from the 👑 tab. Fail-soft → runs (default ON).
+  const { idleActivityAllowed } = await import('../../owner-steering');
+  if (!(await idleActivityAllowed(ctx.workspaceId, 'gym'))) {
+    console.log('[gym-cycle] skipped — owner idle-activity toggle (gym) is OFF');
+    return;
+  }
   const outcome = await runGymAutoloopTick(
     {
       listAutoloops: () => listAutoloopsForWorkspace(sql, { workspaceId: ctx.workspaceId }),

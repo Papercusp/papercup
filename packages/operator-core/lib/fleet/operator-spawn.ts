@@ -65,6 +65,32 @@ export function spawnConcurrencyCeiling(): number {
 }
 
 /**
+ * The EFFECTIVE spawn-concurrency ceiling for a workspace: the system safety-floor
+ * ceiling ({@link spawnConcurrencyCeiling}) clamped DOWN by the owner's `max-bees`
+ * steering knob for the home hive (queen-steering-panel P-006, D-005). The owner can
+ * only LOWER the ceiling (throttle the fleet), never raise it past the system cap.
+ * Read at BOTH the headroom read (so the brain sees the reduced budget) and the
+ * atomic admission cap (so it is HARD-enforced — spawns past it queue). Fail-soft:
+ * any owner-steering read failure leaves the system ceiling in effect. Resolves the
+ * home hive the same way the model-tier session override does (resolveHiveHomeSlug).
+ */
+export async function effectiveSpawnCeiling(workspaceId: string): Promise<number> {
+  const base = spawnConcurrencyCeiling();
+  try {
+    const [{ getOwnerSteering, effectiveMaxBees }, { resolveHiveHomeSlug }] = await Promise.all([
+      import('../owner-steering'),
+      import('../hive/wake'),
+    ]);
+    const home = resolveHiveHomeSlug();
+    if (!home) return base;
+    const s = await getOwnerSteering(workspaceId, home);
+    return effectiveMaxBees(s, base);
+  } catch {
+    return base;
+  }
+}
+
+/**
  * The wake key an over-ceiling spawn attempt sleeps on (D-004 — queue + await,
  * never silent-drop): `events:await { event: spawnSlotEventKey(ws) }`, end the
  * turn, retry the spawn on wake. Emitted whenever a slot frees — a spawn
@@ -134,7 +160,7 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
   headroom: number;
 }> {
   await reclaimAndAnnounce();
-  const ceiling = spawnConcurrencyCeiling();
+  const ceiling = await effectiveSpawnCeiling(workspaceId);
   const running = await countRunning(workspaceId).catch(() => 0);
   return { ceiling, running, headroom: Math.max(0, ceiling - running) };
 }
@@ -660,7 +686,8 @@ export async function spawnAgentInHarness(
       workspaceId: input.workspaceId,
       spawnId,
       idempotencyKey: idemKey,
-      cap: spawnConcurrencyCeiling(),
+      // Owner max-bees knob clamps the admission cap (queen-steering-panel P-006).
+      cap: await effectiveSpawnCeiling(input.workspaceId),
       record: (tx) =>
         recordSpawn(tx, {
           spawnId,

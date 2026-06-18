@@ -233,6 +233,7 @@ export default defineTool({
           text: JSON.stringify({
             ...result.value,
             filePath: result.filePath,
+            ...(mappedFrom ? { mappedFrom } : {}),
             revision:
               result.value.ok && result.value.changed && rev.recorded.current
                 ? { seq: rev.recorded.current.seq }

@@ -73,6 +73,10 @@ export const LEARNING_SINGLETONS: LearningSingleton[] = [
   { blueprintId: 'change-ledger', legacyRoutine: 'change-ledger-scan' },
   { blueprintId: 'scout', legacyRoutine: 'scout-cycle' },
   { blueprintId: 'iq-battery', legacyRoutine: 'iq-battery-gen' },
+  // relight-self-learning-edges P-033: memory-precision monitoring (always-on, flag-gated).
+  // No legacy bespoke routine ever existed — the legacyRoutine name matches nothing, so the
+  // retire-legacy pass is a clean no-op; this loop is born as a @singleton row.
+  { blueprintId: 'memory-precision', legacyRoutine: 'memory-precision-bench' },
 ];
 
 export interface LegacyRowState {

@@ -71,6 +71,14 @@ export function makeScoutCycleAction(
   workspaceCeilingGate?: typeof scoutWorkspaceCeilingGate,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
+    // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate
+    // Scout idea-grading OFF for the home hive. Fail-soft → runs (default ON).
+    const { idleActivityAllowed } = await import('../owner-steering');
+    if (!(await idleActivityAllowed(ctx.workspaceId, 'scout'))) {
+      // eslint-disable-next-line no-console
+      console.log(`[scout-cycle] ${ctx.installSlug}: skipped — owner idle-activity toggle (scout) is OFF`);
+      return;
+    }
     const result = await runScoutCycleTick(
       { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payloadTemplate: ctx.payloadTemplate },
       {

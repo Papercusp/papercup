@@ -350,6 +350,15 @@ export const FLAGS = {
   // (D-001 owner-ratified dark-ship rule for frontier loops); the ranker
   // feature contributes 0 while OFF or while no bets are scored.
   CALIBRATION_MARKETS: "papercusp-calibration-markets",
+  // relight-self-learning-edges-2026-06-14 (P-033): the `memory-precision`
+  // learning singleton — a WEEKLY bench that replays the frozen gold set against
+  // the production hybrid backend AT THE PUSH FLOOR and records FP@5 / R@10 /
+  // precision to harness_shared.memory_precision_bench, so the Learning tab
+  // MONITORS the injection floor (solved/optimal, D-007) instead of trusting a
+  // one-time benchmark. Flag-only (no governor, like change-ledger): cheap
+  // (~$0.05 embeddings/run, no LLM); ON by default so the monitoring panel has
+  // data. OFF cuts the bench (and the precision chips degrade to "—").
+  MEMORY_PRECISION_BENCH: "papercusp-memory-precision-bench",
   // self-learning-frontier-2026-06-12 (P-031 / FB-20): Red Queen vaccination —
   // `system:red-queen-drill` plants origin=drill synthetic frictions in the
   // SANDBOX workspace ('red-queen-sandbox'), detects them with a real watchdog
@@ -980,6 +989,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // owner-set per-cycle governor budget on loop `calibration-markets` +
   // activating the seeded-inactive routine are the P-001 arming acts.
   [FLAGS.CALIBRATION_MARKETS]: false,
+  // ON by default (NOT a dark frontier loop): memory-precision monitoring is a
+  // cheap (~$0.05 embeddings/run, no LLM), read-only WEEKLY measurement of an
+  // already-solved floor (D-007) — finished monitoring, not incomplete/unsafe
+  // work, so it ships enabled. The @singleton routine row is materialized by the
+  // seed CLI post-deploy (singletonActive:true → seeds ACTIVE).
+  [FLAGS.MEMORY_PRECISION_BENCH]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the Red
   // Queen plants synthetic frictions and files origin=drill captures (new
   // capture volume, even though the drill lane never reaches organic

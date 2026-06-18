@@ -794,4 +794,35 @@ body.has-left-sidebar .pc-header {
 .pc-mt__badge--on { color: #c7d2fe; border-color: rgba(99, 102, 241, 0.5); background: rgba(99, 102, 241, 0.14); }
 .pc-mt__reset { flex-shrink: 0; font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 5px; cursor: pointer; color: var(--fg-dim, #b9d4e8); background: var(--bg-3, rgba(255, 255, 255, 0.05)); border: 1px solid var(--border, rgba(125, 211, 252, 0.22)); }
 .pc-mt__reset:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
+
+/* ThrottleSection + AutonomySurfacing (queen-steering-panel P-007 / P-009) */
+.pc-queen__collapse { display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; background: none; border: none; cursor: pointer; text-align: left; color: inherit; font: inherit; }
+.pc-queen__collapse svg { color: var(--fg-mute, #7f9bb4); flex-shrink: 0; }
+.pc-queen__collapse:hover .pc-queen__section-title { color: var(--fg, #e7f7ff); }
+.pc-queen__collapse:focus-visible { outline: 1px solid var(--queen-accent); outline-offset: 2px; border-radius: 5px; }
+.pc-queen__count--on { color: #fcd34d; font-weight: 700; }
+.pc-queen__chip--on { color: var(--fg, #e7f7ff); background: color-mix(in srgb, var(--queen-accent), transparent 82%); border-color: color-mix(in srgb, var(--queen-accent), transparent 46%); }
+.pc-queen__knobs { display: flex; flex-direction: column; gap: 9px; }
+.pc-queen__knob { display: flex; flex-direction: column; gap: 5px; }
+.pc-queen__knobhead { display: flex; align-items: center; gap: 6px; }
+.pc-queen__knobhead svg { color: var(--fg-mute, #7f9bb4); flex-shrink: 0; }
+.pc-queen__knoblabel { font-size: 11px; font-weight: 700; color: var(--fg, #e7f7ff); }
+.pc-queen__knobbadge { margin-left: auto; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 999px; color: var(--fg-mute, #7f9bb4); border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); }
+.pc-queen__knobbadge--on { color: #fcd34d; border-color: color-mix(in srgb, var(--queen-accent), transparent 50%); background: color-mix(in srgb, var(--queen-accent), transparent 88%); }
+.pc-queen__knobrow { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.pc-queen__num { width: 62px; font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 5px; color: var(--fg, #e7f7ff); background: var(--bg, #07101d); border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.3)); }
+.pc-queen__num:focus { outline: none; border-color: color-mix(in srgb, var(--queen-accent), transparent 35%); }
+.pc-queen__num:disabled { opacity: 0.6; }
+.pc-queen__select { width: 100%; font: inherit; font-size: 11.5px; padding: 5px 7px; border-radius: 6px; color: var(--fg, #e7f7ff); background: var(--bg, #07101d); border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.3)); cursor: pointer; }
+.pc-queen__select:focus { outline: none; border-color: color-mix(in srgb, var(--queen-accent), transparent 35%); }
+.pc-queen__select:disabled { opacity: 0.6; cursor: default; }
+.pc-queen__toggles { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.pc-queen__toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--fg, #e7f7ff); cursor: pointer; }
+.pc-queen__toggle--off { color: var(--fg-mute, #7f9bb4); }
+.pc-queen__seg { display: flex; flex-wrap: wrap; gap: 4px; }
+.pc-queen__catlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 168px; overflow-y: auto; }
+.pc-queen__cat { display: flex; align-items: center; gap: 7px; padding: 3px 7px; border-radius: 6px; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border, rgba(125, 211, 252, 0.1)); }
+.pc-queen__cat--more { justify-content: center; color: var(--fg-mute, #7f9bb4); font-size: 10px; background: none; border: none; }
+.pc-queen__catlabel { flex: 1; min-width: 0; font-size: 11px; color: var(--fg-dim, #b9d4e8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-queen__catceil { flex-shrink: 0; font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 1px 6px; border-radius: 999px; color: var(--accent-soft, #7dd3fc); border: 1px solid color-mix(in srgb, var(--accent), transparent 60%); }
 `;

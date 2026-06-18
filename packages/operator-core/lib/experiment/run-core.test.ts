@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BASELINE_ID, resetTestRegistry } from '@papercusp/eval-battery';
+import { BASELINE_ID, registerTest, resetTestRegistry } from '@papercusp/eval-battery';
 import type { ReplayBatteryResult } from '../replay/battery';
-import { _resetExperimentRegistration } from './descriptors';
+import { _resetExperimentRegistration, registerExperimentDescriptors } from './descriptors';
 import { runExperiment, type RunExperimentDeps, type RunExperimentInput } from './run-core';
 import type { ExperimentLedger, ExperimentLedgerRow } from './ledger';
 
@@ -111,16 +111,119 @@ describe('runExperiment', () => {
     expect(d.runGovernedReplay).not.toHaveBeenCalled();
   });
 
-  it('refuses a non-offline (staged) test with a clear message', async () => {
-    const out = await runExperiment(input({ testId: 'gym' }), { workspaceId: 'ws' }, deps());
-    expect(out.ok).toBe(false);
-    expect(out.error).toMatch(/not yet executable/);
-  });
-
   it('refuses an unknown test id', async () => {
     const out = await runExperiment(input({ testId: 'nope' }), { workspaceId: 'ws' }, deps());
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/unknown test descriptor: nope/);
+  });
+});
+
+describe('runExperiment tier default + escalation discipline (P-040/P-041)', () => {
+  beforeEach(() => {
+    resetTestRegistry();
+    _resetExperimentRegistration();
+  });
+
+  it('P-040: naming a live testId without tier:"live" refuses (offline is the default front door)', async () => {
+    const d = deps();
+    const out = await runExperiment(input({ testId: 'gym' }), { workspaceId: 'ws' }, d);
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/default front door|runs at the live tier/);
+    // never reached the substrate
+    expect(d.runGovernedReplay).not.toHaveBeenCalled();
+  });
+
+  it('P-040: replay with the default tier (offline) runs normally', async () => {
+    const out = await runExperiment(input(), { workspaceId: 'ws' }, deps());
+    expect(out.ok).toBe(true);
+    expect(out.result?.tier).toBe('offline');
+  });
+
+  it('P-041: a live tier with NO escalation justification is refused before any spend', async () => {
+    const governorPreflight = vi.fn(async () => ({ allow: true, remainingUsd: null }));
+    const out = await runExperiment(input({ testId: 'gym', tier: 'live' }), { workspaceId: 'ws' }, deps({ governorPreflight }));
+    expect(out.ok).toBe(false);
+    expect(out.refused?.reason).toMatch(/positive offline signal|couldn.t-isolate/i);
+    expect(governorPreflight).not.toHaveBeenCalled(); // escalation gate is upstream of the governor
+  });
+
+  it('P-041: a live tier WITH a couldn’t-isolate trigger passes the escalation gate, then hits the governor', async () => {
+    const governorPreflight = vi.fn(async () => ({ allow: false, reason: 'governor-unbudgeted', remainingUsd: 0 }));
+    const out = await runExperiment(
+      input({ testId: 'gym', tier: 'live', escalation: { couldntIsolate: 'the overlay only bites under real multi-agent contention' } }),
+      { workspaceId: 'ws' },
+      deps({ governorPreflight }),
+    );
+    expect(governorPreflight).toHaveBeenCalledWith({ workspaceId: 'ws', loopId: 'experiment:gym' });
+    expect(out.ok).toBe(false);
+    expect(out.refused?.reason).toBe('governor-unbudgeted');
+  });
+
+  it('P-041: whole-instance requires a cost-exception ack even with a signal', async () => {
+    const governorPreflight = vi.fn(async () => ({ allow: true, remainingUsd: null }));
+    const out = await runExperiment(
+      // a genome arm — within the instance ['genome','model'] slice (an overlay arm would
+      // fail the slice check upstream of the escalation gate).
+      input({ testId: 'instance', tier: 'live', arms: [{ id: 'cand', knobs: { 'genome.config.wake.minSleepSec': 90 } }], escalation: { offlineSignalRunId: 'run_1' } }),
+      { workspaceId: 'ws' },
+      deps({ governorPreflight }),
+    );
+    expect(out.ok).toBe(false);
+    expect(out.refused?.reason).toMatch(/gated cost-exception/i);
+    expect(governorPreflight).not.toHaveBeenCalled();
+  });
+
+  it('P-063: a fully-justified + budgeted live run reaches the descriptor (gym staged-refuses without abDeps)', async () => {
+    const governorPreflight = vi.fn(async () => ({ allow: true, remainingUsd: null }));
+    const out = await runExperiment(
+      input({ testId: 'gym', tier: 'live', payload: { tasks: [], deriveOpts: {} }, escalation: { couldntIsolate: 'needs the real coding pipeline to manifest' } }),
+      { workspaceId: 'ws' },
+      deps({ governorPreflight }),
+    );
+    // routed past tier + escalation + governor → descriptor.run, which refuses (no live abDeps).
+    expect(governorPreflight).toHaveBeenCalled();
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/STAGED/);
+  });
+
+  it('P-063: a live run delegates to the descriptor + writes the ledger when the runner returns a result', async () => {
+    // Register a fake LIVE descriptor that returns a canned normalized result — proving
+    // run-core routes a justified+budgeted live run through descriptor.run + the ledger.
+    registerExperimentDescriptors();
+    registerTest({
+      id: 'fakelive',
+      summary: 'fake live test',
+      kind: 'component',
+      fidelityTier: 'live',
+      costClass: 'high',
+      knobSlice: ['overlay'],
+      metrics: { signals: [], rubricDimensions: [] },
+      async run() {
+        return {
+          testId: 'fakelive',
+          tier: 'live',
+          baselineId: BASELINE_ID,
+          arms: [{ id: BASELINE_ID, label: 'baseline', meanScore: 5, cells: 1, scored: 1, costUsd: 0.2 }],
+          comparison: null,
+          winner: null,
+          totalCostUsd: 0.2,
+          budgetExhausted: false,
+        };
+      },
+    });
+    const rows: ExperimentLedgerRow[] = [];
+    const ledger: ExperimentLedger = { record: async (r) => void rows.push(r) };
+    const governorPreflight = vi.fn(async () => ({ allow: true, remainingUsd: 10 }));
+    const out = await runExperiment(
+      input({ testId: 'fakelive', tier: 'live', escalation: { offlineSignalRunId: 'run_offline_1' }, arms: [{ id: 'cand', knobs: { 'overlay.role': 'x' } }] }),
+      { workspaceId: 'ws' },
+      deps({ governorPreflight, ledger }),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.result?.testId).toBe('fakelive');
+    expect(out.result?.tier).toBe('live');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ testId: 'fakelive', tier: 'live', totalCostUsd: 0.2 });
   });
 });
 

@@ -21,6 +21,7 @@ import {
   loadBlueprintFromFile,
   type Blueprint,
 } from '@papercusp/orchestrator/blueprint';
+import { blueprintRegistrySets } from './registry-sets.js';
 
 export interface ProjectBlueprintInput {
   workspaceId: string;
@@ -119,7 +120,11 @@ export async function getEffectiveBlueprint(
   const cached = await readBlueprintFromPg(sql, opts.workspaceId, opts.harnessSlug);
   if (cached) return cached;
   if (!opts.blueprintPath || !existsSync(opts.blueprintPath)) return null;
-  const loaded = loadBlueprintFromFile(opts.blueprintPath);
+  // P-001: validate ops/roles against the live registries at the PG-projection
+  // chokepoint — the point a blueprint is admitted to the durable pipeline — so an
+  // unregistered op is rejected here, not surfaced as a `requireCoordOp` throw mid
+  // `coordProgramWorkflow`.
+  const loaded = loadBlueprintFromFile(opts.blueprintPath, undefined, blueprintRegistrySets());
   await projectBlueprintToPg(sql, {
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,

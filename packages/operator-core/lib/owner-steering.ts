@@ -360,6 +360,34 @@ export function isAutoScaleOutEnabled(s: OwnerSteering): boolean {
   return s.autoScaleOut !== false;
 }
 
+/**
+ * Resolve whether an idle background activity (gym / Scout / curation) may run for a
+ * workspace's home hive — the single gate the idle-activity seams call (P-006, D-005).
+ * Resolves the home hive (the slug the owner steers on the 👑 tab) unless one is
+ * passed, then checks the toggle. Fail-soft / un-steered / no home hive ⇒ ON
+ * (today's behaviour). Async + a dynamic import of resolveHiveHomeSlug so this leaf
+ * module keeps no static edge to the hive layer.
+ */
+export async function idleActivityAllowed(
+  workspaceId: string,
+  kind: IdleActivityKind,
+  hiveHomeSlug?: string,
+  sql?: Sql,
+): Promise<boolean> {
+  try {
+    let home = hiveHomeSlug?.trim() || null;
+    if (!home) {
+      const { resolveHiveHomeSlug } = await import('./hive/wake');
+      home = resolveHiveHomeSlug();
+    }
+    if (!home) return true;
+    const s = await getOwnerSteering(workspaceId, home, sql);
+    return idleActivityEnabled(s, kind);
+  } catch {
+    return true;
+  }
+}
+
 /** True when ANY throttle knob is set away from its default — drives whether the
  *  wake brief renders a throttle section (P-006) and the resolver/UI "overriding"
  *  badge. Model-tier overrides count (they're surfaced as a throttle knob too). */

@@ -23,6 +23,11 @@ import {
   isPausedNow,
   DEFAULT_OWNER_STEERING,
   OWNER_STEERING_KEYS,
+  effectiveCadenceFloorSec,
+  effectiveMaxBees,
+  idleActivityEnabled,
+  isAutoScaleOutEnabled,
+  hasActiveThrottle,
   type OwnerSteering,
 } from './owner-steering';
 
@@ -60,6 +65,11 @@ describe('getOwnerSteering — decode + defaults', () => {
       pausedUntil: 1_900_000_000_000,
       modelTiers: null,
       tierCeilings: null,
+      cadenceFloorSec: null,
+      maxBees: null,
+      idleActivities: null,
+      autoScaleOut: null,
+      decomposition: null,
     } satisfies OwnerSteering);
   });
 

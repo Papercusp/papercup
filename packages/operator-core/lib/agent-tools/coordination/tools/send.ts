@@ -32,10 +32,8 @@ export default defineTool({
     // 1 element(s)" zod default on these two required fields.
     to: z
       .array(z.string().min(1), {
-        required_error:
+        error:
           'coord:send needs `to`: an array of recipient ownerIds — ["*"] broadcasts, ["human"] surfaces to the user. Look up a full ownerId via coord:presence.',
-        invalid_type_error:
-          '`to` must be an array of recipient ownerId strings (e.g. ["su-1234…"], or ["*"] to broadcast).',
       })
       .min(
         1,
@@ -43,7 +41,7 @@ export default defineTool({
       ),
     summary: z
       .string({
-        required_error:
+        error:
           'coord:send needs `summary`: a one-line headline of the message (what the recipient sees in their inbox).',
       })
       .min(1, '`summary` must be a non-empty one-line headline.'),

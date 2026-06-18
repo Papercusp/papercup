@@ -682,6 +682,12 @@ import '../rationale/rules';
 // from the ONE server-twin source instead of duplicating the packs.
 import './lexicon/active_pack';
 
+// storage:* (storage-settings-page-2026-06-15 P-003) — live storage usage by
+// category + the safe prune-by-category-and-age executor behind the Settings →
+// Storage page (federated categories refused; default keep-all).
+import './storage/usage';
+import './storage/prune';
+
 // autoloop-pot-operator-rebuild-2026-06-05 P0 — re-project the Pot's persisted
 // event-wake subscriptions (harness_shared.pot_wake) into live reaction rules.
 // The registry is in-memory, so this runs on every host boot. Loaded after

@@ -362,6 +362,11 @@ export interface ScaleObserverDeps {
   updatePool: (mutator: (pool: AccountPool) => AccountPool, ws: string) => Promise<AccountPool>;
   scaleOut: (accountId: string, ws: string) => Promise<ScaleOutResult>;
   emitExhausted: (accountId: string, pausedUntil: number) => void;
+  /** Owner auto-scale-out toggle gate (queen-steering-panel P-006): false ⇒ the
+   *  owner has disabled automatic scale-out on the 👑 tab for the home hive, so an
+   *  exhausted account is NOT auto-scaled (manual accounts:scale_out still works).
+   *  Default reads owner-steering fail-soft → true (enabled). */
+  autoScaleOutAllowed: (ws: string) => Promise<boolean>;
   log: (level: LogLevel, msg: string) => void;
 }
 
@@ -401,6 +406,21 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
   const updatePool = deps.updatePool ?? updateAccountPool;
   const scaleOut = deps.scaleOut ?? ((id, ws) => handleAccountExhausted(id, ws, defaultScaleOutDeps(log)));
   const emitExhausted = deps.emitExhausted ?? defaultEmitExhausted;
+  // Owner auto-scale-out toggle (queen-steering-panel P-006). Fail-soft → enabled.
+  const autoScaleOutAllowed =
+    deps.autoScaleOutAllowed ??
+    (async (ws: string): Promise<boolean> => {
+      try {
+        const [{ getOwnerSteering, isAutoScaleOutEnabled }, { resolveHiveHomeSlug }] = await Promise.all([
+          import('../owner-steering'),
+          import('../hive/wake'),
+        ]);
+        const home = resolveHiveHomeSlug();
+        return home ? isAutoScaleOutEnabled(await getOwnerSteering(ws, home)) : true;
+      } catch {
+        return true;
+      }
+    });
 
   observerUnsub = onGovernorPause((ev) => {
     const { accountId } = parseGovernorKey(ev.key);
@@ -415,7 +435,16 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
         );
         const acct = getAccount(pool, accountId);
         if (!acct || !isSustainedlyLimited(acct, t)) return; // not exhausted (yet) — just pausing
-        emitExhausted(accountId, ev.pausedUntil);
+        emitExhausted(accountId, ev.pausedUntil); // observability fires regardless of the toggle
+        // Owner auto-scale-out toggle (queen-steering-panel P-006): when disabled, the
+        // account is left paused (no auto-deploy); manual accounts:scale_out still works.
+        if (!(await autoScaleOutAllowed(ws))) {
+          log(
+            'info',
+            `'${accountId}' sustainedly limited but auto-scale-out is DISABLED by owner steering — not scaling (manual accounts:scale_out still works)`,
+          );
+          return;
+        }
         const r = await scaleOut(accountId, ws);
         if (r.scaledOut) {
           log('info', `auto-scaled '${accountId}' → '${r.account}' (${r.members.length} member(s))`);

@@ -279,6 +279,11 @@ export async function executeBatch(opts: {
 
   const ownerId = actor.ownerId ?? '';
   const parentSpawnId = /^s-/.test(ownerId) ? ownerId : null;
+  // bee-context-efficiency P-005: when on, a warm-inject of a DRAINED bee carries a
+  // marker so the wake-executor re-routes it to a FRESH spawn (fresh session + dossier
+  // + checkpoint) instead of `--resume`-ing the grown transcript (D-018/D-021). Read
+  // once per batch; flag-off ⇒ no marker, the wake is byte-identical to today.
+  const freshContextOn = await getFlag(FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT, 'system').catch(() => false);
   let extraSpawnBudget = Math.max(0, headroom - plan.spawnCount);
   let awaitEvent: string | null = null;
   const placements: PlacementResult[] = [];
@@ -342,7 +347,17 @@ export async function executeBatch(opts: {
         mergeBrief(d.task.brief, brief) ??
         `Queen placement — ${d.task.id} ("${d.task.title}") is on your work-list at head-of-line (${d.affinity?.reasons.join(', ') || 'context affinity'}). Claim_next / work it next.`;
       await sendMessage(actor, { to: [bee], summary, body, extra: { wake: true } });
-      const fan = await wakeRecipients([bee], { summary, source: ownerId, workspaceId });
+      const fan = await wakeRecipients([bee], {
+        summary,
+        source: ownerId,
+        workspaceId,
+        // P-005: stamp the fresh-context new-task marker so the wake-executor re-routes
+        // a drained bee to a fresh spawn (the marker only exists when the flag is on +
+        // the task has a concrete harness; flag-off ⇒ no payload, no behavior change).
+        ...(freshContextOn && harness
+          ? { payload: { freshContextWorkItem: d.task.id, freshContextHarness: harness, freshContextBrief: body } }
+          : {}),
+      });
       if (fan.woken === 0) {
         // No armed wake — don't strand the item on a dead/asleep bee. Release it
         // and climb the ladder: a fresh spawn if a slot is free, else queue back.

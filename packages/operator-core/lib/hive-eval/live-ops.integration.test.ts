@@ -151,4 +151,38 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
       queenWakesWithTurns: 0,
     });
   });
+
+  it('readBeeEkg: aggregates role=bee usage by session scoped to the member, deriving the warm-inject carry (P-015)', async () => {
+    const member = 'heval-beeff1';
+    // sessA = a warm-inject session (2 wakes: spawn + 1 warm-inject); sessB = a single-task session.
+    // Excluded: a worker row (wrong role), an other-member bee row (wrong harness), a NULL-session bee
+    // row (un-attributable — the SELECT filters session_id IS NOT NULL).
+    await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, role, harness_slug, run_id, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count) VALUES
+      (${ws}, 100, 'bee', ${member}, 'r1', 'sessA', 1000, 500, 100000, 5000, 0.50, 4),
+      (${ws}, 200, 'bee', ${member}, 'r2', 'sessA',  200, 300, 130000, 1000, 0.30, 6),
+      (${ws}, 150, 'bee', ${member}, 'r3', 'sessB', 2000, 400,  80000, 8000, 0.40, 5),
+      (${ws}, 150, 'worker', ${member}, 'r4', 'sessW', 9999, 9999, 9999, 9999, 9.99, 9),
+      (${ws}, 150, 'bee', 'other-member', 'r5', 'sessY', 7777, 7777, 7777, 7777, 7.77, 7),
+      (${ws}, 160, 'bee', ${member}, 'r6', NULL, 3333, 3333, 3333, 3333, 3.33, 3)`;
+    const ekg = await readBeeEkg(sql, { workspaceId: ws, member });
+    // carry = cache_read on the NON-FIRST wake of each session: only sessA's second wake (130000).
+    expect(ekg.beeCarriedReadTokens).toBe(130000);
+    expect(ekg.beeCacheReadTokens).toBe(310000); // 100000 + 130000 + 80000
+    expect(ekg.beeCacheCreationTokens).toBe(14000); // 5000 + 1000 + 8000
+    expect(ekg.beeInputTokens).toBe(3200); // 1000 + 200 + 2000
+    // warm-injects = totalWakes(3) − sessions(2) = 1 (sessA's single warm-inject). The score gate.
+    expect(ekg.beeWarmInjects).toBe(1);
+  });
+
+  it('readBeeEkg: a member with no bee wakes reads all-zero (conservative floor)', async () => {
+    const ekg = await readBeeEkg(sql, { workspaceId: ws, member: 'heval-nobee' });
+    expect(ekg).toEqual({
+      beeCarriedReadTokens: 0,
+      beeCacheReadTokens: 0,
+      beeCacheCreationTokens: 0,
+      beeInputTokens: 0,
+      beeWarmInjects: 0,
+    });
+  });
 });

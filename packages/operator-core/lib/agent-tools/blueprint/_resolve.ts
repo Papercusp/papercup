@@ -21,6 +21,7 @@ import {
   type ResolveExtendsPath,
 } from '@papercusp/orchestrator/blueprint';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
+import { blueprintRegistrySets } from '../../blueprint/registry-sets';
 
 export interface ResolveResult {
   ok: boolean;
@@ -68,6 +69,10 @@ export function resolveAndValidate(
   } catch (e) {
     return { ok: false, parseError: `schema validation failed: ${e instanceof Error ? e.message : String(e)}` };
   }
-  const validation = validateBlueprint(blueprint);
+  // P-001: enforce the op/role liveness contract at authoring time — a
+  // `blueprint:validate`/`blueprint:extend` over a deterministic program that
+  // names an unregistered op now returns a clear `unknown-op` error instead of
+  // passing here and throwing later at run time.
+  const validation = validateBlueprint(blueprint, blueprintRegistrySets());
   return { ok: validation.ok, blueprint, validation };
 }

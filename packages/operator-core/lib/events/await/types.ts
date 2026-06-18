@@ -82,6 +82,10 @@ export type WakeChannel =
   // The Hive Queen is never resumed — her ended-session wake fires a FRESH hive
   // launch (queen-brief-cache-assembly B-01 / P-012). Burns a turn like a resume.
   | 'hive-fresh-wake'
+  // A drained bee warm-injected a NEW work-item is re-routed to a FRESH spawn instead
+  // of `--resume`-ing its grown transcript (bee-context-efficiency P-005 / D-018/D-021).
+  // Like hive-fresh-wake, it burns a turn (a fresh bee runs the task).
+  | 'fresh-context-warm-inject'
   | 'plan-run-resume'
   | 'inbox'
   | 'coalesced';

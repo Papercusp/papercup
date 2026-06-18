@@ -131,10 +131,19 @@ function reinjectWindowMs(): number {
  * R@10 ~82%). Note: FP cannot reach ~0% — the bench's hard-negatives genuinely
  * overlap real hits in embedding space. Env-tunable; `<= 0` disables.
  */
+/**
+ * The production PUSH-path floors (LOCKED by the P-031 2D sweep, D-006). Exported
+ * so the memory-precision-bench monitor (relight P-033) measures at the EXACT
+ * production floor — a single source of truth, not a copied magic number. The
+ * `injectMin*` readers below default to these (env-overridable).
+ */
+export const MEMORY_INJECTION_COSINE_FLOOR = 0.45;
+export const MEMORY_INJECTION_LEX_FLOOR = 0.4;
+
 function injectMinScore(): number | undefined {
   const raw = Number(process.env.PAPERCUSP_MEMORY_MIN_SCORE);
   if (Number.isFinite(raw)) return raw > 0 ? raw : undefined;
-  return 0.45;
+  return MEMORY_INJECTION_COSINE_FLOOR;
 }
 
 /**
@@ -147,7 +156,7 @@ function injectMinScore(): number | undefined {
 function injectMinLexScore(): number | undefined {
   const raw = Number(process.env.PAPERCUSP_MEMORY_MIN_LEX_SCORE);
   if (Number.isFinite(raw)) return raw >= 0 ? raw : undefined;
-  return 0.4;
+  return MEMORY_INJECTION_LEX_FLOOR;
 }
 
 /**

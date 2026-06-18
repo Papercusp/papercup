@@ -38,6 +38,11 @@ import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-schedule
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
+import {
+  freshContextWarmInjectTarget,
+  runFreshContextWarmInject,
+  type FreshContextDeps,
+} from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { findLiveHost, injectIntoHost } from './psu-pty-discovery';
 import type { DeliveryWork, WakeOutcome } from './types';
@@ -237,14 +242,15 @@ async function defaultFireHiveWake(input: { installSlug: string; kickoff: string
   try {
     const { activeWorkspaceId } = await import('../../workspace-registry');
     const { fireLaunchBlueprint } = await import('../../blueprint/launch-blueprint');
-    const { HIVE_BLUEPRINT_ID, readHiveWakeState, recordHiveWake, withinWakeFloor } = await import(
-      '../../hive/wake'
-    );
+    const { HIVE_BLUEPRINT_ID, readHiveWakeState, recordHiveWake, withinWakeFloor, effectiveHiveWakeFloorSec } =
+      await import('../../hive/wake');
     const workspaceId = activeWorkspaceId();
     const state = await readHiveWakeState(workspaceId);
     // A fresh wake within the floor window already covers this delivery — the
     // just-launched (or about-to-survey) Queen will see the same durable state.
-    if (withinWakeFloor(state)) return true;
+    // Honour the owner's raised wake-cadence floor (queen-steering-panel P-006).
+    const floorSec = await effectiveHiveWakeFloorSec(workspaceId, input.installSlug);
+    if (withinWakeFloor(state, Date.now(), floorSec)) return true;
     await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug: input.installSlug, workspaceId, kickoff: input.kickoff });
     await recordHiveWake(workspaceId);
     return true;
@@ -293,6 +299,10 @@ export interface ExecuteWakeDeps {
    *  resuming a hive-operator session. Injected for tests; default fires the
    *  hive blueprint with the wake text as kickoff. */
   fireHiveWake?: (input: { installSlug: string; kickoff: string }) => Promise<boolean>;
+  /** bee-context-efficiency P-005: the fresh-context warm-inject fork seam (flag
+   *  gate + fresh-bee spawn + stale-claim release). Injected for tests; defaults to
+   *  the real bindings (flag OFF ⇒ never fires, legacy `--resume` carry preserved). */
+  freshContext?: FreshContextDeps;
 }
 
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
@@ -422,6 +432,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const fired = await fireHiveWake({ installSlug: hiveInstallSlug, kickoff: text }).catch(() => false);
       if (fired) return { kind: 'delivered', channel: 'hive-fresh-wake' };
       return { kind: 'park', reason: 'hive operator: fresh-wake fire failed; next time/watchdog wake will re-survey (never resumed)' };
+    }
+
+    // bee-context-efficiency P-005 (D-018/D-021): fresh-context warm-inject. We only
+    // reach here for an EXITED process (a live session PARKs above, D-005 — within-task
+    // is never forked). If this wake is a Queen warm-inject of a NEW work-item AND the
+    // BEE_FRESH_CONTEXT_WARM_INJECT flag is on, the legacy `--resume` below would reload
+    // the bee's grown transcript (~138K/turn dead-weight carry, D-011). Instead route to
+    // a FRESH spawn for that work-item (fresh session + full preamble + the hydration
+    // tail: dossier P-008 + the work-item CHECKPOINT P-011 = the continuity, D-002). The
+    // marker payload is stamped by place_batch ONLY when the flag is on, so flag-off is
+    // byte-identical to today (the carry-seam oracle). Fail-soft: false ⇒ legacy resume.
+    const freshTarget = freshContextWarmInjectTarget(d);
+    if (freshTarget) {
+      const forked = await runFreshContextWarmInject(d, freshTarget, deps.freshContext, (m) =>
+        console.log(`[wake-executor:fresh-context] ${m}`),
+      );
+      if (forked) return { kind: 'delivered', channel: 'fresh-context-warm-inject' };
+      // else fall through to the legacy resume below (fail-soft).
     }
 
     // Channel 2: process gone → resume.

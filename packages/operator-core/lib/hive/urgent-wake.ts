@@ -33,8 +33,8 @@ import {
   HIVE_BLUEPRINT_ID,
   clampWakeAt,
   declareHiveTimeWake,
+  effectiveHiveWakeFloorSec,
   getHiveTimeWake,
-  hiveWakeFloorSec,
   readHiveWakeState,
   recordHiveWake,
   resolveHiveHomeSlug,
@@ -74,8 +74,13 @@ export async function requestUrgentHiveWake(opts: {
   const kickoff = `Wake (urgent): ${opts.reason}. You are the operator in charge; survey the fleet and figure out what to do — an URGENT item just landed.`;
 
   try {
+    // Owner cadence-floor (queen-steering-panel P-006): resolve the EFFECTIVE floor
+    // ONCE (MAX of system + the owner's wake-cadence knob) and thread it through the
+    // debounce + coalesce so an urgent wake also honours the owner's slower cadence
+    // (a burst still collapses to one wake at the owner-raised boundary).
+    const floorSec = await effectiveHiveWakeFloorSec(workspaceId, installSlug);
     const state = await readHiveWakeState(workspaceId);
-    if (!withinWakeFloor(state, now)) {
+    if (!withinWakeFloor(state, now, floorSec)) {
       await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug, workspaceId, kickoff });
       await recordHiveWake(workspaceId);
       return { fired: true, coalesced: false };
@@ -84,8 +89,8 @@ export async function requestUrgentHiveWake(opts: {
     // Inside the floor: coalesce. The boundary is lastWake + floor; the declare
     // clamp (≥ now + floor) may nudge it slightly later — still bounded by one
     // floor from NOW, which is the guarantee that matters.
-    const boundary = new Date((state.lastWakeAt ?? now) + hiveWakeFloorSec() * 1_000);
-    const target = clampWakeAt(boundary, new Date(now)).at;
+    const boundary = new Date((state.lastWakeAt ?? now) + floorSec * 1_000);
+    const target = clampWakeAt(boundary, new Date(now), floorSec).at;
     const { sql } = getOrgPg();
     const cur = await getHiveTimeWake(sql, installSlug);
     if (cur?.active && cur.nextFireAt && cur.nextFireAt.getTime() <= target.getTime()) {
@@ -103,6 +108,7 @@ export async function requestUrgentHiveWake(opts: {
       at: target,
       kickoff,
       now: new Date(now),
+      floorSec,
     });
     return { fired: false, coalesced: true, at: at.toISOString() };
   } catch (e) {

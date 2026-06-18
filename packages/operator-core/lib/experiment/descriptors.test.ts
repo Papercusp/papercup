@@ -199,9 +199,31 @@ describe('staged live-tier descriptors', () => {
     await expect(gymDescriptor().run(request, fakeCtx())).rejects.toThrow(/STAGED until the owner arms it/);
   });
 
-  it('instance + hive remain staged-metadata in v1', async () => {
+  it('instance + hive stay STAGED as the gated cost-exception (no spend), pointing at their ctx dep slot (P-063)', async () => {
     const request: ExperimentRequest = { batteryId: 'b1', arms: [], repeats: 1, payload: {} };
-    await expect(instanceDescriptor().run(request, fakeCtx())).rejects.toThrow(/not yet executable in v1/);
-    await expect(hiveDescriptor().run(request, fakeCtx())).rejects.toThrow(/not yet executable in v1/);
+    await expect(instanceDescriptor().run(request, fakeCtx())).rejects.toThrow(/gated cost-exception/);
+    await expect(instanceDescriptor().run(request, fakeCtx())).rejects.toThrow(/ctx\.instance\.deps/);
+    await expect(hiveDescriptor().run(request, fakeCtx())).rejects.toThrow(/gated cost-exception/);
+    await expect(hiveDescriptor().run(request, fakeCtx())).rejects.toThrow(/ctx\.hive\.ports/);
+  });
+
+  it('instance/hive validate the genome+model slice + partition before refusing (P-063)', async () => {
+    // an out-of-slice knob (overlay.* is not in their ['genome','model'] slice) → slice error
+    const badSlice: ExperimentRequest = { batteryId: 'b1', arms: [{ id: 'bad', knobs: { 'overlay.queen': 'x' } }], repeats: 1, payload: {} };
+    await expect(instanceDescriptor().run(badSlice, fakeCtx())).rejects.toThrow(/outside its slice/);
+
+    // a safety-excluded knob → safety error (defense in depth)
+    const evil: ExperimentRequest = { batteryId: 'b1', arms: [{ id: 'evil', knobs: { 'budget.cap': 0 } }], repeats: 1, payload: {} };
+    await expect(hiveDescriptor().run(evil, fakeCtx())).rejects.toThrow(/safety-excluded/);
+
+    // a VALID genome+model arm partitions cleanly → falls through to the staged refusal,
+    // proving the genome.* delta + model.<role> axis are accepted for these tiers.
+    const good: ExperimentRequest = {
+      batteryId: 'b1',
+      arms: [{ id: 'g', knobs: { 'genome.config.wake.minSleepSec': 90, 'model.queen': 'claude-opus-4-8' } }],
+      repeats: 1,
+      payload: {},
+    };
+    await expect(instanceDescriptor().run(good, fakeCtx())).rejects.toThrow(/gated cost-exception/);
   });
 });
