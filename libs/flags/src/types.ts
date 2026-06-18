@@ -269,6 +269,14 @@ export const FLAGS = {
   // refuses EVERYTHING with 'governor-dark' and the mirrors no-op — the
   // kill-switch.
   LEARNING_GOVERNOR: "papercusp-learning-governor",
+  // operator-scalability-event-loop-2026-06-16 P5-2: kill-switch for the
+  // loop-pressure concurrency governor (startLoopPressureGovernor). ON: the fleet
+  // sheds effective agent concurrency when THIS box's event loop is critically
+  // saturated (AIMD multiplicative-decrease), recovering as it clears. OFF: the
+  // governor never starts — concurrency follows only the user's cap + 429 AIMD.
+  // Safe always-on (bounded under the user's cap, self-recovering); the flag is the
+  // operator's escape hatch.
+  LOOP_PRESSURE_GOVERNOR: "papercusp-loop-pressure-governor",
   // self-learning-frontier-2026-06-12 (P-020 / FB-06): the replay harness —
   // re-run an agent from a historical transcript point (or synthetic context)
   // under a modified prompt/policy and judge the divergence; the substrate for
@@ -1039,6 +1047,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (⇒ refused by THIS gate) until the P-001 arming act. OFF is the
   // kill-switch (mirrors no-op; preflight refuses 'governor-dark').
   [FLAGS.LEARNING_GOVERNOR]: true,
+  // ON by default (alpha flags-default-on) — finished, safe work (bounded under the
+  // user's concurrency cap, self-recovering). P5-2 kill-switch.
+  [FLAGS.LOOP_PRESSURE_GOVERNOR]: true,
   // ON by default (alpha flags-default-on policy) — queen-autonomous-execution
   // B-10 (P-041/P-045). Behavior-neutral throughput improvement (D-007): it only
   // changes what happens to a FLEET AGENT's otherwise-frozen card (route to a

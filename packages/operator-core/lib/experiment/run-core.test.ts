@@ -148,7 +148,7 @@ describe('runExperiment tier default + escalation discipline (P-040/P-041)', () 
   });
 
   it('P-041: a live tier WITH a couldn’t-isolate trigger passes the escalation gate, then hits the governor', async () => {
-    const governorPreflight = vi.fn(async () => ({ allow: false, reason: 'governor-unbudgeted', remainingUsd: 0 }));
+    const governorPreflight = vi.fn(async () => ({ allow: false, reason: 'unbudgeted' as const, remainingUsd: 0 }));
     const out = await runExperiment(
       input({ testId: 'gym', tier: 'live', escalation: { couldntIsolate: 'the overlay only bites under real multi-agent contention' } }),
       { workspaceId: 'ws' },
@@ -156,7 +156,7 @@ describe('runExperiment tier default + escalation discipline (P-040/P-041)', () 
     );
     expect(governorPreflight).toHaveBeenCalledWith({ workspaceId: 'ws', loopId: 'experiment:gym' });
     expect(out.ok).toBe(false);
-    expect(out.refused?.reason).toBe('governor-unbudgeted');
+    expect(out.refused?.reason).toBe('unbudgeted');
   });
 
   it('P-041: whole-instance requires a cost-exception ack even with a signal', async () => {

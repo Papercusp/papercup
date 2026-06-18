@@ -20,10 +20,12 @@ import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { startLoopPressureGovernor } from '@papercusp/operator-core/lib/loop-pressure-governor';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
-import { startCluster } from '@papercusp/operator-core/lib/cluster-fork';
+import { startCluster, resolveClusterWorkers } from '@papercusp/operator-core/lib/cluster-fork';
 import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
 import { isBenignHostError } from './host-benign-errors';
 
@@ -98,7 +100,10 @@ function startRequestServers(): void {
   // (above) and, when this process's event loop is CRITICALLY saturated, makes the
   // fleet shed effective agent concurrency (AIMD multiplicative-decrease), ramping
   // back as the loop clears. Bounded under the user's cap + self-recovering.
-  startLoopPressureGovernor();
+  // Gated by LOOP_PRESSURE_GOVERNOR (default ON) — the operator's kill-switch.
+  if (getFlag(FLAGS.LOOP_PRESSURE_GOVERNOR)) {
+    startLoopPressureGovernor();
+  }
 
   const server = serve({ fetch: handler, port, hostname }, (info) => {
     console.log(`[hono-host] listening on http://${hostname}:${info.port} (pid=${process.pid})`);
@@ -149,23 +154,6 @@ function startRequestServers(): void {
   }
 }
 
-/**
- * Resolve the request-worker count. DEFAULT-OFF (1 = single process). `auto`/`on`/
- * `1` ⇒ the host's recommended count (resource-profile.httpWorkers, which is 1 on a
- * laptop/workstation/embedded-PG host anyway); a number ⇒ exactly that many. This is
- * a process-MODEL boot switch (infra), not a runtime feature flag — env is the right
- * home, alongside PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_UTILITY_HOST.
- */
-function resolveClusterWorkers(): number {
-  const raw = process.env.PAPERCUSP_CLUSTER_WORKERS ?? process.env.PAPERCUSP_CLUSTER;
-  if (!raw || raw === '0' || raw === 'off' || raw === 'false') return 1;
-  if (raw === 'auto' || raw === 'on' || raw === 'true' || raw === '1') {
-    return Math.max(1, getResourceProfile().httpWorkers);
-  }
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
-}
-
 // P3-2 (operator-scalability-event-loop-2026-06-16): optional node:cluster. DEFAULT
 // OFF → single process: startCluster runs onPrimary() then onWorker() inline, and
 // runBootstrap() is idempotent (globalThis guard), so the net boot is byte-identical
@@ -178,7 +166,7 @@ function resolveClusterWorkers(): number {
 // fleet and can't multiply past max_connections (the 2026-06-17 exhaustion).
 // ENABLING is owner-gated: cross-process sync-invalidate needs the pg-listen-hub on,
 // and it should be validated under the Tauri shell / a staging restart first.
-const clusterWorkers = resolveClusterWorkers();
+const clusterWorkers = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
 if (clusterWorkers > 1) {
   // Size THIS (primary) process's pools for the fleet too; workers inherit + the
   // fork env reinforces it.

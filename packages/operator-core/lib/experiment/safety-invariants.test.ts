@@ -89,14 +89,14 @@ describe('the fidelity-tier escalation discipline gates spend (P-041)', () => {
   });
 
   it('a live tier fails CLOSED on the governor even with valid escalation (no armed budget ⇒ no spend)', async () => {
-    const governorPreflight = vi.fn(async () => ({ allow: false, reason: 'governor-unbudgeted', remainingUsd: 0 }));
+    const governorPreflight = vi.fn(async () => ({ allow: false, reason: 'unbudgeted' as const, remainingUsd: 0 }));
     const out = await runExperiment(
       { testId: 'gym', tier: 'live', batteryId: 'b', arms: [], cases: [{ caseId: 'c', context: 'x', intent: 'y' }], repeats: 1, escalation: { couldntIsolate: 'needs real pipeline contention to surface' } },
       { workspaceId: 'ws' },
       deps({ governorPreflight }),
     );
     expect(out.ok).toBe(false);
-    expect(out.refused?.reason).toBe('governor-unbudgeted');
+    expect(out.refused?.reason).toBe('unbudgeted');
   });
 });
 

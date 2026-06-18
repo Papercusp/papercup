@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import type { Sql } from 'postgres';
 import { readInsightsDir, type InsightEntry } from './insights-index';
 import { readRecallHealth, type RecallHealth } from './recall-stats';
+import type { MemoryPrecisionSnapshot } from './bench/precision-read';
 import { DOCS_CONTENT_ROOT } from '../agent-tools/docs/_repo-paths';
 
 /** Canonical agent-insights MDX directory (the same tree docs:* serves). */
@@ -75,6 +76,13 @@ export interface MemoryHealth extends RecallHealth {
   entityRows: number;
   /** memory_feedback events in the trailing 30 days — the loop's pulse. */
   feedback30d: number;
+  /**
+   * The memory-precision-bench trend (relight P-033) — latest FP@5 / R@10 /
+   * precision + a short history. Populated by the `learning.knowledge` resolver
+   * (it needs the workspace id `readMemoryHealth` doesn't take); `null`/absent
+   * when the bench has never run or migration 312 isn't applied yet.
+   */
+  precision?: MemoryPrecisionSnapshot | null;
 }
 
 /**

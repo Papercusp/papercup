@@ -241,6 +241,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // legacy `--resume`, behavior-neutral; flip ON after the P-006 live verification. (Pre-existing
   // dark flag that was missing from this allowlist — added here to green the gate.)
   FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT,
+  // bee-context-efficiency-2026-06-14 P-013 (D-007): the bee transcript-cap recycle BACKSTOP.
+  // DEFAULT OFF + the routine is seeded INACTIVE (double-gated) — an unverified bee-lifecycle
+  // change that force-recycles over-cap idle bees. OFF ⇒ a no-op (the sweep logs the over-cap
+  // cohort but recycles nothing). Bring up dry-run-first, then flip after live verification.
+  FLAGS.BEE_TRANSCRIPT_CAP,
   // workspace-data-isolation-leaks-2026-06-17 F-C1: per-workspace coordination cutover.
   // DELIBERATE dark ship (NOT alpha default-on) — flipping it cuts the LIVE fleet's
   // coordination (messages/handoffs/escalations/plan-events) over from the shared

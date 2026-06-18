@@ -69,6 +69,28 @@ export interface ClusterHandle {
   drain?: (signal?: string) => void;
 }
 
+/**
+ * Resolve the request-worker count from env + the host's recommendation. DEFAULT-OFF
+ * (1 = single process): `'auto'`/`'on'`/`'true'`/`'1'` ⇒ `recommendedWorkers`
+ * (resource-profile.httpWorkers — itself 1 on a laptop/workstation/embedded-PG host);
+ * a positive number ⇒ exactly that many; unset / `'0'` / `'off'` / `'false'` / junk ⇒
+ * 1. A process-MODEL boot switch (infra), not a runtime feature flag — hence env, not
+ * a FLAG (cf. PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_UTILITY_HOST). Pure + exported
+ * for tests; the caller reads `process.env` + the profile.
+ */
+export function resolveClusterWorkers(
+  env: { PAPERCUSP_CLUSTER_WORKERS?: string; PAPERCUSP_CLUSTER?: string },
+  recommendedWorkers: number,
+): number {
+  const raw = env.PAPERCUSP_CLUSTER_WORKERS ?? env.PAPERCUSP_CLUSTER;
+  if (!raw || raw === '0' || raw === 'off' || raw === 'false') return 1;
+  if (raw === 'auto' || raw === 'on' || raw === 'true' || raw === '1') {
+    return Math.max(1, Math.floor(Number.isFinite(recommendedWorkers) ? recommendedWorkers : 1));
+  }
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= 1 ? n : 1; // 0<x<1 floors to 0 ⇒ fall back to 1
+}
+
 export function startCluster(opts: StartClusterOpts): ClusterHandle {
   const cluster = opts.cluster ?? (nodeCluster as unknown as ClusterLike);
   const log = opts.log ?? ((m) => console.log(m));

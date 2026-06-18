@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   startCluster,
+  resolveClusterWorkers,
   type ClusterLike,
   type ClusterWorkerLike,
 } from './cluster-fork';
@@ -95,5 +96,41 @@ describe('startCluster (P3-2)', () => {
     expect(cl.workers.every((w) => w.killed === 'SIGTERM')).toBe(true);
     cl.emitExit(cl.workers[0]); // draining ⇒ no respawn
     expect(cl.forks).toBe(2);
+  });
+});
+
+describe('resolveClusterWorkers (P3-2 gate)', () => {
+  const REC = 8; // resource-profile.httpWorkers recommendation
+
+  it('defaults OFF (1) when unset or explicitly disabled', () => {
+    expect(resolveClusterWorkers({}, REC)).toBe(1);
+    for (const v of ['0', 'off', 'false']) {
+      expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: v }, REC)).toBe(1);
+    }
+  });
+
+  it('auto/on/true/1 ⇒ the host recommendation', () => {
+    for (const v of ['auto', 'on', 'true', '1']) {
+      expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: v }, REC)).toBe(REC);
+    }
+  });
+
+  it('a positive number ⇒ exactly that many workers', () => {
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '4' }, REC)).toBe(4);
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '16' }, REC)).toBe(16);
+  });
+
+  it('PAPERCUSP_CLUSTER_WORKERS takes precedence over PAPERCUSP_CLUSTER', () => {
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER_WORKERS: '3', PAPERCUSP_CLUSTER: 'off' }, REC)).toBe(3);
+  });
+
+  it('junk / non-positive ⇒ 1 (safe default)', () => {
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: 'banana' }, REC)).toBe(1);
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '-2' }, REC)).toBe(1);
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '0.5' }, REC)).toBe(1);
+  });
+
+  it('auto with a non-finite recommendation falls back to 1', () => {
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: 'auto' }, Number.NaN)).toBe(1);
   });
 });

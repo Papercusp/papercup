@@ -15,11 +15,25 @@
  * diff to an import + one render line. Styles ride the existing
  * `.pc-learning__flow*` classes from LearningTab's style block.
  */
-import { Activity, AlertTriangle, Brain, Gauge, Radar } from 'lucide-react';
+import { Activity, AlertTriangle, Brain, Crosshair, Gauge, Radar, TrendingDown, TrendingUp } from 'lucide-react';
 import type { MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
 
 function fmtScore(v: number | null): string {
   return v == null ? '—' : v.toFixed(2);
+}
+
+function fmtPct(v: number | null | undefined): string {
+  return v == null ? '—' : `${Math.round(v * 100)}%`;
+}
+
+/** FP@5 trend arrow vs the previous bench: down (green) = improving, up (red) = worsening. */
+function fpDeltaIcon(delta: number | null | undefined) {
+  if (delta == null || Math.abs(delta) < 0.005) return null;
+  return delta < 0 ? (
+    <TrendingDown size={10} aria-hidden style={{ color: '#34d399', marginLeft: 3 }} />
+  ) : (
+    <TrendingUp size={10} aria-hidden style={{ color: '#f87171', marginLeft: 3 }} />
+  );
 }
 
 export default function MemoryHealthCard({ memory }: { memory: MemoryHealth | null }) {
@@ -83,6 +97,27 @@ export default function MemoryHealthCard({ memory }: { memory: MemoryHealth | nu
         <Gauge size={11} aria-hidden />
         score p50 <strong>{fmtScore(memory.topScoreP50)}</strong> · p90 <strong>{fmtScore(memory.topScoreP90)}</strong>
       </span>
+      {memory.precision?.latest ? (
+        <span
+          className="pc-learning__flowchip"
+          title={
+            `Memory injection precision from the weekly memory-precision bench (relight P-033): the frozen gold set ` +
+            `replayed against the production hybrid backend at the push floor (${memory.precision.latest.floorCosine}/${memory.precision.latest.floorLex}). ` +
+            `FP@5 = the hard-negative false-positive rate (share of must-return-nothing queries that still surfaced a top-5 hit); ` +
+            `lower is better — the solved floor sits ~17% (FP cannot reach 0; the hard negatives genuinely overlap real hits). ` +
+            `R@10 = recall@10 over the positive queries. ${memory.precision.runCount} bench run(s).`
+          }
+        >
+          <Crosshair size={11} aria-hidden />
+          FP@5 <strong>{fmtPct(memory.precision.latest.fpAt5)}</strong>
+          {fpDeltaIcon(memory.precision.fpAt5Delta)}
+          {memory.precision.latest.rAt10 != null ? (
+            <>
+              {' '}· R@10 <strong>{fmtPct(memory.precision.latest.rAt10)}</strong>
+            </>
+          ) : null}
+        </span>
+      ) : null}
       {memory.fragmentHits7d > 0 ? (
         <span
           className="pc-learning__flowchip"
