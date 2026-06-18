@@ -28,7 +28,7 @@
  */
 
 import { useState, useRef, type FormEvent, type ReactNode } from 'react';
-import { parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryStates } from 'nuqs';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import { Tooltip } from './Tooltip';
@@ -975,15 +975,27 @@ interface CreateHarnessPickerProps {
 }
 
 export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope = null, hiveLabel = 'Hive' }: CreateHarnessPickerProps) {
-  // The SELECTED entry is user-meaningful → nuqs `?picker=` (the memo's URL
-  // state design; agents read/drive it via ui:get_state / ui:dispatch).
-  // Param unset = the picker grid.
-  const [pickerParam, setPickerParam] = useQueryState(
-    'picker',
-    parseAsStringEnum<EntryStep>([...ENTRY_STEPS]),
-  );
-  const step: Step = pickerParam ?? 'picker';
-  const setStep = (s: Step) => void setPickerParam(s === 'picker' ? null : s);
+  // ALL modal URL state lives in ONE useQueryStates so multi-key transitions
+  // write ATOMICALLY (a single navigate). The custom nuqs adapter
+  // (operator-vite/lib/nuqs-tanstack-router-adapter) re-derives EVERY watched key
+  // from the last flush's snapshot, so two separate same-tick setters clobber
+  // each other (and awaiting them does NOT serialize — the setter resolves before
+  // the navigate lands; proven in nuqs-two-write-race.router-integration.test).
+  // The close (clear create+picker) and create-completion (focus slug/harness +
+  // close) each touch several keys; doing them as one useQueryStates write is the
+  // only race-free pattern — without it ?create=false was dropped and the modal
+  // stuck open on the picker grid ("can't dismiss Add a Hive").
+  //   ?picker = the selected entry (unset = the picker grid; agents drive it via
+  //   ui:get_state/ui:dispatch). create/slug/harness are co-owned with AdvShell
+  //   purely so the picker can co-write them atomically with the step/close.
+  const [nav, setNav] = useQueryStates({
+    create: parseAsBoolean.withDefault(false),
+    picker: parseAsStringEnum<EntryStep>([...ENTRY_STEPS]),
+    slug: parseAsString,
+    harness: parseAsString,
+  });
+  const step: Step = nav.picker ?? 'picker';
+  const setStep = (s: Step) => void setNav({ picker: s === 'picker' ? null : s });
   // Default into-hive when a hive is selected (the common case from the tab).
   const [mode, setMode] = useState<CreateMode>(hiveScope ? 'into-hive' : 'standalone');
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
@@ -1002,37 +1014,37 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   const t = useLexicon();
   const combLabel = t('cupboard');
 
-  const handleClose = async () => {
+  const handleClose = () => {
     setMode(hiveScope ? 'into-hive' : 'standalone');
     setCreatedSlug(null);
     setCreatedHiveSlug(null);
-    // SERIALIZE the two URL writes: the custom nuqs adapter clobbers same-tick
-    // writes (the later flush wins), so a synchronous reset-step + close raced —
-    // ?picker=null landed but ?create=false was dropped, leaving the modal stuck
-    // OPEN on the picker grid (the "can't dismiss Add a Hive" report). Awaiting
-    // each write composes it over the previous result; ?create=false goes LAST so
-    // it is authoritative.
-    await setPickerParam(null);
-    await onOpenChange(false);
+    // ATOMIC close: clear create AND picker in ONE useQueryStates write so the
+    // adapter can't drop ?create=false (the stuck-modal bug). onOpenChange is no
+    // longer used to close — AdvShell reads the same ?create and re-renders shut.
+    void setNav({ create: false, picker: null });
   };
 
   // The membership scope passed to a create when adding into the selected hive.
   const memberHive = mode === 'into-hive' && hiveScope ? hiveScope : undefined;
 
-  const handleSuccess = async (slug: string) => {
+  const handleSuccess = (slug: string) => {
     // A new top-level hive (no membership scope) is a root; an into-hive create
     // carries the scope so the caller can focus the new member (P-011). Keep the
     // single-arg call for the root path (back-compat with existing callers).
     const createdInto = memberHive;
-    // AWAIT the parent's focus-write before our own step write — same nuqs
-    // same-tick-clobber hazard as handleClose: an unawaited onCreated (?slug) +
-    // setStep('share-offer') (?picker) raced, and the loser was dropped.
-    if (createdInto) await onCreated?.(slug, { hive: createdInto });
-    else await onCreated?.(slug);
+    // onCreated is now SIDE-EFFECTS ONLY (refresh/localStorage) — AdvShell no
+    // longer writes ?slug/?harness there, so the focus-write here is OURS and goes
+    // in the SAME atomic nav write as the step move (no same-tick clobber). The
+    // modal STAYS OPEN (create untouched) and advances to share-offer.
+    if (createdInto) onCreated?.(slug, { hive: createdInto });
+    else onCreated?.(slug);
     setCreatedSlug(slug);
     // A root hive publishes itself; a member publishes its parent hive.
     setCreatedHiveSlug(memberHive ?? slug);
-    await setPickerParam('share-offer');
+    // into-hive: focus the new member via ?harness, keep ?slug on the hive;
+    // new root: focus the new hive via ?slug. Both folded into one write.
+    if (createdInto) void setNav({ picker: 'share-offer', harness: slug });
+    else void setNav({ picker: 'share-offer', slug, harness: null });
   };
 
   const goBack = () => setStep('picker');
@@ -1047,7 +1059,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
     <>
       <Modal
         open={open}
-        onOpenChange={(v) => { if (!v) void handleClose(); else void onOpenChange(true); }}
+        onOpenChange={(v) => { if (!v) handleClose(); else void onOpenChange(true); }}
         title={step === 'share-offer' && createdSlug ? `${t('pot')} created` : `Add a ${t('pot')}`}
         contentStyle={{
           width: 'min(520px, 96vw)',
@@ -1074,15 +1086,20 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
             // selection carries over; otherwise the headline new-hive default.
             // The search panel threads this into the create form it opens (P-009).
             initialMode={mode === 'into-hive' && hiveScope ? 'into-hive' : 'new-hive'}
-            onCreated={async (slug, opts) => {
+            onCreated={(slug, opts) => {
               // The create form already showed its own success/publish summary
-              // (and a hive auto-publishes per visibility) — skip the share offer.
-              // AWAIT the parent focus-write, THEN close: serialized so the
-              // ?slug focus-write and the ?create=false close-write don't race
-              // (custom-adapter same-tick clobber → stuck-open modal).
-              if (opts?.hive) await onCreated?.(slug, { hive: opts.hive });
-              else await onCreated?.(slug);
-              await handleClose();
+              // (and a hive auto-publishes per visibility) — skip the share offer
+              // and CLOSE. onCreated is side-effects only now; the focus-write
+              // (?slug / ?harness) and the close (?create=false, ?picker=null) go
+              // in ONE atomic nav write so the adapter can't drop the close (the
+              // stuck-modal bug). into-hive focuses the member via ?harness and
+              // keeps ?slug on the hive; a new root focuses it via ?slug.
+              onCreated?.(slug, opts);
+              setCreatedSlug(null);
+              setCreatedHiveSlug(null);
+              setMode(hiveScope ? 'into-hive' : 'standalone');
+              if (opts?.hive) void setNav({ create: false, picker: null, harness: slug });
+              else void setNav({ create: false, picker: null, slug, harness: null });
             }}
           />
         )}

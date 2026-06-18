@@ -265,7 +265,7 @@ function pruneDiskPlain(cat: DiskStorageCategory, req: PruneRequest): PruneResul
   const now = Date.now();
   // 'all' still excludes entries written in the last minute (likely in-flight).
   const cutoff = req.olderThanDays == null ? now - PLAIN_DISK_FLOOR_MS : now - req.olderThanDays * 86400000;
-  for (const e of listDiskEntries(cat.store)) {
+  for (const e of listDiskEntries(cat)) {
     if (e.mtimeMs >= cutoff) continue;
     if (!req.dryRun) {
       try {

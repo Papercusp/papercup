@@ -64,7 +64,7 @@ if (PREVIEW) {
       tsconfig: path.join(REPO_ROOT, 'tsconfig.base.json'),
       output: 'preview/lib-api',
       errorOnEmptyDocumentation: false,
-      sidebar: { label: 'Lib API (preview)', collapsed: true },
+      sidebar: { label: 'Lib API (generated)', collapsed: true },
       typeDoc: {
         entryPointStrategy: 'resolve',
         skipErrorChecking: true,

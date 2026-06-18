@@ -166,7 +166,7 @@ async function computePgUsage(sql: Sql, cat: StorageCategory & { kind: 'pg' }): 
 }
 
 function computeDiskUsage(cat: StorageCategory & { kind: 'disk' }): StorageUsageRow {
-  const entries = listDiskEntries(cat.store);
+  const entries = listDiskEntries(cat);
   const now = Date.now();
   const totalBytes = entries.reduce((a, e) => a + e.sizeBytes, 0);
   const buckets: StorageAgeBucket[] = TRIM_THRESHOLD_DAYS.map((d) => {

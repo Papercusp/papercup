@@ -30,7 +30,7 @@ export type StorageFederation = 'federated' | 'local-diagnostic' | 'bloat-queue'
 /** How the age column encodes time: a real timestamptz, or epoch-milliseconds in a bigint. */
 export type AgeColumnType = 'timestamptz' | 'epoch_ms';
 /** Which on-disk store a disk category maps to (resolved at runtime). */
-export type DiskStore = 'session-dirs' | 'scratch' | 'flight-recorder';
+export type DiskStore = 'session-dirs' | 'scratch' | 'flight-recorder' | 'glob-files';
 
 export interface PgStorageCategory {
   id: string;
@@ -60,6 +60,10 @@ export interface DiskStorageCategory {
   /** session-dir GC floor: never trim more aggressively than this (the audited
    *  retention window that protects a crashed-but-resumable session). */
   minOlderThanDays?: number;
+  /** glob-files store ONLY: enumerate <root>/<prefix>*<suffix> (files only, a
+   *  safe prefix+suffix match — never the whole root). rootKind resolves in disk.ts
+   *  so the taxonomy stays a pure data module (no fs/os import). */
+  glob?: { rootKind: 'papercusp-home'; prefix: string; suffix: string };
   description: string;
 }
 
@@ -118,6 +122,18 @@ export const STORAGE_CATEGORIES: readonly StorageCategory[] = [
     federation: 'local-diagnostic',
     description:
       'Cross-CLI worker activity (tool calls / lifecycle / todos) powering the fleet view. Local-only.',
+  },
+  {
+    id: 'harness-run-output',
+    label: 'Harness run output (logs)',
+    kind: 'pg',
+    schema: 'harness_shared',
+    table: 'harness_run_output',
+    ageColumn: 'ended_at',
+    ageColumnType: 'epoch_ms',
+    federation: 'local-diagnostic',
+    description:
+      'Captured prompt / stdout / stderr / jsonl bodies per agent run. Local-only diagnostic; one of the larger tables.',
   },
   // ── bloat-queue (sync:'none', logical delete ≠ disk reclaim) ─────────────
   {
@@ -202,6 +218,16 @@ export const STORAGE_CATEGORIES: readonly StorageCategory[] = [
     store: 'flight-recorder',
     federation: 'local-diagnostic',
     description: 'Spawn flight-recorder traces under ~/.papercusp/flight-recorder.',
+  },
+  {
+    id: 'perf-tarballs',
+    label: 'Perf-test tarballs',
+    kind: 'disk',
+    store: 'glob-files',
+    glob: { rootKind: 'papercusp-home', prefix: 'p2p-perf-runtime-', suffix: '.tgz' },
+    federation: 'local-diagnostic',
+    description:
+      'p2p perf-test runtime tarballs (~/.papercusp/p2p-perf-runtime-*.tgz) — disposable benchmark debris.',
   },
 ];
 

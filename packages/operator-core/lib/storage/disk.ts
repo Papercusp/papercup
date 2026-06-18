@@ -18,7 +18,7 @@ import {
   type ProtectedSessionIdentity,
 } from '../session-dir-gc';
 import { scratchRoot } from '../scratch-uri';
-import type { DiskStore } from './categories';
+import type { DiskStorageCategory } from './categories';
 
 /** A top-level entry under a disk store: the unit a trim considers. */
 export interface DiskEntry {
@@ -34,13 +34,22 @@ export interface DiskEntry {
   protectKeyKind?: SessionDirCandidate['keyKind'];
 }
 
-/** The non-session-dir store roots (session-dirs resolve via defaultSessionDirRoots). */
-export function plainStoreRoots(store: Exclude<DiskStore, 'session-dirs'>): string[] {
+/** Whole-dir roots for the plain stores (session-dirs resolve via defaultSessionDirRoots;
+ *  glob-files resolve via globRoot, NOT here — they never enumerate a whole dir). */
+export function plainStoreRoots(store: 'scratch' | 'flight-recorder'): string[] {
   switch (store) {
     case 'scratch':
       return [scratchRoot()];
     case 'flight-recorder':
       return [join(homedir(), '.papercusp', 'flight-recorder')];
+  }
+}
+
+/** Resolve a glob-files category's root from its rootKind (keeps categories.ts fs/os-free). */
+function globRoot(rootKind: 'papercusp-home'): string {
+  switch (rootKind) {
+    case 'papercusp-home':
+      return join(homedir(), '.papercusp');
   }
 }
 
@@ -85,12 +94,14 @@ export function dirSizeBytes(path: string, maxEntries = 400_000): number {
 }
 
 /**
- * Enumerate the top-level entries of a store with size + mtime. For session-dirs
+ * Enumerate the trim units of a disk category with size + mtime. For session-dirs
  * each candidate carries its protected-set key so a trim can exclude live
- * sessions; for plain stores each top-level child is one entry.
+ * sessions; for plain stores each top-level child is one entry; for glob-files
+ * ONLY the prefix+suffix-matching files under the resolved root (never the whole
+ * root — e.g. ~/.papercusp holds everything).
  */
-export function listDiskEntries(store: DiskStore): DiskEntry[] {
-  if (store === 'session-dirs') {
+export function listDiskEntries(cat: DiskStorageCategory): DiskEntry[] {
+  if (cat.store === 'session-dirs') {
     return discoverSessionDirCandidates(defaultSessionDirRoots()).map((c) => ({
       path: c.path,
       mtimeMs: c.mtimeMs,
@@ -99,8 +110,33 @@ export function listDiskEntries(store: DiskStore): DiskEntry[] {
       protectKeyKind: c.keyKind,
     }));
   }
+  if (cat.store === 'glob-files') {
+    if (!cat.glob) return [];
+    const root = globRoot(cat.glob.rootKind);
+    const { prefix, suffix } = cat.glob;
+    if (!existsSync(root)) return [];
+    let names: string[];
+    try {
+      names = readdirSync(root);
+    } catch {
+      return [];
+    }
+    const out: DiskEntry[] = [];
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+      const path = join(root, name);
+      try {
+        const st = statSync(path);
+        if (!st.isFile()) continue; // glob-files matches FILES only
+        out.push({ path, mtimeMs: st.mtimeMs, sizeBytes: st.size });
+      } catch {
+        continue;
+      }
+    }
+    return out;
+  }
   const out: DiskEntry[] = [];
-  for (const root of plainStoreRoots(store)) {
+  for (const root of plainStoreRoots(cat.store)) {
     if (!existsSync(root)) continue;
     let names: string[];
     try {
@@ -119,11 +155,6 @@ export function listDiskEntries(store: DiskStore): DiskEntry[] {
     }
   }
   return out;
-}
-
-/** Total recursive size of a store (sum of its top-level entries). */
-export function storeSizeBytes(store: DiskStore): number {
-  return listDiskEntries(store).reduce((acc, e) => acc + e.sizeBytes, 0);
 }
 
 export interface ProtectedGatherResult {

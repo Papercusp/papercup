@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 //
-// Isolation repro for the "stuck Add-a-Hive modal": two nuqs writes from two
-// DIFFERENT useQueryState hooks, fired together, over the REAL custom adapter
-// (nuqs-tanstack-router-adapter) inside a real TanStack router. The picker's
-// close does exactly this — clear ?picker AND ?create — and one write was lost,
-// leaving ?create in the URL (modal stuck open). This test pins down which write
-// pattern reliably lands BOTH so the picker fix can mirror it.
+// Regression for the "stuck Add-a-Hive modal" (CreateHarnessPicker): closing the
+// modal must clear TWO url keys at once — ?create (open) and ?picker (step). Over
+// the REAL custom adapter (nuqs-tanstack-router-adapter), two SEPARATE same-tick
+// useQueryState writes CLOBBER each other (the adapter re-derives every watched
+// key from the last navigate's snapshot), and awaiting them does NOT serialize
+// (the setter resolves before the startTransition→navigate lands). The proven
+// fix is a SINGLE useQueryStates write — one navigate, no race. The picker now
+// routes every multi-key transition through one useQueryStates; this pins the
+// pattern so a future "just call the two setters" regression is caught.
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
@@ -23,38 +26,6 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
 });
 
-// Two SEPARATE hooks (like ?create in AdvShell + ?picker in the picker).
-function TwoSeparateHooks({ mode }: { mode: 'sync' | 'await' }) {
-  const [, setOpen] = useQueryState('open', parseAsBoolean.withDefault(false));
-  const [, setStep] = useQueryState('step', parseAsString);
-  return (
-    <button
-      data-testid="close"
-      onClick={async () => {
-        if (mode === 'await') {
-          await setStep(null);
-          await setOpen(false);
-        } else {
-          void setStep(null);
-          void setOpen(false);
-        }
-      }}
-    >
-      close
-    </button>
-  );
-}
-
-// ONE combined hook (single atomic write).
-function CombinedHook() {
-  const [, set] = useQueryStates({ open: parseAsBoolean.withDefault(false), step: parseAsString });
-  return (
-    <button data-testid="close" onClick={() => void set({ open: false, step: null })}>
-      close
-    </button>
-  );
-}
-
 function mountAt(url: string, ui: React.ReactNode) {
   window.history.replaceState(null, '', url);
   const rootRoute = createRootRoute({
@@ -70,32 +41,51 @@ function mountAt(url: string, ui: React.ReactNode) {
   render(<RouterProvider router={router} />);
 }
 
-describe('nuqs custom-adapter: two writes from different hooks', () => {
-  it('SYNC two-hook close: does ?open clear alongside ?step? (reproduces the race if not)', async () => {
-    mountAt('/?open=true&step=github', <TwoSeparateHooks mode="sync" />);
-    await waitFor(() => expect(window.location.search).toContain('open=true'));
-    fireEvent.click(screen.getByTestId('close'));
-    // give the router/transition time to settle
-    await new Promise((r) => setTimeout(r, 50));
-    expect(window.location.search).not.toContain('step=');
-    expect(window.location.search).not.toContain('open=true'); // ← the assertion the bug fails
-  });
+// THE FIX PATTERN: one useQueryStates → one navigate → both keys land.
+function CombinedHook() {
+  const [, set] = useQueryStates({ open: parseAsBoolean.withDefault(false), step: parseAsString });
+  return (
+    <button data-testid="close" onClick={() => void set({ open: false, step: null })}>
+      close
+    </button>
+  );
+}
 
-  it('AWAIT two-hook close: does awaiting serialize the two writes?', async () => {
-    mountAt('/?open=true&step=github', <TwoSeparateHooks mode="await" />);
-    await waitFor(() => expect(window.location.search).toContain('open=true'));
-    fireEvent.click(screen.getByTestId('close'));
-    await new Promise((r) => setTimeout(r, 50));
-    expect(window.location.search).not.toContain('step=');
-    expect(window.location.search).not.toContain('open=true');
-  });
+// THE FOOTGUN: two separate hooks written same-tick (what the picker did before).
+function TwoSeparateHooks() {
+  const [, setOpen] = useQueryState('open', parseAsBoolean.withDefault(false));
+  const [, setStep] = useQueryState('step', parseAsString);
+  return (
+    <button
+      data-testid="close"
+      onClick={() => {
+        void setStep(null);
+        void setOpen(false);
+      }}
+    >
+      close
+    </button>
+  );
+}
 
-  it('COMBINED useQueryStates close: both keys clear atomically', async () => {
+describe('nuqs custom-adapter multi-key write (CreateHarnessPicker close regression)', () => {
+  it('a single useQueryStates write clears BOTH keys atomically (the fix)', async () => {
     mountAt('/?open=true&step=github', <CombinedHook />);
     await waitFor(() => expect(window.location.search).toContain('open=true'));
     fireEvent.click(screen.getByTestId('close'));
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => expect(window.location.search).not.toContain('open=true'));
     expect(window.location.search).not.toContain('step=');
-    expect(window.location.search).not.toContain('open=true');
+  });
+
+  it('two SEPARATE same-tick setters CLOBBER (documents why the picker must not do this)', async () => {
+    mountAt('/?open=true&step=github', <TwoSeparateHooks />);
+    await waitFor(() => expect(window.location.search).toContain('open=true'));
+    fireEvent.click(screen.getByTestId('close'));
+    await new Promise((r) => setTimeout(r, 60));
+    // ?step cleared but ?open SURVIVES — the exact stuck-modal failure mode. If a
+    // future adapter change makes separate writes safe, this flips and we can
+    // simplify the picker; until then, the single-useQueryStates pattern is required.
+    expect(window.location.search).not.toContain('step=');
+    expect(window.location.search).toContain('open=true');
   });
 });

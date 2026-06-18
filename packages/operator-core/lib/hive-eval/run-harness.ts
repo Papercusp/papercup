@@ -19,6 +19,7 @@ import type { DistilledRun, Subject } from '@papercusp/eval-battery';
 import { computeParallelismStructure, type HiveScenario, type ParallelismStructure } from './scenario';
 import { hiveEvalRunIdentity, type HiveEvalRunIdentity } from './run-identity';
 import type { HiveRunObservations, HiveRunTerminalState } from './store';
+import type { Genome } from '../instance-spec/genome';
 
 /** One cell the battery runs: a scenario × repeat against a fixed instance, with controls. */
 export interface HiveScenarioCell {
@@ -33,6 +34,14 @@ export interface HiveScenarioCell {
   beeCap: number;
   /** Per-cell wall-clock bound; falls back to the battery's defaultTimeoutMs. */
   timeoutMs?: number;
+  /**
+   * The config-variation the instance-under-test boots with — set by an experiment arm
+   * (experiment-registry-invocation-api P-063/D-023): `genome` is the merged genome
+   * (`genome.*` knobs) and `modelOverrides` is the spawn-time `model.<role>` axis (D-003).
+   * The live `bootHive` applies these when standing up the throwaway hive. Absent for an
+   * unvaried (champion) cell — the hive-eval loop's existing cells omit it.
+   */
+  variantConfig?: { genome?: Genome; modelOverrides?: Record<string, string> };
 }
 
 /** What `bootHive` returns — where + how to drive the throwaway hive. Opaque to the engine. */
