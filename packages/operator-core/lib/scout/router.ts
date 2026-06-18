@@ -38,6 +38,11 @@ import type { CreativeLens, Proposal } from './types';
 import type { RoutedIdeaProvenance, RoutedRail } from './outcome-feedback';
 import type { ScoutIdeaView, SeedDistantResult } from './gym-bridge';
 
+/** Default rail for a proposal with no routeHint — the smallest-footprint, reversible
+ *  rail. P-009 scout-config seam: a blueprint's `scout.routing.defaultRail` can override
+ *  this per-hive (single source of truth, referenced by `scout/config.ts`). */
+export const DEFAULT_ROUTING_RAIL: RoutedRail = 'improvement';
+
 /* ────────────────────────────────────────────────────────────────────────
  * The routing decision (pure)
  * ──────────────────────────────────────────────────────────────────────── */
@@ -112,7 +117,7 @@ export function classifyProposal(
   if (p.routeHint) {
     return { rail: p.routeHint, reason: `followed recombine routeHint → ${p.routeHint}`, followedHint: true };
   }
-  const def = opts.defaultRail ?? 'improvement';
+  const def = opts.defaultRail ?? DEFAULT_ROUTING_RAIL;
   return { rail: def, reason: `no routeHint → default ${def} (smallest-footprint, reversible rail)`, followedHint: false };
 }
 
@@ -249,7 +254,7 @@ export function proposalToInstanceView(p: Proposal): InstanceVariantView {
 /** The genome surface's "interacting wholes" vocabulary (reconciliation D-002: Queen prompt
  *  × placement policy × memory architecture × wake policy × coordination economy) — the
  *  markers of a WHOLE-SYSTEM (instance-level) idea vs a component one. */
-const WHOLE_SYSTEM_MARKERS = [
+export const WHOLE_SYSTEM_MARKERS = [
   'genome',
   'whole instance',
   'whole-instance',
@@ -282,10 +287,13 @@ const WHOLE_SYSTEM_MARKERS = [
  * proposal text is scanned for the genome-axis vocabulary (a conservative heuristic — the
  * recombine step may set the hint directly for a stronger signal).
  */
-export function isWholeSystemProposal(p: Proposal): boolean {
+export function isWholeSystemProposal(
+  p: Proposal,
+  markers: readonly string[] = WHOLE_SYSTEM_MARKERS,
+): boolean {
   if (p.routeHint === 'instance') return true;
   const hay = [p.framing, p.mechanism, p.whyNew].map((s) => (s ?? '').toLowerCase()).join(' \n ');
-  return WHOLE_SYSTEM_MARKERS.some((m) => hay.includes(m));
+  return markers.some((m) => hay.includes(m));
 }
 
 /**
@@ -296,7 +304,20 @@ export function isWholeSystemProposal(p: Proposal): boolean {
  * router's `override`.
  */
 export function wholeSystemInstanceOverride(p: Proposal): RoutedRail | undefined {
-  return p.routeHint === 'gym' && isWholeSystemProposal(p) ? 'instance' : undefined;
+  return makeWholeSystemInstanceOverride()(p);
+}
+
+/**
+ * Build a {@link ClassifyOptions.override} that bumps a TESTABLE proposal (hint 'gym')
+ * to the `instance` rail when it varies the whole instance, using a CONFIGURABLE marker
+ * vocabulary (P-009 scout-config seam). The genome-axis markers are coding/Papercusp-specific,
+ * so the `coding` blueprint carries them while a `work` hive can supply its own / none.
+ * Defaults to {@link WHOLE_SYSTEM_MARKERS} (behavior-neutral).
+ */
+export function makeWholeSystemInstanceOverride(
+  markers: readonly string[] = WHOLE_SYSTEM_MARKERS,
+): (p: Proposal) => RoutedRail | undefined {
+  return (p) => (p.routeHint === 'gym' && isWholeSystemProposal(p, markers) ? 'instance' : undefined);
 }
 
 /**

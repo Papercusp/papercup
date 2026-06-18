@@ -71,6 +71,21 @@ export interface CorpusNoveltyOptions {
 
 const DEFAULT_DECIDED_STATES = ['dropped', 'shipped', 'resolved', 'closed', 'done'] as const;
 
+/**
+ * Default search-first novelty knobs (P-009 scout-config seam,
+ * domain-generic-hive-architecture-2026-06-18). The SINGLE source of truth for these
+ * values: `corpusNovelty`'s `??` fallbacks and the blueprint `scout.novelty` config
+ * default (`scout/config.ts`) both reference this, so they cannot drift. Per-blueprint
+ * tuning flows in via the resolved ScoutConfig; absent a blueprint override, behavior is
+ * byte-identical to the previous inline constants.
+ */
+export const DEFAULT_CORPUS_NOVELTY_OPTIONS: Required<CorpusNoveltyOptions> = {
+  matchFloor: 0.5,
+  maxMatches: 5,
+  decidedStates: DEFAULT_DECIDED_STATES,
+  decidedPenalty: 0.15,
+};
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -86,10 +101,10 @@ export function corpusNovelty(
   corpus: readonly CorpusEntry[],
   opts: CorpusNoveltyOptions = {},
 ): CorpusNovelty {
-  const matchFloor = opts.matchFloor ?? 0.5;
-  const maxMatches = opts.maxMatches ?? 5;
-  const decidedStates = opts.decidedStates ?? DEFAULT_DECIDED_STATES;
-  const decidedPenalty = opts.decidedPenalty ?? 0.15;
+  const matchFloor = opts.matchFloor ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.matchFloor;
+  const maxMatches = opts.maxMatches ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.maxMatches;
+  const decidedStates = opts.decidedStates ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.decidedStates;
+  const decidedPenalty = opts.decidedPenalty ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.decidedPenalty;
 
   // No comparable tokens (e.g. empty / punctuation-only) — maximally novel, but
   // we surface nothing (there is nothing to compare).
@@ -140,6 +155,18 @@ export interface BucketOptions {
   maxMoonshots?: number;
 }
 
+/**
+ * Default verdict-bucket knobs (P-009 scout-config seam) — single source of truth for
+ * `verdictFor`/`bucketByCritique`'s `??` fallbacks AND the blueprint `scout.buckets`
+ * config default (`scout/config.ts`).
+ */
+export const DEFAULT_BUCKET_OPTIONS: Required<BucketOptions> = {
+  noveltyFloor: 0.34,
+  feasibilityFloor: 0.5,
+  moonshotNoveltyFloor: 0.66,
+  maxMoonshots: 2,
+};
+
 export interface CritiqueBuckets<T extends CritiqueScores> {
   /** Novel AND feasible — proceed to debate/recombine. */
   kept: T[];
@@ -159,9 +186,9 @@ export function verdictFor(
   s: CritiqueScores,
   opts: BucketOptions = {},
 ): { verdict: CritiqueVerdict; reason: string } {
-  const noveltyFloor = opts.noveltyFloor ?? 0.34;
-  const feasibilityFloor = opts.feasibilityFloor ?? 0.5;
-  const moonshotNoveltyFloor = opts.moonshotNoveltyFloor ?? 0.66;
+  const noveltyFloor = opts.noveltyFloor ?? DEFAULT_BUCKET_OPTIONS.noveltyFloor;
+  const feasibilityFloor = opts.feasibilityFloor ?? DEFAULT_BUCKET_OPTIONS.feasibilityFloor;
+  const moonshotNoveltyFloor = opts.moonshotNoveltyFloor ?? DEFAULT_BUCKET_OPTIONS.moonshotNoveltyFloor;
 
   if (s.novelty < noveltyFloor) {
     return {
@@ -194,7 +221,7 @@ export function bucketByCritique<T extends CritiqueScores>(
   items: readonly T[],
   opts: BucketOptions = {},
 ): CritiqueBuckets<T> {
-  const maxMoonshots = opts.maxMoonshots ?? 2;
+  const maxMoonshots = opts.maxMoonshots ?? DEFAULT_BUCKET_OPTIONS.maxMoonshots;
   const kept: T[] = [];
   const moonshotCandidates: T[] = [];
   const rejected: T[] = [];
