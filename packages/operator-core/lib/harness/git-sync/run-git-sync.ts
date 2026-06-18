@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
+import { groupFilesForAttribution, type FileAttribution } from './git-sync-attribution';
 
 export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -258,6 +259,64 @@ export async function findOversizedDirtyFiles(runGit: RunGit, repoPath: string, 
   return out;
 }
 
+/** Enumerate every dirty path (modified/added/deleted/untracked), repo-relative, in the
+ *  same path-space as the oversized/content excludes. `-z` keeps paths with spaces/newlines
+ *  intact; a rename/copy origin path (the 2nd `-z` field) is skipped. Exported for P-004 tests. */
+export async function dirtyFiles(runGit: RunGit, repoPath: string): Promise<string[]> {
+  const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
+  if (r.code !== 0) return [];
+  const entries = r.stdout.split('\0').filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.length < 4) continue;
+    const xy = e.slice(0, 2);
+    if (xy.includes('R') || xy.includes('C')) i++; // -z rename/copy: skip the origin path that follows
+    out.push(e.slice(3));
+  }
+  return out;
+}
+
+/** The CI-skip suffix git-sync's message carries (e.g. ` [skip ci]`), so every per-agent
+ *  commit skips CI exactly like the catch-all. Empty when the message has no such marker. */
+function skipCiSuffix(message: string): string {
+  const m = message.match(/(\[skip ci\])\s*$/i);
+  return m ? ` ${m[1]}` : '';
+}
+
+/**
+ * P-004 (git-sync-dx-hardening): peel each declaring agent's dirty files into its OWN commit
+ * (intent subject + a Co-Authored-By trailer), preserving the CI-skip marker. Excluded files
+ * (oversized / content offenders) stay quarantined. The catch-all (agent=null) group is left
+ * for the caller's existing whole-tree commit. Never throws; a real commit failure returns an
+ * error. Exported for the P-004 commit-grouping test (injected runGit, no real repo).
+ */
+export async function commitAttributedGroups(
+  runGit: RunGit,
+  repoPath: string,
+  attribution: Map<string, FileAttribution>,
+  excludePaths: string[],
+  message: string,
+): Promise<{ committedAny: boolean; error?: string }> {
+  const excludeSet = new Set(excludePaths);
+  const dirty = (await dirtyFiles(runGit, repoPath)).filter((f) => !excludeSet.has(f));
+  const groups = groupFilesForAttribution(dirty, attribution);
+  const suffix = skipCiSuffix(message);
+  let committedAny = false;
+  for (const g of groups) {
+    if (g.agent === null || g.files.length === 0) continue; // catch-all handled by the caller's add -A
+    await runGit(['add', '--', ...g.files], repoPath);
+    const args = ['commit', '--no-verify', '-m', `${g.subject}${suffix}`];
+    if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
+    const c = await runGit(args, repoPath);
+    if (c.code === 0) committedAny = true;
+    else if (!nothingToCommit(c)) {
+      return { committedAny, error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}` };
+    }
+  }
+  return { committedAny };
+}
+
 /**
  * Sync ONE repo (superproject or a single submodule) to origin: commit dirty →
  * fetch → merge (reconciling a diverged/behind remote) → push. Never throws.
@@ -274,6 +333,11 @@ async function syncOneRepo(
     contentDetectors: ContentDetector[];
     readText: (repoPath: string, relPath: string) => Promise<string | null>;
     log: (m: string) => void;
+    /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
+     *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
+     *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
+     *  to today's single commit. */
+    attribution?: Map<string, FileAttribution>;
   },
 ): Promise<RepoSyncResult> {
   const { remote, message, doPush } = o;
@@ -319,6 +383,20 @@ async function syncOneRepo(
     // Exclude BOTH oversized + content offenders from the auto-commit (deduped — a
     // file can be both). Everything clean still syncs this tick.
     const excludePaths = [...new Set([...oversized.map((f) => f.path), ...contentErrors.map((c) => c.file)])];
+    let committedAny = false;
+    // P-004: when an attribution map is supplied (flag GIT_SYNC_DERIVED_ATTRIBUTION on), peel
+    // each declaring agent's dirty files into its OWN commit (intent subject + Co-Authored-By)
+    // BEFORE the catch-all. Absent/empty → no-op, so the flag-OFF path stays byte-identical.
+    if (o.attribution && o.attribution.size > 0) {
+      const res = await commitAttributedGroups(runGit, repoPath, o.attribution, excludePaths, message);
+      if (res.error) {
+        return { status: 'error', message: res.error, oversized, contentErrors };
+      }
+      committedAny = res.committedAny;
+    }
+    // Catch-all = today's single whole-tree commit: sweeps the unattributed remainder (or
+    // EVERYTHING when no attribution), including anything a path-specific add missed (rename
+    // origin-sides, etc.). Byte-identical to the pre-P-004 commit path.
     const addArgs =
       excludePaths.length === 0
         ? ['add', '-A']
@@ -326,7 +404,7 @@ async function syncOneRepo(
     await runGit(addArgs, repoPath);
     const c = await runGit(['commit', '--no-verify', '-m', message], repoPath);
     if (c.code === 0) {
-      committedLocal = true;
+      committedAny = true;
     } else if (!nothingToCommit(c)) {
       // P-002: a real commit failure (index.lock race, corrupt index, a hook) is NOT
       // a merge conflict. If the still-dirty tree fell through to the merge below it
@@ -340,6 +418,7 @@ async function syncOneRepo(
         contentErrors,
       };
     }
+    committedLocal = committedAny;
   }
 
   const fetch = await runGit(['fetch', remote, branch], repoPath);

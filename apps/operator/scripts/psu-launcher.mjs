@@ -795,6 +795,38 @@ async function pickPlan(workspace, harness) {
   });
 }
 
+/**
+ * psu-account-chooser P-005: pick a pool account to pin this session to (gateway
+ * routing), or the default credential. Returns the account id, or null for "no pin"
+ * — INCLUDING when the picker is hidden: gateway off, an empty pool, or any fetch
+ * error (fail-soft — the account step never blocks a launch). The "default" row is
+ * FIRST so hitting enter keeps today's behavior; accounts blocked by the active
+ * session-override are shown disabled (the server would reject them anyway).
+ */
+async function pickAccount(workspace) {
+  let accounts;
+  try {
+    const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+    accounts = (await api(`/api/agent-mcp/console/bootstrap-su/options${q}`)).accounts;
+  } catch {
+    return null;
+  }
+  const pool = Array.isArray(accounts?.pool) ? accounts.pool : [];
+  if (pool.length === 0) return null; // gateway off / no pool → hidden, byte-identical
+  const exclude = new Set(accounts.excludeAccounts ?? []);
+  const forced = new Set(accounts.forcedAccounts ?? []);
+  const { select } = await import('@inquirer/prompts');
+  const choices = [
+    { name: '· default credential — no account pin', value: null },
+    ...pool.map((id) => {
+      const blocked = exclude.has(id) || (forced.size > 0 && !forced.has(id));
+      const tag = exclude.has(id) ? '  (excluded)' : forced.size > 0 && !forced.has(id) ? '  (not in allow-list)' : '';
+      return { name: `${id}${tag}`, value: id, disabled: blocked ? '(blocked by session-override)' : false };
+    }),
+  ];
+  return select({ message: 'Account (inference-gateway pin)', default: null, choices });
+}
+
 /** Sentinel for the "no feature" picker row (optional-feature roles). */
 const NO_FEATURE = '<no-feature>';
 
@@ -1509,6 +1541,10 @@ async function main() {
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
     const plan = p.needPlan ? planValue(await pickPlan(workspace, harness)) : p.plan;
+    // psu-account-chooser P-005: offer a pool-account pin when one is meaningful
+    // (gateway on + a non-empty pool). pickAccount returns null — and prompts
+    // nothing — otherwise, so the default launch stays byte-identical.
+    if (!args.account) args.account = await pickAccount(workspace);
     selections = { agent, workspace, harness, plan };
   } else {
     selections = selectionsFromArgs(args);

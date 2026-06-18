@@ -612,3 +612,33 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 });
+
+describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
+  beforeEach(() => {
+    getFlagMock.mockResolvedValue(false);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
+    getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
+  });
+  const choices = async () => (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountChoices('default');
+
+  it('gateway off → hidden (empty pool) — the current default', async () => {
+    getFlagMock.mockResolvedValue(false);
+    expect(await choices()).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [] });
+  });
+
+  it('gateway on → pool ids + the active session-override', async () => {
+    getFlagMock.mockResolvedValue(true);
+    getAccountOverrideMock.mockResolvedValue({ forcedAccounts: ['aviynw6'], excludeAccounts: ['aviynw2'] });
+    const r = await choices();
+    expect(r.gatewayOn).toBe(true);
+    expect(r.pool).toEqual(['aviynw6', 'aviynw2']);
+    expect(r.forcedAccounts).toEqual(['aviynw6']);
+    expect(r.excludeAccounts).toEqual(['aviynw2']);
+  });
+
+  it('GET /options surfaces the accounts field (empty when gateway off)', async () => {
+    getFlagMock.mockResolvedValue(false);
+    const json = await (await callGet()).json();
+    expect(json.accounts).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [] });
+  });
+});

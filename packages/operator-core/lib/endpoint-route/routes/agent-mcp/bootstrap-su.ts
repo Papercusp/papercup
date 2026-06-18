@@ -259,6 +259,32 @@ export async function resolveAccountPin(
   }
 }
 
+/**
+ * psu-account-chooser P-005: the account choices the interactive psu picker offers.
+ * Returns the pool account ids + the active session-override — but ONLY when the
+ * inference gateway is on (pinning is a no-op otherwise, so the picker stays hidden
+ * and the launch is byte-identical to today). `pool` empty ⇒ the launcher skips the
+ * account step entirely. Fail-soft: any error ⇒ no choices (hidden picker). Exported
+ * for tests.
+ */
+export async function resolveAccountChoices(
+  workspaceId: string,
+): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[] }> {
+  const empty = { gatewayOn: false, pool: [] as string[], forcedAccounts: [] as string[], excludeAccounts: [] as string[] };
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return empty;
+    const { loadAccountPool } = await import('../../../deployment/account-pool-store');
+    const pool = (await loadAccountPool(workspaceId)).accounts.map((a: { id: string }) => a.id);
+    const { getAccountOverride } = await import('../../../deployment/account-session-override');
+    const ov = await getAccountOverride(workspaceId);
+    return { gatewayOn: true, pool, forcedAccounts: ov.forcedAccounts, excludeAccounts: ov.excludeAccounts };
+  } catch {
+    return empty;
+  }
+}
+
 const brainGet = defineTool({
   method: 'GET',
   path: '/agent-mcp/console/bootstrap-su/brain',
@@ -347,7 +373,10 @@ const optionsGet = defineTool({
     const { getKnownRoles } = await import('../../../known-roles');
     const { roleConsumes } = await import('../../../role-registry');
     const roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
-    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles });
+    // psu-account-chooser P-005: pool accounts the interactive picker offers (empty +
+    // hidden unless the gateway is on — see resolveAccountChoices).
+    const accounts = await resolveAccountChoices(workspace);
+    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts });
   },
 });
 
