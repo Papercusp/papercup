@@ -55,6 +55,13 @@ export interface ResourceSignals {
   embeddedPg: boolean;
   /** This process's role (see {@link HostRole}). Default `'full'`. */
   hostRole: HostRole;
+  /** Running on battery power (a laptop unplugged)? P5-3: when true the derived
+   *  caps enter power-saver mode — fewer concurrent agents, no serialization
+   *  thread pool, and a >1 {@link ResourceProfile.backgroundCadenceMultiplier} so
+   *  background ticks run less often. Optional; defaults false (AC / unknown =
+   *  full power — a server we can't read battery state for is never throttled).
+   *  Detected out-of-band via {@link detectPowerSource} and injected at boot. */
+  onBattery?: boolean;
 }
 
 /**
@@ -148,6 +155,11 @@ export interface ResourceProfile {
    *  The desktop's embedded PG reads these at boot; a native PG is tuned from them
    *  by the `pg-autotune` script. */
   readonly database: DatabaseTuning;
+  /** Multiplier (>=1) background tick schedulers apply to their cadence. 1 on AC;
+   *  >1 on battery (P5-3) so periodic background work runs proportionally less
+   *  often to save power. A tick that fires every minute at multiplier 3 should
+   *  effectively run ~every 3 minutes. */
+  readonly backgroundCadenceMultiplier: number;
 }
 
 /** Override any subset of the auto-detected signals. */

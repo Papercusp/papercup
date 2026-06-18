@@ -41,6 +41,13 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   'smoke-fail',
   'escalation-spike',
   'fire-circuit-open',
+  // P-011: per-harness sources whose absence reliably means resolution (a torn-down
+  // benchmark hive's saturation/orphan/stuck signal simply stops). Added so auto-close
+  // retires the full benchmark-debris set (governor-starvation was the gap — 27 EIs).
+  'governor-starvation',
+  'orphaned-spawn',
+  'stuck-plan',
+  'ship-link-stuck',
 ]);
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */

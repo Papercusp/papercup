@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { makeReactTailwindRegistry, _CURATED_FOR_TESTS } from './registry';
 
 describe('makeReactTailwindRegistry', () => {
@@ -14,7 +16,8 @@ describe('makeReactTailwindRegistry', () => {
 
   it('sourceFor returns the react-tailwind source pointer for a known id', async () => {
     expect(await reg.sourceFor('action.primary')).toEqual({
-      path: 'libs/papercusp/_retired/apps-web/app/harness/Button.tsx',
+      path: 'apps/operator/app/harness/Button.tsx',
+      symbol: 'Button',
     });
   });
 
@@ -35,6 +38,23 @@ describe('curated registry invariants', () => {
       expect(eco).toBeDefined();
       expect(eco!.sourcePointer.path.length).toBeGreaterThan(0);
       expect(eco!.importHint).toMatch(/^import /);
+    }
+  });
+
+  it('never points implementers at retired UI code', () => {
+    for (const e of _CURATED_FOR_TESTS) {
+      const pointer = e.ecosystems['react-tailwind']?.sourcePointer.path ?? '';
+      expect(pointer).not.toContain('/_retired/');
+      expect(pointer).not.toContain('_retired/');
+      expect(e.ecosystems['react-tailwind']?.importHint ?? '').not.toContain('@papercusp/ui');
+    }
+  });
+
+  it('points at files that exist in the live repo', () => {
+    const repoRoot = resolve(__dirname, '../../../..');
+    for (const e of _CURATED_FOR_TESTS) {
+      const pointer = e.ecosystems['react-tailwind']!.sourcePointer.path;
+      expect(existsSync(resolve(repoRoot, pointer)), pointer).toBe(true);
     }
   });
 

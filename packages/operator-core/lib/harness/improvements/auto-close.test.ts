@@ -55,7 +55,7 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
   });
 
   it('accepts every eligible source and rejects an unlisted one', () => {
-    for (const src of ['red-test', 'repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open']) {
+    for (const src of ['red-test', 'repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(true);
     }
     for (const src of ['service-down', 'migration-drift', 'orphaned-dispatch', 'insight-staleness']) {
