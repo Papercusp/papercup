@@ -51,7 +51,11 @@ const MOBILE_PRINCIPAL: Principal = {
   label: 'avi@storewolf.com',
 };
 
-function ctx(overrides: Partial<RouteContext<unknown>> = {}): RouteContext<unknown> {
+// Returns RouteContext<never> to match the handler param: routeByPath casts the routes to
+// RouteDefinition<never> (the sound supertype of all body-typed defs, since the handler is
+// contravariant in its input type), so handlers expect RouteContext<never>. The cast covers
+// `input: undefined` → never (the test handlers never read input).
+function ctx(overrides: Partial<RouteContext<never>> = {}): RouteContext<never> {
   return {
     principal: MOBILE_PRINCIPAL,
     input: undefined,
@@ -59,7 +63,7 @@ function ctx(overrides: Partial<RouteContext<unknown>> = {}): RouteContext<unkno
     log: () => {},
     signal: new AbortController().signal,
     ...overrides,
-  };
+  } as RouteContext<never>;
 }
 
 function routeByPath(method: string, path: string): RouteDefinition<never> {

@@ -136,3 +136,37 @@ export async function readWorkQueueHealth(
     reaperLastReleased: run?.lastReleased ?? null,
   };
 }
+
+/**
+ * Per-harness stuck-feature counts for `harness:health` (P-008) — the freed-but-
+ * non-dispatchable + dead-held feature rows for ONE harness in a workspace. The
+ * reaper metric is workspace-global; this is the per-harness slice. Uses the SAME
+ * dispatch-state set + liveness rule as the reaper.
+ */
+export async function readHarnessStuckFeatures(
+  sql: Db,
+  workspaceId: string,
+  harnessSlug: string,
+  opts: { graceMs?: number } = {},
+): Promise<{ stuckFeatures: number; deadHeldFeatures: number }> {
+  const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
+  const [row] = await sql<{ stuck_features: number; dead_held_features: number }[]>`
+    WITH live_holder AS (${liveHolderFragment(sql, graceSec)})
+    SELECT
+      (SELECT count(*) FROM harness_shared.harness_features_consolidated f
+         WHERE f.workspace_id = ${workspaceId} AND f.harness_slug = ${harnessSlug}
+           AND f.taken_by IS NULL
+           AND f.status IS NOT NULL
+           AND f.status <> ALL(${nonRequeue}::text[]))::int AS stuck_features,
+      (SELECT count(*) FROM harness_shared.harness_features_consolidated f
+         WHERE f.workspace_id = ${workspaceId} AND f.harness_slug = ${harnessSlug}
+           AND f.taken_by IS NOT NULL AND f.taken_by <> ''
+           AND f.taken_at IS NOT NULL
+           AND (now() - f.taken_at) > make_interval(secs => ${graceSec})
+           AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by))::int AS dead_held_features`;
+  return {
+    stuckFeatures: Number(row?.stuck_features ?? 0),
+    deadHeldFeatures: Number(row?.dead_held_features ?? 0),
+  };
+}
