@@ -623,15 +623,19 @@ export const EXTERNAL_RATE_LIMIT_ERROR_RE =
   /openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests/i;
 
 /**
- * Caller-side scope/arg errors that surface with a NON-`invalid_args` code (usually
+ * Caller-side ARG errors that surface with a NON-`invalid_args` code (usually
  * `handler_error`/`harness_required`): the caller omitted or named an unregistered
- * harness, or the session isn't workspace-scoped. These are DX/caller problems
- * (kind=change), NOT tool bugs — without this they fall through to `structural` and
- * flood the auto-implement bug lane with un-fixable "the caller passed the wrong arg"
- * EIs (watchdog-embed-resilience-and-dedup-2026-06-17 P-007). MIRROR of the SQL clause.
+ * harness. These are DX/caller problems (kind=change), NOT tool bugs — without this
+ * they fall through to `structural` and flood the auto-implement bug lane with
+ * un-fixable "the caller passed the wrong harness arg" EIs
+ * (watchdog-embed-resilience-and-dedup-2026-06-17 P-007). MIRROR of the SQL clause.
+ * NB: a missing WORKSPACE-scope ("requires a workspace-scoped call") is deliberately
+ * NOT here — the collector design treats a workspace-scoping gap as `structural` (a
+ * wiring gap worth catching at the low bar), and P-003's fingerprint already separates
+ * it from the embed-429 it used to mask.
  */
 export const CALLER_SCOPE_ERROR_RE =
-  /requires a workspace-scoped call|No harness specified|harness_required|not registered in (any workspace|harness_shared)/i;
+  /No harness specified|harness_required|not registered in (any workspace|harness_shared)/i;
 
 export function classifyToolError(
   errorCode: string | null | undefined,
@@ -827,7 +831,7 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
           -- classifyToolError / CALLER_SCOPE_ERROR_RE).
           WHEN error_code IN ('invalid_args','invalid_input','role_not_allowed','missing_capability','quota_exceeded','harness_required')
                OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%'
-               OR error_message ~* 'requires a workspace-scoped call|No harness specified|not registered in (any workspace|harness_shared)' THEN 'caller'
+               OR error_message ~* 'No harness specified|not registered in (any workspace|harness_shared)' THEN 'caller'
           -- EXTERNAL provider rate-limit (mirrors classifyToolError / EXTERNAL_RATE_LIMIT_ERROR_RE):
           -- an OpenAI embedding TPM 429 ("Rate limit reached" / "tokens per min" / openai_embed_failed_429)
           -- is CAPACITY, not a code bug. Checked before the structural fallback so a sustained
