@@ -57,6 +57,53 @@ export interface ResourceSignals {
   hostRole: HostRole;
 }
 
+/**
+ * Recommended PostgreSQL server knobs derived from the host, PGTune-style.
+ *
+ * The stock Postgres defaults (`max_connections=100`, `shared_buffers=128MB`)
+ * are sized for a tiny machine and never grow — on a 128-core / 251 GiB box
+ * that is a 0.05%-of-RAM buffer cache and a connection ceiling a single
+ * operator process can exhaust by itself. These caps scale the server to the
+ * detected hardware (with floors so a laptop stays sane and ceilings so a huge
+ * box can't ask for more shared memory than is wise). Applied two ways:
+ *   - embedded Postgres (the desktop): fed straight into the postmaster's
+ *     `-c key=value` flags at boot — the app autoadjusts with zero config;
+ *   - native Postgres (a dev box / dedicated server): rendered into a
+ *     `conf.d` drop-in by the `pg-autotune` script.
+ *
+ * Memory sizes are in **MiB**. Render to GUC strings via
+ * {@link databaseTuningToSettings}.
+ */
+export interface DatabaseTuning {
+  /** `max_connections` — server-wide backend ceiling. */
+  readonly maxConnections: number;
+  /** `superuser_reserved_connections` — slots kept for superusers so an
+   *  exhausted pool never locks operators out of their own DB. */
+  readonly superuserReservedConnections: number;
+  /** `shared_buffers` (MiB) — the DB's dedicated page cache. ~25% RAM on a
+   *  dedicated DB, a gentler ~15% when an embedded PG shares the box. */
+  readonly sharedBuffersMb: number;
+  /** `effective_cache_size` (MiB) — planner hint for total cache (OS + DB),
+   *  not an allocation. ~75% RAM dedicated, ~50% embedded. */
+  readonly effectiveCacheSizeMb: number;
+  /** `maintenance_work_mem` (MiB) — for VACUUM / CREATE INDEX. */
+  readonly maintenanceWorkMemMb: number;
+  /** `work_mem` (MiB) — per sort/hash node. Sized so `max_connections` worth of
+   *  concurrent sorts can't blow past RAM. */
+  readonly workMemMb: number;
+  /** `wal_buffers` (MiB). */
+  readonly walBuffersMb: number;
+  /** `max_worker_processes` — background-worker slot ceiling (>= the parallel
+   *  caps below + replication senders). */
+  readonly maxWorkerProcesses: number;
+  /** `max_parallel_workers` — total parallel-query workers. */
+  readonly maxParallelWorkers: number;
+  /** `max_parallel_workers_per_gather` — parallel workers a single query may use. */
+  readonly maxParallelWorkersPerGather: number;
+  /** `max_parallel_maintenance_workers` — parallel workers for CREATE INDEX etc. */
+  readonly maxParallelMaintenanceWorkers: number;
+}
+
 /** The memoized, fully-derived profile — every scale cap the app needs. */
 export interface ResourceProfile {
   /** The (possibly injected) raw signals the caps were derived from. */
@@ -97,6 +144,10 @@ export interface ResourceProfile {
   /** Alias of {@link httpWorkers} for consumers that think in "process count".
    *  Also 1 until clustering lands. */
   readonly processCount: number;
+  /** Recommended PostgreSQL server knobs for THIS host (see {@link DatabaseTuning}).
+   *  The desktop's embedded PG reads these at boot; a native PG is tuned from them
+   *  by the `pg-autotune` script. */
+  readonly database: DatabaseTuning;
 }
 
 /** Override any subset of the auto-detected signals. */
@@ -115,6 +166,87 @@ function clamp(n: number, lo: number, hi: number): number {
   // floor, the safe small-host default.
   if (!Number.isFinite(n)) return lo;
   return Math.max(lo, Math.min(hi, n));
+}
+
+/**
+ * Pure PostgreSQL server-tuning derivation from raw signals — PGTune-style,
+ * every knob a `clamp(formula, FLOOR, CEILING)`. Exported + memo-free for unit
+ * tests. See {@link DatabaseTuning} for what each knob is.
+ *
+ * | knob                          | formula                                            | floor |  ceiling |
+ * |-------------------------------|----------------------------------------------------|-------|----------|
+ * | maxConnections                | cores * 4                                          |  100  |   1000   |
+ * | superuserReservedConnections  | round(maxConnections * 0.02)                       |    3  |     12   |
+ * | sharedBuffersMb               | RAM * (embeddedPg ? 0.15 : 0.25)                   |  128  |  65536   |
+ * | effectiveCacheSizeMb          | RAM * (embeddedPg ? 0.50 : 0.75)                   |  256  | 786432   |
+ * | maintenanceWorkMemMb          | RAM / 16                                            |   64  |   2048   |
+ * | workMemMb                     | (RAM - sharedBuffers) / (maxConnections * 4)       |    4  |     64   |
+ * | walBuffersMb                  | sharedBuffers * 0.03                                |    4  |     64   |
+ * | maxWorkerProcesses            | cores                                              |    8  |    256   |
+ * | maxParallelWorkers            | cores                                              |    8  |    256   |
+ * | maxParallelWorkersPerGather   | round(cores / 2)                                   |    1  |      8   |
+ * | maxParallelMaintenanceWorkers | round(cores / 2)                                   |    1  |      8   |
+ *
+ * The embedded-vs-dedicated split mirrors the rest of the module: an embedded PG
+ * shares the box with the operator + agents, so it takes a gentler slice of RAM
+ * (it must not starve the very process it serves); a dedicated/native DB gets the
+ * textbook PGTune fractions.
+ */
+export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
+  const rawCores = Math.floor(signals.cores);
+  const cores = Number.isFinite(rawCores) ? Math.max(1, rawCores) : 1;
+  // Floor RAM at 0.5 GiB so a bogus/zero signal still yields finite, sane caps
+  // (the clamps below would otherwise key off 0).
+  const totalMb = Math.max(0.5 * 1024, (Number.isFinite(signals.totalMemBytes) ? signals.totalMemBytes : 0) / (1024 * 1024));
+  const { embeddedPg } = signals;
+
+  const maxConnections = clamp(cores * 4, 100, 1000);
+  const superuserReservedConnections = clamp(Math.round(maxConnections * 0.02), 3, 12);
+  const sharedBuffersMb = clamp(Math.round(totalMb * (embeddedPg ? 0.15 : 0.25)), 128, 65536);
+  const effectiveCacheSizeMb = clamp(Math.round(totalMb * (embeddedPg ? 0.5 : 0.75)), 256, 786432);
+  const maintenanceWorkMemMb = clamp(Math.round(totalMb / 16), 64, 2048);
+  const workMemMb = clamp(Math.round((totalMb - sharedBuffersMb) / (maxConnections * 4)), 4, 64);
+  const walBuffersMb = clamp(Math.round(sharedBuffersMb * 0.03), 4, 64);
+  const maxWorkerProcesses = clamp(cores, 8, 256);
+  const maxParallelWorkers = clamp(cores, 8, 256);
+  const maxParallelWorkersPerGather = clamp(Math.round(cores / 2), 1, 8);
+  const maxParallelMaintenanceWorkers = clamp(Math.round(cores / 2), 1, 8);
+
+  return {
+    maxConnections,
+    superuserReservedConnections,
+    sharedBuffersMb,
+    effectiveCacheSizeMb,
+    maintenanceWorkMemMb,
+    workMemMb,
+    walBuffersMb,
+    maxWorkerProcesses,
+    maxParallelWorkers,
+    maxParallelWorkersPerGather,
+    maxParallelMaintenanceWorkers,
+  };
+}
+
+/**
+ * Render a {@link DatabaseTuning} into a map of Postgres GUC name → value string
+ * (with MB units where the knob is a size). Feed to a `conf.d` file
+ * (`${k} = ${v}`) or to embedded-postgres `-c` flags
+ * (`Object.entries(...).flatMap(([k, v]) => ['-c', \`${k}=${v}\`])`).
+ */
+export function databaseTuningToSettings(t: DatabaseTuning): Record<string, string> {
+  return {
+    max_connections: String(t.maxConnections),
+    superuser_reserved_connections: String(t.superuserReservedConnections),
+    shared_buffers: `${t.sharedBuffersMb}MB`,
+    effective_cache_size: `${t.effectiveCacheSizeMb}MB`,
+    maintenance_work_mem: `${t.maintenanceWorkMemMb}MB`,
+    work_mem: `${t.workMemMb}MB`,
+    wal_buffers: `${t.walBuffersMb}MB`,
+    max_worker_processes: String(t.maxWorkerProcesses),
+    max_parallel_workers: String(t.maxParallelWorkers),
+    max_parallel_workers_per_gather: String(t.maxParallelWorkersPerGather),
+    max_parallel_maintenance_workers: String(t.maxParallelMaintenanceWorkers),
+  };
 }
 
 /**
@@ -180,6 +312,9 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   // No cluster yet — pinned to 1 (floor === ceiling).
   const httpWorkers = clamp(1, 1, 1);
 
+  // PostgreSQL server knobs scaled to the same host (see deriveDatabaseTuning).
+  const database = deriveDatabaseTuning(signals);
+
   return {
     signals: Object.freeze({ ...signals, cores }),
     hostClass,
@@ -191,6 +326,7 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
     backgroundInProcess,
     httpWorkers,
     processCount: httpWorkers,
+    database,
   };
 }
 

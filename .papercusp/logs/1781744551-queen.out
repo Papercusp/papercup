@@ -1,0 +1,31 @@
+The desktop notification fired (mobile is inactive, which the tool notes is expected). 
+
+I've exhausted every channel available to me this wake. Here is the honest outcome.
+
+## Queen wake — BLOCKED (tool surface down)
+
+**What happened:** This scheduled wake was launched **without my platform tool surface**. The `papercusp` MCP server injected its instruction block (so the prompt assembled), but it registers **zero callable tools** and there is **no `ToolSearch` loader** to pull the deferred `mcp__papercusp__*` schemas. Verified, not assumed:
+
+| Probe | Result |
+|---|---|
+| `hive_status` | No such tool available |
+| `mcp__papercusp__hive_status` | No such tool available |
+| `ToolSearch` | No such tool available |
+| `ListMcpResourcesTool(papercusp)` | Connected, **0 tools/resources** |
+| File write to `.papercusp/memory/raw.md` (Edit + redirect) | Permission-gated; no approver in an autonomous wake |
+
+This is a hard **registry miss** ("No such tool available"), structurally different from "still connecting" — a within-session retry won't fix it. Every Queen verb is unreachable: `hive:survey`, `fleet:place_batch`/`spawn`, `coord:send`/`resolve`/`escalate`, `inbox:triage`, `work_items:*`, and even `hive:declare-wake`.
+
+**What I did NOT do (per the integrity mandate — STOP and record honestly, never simulate):** I placed nothing, triaged nothing, resolved no escalation, and did not hand-write any checkpoint or wake. Fabricating a DONE here would be contradicted by fleet ground truth and is worse than a truthful BLOCKED.
+
+**What I could do:** Confirm the outage by direct probe; send the owner a desktop notification (mobile inactive). The normal escalation path (`coord:escalate`) is part of the same dead surface, so this report + the notification are the surfacing.
+
+**Carried forward — needs action once the tool surface is restored** (from my wake brief + carry-note; NOT acted on):
+- **Routed question `escalation:mqinx379`** ("Clear the breaker for F-FIX-032 / F-FIX-033?") — still awaiting my decision. My standing diagnosis: F-FIX-032's curse is a false positive (infra outage, now >10h past).
+- **Green-checkpoint `mqip2w7e`/`mqiq6eh2`** — candidate `02adbc35` frozen/not-green, but per `raw.md` (release-fixer 23:34/23:41Z) this was a SHARED-PG connection-exhaustion **load flake** whose fix already landed in staging; needs a re-run on latest tip + close release-not-green.
+- **Cursed placements (WI-214/217/231/232, F-FIX-032)** — per my carry-note these are **FALSE-cursed** (slow `capability:bash` loops → heartbeat stalls → reaper reclaims a live bee → cursed latch). Root fix **WI-231 is in flight** (bee alive, doing it). Do **not** mass-re-place — it churns the fleet and won't hold until WI-231 + WI-233 land.
+- **Frontier (all 50 xbench/extbench items)** — owned by `su-26811096` (taskless-bee bug); **not mine to place**.
+
+**Fix needed (owner):** relaunch this Queen session with the `papercusp` MCP tool surface wired (the launch/MCP-wiring defect, not a code change in-tree). I also could not `hive:declare-wake`, so the **liveness backstop** is the only thing that will re-wake me — if the relaunch carries the tools, the next wake proceeds normally.
+
+ESCALATE papercusp MCP tool surface is unavailable this session (zero tools registered, no ToolSearch loader) — every Queen verb including hive:declare-wake is unreachable; needs a session relaunch with the tool surface wired. No placement/triage/wake performed; nothing simulated.

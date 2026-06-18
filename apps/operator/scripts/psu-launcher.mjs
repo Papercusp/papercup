@@ -274,13 +274,20 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
  * `codex` with `--dangerously-bypass-hook-trust` (the home's only hooks are
  * ours) + the approvals/sandbox bypass MCP tool calls need.
  */
-export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionId } = {}) {
+export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionId, replaceClaudeBase } = {}) {
   if (backend === 'claude') {
+    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
+    // when armed, the playbook REPLACES the Claude coding base (--system-prompt-file +
+    // --exclude-dynamic-system-prompt-sections to drop the residual env block) instead of
+    // appending to it. Flag-off ⇒ --append-system-prompt-file, byte-identical to today.
+    const systemPromptArgs = replaceClaudeBase
+      ? ['--system-prompt-file', promptFile, '--exclude-dynamic-system-prompt-sections']
+      : ['--append-system-prompt-file', promptFile];
     return {
       bin: 'claude',
       args: [
         '--dangerously-skip-permissions',
-        '--append-system-prompt-file', promptFile,
+        ...systemPromptArgs,
         // Force the session id bootstrap-su recorded so `psu --resume <uuid>`
         // can correlate this session to its adv row — and resume the EXACT
         // session, not `--continue`'s most-recent-in-cwd. claude-only (omp/codex
@@ -296,11 +303,18 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
     // omp's papercusp-su is user-level (~/.omp/agent/mcp.json);
     // --append-system-prompt takes a file path; -e loads the coordination
     // extension (P-021) for lock enforcement when one is provided.
-    const args = ['--approval-mode', 'yolo', '--append-system-prompt', promptFile];
+    // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
+    const args = [
+      '--approval-mode', 'yolo',
+      replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
+    ];
     if (coordExtPath) args.push('-e', coordExtPath);
     return { bin: 'omp', args };
   }
   if (backend === 'codex') {
+    // codex has no --system-prompt flag: its system prompt IS the per-session
+    // CODEX_HOME AGENTS.md (the playbook), so codex already carries no Claude base —
+    // REPLACE_CLAUDE_BASE is a no-op here (nothing to switch from append to replace).
     return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox'] };
   }
   throw new Error(`suLaunchArgs: backend '${backend}' has no interactive su launch`);
@@ -1604,6 +1618,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // --resume/--continue *unless* --fork-session is also present (that exception
     // is what launchTrackedFork relies on; see resumeArgsFor).
     nativeSessionId: args.resumeSession ? null : res.nativeSessionId,
+    // P-014: REPLACE_CLAUDE_BASE — bootstrap-su resolves the flag server-side and
+    // threads it via envelopeEnv (same env name the fleet path reads). Off/absent ⇒
+    // suLaunchArgs uses --append (byte-identical to today).
+    replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === '1',
   });
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });

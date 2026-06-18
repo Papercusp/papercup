@@ -6,11 +6,20 @@
  * writes L1 results). Builds from the live store via {@link emitReport} — no run re-execution.
  *
  *   npx tsx packages/operator-core/lib/external-bench/report/report-cli.ts <runId> \
- *     [--out <dir>] [--workspace <slug>]
+ *     [--out <dir>] [--workspace <slug>] [--attribution] [--control <arm>]
  *
  * With no <runId>, lists the most-recent run ids in the result table so you can pick one.
+ *
+ * `--attribution` ALSO writes a `attribution-<runId>.md` — the per-capability "which capability lifted
+ * which suite/task, at what cost" headline (plan P-011; vanilla-vs-+memory/+coord/ours over the stored
+ * rows). `--control <arm>` overrides the default `vanilla` control. Suites without the control arm are
+ * listed as skipped, not silently dropped.
  */
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { emitReport } from './report-builder-pg';
+import { buildRunCapabilityAttribution, formatRunAttributionMarkdown } from './capability-attribution-report';
 import { resolveDb } from '../reproducibility/db';
 
 function arg(name: string): string | undefined {
@@ -52,8 +61,27 @@ if (!runId) {
 const path = await emitReport(runId, { workspace, outDir });
 if (path) {
   console.log(`wrote ${path}`);
-  process.exit(0);
 } else {
   console.error(`no benchmark_run_result rows for run "${runId}" — nothing to report`);
   process.exit(2);
 }
+
+// --attribution: also write the per-capability attribution headline as markdown.
+if (process.argv.includes('--attribution')) {
+  const control = arg('control');
+  const run = await buildRunCapabilityAttribution(runId, {
+    workspace,
+    ...(control ? { attribution: { control } } : {}),
+  });
+  if (!run) {
+    console.error(`no rows for run "${runId}" — no attribution`);
+    process.exit(2);
+  }
+  const dir = outDir ?? join(homedir(), '.papercusp', 'bench-results', 'reports');
+  mkdirSync(dir, { recursive: true });
+  const mdPath = join(dir, `attribution-${runId}.md`);
+  writeFileSync(mdPath, formatRunAttributionMarkdown(run), 'utf8');
+  console.log(`wrote ${mdPath}`);
+}
+
+process.exit(0);

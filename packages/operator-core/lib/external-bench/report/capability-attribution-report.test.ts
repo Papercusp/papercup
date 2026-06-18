@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { TaskRunResult, ArmId, BenchSuite, GraderStatus } from '@papercusp/bench-metrics';
-import { buildRunCapabilityAttribution, type RunResultReader } from './capability-attribution-report';
+import { buildRunCapabilityAttribution, formatRunAttributionMarkdown, type RunResultReader } from './capability-attribution-report';
 
 let seq = 0;
 function row(suite: BenchSuite, taskId: string, arm: ArmId, resolved: boolean): TaskRunResult {
@@ -101,5 +101,37 @@ describe('buildRunCapabilityAttribution', () => {
     expect(res!.control).toBe('baseline-b-native');
     expect(res!.perSuite[0].capabilities.map((c) => c.capability)).toEqual(['papercusp']);
     expect(res!.perSuite[0].capabilities[0].valueDelta).toBeCloseTo(1, 6);
+  });
+});
+
+describe('formatRunAttributionMarkdown', () => {
+  it('renders the headline matrix, per-suite lines, skipped suites, and caveats', async () => {
+    const rows = [
+      row('tau2-bench', 't1', 'vanilla', false),
+      row('tau2-bench', 't1', '+memory', true),
+      // a suite with no control → skipped, surfaced in the markdown
+      row('swe-bench-pro', 'c1', 'papercusp', true),
+      row('swe-bench-pro', 'c1', 'baseline-b-native', false),
+    ];
+    const run = await buildRunCapabilityAttribution('run-X', { reader: fakeReader(rows) });
+    const md = formatRunAttributionMarkdown(run!);
+    expect(md).toContain('# Capability attribution — run `run-X`');
+    expect(md).toContain('Control arm: `vanilla`');
+    expect(md).toContain('## Cross-suite headline');
+    expect(md).toContain('| `+memory` |'); // rollup row
+    expect(md).toContain('### tau2-bench (passAt1)');
+    expect(md).toContain('+memory vs vanilla on tau2-bench'); // per-suite line
+    expect(md).toContain('## Skipped suites');
+    expect(md).toContain('`swe-bench-pro`:'); // skipped reason listed
+    expect(md).toContain('## Caveats');
+    expect(md).toMatch(/PRIMARY = single-capability arms/);
+  });
+
+  it('degrades gracefully when no suite has the control arm', async () => {
+    const rows = [row('swe-bench-pro', 'c1', 'papercusp', true)];
+    const run = await buildRunCapabilityAttribution('run-X', { reader: fakeReader(rows) });
+    const md = formatRunAttributionMarkdown(run!);
+    expect(md).toContain('_No capability arms attributed');
+    expect(md).toContain('## Skipped suites');
   });
 });

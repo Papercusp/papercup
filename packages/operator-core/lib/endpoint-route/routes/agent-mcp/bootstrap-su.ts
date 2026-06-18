@@ -647,8 +647,23 @@ const post = defineTool({
       }
     }
 
+    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
+    // resolve the flag server-side and thread it to the launcher via envelopeEnv (same env
+    // name the fleet path reads). The psu launcher reads it to make the playbook REPLACE the
+    // Claude base (--system-prompt-file + --exclude-dynamic) instead of appending. Fail-soft:
+    // a flag-lookup throw ⇒ off ⇒ the launcher uses --append (byte-identical to today).
+    let replaceClaudeBase = false;
+    try {
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      replaceClaudeBase = await getFlag(FLAGS.REPLACE_CLAUDE_BASE, workspace);
+    } catch {
+      /* flag miss ⇒ replace-base stays off (Claude base + --append stands) */
+    }
+
     const envelopeEnv: Record<string, string> = {
       ...envelope.env,
+      ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
       PAPERCUSP_AGENT: agent,
       PAPERCUSP_SID: sid,
       // Per-launch dispatch profile. claude's user-level MCP url expands

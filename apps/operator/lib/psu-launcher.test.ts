@@ -538,6 +538,54 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
   it('unknown backend: throws', () => {
     expect(() => suLaunchArgs('gemini', files)).toThrow();
   });
+
+  // domain-generic-agent-personas-2026-06-17 P-014: REPLACE_CLAUDE_BASE (default-off).
+  it('replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)', () => {
+    expect(suLaunchArgs('claude', files).args).toContain('--append-system-prompt-file');
+    expect(suLaunchArgs('claude', files).args).not.toContain('--system-prompt-file');
+    expect(suLaunchArgs('claude', files).args).not.toContain('--exclude-dynamic-system-prompt-sections');
+    expect(suLaunchArgs('omp', files).args).toContain('--append-system-prompt');
+    expect(suLaunchArgs('omp', files).args).not.toContain('--system-prompt');
+  });
+
+  it('replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic)', () => {
+    const { args } = suLaunchArgs('claude', { ...files, replaceClaudeBase: true });
+    expect(args).toEqual([
+      '--dangerously-skip-permissions',
+      '--system-prompt-file', '/lc/session-9.md',
+      '--exclude-dynamic-system-prompt-sections',
+      '--permission-mode', 'bypassPermissions',
+    ]);
+    expect(args).not.toContain('--append-system-prompt-file');
+  });
+
+  it('replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append', () => {
+    const { args } = suLaunchArgs('omp', { ...files, replaceClaudeBase: true });
+    expect(args).toEqual([
+      '--approval-mode', 'yolo',
+      '--system-prompt', '/lc/session-9.md',
+      '-e', '/home/u/.papercusp/papercusp-coord.ts',
+    ]);
+    expect(args).not.toContain('--append-system-prompt');
+  });
+
+  it('replaceClaudeBase ON: codex is a no-op (AGENTS.md is already the whole prompt — no Claude base)', () => {
+    expect(suLaunchArgs('codex', { ...files, replaceClaudeBase: true }).args).toEqual([
+      '--dangerously-bypass-hook-trust',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ]);
+  });
+
+  it('replaceClaudeBase ON: claude still forces --session-id when given', () => {
+    const { args } = suLaunchArgs('claude', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9', replaceClaudeBase: true });
+    expect(args).toEqual([
+      '--dangerously-skip-permissions',
+      '--system-prompt-file', '/lc/s.md',
+      '--exclude-dynamic-system-prompt-sections',
+      '--session-id', 'uuid-9',
+      '--permission-mode', 'bypassPermissions',
+    ]);
+  });
 });
 
 describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {

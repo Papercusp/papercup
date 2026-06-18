@@ -1,0 +1,27 @@
+Every write and inspection path in this session is closed: the memory-file Edit also requires a permission that isn't granted, the read-API curl was permission-blocked, and the mobile push didn't send (Remote Control inactive). I'll stop attempting actions that can't land — continuing would just generate noise — and give you an honest report instead.
+
+## 🛑 BLOCKED — Queen cannot function this wake (no tool surface)
+
+**Root problem: this Queen session has *no* papercusp MCP tools registered.** I verified empirically, not by assumption:
+
+- `mcp__papercusp__hive_status`, `mcp__papercusp__coord_inbox`, `mcp__papercusp__memory_search`, `mcp__papercusp_su__memory_search`, and the bare `hive_status` → all return **"No such tool available."**
+- `ListMcpResourcesTool` sees the `papercusp` server but **no exposed surface**, and there is **no `ToolSearch` tool present** — so the verbs aren't merely deferred, they're absent.
+- The read-only `:3070` API curl and the `raw.md` memory write both **require a permission this autonomous session can't grant**.
+
+Every Queen verb I'd need this wake — `inbox:triage`, `coord:resolve`, `work_items:set_priority`, `fleet:place_batch`, `autonomy:decide`, and critically `hive:declare-wake` — is an MCP tool with **no REST fallback**. So I can't triage, place, resolve, or even declare my next wake. Per the integrity mandate I will **not** fabricate any of it (no hand-editing coord/work-item/escalation state, no cron/at/systemd to fake a wake).
+
+**What I was woken to do but could not:**
+- Re-tier the escalation that woke me — green-checkpoint blocker `mqip2w7e` (+ advisory `mqiq6eh2`) on frozen candidate `02adbc35`.
+- Answer the question escalation `mqinx379` directed at me (clear the F-FIX-032/033 cursed breaker?).
+- Declare my next wake → the cadence now falls to the **liveness backstop**.
+
+**State I derived (from the precomputed brief + `raw.md`) so a tool-capable successor or you can act directly:**
+1. **Green-checkpoint `02adbc35` is a known, already-fixed shared-PG load flake** (`raw.md` 156–157: hermetic fix landed via submodule `42a54ca` / `console-noise-filter`). The advisory itself says "re-run on latest tip + close." → **Just re-run the gate on latest staging HEAD and close the stale blocker** — not a genuine need-human.
+2. **The cursed papercup frontier is being handled by SU engineer `su-37e53`** (active in inbox). My standing diagnosis holds: it's false-curse from slow `capability:bash` tight loops stalling heartbeats — **don't mass-re-place**; the durable fix is in flight (WI-231 perf + WI-233 heartbeat-threshold relax). One bee (`principal`) is alive on WI-231.
+3. **The ~50 xbench/extbench frontier items are NOT this hive's** (owner `su-26811096`) — do not place on them.
+
+**What's needed from you / the environment:** restore papercusp MCP tool registration for Queen sessions (the likely cause is an MCP-server registration/connection gap — the server injected its instructions and the wake brief, but its tools never reached my tool list). Once tools are back, the next wake can do the actual triage in seconds.
+
+Nothing is on fire that this blockage endangers: bees are running, an SU engineer owns the root issue, and the green-checkpoint blocker self-heals on the next gate run.
+
+ESCALATE no papercusp MCP tools registered this session — cannot triage/place/resolve/declare-wake; restore MCP tool registration for Queen sessions

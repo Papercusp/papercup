@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   configureResourceProfile,
+  databaseTuningToSettings,
+  deriveDatabaseTuning,
   deriveResourceProfile,
   getResourceProfile,
   resetResourceProfile,
@@ -265,6 +267,103 @@ describe('utility hostRole halves the DBOS queue like request-only (RP3)', () =>
     expect(p.dbosQueueConcurrency).toBe(8);
     const full = deriveResourceProfile(signals({ cores: 16, hostRole: 'full' }));
     expect(p.dbosQueueConcurrency).toBeLessThan(full.dbosQueueConcurrency);
+  });
+});
+
+describe('deriveDatabaseTuning — server (128 cores, 256 GiB, native PG)', () => {
+  const t = deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes: 256 * GIB }));
+
+  it('scales max_connections far past the stock 100 (128 * 4 = 512)', () => {
+    expect(t.maxConnections).toBe(512);
+    expect(t.maxConnections).toBeGreaterThan(100); // the stock default it replaces
+  });
+
+  it('keeps superuser slots reserved so an exhausted pool never locks operators out', () => {
+    expect(t.superuserReservedConnections).toBe(10); // round(512 * 0.02)
+  });
+
+  it('hits the shared_buffers ceiling at 64 GiB (256 GiB * 0.25 = 64 GiB)', () => {
+    expect(t.sharedBuffersMb).toBe(65536);
+  });
+
+  it('sets effective_cache_size to ~75% RAM (planner hint)', () => {
+    expect(t.effectiveCacheSizeMb).toBe(196608); // 256 * 0.75 * 1024
+  });
+
+  it('caps maintenance_work_mem at 2 GiB and work_mem at 64 MiB', () => {
+    expect(t.maintenanceWorkMemMb).toBe(2048);
+    expect(t.workMemMb).toBe(64);
+  });
+
+  it('scales the parallel-worker pool to the cores', () => {
+    expect(t.maxWorkerProcesses).toBe(128);
+    expect(t.maxParallelWorkers).toBe(128);
+    expect(t.maxParallelWorkersPerGather).toBe(8); // clamp(round(128/2), 1, 8)
+    expect(t.maxParallelMaintenanceWorkers).toBe(8);
+  });
+
+  it('never lets the parallel cap exceed the worker-process pool (PG invariant)', () => {
+    expect(t.maxParallelWorkers).toBeLessThanOrEqual(t.maxWorkerProcesses);
+    expect(t.maxParallelWorkersPerGather).toBeLessThanOrEqual(t.maxParallelWorkers);
+  });
+});
+
+describe('deriveDatabaseTuning — laptop with embedded PG sits on the floors', () => {
+  const t = deriveDatabaseTuning(signals({ cores: 4, embeddedPg: true, totalMemBytes: 8 * GIB, freeMemBytes: 8 * GIB }));
+
+  it('floors max_connections at 100 (a small box never goes below the stock ceiling)', () => {
+    expect(t.maxConnections).toBe(100); // clamp(4 * 4, 100, 1000)
+    expect(t.superuserReservedConnections).toBe(3); // floor
+  });
+
+  it('takes only a gentle slice of a shared box (15% RAM, not 25%)', () => {
+    expect(t.sharedBuffersMb).toBe(Math.round(8 * 1024 * 0.15)); // 1229
+  });
+
+  it('floors the worker pool at 8 (== the PG default, no regression on tiny hosts)', () => {
+    expect(t.maxWorkerProcesses).toBe(8);
+    expect(t.maxParallelWorkers).toBe(8);
+    expect(t.maxParallelWorkersPerGather).toBe(2); // round(4 / 2)
+  });
+});
+
+describe('deriveDatabaseTuning — embedded takes a gentler RAM slice than dedicated', () => {
+  it('shared_buffers + effective_cache_size shrink when the DB shares the box', () => {
+    const dedicated = deriveDatabaseTuning(signals({ cores: 16, embeddedPg: false, totalMemBytes: 64 * GIB }));
+    const embedded = deriveDatabaseTuning(signals({ cores: 16, embeddedPg: true, totalMemBytes: 64 * GIB }));
+    expect(embedded.sharedBuffersMb).toBeLessThan(dedicated.sharedBuffersMb);
+    expect(embedded.effectiveCacheSizeMb).toBeLessThan(dedicated.effectiveCacheSizeMb);
+    expect(dedicated.sharedBuffersMb).toBe(16384); // 64 * 0.25 * 1024
+    expect(embedded.sharedBuffersMb).toBe(9830); // round(64 * 0.15 * 1024)
+  });
+});
+
+describe('deriveDatabaseTuning — non-finite signals never poison the knobs', () => {
+  it('NaN cores → finite knobs on the floor', () => {
+    const t = deriveDatabaseTuning(signals({ cores: NaN, totalMemBytes: NaN }));
+    for (const v of Object.values(t)) expect(Number.isFinite(v)).toBe(true);
+    expect(t.maxConnections).toBe(100); // 1 core * 4 -> floored to 100
+    expect(t.sharedBuffersMb).toBeGreaterThanOrEqual(128); // RAM floored to 0.5 GiB -> floor
+  });
+});
+
+describe('databaseTuningToSettings — renders GUC strings with units', () => {
+  it('counts are plain, sizes carry MB', () => {
+    const t = deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB }));
+    const s = databaseTuningToSettings(t);
+    expect(s.max_connections).toBe('512');
+    expect(s.shared_buffers).toBe('65536MB');
+    expect(s.effective_cache_size).toBe('196608MB');
+    expect(s.work_mem).toBe('64MB');
+    expect(s.max_parallel_workers_per_gather).toBe('8');
+  });
+});
+
+describe('resource profile exposes the database tuning', () => {
+  it('the memoized profile carries the derived DB knobs', () => {
+    const p = deriveResourceProfile(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes: 256 * GIB }));
+    expect(p.database.maxConnections).toBe(512);
+    expect(p.database.sharedBuffersMb).toBe(65536);
   });
 });
 

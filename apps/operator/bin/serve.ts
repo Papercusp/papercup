@@ -354,10 +354,28 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   // or silently serves stale data on another port.
   await sweepOrphanPostgres(dataDir);
 
+  // Autoadjust the embedded PG to the host: derive server knobs (max_connections,
+  // shared_buffers, parallelism, work_mem, …) from detected cores/RAM and pass
+  // them as `-c` flags. embeddedPg:true — the DB shares this box with the operator
+  // + agents, so it takes a gentler RAM slice (see deriveDatabaseTuning). Without
+  // this the desktop's embedded PG runs on laptop-sized stock defaults
+  // (max_connections=100 / shared_buffers=128MB), which a busy fleet exhausts.
+  const { deriveDatabaseTuning, databaseTuningToSettings, detectResourceSignals } =
+    await import('@papercusp/resource-profile');
+  const extraPostgresSettings = databaseTuningToSettings(
+    deriveDatabaseTuning(detectResourceSignals({ embeddedPg: true })),
+  );
+  log(
+    `embedded PG host-tuning: max_connections=${extraPostgresSettings.max_connections}, ` +
+      `shared_buffers=${extraPostgresSettings.shared_buffers}, ` +
+      `effective_cache_size=${extraPostgresSettings.effective_cache_size}`,
+  );
+
   const pg = (await startEmbeddedPostgresServer({
     port,
     dataDir,
     dbSqlDir: existsSync(dbSqlDir) ? dbSqlDir : undefined,
+    extraPostgresSettings,
     onLog: (m: string) => log(`pg: ${m}`),
   })) as PgHandle;
 

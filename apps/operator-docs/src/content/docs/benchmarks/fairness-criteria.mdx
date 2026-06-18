@@ -37,9 +37,24 @@ The 2026-06-17 su-vs-mini-swe Opus-4.6 run **failed several of these** (audited 
 
 ### C4 — Test what you claim (the capability must actually be exercised)
 - **The benchmark config must exercise the feature whose advantage you are claiming.**
-- Our differentiator is **multi-agent coordination**: multiple workers on the **same task**, communicating and correcting each other. That advantage **only** appears when workers **overlap on shared work**. Two workers on two *different* tasks get **zero** coordination benefit — it is just parallelism across independent tasks.
-- Therefore: to claim the coordination advantage, run the **hive/Queen config with multiple workers per task** (overlapping, communicating). A `su-independent` arm (one bee per task, no coordination) measures only the **per-task spine** — it must **not** be used to claim a coordination win.
-- State explicitly which capability each arm tests: single-agent loop · single-bee multi-role spine · multi-worker coordinated hive.
+- Our differentiator is **multi-agent coordination**: multiple workers coordinating + correcting each other on overlapping work. That advantage **only** appears when workers **coordinate** — two workers on two *different* tasks with no communication get **zero** coordination benefit (just parallelism).
+- **The real research question is COORDINATION TOPOLOGY: central coordinator (Queen) vs totally-distributed (peer-to-peer) coordination — which collaborates better?** Both topologies use MULTIPLE coordinating agents; they differ only in *how* coordination happens.
+
+**Arm taxonomy (name the topology, don't conflate):**
+
+| Arm | Agents | Coordination | Exists today? |
+|---|---|---|---|
+| mini-swe-agent | 1 | none (baseline floor) | ✅ external |
+| `su-independent` (code) | N, **one task each** | **NONE** — isolated, no comms | ✅ but it's the *no-coordination* pole, NOT distributed |
+| `fifo-noqueen` | N over a backlog | none (scripted FIFO, Queen never wakes) | ✅ also a no-coordination pole |
+| **distributed / peer** | **N, coordinating peer-to-peer** (coord:claim / declare-intent / messages / correct each other), **NO central Queen** | **distributed** | ❌ **MUST BE BUILT** |
+| `hive-realqueen` | N, central Queen places/evicts/re-places/briefs/wakes | **central** | ✅ (currently reliability-degraded — EI-1293) |
+
+<Aside type="caution">
+The code's `su-independent` is the **NO-coordination** pole ("N independent agents, one task each, NO Queen and NO hive orchestration" — per its own header), **not** distributed coordination. A central-vs-distributed comparison therefore **cannot be run until a distributed/peer-coordination arm is built**. Do not label a no-coordination run as "distributed."
+</Aside>
+
+- State explicitly which topology each arm tests. The 2026-06-17 run used `su-independent` = **no coordination** → it tested neither topology, so it says nothing about central-vs-distributed.
 
 ### C5 — Identical grader, environment, and exclusion policy
 - Same grading harness (e.g. `swe_bench_pro_eval.py --use_local_docker`), same `FAIL_TO_PASS`/`PASS_TO_PASS`, same docker images, same per-task timeouts, same repo base commit.

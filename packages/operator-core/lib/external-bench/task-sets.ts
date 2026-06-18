@@ -716,6 +716,16 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
   } catch {
     metrPilotCount = null;
   }
+  let gdpvalGoldCount: number | null = null;
+  let gdpvalPilotCount: number | null = null;
+  try {
+    const g = loadGdpvalTasks();
+    gdpvalGoldCount = g.length;
+    gdpvalPilotCount = gdpvalPilotSubset(g).length;
+  } catch {
+    gdpvalGoldCount = null;
+    gdpvalPilotCount = null;
+  }
   return [
     { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)', count: pilotCount },
     {
@@ -737,6 +747,8 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
     { id: 'metr-hcast', label: 'METR HCAST full (~31 open Task-Standard tasks)', count: metrCount },
     { id: 'swarmbench-pilot', label: 'SwarmBench pilot (Pursuit+Sync, small grid, 3 seeds)', count: swarmbenchScenarios('swarmbench-pilot').length },
     { id: 'swarmbench', label: 'SwarmBench full (5 tasks × 10 agents × 100 rounds — EXPENSIVE)', count: swarmbenchScenarios('swarmbench').length },
+    { id: 'gdpval-pilot', label: 'GDPval pilot (1 task/occupation, deliverable win-rate)', count: gdpvalPilotCount },
+    { id: 'gdpval-gold-220', label: 'GDPval gold subset (220, pairwise-judge win-rate vs expert)', count: gdpvalGoldCount },
     { id: 'custom', label: 'Custom instance ids', count: null },
   ];
 }

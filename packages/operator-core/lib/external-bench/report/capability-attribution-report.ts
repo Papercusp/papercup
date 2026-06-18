@@ -22,7 +22,12 @@ import type {
   CrossSuiteAttribution,
   TaskRunResult,
 } from '@papercusp/bench-metrics';
-import { buildCapabilityAttribution, buildCrossSuiteAttribution, DEFAULT_CONTROL_ARM } from '@papercusp/bench-metrics';
+import {
+  buildCapabilityAttribution,
+  buildCrossSuiteAttribution,
+  formatAttributionLines,
+  DEFAULT_CONTROL_ARM,
+} from '@papercusp/bench-metrics';
 
 /** The injected row reader — defaults to the reproducibility store's `listRunResults`. */
 export type RunResultReader = (opts: { runId: string }) => Promise<TaskRunResult[]>;
@@ -104,4 +109,74 @@ export async function buildRunCapabilityAttribution(
     crossSuite: buildCrossSuiteAttribution(perSuite),
     skippedSuites,
   };
+}
+
+/* ----------------------------- markdown rendering ----------------------------- */
+
+/** A 2-decimal value delta, signed. */
+function fmtDelta(n: number): string {
+  return (n >= 0 ? '+' : '') + n.toFixed(2);
+}
+
+/**
+ * Render a {@link RunCapabilityAttribution} as a readable markdown artifact — the cross-suite headline
+ * matrix, the per-suite narrative lines ({@link formatAttributionLines}), the skipped suites, and the
+ * honest-framing caveats. Pure (no IO) so it unit-tests without a store; the CLI writes the string to a file.
+ * This is the owner-facing surface: the moment a run lands, "which capability lifted which suite/task, at what
+ * cost" reads straight out of one `.md`.
+ */
+export function formatRunAttributionMarkdown(run: RunCapabilityAttribution): string {
+  const out: string[] = [];
+  out.push(`# Capability attribution — run \`${run.runId}\``);
+  out.push('');
+  out.push(`Control arm: \`${run.control}\``);
+  out.push('');
+
+  // Cross-suite headline (per-capability roll-up).
+  out.push('## Cross-suite headline');
+  out.push('');
+  if (run.crossSuite.rollup.length === 0) {
+    out.push('_No capability arms attributed (no suite carried the control arm)._');
+  } else {
+    out.push('| capability | suites | mean Δ | significant | Pareto-better | tasks ↑ | tasks ↓ |');
+    out.push('|---|---|---|---|---|---|---|');
+    for (const r of run.crossSuite.rollup) {
+      out.push(
+        `| \`${r.capability}\` | ${r.suites} | ${fmtDelta(r.meanValueDelta)} | ${r.suitesSignificant}/${r.suites} | ${r.suitesParetoBetter}/${r.suites} | ${r.totalUnlocked} | ${r.totalRegressed} |`,
+      );
+    }
+    out.push('');
+    out.push('_Mean Δ mixes pass@1 and meanScore across suites of different metrics — read the per-suite lines for the honest per-metric number._');
+  }
+  out.push('');
+
+  // Per-suite narrative lines.
+  out.push('## Per suite');
+  out.push('');
+  for (const rep of run.perSuite) {
+    out.push(`### ${rep.suite} (${rep.metric})`);
+    const lines = formatAttributionLines(rep);
+    if (lines.length === 0) out.push('_no capability arms_');
+    else for (const l of lines) out.push(`- ${l}`);
+    out.push('');
+  }
+
+  // Skipped suites (honest about what wasn't attributed).
+  if (run.skippedSuites.length) {
+    out.push('## Skipped suites');
+    out.push('');
+    for (const s of run.skippedSuites) out.push(`- \`${s.suite}\`: ${s.reason}`);
+    out.push('');
+  }
+
+  // Caveats — carried from the attribution reports (D-008/D-011).
+  const caveats = run.crossSuite.caveats;
+  if (caveats.length) {
+    out.push('## Caveats');
+    out.push('');
+    for (const c of caveats) out.push(`- ${c}`);
+    out.push('');
+  }
+
+  return out.join('\n');
 }

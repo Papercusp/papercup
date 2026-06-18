@@ -1,0 +1,3 @@
+I need write permission to implement this fix. The bug is in `packages/operator-core/lib/iq-battery/bee-instance.ts` — the `--timeout-ms` flag from the IQ battery gen0 runner never gets forwarded to the bee's spawn call, so bees always hit the 45-minute DBOS default instead of the user's configured timeout.
+
+The fix is three surgical edits to that one file, plus a regression test in `bee-instance.test.ts`. Can you grant write access to these files so I can proceed?
