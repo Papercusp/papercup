@@ -1,0 +1,149 @@
+import { describe, it, expect, vi } from 'vitest';
+import {
+  buildEpochEncryptCapability,
+  buildEpochDecryptGate,
+  buildEpochKeyResolver,
+  type EpochKeyResolver,
+} from './hive-epoch-op-gate';
+import { PendingEpochContent } from './pending-epoch-content';
+import type { HiveEpochCrypto, EpochKey } from './hive-epoch-crypto';
+import type { OpEnvelope } from './op-envelope-types';
+import type { LocalWriteOp } from './boot';
+
+/**
+ * Fake symmetric crypto: the "ciphertext" encodes (key, aad.opId, payload); decryptOp
+ * round-trips only when BOTH the key AND the AAD opId match what sealed it — so a wrong
+ * key or a tampered (table/hbKey/author/epoch/hive) AAD fails closed, exactly like the
+ * real XChaCha20-Poly1305 AEAD. Lets us prove the gate's defer/drop/passthrough logic
+ * without real crypto.
+ */
+function fakeCrypto(): HiveEpochCrypto {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  return {
+    deriveEpochKey: async () => 'K' as unknown as EpochKey,
+    wrapKeyToMember: async () => new Uint8Array(),
+    unwrapEpochKey: async () => 'K' as unknown as EpochKey,
+    encryptOp: async (payload: Uint8Array, key: EpochKey, aad: { opId: string }) =>
+      enc.encode(JSON.stringify({ k: String(key), aad: aad.opId, p: Buffer.from(payload).toString('base64') })),
+    decryptOp: async (ct: Uint8Array, key: EpochKey, aad: { opId: string }) => {
+      const o = JSON.parse(dec.decode(ct)) as { k: string; aad: string; p: string };
+      if (o.k !== String(key) || o.aad !== aad.opId) throw new Error('AEAD verify failed');
+      return new Uint8Array(Buffer.from(o.p, 'base64'));
+    },
+  } as unknown as HiveEpochCrypto;
+}
+
+const KEY_OK: EpochKeyResolver = async () => 'K' as unknown as EpochKey;
+const KEY_MISSING: EpochKeyResolver = async () => {
+  throw new Error('EpochKeyUnavailable'); // a member whose wrapped row hasn't arrived
+};
+const HIVE = 'hello-world-hive';
+
+const localOp = (over: Partial<LocalWriteOp> = {}): LocalWriteOp =>
+  ({ type: 'put', table: 'harness-features', hbKey: 'F-1', value: { title: 'hi' }, ts: 0, writerPubkey: 'author1', ...over }) as LocalWriteOp;
+
+const envFromEnc = (enc: { epoch: number; value: unknown }, over: Partial<OpEnvelope> = {}): OpEnvelope =>
+  ({ type: 'put', table: 'harness-features', hbKey: 'F-1', writerPubkey: 'author1', value: enc.value, epoch: enc.epoch, ...over }) as OpEnvelope;
+
+describe('hive-epoch-op-gate', () => {
+  it('encrypt → decrypt round-trips (same op identity + key) and clears epoch downstream', async () => {
+    const crypto = fakeCrypto();
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 3 });
+    const enc = await cap.encryptOp(localOp());
+    expect(enc).not.toBeNull();
+    expect(enc!.epoch).toBe(3);
+    expect((enc!.value as { __rekey?: string }).__rekey).toBeTypeOf('string');
+
+    const pending = new PendingEpochContent();
+    const gate = buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending });
+    let applied: OpEnvelope | null = null;
+    const out = await gate(async (op) => {
+      applied = op;
+      return true;
+    })(envFromEnc(enc!));
+    expect(out).toBe(true);
+    expect(applied!.value).toEqual({ title: 'hi' }); // decrypted plaintext
+    expect(applied!.epoch).toBeUndefined(); // epoch cleared after decrypt
+  });
+
+  it('epoch-absent op ⇒ plaintext passthrough (inner sees it unchanged)', async () => {
+    const pending = new PendingEpochContent();
+    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_OK, hiveId: HIVE, pending });
+    let seen: OpEnvelope | null = null;
+    const out = await gate(async (op) => {
+      seen = op;
+      return true;
+    })({ type: 'put', table: 'hive_members', hbKey: 'm1', value: { x: 1 } } as OpEnvelope);
+    expect(out).toBe(true);
+    expect(seen!.value).toEqual({ x: 1 });
+  });
+
+  it('key NOT local ⇒ DEFER (buffered, inner not called, returns false) — the removed-member cut', async () => {
+    const pending = new PendingEpochContent();
+    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_MISSING, hiveId: HIVE, pending });
+    const inner = vi.fn(async () => true);
+    const out = await gate(inner)({ type: 'put', table: 'harness-features', hbKey: 'F-2', value: { __rekey: 'YWJj' }, epoch: 5 } as OpEnvelope);
+    expect(out).toBe(false);
+    expect(inner).not.toHaveBeenCalled();
+    expect(pending.size()).toBe(1); // deferred; a removed member's never drains = forever cut
+  });
+
+  it('have key but decrypt fails (wrong key / tampered AAD) ⇒ DROP (not deferred)', async () => {
+    const crypto = fakeCrypto();
+    const pending = new PendingEpochContent();
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 5 });
+    const enc = await cap.encryptOp(localOp({ hbKey: 'F-3', value: { a: 1 } }));
+    // The gate resolves a DIFFERENT key than the one it was sealed under → AEAD verify fails.
+    const gate = buildEpochDecryptGate({ crypto, resolveKey: async () => 'WRONG' as unknown as EpochKey, hiveId: HIVE, pending });
+    const inner = vi.fn(async () => true);
+    const out = await gate(inner)(envFromEnc(enc!, { hbKey: 'F-3' }));
+    expect(out).toBe(false);
+    expect(inner).not.toHaveBeenCalled();
+    expect(pending.size()).toBe(0); // dropped (a true cut), NOT deferred
+  });
+
+  it('a tampered op identity (different hbKey than sealed) ⇒ DROP (AAD mismatch)', async () => {
+    const crypto = fakeCrypto();
+    const pending = new PendingEpochContent();
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 7 });
+    const enc = await cap.encryptOp(localOp({ hbKey: 'F-real', value: { a: 1 } }));
+    const gate = buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending });
+    const inner = vi.fn(async () => true);
+    // apply the ciphertext but claim a DIFFERENT hbKey → the AAD opId won't match → drop.
+    const out = await gate(inner)(envFromEnc(enc!, { hbKey: 'F-forged' }));
+    expect(out).toBe(false);
+    expect(inner).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildEpochKeyResolver (owner|member dispatch)', () => {
+  it('OWNER → deriveEpochKey (mints); never touches the provider', async () => {
+    const derive = vi.fn(async () => 'OWNER' as unknown as EpochKey);
+    const keyForEpoch = vi.fn(async () => 'M' as unknown as EpochKey);
+    const resolve = buildEpochKeyResolver({
+      crypto: { deriveEpochKey: derive } as unknown as HiveEpochCrypto,
+      provider: { keyForEpoch } as never,
+      isOwner: async () => true,
+    });
+    expect(await resolve(HIVE, 2)).toBe('OWNER');
+    expect(derive).toHaveBeenCalledWith(HIVE, 2);
+    expect(keyForEpoch).not.toHaveBeenCalled();
+  });
+
+  it('MEMBER → provider.keyForEpoch (unwraps); never derives; caches owner-ness', async () => {
+    const derive = vi.fn();
+    const keyForEpoch = vi.fn(async () => 'M' as unknown as EpochKey);
+    const isOwner = vi.fn(async () => false);
+    const resolve = buildEpochKeyResolver({
+      crypto: { deriveEpochKey: derive } as unknown as HiveEpochCrypto,
+      provider: { keyForEpoch } as never,
+      isOwner,
+    });
+    expect(await resolve(HIVE, 4)).toBe('M');
+    await resolve(HIVE, 5);
+    expect(derive).not.toHaveBeenCalled();
+    expect(keyForEpoch).toHaveBeenCalledTimes(2);
+    expect(isOwner).toHaveBeenCalledTimes(1); // owner-ness resolved once + cached
+  });
+});
