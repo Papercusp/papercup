@@ -88,6 +88,16 @@ import { buildVerifyBindingAdapter } from './verify-binding-adapter';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { recordTelemetryReport } from '../../record-telemetry';
 import { TELEMETRY_KINDS, type TelemetryKind } from '../../telemetry-kinds';
+// ── Owner-enforcement (plan shared-hive-owner-enforcement-2026-06-19) ── the single
+// merge-seam where every inbound op is checked against the owner's signed Hive policy:
+// EN-2 rate (inner) wrapped by EN-4 ban/allowlist/takedown/content (outer). Default-off
+// (no policy ⇒ passthrough). Composition is proven by policy-admission.apply.test.ts.
+import type { HivePolicy } from '../../hive-policy-schema';
+import { getHivePolicy } from '../../hive-policy-store';
+import { isContentTakenDown } from '../../hive-moderation';
+import { MemberRateLimiter } from './rate-limiter';
+import { makeRateLimitedApply } from './rate-limit-admission';
+import { makePolicyEnforcedApply } from './policy-admission';
 
 /** Short human label for a dropped peer, for the boot-history message field.
  *  Truncates the (long) Noise key to its first 8 hex chars. */
@@ -602,6 +612,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // CURRENT scopedApply each pass). An `applyOverride` (the rigs) is never rebuilt.
   let scopedApply = opts.applyOverride ?? buildScopedApply(hiveHomeProjectionSlug);
 
+  // ── Owner-enforcement rate limiter (EN-2) ── STATEFUL across merge passes (its
+  // per-(author,class) tumbling windows persist), so it is created ONCE here and
+  // reused; the owner policy is re-snapshotted per pass below. Inert until an owner
+  // sets a rate cap (no caps ⇒ the wrapper is a pure passthrough).
+  const rateLimiter = new MemberRateLimiter();
+
   // ── Admitted-set ── keyHex → log. Seeded with the own log (which is
   // structurally an AdmittedLog). Remote logs are added on admit (4b).
   const admitted = new Map<string, AdmittedLog>();
@@ -1071,10 +1087,49 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         return 0;
       }
 
+      // ── Owner-enforcement seam (plan shared-hive-owner-enforcement-2026-06-19) ──
+      // Read the owner-SIGNED Hive policy ONCE per merge pass. This runs only past the
+      // !changed guard above (a pass with new content to merge) — an idle / un-policed
+      // harness pays NOTHING. The policy is scoped to the Hive home (hiveHomeProjectionSlug
+      // rebinds on the joiner re-key; the owner's home harness is its own slug). null ⇒
+      // no policy ⇒ no enforcement.
+      const ownerPolicy: HivePolicy | null =
+        (
+          await getHivePolicy(
+            opts.workspaceId,
+            hiveHomeProjectionSlug ?? opts.harnessSlug,
+          ).catch(() => null)
+        )?.policy ?? null;
+      // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
+      // EN-2 rate (inner) wrapped by EN-4 ban → allowlist → takedown → content (outer),
+      // over the CURRENT scopedApply (which `rekey` may have rebound). With no policy this
+      // is `scopedApply` itself — byte-for-byte the prior behavior. Author attribution keys
+      // off the unforgeable receiver-stamped sourceLogKeyHex via admittedIdentities; an
+      // author-dependent rule with an unresolved author fails CLOSED (the wrappers' contract).
+      const enforcedApply = ownerPolicy
+        ? makePolicyEnforcedApply({
+            currentPolicy: () => ownerPolicy,
+            resolveAuthor: (k) => {
+              const id = admittedIdentities.get(k);
+              return id ? { githubUserId: id.githubUserId, githubUsername: id.githubLogin } : null;
+            },
+            ownLogKeyHex: ownLog.keyHex,
+            isContentTakenDown: (policy, op) => isContentTakenDown(policy, op.hbKey ?? ''),
+            apply: makeRateLimitedApply({
+              limiter: rateLimiter,
+              ownLogKeyHex: ownLog.keyHex,
+              resolveAuthorId: (k) => admittedIdentities.get(k)?.githubUserId ?? null,
+              currentCaps: () => ownerPolicy.rate ?? null,
+              apply: scopedApply,
+            }),
+          })
+        : scopedApply;
+
       const mergeOpts = {
         // D-021: route through THIS harness's scoped projection apply, not the
-        // global registry (which the last-booted harness would own).
-        applyImpl: scopedApply,
+        // global registry (which the last-booted harness would own). EN-4: wrapped by
+        // the owner-enforcement seam above (passthrough = scopedApply when no policy).
+        applyImpl: enforcedApply,
         // The old per-author cap, reshaped: a per-PASS read budget. A log with
         // more backlog than this advances chunk-by-chunk across the 1Hz poll
         // (≈50k ops/sec/log ingest ceiling) instead of losing its tail (EI-91).
@@ -1316,6 +1371,29 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     }
     if (!inScope) {
+      // A-003 fix: the slug scope can be UNRESOLVED at admit time. A joiner's member
+      // harness only learns its hive-home slug at the 2c re-key (`hiveHomeProjectionSlug`
+      // is set by `rekey`'s rebind, AFTER boot opens the topic + onAnnounce goes live).
+      // If the owner's hive-home log announce races in during that `home=<none>` window,
+      // a CONCLUSIVE out-of-scope reject would drop it permanently (announces are not
+      // re-delivered) → the hive-home log never federates (the live-RED bug the witness
+      // caught). So: while home is UNRESOLVED and the origin is some OTHER harness's slug
+      // (a hive-home candidate that the pending rebind may bring in-scope), buffer the
+      // frame for retry instead of rejecting — `retryPendingOnce` re-checks the slug
+      // scope against the now-resolved `hiveHomeProjectionSlug` and admits iff in-scope.
+      // Once home IS resolved, an out-of-scope frame is genuinely foreign → conclusive.
+      if (hiveHomeProjectionSlug == null && originSlug != null && originSlug !== slug) {
+        if (!pendingPeers.has(frame.device_pubkey)) {
+          pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+        }
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_pending',
+          `scope_unresolved origin=${originSlug} own=${slug} ${peerLabel(frame.log_core_key)}`,
+        );
+        return { admit: false, reason: 'pending' };
+      }
       // The NORMAL broadcast-filtering outcome (one topic, many harnesses) — not an
       // alarm. Recorded for observability; NOT forwarded to the admission-rejection
       // telemetry (it is not a forgery / binding failure). Conclusive (never retried).
@@ -1428,9 +1506,29 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         };
         const decision = await admit(input);
         if (decision.admit) {
-          // Verified! Remove from pending + admit.
-          pendingPeers.delete(devicePubkey);
-          await admitPeer(entry.frame);
+          // A-003: identity is verified, but the SLUG SCOPE may have been unresolved
+          // when this frame was first buffered (the joiner's hive-home rebind had not
+          // happened yet). Re-check scope against the now-current `hiveHomeProjectionSlug`
+          // (the rekey rebind updates it). Admit ONLY if in-scope; if still out-of-scope
+          // because home is STILL unresolved, keep pending (the rebind may yet land); if
+          // out-of-scope with home now RESOLVED, the frame is genuinely foreign →
+          // conclusive reject. (Identity-pending peers re-verified here are in-scope for
+          // this harness, so this gate is transparent to the D-006 channel-2 path.)
+          const originSlug = entry.frame.harness_slug ?? null;
+          const inScope = announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug);
+          if (inScope) {
+            pendingPeers.delete(devicePubkey);
+            await admitPeer(entry.frame);
+          } else if (hiveHomeProjectionSlug != null) {
+            pendingPeers.delete(devicePubkey);
+            recordBootEvent(
+              opts.workspaceId,
+              opts.harnessSlug,
+              'announce_rejected',
+              `out-of-scope origin=${originSlug} own=${slug} ${peerLabel(entry.frame.log_core_key)}`,
+            );
+          }
+          // else: home still unresolved → leave pending for the next retry tick.
         } else if (decision.reason !== 'pending') {
           // Conclusive failure (binding_invalid / bad_sig / revoked) —
           // stop retrying.
