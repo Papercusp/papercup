@@ -55,6 +55,11 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // shared-hive-federation-2026-06-08 (P-006): per-Hive admission federates over the
   // peer-log (projections/hive-members.ts → hive_members).
   'hive-members': 'hive_members',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-SIGNED Hive policy record
+  // federates over the peer-log (projections/hive-policy.ts → hive_policy; tableTag
+  // 'hive-policy'). SINGLETON per Hive, scoped to the Hive home; the projection verifies
+  // the owner signature before applying.
+  'hive-policy': 'hive_policy',
   // fed-reanchor B5: the work-queue's issue/task family federates over the peer-log
   // (projections/engineer-issues.ts → engineer_issues; key == issue_id).
   'engineer-issues': 'engineer_issues',

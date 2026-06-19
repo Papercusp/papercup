@@ -31,6 +31,9 @@ vi.mock('nuqs', async () => {
   const builder = (def: unknown) => ({ __default: def, withDefault: (d: unknown) => ({ __default: d }) });
   return {
     parseAsString: builder(null),
+    // HivePolicyPanel uses parseAsBoolean.withDefault(false) for the 'hivePolicy'
+    // panel-open URL state — the mock must export it or the panel render throws.
+    parseAsBoolean: builder(false),
     useQueryState: (key: string, parser?: { __default?: unknown }) => {
       const [v, setV] = React.useState<unknown>(initialParams[key] ?? parser?.__default ?? null);
       return [v, (next: unknown) => { setV(next); return Promise.resolve(true); }];
