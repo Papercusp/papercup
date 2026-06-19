@@ -60,6 +60,12 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // 'hive-policy'). SINGLETON per Hive, scoped to the Hive home; the projection verifies
   // the owner signature before applying.
   'hive-policy': 'hive_policy',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-3): the member→owner moderation report
+  // queue + the approval-mode pending-join queue federate over the peer-log
+  // (projections/hive-reports.ts → hive_reports; projections/hive-pending-joins.ts →
+  // hive_pending_joins). Both hive-home-grained (scoped to the Hive home slug).
+  'hive-reports': 'hive_reports',
+  'hive-pending-joins': 'hive_pending_joins',
   // fed-reanchor B5: the work-queue's issue/task family federates over the peer-log
   // (projections/engineer-issues.ts → engineer_issues; key == issue_id).
   'engineer-issues': 'engineer_issues',
