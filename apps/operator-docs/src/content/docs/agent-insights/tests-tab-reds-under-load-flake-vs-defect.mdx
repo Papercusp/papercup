@@ -59,6 +59,19 @@ the failing test name + assertion (or the timeout message).
   `overwatch/liveness.test.ts` passes a fake `sql` directly and clears mocks in
   `beforeEach`) — it just ran in a worker a sibling polluted. Passes in isolation;
   self-greens on the next fleet run.
+  - **The race can wear a CONCRETE-ASSERTION disguise.** `plans/set-schedule.test.ts`
+    flaked twice (2026-06-19 02:15 + 02:43, both on load spikes) with
+    `expected [ Array(1) ] to be undefined` — which *reads* like a deterministic
+    defect, not a `undefined`-is-not-a-function bleed. Don't be fooled: it asserts
+    `b.warnings` is undefined (weekly RRULE → no frequency warning), runs the REAL
+    pure `frequencyWarning`, and that function returns `null` for that input at
+    **every** wall-clock (verified 0/6720 samples across 14 days) — so a non-null
+    warning can ONLY come from cross-file `vi.mock` contamination of
+    `harness/routines/schedule-next` under the parallel scheduler. It's a vi.mock-heavy
+    file (3 mocks); passes 7/7 isolated. Lesson: a concrete-looking `toBe`/`toBeUndefined`
+    failure is STILL this class if (a) it passes in isolation, (b) the asserted
+    production logic is provably deterministic for the input, and (c) it only fails on
+    load spikes. Re-run isolated before ever touching a correct test.
 
 Both classes correlate with **box load** (fleet + benchmark containers; saw load avg 33–90,
 180 vitest procs). They are test-INFRA fragility, not defects — the fix is lower load, not

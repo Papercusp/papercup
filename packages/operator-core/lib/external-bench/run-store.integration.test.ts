@@ -30,6 +30,7 @@ import {
   listBenchRuns,
   getBenchRunDetail,
   importPreservedRunToStore,
+  importAllPreservedRuns,
   rollupBenchRunMetrics,
 } from './run-store';
 import type { FleetTaskResult } from './hive-backlog';
@@ -263,5 +264,56 @@ describe('bench run-store (file-dir import)', () => {
     const detail = await getBenchRunDetail('preserved-run', scope);
     expect(detail!.perTask).toHaveLength(2);
     expect(detail!.run.coordEvents).toHaveLength(2);
+  });
+});
+
+// A preserved run whose arm JSON OMITS the `arm` field passed `undefined` to the
+// upsert → postgres-js `UNDEFINED_VALUE: Undefined values are not allowed` →
+// importAllPreservedRuns threw and the WHOLE boot-time backfill aborted (the
+// Evaluation Compare view stayed empty). importPreservedRunToStore now coerces the
+// missing arm to a placeholder and importAllPreservedRuns isolates per-run failures
+// so one bad dir can't sink the batch.
+describe('importAllPreservedRuns — resilient to a malformed run (missing arm) [EI: bench-import]', () => {
+  let baseDir: string;
+  beforeAll(() => {
+    baseDir = mkdtempSync(join(tmpdir(), 'bench-import-malformed-'));
+    const okDir = join(baseDir, 'ok-run');
+    mkdirSync(okDir, { recursive: true });
+    writeFileSync(
+      join(okDir, 'hive-realqueen.json'),
+      JSON.stringify({
+        arm: 'hive-realqueen',
+        runId: 'ok-run-orig',
+        taskCount: 1,
+        perTask: [{ instanceId: 'inst_ok', costUsd: 1, tokensIn: 10, tokensOut: 10, turns: 1, wallClockMs: 0, diffBytes: 5 }],
+        recovered: false,
+      }),
+      'utf8',
+    );
+    // The malformed run: arm JSON has NO `arm` key (the production failure mode).
+    const badDir = join(baseDir, 'bad-run');
+    mkdirSync(badDir, { recursive: true });
+    writeFileSync(
+      join(badDir, 'hive-noarm.json'),
+      JSON.stringify({
+        runId: 'bad-run-orig',
+        taskCount: 1,
+        perTask: [{ instanceId: 'inst_bad', costUsd: 1, tokensIn: 10, tokensOut: 10, turns: 1, wallClockMs: 0, diffBytes: 5 }],
+        recovered: false,
+      }),
+      'utf8',
+    );
+  });
+  afterAll(() => rmSync(baseDir, { recursive: true, force: true }));
+
+  it('imports BOTH runs without throwing; the missing-arm run gets a placeholder arm (pre-fix: whole batch threw)', async () => {
+    const res = await importAllPreservedRuns({ ...scope, baseDir });
+    expect(res.imported.sort()).toEqual(['bad-run', 'ok-run']);
+    expect(res.skipped).toEqual([]);
+
+    expect((await getBenchRunDetail('ok-run', scope))!.arm).toBe('hive-realqueen');
+    const bad = await getBenchRunDetail('bad-run', scope);
+    expect(bad!.arm).toBe('unknown'); // coerced placeholder, not undefined
+    expect(bad!.perTask).toHaveLength(1);
   });
 });

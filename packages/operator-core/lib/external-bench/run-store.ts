@@ -386,7 +386,11 @@ export async function recordRunCompletion(
   // blocks or fails run completion; a runId with no run_result rows just no-ops (returns null).
   try {
     const { emitReport } = await import('./report/report-builder-pg');
-    await emitReport(runId, { workspace: opts.workspace });
+    // DbScope carries `workspaceId`, not `workspace` — the old `opts.workspace`
+    // was always `undefined` (a type error), so the report builder silently fell
+    // back to the ACTIVE workspace and emitted the wrong/empty report for any run
+    // in a non-active workspace.
+    await emitReport(runId, { workspace: opts.workspaceId });
   } catch {
     /* report emit is best-effort — a missing report never breaks a completed run */
   }
@@ -508,7 +512,10 @@ export async function importPreservedRunToStore(
   await upsertBenchRun(
     {
       id,
-      arm: run.arm,
+      // `arm` is a NOT-NULL identity column; a preserved run whose metadata JSON
+      // omitted it would pass `undefined` to postgres-js (UNDEFINED_VALUE) and
+      // throw. Fall back to a placeholder so a near-complete run still imports.
+      arm: run.arm ?? 'unknown',
       taskSetId: inferTaskSetId(perTask.length),
       model: 'opus',
       source: 'import',
@@ -522,6 +529,10 @@ export async function importPreservedRunToStore(
 
   // Per-task rows (with grader verdict already merged by readPreservedRun).
   for (const t of perTask) {
+    // instance_id is half the (run_id, instance_id) PK / ON CONFLICT target — a
+    // task missing it can't be keyed (undefined → postgres-js UNDEFINED_VALUE);
+    // skip it rather than abort the whole run's import.
+    if (t.instanceId == null) continue;
     await upsertBenchRunTask(
       id,
       {
@@ -587,8 +598,20 @@ export async function importAllPreservedRuns(
   const imported: string[] = [];
   const skipped: string[] = [];
   for (const entry of listPreservedRuns(baseDir)) {
-    const res = await importPreservedRunToStore(entry.id, opts);
-    (res.imported ? imported : skipped).push(entry.id);
+    // Per-entry isolation: ONE malformed preserved run (e.g. a metadata JSON
+    // missing `arm` → postgres-js `UNDEFINED_VALUE`) must not abort the whole
+    // boot-time backfill and leave the Evaluation Compare view empty. Skip the
+    // bad run with a warning and import the rest.
+    try {
+      const res = await importPreservedRunToStore(entry.id, opts);
+      (res.imported ? imported : skipped).push(entry.id);
+    } catch (e) {
+      skipped.push(entry.id);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[bench-import] skipped malformed preserved run ${entry.id}: ${e instanceof Error ? e.message : e}`,
+      );
+    }
   }
   return { imported, skipped };
 }

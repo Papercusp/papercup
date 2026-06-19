@@ -110,7 +110,23 @@ transform, not the test body. Bumping the timeout is a losing treadmill (proven 
 parallel files. The failing test is often correctly written (e.g.
 <code dir="auto">overwatch/liveness.test.ts</code> passes a fake <code dir="auto">sql</code> directly and clears mocks in
 <code dir="auto">beforeEach</code>) — it just ran in a worker a sibling polluted. Passes in isolation;
-self-greens on the next fleet run.</li>
+self-greens on the next fleet run.
+<ul>
+<li><strong>The race can wear a CONCRETE-ASSERTION disguise.</strong> <code dir="auto">plans/set-schedule.test.ts</code>
+flaked twice (2026-06-19 02:15 + 02:43, both on load spikes) with
+<code dir="auto">expected [ Array(1) ] to be undefined</code> — which <em>reads</em> like a deterministic
+defect, not a <code dir="auto">undefined</code>-is-not-a-function bleed. Don’t be fooled: it asserts
+<code dir="auto">b.warnings</code> is undefined (weekly RRULE → no frequency warning), runs the REAL
+pure <code dir="auto">frequencyWarning</code>, and that function returns <code dir="auto">null</code> for that input at
+<strong>every</strong> wall-clock (verified 0/6720 samples across 14 days) — so a non-null
+warning can ONLY come from cross-file <code dir="auto">vi.mock</code> contamination of
+<code dir="auto">harness/routines/schedule-next</code> under the parallel scheduler. It’s a vi.mock-heavy
+file (3 mocks); passes 7/7 isolated. Lesson: a concrete-looking <code dir="auto">toBe</code>/<code dir="auto">toBeUndefined</code>
+failure is STILL this class if (a) it passes in isolation, (b) the asserted
+production logic is provably deterministic for the input, and (c) it only fails on
+load spikes. Re-run isolated before ever touching a correct test.</li>
+</ul>
+</li>
 </ul>
 <p>Both classes correlate with <strong>box load</strong> (fleet + benchmark containers; saw load avg 33–90,
 180 vitest procs). They are test-INFRA fragility, not defects — the fix is lower load, not

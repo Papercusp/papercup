@@ -2,10 +2,16 @@
  * set-schedule.test.ts — the plans:set-schedule handler's OWN logic: recurrence
  * validation, error-code mapping, the persisted-args shaping, and the `scheduled`
  * flag. These branches all run BEFORE the PG write, so we mock `./source`
- * (setPlanSchedule has no other test) and `./_ctx-opts` to keep this a fast,
- * deterministic unit test, while running the REAL validateRrule/frequencyWarning
- * (pure). A regression that flips the rrule/cron dispatch, drops a required-field
- * check, or mis-maps an error code is exactly what this pins.
+ * (setPlanSchedule has no other test) and `./_ctx-opts`.
+ *
+ * We also mock `../../harness/routines/schedule-next` (validateRrule +
+ * frequencyWarning) and drive its verdict from the test. Those helpers have their
+ * OWN tests; here we test the handler's WIRING (which verdict maps to which branch),
+ * not the rrule library's internals. (Using the real ones depended on a lazy
+ * rrule-lib `createRequire` load that flaked under the full parallel suite — a
+ * deterministic mock removes that flake source; D-028 path-2 says mock the
+ * dependency, test the wiring.) A regression that flips the rrule/cron dispatch,
+ * drops a required-field check, or mis-maps an error code is what this pins.
  *
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/set-schedule.test.ts
@@ -20,9 +26,16 @@ vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
+vi.mock('../../harness/routines/schedule-next', () => ({
+  validateRrule: vi.fn(),
+  frequencyWarning: vi.fn(),
+}));
 
 import { setPlanSchedule } from './source';
+import { validateRrule, frequencyWarning } from '../../harness/routines/schedule-next';
 const setSched = vi.mocked(setPlanSchedule);
+const validate = vi.mocked(validateRrule);
+const freqWarn = vi.mocked(frequencyWarning);
 const tool = (await import('./set-schedule')).default;
 
 type Out = { content: { text: string }[]; isError?: boolean };
@@ -33,6 +46,8 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   setSched.mockReset();
   setSched.mockResolvedValue(true);
+  validate.mockReset().mockReturnValue({ ok: true }); // default: rrule is valid
+  freqWarn.mockReset().mockReturnValue(null); // default: not "frequent"
 });
 
 describe('plans:set-schedule validation (pre-PG branches)', () => {
@@ -43,12 +58,14 @@ describe('plans:set-schedule validation (pre-PG branches)', () => {
     expect(setSched).not.toHaveBeenCalled();
   });
 
-  it('rejects an rrule that fails validateRrule (missing FREQ)', async () => {
+  it('rejects an rrule that fails validateRrule, surfacing the reason', async () => {
+    validate.mockReturnValue({ ok: false, error: 'rrule missing FREQ' });
     const out = await call({ schedule: { kind: 'rrule', rrule: 'BYDAY=MO,WE' } });
     expect(out.isError).toBe(true);
     const b = body(out);
     expect(b.error).toBe('invalid_rrule');
-    expect(String(b.detail)).toMatch(/FREQ/i);
+    expect(String(b.detail)).toMatch(/FREQ/i); // the validateRrule error is passed through
+    expect(validate).toHaveBeenCalledWith('BYDAY=MO,WE');
     expect(setSched).not.toHaveBeenCalled();
   });
 
