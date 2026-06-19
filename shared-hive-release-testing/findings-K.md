@@ -238,3 +238,48 @@ invariant → RED → restore → GREEN.)
   after the witness was captured — it was the pre-fix 05:33 `.deb`, only useful for the
   pre-fix witness. The K-2 / C-001 re-witness rides su-9140a's **integrated fix-`.deb`**
   pair (A-002 + A-003 + D-001) — see the coord ask; no separate pair needed.
+
+---
+
+## Re-key (Move 2) — **IMPLEMENTED** (2026-06-19, su-ee7e9 + 7dcd8 + 328af + c2a63)
+
+The §"Re-key (Move 2) … NOT in this release" verdict above is **superseded**: the owner
+re-confirmed and chose to **build Move 2** this session. It is now implemented end-to-end,
+**flag-dark behind `papercusp-hive-rekey`** (default off → zero production behavior change
+until the witness is green + the owner flips the flag), committed + pushed to
+`origin/staging`. Full hyperbee backbone **1085** green with the whole stack together.
+
+**What landed (all flag-dark):**
+- **A-003 seam** — the hive-home→joiner path the epoch/key rows ride; first GREEN live
+  witness on the real binary (`findings-A003-GREEN-witness-2026-06-19.md`) + re-landed +
+  pinned. EI-1688 (snapshot delete-resurrection, the revocation-durability prereq) fixed.
+- **Per-epoch content crypto** (`hive-epoch-op-gate.ts`) — encrypt-on-capture (7dcd8) +
+  apply-side decrypt gate + owner|member key resolver (su-ee7e9). AEAD bound to
+  (hive, epoch, op-identity); decrypt wraps the enforcement stack OUTERMOST
+  (decrypt → EN-4 → EN-2 → scopedApply; 328af-reviewed). Boot thread + `buildHiveRekeyBootDeps`.
+- **`hive_epoch_keys` distribution** — federated projection + CDC serializer (su-ee7e9).
+- **Boundary trigger** (`advanceEpochOnHiveBoundary`) — member-remove + go-private advance
+  the epoch + re-key REMAINING members. **This is the C-001 read cut:** a removed member's
+  epoch-N+1 key never arrives → its post-boundary content defers forever, undecryptable.
+  Closes **K-1** (revoke now `live:true`) + **K-2** (cut is at the CRYPTO layer; the content
+  topic stays immutable, so no topic-level cutoff is needed).
+- **Member-ADD key distribution** (`grantEpochKeysToMembers`, wraps [0..current]) — the
+  join-time gap su-ee7e9 found by analysis: the boundary trigger fired ONLY on
+  remove/go-private, so a JOINER got no key (the re-key cut everyone, not just removed
+  members) — masked by hermetic tests seeding keys. Fix grants every epoch key [0..current]
+  to a joiner (content is encrypted-once + never re-encrypted on advance → a collaborator
+  needs all prior keys to read the existing project; c2a63's correctness call).
+  Owner-self-gating; wired into BOTH admission seams (`upsertHiveMember` + open-mode
+  `boot.ts` admit), dual-reviewed (su-ee7e9 + 328af).
+
+**P-008 live cut-off witness — DESIGN (run pending, folded with 328af's AK in one flag-on
+.deb rig):** extend `two-instance-hive-from-repo-smoke.sh`, flag-on via env
+`PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1`. K0 B's `hive_epoch_keys` count ≥ 1 (origin=remote,
+member-add grant federated) → K1 CONTROL A writes F-CTRL → B reads it (decrypts) → K2 A
+revokes B via `substrate:revoke_contributor` (→ `revokeHiveContributor` → epoch advance) →
+K3 CUT A writes F-CUT → B **cannot** read it (defers, undecryptable) while a remaining
+member can. The 2-peer CUT (B read F-CTRL, can't read F-CUT) = the release-grade C-001
+proof; 3rd-instance remaining-member-reads-F-CUT = non-regression follow-up.
+**Result: ⏳ pending the run.** Ship gate, NOT a correctness gate — implementation proven
+hermetically (backbone 1085 + 7dcd8 68/22 + 328af compose 6/6 + helper 8/8 + seam tests).
+Plan: `shared-hive-rekey-2026-06-19`.
