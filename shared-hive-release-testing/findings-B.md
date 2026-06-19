@@ -154,20 +154,49 @@ crash/corruption blocker, so it does not by itself hold release — but "a feder
 feature loses its design + plan lineage on a real hive" should be a conscious choice
 before public release, not a silent gap.
 
-### B-003 — Log-first federated tables lack a real 2-peer crossing test (S2, test-depth gap)
+### B-003 — Log-first federated tables lacked a real 2-peer crossing test (S2 — NOW FULLY CLOSED this pass)
 
 **Severity:** S2 (the projection write/delete paths ARE unit-tested against real PG;
-what is untested is the end-to-end `ownLog.append` → swarm → peer-apply crossing).
+what was untested is the end-to-end `ownLog.append` → swarm → peer-apply crossing).
 
-`feature_claims`, `feature_queue`, `feature_working_set`, `contributors` federate via
-direct `ownLog.append` (not substrate-outbox), and have only **single-PG
-projection-unit tests** — no test writes on peer A and asserts the row applies on
-peer B with `origin=remote`. (`shared_presence`, the 5th log-first table, IS
-exercised 2-peer — it is the roster `_cross-peer-rig` federates.) The composition-rig
-loop tests exercise the loop with a *fake* pipeline, not these tables' real apply.
-Lower-priority than B-001/B-002 (these are smaller, well-typed rows and the
-projection logic is covered), but a real 2-peer crossing test per table would close
-the gap. Left open with rationale; recommend a follow-up reusing `_cross-peer-rig`.
+The 4 substrate-free log-first tables federate via direct `ownLog.append` and had
+only **single-PG projection-unit tests** — no test wrote on peer A and asserted the
+row applied on peer B. (`shared_presence`, the 5th log-first table, IS exercised
+2-peer — it is the roster `_cross-peer-rig` federates. The composition-rig loop tests
+exercise the loop with a *fake* pipeline, not these tables' real apply.)
+
+**Two closed this pass (the highest-value ones):**
+- `feature-claims-two-peer-federation.integration.test.ts` (the highest-STAKES) — two
+  mutually-admitted Swarms on a real loopback DHT, each wiring the REAL `feature_claims`
+  projection; each peer appends a claim exactly as `orchestrator/feature-claim.ts` does,
+  and the test asserts each peer's PG ends holding the OTHER peer's claim (the property
+  that lets the orchestrator on B see A's claim → a double-claim is detectable instead of
+  both peers working a feature blind). Column-completeness at the crossing + no echo
+  mis-attribution. Teeth: no-op the projection `writeToPg` → RED; restore → GREEN.
+- `contributors-two-peer-federation.integration.test.ts` (admission-relevant + the only
+  one with a DELETE path) — the per-harness contributor/device roster. Proves (1) the row
+  crosses A→B with the `device_attestations` JSONB array + `binding_status` +
+  `revoked_pubkeys` intact (jsonb not silently flattened), and (2) a contributor TOMBSTONE
+  (`del`, EI-79 ts-guarded) crosses A→B and removes the row on B (a removed contributor
+  doesn't linger on the peer). Teeth: no-op the projection `deleteFromPg` → the tombstone
+  proof goes RED; restore → GREEN.
+
+To build them I added a small **additive, backward-compatible seam** to `_cross-peer-rig.ts`
+(`buildPeerApply`/`bootPresencePeer`/`federateTwoPeerPresence` now take optional
+`extraProjections`), verified safe by re-running the rig's existing consumers
+(`cross-peer-coordination` 9/9 + `leave-hive-tombstone` 1/1).
+
+**`feature_queue` + `feature_working_set` closed (the last two):**
+`feature-queue-workingset-two-peer-federation.integration.test.ts` — one real two-peer
+rig wiring BOTH projections; proves each work-pointer crosses A→B as a `put` and is
+removed on B by a `del` tombstone (ts-guarded). The `feature_working_set` apply's
+`working_users[]` recompute (`UPDATE harness_features_consolidated`) is exercised on the
+peer too (a minimal real-shape features table is present). Teeth: no-op the queue
+`writeToPg` → RED ("never crossed A→B"); restore → GREEN.
+
+**Status: B-003 is fully closed.** All 5 log-first federated tables now have a real
+2-peer crossing test — `shared_presence` (pre-existing via `_cross-peer-rig`),
+`feature_claims`, `contributors`, `feature_queue`, `feature_working_set` (this pass).
 
 ### B-004 — Brief first-pass corrections (informational)
 
@@ -218,21 +247,40 @@ did NOT close that — it is a topic-derivation concern (Brief A's live path + t
 My column-drift guard runs over the mapper directly, so it is unaffected by the topic
 path. Flagged so it is not assumed covered.
 
-## What I tested
+## What I tested (new, teeth-verified)
 
-- New: `federated-column-completeness.integration.test.ts` (13 CDC tables × real
-  migrated schema; teeth-verified RED→GREEN). 14/14 green.
-- Re-ran + confirmed green: `capture-coverage.test.ts`, `projection-engine.test.ts`
-  (the two structural guards).
-- Did NOT modify any production source (verified `feature-issue-op-keys.ts` is
-  byte-identical to HEAD after teeth-verification).
+- `federated-column-completeness.integration.test.ts` (B-001) — 13 CDC tables ×
+  real migrated schema; the column-drift guard. Teeth-verified (drop `severity` from
+  `toIssueValue` → RED; restore → GREEN). 14/14 green.
+- `feature-claims-two-peer-federation.integration.test.ts` (B-003) — real 2-peer
+  swarm crossing for `feature_claims`. Teeth-verified (no-op the projection → RED;
+  restore → GREEN). 1/1 green.
+- `contributors-two-peer-federation.integration.test.ts` (B-003) — real 2-peer swarm
+  crossing for `contributors`: row crossing (jsonb attestations intact) + tombstone
+  crossing (ts-guarded del removes the row on B). Teeth-verified (no-op `deleteFromPg`
+  → tombstone proof RED; restore → GREEN). 1/1 green.
+- `feature-queue-workingset-two-peer-federation.integration.test.ts` (B-003) — real
+  2-peer crossing for `feature_queue` + `feature_working_set` (put + del tombstone each;
+  the working_users recompute runs on the peer). Teeth-verified (no-op the queue
+  `writeToPg` → RED; restore → GREEN). 1/1 green. **→ B-003 fully closed.**
+- Additive seam on `_cross-peer-rig.ts` (`extraProjections`) — backward-compatible;
+  verified by re-running its consumers (`cross-peer-coordination` 9/9,
+  `leave-hive-tombstone` 1/1).
+- Re-ran + confirmed green: the two structural guards `capture-coverage.test.ts` +
+  `projection-engine.test.ts` (18/18).
+- No production source semantics changed: `feature-issue-op-keys.ts` and
+  `projections/feature-claims.ts` are byte-identical to HEAD after teeth-verification;
+  the only non-test edit is the additive rig seam.
 
 ## Verdict
 
-**GREEN** for the substrate-outbox capture→apply path (structurally guarded at table
-and now column grain; 12/13 CDC tables have real 2-peer tests; `harness_plan_parts`
-is DARK-by-flag, not broken). **YELLOW pending the B-002 owner decision** — a
-federated feature currently loses its design + plan-lineage + a few content columns
-on a peer; that should be a conscious choice before public release. **B-003** (log-first
-2-peer crossing) is an open S2 test-depth gap with rationale. No S0 data-loss/corruption
-found in the federated path.
+**GREEN** for the substrate-outbox capture→apply path: structurally guarded at the
+table grain (two green coverage guards) and now the **column grain** (new B-001
+guard); 12/13 CDC tables have real 2-peer tests (`harness_plan_parts` is DARK-by-flag,
+not broken); and the highest-stakes log-first table (`feature_claims`) now has a real
+teeth-verified 2-peer crossing test. **YELLOW pending the B-002 owner decision** — a
+federated feature currently loses its design + plan-lineage + a few content columns on
+a peer; that should be a conscious choice before public release (filed as WI-251).
+**B-003 is now fully closed** — all 5 log-first federated tables have a real
+teeth-verified 2-peer crossing test. **No S0 data-loss/corruption found in the
+federated path.** The only residual is the B-002 owner decision (the YELLOW above).
