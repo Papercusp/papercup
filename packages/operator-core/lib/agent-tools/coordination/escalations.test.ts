@@ -6,9 +6,19 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog, coordLog } from './log';
-import { listEscalationsPaginated } from './escalations';
+import { listEscalationsPaginated, resolveEscalationsBatch } from './escalations';
 
 afterEach(() => resetCoordLog());
+
+/** An InMemoryCoordLog that counts how many times the FULL surface is scanned
+ *  (`readEvents`) — the O(n²) signal the batch resolve must NOT trip. */
+class CountingCoordLog extends InMemoryCoordLog {
+  readEventsCalls = 0;
+  override readEvents(surface: Parameters<InMemoryCoordLog['readEvents']>[0]) {
+    this.readEventsCalls += 1;
+    return super.readEvents(surface);
+  }
+}
 
 async function seedOpen(n: number): Promise<void> {
   configureCoordLog(new InMemoryCoordLog());
@@ -78,5 +88,85 @@ describe('listEscalationsPaginated — bounded read (EI-1548)', () => {
     const r = await listEscalationsPaginated({ maxRecords: 50 });
     expect(r.escalations).toEqual([]);
     expect(r.truncated).toBe(false);
+  });
+});
+
+describe('resolveEscalationsBatch — single-load drain (EI-1490)', () => {
+  async function seedOpens(log: InMemoryCoordLog, n: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 1; i <= n; i++) {
+      const id = `e${i}`;
+      ids.push(id);
+      await log.putEvent('escalations', id, {
+        ts: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+        msg_id: id,
+        from: 'system:hive-placement-watchdog',
+        to: ['human'],
+        kind: 'escalation',
+        severity: 'advisory',
+        summary: `esc ${id}`,
+        resolved: null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+    return ids;
+  }
+
+  it('reads the FULL surface exactly ONCE regardless of batch size (no O(n²))', async () => {
+    const log = new CountingCoordLog();
+    configureCoordLog(log);
+    const ids = await seedOpens(log, 25);
+    log.readEventsCalls = 0; // ignore the seeding reads (putEvent does none, but be safe)
+
+    const r = await resolveEscalationsBatch(
+      ids.map((id) => ({ msg_id: id, choice: 'auto-reconciled', resolver: 'system:test' })),
+    );
+
+    expect(r.resolved).toBe(25);
+    // The whole batch drained from ONE load — the regression: the old per-item
+    // path scanned the entire surface once PER item (would be 25 here).
+    expect(log.readEventsCalls).toBe(1);
+
+    // And they really are folded out of the open set afterwards.
+    const open = await listEscalationsPaginated({ status: 'open', maxRecords: 500 });
+    expect(open.escalations).toHaveLength(0);
+  });
+
+  it('reports notFound / alreadyResolved / duplicate-in-batch without extra loads', async () => {
+    const log = new CountingCoordLog();
+    configureCoordLog(log);
+    const [e1] = await seedOpens(log, 1);
+    log.readEventsCalls = 0;
+
+    const r = await resolveEscalationsBatch([
+      { msg_id: e1, choice: 'x' }, // resolves
+      { msg_id: e1, choice: 'x' }, // duplicate in same batch → alreadyResolved
+      { msg_id: 'missing', choice: 'x' }, // notFound
+    ]);
+
+    expect(r).toMatchObject({ resolved: 1, alreadyResolved: 1, notFound: 1, requiresSpawnApprove: 0 });
+    expect(log.readEventsCalls).toBe(1);
+  });
+
+  it('never auto-resolves a spawn-approval request', async () => {
+    const log = new CountingCoordLog();
+    configureCoordLog(log);
+    await log.putEvent('escalations', 'spawn1', {
+      ts: '2026-01-01T00:00:01.000Z', msg_id: 'spawn1', from: 'bee-7', to: ['human'],
+      kind: 'escalation', severity: 'blocker', summary: 'approve spawn?', resolved: null,
+      spawnRequest: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const r = await resolveEscalationsBatch([{ msg_id: 'spawn1', choice: 'auto-reconciled' }]);
+    expect(r).toMatchObject({ resolved: 0, requiresSpawnApprove: 1 });
+  });
+
+  it('empty batch → no load, zero counts', async () => {
+    const log = new CountingCoordLog();
+    configureCoordLog(log);
+    const r = await resolveEscalationsBatch([]);
+    expect(r).toEqual({ resolved: 0, notFound: 0, alreadyResolved: 0, requiresSpawnApprove: 0 });
+    expect(log.readEventsCalls).toBe(0);
   });
 });

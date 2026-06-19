@@ -35,6 +35,7 @@ import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
 import { selectSpawnAccount } from '../deployment/account-pool-store';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
+import { desktopEnvForHive } from '../agent-tools/computer/desktop-lease';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import { assembleSpawnHydration } from './spawn-hydration';
 import { productionSpawnHydrationDeps } from './spawn-hydration-deps';
@@ -998,6 +999,15 @@ export async function spawnAgentInHarness(
   // accounts sit idle (owner's "rate-limit-with-headroom = routing bug"). selectSpawnAccount only
   // ever returns an AVAILABLE account, so the keyed per-account bucket admits.
   if (routeAccountId) extraEnv.PAPERCUSP_ACCOUNT_ID = routeAccountId;
+
+  // capability:computer desktop lease (computer-tool-plan 2.4): if THIS hive holds a
+  // leased sandbox desktop, thread its display into the bee's env so capability:computer
+  // resolves the right Xvfb (never host :0). Keyed by the harness slug (== the hive home-
+  // harness slug). desktopEnvForHive() returns {} when the hive has no lease → a clean
+  // no-op (the tool then errors "no desktop leased" = deny-by-default). Mirrors the frame
+  // path's acquireAgentDisplay→DISPLAY injection (orchestrator-runner). The lease lives in
+  // THIS operator loop's in-process map, the same loop that builds this spawn.
+  Object.assign(extraEnv, desktopEnvForHive(slug));
 
   // Register an abort handle so fleet:cancel can stop the child (EI-40).
   const abort = new AbortController();

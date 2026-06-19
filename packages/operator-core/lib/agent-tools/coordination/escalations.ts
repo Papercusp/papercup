@@ -186,6 +186,91 @@ export async function archiveResolvedEscalations(
   return { scanned: opens.length, archived, truncated: toArchive.length >= limit };
 }
 
+/** One escalation to resolve in a batch sweep. Mirrors the per-call ResolveInput
+ *  fields the batch path needs (no `allowSpawnRequest` — spawn-approval requests
+ *  are never auto-reconciled, so a batch never resolves them). */
+export interface BatchResolveItem {
+  msg_id: string;
+  choice: string;
+  resolver?: string;
+  note?: string;
+}
+
+export interface BatchResolveResult {
+  resolved: number;
+  notFound: number;
+  alreadyResolved: number;
+  requiresSpawnApprove: number;
+}
+
+/**
+ * Resolve MANY escalations from a SINGLE load of the escalation log.
+ *
+ * EI-1490: the attention-reconcile sweep used to call `resolveEscalation` once
+ * per stale escalation, and EACH call re-reads the ENTIRE escalations surface
+ * (`loadEscalations` → `readEvents`) to find the open + check the resolve index.
+ * Over the live ~13k operational backlog that is O(n²) per tick (500 resolves ×
+ * a full ~14k-event scan each), so a sweep tick is slow enough to drain only a
+ * fraction of its batch before the step budget — the lane never actually
+ * drained. This batch loads + indexes ONCE, then writes the sibling
+ * `escalation_resolved` events in a single O(n) pass.
+ *
+ * Idempotent + safe exactly like `resolveEscalation`: an unknown id → notFound,
+ * an already-resolved (or duplicate-in-batch) id → alreadyResolved (no write),
+ * a spawn-approval request → requiresSpawnApprove (never auto-resolved).
+ */
+export async function resolveEscalationsBatch(
+  inputs: readonly BatchResolveItem[],
+): Promise<BatchResolveResult> {
+  const result: BatchResolveResult = {
+    resolved: 0,
+    notFound: 0,
+    alreadyResolved: 0,
+    requiresSpawnApprove: 0,
+  };
+  if (inputs.length === 0) return result;
+
+  // ONE load for the whole batch (the O(n²) → O(n) fix).
+  const { opens, resolves } = await loadEscalations();
+  const openById = new Map(opens.map((e) => [e.msg_id, e]));
+  const alreadyResolved = indexResolves(resolves);
+  // Also guard against the same msg_id appearing twice in `inputs`.
+  const resolvedThisBatch = new Set<string>();
+
+  for (const input of inputs) {
+    const open = openById.get(input.msg_id);
+    if (!open) {
+      result.notFound += 1;
+      continue;
+    }
+    if (alreadyResolved.has(input.msg_id) || resolvedThisBatch.has(input.msg_id)) {
+      result.alreadyResolved += 1;
+      continue;
+    }
+    if ((open as Record<string, unknown>).spawnRequest === true) {
+      result.requiresSpawnApprove += 1;
+      continue;
+    }
+    const ev: EscalationResolvedEvent = {
+      ts: new Date().toISOString(),
+      msg_id: newMsgId(),
+      from: input.resolver ?? open.from,
+      to: [open.from],
+      kind: 'escalation_resolved',
+      related_msg_id: input.msg_id,
+      summary: `resolved: ${input.choice}`,
+      choice: input.choice,
+    };
+    if (input.resolver !== undefined) ev.by = input.resolver;
+    if (input.note !== undefined) ev.note = input.note;
+    await coordLog.putEvent('escalations', ev.msg_id, ev);
+    resolvedThisBatch.add(input.msg_id);
+    result.resolved += 1;
+  }
+
+  return result;
+}
+
 /** Read one escalation by msg_id (with folded resolution), or null. */
 export async function getEscalation(
   msg_id: string,

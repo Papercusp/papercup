@@ -200,6 +200,11 @@ import './p2p-perf-actions';
 //  `scout` blueprint. register-scout-action no longer registers anything; the
 //  scout:cycle op lazy-imports productionScoutRunner from it directly.)
 import './session-dir-gc-action';
+// `system:telemetry-retention` — daily prune of the unbounded high-volume
+// diagnostic tables (route_invocations/tool_invocations); infra-audit R2 (plan
+// infra-perf-robustness-audit-2026-06-18 P-006). Seeded INACTIVE
+// (seed-telemetry-retention-routine.ts --active).
+import './telemetry-retention-action';
 // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
 // reaper — marks dead-process open adv_sessions ended (reclaims roster +
 // unblocks session-dir-gc). Flag-gated DEFAULT-OFF + seeded INACTIVE.

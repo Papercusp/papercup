@@ -21,7 +21,7 @@
  */
 
 import { isOperationalEscalation } from './adapters';
-import { listEscalations, resolveEscalation } from '../agent-tools/coordination/escalations';
+import { listEscalations, resolveEscalationsBatch } from '../agent-tools/coordination/escalations';
 
 /** Resolver identity stamped on auto-reconciled escalations (audit trail). */
 export const RECONCILE_OWNER = 'system:attention-reconcile';
@@ -93,16 +93,23 @@ export async function reconcileStaleEscalationsOnce(
   const limit = opts.limit ?? RECONCILE_BATCH_LIMIT;
   const batch = stale.slice(0, limit);
 
-  let resolved = 0;
-  for (const s of batch) {
-    const r = await resolveEscalation({
-      msg_id: s.msg_id,
-      choice: 'auto-reconciled',
-      resolver: RECONCILE_OWNER,
-      note: `auto-resolved: operational escalation idle ${Math.round(s.ageDays)}d — live state is the derived health metric (queue-pending-accuracy P-003/P-005)`,
-    });
-    if (r !== 'not_found' && r !== 'already_resolved' && r !== 'requires_spawn_approve') resolved += 1;
-  }
+  // EI-1490: resolve the whole batch from a SINGLE load of the escalation log.
+  // The per-item `resolveEscalation` re-read the entire surface every call
+  // (O(n²) over the ~13k operational backlog), so a tick drained only a fraction
+  // of its batch before the step budget — the lane never actually emptied.
+  const resolved =
+    batch.length === 0
+      ? 0
+      : (
+          await resolveEscalationsBatch(
+            batch.map((s) => ({
+              msg_id: s.msg_id,
+              choice: 'auto-reconciled',
+              resolver: RECONCILE_OWNER,
+              note: `auto-resolved: operational escalation idle ${Math.round(s.ageDays)}d — live state is the derived health metric (queue-pending-accuracy P-003/P-005)`,
+            })),
+          )
+        ).resolved;
 
   return { scanned: opens.length, stale: stale.length, resolved, truncated: stale.length > batch.length };
 }

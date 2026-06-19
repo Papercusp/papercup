@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const listMock = vi.fn();
-const resolveMock = vi.fn();
+const batchMock = vi.fn();
 vi.mock('../agent-tools/coordination/escalations', () => ({
   listEscalations: (...a: unknown[]) => listMock(...a),
-  resolveEscalation: (...a: unknown[]) => resolveMock(...a),
+  resolveEscalationsBatch: (...a: unknown[]) => batchMock(...a),
 }));
 
 import {
@@ -72,8 +72,11 @@ describe('selectStaleEscalations (P-003/P-005)', () => {
 describe('reconcileStaleEscalationsOnce (P-003)', () => {
   beforeEach(() => {
     listMock.mockReset();
-    resolveMock.mockReset();
-    resolveMock.mockResolvedValue({ kind: 'escalation_resolved' });
+    batchMock.mockReset();
+    // Default: the batch resolves everything it is handed.
+    batchMock.mockImplementation((items: { msg_id: string }[]) =>
+      Promise.resolve({ resolved: items.length, notFound: 0, alreadyResolved: 0, requiresSpawnApprove: 0 }),
+    );
   });
 
   it('resolves only the stale operational escalations and reports counts', async () => {
@@ -85,11 +88,13 @@ describe('reconcileStaleEscalationsOnce (P-003)', () => {
     ]);
     const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
     expect(r).toMatchObject({ scanned: 4, stale: 2, resolved: 2, truncated: false });
-    expect(resolveMock).toHaveBeenCalledTimes(2);
-    const resolvedIds = resolveMock.mock.calls.map((c) => (c[0] as { msg_id: string }).msg_id).sort();
-    expect(resolvedIds).toEqual(['old1', 'old2']);
+    // EI-1490: the sweep resolves the whole batch in ONE call (was one call per
+    // item, each re-loading the entire escalation log — O(n²) over ~13k rows).
+    expect(batchMock).toHaveBeenCalledTimes(1);
+    const items = batchMock.mock.calls[0][0] as { msg_id: string; resolver: string }[];
+    expect(items.map((i) => i.msg_id).sort()).toEqual(['old1', 'old2']);
     // stamps the reconcile owner so the resolution is attributable in the ledger
-    expect((resolveMock.mock.calls[0][0] as { resolver: string }).resolver).toBe('system:attention-reconcile');
+    expect(items[0].resolver).toBe('system:attention-reconcile');
   });
 
   it('respects the batch limit and reports truncated=true', async () => {
@@ -100,13 +105,22 @@ describe('reconcileStaleEscalationsOnce (P-003)', () => {
     ]);
     const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl, limit: 2 });
     expect(r).toMatchObject({ stale: 3, resolved: 2, truncated: true });
-    expect(resolveMock).toHaveBeenCalledTimes(2);
+    // ONE batch call carrying exactly the limit-bounded slice.
+    expect(batchMock).toHaveBeenCalledTimes(1);
+    expect((batchMock.mock.calls[0][0] as unknown[]).length).toBe(2);
   });
 
   it('is idempotent: an already-resolved escalation is not counted as resolved', async () => {
     listMock.mockResolvedValue([row({ msg_id: 'gone', ts: iso(10 * DAY) })]);
-    resolveMock.mockResolvedValue('already_resolved');
+    batchMock.mockResolvedValue({ resolved: 0, notFound: 0, alreadyResolved: 1, requiresSpawnApprove: 0 });
     const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
     expect(r).toMatchObject({ stale: 1, resolved: 0 });
+  });
+
+  it('makes NO batch call when there is nothing stale (empty sweep)', async () => {
+    listMock.mockResolvedValue([row({ msg_id: 'fresh', ts: iso(1 * DAY) })]);
+    const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+    expect(r).toMatchObject({ stale: 0, resolved: 0 });
+    expect(batchMock).not.toHaveBeenCalled();
   });
 });
