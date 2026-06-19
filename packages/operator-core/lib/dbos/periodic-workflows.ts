@@ -31,6 +31,7 @@ import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
+import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
 // spawnReclaimSweep, staleClaimSweep, learningInfraHealth, steeringChurnSweep) were
@@ -244,3 +245,26 @@ const testRunsPruneWorkflow = DBOS.registerWorkflow(testRunsPruneTick, {
   name: 'testRunsPrune', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(testRunsPruneWorkflow, { name: 'testRunsPrune', crontab: '0 17 4 * * *' });
+
+// Every 6h (:50, off the :00 stampede + after the outbox backstop GC at :00):
+// storage growth alarm (infra-perf-reliability-audit-round4 P-017 — the EI-126
+// 102 GB silent-growth guard). READ-ONLY catalog-size check (sizesOnly, no row
+// scan); emits a notifications:recent toast if any PG storage category crosses
+// its absolute ceiling. Default ON; kill-switch PAPERCUSP_STORAGE_GROWTH_ALARM=0.
+// Never throws → can't affect what it watches. Shed under loop pressure.
+async function storageGrowthAlarmTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_STORAGE_GROWTH_ALARM === '0') return;
+    if (shouldShedHeavyTick('storage-growth-alarm')) return;
+    const r = await runStorageGrowthAlarmOnce();
+    if (r.breaches.length > 0) {
+      console.log(
+        `[storage-growth-alarm] ${r.breaches.length} categor(y/ies) over ceiling: ${r.breaches.map((b) => `${b.id}=${(b.bytes / 1024 ** 3).toFixed(1)}GB`).join(', ')}`,
+      );
+    }
+  }, { name: 'storage-growth-alarm' });
+}
+const storageGrowthAlarmWorkflow = DBOS.registerWorkflow(storageGrowthAlarmTick, {
+  name: 'storageGrowthAlarm', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
