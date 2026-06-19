@@ -12,7 +12,7 @@ import { eq } from 'drizzle-orm';
 
 const hr = generated.harnessRegistryInHarnessShared;
 
-interface ProjectEntry {
+export interface ProjectEntry {
   slug: string;
   path: string;
   harness_kind?: string;
@@ -28,7 +28,7 @@ export interface HarnessLite {
   last_active_ts: number | null;
 }
 
-async function readHarnessRegistryFor(workspaceId: string): Promise<ProjectEntry[]> {
+export async function readHarnessRegistryFor(workspaceId: string): Promise<ProjectEntry[]> {
   // Per-workspace explicit lookup — mobile MUST not use activeWorkspaceId()
   // (the desktop's currently-selected workspace), it must use the JWT claim
   // it was paired into. Reads `harness_shared.harness_registry` directly

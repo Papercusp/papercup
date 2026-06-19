@@ -23,7 +23,7 @@ import { join } from 'node:path';
 
 import { getLegacyClient, getFeatureLineage, formatLineageForPrompt } from '@papercusp/db-org';
 
-import { papercuspPath } from '../papercusp-root';
+import { promptsDir } from '../prompt-assembly';
 
 export type KickoffKind = 'feature' | 'new-plan';
 
@@ -41,7 +41,17 @@ export interface NewPlanKickoffCtx {
 
 export type KickoffCtx = FeatureKickoffCtx | NewPlanKickoffCtx;
 
-const CURATED_BRIEFS_DIR_REL = ['apps', 'operator', 'prompts', 'kickoffs'];
+// The curated kickoff briefs live next to the role personas, under
+// `apps/operator/prompts/kickoffs/`. Resolve via the canonical `promptsDir()`
+// (the same resolver role-persona loading uses — dev cwd, the import.meta
+// walk-up, AND the packaged-desktop `PAPERCUSP_PROMPTS_DIR` env), NOT via the
+// workspace DATA root `papercuspPath()`. The data root is `~/.papercusp-
+// workspaces/<id>/.papercusp/`, which never contains the repo's prompt files —
+// so the old `papercuspPath('apps','operator','prompts','kickoffs',…)` always
+// missed and the New-plan launch silently dropped the brief (the planner pane
+// opened with `--role=planner` but no `--launch-context`). See the kickoff
+// resolution test.
+const KICKOFFS_SUBDIR = 'kickoffs';
 
 /**
  * Build the kickoff brief for `ctx.kind`, write it to a fresh temp
@@ -130,7 +140,7 @@ async function renderFeatureBody(ctx: FeatureKickoffCtx): Promise<string | null>
  * user a question it can answer itself.
  */
 async function renderNewPlanBody(ctx: NewPlanKickoffCtx): Promise<string | null> {
-  const briefPath = papercuspPath(...CURATED_BRIEFS_DIR_REL, 'new-plan.md');
+  const briefPath = join(promptsDir(), KICKOFFS_SUBDIR, 'new-plan.md');
   let template: string;
   try {
     template = readFileSync(briefPath, 'utf8');

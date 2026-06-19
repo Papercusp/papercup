@@ -10,6 +10,7 @@ import { VOICE_FRAME_SAMPLES } from './codec';
 const peerFrameCbs: Array<(id: string, f: Int16Array) => void> = [];
 const pushMicFrame = vi.fn();
 let mockChannel: { id: string } | null = { id: 'vc-1' };
+let mockTtsEngine = 'kokoro';
 
 vi.mock('./manager', () => ({
   onPeerFrame: (cb: (id: string, f: Int16Array) => void) => {
@@ -24,7 +25,7 @@ vi.mock('./manager', () => ({
 }));
 
 vi.mock('../voice-prefs', () => ({
-  loadVoicePrefs: async () => ({ ttsEngine: 'kokoro' }),
+  loadVoicePrefs: async () => ({ ttsEngine: mockTtsEngine }),
 }));
 
 const synthesizeMock = vi.fn();
@@ -105,6 +106,7 @@ describe('voiceAgentSay', () => {
   afterEach(() => {
     vi.clearAllMocks();
     mockChannel = { id: 'vc-1' };
+    mockTtsEngine = 'kokoro';
   });
 
   it('TTS → wav → 48k paced frames into the channel', async () => {
@@ -114,10 +116,49 @@ describe('voiceAgentSay', () => {
     synthesizeMock.mockResolvedValue({ ok: true, audio: wav.buffer, contentType: 'audio/wav' });
 
     const frames = await voiceAgentSay('hello there');
-    expect(synthesizeMock).toHaveBeenCalledWith('kokoro', 'hello there', undefined, expect.anything());
+    // The channel say-path always asks synthesize for a WAV container.
+    expect(synthesizeMock).toHaveBeenCalledWith('kokoro', 'hello there', undefined, expect.anything(), {
+      container: 'wav',
+    });
     expect(frames).toBe(5);
     expect(pushMicFrame).toHaveBeenCalledTimes(5);
     expect((pushMicFrame.mock.calls[0][0] as Int16Array).length).toBe(VOICE_FRAME_SAMPLES);
+  });
+
+  it('speaks via elevenlabs — synthesize returns a WAV-wrapped stream → paced frames', async () => {
+    // The narrator (B1) runs ttsEngine:'elevenlabs'. synthesize (real impl,
+    // mocked here) returns audio/wav for container:'wav' — the EL raw PCM
+    // wrapped into a RIFF/WAVE. 0.1s of 24k PCM → 5 frames @48k.
+    mockTtsEngine = 'elevenlabs';
+    const pcm24 = new Int16Array(2400).fill(600);
+    const wav = encodeWavPcm16(pcm24, 24_000);
+    synthesizeMock.mockResolvedValue({ ok: true, audio: wav.buffer, contentType: 'audio/wav' });
+
+    const frames = await voiceAgentSay('the agents are on two machines');
+    expect(synthesizeMock).toHaveBeenCalledWith(
+      'elevenlabs',
+      'the agents are on two machines',
+      undefined,
+      expect.anything(),
+      { container: 'wav' },
+    );
+    expect(frames).toBe(5);
+    expect(pushMicFrame).toHaveBeenCalledTimes(5);
+  });
+
+  it('no-ops on a non-wav content-type (e.g. an engine that ignored the wav request)', async () => {
+    mockTtsEngine = 'elevenlabs';
+    synthesizeMock.mockResolvedValue({
+      ok: true,
+      audio: new ArrayBuffer(64),
+      contentType: 'audio/mpeg',
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const frames = await voiceAgentSay('mp3 should not reach the channel');
+    expect(frames).toBe(0);
+    expect(pushMicFrame).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('needs WAV/PCM'));
+    errSpy.mockRestore();
   });
 
   it('no-ops when not in a channel', async () => {

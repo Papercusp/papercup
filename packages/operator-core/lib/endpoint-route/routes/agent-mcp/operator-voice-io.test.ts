@@ -11,6 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { DEFAULT_VOICE_PREFS } from '../../../voice-prefs';
+import { decodeWavPcm16 } from '../../../voice-node/wav';
 
 vi.mock('../../../voice-prefs', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../voice-prefs')>();
@@ -23,7 +24,7 @@ vi.mock('../../../voice-credentials', () => ({
 }));
 
 import { loadVoicePrefs } from '../../../voice-prefs';
-import { readElevenLabsKey } from '../../../voice-credentials';
+import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
 import sttRoute from './operator-stt';
 import ttsRoute, { synthesize } from './operator-tts';
 
@@ -179,5 +180,63 @@ describe('POST /agent-mcp/operator-tts', () => {
     });
     const synth = await synthesize('kokoro', 'hi', undefined, DEFAULT_VOICE_PREFS);
     expect(synth).toMatchObject({ ok: false, status: 502 });
+  });
+
+  // ── synthesize() container option (B1 — the p2p voice-channel say-path) ──────
+  // voiceAgentSay requests container:'wav' so its decodeWavPcm16 path accepts
+  // every server engine. ElevenLabs has no WAV container, so synthesize asks
+  // for raw pcm_24000 and wraps it into a WAV here. These exercise synthesize()
+  // directly (fetch stubbed) — the same seam voiceAgentSay calls.
+
+  it("elevenlabs container:'wav' requests pcm_24000 and returns a decodable WAV", async () => {
+    (readElevenLabsKey as Mock).mockResolvedValue('k-123');
+    // What output_format=pcm_24000 yields: raw little-endian PCM16 @ 24kHz.
+    const pcm = new Int16Array([0, 1000, -1000, 2000, -2000, 32767, -32768, 123]);
+    const mock = stubFetch(() => new Response(Buffer.from(pcm.buffer), { status: 200 }));
+
+    const synth = await synthesize('elevenlabs', 'narrate the demo', undefined, DEFAULT_VOICE_PREFS, {
+      container: 'wav',
+    });
+    expect(synth.ok).toBe(true);
+    if (!synth.ok) return;
+    expect(synth.contentType).toBe('audio/wav');
+
+    // Must have asked EL for raw PCM (so the WAV wrap is lossless).
+    const [url, init] = mock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('output_format=pcm_24000');
+    expect((init.headers as Record<string, string>).accept).toBe('audio/pcm');
+
+    // The bytes are a real RIFF/WAVE the channel decoder accepts, round-tripping
+    // the PCM at 24kHz — proving voiceAgentSay's decodeWavPcm16 path will work.
+    const decoded = decodeWavPcm16(new Uint8Array(synth.audio));
+    expect(decoded.sampleRate).toBe(24_000);
+    expect([...decoded.samples]).toEqual([...pcm]);
+  });
+
+  it('elevenlabs default container stays mp3 (audio/mpeg, no output_format) — TUI path unchanged', async () => {
+    (readElevenLabsKey as Mock).mockResolvedValue('k-123');
+    const mock = stubFetch(() => new Response(Buffer.from('mp3-bytes'), { status: 200 }));
+    const synth = await synthesize('elevenlabs', 'narrate the demo', undefined, DEFAULT_VOICE_PREFS);
+    expect(synth.ok).toBe(true);
+    if (!synth.ok) return;
+    expect(synth.contentType).toBe('audio/mpeg');
+    const [url] = mock.mock.calls[0] as [string, RequestInit];
+    expect(url).not.toContain('output_format');
+  });
+
+  it("openai/cartesia container:'wav' request a WAV response_format", async () => {
+    (readOpenAiKey as Mock).mockResolvedValue('o-123');
+    let mock = stubFetch(() => new Response(Buffer.from('RIFF....WAVE'), { status: 200 }));
+    let synth = await synthesize('openai', 'hi', undefined, DEFAULT_VOICE_PREFS, { container: 'wav' });
+    expect(synth.ok).toBe(true);
+    if (synth.ok) expect(synth.contentType).toBe('audio/wav');
+    expect(JSON.parse(String((mock.mock.calls[0] as [string, RequestInit])[1].body)).response_format).toBe('wav');
+
+    (readCartesiaKey as Mock).mockResolvedValue('c-123');
+    mock = stubFetch(() => new Response(Buffer.from('RIFF....WAVE'), { status: 200 }));
+    synth = await synthesize('cartesia', 'hi', undefined, DEFAULT_VOICE_PREFS, { container: 'wav' });
+    expect(synth.ok).toBe(true);
+    if (synth.ok) expect(synth.contentType).toBe('audio/wav');
+    expect(JSON.parse(String((mock.mock.calls[0] as [string, RequestInit])[1].body)).output_format.container).toBe('wav');
   });
 });

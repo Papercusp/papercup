@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { getSystemAction, listSystemActions, type SystemActionCtx, type SystemActionResult } from '../harness/routines/system-actions';
 
@@ -16,6 +16,7 @@ import {
   handleBlueprintRun,
   setBlueprintResolver,
   setBlueprintRunFire,
+  setOrphanRoutineSeams,
   type DeciderFireFn,
 } from './blueprint-run-action';
 import { setLaunchBlueprintFire, type LaunchFireFn } from './launch-blueprint';
@@ -32,11 +33,19 @@ const ctx = (over: Partial<SystemActionCtx> = {}): SystemActionCtx => ({
   ...over,
 });
 
+// EI-1575: the handler now consults installIsGone() (a PG registry read) before
+// doing anything. Keep these unit tests hermetic by default — the install is
+// "present" (not gone) unless a test opts into the orphan path.
+beforeEach(() => {
+  setOrphanRoutineSeams({ installGone: async () => false });
+});
+
 afterEach(() => {
   setBlueprintResolver(null);
   setBlueprintRunFire(null);
   setLaunchBlueprintFire(null);
   setNegativeSpaceScanDeps(null);
+  setOrphanRoutineSeams({ installGone: null, disarm: null });
   gateState.verdict = { allow: true, consecutiveErrors: 0 };
 });
 
@@ -164,4 +173,48 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
   // by blueprint-run-action.integration.test.ts against a throwaway DB — exercising it here
   // would write to whatever PG getOrgPg() resolves to. This unit file stays hermetic: it
   // only drives the injected resolver + fire seams (no DB).
+
+  describe('EI-1575: orphaned-routine self-heal (deleted harness/hive)', () => {
+    it('disarms the install and does NOT fire/queue when the target is gone', async () => {
+      const fired: Array<Parameters<DeciderFireFn>[0]> = [];
+      setBlueprintRunFire((input) => { fired.push(input); });
+      setBlueprintResolver(async () => {
+        throw new Error('resolver must not run once the install is detected gone');
+      });
+      const disarmed: string[] = [];
+      setOrphanRoutineSeams({
+        installGone: async (_ws, slug) => slug === 'offsite-planner-demo', // this one is deleted
+        disarm: async (_ws, slug) => { disarmed.push(slug); return 3; },
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // A deleted hive's routine fires blueprint-run (queen launch) — must short-circuit.
+      const result = await handleBlueprintRun(
+        ctx({ installSlug: 'offsite-planner-demo', payloadTemplate: { blueprintId: 'coding' } }),
+      );
+
+      expect(result).toBeUndefined();         // no durableSpawns → no /invoke 404 storm
+      expect(fired).toHaveLength(0);           // no decider fired
+      expect(disarmed).toEqual(['offsite-planner-demo']); // its routines disarmed
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/target harness\/hive is gone.*EI-1575/);
+      warn.mockRestore();
+    });
+
+    it('a live install is unaffected — the run proceeds normally', async () => {
+      const fired: Array<Parameters<DeciderFireFn>[0]> = [];
+      setBlueprintResolver(async () => withDecider('director'));
+      setBlueprintRunFire((input) => { fired.push(input); });
+      let disarmCalled = false;
+      setOrphanRoutineSeams({
+        installGone: async () => false, // present
+        disarm: async () => { disarmCalled = true; return 0; },
+      });
+
+      await handleBlueprintRun(ctx({ installSlug: 'live-harness' }));
+
+      expect(disarmCalled).toBe(false);
+      expect(fired).toHaveLength(1);
+      expect(fired[0].role).toBe('director');
+    });
+  });
 });

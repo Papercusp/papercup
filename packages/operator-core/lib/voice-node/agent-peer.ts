@@ -141,10 +141,14 @@ export async function voiceAgentSay(text: string): Promise<number> {
   if (!voiceStatus().channel) return 0;
   const prefs = await loadVoicePrefs();
   const engine = prefs.ttsEngine === 'browser' ? 'kokoro' : prefs.ttsEngine;
-  const synth = await synthesize(engine, text, undefined, prefs);
+  // Ask for a WAV container so the single decodeWavPcm16 path below handles
+  // every server engine — synthesize wraps ElevenLabs' raw PCM into WAV and
+  // requests WAV from OpenAI/Cartesia; kokoro is WAV natively. mp3-only
+  // engines (none today) would still trip the guard below.
+  const synth = await synthesize(engine, text, undefined, prefs, { container: 'wav' });
   if (!synth.ok || !synth.audio) return 0;
   if (!(synth.contentType ?? '').includes('wav')) {
-    console.error(`[voice-agent] unsupported TTS content-type ${synth.contentType} — kokoro/wav only for v1`);
+    console.error(`[voice-agent] unsupported TTS content-type ${synth.contentType} for engine ${engine} — channel say-path needs WAV/PCM`);
     return 0;
   }
   const decoded = decodeWavPcm16(new Uint8Array(synth.audio));

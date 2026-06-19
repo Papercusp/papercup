@@ -40,12 +40,71 @@ import { checkFireGate, recordFire } from '../autoloop';
 import { getEffectiveBlueprint } from './project-to-pg';
 import { resolveLaunchBlueprint, buildLaunchSpawnRequest } from './launch-blueprint';
 import { operatorApiBase } from '../operator-api-base';
+import { readHarnessRegistryFor } from '../device-harnesses';
 import '../coord-ops/index'; // register coord ops (program-mode spine steps)
 import '../blueprint-steps/index'; // register deterministic step-ops (P-010)
 import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner';
 import { buildCoordOpCtx } from '../coord-ops/prod-caps';
 
 const operatorBase = operatorApiBase;
+
+// ── EI-1575: self-heal orphaned routines for deleted harnesses/hives ──────────
+// A per-install routine left armed after its harness/hive is deleted fires
+// forever — each tick queues a durable blueprint launch whose
+// `/api/harness/<slug>/invoke` 404s, so it can never succeed. Rather than rely
+// on every deletion path remembering to disarm (and leaving already-orphaned
+// rows firing), the firing seam itself disarms when it detects the target is
+// gone.
+
+type InstallGoneFn = (workspaceId: string, installSlug: string) => Promise<boolean>;
+type DisarmRoutinesFn = (workspaceId: string, installSlug: string) => Promise<number>;
+let _installGone: InstallGoneFn | null = null;
+let _disarmRoutines: DisarmRoutinesFn | null = null;
+
+/** Test seam (EI-1575): override the orphaned-install existence check + disarm. */
+export function setOrphanRoutineSeams(seams: {
+  installGone?: InstallGoneFn | null;
+  disarm?: DisarmRoutinesFn | null;
+}): void {
+  if ('installGone' in seams) _installGone = seams.installGone ?? null;
+  if ('disarm' in seams) _disarmRoutines = seams.disarm ?? null;
+}
+
+/**
+ * True when `installSlug` names a harness/hive that no longer exists in the
+ * workspace registry, so its routines are orphaned and should be disarmed.
+ * Deliberately conservative — it returns false (NOT gone) when:
+ *   - the slug is a reserved `@`-prefixed harness-LESS host (e.g. the
+ *     `@singleton` learning-loop routines, which legitimately have no harness), or
+ *   - the registry reads back empty (a transient unreadable registry must never
+ *     be mistaken for "every harness was deleted" → mass-disarm).
+ */
+async function installIsGone(workspaceId: string, installSlug: string): Promise<boolean> {
+  if (installSlug.startsWith('@')) return false; // reserved harness-less host
+  try {
+    const projects = await readHarnessRegistryFor(workspaceId);
+    if (projects.length === 0) return false; // registry empty/unreadable — don't risk a false disarm
+    return !projects.some((p) => p.slug === installSlug);
+  } catch {
+    // A transient registry-read failure must never be read as "gone" (→ disarm)
+    // nor crash the routine step. Treat as not-gone; the next fire re-checks.
+    return false;
+  }
+}
+
+/** Disarm (deactivate) every active routine of a gone install. Returns the count. */
+async function disarmInstallRoutines(workspaceId: string, installSlug: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ id: string }[]>`
+    UPDATE harness_shared.routines
+       SET active = false, next_fire_at = NULL, updated_at = now()
+     WHERE workspace_id = ${workspaceId}
+       AND install_slug = ${installSlug}
+       AND active = true
+    RETURNING id
+  `;
+  return rows.length;
+}
 
 /**
  * The decider-fire seam — injectable so tests capture the dispatch without a real HTTP
@@ -250,6 +309,24 @@ async function runScheduledProgram(
 /** The registered `system:blueprint-run` handler. */
 export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | SystemActionResult> {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
+
+  // EI-1575: stop firing for a DELETED harness/hive. Each tick of an orphaned
+  // routine queues a durable blueprint launch (e.g. the 'coding' queen) whose
+  // `/api/harness/<slug>/invoke` 404s — a perpetual, useless 404 + DBOS churn.
+  // When the target install is gone from the registry, disarm ALL of its
+  // routines and stop. This self-heals already-orphaned rows on their next
+  // fire, independent of which deletion path missed the cleanup. (Reserved
+  // `@singleton` hosts + an empty/unreadable registry are never "gone" — see
+  // installIsGone.)
+  const installGone = _installGone ?? installIsGone;
+  if (await installGone(workspaceId, installSlug)) {
+    const disarm = _disarmRoutines ?? disarmInstallRoutines;
+    const n = await disarm(workspaceId, installSlug);
+    console.warn(
+      `[blueprint-run] ${installSlug}: target harness/hive is gone — disarmed ${n} orphaned routine(s); will not re-fire (EI-1575)`,
+    );
+    return;
+  }
 
   // unify-agent-launches-as-blueprints D-002: a routine may name a STANDALONE
   // launch blueprint to fire (e.g. the `scan` cadence routine seeds

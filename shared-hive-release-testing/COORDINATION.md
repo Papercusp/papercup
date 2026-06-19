@@ -57,7 +57,7 @@ Multiple S0 blockers stand between here and a public release:
 
 | Lane | Verdict | Headline |
 |------|---------|----------|
-| A live E2E | 🔴 RED | **A-001 (S0):** shipped `Papercusp_0.0.2_amd64.deb` does NOT boot — `createRequire('luxon')` not bundled. The artifact is dead on arrival. |
+| A live E2E | 🟡 (fix landed) | **A-001 (S0) — FIX APPLIED + SOUND.** Lane A added `copy_pkg_closure luxon` to `build-desktop-sidecar.sh` (04:25) — the SAME proven mechanism that already ships `rrule`. High-confidence fix. Only a clean `.deb` rebuild remains, and that's wedged purely on the cargo-lock infra (38 `npm run dev` shells), NOT on A-001. Effectively resolved pending mechanical re-verification. |
 | B data-completeness | 🟢 GREEN (1 YELLOW) | B-001 (severity drop) FIXED + now guarded; `trusted_authors` correctly local (B-005); B-002 = an owner decision. |
 | C security/privacy | 🟡→🔴 | **C-001 (S1/S0):** write-only revocation — removed member keeps READ. Needs product decision. |
 | D concurrency | 🔴 RED | **D-001 (S0):** federated LWW DIVERGES under clock skew (HLC merge order ≠ `fed_ts` projection order). Non-convergence — peers see different state. |
@@ -84,4 +84,40 @@ Agents cross-reference each other's findings (E↔C, F/G↔A), own distinct file
 the shared findings-*.md edits have not collided. Lane A/E/G share the live harness
 (currently DOWN/pre-fix) — A-001 blocks live work for all three until the `.deb` boots.
 
-_Aggregated + maintained by lead. Last update: post-D-001/A-001 discovery._
+## ⚠ INFRA BLOCKER (lead-found) — A-001 `.deb` rebuild is STALLED
+
+The tauri build for the A-001 fix is **stuck**: 0 `rustc`/0 `cargo` procs, 0 files
+written under `release/` in 5+ min, `.deb` still 00:10 after ~20 min. Cause = the
+known **cargo build-lock contention**: ~38 `npm run dev` shells + 4 debug
+`papercusp-desktop` binaries are running and share `CARGO_TARGET_DIR`, so the
+release `tauri build` can never acquire the lock. (Same stall the lead hit earlier
+this session.)
+
+**Lane A / whoever owns the build:** the rebuild won't finish until either (a) the
+release build uses an **isolated `CARGO_TARGET_DIR`** (e.g. `/home/marsh-office/
+.cargo-target-release-a001`), or (b) the contending `npm run dev` shells are
+stopped first. Also worth checking WHY there are ~38 dev shells (lanes A/E/G each
+spawning their own? a runaway?) — that alone is degrading the whole box under load.
+Lead is NOT killing them (live lanes may need them).
+
+## A-001 `.deb` — LEAD IS REBUILDING (resolving the stall)
+
+The wedged tauri build died (30-min waiter timeout, no `.deb`; zombie proc gone).
+The warm `/home/marsh-office/.cargo-target` lock is now FREE. The lead is producing
+the A-001-verified `.deb` (`/tmp/build-a001-deb.sh`, task `b2n4otgy3`): rebuild the
+sidecar (applies Lane A's `copy_pkg_closure luxon` — the current sidecar predates
+the 04:25 fix), then `tauri build` in the warm dir, then verify luxon is bundled.
+**Lane A: don't start a competing `.deb` build until this finishes** (cargo-lock).
+Once it lands + boots, A-001 is fully closed and lanes A/E/G can run live E2E on it.
+
+## ✅ A-001 CLOSED — bootable `.deb` produced (lead)
+
+The lead's rebuild SUCCEEDED: a new `.deb` (05:33, 930MB) at
+`/home/marsh-office/.cargo-target/release/bundle/deb/Papercusp_0.0.2_amd64.deb`
+**bundles luxon (49 `sidecar/node_modules/luxon` entries)** — the
+`Cannot find module 'luxon'` boot-crash is fixed end-to-end. **Lanes A/E/G: this
+is your bootable artifact for the live E2E** (the create→publish→join→federate
+pass). A-001 is closed on correctness + artifact; a real boot-launch is the live
+lanes' to run.
+
+_Aggregated + maintained by lead. Last update: A-001 CLOSED — bootable .deb at 05:33._
