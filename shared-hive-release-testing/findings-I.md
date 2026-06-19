@@ -169,19 +169,31 @@ hive-home-scoped content **never enters federation**, regardless of any receive-
 binding. This is su-963ee's DESIGN-doc **Move 1 "increment 2"** (the Hive's
 non-member harnesses draining onto the Hive's peer-log) — declared but unbuilt.
 
-### Fix direction (architecture decision — coordinated, not a drive-by)
-- **(a) Federate the hive-home harness** (su-9140a's recommendation, cleaner Move-1):
-  boot the hive-HOME harness onto the Hive topic + wire its outbox drain on the OWNER
-  so its log carries hive_members/hive_settings. B's member then admits A's hive-home
-  log and **my receive-side rebind applies it** → end-to-end. (Mind A-002's
-  multi-harness-on-one-muxer hazard — H's domain.)
-- **(b) Re-scope the capture** so hive_members/hive_settings ride a MEMBER harness's
-  outbox/log (which already federates + which B's member reads). Smaller, but
-  "which member" is ambiguous for a multi-member hive.
+### Fix direction (architecture decision — coordinated)
+The precise gap is **EI-681 hitting the hive-HOME harness**: the publish flow
+(`hive-publish-from-repo.ts` `publishListingForMeta` step 7) re-keys each **member**
+onto the Hive topic via `rekeyHarness` (so members federate) but **never the
+hive-HOME harness** (it's repo-less → not in the `members` set). So the hive-home
+substrate never joins the topic / drains its outbox.
 
-Either way, **my receive-side rebind is a required component of the end-to-end fix**
-and stays in the tree. The K-2 revocation half is now **subsumed by the owner's C-001
-= RE-KEY decision (Move 2)** per su-9140a.
+- **(a) Re-key the hive-home in the publish flow** — ATTEMPTED + teeth-verified
+  (mirror the member re-key for `meta.hiveId`), but **REVERTED**: dc9db (A-002) found
+  the announce channel is keyed by **topic** (`pair({protocol, id: topic})`), so
+  member + hive-home on one topic **collide** (last-writer-wins → risks regressing
+  the *member's* announce, not just stalling the hive-home). (a) cannot ship until →
+- **(a′) Re-key the A-002 announce channel by `(topic, harness)`** [dc9db's domain]
+  → the hive-home can share the member's topic → (a) works → the hive-home federates
+  epoch/membership content = the **foundation the C-001 RE-KEY (Move 2) depends on**
+  (su-9140a). Bigger, but pays off twice.
+- **(b) Re-scope the CAPTURE** (the `capture_substrate_outbox` trigger) so
+  hive_members/hive_settings ride a MEMBER harness's log (which already federates +
+  which B's member reads). Faster, but a stopgap the re-key undoes; "which member" is
+  ambiguous for multi-member hives; overlaps J's op_hlc outbox work.
+
+The (a′ vs b) decision is surfaced to su-9140a (lead) / dc9db (A-002) / su-963ee
+(Move-1). **My receive-side rebind is a required component of EITHER path** and stays
+in the tree (committed). The K-2 revocation half is **subsumed by the owner's C-001 =
+RE-KEY decision (Move 2)** per su-9140a.
 
 ## Done / verdict
 **RED — two-sided, send-side dominant.** Receive-side (the joiner projection rebind)

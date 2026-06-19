@@ -47,21 +47,30 @@ export interface OpAAD {
  */
 export interface HiveEpochCrypto {
   /**
-   * Derive the symmetric content key for (hive, epoch) from the group-key material the
-   * foundation manages. Deterministic for a given epoch's established key state.
+   * OWNER-SIDE get-or-generate the content key for (hive, epoch). The key is a FRESH
+   * RANDOM per-epoch key (NOT a deterministic derivation — fresh-per-epoch is what gives
+   * the read cut-off: a removed peer can't recompute it), persisted by the foundation
+   * (owner-local, never federated in the clear); returns the stored key for that epoch,
+   * generating + persisting it on first call for a new epoch. MEMBERS never call this —
+   * they obtain the epoch key via `unwrapEpochKey` from their distributed wrapped blob.
+   * (ed300's design, 2026-06-19.)
    */
   deriveEpochKey(hiveId: string, epoch: number): Promise<EpochKey>;
 
   /**
-   * Wrap `key` TO a single remaining member's device pubkey (asymmetric) → an opaque
-   * blob only that member's device key can unwrap. Called once per remaining member on
-   * an epoch advance; the removed member is simply never wrapped to.
+   * Wrap `key` TO a single remaining member's device pubkey → an opaque blob only that
+   * member's device key can unwrap. `memberDevicePubkeyBase64` is the member's raw
+   * Ed25519 device pubkey, base64 (the same `device_pubkey` carried in hive_members
+   * device_attestations / the announce); the foundation converts Ed25519→X25519 for the
+   * ECDH sealed-box wrap. Called once per REMAINING member on an epoch advance; the
+   * removed member is simply never wrapped to (→ K writes no hive_epoch_keys row for it).
    */
   wrapKeyToMember(key: EpochKey, memberDevicePubkeyBase64: string): Promise<Uint8Array>;
 
   /**
-   * Unwrap a wrapped-epoch-key blob with the local device key (resolved from the
-   * keychain id, mirroring local-announce-identity / device-keychain-id).
+   * MEMBER-SIDE: unwrap a distributed wrapped-epoch-key blob with the local device key
+   * (resolved from the keychain id, mirroring local-announce-identity / device-keychain-id).
+   * This is the only way a non-owner obtains an epoch key.
    */
   unwrapEpochKey(blob: Uint8Array, ownDeviceKeychainId: string): Promise<EpochKey>;
 

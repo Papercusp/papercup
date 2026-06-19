@@ -535,7 +535,7 @@ export async function getPlanRow(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -556,7 +556,7 @@ export async function getPlanRow(
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+                 archived, is_legacy, updated_at, items, now_state, now_next
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
              AND plan_slug = ${slug}
@@ -591,7 +591,7 @@ export async function listPlanRows(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -612,7 +612,7 @@ export async function listPlanRows(
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+                 archived, is_legacy, updated_at, items, now_state, now_next
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            ${archivedFilter}
@@ -669,7 +669,7 @@ export async function listPlanIndexRows(
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -699,7 +699,7 @@ export async function listPlanIndexRows(
           SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+                 archived, is_legacy, updated_at, items, now_state, now_next
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            ${archivedFilter}
@@ -761,7 +761,7 @@ export async function listPlanIndexRowsForWorkspace(
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId}
@@ -791,7 +791,7 @@ export async function listPlanIndexRowsForWorkspace(
           SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+                 archived, is_legacy, updated_at, items, now_state, now_next
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId}
            ${archivedFilter}
@@ -913,7 +913,7 @@ export async function listPlanRowsMatchingAnyToken(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -937,7 +937,7 @@ export async function listPlanRowsMatchingAnyToken(
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+                 archived, is_legacy, updated_at, items, now_state, now_next
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            ${archivedFilter}

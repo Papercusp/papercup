@@ -151,6 +151,15 @@ work in the tree. Merge conflicts go to a `merge-resolver` agent, not you. From
 auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
+**Never sit in a wait/poll loop for git-sync to "push your change" or the deploy to
+land — force it instead.** The pipeline is async: keep working, and locate your edit
+with `dev:pipeline_position` (not a browser). But when your *next step genuinely
+requires* a code change to be **live on `:3070`** before you can proceed (you must
+exercise it through the running operator), do **not** idle waiting for the scheduled
+commit→checkpoint→deploy. **Force the deploy now:**
+`npx tsx apps/operator/lib/release/deploy-cli.ts --execute`. Blocking on git-sync /
+the green gate before continuing is the anti-pattern; force it and move on.
+
 ## Server-side edits and the two-port model — no hot-reload
 
 The Hono host (`bin/hono-host.ts`, MCP tools, `lib/endpoint-route`,

@@ -316,18 +316,19 @@ describe('cc fleet statusline — render + fail-open', () => {
     const r = runStatusline({ PAPERCUSP_SID: 'su-me-self', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('papercusp');
+    expect(r.stdout).toContain('◇ su-me'); // THIS agent's own shorthand id chip
     expect(r.stdout).toContain('2 peers'); // su-074be + su-a6146, not me
     expect(r.stdout).toContain('4be3de'); // newest peer's short id
     expect(r.stdout).toContain('✎ catalog.ts');
     expect(r.stdout).not.toContain('npm test'); // my own action is excluded
   });
 
-  it('renders "solo" when only my own activity exists', () => {
+  it('renders "solo" + this agent\'s own id when only my own activity exists', () => {
     const fixture = join(cache, 'sl-solo.json');
     fs.writeFileSync(fixture, JSON.stringify({ activity: [{ owner_id: 'su-only-me', summary: '✎ x.ts', kind: 'tool' }], count: 1 }));
     const r = runStatusline({ PAPERCUSP_SID: 'su-only-me', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('papercusp · solo');
+    expect(r.stdout).toBe('papercusp · ◇ su-only · solo');
   });
 
   it('not a psu session → prints nothing (Claude falls back to default), exit 0', () => {

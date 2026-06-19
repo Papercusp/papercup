@@ -37,6 +37,13 @@ export interface InProcessHarnessHealth {
   harnessSlug: string;
   verdict: SubstrateHealthVerdict;
   reasons: string[];
+  /**
+   * EI-1618: substrate-outbox DRAIN stats for this harness. `undrainedCount` =
+   * rows with `drained_at IS NULL`; `oldestUndrainedAgeMs` = age of the oldest
+   * (null when none / not measured). A non-trivial stalled value is the
+   * silent-stall (EI-681) signal that boot-health alone hides.
+   */
+  drain: { undrainedCount: number; oldestUndrainedAgeMs: number | null };
 }
 
 export interface InProcessSubstrateStatus {
@@ -78,9 +85,22 @@ export interface GetInProcessStatusOpts {
     workspaceId: string,
     harnessSlug: string,
   ) => { total: number; won: number; lost: number; error: number };
+  /**
+   * EI-1618 — per-harness substrate-outbox drain stats fetcher. Defaulted to
+   * zero because this module is pure (no PG). Production callers (e.g. the
+   * federation-status route) pass a resolver that queries `substrate_outbox`:
+   *   undrainedCount = COUNT(*) WHERE drained_at IS NULL (for the scope),
+   *   oldestUndrainedAgeMs = now - MIN(captured_ts) of those rows (null if none).
+   * This is what flips a stuck (captured-but-not-federating) harness off "healthy".
+   */
+  resolveDrainStats?: (
+    workspaceId: string,
+    harnessSlug: string,
+  ) => { undrainedCount: number; oldestUndrainedAgeMs: number | null };
 }
 
 const ZERO_STATS = { total: 0, won: 0, lost: 0, error: 0 } as const;
+const ZERO_DRAIN = { undrainedCount: 0, oldestUndrainedAgeMs: null } as const;
 
 export function getInProcessSubstrateStatus(
   opts: GetInProcessStatusOpts = {},
@@ -99,9 +119,11 @@ export function getInProcessSubstrateStatus(
     progressByKey.set(`${p.workspaceId}::${p.harnessSlug}`, p);
   }
   const resolveStats = opts.resolveClaimStats ?? (() => ZERO_STATS);
+  const resolveDrain = opts.resolveDrainStats ?? (() => ZERO_DRAIN);
 
   const harnesses: InProcessHarnessHealth[] = booted.map((h) => {
     const stats = resolveStats(h.workspaceId, h.harnessSlug);
+    const drain = resolveDrain(h.workspaceId, h.harnessSlug);
     const bp = progressByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
     const { verdict, reasons } = assessHarnessSubstrateHealth({
       // health.ts's `flagEnabled` is its real "is the substrate active" input
@@ -110,12 +132,15 @@ export function getInProcessSubstrateStatus(
       handlePresent: true,
       claimStats: stats,
       bootstrapProgress: bp ?? null,
+      // EI-1618: a stalled outbox flips the verdict off 'healthy'.
+      drainStats: drain,
     });
     return {
       workspaceId: h.workspaceId,
       harnessSlug: h.harnessSlug,
       verdict,
       reasons,
+      drain,
     };
   });
 

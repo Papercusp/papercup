@@ -145,4 +145,63 @@ describe('assessHarnessSubstrateHealth', () => {
     });
     expect(r.verdict).toBe('healthy');
   });
+
+  // EI-1618 — substrate-outbox drain stall (the silent-stall / EI-681 class).
+  it('fresh undrained rows (age < threshold) stay healthy', () => {
+    const r = assessHarnessSubstrateHealth({
+      flagEnabled: true,
+      handlePresent: true,
+      drainStats: { undrainedCount: 3, oldestUndrainedAgeMs: 5_000 }, // 5s
+    });
+    expect(r.verdict).toBe('healthy');
+  });
+
+  it('undrainedCount=0 stays healthy (no false positive)', () => {
+    const r = assessHarnessSubstrateHealth({
+      flagEnabled: true,
+      handlePresent: true,
+      drainStats: { undrainedCount: 0, oldestUndrainedAgeMs: null },
+    });
+    expect(r.verdict).toBe('healthy');
+  });
+
+  it('outbox lagging (oldest undrained >= 60s, < 5m) -> degraded', () => {
+    const r = assessHarnessSubstrateHealth({
+      flagEnabled: true,
+      handlePresent: true,
+      drainStats: { undrainedCount: 3, oldestUndrainedAgeMs: 90_000 }, // 90s
+    });
+    expect(r.verdict).toBe('degraded');
+    expect(r.reasons.join(' ')).toMatch(/outbox lagging/);
+  });
+
+  it('outbox STALLED (oldest undrained >= 5m) -> unhealthy (the EI-681 silent stall)', () => {
+    const r = assessHarnessSubstrateHealth({
+      flagEnabled: true,
+      handlePresent: true,
+      drainStats: { undrainedCount: 12, oldestUndrainedAgeMs: 600_000 }, // 10m
+    });
+    expect(r.verdict).toBe('unhealthy');
+    expect(r.reasons.join(' ')).toMatch(/STALLED.*not federating/);
+  });
+
+  it('worst-wins: an unhealthy claim rate is NOT upgraded by a merely-lagging drain', () => {
+    const r = assessHarnessSubstrateHealth({
+      flagEnabled: true,
+      handlePresent: true,
+      claimStats: { total: 100, won: 40, lost: 0, error: 60 }, // 60% -> unhealthy
+      drainStats: { undrainedCount: 2, oldestUndrainedAgeMs: 90_000 }, // lagging (degraded-tier)
+    });
+    expect(r.verdict).toBe('unhealthy');
+  });
+
+  it('respects custom drain thresholds', () => {
+    const r = assessHarnessSubstrateHealth({
+      flagEnabled: true,
+      handlePresent: true,
+      drainStats: { undrainedCount: 1, oldestUndrainedAgeMs: 2_000 }, // 2s
+      drainStalledThresholdMs: 1_000, // 1s -> already lagging
+    });
+    expect(r.verdict).toBe('degraded');
+  });
 });

@@ -8,12 +8,14 @@
  * merged read and the FS read agree on what a doc_id means.
  */
 
-import { loadHarnessRegistry } from '../../harness-registry';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveDocsRoot } from '../../endpoint-route/routes/harness/project-docs';
 
-/** The harness's git working-tree root (registry path), or null if unknown. */
+/** The harness's git working-tree root, or null if unknown. For a repo-less
+ *  `kind:'hive'` harness this resolves its MEMBER repo's path (git-sync-any-hive:
+ *  a coding hive's docs/source live in its member repo, not the empty hive dir). */
 export async function resolveHarnessRepoRoot(slug: string): Promise<string | null> {
-  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
+  return resolveHarnessContentPath(await loadHarnessRegistry(), slug) ?? null;
 }
 
 /** Both roots for a harness: the repo (git) root and the docs (bodies) root. */

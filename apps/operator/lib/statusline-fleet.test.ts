@@ -55,6 +55,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     const lines = out.split('\n');
     expect(lines).toHaveLength(3);
     expect(lines[0]).toContain('papercusp');
+    expect(lines[0]).toContain('◇ su-me'); // THIS agent's own shorthand id chip
     expect(lines[0]).toContain('⏸ manual ✉2');
     expect(lines[0]).toContain('🐝1');
     expect(lines[0]).toContain('2 peers');
@@ -147,6 +148,24 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(out).toContain('papercusp');
     expect(out).toContain('2 peers');
     expect(out).not.toContain('💡');
+  });
+
+  it("a real uuid-shaped SID renders as the coord ownerLabel short form (◇ su-<first5>)", () => {
+    const out = render(
+      {
+        ok: true,
+        wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+        bees: { running: 0 },
+        governor: { anyPaused: false, paused: [] },
+        activity: [],
+        tips: [],
+      },
+      { PAPERCUSP_SID: 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353' },
+    );
+    // su-9859e == the ownerLabel form (role prefix + first 5 of the uuid body),
+    // NOT the last-6 (a21353) used for the ◆ peer chip.
+    expect(out).toContain('papercusp · ◇ su-9859e');
+    expect(out).not.toContain('a21353');
   });
 
   it('garbage fixture prints nothing and exits 0', () => {

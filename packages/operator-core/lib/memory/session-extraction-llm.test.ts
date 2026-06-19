@@ -235,6 +235,176 @@ describe('getSessionExtractionLlm — the probe-gated factory (P-003)', () => {
 });
 
 /**
+ * Hermetic, pure-JS port of mem0's `MemoryVectorStore` (the 'memory' provider),
+ * backed by a Map instead of `better-sqlite3`. Injected below via
+ * `VectorStoreFactory.create` so the loudness test never loads the native
+ * `better_sqlite3.node`.
+ *
+ * WHY: that native addon is compiled for the operator's Node ABI (Node 25 /
+ * NODE_MODULE_VERSION 141), but the green-checkpoint gate runs the suite under
+ * Node 22 (ABI 127). Loading it there throws `ERR_DLOPEN_FAILED`, and this is
+ * the ONLY test in the package that instantiates a real `oss.Memory` / touches
+ * the native store. The add() path under test (LLM cascade → embed → search →
+ * insert) is storage-agnostic, so a faithful in-memory port keeps the exact
+ * behavior while removing the brittle native dependency. (Port mirrors
+ * mem0ai/dist/oss MemoryVectorStore; keywordSearch is unused by add().)
+ */
+class InMemoryVectorStore {
+  private readonly dimension: number;
+  private readonly rows = new Map<string, { vector: number[]; payload: Record<string, unknown> }>();
+  private userId: string | null = null;
+  private static readonly CAMEL_TO_SNAKE: Record<string, string> = {
+    userId: 'user_id',
+    agentId: 'agent_id',
+    runId: 'run_id',
+  };
+  constructor(config?: { dimension?: number }) {
+    this.dimension = config?.dimension || 1536;
+  }
+  private normalizePayload(payload: Record<string, unknown>): Record<string, unknown> {
+    for (const [camel, snake] of Object.entries(InMemoryVectorStore.CAMEL_TO_SNAKE)) {
+      if (camel in payload && !(snake in payload)) {
+        payload[snake] = payload[camel];
+        delete payload[camel];
+      }
+    }
+    return payload;
+  }
+  private cosineSimilarity(a: number[], b: number[]): number {
+    let dot = 0;
+    let na = 0;
+    let nb = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i];
+      na += a[i] * a[i];
+      nb += b[i] * b[i];
+    }
+    return dot / (Math.sqrt(na) * Math.sqrt(nb));
+  }
+  private matchFieldCondition(payload: Record<string, unknown>, key: string, value: unknown): boolean {
+    const pv = payload[key];
+    if (typeof value !== 'object' || value === null) {
+      if (value === '*') return true;
+      return pv === value;
+    }
+    if (Array.isArray(value)) return value.includes(pv);
+    const v = value as Record<string, unknown>;
+    if ('eq' in v) return pv === v.eq;
+    if ('ne' in v) return pv !== v.ne;
+    if ('gt' in v) return (pv as number) > (v.gt as number);
+    if ('gte' in v) return (pv as number) >= (v.gte as number);
+    if ('lt' in v) return (pv as number) < (v.lt as number);
+    if ('lte' in v) return (pv as number) <= (v.lte as number);
+    if ('in' in v) return Array.isArray(v.in) && v.in.includes(pv);
+    if ('nin' in v) return !Array.isArray(v.nin) || !v.nin.includes(pv);
+    if ('contains' in v) return typeof pv === 'string' && pv.includes(v.contains as string);
+    if ('icontains' in v)
+      return typeof pv === 'string' && pv.toLowerCase().includes(String(v.icontains).toLowerCase());
+    return pv === value;
+  }
+  private filterVector(
+    entry: { payload: Record<string, unknown> },
+    filters?: Record<string, unknown>,
+  ): boolean {
+    if (!filters || Object.keys(filters).length === 0) return true;
+    const keyMap: Record<string, string> = { $and: 'AND', $or: 'OR', $not: 'NOT' };
+    const normalized: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(filters)) {
+      const nk = keyMap[k] || k;
+      if (!(nk in normalized)) normalized[nk] = val;
+    }
+    for (const [k, val] of Object.entries(normalized)) {
+      if (k === 'AND') {
+        if (!(val as Record<string, unknown>[]).every((s) => this.filterVector(entry, s))) return false;
+      } else if (k === 'OR') {
+        if (!(val as Record<string, unknown>[]).some((s) => this.filterVector(entry, s))) return false;
+      } else if (k === 'NOT') {
+        if (!(val as Record<string, unknown>[]).every((s) => !this.filterVector(entry, s))) return false;
+      } else if (!this.matchFieldCondition(entry.payload, k, val)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  async insert(vectors: number[][], ids: string[], payloads: Record<string, unknown>[]): Promise<void> {
+    for (let i = 0; i < vectors.length; i++) {
+      if (vectors[i].length !== this.dimension) {
+        throw new Error(`Vector dimension mismatch. Expected ${this.dimension}, got ${vectors[i].length}`);
+      }
+      // float32 round-trip + JSON snapshot mirror the real sqlite-backed store.
+      this.rows.set(ids[i], {
+        vector: Array.from(new Float32Array(vectors[i])),
+        payload: JSON.parse(JSON.stringify(payloads[i])),
+      });
+    }
+  }
+  async search(
+    query: number[],
+    topK = 10,
+    filters?: Record<string, unknown>,
+  ): Promise<Array<{ id: string; payload: Record<string, unknown>; score: number }>> {
+    if (query.length !== this.dimension) {
+      throw new Error(`Query dimension mismatch. Expected ${this.dimension}, got ${query.length}`);
+    }
+    const out: Array<{ id: string; payload: Record<string, unknown>; score: number }> = [];
+    for (const [id, row] of this.rows) {
+      const payload = this.normalizePayload({ ...row.payload });
+      if (this.filterVector({ payload }, filters)) {
+        out.push({ id, payload, score: this.cosineSimilarity(query, row.vector) });
+      }
+    }
+    out.sort((a, b) => (b.score || 0) - (a.score || 0));
+    return out.slice(0, topK);
+  }
+  async keywordSearch(): Promise<Array<{ id: string; payload: Record<string, unknown>; score: number }>> {
+    return [];
+  }
+  async get(vectorId: string): Promise<{ id: string; payload: Record<string, unknown> } | null> {
+    const row = this.rows.get(vectorId);
+    if (!row) return null;
+    return { id: vectorId, payload: this.normalizePayload({ ...row.payload }) };
+  }
+  async update(vectorId: string, vector: number[], payload: Record<string, unknown>): Promise<void> {
+    if (vector.length !== this.dimension) {
+      throw new Error(`Vector dimension mismatch. Expected ${this.dimension}, got ${vector.length}`);
+    }
+    this.rows.set(vectorId, {
+      vector: Array.from(new Float32Array(vector)),
+      payload: JSON.parse(JSON.stringify(payload)),
+    });
+  }
+  async delete(vectorId: string): Promise<void> {
+    this.rows.delete(vectorId);
+  }
+  async deleteCol(): Promise<void> {
+    this.rows.clear();
+  }
+  async list(
+    filters?: Record<string, unknown>,
+    topK = 100,
+  ): Promise<[Array<{ id: string; payload: Record<string, unknown> }>, number]> {
+    const out: Array<{ id: string; payload: Record<string, unknown> }> = [];
+    for (const [id, row] of this.rows) {
+      const payload = this.normalizePayload({ ...row.payload });
+      if (this.filterVector({ payload }, filters)) out.push({ id, payload });
+    }
+    return [out.slice(0, topK), out.length];
+  }
+  async getUserId(): Promise<string> {
+    if (this.userId) return this.userId;
+    this.userId =
+      Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    return this.userId;
+  }
+  async setUserId(userId: string): Promise<void> {
+    this.userId = userId;
+  }
+  async initialize(): Promise<void> {
+    /* no-op: the Map is the store */
+  }
+}
+
+/**
  * THE LOUDNESS TEST (P-006 — the point of the plan): an expired/garbage
  * OAuth token must yield (a) writes that still land via the next rung
  * and (b) a fired demotion warning. Never a silent no-op.
@@ -249,6 +419,7 @@ describe('loudness: dead OAuth token → writes land via next rung + warning (P-
     const oss = (await import('mem0ai/oss')) as unknown as {
       LLMFactory: { create: (p: string, c: Record<string, unknown>) => unknown };
       EmbedderFactory: { create: (p: string, c: Record<string, unknown>) => unknown };
+      VectorStoreFactory: { create: (p: string, c: Record<string, unknown>) => unknown };
       Memory: new (config: Record<string, unknown>) => {
         add: (
           messages: string,
@@ -291,7 +462,12 @@ describe('loudness: dead OAuth token → writes land via next rung + warning (P-
     // under vitest — its dynamicImport trick has no import callback here).
     const origLlm = oss.LLMFactory.create.bind(oss.LLMFactory);
     const origEmb = oss.EmbedderFactory.create.bind(oss.EmbedderFactory);
+    const origVec = oss.VectorStoreFactory.create.bind(oss.VectorStoreFactory);
     oss.LLMFactory.create = (p, c) => (p === 'custom' ? cascade : origLlm(p, c));
+    // Inject the hermetic JS store for the 'memory' provider so the native
+    // better_sqlite3.node is never loaded (see InMemoryVectorStore above).
+    oss.VectorStoreFactory.create = (p, c) =>
+      p === 'memory' ? new InMemoryVectorStore(c as { dimension?: number }) : origVec(p, c);
     const embed = async (text: string) =>
       Array.from({ length: 8 }, (_, i) => (((i + 1) * text.length) % 97) / 97);
     oss.EmbedderFactory.create = (p, c) =>
@@ -328,6 +504,7 @@ describe('loudness: dead OAuth token → writes land via next rung + warning (P-
     } finally {
       oss.LLMFactory.create = origLlm;
       oss.EmbedderFactory.create = origEmb;
+      oss.VectorStoreFactory.create = origVec;
     }
   });
 });

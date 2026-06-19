@@ -314,6 +314,10 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
     await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
     // members(): shop (id=100) reboots; docs (no repo id) is skipped (step 6
     // bound no row for it); shop-hive (the home, no github_remote) is not a member.
+    // A-003 NOTE: the hive-home is DELIBERATELY not re-keyed onto the member topic —
+    // dc9db (A-002) proved member+hive-home on one topic collide (announce keyed by
+    // topic). Hive-home-scoped content (hive_members/hive_settings) federates via the
+    // member log instead (option b — capture re-scope), not via the hive-home substrate.
     expect(calls.rekeyed).toEqual([{ ws: 'ws', slug: 'shop' }]);
   });
 

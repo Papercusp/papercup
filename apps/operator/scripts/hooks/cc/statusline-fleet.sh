@@ -3,11 +3,14 @@
 # `coord:glance` (papercusp-worker-integration-2026-06-04 D-005 + the
 # coord-glance combined read, 2026-06-12). Two lines:
 #
-#   papercusp · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
+#   papercusp · ◇ su-9859e · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
 #   💡 Wake mode is manual — 2 staged wakes waiting; … /mcp__papercusp-su__tool:coord:wake-mode mode=auto
 #   ⋯ run /mcp__papercusp-su__tool:coord:glance for detail
 #
-# Line 1: wake-gate state (▶ auto / ⏸ manual, ✉ staged wakes), bees in flight,
+# Line 1: THIS agent's own papercusp shorthand id (◇ <id> — the coord ownerLabel
+# form, e.g. ◇ su-9859e, so a human can correlate the terminal with coord/fleet
+# tools; paired with the ◆ filled-diamond that marks the most-recent PEER),
+# wake-gate state (▶ auto / ⏸ manual, ✉ staged wakes), bees in flight,
 # governor pauses, peer count + most-recent peer action. Line 2 (only when the
 # server has a tip for this state): the top contextual tip from the glance tips
 # engine, usually with the slash command that resolves it. Line 3 (only when a
@@ -114,6 +117,28 @@ def peer_part(peer):
     return f'◆ {short} {summ}'[:60] if summ else None
 
 
+def self_short(owner):
+    """THIS agent's papercusp shorthand id, matching the coord ownerLabel form
+    (role prefix + first 5 chars of the uuid body, e.g.
+    su-9859ea5e-…→su-9859e) — the id a human sees in coord/fleet tools, so it
+    correlates the terminal with the rest of the fleet. '' when there's no real
+    session id (e.g. the 'fixture'/unset sentinel)."""
+    owner = str(owner or '').strip()
+    if not owner or owner == 'fixture':
+        return ''
+    bits = owner.split('-')
+    if len(bits) >= 2 and bits[1]:
+        return f'{bits[0]}-{bits[1][:5]}'
+    return owner[:8]
+
+
+def lead():
+    """Line-1 prefix segments: 'papercusp' plus this agent's own ◇ id chip
+    (◇ = self, paired with ◆ = most-recent peer). Both render paths share it."""
+    me_id = self_short(me)
+    return ['papercusp', f'◇ {me_id}'] if me_id else ['papercusp']
+
+
 def emit(lines, cols):
     sys.stdout.write('\n'.join(l[:cols] for l in lines if l))
 
@@ -149,7 +174,8 @@ if not isinstance(glance, dict) or 'wake' not in glance:
     if not isinstance(rows, list) or not rows:
         sys.exit(0)
     n, peer = peer_glance(rows)
-    parts = ['papercusp', f'{n} peer{"" if n == 1 else "s"}' if n else 'solo']
+    parts = lead()
+    parts.append(f'{n} peer{"" if n == 1 else "s"}' if n else 'solo')
     if peer is not None:
         p = peer_part(peer)
         if p:
@@ -164,7 +190,7 @@ gov = glance.get('governor') or {}
 tips = glance.get('tips') or []
 n, peer = peer_glance(glance.get('activity'))
 
-parts = ['papercusp']
+parts = lead()
 mode = wake.get('default')
 staged = wake.get('stagedTotal') or 0
 if mode in ('auto', 'manual'):

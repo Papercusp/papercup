@@ -175,3 +175,31 @@ Caveats (none A-002-blocking): the live 2nd-hive→joiner *content* leg is cover
 by the integration test, not the live pair (the smoke never joins B to the invite
 hive — a harness limitation, not a defect); and an incidental invite-hive
 status-beacon-capture type bug is filed for the discovery/M lane (§6).
+
+## 8. Scope boundary — the fix covers DIFFERENT-topic hives, NOT same-topic multi-harness (matters for A-003 send-side)
+
+The A-002 fix discriminates the announce channel by **topic** (channel `id` =
+the 32-byte hive topic). That solves the A-002 brief (multiple HIVES =
+different topics on one instance). It does **NOT** cover **two local harnesses
+sharing ONE topic**.
+
+This is the deciding constraint for Brief I's (A-003) **send-side** fix. d2230's
+option (a) — boot the hive-HOME harness onto the SAME hive topic as the member
+harness so hive_members/hive_settings federate — would put **two local harnesses
+(member + hive-home) on one topic**, and they collide on the announce channel
+exactly like A-002, intra-topic:
+- 1st harness (member) opens `createChannel({id: hiveTopic})` → announces its log
+  → federates. ✓
+- 2nd harness (hive-home) → `createChannel({id: hiveTopic})` → **id already open →
+  returns null** (`swarm.ts:187`) → the hive-home log is **never announced** →
+  the joiner never admits it → hive_members/hive_settings never federate. STALL.
+
+**Recommendation:** A-003 send-side should use **option (b)** — re-scope the
+hive_members/hive_settings capture to ride the MEMBER harness's log (one log per
+topic, no second announce, no collision; d2230's receive-side rebind then applies
+it end-to-end). **If option (a) is required anyway**, the announce channel must be
+extended to carry **multiple log announces per topic** (one `ourAnnounce` per
+local harness/log on that topic; the `onAnnounce` handler already admits
+per-frame, so it's a bounded extension of the per-topic state in `swarm.ts` —
+owned by this lane). Either way the A-002 fix itself is correct + complete for its
+own brief; this is a forward-compat note for the overlapping A-003/Move-1 work.

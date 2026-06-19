@@ -72,9 +72,16 @@ the security target (do we need FS/PCS now, → MLS, or is epoch-wrap acceptable
 
 ## K's half — phases
 
-**P1 — Epoch model.** Add a monotonic `epoch:int` to hive state (the `hives` row +
-the federated hive state), default 0. Read/write helpers; it federates with the hive
-membership/settings (rides A-003's substrate — see Dependency).
+**P1 — Epoch model.** The current epoch is a **`hive_settings` row** (`setting_key='epoch'`,
+`value`=JSON monotonic int, default 0) — NOT a new column on the local `hives` table.
+Grounding (read 2026-06-19): `hives` (184-hives-table.sql) is workspace-LOCAL +
+RLS-isolated, has **no projection** → it does not federate. `hive_settings`
+(186-hive-settings.sql) IS the federated key-value hive-state table (projection
+`projections/hive-settings.ts`, LWW by `fed_ts`/`fed_hlc`, keyed on
+`harness_slug`=hive home_slug). So putting the epoch in `hive_settings` makes it reach
+joiners **for free over the same path A-003 fixes** (and D-001-ordered by `fed_hlc`).
+Deliver: a typed get/set epoch helper over the hive-settings projection + an
+`advanceEpoch` writer.
 
 **P2 — Boundary trigger.** member-remove (`revokeHiveContributor` /
 `revoke-contributor`) AND go-private (`setHiveListing` private branch) →
@@ -83,11 +90,15 @@ to each REMAINING member, emit the distribution op (P3). This is where the curre
 write-plane-only revoke gains its read-plane teeth. (K-1's `live:false` no-op becomes a
 real epoch advance.)
 
-**P3 — Distribution transport.** A new substrate op kind (`hive_epoch_key`) carrying
-`{hiveId, epoch, perMemberWrappedKeys[]}`, dispatched via the `tableTag` registry,
-projected into a local `hive_epoch_keys` table. Ordered via `fed_hlc` so the key op
-precedes its epoch's content (D-001 tie-in). Removed peer is simply not in
-`perMemberWrappedKeys` → never gets the key.
+**P3 — Distribution transport.** A new FEDERATED table `hive_epoch_keys` with
+**per-member rows** `(workspace_id, hive_home_slug, epoch, member_device_pubkey,
+wrapped_key bytea, author_pubkey, origin, fed_ts, fed_hlc, created_at, updated_at)` +
+its own projection registered by `tableTag` (mirror `projections/hive-settings.ts` —
+the federated-table pattern with the echo-guard + LWW + `fed_hlc` ordering). The boundary
+trigger writes one row per REMAINING member (`wrapKeyToMember`); the removed peer is
+simply never given a row → it federates the ciphertext content but has no wrapped key.
+`fed_hlc`-ordered so a member has epoch N's key row before epoch-N content (D-001
+tie-in). New migration (next `db:next-migration`).
 
 **P4 — Serving / reading under epochs.** New content ops carry `epoch`; payloads
 encrypted via `encryptOp` under the current epoch key (app-layer AEAD on the op payload
@@ -106,26 +117,92 @@ the stored wrapped key → `decryptOp`. A peer without the wrapped key gets ciph
   owner removes B → writes new content → **B can no longer read it** (decrypt-fail /
   ciphertext) while a remaining member still reads + converges.
 
-## Dependency — A-003 first
+## Dependency — A-003 send-side (= Move-1 "increment 2") is the hard blocker for P1/P3
 The brief: "land A-003 first — the membership/epoch state must reach joiners." d2230
-reframed A-003 as a **send-side** gap (the hive-home harness never drains its outbox /
-isn't on the topic). The epoch model (P1) + distribution (P3) ride the SAME
-hive-state-to-joiner substrate, so P1/P3 are blocked on d2230's send-side fix. K can
-build P2/P4/P5 design + the epoch helpers + the flag-gated tests in parallel, and wire
-distribution once A-003 lands.
+**finalized A-003 RED (2026-06-19)** and root-caused it precisely: the bug is dominantly
+**send-side** — the owner's hive-HOME harness (kind:'hive') never federates its OWN
+content (`hive_members`/`hive_settings` outbox rows are `drained_at=NULL`; the hive-home
+harness never joins the hive topic — only MEMBER harnesses do). d2230's receive-side
+rebind is correct + fires live but is MOOT because no op leaves A. This is su-963ee's
+Move-1 **"increment 2"** (wire the hive-home harness to federate: boot onto topic +
+drain its outbox), and 9140a's recommended fix is option (a) precisely BECAUSE the
+re-key needs the hive-home to federate epoch/membership state.
+
+Implication for this lane: **P1 (epoch in `hive_settings`) + P3 (epoch-key distribution)
+both ride the hive-home→joiner path that does not exist yet.** They are blocked on the
+A-003 send-side fix, which is **finalized-RED but NOT yet owned/started** (d2230 is
+positioned for option (a); awaiting su-963ee/owner's call on whether A-003 send-side
+gets its own lane now or rides Move 1). So the re-key's release-gate sequence is:
+**A-003 send-side (Move-1 inc-2) → P1/P3 → P4/P5 witness.** Parallel-unblocked NOW:
+ed300's crypto foundation (no A-003 dep), the feature flag, P5 test scaffolding, and
+P2/P4 design.
 
 ## Back-compat (brief §6)
 v1 = **encrypt new hives only** (existing hives stay legacy-unencrypted + documented);
 migrating existing hives (re-encrypt history under epoch 0) is a later phase. Surfacing
 for the owner; new-hives-only is the pragmatic ship.
 
-## Open decisions (for ed300 / owner)
-1. Security target: epoch-wrap (v1) vs MLS/TreeKEM (FS/PCS). Drives ed300's foundation.
-2. Encryption layer: app-layer AEAD on op payloads (K's lean) vs per-epoch hypercore
-   `encryptionKey` (ed300's call — affects the corestore).
-3. Back-compat: new-hives-only v1 (recommended) vs migrate-existing.
+## Open decisions — RESOLVED (ed300, 2026-06-19; see plan decisions D-001/D-003)
+1. **Security target → epoch-wrap (v1)**, behind the MLS-able `HiveEpochCrypto` interface.
+   MLS/TreeKEM (FS/PCS) is a later v2 upgrade, NOT a start-gate (plan D-001). Owner's
+   FS/PCS target relayed as a v2 confirmation (plan P-009, non-blocking).
+2. **Encryption layer → app-layer AEAD on op payloads** (XChaCha20-Poly1305), NOT a
+   per-epoch hypercore `encryptionKey`. Keeps old epochs readable by current members +
+   avoids a corestore change; the interface is op-based (encryptOp/decryptOp) anyway.
+3. **Back-compat → new-hives-only v1** (plan D-003); existing hives stay legacy-unencrypted
+   + documented (the honest-UI line already shipped covers them).
+
+## Crypto foundation — ✅ LANDED (ed300, plan P-001)
+`packages/operator-core/lib/sync/hyperbee/hive-epoch-crypto-impl.ts` —
+`createHiveEpochCrypto()` implements the `HiveEpochCrypto` seam (interface unchanged):
+- **deriveEpochKey** = fresh-random 32B key per `(hive,epoch)`, persisted in the device
+  **keychain** (service `papercusp-hive-epoch-key`, id `<hiveId>:<epoch>`), get-or-create.
+  This is the **epoch-advancer's** seam; members never mint. Fresh-random (not KDF-from-root)
+  is what makes the cut-off real.
+- **wrapKeyToMember** = libsodium sealed box to the member's Ed25519 device key
+  (Ed25519→X25519). **unwrapEpochKey** = inverse via the local keychain device key; fails
+  closed when not wrapped to (the removed-member cut-off) or the device key is absent.
+- **encryptOp/decryptOp** = XChaCha20-Poly1305; `OpAAD{hiveId,epoch,opId}` bound as
+  length-prefixed associated data.
+- Tests: `hive-epoch-crypto-impl.test.ts` 12/12, **teeth-verified** (neutering the
+  fail-closed `seal_open` guard flips exactly the cut-off + end-to-end-cut-off tests RED).
+  Type-clean (added `sodium-native.d.ts` ambient types). Lazy sodium import (SPA-bundle-safe).
+
+**Usage contract for the K-half consumer:**
+1. `deriveEpochKey` = epoch-advancer mints+persists; members use `unwrapEpochKey` for BOTH
+   read and write (never `deriveEpochKey`).
+2. `unwrapEpochKey` is STATELESS — re-unwrap from the durable `hive_epoch_keys` blob (P-005)
+   each access + cache the EpochKey in-process; no member-side secret store needed.
+3. `OpAAD.opId` must be deterministic + stable per op (table+key+author) so encrypt and the
+   remote decrypt use the identical AAD (else decrypt fails closed).
+4. Wire `createHiveEpochCrypto()` behind the flag; `notImplementedHiveEpochCrypto` stays the
+   default until then.
+
+## Serving layer — ✅ LANDED (K, the unblocked part of P4)
+`packages/operator-core/lib/sync/hyperbee/hive-epoch-serving.ts` — the pure glue between
+the federation op path and ed300's crypto (consumes the stable contract; touches NO
+capture/drain code, so zero collision with d2230's in-flight A-003 work):
+- **`deriveOpId(tableTag, rowKey, authorPubkey)`** = sha256 of the JSON-encoded triple —
+  the deterministic + cross-peer-stable `OpAAD.opId` ed300's contract delegated to the
+  serving layer (encrypt on the owner + decrypt on a member compute the IDENTICAL AAD).
+- **`encryptOpPayload` / `decryptOpPayload`** = assemble `OpAAD{hiveId,epoch,opId}` in ONE
+  place + call ed300's `encryptOp`/`decryptOp` (so encrypt/decrypt can't drift).
+- **`EpochKeyProvider`** seam (owner `deriveEpochKey` vs member re-unwrap-from-blob — impl
+  deferred to P1/P3, rides d2230's federation path).
+- **`resolveHiveEpochCrypto(enabled)`** = the `papercusp-hive-rekey` flag gate →
+  `createHiveEpochCrypto()` | the fail-closed `notImplemented` stub (impl dynamic-imported
+  only when on; no static sodium pull).
+- Tests `hive-epoch-serving.test.ts` **7/7, teeth-verified** (drop `rowKey` from
+  `deriveOpId` → the sensitivity + the wrong-epoch-key/tampered-AAD cut-off tests flip RED).
+  The C-001 cut-off is proven at the serving level against ed300's REAL crypto: wrong-epoch
+  key, tampered op-identity, and tampered epoch all **fail-closed** on decrypt.
 
 ## Status
-- Split + interface proposed to ed300/9140a (awaiting ed300's sign-off on the seam).
-- Next: on interface sign-off → formal plan `shared-hive-rekey-2026-06-19` + start P1
-  (epoch model) + P5 flag-gated test scaffolding (both A-003-independent).
+- ✅ Interface signed off; ✅ crypto foundation (P-001) LANDED; ✅ serving glue (deriveOpId
+  + AAD wrappers + flag-gate) LANDED + teeth-verified.
+- REMAINING for K, all BLOCKED on **P-002 (A-003 send-side / Move-1 inc-2)** — the single
+  critical blocker (46b7a best-leveraged there per ed300): P1 (epoch in `hive_settings`),
+  P3 (`hive_epoch_keys` distribution table + the EpochKeyProvider impl), and the op-path
+  wiring (encrypt-on-write / decrypt-on-read into the projection path — coordinate with
+  d2230's federation seam). Then P5/P8: the flipped `revoked-swarm` test + the LIVE
+  cut-off witness (the release gate). Crypto + serving are both ahead of the dependency.

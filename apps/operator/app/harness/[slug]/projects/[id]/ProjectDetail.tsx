@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { MarkdownView } from '@papercusp/ui-primitives';
 import { MarkdownEditor } from '../../../../_components/MarkdownEditor';
+import Link from '@/lib/router-compat/link';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../../theme';
 import { useSyncQuery } from '@papercusp/sync';

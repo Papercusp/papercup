@@ -47,6 +47,23 @@ export interface SubstrateHealthInputs {
     lastChangeMs: number;
     caughtUp: boolean;
   } | null;
+  /**
+   * Substrate-outbox DRAIN health (EI-1618). `undrainedCount` = rows with
+   * `drained_at IS NULL` for this scope; `oldestUndrainedAgeMs` = age of the
+   * oldest such row. A long-undrained outbox means content was CAPTURED but is
+   * NOT federating — the silent-stall class (EI-681: harness booted but its
+   * outbox never drains / it never joins the topic). Boot-health alone reports
+   * such a harness as "healthy"; this input is what makes the stall visible.
+   * Absent / null age = not measured (pure in-process callers without PG).
+   */
+  drainStats?: {
+    undrainedCount: number;
+    oldestUndrainedAgeMs: number | null;
+  };
+  /** oldest-undrained age ≥ this → at least `degraded`. Default 60s. */
+  drainStalledThresholdMs?: number;
+  /** oldest-undrained age ≥ this → `unhealthy`. Default 5m. */
+  drainUnhealthyThresholdMs?: number;
   /** Override for tests; defaults to Date.now(). */
   nowMs?: number;
   /** mergedOps lagging highestSeen for this long → unhealthy. Default 5m. */
@@ -112,6 +129,30 @@ export function assessHarnessSubstrateHealth(
           (now - lastChangeMs) / 1000,
         )}s)`,
       );
+    }
+  }
+
+  // EI-1618: a stuck outbox (captured-but-not-draining) means content silently
+  // isn't federating. Boot-health alone reports such a harness "healthy"; surface
+  // the stall here. Worst-wins (never upgrades an already-worse verdict).
+  if (
+    inputs.drainStats &&
+    inputs.drainStats.undrainedCount > 0 &&
+    inputs.drainStats.oldestUndrainedAgeMs != null
+  ) {
+    const drainStalled = inputs.drainStalledThresholdMs ?? 60 * 1_000;
+    const drainUnhealthy = inputs.drainUnhealthyThresholdMs ?? 5 * 60 * 1_000;
+    const ageMs = inputs.drainStats.oldestUndrainedAgeMs;
+    const ageS = Math.round(ageMs / 1000);
+    const n = inputs.drainStats.undrainedCount;
+    if (ageMs >= drainUnhealthy) {
+      verdict = 'unhealthy';
+      reasons.push(
+        `outbox STALLED: ${n} row(s) undrained for ${ageS}s — captured but not federating (EI-681 class)`,
+      );
+    } else if (ageMs >= drainStalled) {
+      if (verdict === 'healthy') verdict = 'degraded';
+      reasons.push(`outbox lagging: ${n} row(s) undrained for ${ageS}s`);
     }
   }
 

@@ -462,23 +462,6 @@ async function publishListingForMeta(
       deps.rekeyHarness ??
       (async (ws: string, slug: string) =>
         (await import('./sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
-    // A-003 / EI-681 (send-side): the hive-HOME harness (`meta.hiveId`) carries the
-    // hive-home-scoped content — `hive_members` / `hive_settings` — but it is
-    // repo-less, so it is NOT in the `members` set and the per-member re-key below
-    // skips it. Without re-keying it, the hive-home substrate never joins the Hive
-    // topic and its outbox-drain never wires → those ops sit in `substrate_outbox`
-    // with `drained_at = NULL` and NEVER federate to joiners (the receive-side
-    // joiner rebind — register-all `hiveHomeSlug` — then has nothing to apply).
-    // Re-key it IN PLACE with the same owner-safe `rekeyHarness` as the members (a
-    // full reboot would break the owner's corestore replication-serving of its own
-    // log core — EI-681). NOT `onlyRepoIds`-gated: the hive itself re-keys on every
-    // (re)publish. Best-effort + fire-and-forget, like the member loop.
-    try {
-      const ph = rekeyHarness(opts.workspaceId, meta.hiveId) as Promise<unknown> | undefined;
-      if (ph && typeof ph.catch === 'function') ph.catch(() => {});
-    } catch {
-      /* a sync throw from the hive-home re-key must never fail or slow publish */
-    }
     for (const m of members) {
       if (typeof m.github_repository_id !== 'number' || !m.github_remote) continue;
       if (opts.onlyRepoIds && !opts.onlyRepoIds.includes(m.github_repository_id)) continue;
