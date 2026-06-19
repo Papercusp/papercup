@@ -131,10 +131,26 @@ probe and a final post-run check: zero remote rows of any kind):
 The v2-vs-single comparison is decisive: identical except **1 vs 2 hives** (both
 2-peer, distinct identities, same seed sequence) → 2 hives = total stall. Creating a
 second hive on an instance (a second from-repo create / a second hive-pubkey topic)
-appears to break the first hive's peer-log apply path. **Root cause not yet pinned**
-(candidate: the 2nd hive's substrate boot / swarm re-join disrupts the 1st hive's
-replication-serving or projection-apply wiring). High-value to investigate before
-release — a real deployment will routinely host multiple hives.
+appears to break the first hive's peer-log apply path.
+
+**Root cause narrowed (code-level; layer pinned, exact channel-clobber pending a
+download-event repro deferred past the active fleet-halt — recorded on EI-1590):**
+- ❌ NOT the Model-B/D-021 projection-registry collision — `boot.ts:519` wires a
+  per-harness `scopedApply` (`buildHarnessProjectionApply`) into `mergeNow`, and in
+  the repro the joiner had only ONE harness, so a global tableTag collision can't be
+  its failure.
+- ❌ NOT a shared corestore — `corestore.ts` is strictly per-harness (`${workspaceRoot}::${slug}`).
+- ✅ LIKELY the **shared Hyperswarm + per-harness `store.replicate(socket)` over one
+  Protomux muxer**: `swarm.ts` has a process SINGLETON `_sharedSwarm`; every harness
+  joins its topic on that one swarm and calls `opts.store.replicate(socket)` (line 329)
+  with its own per-harness corestore, and `Protomux.from` reuses the socket muxer
+  (swarm.ts:176) — the exact EI-681 hazard. Booting the 2nd hive's replication on the
+  shared muxer is the most likely surface that disrupts the 1st hive's replication
+  channel (symptom fits: owner drains to its log + `peer_connected`, but the log core
+  stops replicating to the peer → peer applies nothing).
+- NEXT to pin: on the peer, check the owner's hive1 log core `contiguousLength` +
+  `download`/`upload` events after hive2 boots (per the EI-681 lesson). High-value
+  before release — a real deployment routinely hosts multiple hives.
 
 ---
 
