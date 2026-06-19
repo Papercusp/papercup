@@ -96,6 +96,8 @@ import '../overwatch/loop';
 import './hive/list';
 import './hive/get';
 import './hive/create';
+// EI-1582 — the agent-facing producer for hive_slug (wire a harness in as a member):
+import './hive/add_member';
 // hive-from-github-url-2026-06-11 P-006 — create a Hive FROM a GitHub URL:
 import './hive/create_from_repo';
 // per-hive-learning-loops-2026-06-14 P-071 — opt INTO platform mode ("Papercusp inside Papercusp"):
