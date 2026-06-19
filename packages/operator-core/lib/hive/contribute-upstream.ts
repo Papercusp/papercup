@@ -125,6 +125,19 @@ export interface ContributeUpstreamInput {
   }) => Promise<OpenForkPrResult>;
   /** Resolve the gh token (credential presence gate). Default: getGhAuthToken. */
   resolveGhToken?: () => Promise<{ ok: true; token: string } | { ok: false; reason: string }>;
+  /**
+   * PR-4 (b): track the WI↔PR row when a fork→canonical PR opens (the manual
+   * contribute path the brief calls out alongside the autonomous hook). Default:
+   * the real producer (`upsertFeaturePrOnOpen`) keyed by the member harness +
+   * featureBranch, attributed to the operator. BEST-EFFORT — a write failure
+   * never fails the (already-opened) PR.
+   */
+  recordFeaturePr?: (row: {
+    workspaceId: string;
+    harnessSlug: string;
+    featureId: string;
+    prUrl: string;
+  }) => Promise<void>;
 }
 
 export type PublishPackOutcome =
@@ -262,6 +275,31 @@ async function defaultResolveGhToken(): Promise<
   return r.kind === 'ok' ? { ok: true, token: r.token } : { ok: false, reason: r.error.kind };
 }
 
+/**
+ * Default PR-4 producer seam: UPSERT the WI↔PR row for a manual fork→canonical
+ * contribution, attributed to the resolved operator. Dynamic imports keep this
+ * module's static graph IO-free (the rest of the flow is seam-injected). The
+ * operator id is resolved best-effort (null when gh can't answer); the whole
+ * thing swallows errors — the PR already opened.
+ */
+async function defaultRecordFeaturePr(row: {
+  workspaceId: string;
+  harnessSlug: string;
+  featureId: string;
+  prUrl: string;
+}): Promise<void> {
+  const { upsertFeaturePrOnOpen } = await import('../harness/feature-pr-producer');
+  const { getAuthenticatedGithubUser } = await import('../identity/resolve-local-github-identity');
+  let authorGithubUserId: number | null = null;
+  try {
+    const user = await getAuthenticatedGithubUser();
+    if (user) authorGithubUserId = user.id;
+  } catch {
+    /* identity best-effort — record the PR even without the operator id */
+  }
+  await upsertFeaturePrOnOpen({ ...row, authorGithubUserId });
+}
+
 // ── The composition ────────────────────────────────────────────────────────────
 
 export async function contributeUpstream(
@@ -274,6 +312,7 @@ export async function contributeUpstream(
   const publishPack = input.publishPack ?? defaultPublishPack;
   const pushAndOpenPr = input.pushAndOpenPr ?? defaultPushAndOpenPr;
   const resolveGhToken = input.resolveGhToken ?? defaultResolveGhToken;
+  const recordFeaturePr = input.recordFeaturePr ?? defaultRecordFeaturePr;
 
   // Resolve the self-hive member checkout. No self-hive ⇒ platform mode was never
   // enabled — a clean error, never a throw (the user must platform:enable first).
@@ -300,7 +339,7 @@ export async function contributeUpstream(
   if (input.kind === 'learning-pack') {
     return contributeLearningPack(input, member, { exportPack, publishPack });
   }
-  return contributePr(input, member, { pushAndOpenPr, resolveGhToken });
+  return contributePr(input, member, { pushAndOpenPr, resolveGhToken, recordFeaturePr, workspaceId });
 }
 
 // ── kind: 'learning-pack' (the Comb path) ──────────────────────────────────────
@@ -416,6 +455,13 @@ async function contributePr(
       args: { featureBranch: string; title: string; body: string; token: string },
     ) => Promise<OpenForkPrResult>;
     resolveGhToken: () => Promise<{ ok: true; token: string } | { ok: false; reason: string }>;
+    recordFeaturePr: (row: {
+      workspaceId: string;
+      harnessSlug: string;
+      featureId: string;
+      prUrl: string;
+    }) => Promise<void>;
+    workspaceId: string;
   },
 ): Promise<ContributeUpstreamResult> {
   const featureBranch = input.featureBranch;
@@ -481,6 +527,20 @@ async function contributePr(
   });
   if (!pr.ok) {
     return { ok: false, kind: 'pr', error: 'fork_pr_failed', message: pr.error };
+  }
+  // PR-4 (b): track this fork→PR (WI→PR row) the moment it opens, attributed to
+  // the operator — so it shows in the report GUI + the merge stamps via the row.
+  // The featureBranch is this contribution's stable key. Best-effort: the PR
+  // already exists, so a producer failure must NOT fail the contribution.
+  try {
+    await seams.recordFeaturePr({
+      workspaceId: seams.workspaceId,
+      harnessSlug: member.memberSlug,
+      featureId: featureBranch!,
+      prUrl: pr.prUrl,
+    });
+  } catch {
+    /* best-effort — the PR opened; tracking is non-fatal */
   }
   return {
     ok: true,

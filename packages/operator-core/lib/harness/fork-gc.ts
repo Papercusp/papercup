@@ -109,10 +109,9 @@ export async function evaluateForkForGc(opts: ForkGcEvalOpts): Promise<ForkGcEva
   }
 
   // Only ever touch a genuine fork of THIS upstream — never an unrelated repo
-  // that happens to share the name, and never an original (non-fork) repo.
-  const isForkOfUpstream =
-    repo?.fork === true && (repo.parent?.full_name ?? '') === upstreamFullName;
-  if (!isForkOfUpstream) {
+  // that happens to share the name, and never an original (non-fork) repo. The
+  // guard narrows `repo` to non-null for the staleness read below.
+  if (!repo || repo.fork !== true || (repo.parent?.full_name ?? '') !== upstreamFullName) {
     return { forkFullName, upstreamFullName, decision: 'keep_not_a_fork', openPrCount: 0, ageMs: null };
   }
 

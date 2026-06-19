@@ -9,13 +9,15 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQueryState, parseAsStringLiteral, parseAsBoolean } from 'nuqs';
+import { useQueryState, parseAsStringLiteral, parseAsBoolean, parseAsInteger } from 'nuqs';
 import { toast } from 'sonner';
-import { GitPullRequest, RefreshCw, Settings } from 'lucide-react';
+import { GitPullRequest, RefreshCw, Settings, Bot, Lock } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { groupByHive, type HiveGroupProject } from '../adv/harnesses/harness-hive-groups';
+import { computeAutoStatus, type PrAutoStatus } from '@papercusp/operator-core/lib/pr-host/pr-row-data';
 import { PrRow, type PrRowData } from './PrRow';
 import { PrReviewerSettings } from './PrReviewerSettings';
+import { useHarnessClaimStatus } from '../adv/harnesses/useHarnessClaimStatus';
 
 const PR_FILTERS = ['all', 'mine', 'awaiting-me', 'approved', 'merged'] as const;
 type PrFilter = (typeof PR_FILTERS)[number];
@@ -43,22 +45,49 @@ interface ReviewGate {
   viewerGithubId?: number;
   trustedAuthorIds: ReadonlySet<number>;
   reviewerRoleEnabled: boolean;
+  /** PR-3: harness auto-mode settings (drive the toggle + honest auto-status). */
+  autoReview: boolean;
+  autoMerge: boolean;
+  /** PR-3 §3: may the viewer flip auto-mode (claimed-owner gate, server-authoritative)? */
+  autoModeEditable: boolean;
 }
 
 async function fetchReviewGate(harnessSlug: string): Promise<ReviewGate | null> {
   const r = await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/pr-reviewer-settings`);
   if (!r.ok) return null;
   const j = (await r.json().catch(() => null)) as {
-    settings?: { pr_reviewer_role_enabled?: boolean };
+    settings?: { pr_reviewer_role_enabled?: boolean; auto_review?: boolean; auto_merge?: boolean };
     trustList?: Array<{ trusted_github_user_id: number }>;
     viewer?: { github_user_id: number } | null;
+    autoModeEditable?: boolean;
   } | null;
   if (!j) return null;
   return {
     viewerGithubId: j.viewer?.github_user_id,
     trustedAuthorIds: new Set((j.trustList ?? []).map((t) => t.trusted_github_user_id)),
     reviewerRoleEnabled: !!j.settings?.pr_reviewer_role_enabled,
+    autoReview: !!j.settings?.auto_review,
+    autoMerge: !!j.settings?.auto_merge,
+    autoModeEditable: !!j.autoModeEditable,
   };
+}
+
+/** POST an auto-mode change (claimed-owner-gated server-side). */
+async function postAutoMode(harnessSlug: string, on: boolean): Promise<void> {
+  // ON  → enable the role + both auto levers (the full auto-apply path).
+  // OFF → clear the auto levers (leave the personal reviewer role as-is).
+  const patch = on
+    ? { pr_reviewer_role_enabled: true, auto_review: true, auto_merge: true }
+    : { auto_review: false, auto_merge: false };
+  const r = await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/pr-reviewer-settings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!r.ok) {
+    const body = (await r.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${r.status}`);
+  }
 }
 
 interface PrsResponse {
@@ -112,6 +141,24 @@ export function PrsTab({
     'prs_settings',
     parseAsBoolean.withDefault(false),
   );
+  // PR-3 §5: the focused PR + whether its agent-report panel is expanded are
+  // user-meaningful, deep-linkable, agent-driveable → nuqs (AGENTS.md rule).
+  const [selectedPr, setSelectedPr] = useQueryState('prs_selected', parseAsInteger);
+  const [reportOpen, setReportOpen] = useQueryState(
+    'prs_report',
+    parseAsBoolean.withDefault(false),
+  );
+  const toggleReport = useCallback(
+    (n: number) => {
+      if (selectedPr === n && reportOpen) {
+        void setReportOpen(false);
+      } else {
+        void setSelectedPr(n);
+        void setReportOpen(true);
+      }
+    },
+    [selectedPr, reportOpen, setSelectedPr, setReportOpen],
+  );
   const [prs, setPrs] = useState<PrRowData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +191,41 @@ export function PrsTab({
   const effViewerGithubId = viewerGithubId ?? fetchedGate?.viewerGithubId;
   const effTrustedAuthorIds = trustedAuthorIds ?? fetchedGate?.trustedAuthorIds ?? EMPTY_ID_SET;
   const effReviewerRoleEnabled = reviewerRoleEnabled ?? fetchedGate?.reviewerRoleEnabled ?? false;
+  const effAutoReview = fetchedGate?.autoReview ?? false;
+  const effAutoMerge = fetchedGate?.autoMerge ?? false;
+  const effAutoModeEditable = fetchedGate?.autoModeEditable ?? false;
+  // The single owner-facing "auto-apply agent recommendations" state: the full
+  // auto path (role + approve + merge) is on. Granular per-lever control stays
+  // in the settings modal.
+  const autoModeOn = effReviewerRoleEnabled && effAutoReview && effAutoMerge;
+
+  // PR-3 §3: claimed-owner authority for the contextual CTA (reuse the shared
+  // hook). The server's `autoModeEditable` is the AUTHORITATIVE gate (it also
+  // enforces the POST); this drives the human "claim to enable" messaging.
+  const claim = useHarnessClaimStatus(harnessSlug);
+  const [savingAuto, setSavingAuto] = useState(false);
+
+  const autoModeTooltip = effAutoModeEditable
+    ? 'Auto-apply agent recommendations — when on, the daemon auto-approves + merges trusted PRs the agent recommended approve, once checks are green.'
+    : claim.data?.viewer_can_claim
+      ? 'Only the claimed owner can change auto-mode. Claim this harness (Insights → Claim) to configure.'
+      : 'Only the claimed owner can change auto-mode for this harness.';
+
+  const handleToggleAutoMode = useCallback(async () => {
+    if (!effAutoModeEditable || savingAuto) return;
+    const next = !autoModeOn;
+    setSavingAuto(true);
+    try {
+      await postAutoMode(harnessSlug, next);
+      toast.success(next ? 'Auto-apply agent recommendations: ON' : 'Auto-apply: OFF');
+      const g = await fetchReviewGate(harnessSlug);
+      if (g) setFetchedGate(g);
+    } catch (e) {
+      toast.error(`Couldn't change auto-mode: ${String(e)}`);
+    } finally {
+      setSavingAuto(false);
+    }
+  }, [effAutoModeEditable, savingAuto, autoModeOn, harnessSlug]);
 
   // Whether this slug resolves into a hive with other members — gates the
   // scope toggle. Rides the audited sync path (harnessProjects.lite, EI-206)
@@ -238,6 +320,31 @@ export function PrsTab({
             </span>
           )}
         </span>
+
+        {/* PR-3 §3: per-hive auto-mode toggle, gated on claimed-owner authority.
+            Read-only (lock) for an unclaimed / non-owner viewer; the server
+            enforces the same gate on POST (the teeth). */}
+        <div
+          className={`pc-adv-prs__automode${effAutoModeEditable ? '' : ' is-locked'}`}
+          title={autoModeTooltip}
+        >
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoModeOn}
+            aria-label="Auto-apply agent recommendations"
+            disabled={!effAutoModeEditable || savingAuto}
+            className={`pc-adv-prs__autoswitch${autoModeOn ? ' is-on' : ''}`}
+            onClick={() => void handleToggleAutoMode()}
+          >
+            <span className="pc-adv-prs__autoswitch-knob" />
+          </button>
+          <span className="pc-adv-prs__automode-label">
+            {effAutoModeEditable ? <Bot size={12} aria-hidden /> : <Lock size={12} aria-hidden />}
+            Auto-apply
+          </span>
+        </div>
+
         {hiveAvailable && (
           <div className="pc-adv-prs__scope" role="tablist" aria-label="PR scope">
             {PR_SCOPES.map((s) => (
@@ -298,14 +405,24 @@ export function PrsTab({
               : 'No PRs match this filter.'}
           </div>
         ) : (
-          displayed.map((pr) => (
-            <PrRow
-              key={`${pr.member_slug ?? harnessSlug}:${pr.remote}#${pr.number}`}
-              pr={pr}
-              onApprove={(n) => void handleApprove(n, false, pr.member_slug)}
-              onApproveAndMerge={(n) => void handleApprove(n, true, pr.member_slug)}
-            />
-          ))
+          displayed.map((pr) => {
+            const autoStatus: PrAutoStatus = computeAutoStatus(pr, {
+              reviewerRoleEnabled: effReviewerRoleEnabled,
+              autoReview: effAutoReview,
+              autoMerge: effAutoMerge,
+            });
+            return (
+              <PrRow
+                key={`${pr.member_slug ?? harnessSlug}:${pr.remote}#${pr.number}`}
+                pr={pr}
+                autoStatus={autoStatus}
+                expanded={selectedPr === pr.number && reportOpen}
+                onToggleExpand={() => toggleReport(pr.number)}
+                onApprove={(n) => void handleApprove(n, false, pr.member_slug)}
+                onApproveAndMerge={(n) => void handleApprove(n, true, pr.member_slug)}
+              />
+            );
+          })
         )}
       </div>
 
@@ -357,6 +474,29 @@ export function PrsTab({
           color: var(--fg-mute, #7f9bb4); background: transparent; border: 0; border-radius: 4px; cursor: pointer;
         }
         .pc-adv-prs__settings:hover { color: var(--fg, #e7f7ff); }
+        /* PR-3 auto-mode toggle */
+        .pc-adv-prs__automode {
+          display: inline-flex; align-items: center; gap: 6px;
+          padding: 2px 8px 2px 4px; border-radius: 999px;
+          border: 1px solid color-mix(in oklab, #22c55e, transparent 80%);
+        }
+        .pc-adv-prs__automode.is-locked { border-color: var(--border, rgba(125,211,252,0.18)); opacity: 0.85; }
+        .pc-adv-prs__automode-label {
+          display: inline-flex; align-items: center; gap: 4px;
+          font-size: 11px; font-weight: 600; color: var(--fg-mute, #7f9bb4);
+        }
+        .pc-adv-prs__autoswitch {
+          appearance: none; width: 30px; height: 17px; border-radius: 999px; flex-shrink: 0; padding: 0;
+          background: var(--bg-3, #1e293b); border: 1px solid var(--border, rgba(125,211,252,0.25));
+          position: relative; cursor: pointer; transition: background-color 140ms ease;
+        }
+        .pc-adv-prs__autoswitch-knob {
+          content: ''; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px;
+          border-radius: 50%; background: var(--fg, #e7f7ff); transition: transform 140ms ease;
+        }
+        .pc-adv-prs__autoswitch.is-on { background: #22c55e; border-color: #22c55e; }
+        .pc-adv-prs__autoswitch.is-on .pc-adv-prs__autoswitch-knob { transform: translateX(13px); }
+        .pc-adv-prs__autoswitch:disabled { cursor: not-allowed; opacity: 0.6; }
         .pc-adv-prs__list {
           flex: 1; min-height: 0; overflow: auto;
           padding: 10px 12px; display: grid; gap: 8px; align-content: start;

@@ -86,6 +86,16 @@ const TRANSIENT_429_BACKOFF_MS = 400;
  *  account; just wait briefly for the upstream to recover). */
 const OVERLOAD_529_BACKOFF_MS = 1000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
+/** Upstream stall guard (the 2026-06-19 deadlock fix). `doFetch`/the body stream had NO deadline, so a
+ *  stalled upstream (socket accepted, no response — Anthropic during an overload) hung the proxy task
+ *  forever; PriorityAdmissionQueue only frees a slot when the task settles, so each hang leaked a slot
+ *  until the pool deadlocked at maxConcurrent (every request then queued + timed out, on every account).
+ *  An AbortController turns the permanent hang into a normal reject → slot release → failover. Two
+ *  activity-reset windows so a LEGITIMATELY long request is never clipped: a generous wait for response
+ *  HEADERS (non-streaming headers arrive only after the full generation), and a per-chunk idle gap for
+ *  the streamed BODY (reset on every byte — only a true stall trips it). Both env-overridable. */
+const DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_HEADERS_MS) || 5 * 60 * 1000;
+const DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_BODY_IDLE_MS) || 90 * 1000;
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
  *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
@@ -166,6 +176,16 @@ export interface GatewayDeps {
   concurrency?: number;
   /** Aging interval for the priority queue (ms a waiter takes to gain +1 priority). Default 1000. */
   agingIntervalMs?: number;
+  /** Max wait for upstream RESPONSE HEADERS before the request is aborted as stalled. A stalled
+   *  upstream (Anthropic accepts the socket during an overload but never responds) used to hang the
+   *  proxy task forever, leaking its admission slot until the pool deadlocked (the 2026-06-19 outage).
+   *  Generous by default because NON-streaming headers arrive only after the full generation; streaming
+   *  headers are near-instant. Default 5 min (env PAPERCUSP_GATEWAY_UPSTREAM_HEADERS_MS). */
+  upstreamHeadersTimeoutMs?: number;
+  /** Max GAP between upstream BODY bytes once a response is streaming, before it is aborted as stalled.
+   *  Reset on every chunk, so a legitimately long stream is never clipped — only a true mid-stream
+   *  stall trips it. Default 90s (env PAPERCUSP_GATEWAY_UPSTREAM_BODY_IDLE_MS). */
+  upstreamBodyIdleTimeoutMs?: number;
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -324,6 +344,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const doFetch = deps.fetchImpl ?? fetch;
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
+  const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
+  const upstreamBodyIdleTimeoutMs = deps.upstreamBodyIdleTimeoutMs ?? DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS;
   const log = deps.log ?? (() => {});
   const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs });
 
@@ -491,6 +513,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
       log('info', `gw-route: client=${req.socket?.remotePort ?? '?'} want=${wantAccount ?? '-'} routed=${active.accountId} model=${model}`);
     }
 
+    // Upstream stall guard (2026-06-19 deadlock fix). An activity-reset deadline that aborts the
+    // upstream call if it stalls, so a hung upstream can never pin the proxy task (and leak its
+    // admission slot) forever. Hoisted above the try so `finally` clears it as a backstop. The
+    // AbortController itself is per-attempt (created in the loop), but the timer handle lives here.
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearStall = () => {
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = undefined; }
+    };
     try {
       // Constant request headers (everything but the per-account Authorization/dispatcher, set per attempt).
       // Every account is a Claude Max subscription OAuth credential → `Authorization: Bearer` + the
@@ -520,19 +550,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const token = await active.token();
         const headers: Record<string, string> = { ...baseHeaders, authorization: `Bearer ${token}` };
 
+        // Per-attempt abort + stall deadline: aborts THIS upstream call (headers or body) if it
+        // stalls, converting a permanent hang into a reject → the finally releases the admission slot.
+        const ac = new AbortController();
+        const armStall = (ms: number) => {
+          clearStall();
+          stallTimer = setTimeout(() => ac.abort(new Error(`upstream stall: no activity for ${ms}ms`)), ms);
+          stallTimer.unref?.();
+        };
         let up: Response;
         try {
-          const init: FetchInit = { method: req.method ?? 'POST', headers };
+          const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
           if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
           // Per-account IP routing: forward this account's request through its dedicated egress
           // dispatcher (proxy / bound source IP) when configured; absent ⇒ default (shared) egress.
           const dispatcher = await dispatcherFor(active);
           if (dispatcher) init.dispatcher = dispatcher;
+          // Wait for response HEADERS under the (generous) headers deadline; once they arrive, switch
+          // to the per-chunk body-idle deadline (reset on each streamed byte below).
+          armStall(upstreamHeadersTimeoutMs);
           up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
+          armStall(upstreamBodyIdleTimeoutMs);
         } catch (e) {
+          clearStall();
           upstreamErrors++;
-          log('error', `upstream fetch failed: ${(e as Error).message}`);
-          sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream error: ${(e as Error).message}` }, gateway: true });
+          const stalled = ac.signal.aborted;
+          log('error', `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} on '${active.accountId}': ${(e as Error).message}`);
+          sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream ${stalled ? 'stall timeout' : 'error'}: ${(e as Error).message}` }, gateway: true });
           return;
         }
 
@@ -677,6 +721,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
           }
           if (proceed) {
+            clearStall(); // this attempt is done; the next iteration arms a fresh deadline
             peekedRest?.destroy(); // discard the throttled/capped account's body
             if (backoff > 0) {
               await new Promise<void>((r) => {
@@ -701,6 +746,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // We already consumed this body via peekBody — write the peeked head, then stream any remainder.
           if (peekedHead.length) res.write(peekedHead);
           if (peekedRest) {
+            peekedRest.on('data', () => armStall(upstreamBodyIdleTimeoutMs)); // reset idle deadline per chunk
             peekedRest.pipe(res);
             await new Promise<void>((resolve) => {
               res.on('finish', () => resolve());
@@ -712,6 +758,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
         } else if (up.body) {
           const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+          // Reset the body-idle deadline on every chunk so a legitimately long stream is never clipped —
+          // only a genuine mid-stream stall (no bytes for upstreamBodyIdleTimeoutMs) trips the abort,
+          // which surfaces as a stream 'error' below → resolve → finally releases the slot.
+          nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
           nodeStream.pipe(res);
           await new Promise<void>((resolve) => {
             res.on('finish', () => resolve());
@@ -724,9 +774,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         } else {
           res.end();
         }
+        clearStall();
         return;
       }
     } finally {
+      clearStall();
       release();
     }
   }

@@ -42,6 +42,9 @@ function deps(over: Partial<ContributeUpstreamInput> = {}): ContributeUpstreamIn
       prUrl: 'https://github.com/Papercusp/papercup/pull/42',
     }),
     resolveGhToken: async () => ({ ok: true, token: 'tkn' }),
+    // PR-4 (b): inject a no-op producer so the flow stays IO-free; the pr-path
+    // tests below override it with a spy to assert the WI→PR row is written.
+    recordFeaturePr: async () => {},
     ...over,
   };
 }

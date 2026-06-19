@@ -180,3 +180,104 @@ describe('PrRow — gone (404-demoted) state', () => {
     expect(screen.queryByText('PR gone')).toBeNull();
   });
 });
+
+// ── PR-3: agent report + WI + honest auto-status ──────────────────────
+
+function makeReport(overrides: Partial<NonNullable<PrRowData['report']>> = {}): NonNullable<PrRowData['report']> {
+  return {
+    recommendation: 'approve',
+    summary: 'Adds the widget and a test.',
+    rationale: 'Change is scoped and tested.',
+    risks: [],
+    checksObserved: { checks_state: 'success', mergeable_state: 'mergeable', tests_touched: true } as never,
+    headSha: 'abcdef1234',
+    stale: false,
+    model: 'claude',
+    reviewedAt: '2026-06-19T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('PrRow — agent report (PR-3)', () => {
+  it('renders the recommendation chip prominently', () => {
+    render(<PrRow pr={makePr({ report: makeReport({ recommendation: 'approve' }) })} />);
+    expect(screen.getByText('Approve')).toBeTruthy();
+  });
+
+  it('shows request-changes / reject recommendations', () => {
+    cleanup();
+    render(<PrRow pr={makePr({ report: makeReport({ recommendation: 'request_changes' }) })} />);
+    expect(screen.getByText('Request changes')).toBeTruthy();
+    cleanup();
+    render(<PrRow pr={makePr({ report: makeReport({ recommendation: 'reject' }) })} />);
+    expect(screen.getByText('Reject')).toBeTruthy();
+  });
+
+  it('renders the linked WI chip', () => {
+    render(<PrRow pr={makePr({ featureId: 'WI-123' })} />);
+    expect(screen.getByText('WI-123')).toBeTruthy();
+  });
+
+  it('flags a stale report (reviewed an earlier commit)', () => {
+    render(<PrRow pr={makePr({ report: makeReport({ stale: true }) })} />);
+    expect(screen.getByText('reviewed earlier commit')).toBeTruthy();
+  });
+
+  it('an expand chevron toggles the report panel', async () => {
+    const user = userEvent.setup();
+    const onToggleExpand = vi.fn();
+    render(
+      <PrRow
+        pr={makePr({ number: 7, report: makeReport() })}
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+      />,
+    );
+    await user.click(screen.getByLabelText('Expand report for PR #7'));
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it('expanded → renders summary, rationale, and risks', () => {
+    render(
+      <PrRow
+        pr={makePr({ report: makeReport({ risks: ['Touches no tests', 'Wide blast radius'] }) })}
+        expanded
+      />,
+    );
+    expect(screen.getByText('Adds the widget and a test.')).toBeTruthy();
+    expect(screen.getByText(/Change is scoped and tested\./)).toBeTruthy();
+    expect(screen.getByText('Touches no tests')).toBeTruthy();
+    expect(screen.getByText('Wide blast radius')).toBeTruthy();
+  });
+
+  it('no report → no chevron, no recommendation chip', () => {
+    render(<PrRow pr={makePr({ report: null })} />);
+    expect(screen.queryByLabelText(/Expand report/)).toBeNull();
+    expect(screen.queryByText('Approve')).toBeNull(); // (no manual button either, role off)
+  });
+});
+
+describe('PrRow — honest auto-status (never a false "merged")', () => {
+  it('manual mode → "Manual review", no merge claim', () => {
+    render(<PrRow pr={makePr()} autoStatus={{ mode: 'manual' }} />);
+    expect(screen.getByText(/Manual review/)).toBeTruthy();
+    expect(screen.queryByText(/auto-merge on next poll/i)).toBeNull();
+  });
+
+  it('willMerge → "Will auto-merge on next poll"', () => {
+    render(<PrRow pr={makePr()} autoStatus={{ mode: 'auto', willMerge: true }} />);
+    expect(screen.getByText(/Will auto-merge on next poll/)).toBeTruthy();
+  });
+
+  it('blocked → shows the HONEST blocker reason, not a merged state', () => {
+    render(
+      <PrRow
+        pr={makePr({ check_conclusion: 'failure' })}
+        autoStatus={{ mode: 'auto', willMerge: false, blockers: ['CI checks are failing'] }}
+      />,
+    );
+    expect(screen.getByText(/Auto-merge blocked: CI checks are failing/)).toBeTruthy();
+    // Honesty: the row must NEVER assert the PR is merged/approved when it isn't.
+    expect(screen.queryByText(/✓ approved/)).toBeNull();
+  });
+});

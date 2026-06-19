@@ -126,6 +126,54 @@ test('transparent proxy — streams an SSE body through untouched, drops content
   assert.ok(text.includes('message_start') && text.includes('"text":"hi"'));
 });
 
+test('upstream HEADERS stall is aborted (502) and RELEASES the admission slot — the 2026-06-19 deadlock fix', async () => {
+  // Reproduce the outage: an upstream that accepts the socket but never responds used to hang the proxy
+  // task forever, leaking its admission slot until the pool deadlocked at maxConcurrent. With
+  // concurrency:1, a leak would wedge the gateway permanently — so the 2nd request succeeding PROVES the
+  // slot was freed.
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls++;
+      if (calls === 1) return; // STALL: never write, never end (the deadlock trigger)
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    },
+    { concurrency: 1, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120 },
+  );
+  const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r1.status, 502, 'stalled upstream is aborted, not hung');
+  assert.equal((await r1.json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized 502');
+  const r2 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+  assert.equal(r2.status, 200, 'the single admission slot was released — no deadlock');
+  assert.equal((await r2.json() as { ok: boolean }).ok, true);
+});
+
+test('a mid-stream upstream stall is aborted (body-idle deadline) and releases the slot', async () => {
+  // Headers + first chunk arrive, then the upstream stalls mid-stream. The per-chunk body-idle deadline
+  // must trip (a leak here would also wedge concurrency:1).
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls++;
+      if (calls === 1) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+        return; // then STALL — never send more, never end
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    },
+    { concurrency: 1, upstreamHeadersTimeoutMs: 2000, upstreamBodyIdleTimeoutMs: 120 },
+  );
+  const r1 = await post({ model: 'claude-opus-4', stream: true, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r1.status, 200, 'headers + first chunk forwarded fine');
+  await r1.text().catch(() => {}); // body aborts mid-stream → client read ends (truncated); tolerate the reset
+  const r2 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+  assert.equal(r2.status, 200, 'mid-stream stall released the slot — no deadlock');
+  assert.equal((await r2.json() as { ok: boolean }).ok, true);
+});
+
 test('backpressure — an upstream unified-429 pauses the governor; the next request gets a synthetic 429+retry-after', async () => {
   const gov = new RateLimitGovernor({ maxConcurrent: 20 });
   const resetSec = Math.round(Date.now() / 1000) + 3600;

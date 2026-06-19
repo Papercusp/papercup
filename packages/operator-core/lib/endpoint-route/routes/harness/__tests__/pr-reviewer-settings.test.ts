@@ -14,6 +14,8 @@ import routes, {
   parseSettingsPatch,
   parseTrustRemoveBody,
   toToggles,
+  patchTouchesAutoMode,
+  autoModeEditableFrom,
 } from '../pr-reviewer-settings';
 import { defaultPrReviewerSettings } from '../../../../pr-host/pr-reviewer-settings-types';
 
@@ -118,6 +120,32 @@ describe('parseTrustRemoveBody', () => {
 
   it('rejects a non-numeric string', () => {
     expect(parseTrustRemoveBody({ trusted_github_user_id: 'bob' }).ok).toBe(false);
+  });
+});
+
+describe('PR-3 owner-gated auto-mode — patchTouchesAutoMode', () => {
+  it('true when the patch flips auto_review or auto_merge', () => {
+    expect(patchTouchesAutoMode({ auto_review: true })).toBe(true);
+    expect(patchTouchesAutoMode({ auto_merge: false })).toBe(true);
+    expect(patchTouchesAutoMode({ auto_review: false, auto_merge: true })).toBe(true);
+  });
+  it('false for non-auto-mode patches (role / merge_method are not gated here)', () => {
+    expect(patchTouchesAutoMode({ pr_reviewer_role_enabled: true })).toBe(false);
+    expect(patchTouchesAutoMode({ merge_method: 'rebase' })).toBe(false);
+    expect(patchTouchesAutoMode({})).toBe(false);
+  });
+});
+
+describe('PR-3 owner-gated auto-mode — autoModeEditableFrom (the teeth)', () => {
+  it('editable ONLY for a gh-authed claimed owner', () => {
+    expect(autoModeEditableFrom({ editable: true, claimOwner: true })).toBe(true);
+  });
+  it('a non-owner viewer (even gh-authed) is read-only — the 403 case', () => {
+    expect(autoModeEditableFrom({ editable: true, claimOwner: false })).toBe(false);
+  });
+  it('an anonymous viewer is read-only', () => {
+    expect(autoModeEditableFrom({ editable: false, claimOwner: true })).toBe(false);
+    expect(autoModeEditableFrom({ editable: false, claimOwner: false })).toBe(false);
   });
 });
 

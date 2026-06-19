@@ -50,6 +50,10 @@ export interface PrReviewerSettingsResponse {
   audit: AuditEntry[];
   viewer: { github_user_id: number; github_login: string } | null;
   editable: boolean;
+  /** PR-3 §3: viewer is the claimed owner (may flip auto-mode). */
+  claimOwner?: boolean;
+  /** PR-3 §3: may the viewer flip auto_review/auto_merge (= editable && claimOwner)? */
+  autoModeEditable?: boolean;
   /** P-007 (D-002): hive HOME slug the role bit was inherited from, when this
    *  harness has no explicit row. Provenance display only. */
   inheritedFrom?: string | null;
@@ -172,6 +176,10 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
 
   // The auto_* toggles are meaningless while the master kill-switch is off.
   const subTogglesDisabled = !editable || !settings?.pr_reviewer_role_enabled;
+  // PR-3 §3: auto-mode (auto_review/auto_merge) is owner-gated — read-only for
+  // a non-claimed-owner even when gh-authed (the server enforces the same gate).
+  const autoModeEditable = data?.autoModeEditable ?? false;
+  const autoTogglesDisabled = subTogglesDisabled || !autoModeEditable;
 
   const flip = useCallback(
     async (key: keyof SettingsToggles, value: SettingsToggles[keyof SettingsToggles]) => {
@@ -263,16 +271,24 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
               />
               <Toggle
                 label="Auto-approve trusted PRs"
-                hint="Approve PRs whose author is in your trust list."
+                hint={
+                  autoModeEditable
+                    ? 'Approve PRs whose author is in your trust list.'
+                    : 'Owner-only: claim this harness to change auto-mode.'
+                }
                 checked={!!settings?.auto_review}
-                disabled={subTogglesDisabled || saving}
+                disabled={autoTogglesDisabled || saving}
                 onChange={(v) => void flip('auto_review', v)}
               />
               <Toggle
                 label="Auto-merge approved PRs"
-                hint="Merge PRs auto-approve fired on, once checks are green."
+                hint={
+                  autoModeEditable
+                    ? 'Merge PRs auto-approve fired on, once checks are green.'
+                    : 'Owner-only: claim this harness to change auto-mode.'
+                }
                 checked={!!settings?.auto_merge}
-                disabled={subTogglesDisabled || saving}
+                disabled={autoTogglesDisabled || saving}
                 onChange={(v) => void flip('auto_merge', v)}
               />
               <label className="pc-prrs__field">

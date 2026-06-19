@@ -41,6 +41,8 @@ vi.mock('nuqs', async () => {
     // P-049 added `prs_settings` via `parseAsBoolean.withDefault(false)`. Unlike
     // parseAsStringLiteral, parseAsBoolean is a bare parser object (not a factory).
     parseAsBoolean: { withDefault: (d: unknown) => ({ __default: d }) },
+    // PR-3 added `prs_selected` via bare `parseAsInteger` (no withDefault).
+    parseAsInteger: { __default: null },
   };
 });
 
@@ -96,5 +98,78 @@ describe('PrsTab — no render-loop refetch (regression)', () => {
     view.rerender(<PrsTab harnessSlug="acme" />);
     await new Promise((r) => setTimeout(r, 50));
     expect(countPrsCalls(fetchSpy)).toBe(1);
+  });
+});
+
+// ── PR-3: owner-gated auto-mode toggle ────────────────────────────────
+
+/** A fetch mock that routes by URL: /prs (empty), /pr-reviewer-settings (gate),
+ *  /claim-status (claim). `autoModeEditable` drives whether the toggle is live. */
+function routedFetch(opts: { autoModeEditable: boolean; autoOn?: boolean }) {
+  return vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.includes('/pr-reviewer-settings')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          settings: {
+            pr_reviewer_role_enabled: !!opts.autoOn,
+            auto_review: !!opts.autoOn,
+            auto_merge: !!opts.autoOn,
+            merge_method: 'squash',
+          },
+          trustList: [],
+          audit: [],
+          viewer: { github_user_id: 1, github_login: 'owner' },
+          editable: true,
+          claimOwner: opts.autoModeEditable,
+          autoModeEditable: opts.autoModeEditable,
+        }),
+      } as unknown as Response;
+    }
+    if (u.includes('/claim-status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'unclaimed', viewer_can_claim: true, claimants: [] }),
+      } as unknown as Response;
+    }
+    // /prs and anything else
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ prs: [], pollingFailedAt: null, noRemote: false }),
+    } as unknown as Response;
+  });
+}
+
+describe('PrsTab — auto-mode toggle is claimed-owner gated (PR-3)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('a non-owner sees the auto toggle READ-ONLY (disabled)', async () => {
+    vi.stubGlobal('fetch', routedFetch({ autoModeEditable: false }));
+    const { findByLabelText } = render(<PrsTab harnessSlug="acme" />);
+    const toggle = (await findByLabelText('Auto-apply agent recommendations')) as HTMLButtonElement;
+    await waitFor(() => expect(toggle.disabled).toBe(true));
+  });
+
+  it('a claimed owner can flip the auto toggle (enabled)', async () => {
+    vi.stubGlobal('fetch', routedFetch({ autoModeEditable: true, autoOn: false }));
+    const { findByLabelText } = render(<PrsTab harnessSlug="acme" />);
+    const toggle = (await findByLabelText('Auto-apply agent recommendations')) as HTMLButtonElement;
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('reflects auto-mode ON when role + both auto levers are set', async () => {
+    vi.stubGlobal('fetch', routedFetch({ autoModeEditable: true, autoOn: true }));
+    const { findByLabelText } = render(<PrsTab harnessSlug="acme" />);
+    const toggle = (await findByLabelText('Auto-apply agent recommendations')) as HTMLButtonElement;
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
   });
 });

@@ -113,7 +113,11 @@ function bucketSql(
       ${where}`;
 }
 
-async function computePgUsage(sql: Sql, cat: StorageCategory & { kind: 'pg' }): Promise<StorageUsageRow> {
+async function computePgUsage(
+  sql: Sql,
+  cat: StorageCategory & { kind: 'pg' },
+  opts: { sizesOnly?: boolean } = {},
+): Promise<StorageUsageRow> {
   const base: StorageUsageRow = {
     id: cat.id,
     label: cat.label,
@@ -135,6 +139,10 @@ async function computePgUsage(sql: Sql, cat: StorageCategory & { kind: 'pg' }): 
     base.note = `size unavailable: ${(err as Error)?.message ?? 'error'}`;
     return base;
   }
+
+  // sizesOnly (storage-growth-alarm P-017): the catalog size is all the caller
+  // needs — skip the bounded age-distribution scan entirely (no per-table SQL).
+  if (opts.sizesOnly) return base;
 
   // Federated / no age column → read-only, no distribution.
   if (!base.trimmable || !cat.ageColumn || !cat.ageColumnType) return base;
@@ -196,13 +204,13 @@ function computeDiskUsage(cat: StorageCategory & { kind: 'disk' }): StorageUsage
 
 /** Compute usage for every category. Sequential (gentle on the DB); a failing
  *  category degrades to size-only with a note rather than failing the page. */
-export async function computeStorageUsage(): Promise<StorageUsageRow[]> {
+export async function computeStorageUsage(opts: { sizesOnly?: boolean } = {}): Promise<StorageUsageRow[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql as unknown as Sql;
   const out: StorageUsageRow[] = [];
   for (const cat of STORAGE_CATEGORIES) {
     if (cat.kind === 'pg') {
-      out.push(await computePgUsage(sql, cat));
+      out.push(await computePgUsage(sql, cat, opts));
     } else {
       try {
         out.push(computeDiskUsage(cat));

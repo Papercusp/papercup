@@ -183,6 +183,11 @@
  *     (lib/graduation/seed-graduation-routine.ts).
  */
 import '../git-sync/git-sync-action';
+// papercusp-dogfood-phase7-pr-lifecycle P-042 (un-vaporware, PR-1): `system:pr-poll`
+// — per-harness inbound-PR poll daemon (notice PR → track → trigger reviewer →
+// decideAutoReview → auto-approve/merge). Seeded INACTIVE; the pr-reviewer-settings
+// route flips it active when the reviewer role is enabled for a harness.
+import '../../pr-host/poll-daemon';
 import '../../blueprint/blueprint-run-action';
 // scheduled-recurring-plans-2026-06-16 P-007: `system:plan-run` — one fire of a
 // scheduled plan (instance plan → plan_runs row → run-scoped frontier work_items).

@@ -13,7 +13,9 @@ import {
   resizePty,
   writePty,
   findPtyByPid,
+  deriveMaxConcurrentPtys,
 } from './pty-bridge';
+import { getResourceProfile } from './resource-profile';
 
 const liveIds: string[] = [];
 
@@ -140,5 +142,33 @@ describe('pty-bridge', () => {
       expect(findPtyByPid(pid, 'su-anyone')?.id).toBe(handle.id);
       expect(findPtyByPid(pid)?.id).toBe(handle.id);
     });
+  });
+});
+
+// F-E2 of app-wide-load-traps: the absolute pty backstop is no longer a fixed
+// big-box literal (16) but scales to the host's resource-profile agent budget,
+// so a 4-core laptop's fork-bomb backstop is ~2-4 instead of 16. The pure
+// derivation is exported so we can test the formula without injecting host state.
+describe('maxConcurrentPtys backstop derivation (F-E2 adaptive caps)', () => {
+  it('is 2× the agent budget, capped at the legacy 16 absolute backstop', () => {
+    expect(deriveMaxConcurrentPtys(1)).toBe(2); // 4-core laptop sharing an embedded PG
+    expect(deriveMaxConcurrentPtys(2)).toBe(4); // small native host
+    expect(deriveMaxConcurrentPtys(4)).toBe(8);
+    expect(deriveMaxConcurrentPtys(8)).toBe(16); // ceil(16) hits the cap
+    expect(deriveMaxConcurrentPtys(16)).toBe(16); // server — capped, preserves old behavior
+    expect(deriveMaxConcurrentPtys(64)).toBe(16); // never exceeds the absolute backstop
+  });
+
+  it('floors a non-positive / non-finite budget to 1 agent (backstop 2), never 0 or NaN', () => {
+    expect(deriveMaxConcurrentPtys(0)).toBe(2);
+    expect(deriveMaxConcurrentPtys(-5)).toBe(2);
+    expect(deriveMaxConcurrentPtys(Number.NaN)).toBe(2);
+    expect(deriveMaxConcurrentPtys(Number.POSITIVE_INFINITY)).toBe(2);
+  });
+
+  it('is wired to the live resource profile (scales with host), not a fixed literal', () => {
+    const expected = deriveMaxConcurrentPtys(getResourceProfile().maxSimultaneousAgents);
+    expect(expected).toBeGreaterThanOrEqual(2);
+    expect(expected).toBeLessThanOrEqual(16);
   });
 });

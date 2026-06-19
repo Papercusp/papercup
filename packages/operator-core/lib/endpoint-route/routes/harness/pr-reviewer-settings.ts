@@ -621,6 +621,25 @@ const postSettings = defineTool({
         updated_at               = now()
     `;
 
+    // PR-1 (P-042): keep the `system:pr-poll` routine in lockstep with the reviewer
+    // role. Enabling the role seeds + activates the per-harness poll daemon (notice
+    // PR → review-trigger → auto-flow); disabling it deactivates the routine (the row
+    // stays, so re-enabling restores cadence + last-seen). Best-effort — a routine
+    // sync failure must never fail the settings write.
+    try {
+      if (merged.pr_reviewer_role_enabled) {
+        const { seedPrPollRoutineForHarness } = await import('../../../pr-host/pr-poll-routine');
+        await seedPrPollRoutineForHarness({ workspaceId, installSlug: slug, active: true }, { sql });
+      } else {
+        const { setPrPollRoutineActive } = await import('../../../pr-host/pr-poll-routine');
+        await setPrPollRoutineActive(sql, slug, false);
+      }
+    } catch (e) {
+      console.warn(
+        `[pr-reviewer-settings] pr-poll routine sync failed for ${slug}: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+
     return Response.json({ ok: true, settings: toToggles(merged) });
   },
 });
