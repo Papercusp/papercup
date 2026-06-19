@@ -311,7 +311,9 @@ export function runBootstrap(): void {
   // refresh tokens never mutually invalidate (the every-terminal-relogin
   // cascade, claude-credential-sync-2026-06-10). Flag is consulted per pass.
   try {
-    startClaudeCredentialSync({ isEnabled: () => getFlag(FLAGS.CLAUDE_CRED_SYNC) });
+    startClaudeCredentialSync({
+      isEnabled: () => getFlag(FLAGS.CLAUDE_CRED_SYNC, 'operator-host'),
+    });
   } catch (e) {
     console.warn('[claude-cred-sync] failed to start:', (e as Error)?.message ?? e);
   }
