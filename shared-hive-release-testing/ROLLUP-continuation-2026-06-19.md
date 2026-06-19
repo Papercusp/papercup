@@ -64,6 +64,28 @@ Legend: 🟢 landed/green · 🔧 in progress · 🟡 caveat · 🔴 blocked
 ## Monitor log
 - 12:05 — board created. All 7 lanes owned + active. Backbone + live core re-green.
   Live-N scale note delivered. Awaiting lane landings.
+- 18:08 — **🎯 A-003 LIVE TRACE = CONCLUSIVE LOCALIZATION (the green-rig/red-binary cycle broken).**
+  Instrumented run (PAPERCUSP_A003_TRACE=1) on B's joiner (member=hello-world), verbatim:
+  `boot: hiveHomeProjectionSlug=<none>` → `slug-filter origin=hello-world own=hello-world home=<none> → ADMIT`
+  (member log ✓) → `slug-filter origin=hello-world-hive own=hello-world home=<none> → REJECT` (HIVE-HOME LOG
+  DROPPED) → `resolve: joinerHiveHomeSlug=hello-world-hive` (AFTER the reject) → `rekey rebind=true`.
+  **SPLIT: announce WORKS (dc9db cleared — B DOES receive origin=hello-world-hive); the bug is ADMIT** — B's
+  slug-filter REJECTS the hive-home log because `home=<none>` at admit time, the resolve runs AFTER, and rejected
+  announces are never re-delivered → hive-home log never federates. d2230's resolve-then-join reorder did NOT
+  move resolve before this admit on the live path. FIX (→ d2230): buffer-and-retry the home=<none> frame, OR
+  re-announce/replay on rebind, OR hoist resolve fully ahead of any admit. dc9db's same-topic integration test
+  now has the exact red-rig (onAnnounce sees origin=<hive-home> while home=<none>). A targeted, testable fix at last.
+- 18:00 — **⚠ A-003 RE-WITNESS #2 = STILL RED (d2230's resolve-then-join fix did NOT close it on the binary).**
+  Rebuilt the .deb from staging — fix IS in the binary (announceSlugInScope=2, serve.mjs 13:42) — ran the
+  content-matrix: 28 PASS but hive_settings/hive_members cross in ZERO directions (backfill + incr-A→B +
+  incr-B→A), identical to re-witness #1. hive_settings clean RED (outbox=10, write OK, zero remote on B).
+  So the boot-ordering reorder, green in d2230's suite + integration, is refuted by the binary = green-rig/
+  red-binary AGAIN (3rd time the live witness catches what the rig misses). I omitted the trace this run
+  (prioritized the fast verdict), so I'm RE-RUNNING the matrix on the SAME .deb with PAPERCUSP_A003_TRACE=1
+  (:182, features+hive-settings/members) to capture d2230's `[A-003] slug-filter origin=/own=/home=/→ADMIT|REJECT`
+  lines on B — the conclusive splitter of announce(dc9db) vs admit/apply(d2230). Told the team to HOLD a 3rd
+  blind fix until the trace lands. **A-003 STILL the live release blocker.** (Re-key K-layer fully built +
+  32 teeth-tests, register-all held until A-003 green.)
 - 17:26 — **A-003 root-cause NARROWED (dc9db, off my :180 pair's PG) + my drain-read CORRECTED.**
   NOT the drain: hive_settings IS drained (substrate_outbox 6/6, undrained=0), the hive-home boots +
   joins-topic + peer_connected. (My "outbox=10 undrained" was a MISREAD of the matrix's captured-count
