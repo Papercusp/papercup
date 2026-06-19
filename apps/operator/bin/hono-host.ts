@@ -99,7 +99,14 @@ function startRequestServers(): void {
   // host; logs a single structured warning when p95 loop delay over a 10s window
   // crosses 100ms — the signal that the main thread is CPU-bound. Per-process:
   // each worker has its own event loop to watch.
-  startEventLoopLagMonitor();
+  // infra round-3 F1: on the production host, also capture a short CPU profile
+  // when the loop saturates (≥ critical p95), so the synchronous culprit is
+  // identifiable instead of re-investigated from scratch each time. Rate-limited
+  // (≤1 / 5 min), best-effort, off by default elsewhere (perf suite / tests).
+  // PAPERCUSP_LOOP_PROFILER=0 kills it.
+  startEventLoopLagMonitor({
+    profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER !== '0',
+  });
 
   // P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()
   // (above) and, when this process's event loop is CRITICALLY saturated, makes the
