@@ -30,10 +30,14 @@
 import type { ScenarioSetup, SetupCleanup } from '@papercusp/testing-shell/llm';
 
 import { getMemoryBackend, type MemoryBackend } from '../memory/backend';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** Default harness pool for seeds that don't name a scope. */
 export function defaultSeedScope(): string {
-  return `harness:${process.env.PAPERCUSP_LLM_TEST_HARNESS ?? 'papercup'}`;
+  // Generalized: fall back to the configured operator-home pointer
+  // (PAPERCUSP_HIVE_HOME_SLUG via operatorHomeHarnessSlug()), not a baked
+  // 'papercup' literal — papercup→papercusp is an env switch, not a code edit.
+  return `harness:${process.env.PAPERCUSP_LLM_TEST_HARNESS ?? operatorHomeHarnessSlug()}`;
 }
 
 export async function applyScenarioSetup(

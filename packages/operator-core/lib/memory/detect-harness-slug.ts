@@ -6,9 +6,13 @@
  * Resolution order (D-003):
  *   1. `PAPERCUSP_HARNESS_SLUG` env var (explicit override)
  *   2. Walk cwd upward looking for a `.papercusp/slug` marker file
- *   3. Walk cwd upward looking for the Papercusp meta-repo marker
- *      (package.json whose name is "papercup" — this is the "I'm
- *      working on Papercusp itself" case; slug = `papercup`)
+ *   3. Walk cwd upward for the Papercusp meta-repo marker (a monorepo
+ *      root that vendors `libs/papercusp`; package name
+ *      papercup|papercusp[-monorepo], npm-scope-tolerant — the "I'm
+ *      working on Papercusp itself" case). The slug is the configured
+ *      operator-home pointer (`PAPERCUSP_HIVE_HOME_SLUG`), NOT a baked
+ *      literal, so a papercup→papercusp switch is an env change, not a
+ *      code edit here.
  *   4. Otherwise return null — memory injection falls back to user
  *      scope only
  *
@@ -22,6 +26,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+
+import {
+  HOME_HARNESS_ENV,
+  LEGACY_DEFAULT_HOME_HARNESS,
+} from '../harness/operator-home-harness';
 
 export type DetectSource =
   | 'env'
@@ -63,13 +72,21 @@ function readSlugMarker(dir: string): string | null {
 }
 
 function looksLikePapercupRepo(dir: string): boolean {
-  // Papercusp's own repo has package.json with name "papercup" at the root
-  // PLUS a libs/papercusp submodule. Both checks together ~zero false-positive.
+  // Recognize the Papercusp dogfood monorepo root: a package.json whose
+  // (npm-scope-stripped) name is papercup|papercusp, optionally
+  // `-monorepo`, PLUS a vendored `libs/papercusp` submodule. The name is
+  // matched tolerantly (anchored) so the papercup→papercusp rename — and
+  // the scoped `@papercupai/papercup-monorepo` package name — need no edit
+  // here, while a foreign repo that merely contains `papercup` in its name
+  // (e.g. "not-papercup") is still rejected. The libs/papercusp check keeps
+  // false-positives ~zero. Detection ONLY — the returned slug is the
+  // configured home pointer (see step 3 below), never a baked literal.
   const pkgPath = path.join(dir, 'package.json');
   try {
     const raw = fs.readFileSync(pkgPath, 'utf8');
     const pkg = JSON.parse(raw) as { name?: string };
-    if (pkg?.name !== 'papercup') return false;
+    const bareName = (pkg?.name ?? '').replace(/^@[^/]+\//, ''); // strip npm scope
+    if (!/^papercu(p|sp)(-monorepo)?$/.test(bareName)) return false;
   } catch {
     return false;
   }
@@ -121,10 +138,18 @@ export function detectHarnessSlugSync(opts: {
     if (marker) return { slug: marker, source: 'marker-file' };
   }
 
-  // 3. Walk for Papercusp meta-repo
+  // 3. Walk for the Papercusp meta-repo. The slug is the configured
+  //    operator-home pointer (PAPERCUSP_HIVE_HOME_SLUG, read from the same
+  //    `env` resolved above), NOT a baked literal — papercup→papercusp is
+  //    an env switch, not a code change. Falls back to the legacy default
+  //    only when the pointer is unset (pre-pointer installs).
   for (const dir of walkUp(opts.cwd)) {
     if (looksLikePapercupRepo(dir)) {
-      return { slug: 'papercup', source: 'meta-papercup' };
+      const home = env[HOME_HARNESS_ENV]?.trim();
+      return {
+        slug: home && home.length > 0 ? home : LEGACY_DEFAULT_HOME_HARNESS,
+        source: 'meta-papercup',
+      };
     }
   }
 

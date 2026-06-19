@@ -13,9 +13,13 @@ const M = vi.hoisted(() => ({
   listOwnedHiveMeta: vi.fn(),
   getInProcessSubstrateStatus: vi.fn(),
   ensureHiveDirectoryWired: vi.fn(async () => null),
+  // EI-1618/EI-1599: the substrate-outbox drain read goes through getOrgPg().sql.unsafe.
+  sqlUnsafe: vi.fn(async () => [] as unknown[]),
+  getOrgPg: vi.fn(() => ({ sql: { unsafe: M.sqlUnsafe } })),
 }));
 const { listOwnedHiveMeta, getInProcessSubstrateStatus, ensureHiveDirectoryWired } = M;
 
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: M.getOrgPg }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../hive-directory-meta', () => ({ listOwnedHiveMeta: M.listOwnedHiveMeta }));
 vi.mock('../../../sync/hyperbee/in-process-status', () => ({
@@ -65,6 +69,9 @@ beforeEach(() => {
   listOwnedHiveMeta.mockReset();
   getInProcessSubstrateStatus.mockReset();
   ensureHiveDirectoryWired.mockClear();
+  M.sqlUnsafe.mockReset();
+  M.sqlUnsafe.mockResolvedValue([]); // no undrained rows by default
+  M.getOrgPg.mockClear();
   getInProcessSubstrateStatus.mockReturnValue({
     substrateActive: true,
     bootedCount: 2,
@@ -96,7 +103,15 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
     expect(body.hives).toEqual([
       { hiveId: 'pub', title: 'Pub', visibility: 'public', memberCount: 1, reachablePeers: 3 },
     ]);
-    expect(body.substrate).toEqual({ active: true, bootedHarnesses: 2, healthy: 1, booting: 0, degraded: 1 });
+    expect(body.substrate).toEqual({
+      active: true,
+      bootedHarnesses: 2,
+      healthy: 1,
+      booting: 0,
+      degraded: 1,
+      // no undrained outbox rows (default sqlUnsafe → []) → honest zero-drain
+      drain: { stalledHarnesses: 0, worstUndrainedCount: 0, worstOldestUndrainedAgeMs: null },
+    });
   });
 
   it('reports reachablePeers:0 for a private hive — it never announces (no fake reach)', async () => {
@@ -118,6 +133,76 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
     const { status, body } = await call('http://localhost/api/discovery/federation-status');
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true, hives: [] });
+  });
+
+  it('wires the substrate-outbox drain read into the verdict resolver (EI-1618)', async () => {
+    configureHiveDirectoryForTest(fakeDeps(0));
+    listOwnedHiveMeta.mockResolvedValue([]);
+    // one harness with 2 rows captured ~2m ago, still undrained
+    const oldTs = Date.now() - 120_000;
+    M.sqlUnsafe.mockResolvedValue([
+      { workspace_id: 'ws-test', harness_slug: 'a', undrained: '2', oldest_ts: String(oldTs) },
+    ]);
+
+    await call('http://127.0.0.1/api/discovery/federation-status');
+
+    // the route passed a resolveDrainStats fn that reads the prefetched stats
+    const opts = getInProcessSubstrateStatus.mock.calls.at(-1)?.[0] as
+      | {
+          resolveDrainStats?: (
+            ws: string,
+            slug: string,
+          ) => { undrainedCount: number; oldestUndrainedAgeMs: number | null };
+        }
+      | undefined;
+    expect(typeof opts?.resolveDrainStats).toBe('function');
+    const stat = opts!.resolveDrainStats!('ws-test', 'a');
+    expect(stat.undrainedCount).toBe(2);
+    expect(stat.oldestUndrainedAgeMs).toBeGreaterThanOrEqual(119_000);
+    // a harness with no undrained rows resolves to honest zero
+    expect(opts!.resolveDrainStats!('ws-test', 'other')).toEqual({
+      undrainedCount: 0,
+      oldestUndrainedAgeMs: null,
+    });
+  });
+
+  it('rolls stalled harnesses into substrate.drain (the honest install-wide sync signal)', async () => {
+    configureHiveDirectoryForTest(fakeDeps(0));
+    listOwnedHiveMeta.mockResolvedValue([]);
+    getInProcessSubstrateStatus.mockReturnValue({
+      substrateActive: true,
+      bootedCount: 3,
+      summary: {},
+      harnesses: [
+        { workspaceId: 'ws-test', harnessSlug: 'clean', verdict: 'healthy', reasons: [], drain: { undrainedCount: 0, oldestUndrainedAgeMs: null } },
+        { workspaceId: 'ws-test', harnessSlug: 'lag', verdict: 'degraded', reasons: ['x'], drain: { undrainedCount: 4, oldestUndrainedAgeMs: 90_000 } },
+        { workspaceId: 'ws-test', harnessSlug: 'stall', verdict: 'unhealthy', reasons: ['y'], drain: { undrainedCount: 12, oldestUndrainedAgeMs: 600_000 } },
+      ],
+      logStats: [],
+    });
+
+    const { body } = await call('http://127.0.0.1/api/discovery/federation-status');
+    expect(body.substrate.drain).toEqual({
+      stalledHarnesses: 2, // 'lag' (90s ≥ 60s) + 'stall' (600s); 'clean' excluded
+      worstUndrainedCount: 12,
+      worstOldestUndrainedAgeMs: 600_000,
+    });
+  });
+
+  it('does NOT flag a harness with a few briefly-undrained rows (< 60s) as stalled', async () => {
+    configureHiveDirectoryForTest(fakeDeps(0));
+    listOwnedHiveMeta.mockResolvedValue([]);
+    getInProcessSubstrateStatus.mockReturnValue({
+      substrateActive: true,
+      bootedCount: 1,
+      summary: {},
+      harnesses: [
+        { workspaceId: 'ws-test', harnessSlug: 'fresh', verdict: 'healthy', reasons: [], drain: { undrainedCount: 3, oldestUndrainedAgeMs: 5_000 } },
+      ],
+      logStats: [],
+    });
+    const { body } = await call('http://127.0.0.1/api/discovery/federation-status');
+    expect(body.substrate.drain.stalledHarnesses).toBe(0);
   });
 
   it('declares the loopback tier (auth-tier Wave 1) — 403s a non-loopback caller', async () => {

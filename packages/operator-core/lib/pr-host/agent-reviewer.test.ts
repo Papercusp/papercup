@@ -345,6 +345,42 @@ describe('runAgentReview', () => {
     expect(d.store).toHaveBeenCalledWith(expect.objectContaining({ featureId: null }));
   });
 
+  it('loads repo conventions when the caller did not supply them', async () => {
+    const host = makeHost(CLEAN_DIFF);
+    const d = deps();
+    d.loadConventions.mockResolvedValue('be tidy');
+    await runAgentReview({
+      host,
+      pr: makePr(),
+      workspaceId: 'ws1',
+      harnessSlug: 'papercup',
+      reviewerGithubId: 7,
+      runLlm: llmReturning(approveJson),
+      model: 'm',
+      deps: d,
+    });
+    expect(d.loadConventions).toHaveBeenCalledWith(
+      expect.objectContaining({ remote: 'github.com/owner/repo', ref: 'main' }),
+    );
+  });
+
+  it('does not load conventions when the caller supplied them', async () => {
+    const host = makeHost(CLEAN_DIFF);
+    const d = deps();
+    await runAgentReview({
+      host,
+      pr: makePr(),
+      workspaceId: 'ws1',
+      harnessSlug: 'papercup',
+      reviewerGithubId: 7,
+      conventions: 'caller-provided',
+      runLlm: llmReturning(approveJson),
+      model: 'm',
+      deps: d,
+    });
+    expect(d.loadConventions).not.toHaveBeenCalled();
+  });
+
   it('still returns the recommendation when the store fails', async () => {
     const host = makeHost(CLEAN_DIFF);
     const d = deps();

@@ -31,6 +31,8 @@ import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessPlanRow } from './projections/harness-plans';
 import type { HiveSettingRow } from './projections/hive-settings';
 import type { HivePolicyRow } from './projections/hive-policy';
+import type { ReportWireRow } from './projections/hive-reports';
+import type { PendingJoinWireRow } from './projections/hive-pending-joins';
 import type { HarnessIssueRow } from './projections/issues';
 import type { ContributorUsageEventRow } from './projections/usage';
 import type { CoordConversationRow } from './projections/coord-conversation';
@@ -82,6 +84,13 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // record. Projection 'hive-policy' (projections/hive-policy.ts); SINGLETON, so
   // key == harness_slug (the Hive home).
   hive_policy: 'hive-policy',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MOD): the member→owner moderation
+  // report queue. Projection 'hive-reports' (projections/hive-reports.ts); key == report_id.
+  hive_reports: 'hive-reports',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MEMBER): approval-mode pending join
+  // requests. Projection 'hive-pending-joins' (projections/hive-pending-joins.ts); key ==
+  // github_user_id (the generated pending_join_fed_key column).
+  hive_pending_joins: 'hive-pending-joins',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission.
   // Projection 'hive-members' (projections/hive-members.ts); key == github_user_id.
   // The capture trigger (mig 189) writes outbox.harness_slug := NEW.hive_home_slug so

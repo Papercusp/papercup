@@ -95,6 +95,8 @@ export function auditActionLabel(action: string): string {
       return 'Agent review failed';
     case 'skipped_untrusted':
       return 'Skipped (untrusted author)';
+    case 'skipped_revoked':
+      return 'Refused (revoked contributor)';
     case 'skipped_checks_failing':
       return 'Skipped (checks failing)';
     case 'error':

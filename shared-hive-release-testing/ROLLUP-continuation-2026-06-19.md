@@ -64,6 +64,19 @@ Legend: 🟢 landed/green · 🔧 in progress · 🟡 caveat · 🔴 blocked
 ## Monitor log
 - 12:05 — board created. All 7 lanes owned + active. Backbone + live core re-green.
   Live-N scale note delivered. Awaiting lane landings.
+- 21:10 — **A-003 fix DEEP-DIVE outcome: implemented → unvalidatable → REVERTED; + NEW discovery blocker.**
+  Ran the witness 3× to validate my fix. ALL THREE failed at B's JOIN before the federation test:
+  `hiveId and memberLinks[] required` (B's discovery returns EMPTY). Run #3/#4: B's embedded PG
+  OOM-crashed (resource — `shared_buffers≈38GB`×4 PGs starve the box). Run #val (clean box, B PG
+  HEALTHY 0-crash): join STILL failed empty-discovery. So it's NOT (only) OOM — **B's discovery of
+  A's published hive is broken/too-slow on the current staging .deb, DETERMINISTIC 3/3**, whereas the
+  earlier witnesses (#1/#2, hours ago) reached hive_settings. My A-003 fix fired 0× in all runs (never
+  reached substrate federation) → uninvolved. REVERTED my fix (suite-green baseline restored 1009/1010;
+  git-sync commits the revert); patch + caveat in `findings-A003-live-trace-diagnosis.md` for d2230.
+  ⚠ **NEW: discovery/join is failing live** — either a real regression (since #1/#2) or a harness/DHT-
+  timeout artifact; UNRESOLVED, blocks ALL live witnessing (A-003, re-key cut-off, any 2-peer join).
+  Needs the discovery-lane owner to investigate. LESSON: don't let an unvalidated load-bearing admission
+  change reach the shared tree before the live witness confirms it (caught + reverted, but shouldn't recur).
 - 20:20 — **🔧 su-9140a IMPLEMENTED the A-003 fix (effort was idle/unowned + coord down) — validating.**
   With zero operator-core churn for ~45min (no owner on A-003) + coord down (couldn't hand back to d2230) +
   the exact diagnosis in hand, stepped in. Root cause (from the live trace): boot.ts onAnnounce marks the

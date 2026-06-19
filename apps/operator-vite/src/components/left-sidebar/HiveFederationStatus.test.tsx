@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import HiveFederationStatus, { reachLabel, substrateLabel, type FedStatus } from './HiveFederationStatus';
+import HiveFederationStatus, { reachLabel, substrateLabel, drainLabel, type FedStatus } from './HiveFederationStatus';
 
 function mockFetch(body: FedStatus | null, ok = true) {
   global.fetch = vi.fn(async () => ({

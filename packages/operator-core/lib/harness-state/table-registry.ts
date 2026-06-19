@@ -188,6 +188,19 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // topic (P-004). The projection VERIFIES the owner signature before applying (a
   // forged policy is dropped). Listed here so it resolves to sync:'peer-log'.
   'hive_policy',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MEMBER): approval-mode pending
+  // join requests (projections/hive-pending-joins.ts). Keyed (workspace_id, harness_slug
+  // = the Hive home, github_user_id) → workspace-owned + peer-log; rides the Hive-pubkey
+  // topic. Bidirectional on the hive-home seam: a joiner's REQUEST reaches the owner, the
+  // owner's DECISION (status) reaches the joiner back.
+  'hive_pending_joins',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MOD): the member→owner moderation
+  // report queue (projections/hive-reports.ts). Keyed (workspace_id, harness_slug = the
+  // Hive home, report_id) → workspace-owned + peer-log. A MEMBER's report federates to the
+  // owner's queue; the owner's resolution (status) federates back. (Takedowns + bans ride
+  // EN-1's owner-SIGNED hive_policy, not this table — reports go member→owner so they
+  // cannot ride the owner signature.)
+  'hive_reports',
   // fed-reanchor B5: the work-queue's issue/task family (work_items kind ∈ bug|change|
   // task) federates over the Hive peer-log — closes engineer-issues-2026-06-03 D-009's
   // "federation deferred". Keyed (workspace_id, issue_id); the capture trigger (mig 197)

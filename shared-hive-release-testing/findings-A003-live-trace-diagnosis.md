@@ -87,6 +87,21 @@ needs maximal free memory (one pair at a time, all stray pairs killed) OR smalle
 NOT a release blocker; an infra/test-harness constraint. The A-003 fix below remains unvalidated only
 because the box couldn't sustain the witness, not because of any code fault.
 
+## Discovery blocker — CHARACTERIZED (not a stale harness; it's directory-discovery timing/federation)
+Ruled OUT harness shape-drift: `GET /api/discovery/hives` returns `{count, rows:[{hiveId, memberLinks,
+title, visibility, …}]}` (routes/discovery/hives.ts:54) — EXACTLY what the matrix reads
+(`d['rows']`, `r['hiveId']`, `memberLinks`; smoke.sh:164-166). No field/wrapper rename. So the empty
+`memberLinks` → join-fail means B's `getHiveDirectory().listDiscoveredHives()` genuinely had NO row for
+A's PUBLIC hive within the harness's 120s poll (40×3s). i.e. **B's hive-DIRECTORY never gossiped A's
+hive in time.** Relevant: the directory is LAZY-WIRED on B's FIRST browse (hives.ts:25-31
+`ensureHiveDirectoryWired`) — B only starts listening on the directory topic when it first polls, then
+must receive A's announce over the directory topic/DHT. So the blocker is **directory gossip not
+delivering A→B within 120s** — most likely slow DHT on the loaded box (the earlier #1/#2 witnesses, hours
+ago + less loaded, got through), OR a directory-federation regression. NEXT to isolate (needs ONE clean
+run on a quiet box): poll discovery with a LONGER window + check inst-b for `ensureHiveDirectoryWired` +
+directory-topic peer-connect; if it eventually lists A's hive → just slow gossip (raise the harness
+window), if never → a real directory-federation regression for the directory lane. NOT yet distinguished.
+
 ## Why this is the whole release gate
 A-003 is the one live-red federation blocker. Everything downstream is staged (re-key built
 + 32 teeth-tests, held on A-003 green; owner-enforcement EN-2 built; PR-system/dogfood planned).

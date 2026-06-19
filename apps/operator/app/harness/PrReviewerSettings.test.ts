@@ -46,6 +46,7 @@ describe('auditActionLabel', () => {
     expect(auditActionLabel('manual_approve')).toBe('Approved');
     expect(auditActionLabel('manual_merge')).toBe('Merged');
     expect(auditActionLabel('skipped_untrusted')).toBe('Skipped (untrusted author)');
+    expect(auditActionLabel('skipped_revoked')).toBe('Refused (revoked contributor)');
     expect(auditActionLabel('skipped_checks_failing')).toBe('Skipped (checks failing)');
     expect(auditActionLabel('error')).toBe('Error');
   });
@@ -65,6 +66,7 @@ describe('auditActionTone', () => {
   });
   it('skipped actions are muted', () => {
     expect(auditActionTone('skipped_untrusted')).toBe('muted');
+    expect(auditActionTone('skipped_revoked')).toBe('muted');
     expect(auditActionTone('skipped_checks_failing')).toBe('muted');
   });
   it('unknown actions default to warn', () => {

@@ -91,12 +91,39 @@ describe('detectHarnessSlugSync — marker file', () => {
 });
 
 describe('detectHarnessSlugSync — papercup meta detection', () => {
-  it('detects papercup repo via package.json + libs/papercusp', () => {
+  it('detects papercup repo via package.json + libs/papercusp (legacy default when pointer unset)', () => {
     const cwd = mkDir('papercup-root/some/sub');
     mkFile('papercup-root/package.json', JSON.stringify({ name: 'papercup' }));
     mkDir('papercup-root/libs/papercusp');
     const r = detectHarnessSlugSync({ cwd, env: {} });
     expect(r).toEqual({ slug: 'papercup', source: 'meta-papercup' });
+  });
+
+  it('detects the real scoped monorepo name (@papercupai/papercup-monorepo)', () => {
+    // The live repo's package.json name — the old `name === 'papercup'`
+    // check rejected this, leaving meta-detection dead. Generalized match
+    // strips the npm scope and accepts papercup[-monorepo].
+    const cwd = mkDir('mono-root/apps/x');
+    mkFile('mono-root/package.json', JSON.stringify({ name: '@papercupai/papercup-monorepo' }));
+    mkDir('mono-root/libs/papercusp');
+    const r = detectHarnessSlugSync({ cwd, env: {} });
+    expect(r).toEqual({ slug: 'papercup', source: 'meta-papercup' });
+  });
+
+  it('tolerates the papercup→papercusp rename (papercusp-monorepo)', () => {
+    const cwd = mkDir('cusp-root');
+    mkFile('cusp-root/package.json', JSON.stringify({ name: 'papercusp-monorepo' }));
+    mkDir('cusp-root/libs/papercusp');
+    const r = detectHarnessSlugSync({ cwd, env: {} });
+    expect(r).toEqual({ slug: 'papercup', source: 'meta-papercup' });
+  });
+
+  it('returns the configured home pointer (PAPERCUSP_HIVE_HOME_SLUG), not a baked literal', () => {
+    const cwd = mkDir('papercup-root');
+    mkFile('papercup-root/package.json', JSON.stringify({ name: 'papercup' }));
+    mkDir('papercup-root/libs/papercusp');
+    const r = detectHarnessSlugSync({ cwd, env: { PAPERCUSP_HIVE_HOME_SLUG: 'papercusp' } });
+    expect(r).toEqual({ slug: 'papercusp', source: 'meta-papercup' });
   });
 
   it('does NOT detect when package.json name mismatches', () => {
