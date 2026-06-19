@@ -116,7 +116,15 @@ export async function publishHiveToDirectory(
   const announced = frame !== null;
   // Deceptive-publish fix: report how many peers the broadcast could actually
   // reach. announced && reachablePeers===0 ⇒ "registered but nobody heard it".
-  return { registered: true, announced, reachablePeers: announced ? dir.reachablePeers() : 0, visibility: meta.visibility };
+  // G-001: scope the count to THIS hive's announce topic (reachablePeersForHive),
+  // not every joined topic — an invite announce must not count global-directory
+  // peers it never reaches.
+  return {
+    registered: true,
+    announced,
+    reachablePeers: announced ? dir.reachablePeersForHive(meta.hiveId) : 0,
+    visibility: meta.visibility,
+  };
 }
 
 /**

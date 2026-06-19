@@ -82,7 +82,12 @@ and mock the consumer.
    `src/**/*.spec.ts`. A `.test.ts` in a `.spec`-only lib is silently NOT RUN
    ("No test files found"). This also traps coverage SWEEPS: a reference check
    that greps only `-g '*.test.ts'` reports `.spec`-covered modules as
-   "uncovered" — grep both.
+   "uncovered" — grep ALL of `*.test.ts`, `*.test.tsx`, AND `*.spec.ts`. The
+   `.tsx` case bites hardest: a React/jsdom module's colocated test is
+   `<name>.test.tsx`, so a `.test.ts`-only enumerator flags an already-covered
+   component as a gap (e.g. `ui/built-in-intents.ts` has `built-in-intents.test.tsx`).
+   ALWAYS read the existing test before writing a "missing" one — the discipline
+   that catches a false positive is reading the neighbor, not trusting the sweep.
 4. **operator-core vitest is fail-on-console; apps/operator is NOT.** In
    operator-core, a tested path that `console.warn`/`error`s fails the test —
    `vi.spyOn(console,'warn').mockImplementation(()=>{})` in `beforeEach` (it must

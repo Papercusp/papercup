@@ -122,7 +122,12 @@ operator-core/apps/operator/orchestrator/sync = <code dir="auto">*.test.ts</code
 <code dir="auto">src/**/*.spec.ts</code>. A <code dir="auto">.test.ts</code> in a <code dir="auto">.spec</code>-only lib is silently NOT RUN
 (“No test files found”). This also traps coverage SWEEPS: a reference check
 that greps only <code dir="auto">-g '*.test.ts'</code> reports <code dir="auto">.spec</code>-covered modules as
-“uncovered” — grep both.</li>
+“uncovered” — grep ALL of <code dir="auto">*.test.ts</code>, <code dir="auto">*.test.tsx</code>, AND <code dir="auto">*.spec.ts</code>. The
+<code dir="auto">.tsx</code> case bites hardest: a React/jsdom module’s colocated test is
+<code dir="auto">&#x3C;name>.test.tsx</code>, so a <code dir="auto">.test.ts</code>-only enumerator flags an already-covered
+component as a gap (e.g. <code dir="auto">ui/built-in-intents.ts</code> has <code dir="auto">built-in-intents.test.tsx</code>).
+ALWAYS read the existing test before writing a “missing” one — the discipline
+that catches a false positive is reading the neighbor, not trusting the sweep.</li>
 <li><strong>operator-core vitest is fail-on-console; apps/operator is NOT.</strong> In
 operator-core, a tested path that <code dir="auto">console.warn</code>/<code dir="auto">error</code>s fails the test —
 <code dir="auto">vi.spyOn(console,'warn').mockImplementation(()=>{})</code> in <code dir="auto">beforeEach</code> (it must

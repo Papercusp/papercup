@@ -138,6 +138,32 @@ The clean fix is **one ordering key of record, end to end**:
 design decision. Filed to the owner via coord (cross-cutting — out of this lane's
 low-risk fix mandate, per the README rule). I did NOT self-patch.
 
+**Fix implementation constraint (code-derived — shapes the a/b choice):** the fix
+is NOT just "add an `hlc` column + change the guard". HLC is assigned at ONE site
+— the drain/append seam (`boot.ts:1465 stampOpHlc`, the only call) — so it lives
+on the outbound LOG OP, never in the local PG row. A LOCAL write's row is stamped
+by migration-214 with `fed_ts = clock_timestamp()` and carries NO hlc (no hlc
+column exists on any consolidated table). Consequence: under approach (a), a
+stored LOCAL row would have a NULL hlc, so an incoming remote op falls back to
+`fed_ts` against it → the local-vs-remote divergence persists. So BOTH approaches
+must move/duplicate HLC assignment to the LOCAL-WRITE moment (the local write path
+or the mig-214 trigger must consult the HLC clock), not only at drain. That
+write-time-vs-drain-time rework is the real design depth — and exactly why this is
+an owner decision, not a mechanical patch. (The fuzz validation below feeds the
+guard ops that already carry an hlc, so it proves the comparator direction; it
+does not exercise the local-row-has-no-hlc gap — that's a fix-design note, not a
+gap in the repro.)
+
+**Fix direction VALIDATED empirically (no production change):** the fuzz harness
+has a swappable guard `guardOrder: 'fed_ts' | 'lww'`. With `'lww'` (the guard
+orders by the merge's own `lwwPick` comparator — put AND del — i.e. "one ordering
+key of record"), the SAME skew sweep that diverges under `'fed_ts'` **converges on
+all 120 seeds**. Paired A/B test: diverges-under-fed_ts > 0, diverges-under-lww =
+0 (`convergence-fuzz.test.ts` → "D-001 fix VALIDATION"). So both fix options (a)
+carry-hlc-to-the-guard and (b) derive-fed_ts-from-HLC are confirmed to resolve
+the divergence — the remedy is proven on the very harness that exposes the bug,
+which de-risks the migration decision.
+
 ---
 
 ## Convergence matrix (content type × scenario)

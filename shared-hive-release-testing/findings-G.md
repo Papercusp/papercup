@@ -47,7 +47,7 @@ live G pass is queued behind E + the halt, not behind a boot bug.
 
 ---
 
-## G-001 — `reachablePeers` is TOPIC-BLIND: publish overstates real reach (S2 honesty; Brief-G "publish-lie" class)
+## G-001 — `reachablePeers` is TOPIC-BLIND: publish overstates real reach (S2 honesty; Brief-G "publish-lie" class) — ✅ FIXED
 
 **Severity:** S2 by the program rubric (UX/honesty). **Brief G explicitly elevates
 publish-lies to S1** — this is a regression of the exact "deceptive-publish" class the
@@ -91,15 +91,21 @@ that computes the number is never asserted against the announce topic.
   `reachablePeers` = the injected all-topics count even though the invite topic has 0
   peers.
 
-**Fix (low-risk, in-lane — sketch):** thread the announce topic into the count.
-- `HiveDirectoryDeps.reachablePeers?(topicHex?: string)`, `HiveDirectory.reachablePeers(topicHex?)`
-  pass-through, and a `HiveDirectory.reachablePeersForHive(hiveId)` that resolves the
-  owned descriptor's topic and calls `reachablePeers(hiveTopicAsHex(topic))`.
-- boot wiring → `(topicHex?) => gossip.openChannelCount(topicHex)`.
-- `publishHiveToDirectory` → `reachablePeers: announced ? dir.reachablePeersForHive(meta.hiveId) : 0`.
-- Default-no-arg path preserved → back-compat.
-- **Touches `hive-directory*.ts` which Lane E also edits → coordinate before landing**
-  (filed to owner + E; not landed unilaterally).
+**Fix — ✅ LANDED (coordinated with Lane E, who explicitly cleared the files).** Threaded
+the announce topic into the count across 4 files:
+- `hive-directory.ts` — `reachablePeers(topicHex?)` pass-through + new
+  `reachablePeersForHive(hiveId)` (resolves the owned descriptor's topic via
+  `topicForLocalHive` → `reachablePeers(hiveTopicAsHex(topic))`; 0 for unknown/private).
+- `hive-directory-deps.ts` — dep signature `reachablePeers?(topicHex?)` + production
+  passthrough.
+- `hive-directory-boot.ts:121` — wiring closure → `(topicHex?) => gossip.openChannelCount(topicHex)`.
+- `hive-publish.ts:119` — `reachablePeers: announced ? dir.reachablePeersForHive(meta.hiveId) : 0`.
+- Default-no-arg path preserved → back-compat (the existing deceptive-publish test, whose
+  fake ignores the topic, stays green). **Type-clean** (operator-core tsc — no errors in
+  the touched files). **Teeth-verified:** the flipped invariant test (now asserting
+  `askedTopic === INVITE` + `reachablePeers === 0`) goes RED when the call is reverted to
+  the topic-blind `dir.reachablePeers()`. No regressions: hive-publish (8), -from-repo
+  (21), set_hive (10), directory-swarm (11) all green.
 
 ---
 
@@ -268,22 +274,34 @@ state the desktop does not yet surface live federation status.
 
 ---
 
-## Brief G dimension verdict: **YELLOW**
+## Brief G dimension verdict: **YELLOW (trending GREEN — every honesty LIE is now fixed)**
 
-**No S0 and no S1-by-the-program-rubric blocker** in the desktop UX honesty surface —
-crucially, the S0 "synced while stranded" lie does **not** exist (there is no live sync
-claim to lie). But there are **three real honesty gaps the brief weights heavily**:
+**No S0, no S1-by-rubric blocker** — and crucially the S0 "synced while stranded" lie
+does **not** exist (there is no live sync claim to lie). The three honesty gaps the brief
+weights heavily are now **fixed + teeth-verified in code**:
 
-- **G-001** — publish overstates reach (the deceptive-publish class, resurrected for
-  invite + multi-topic boxes). Brief-G class: S1.
-- **G-002** — invite-link join shows fake success for expired/wrong/withdrawn links.
-  Brief-G class: S1.
-- **G-003** — discover panel never refreshes (stale/withdrawn linger).
+- ✅ **G-001 FIXED** — `reachablePeers` is now scoped to the announce topic (count-by-topic).
+- ✅ **G-002 FIXED (copy)** — the invite-join no longer promises "appears shortly"
+  unconditionally (a bounded-confirmation upgrade remains an optional product decision).
+- ✅ **G-003 FIXED** — the discover panel now polls + has a manual Refresh (withdrawn
+  hives drop out, new ones appear).
+- ✅ **G-005 FIXED** — the stale doc comment corrected.
 
-…plus **G-004** — the desktop has **no** live federation-status surface, so the user
-cannot detect a 0-peer publish or a dead join. All four are fixable with small,
-low-risk, in-lane changes (count-by-topic, honest copy + bounded confirm, a refresh
-poll), or — at minimum — release notes that state the limitations.
+**Why not GREEN yet** (two items, neither a code-honesty lie):
+1. **G-004 (gap)** — the desktop still has **no** live federation/peer/sync surface, so a
+   user can't *see* a 0-peer publish or a dead invite. The action-point copy is now
+   honest, so the user is no longer *actively misled*; but a positive status surface (or
+   a documented limitation) is still wanted. Small, in-lane (operator-vite) or a
+   release-note. NOT a lie — an absence.
+2. **The live desktop pass has not been run for lane G.** Now unblocked (A-001 fixed,
+   bootable `.deb`), but queued behind Brief E's live pair and the `:0` fleet-halt (drive
+   a sandbox Xvfb, never `:0`). The brief's GREEN bar requires confirming these fixed
+   flows in the *actual running desktop*; the honesty *logic* is proven by the
+   component/unit tests, but the live render has not yet been witnessed.
+
+**Flip to GREEN when:** (a) a live desktop pass confirms publish/join/discover/status
+render the now-honest copy against ground truth, and (b) G-004 is implemented or
+documented.
 
 **Landed this lane (low-risk, in-lane, GUI-free):** ✅ G-002 honest invite-join copy
 (+ teeth-verified test); ✅ G-005 doc-comment fix; + 3 teeth-verified/tripwire honesty

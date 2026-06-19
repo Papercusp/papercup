@@ -54,6 +54,22 @@ describe('set_url intent', () => {
     await call('set_url', { params: { c: '3' }, mode: 'replace' });
     expect(window.location.search).toBe('?c=3');
   });
+
+  it('dispatches a popstate so nuqs/Next subscribers re-read the URL', async () => {
+    // The whole point of set_url over a plain history.replaceState: it fires a
+    // popstate so URL-state subscribers refresh. Dropping it would silently break
+    // every agent-driven navigation (the URL changes but nothing re-renders).
+    window.history.replaceState({}, '', '/admin');
+    let fired = 0;
+    const onPop = () => { fired += 1; };
+    window.addEventListener('popstate', onPop);
+    try {
+      await call('set_url', { params: { tab: 'plans' } });
+    } finally {
+      window.removeEventListener('popstate', onPop);
+    }
+    expect(fired).toBe(1);
+  });
 });
 
 describe('snapshot / read_visible_text intents', () => {

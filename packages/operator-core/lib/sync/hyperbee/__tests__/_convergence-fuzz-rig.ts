@@ -25,9 +25,20 @@
  */
 import { stampOpHlc } from '../hlc-stamp';
 import { HlcClock } from '@papercusp/locks-core';
+import { lwwPick } from '../projection';
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from '../read-merge';
 import type { PeerLogOp } from '../peer-log';
 import type { OpEnvelope } from '../op-envelope-types';
+
+/**
+ * The materialised-store guard ordering key:
+ *   'fed_ts' — TODAY's behaviour: order by op.ts wall clock (the bug surface).
+ *   'lww'    — the PROPOSED FIX: order by the SAME comparator the merge fold uses
+ *              (`lwwPick`: HLC → del>put → sourceLogKeyHex). When the guard and the
+ *              merge share one ordering key of record, the guard never rejects a
+ *              merge-winner, so the skew sweep converges. (Validates D-001's fix.)
+ */
+export type GuardOrder = 'fed_ts' | 'lww';
 
 /** Deterministic PRNG (mulberry32). Seed-controlled — never `Math.random`. */
 export function makeRng(seed: number): () => number {
@@ -54,6 +65,8 @@ export interface FuzzOptions {
   skewProb?: number;
   /** Probability a delivered op is duplicated in a peer's fold order. */
   dupProb?: number;
+  /** Materialised-store guard ordering: 'fed_ts' (today / bug) | 'lww' (the fix). */
+  guardOrder?: GuardOrder;
 }
 
 interface GenOp {
@@ -62,25 +75,43 @@ interface GenOp {
   op: PeerLogOp;
 }
 
-/** A faithful transcription of every mutable projection's PG LWW guard. Keyed
- *  on `table::hbKey` exactly like the merge's `cursor.winners` group key. */
+/** The materialised store, with a SWAPPABLE guard ordering key. Keyed on
+ *  `table::hbKey` exactly like the merge's `cursor.winners` group key.
+ *   - 'fed_ts' faithfully transcribes every mutable projection's PG LWW guard
+ *     TODAY (`EXCLUDED.fed_ts >= stored.fed_ts`, fed_ts = op.ts; del ts-guard).
+ *   - 'lww' is the PROPOSED FIX: the guard orders by the merge's own comparator
+ *     (`lwwPick`), so it never rejects a merge-winner (put AND del). */
 export class FedTsGuardedStore {
   readonly rows = new Map<string, { fedTs: number | null; value: unknown }>();
+  /** 'lww' mode only: the winning envelope per key (incl. del tombstones) — the
+   *  guard's order-of-record, mirroring the merge's cursor.winners. */
+  private winners = new Map<string, OpEnvelope>();
+  constructor(private readonly order: GuardOrder = 'fed_ts') {}
   private key(op: OpEnvelope): string {
     return `${op.table}::${op.hbKey}`;
   }
   apply = async (op: OpEnvelope): Promise<boolean> => {
+    if (op.type !== 'put' && op.type !== 'del') return false;
+    if (!op.hbKey) return false;
+    const k = this.key(op);
+    if (this.order === 'lww') {
+      // FIX MODEL: order by the SAME total order as the merge fold. Reject only
+      // when the stored winner beats-or-ties the incoming op (lwwPick returns it).
+      const prev = this.winners.get(k);
+      if (prev && lwwPick(prev, op) !== op) return false;
+      this.winners.set(k, op);
+      if (op.type === 'del') this.rows.delete(k);
+      else this.rows.set(k, { fedTs: op.ts ?? null, value: op.value });
+      return true;
+    }
+    // TODAY (the bug surface): order by fed_ts = op.ts (wall clock).
     if (op.type === 'del') {
-      // ts-guarded delete (fed_ts <= del.ts erases; a stale del matches nothing).
-      const k = this.key(op);
       const cur = this.rows.get(k);
       const delTs = op.ts ?? null;
       if (cur && (delTs === null || (cur.fedTs !== null && cur.fedTs <= delTs))) this.rows.delete(k);
       return true;
     }
-    if (op.type !== 'put' || !op.hbKey) return false;
-    const k = this.key(op);
-    const incoming = op.ts ?? null; // fed_ts = provenance.ts = op.ts
+    const incoming = op.ts ?? null;
     const cur = this.rows.get(k);
     if (cur && cur.fedTs !== null && (incoming === null || incoming < cur.fedTs)) return false;
     this.rows.set(k, { fedTs: incoming, value: op.value });
@@ -177,7 +208,7 @@ export async function runConvergenceFuzz(opts: FuzzOptions): Promise<FuzzResult>
 
   const digests: string[] = [];
   for (let p = 0; p < opts.peers; p++) {
-    const store = new FedTsGuardedStore();
+    const store = new FedTsGuardedStore(opts.guardOrder ?? 'fed_ts');
     const cursor = createMergeCursor();
     // This peer eventually receives EVERY op (the post-heal fixed point) but in
     // its OWN seeded fold order — one stable AdmittedLog per origin op (keyHex =

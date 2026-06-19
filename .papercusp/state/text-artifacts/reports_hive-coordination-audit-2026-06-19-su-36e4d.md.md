@@ -1,6 +1,6 @@
 ---
 rel_path: "reports/hive-coordination-audit-2026-06-19-su-36e4d.md"
-updated_at: 1781857496755
+updated_at: 1781864839771
 _body: "content"
 ---
 
@@ -62,3 +62,20 @@ The coordination system is **fundamentally healthy and richly instrumented**. De
 3. Treat **operational/health escalations as ephemeral** (derived live) rather than persisting them to the durable decision queue that then needs GC — this is the structural cure for the chatter in Q11.
 4. The infra P0 (gateway egress / host-restart orphans) is the single biggest throughput drag — it defeats the otherwise-healthy auto-implement lane.
 
+
+---
+
+## Live E2E attempt — 2026-06-19 10:18–10:27 (owner-directed: "start it now")
+
+I started the papercusp hive (`hive:start`) and forced a Queen wake to drive the live Queen→bee→git-sync flow. **The E2E is BLOCKED: the papercusp Queen cannot run.** Four independent, stacked, migration-introduced breakages — all confirmed live:
+
+1. **Queen wake no-ops on the green :3070 operator** (the blocker for manual wakes). `hive:start` + `hive:wake force` both produced `turns:1 / 0 tokens / $0` Queen runs (runIds 1781864286-queen, 1781864531-queen) vs real wakes ~14–21 turns. Operator log (`papercup-dev-api.service`, :3070, runs the green `papercup-release` checkout):
+   `[durable-spawn] could not enqueue durable fire (papercusp/queen); falling back to fire-and-forget: \`DBOS.launch()\` must be called before running workflows.`
+   → DBOS not launched on :3070 → durable fire fails → fire-and-forget no-op (places nothing, arms no next wake). Adjacent to but distinct from the documented `queen-fires-but-no-ops-dbos-step` insight ("Invalid call to a workflow function from within a step").
+2. **hive-wake routine fails — 'hive' blueprint not resolvable** (EI-1562): `no built-in blueprint "hive" at .../papercup-release/.../blueprints/hive/blueprint.yaml`. VERIFIED there is **no `hive/` blueprint dir in EITHER the release OR the main checkout** (blueprints/ has bee/coding/scout/sentinel/… but no `hive`). The routine's file-path resolution of 'hive' can't succeed anywhere; the working wakes must synthesize 'hive' as a built-in via a different path.
+3. **No bp-schedule autoloop for papercusp** (`autoloop_status` → `rows:null`, `scheduleRoutines:[]`) — the coding-pipeline dispatch path that would work the 12 migrated features doesn't exist.
+4. **hive:survey excludes the home seat** — `frontier 0` despite `todo_depth 12`; with `members:[]` the 12 migrated home-harness items wouldn't surface to a live Queen anyway (EI-1592).
+
+The 3 earlier real Queen wakes (08:24/08:57/09:49, 14–21 turns) all preceded the operator re-home to papercusp → these failures are **migration-introduced**. Rate governor healthy throughout (not starvation); egress healthy (the no-op reproduces independent of the gateway).
+
+**Verdict:** the migration verified resolution plumbing (S5 PASS) but the operator that RUNS the hive cannot bring up a working Queen, so no work can flow. **Owner/infra fix needed** (not safe to do unilaterally mid-fleet-halt: :3070 serves the whole operator + the api.papercupai.com tunnel + 28 live agents): redeploy/restart the green :3070 with `DBOS.launch()` invoked, and ensure the 'hive' blueprint is resolvable (file or synthesized) in the release checkout. Documented on EI-1592 + EI-1562; verification agent (s-1781862448086) alerted. I did NOT manually spawn bees to substitute for the Queen — that would mask the actual coordination failure being tested.

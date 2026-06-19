@@ -147,9 +147,10 @@ export function HowSharingWorksModal({ open, onClose }: { open: boolean; onClose
         Joining clones the {hive}’s member repos to your machine and <strong style={{ color: 'var(--fg)' }}>federates</strong>{' '}
         its shared workspace — messages, plans, presence, and file locks sync across everyone’s machines
         over the {hive}’s topic. You’re admitted to the <em>whole</em> {hive} at once, not repo by repo.
-        The owner sees you as a contributor and can revoke you — a revocation removes you from every member
-        repo at once. What you get: the repos plus the live shared coordination. What the owner controls:
-        who’s admitted.
+        The owner sees you as a contributor and can revoke you — revocation stops your writes across every
+        member repo at once. If you already joined, you keep read access to the {hive}'s new content until
+        it's dissolved. What you get: the repos plus the live shared coordination. What the owner controls:
+        who's admitted.
       </Section>
 
       <Section summary="Claimed vs unclaimed — a trust signal, not ownership">

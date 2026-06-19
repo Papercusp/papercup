@@ -49,8 +49,16 @@ export function stampOpHlc(op, clock = processHlc()) {
 
 `HlcClock.send(physicalNow)` is built for exactly this ("seed from an event's
 own recorded ms") and stays monotone via `bumpCount` when `ts` is in the past,
-so causality (the RECV-seam `observeRemoteHlc` advance) is preserved. Now the
-merge's HLC order matches the PG guard's `fed_ts` order → no silent rejection.
+so causality (the RECV-seam `observeRemoteHlc` advance) is preserved. The
+merge's HLC order matches the PG guard's `fed_ts` order → no silent rejection
+**FOR THE DRAIN-INTERLEAVE CASE**.
+
+> ⚠️ **INCOMPLETE — see "## REOPENED (D-001)" below.** Seeding the HLC from
+> `op.ts` only guarantees `HLC.physical ≥ op.ts` for the SAME op. It does NOT
+> make the HLC ORDER of two CONCURRENT ops match their `fed_ts` order, because
+> the RECV-seam advance this fix DELIBERATELY PRESERVES raises a peer's clock
+> ABOVE a later write's `ts` (`send(ts)` returns `max(clock.physical, ts)`). The
+> split-brain is still reachable on `staging`.
 
 ## Gotchas when reproducing in a rig
 
@@ -69,3 +77,48 @@ each cell its **own** `HlcClock` (gated `hlcClock` seams on `boot.ts`
 If two federated cells end a converge() with DIFFERENT values for the same key
 (and `fixedPoint=true`), suspect an ordering-key mismatch between the merge fold
 and a projection's PG LWW guard — they must use the SAME key.
+
+## REOPENED (D-001, 2026-06-19, shared-hive-release-testing Brief D)
+
+The 2026-06-14 fix closed the **drain-interleave** trigger but NOT the root
+cause: the merge fold orders by **HLC** and the PG guard orders by **fed\_ts =
+op.ts**, and these are still two different clocks. Seeding HLC from `op.ts` makes
+`HLC.physical ≥ op.ts` for one op, but the RECV seam (`observeRemoteHlc`, kept on
+purpose) advances a peer's `HlcClock` ABOVE a later write's `ts`. Then:
+
+* Winner **W**: its author observed a remote op at HLC.physical = 9000 (recv
+  advance), then wrote KEY at wall `ts = 1000` → HLC `(9000,·)`, **fed\_ts 1000**.
+* Loser **L**: a fresh-clock peer wrote KEY at `ts = 5000` → HLC `(5000,0)`,
+  **fed\_ts 5000**.
+
+`lwwPick`/`beatsStored` pick W (higher HLC); the PG guard prefers L (higher
+fed\_ts). The merge SUPPRESSES the HLC-loser once the HLC-winner is the standing
+winner, and the PG guard REJECTS the HLC-winner when its fed\_ts lost — so the two
+authors materialise different rows and never reconcile:
+
+* W's author folds W first → PG = W; L arrives, beatsStored(L,W)=false → suppressed.
+* L's author folds L first → PG = L; W arrives, handed to apply → `WHERE
+  EXCLUDED.fed_ts(1000) >= stored.fed_ts(5000)` is FALSE → rejected → PG stays L.
+
+**Reachability:** HLC.physical is monotone and propagates the GLOBAL-max wall-ts
+seen anywhere (recv takes `max`). A single forward clock excursion on ANY peer
+(NTP overshoot, fast VM, manual set) raises the HLC floor for everyone
+permanently; thereafter any concurrent same-key writes whose wall-`ts` order
+differs across peers can diverge. The window self-heals only once every peer's
+wall clock advances past the floor.
+
+**Why the green suite missed it (still):** `split-brain-queen` and the
+composition rig share one wall clock (`physical: () => this.now()`), so they
+can't construct recv-advance + skew. `three-peer-partition-rejoin` asserts
+convergence at the read-merge layer with a TEST-LOCAL ts-only LWW and an injected
+sink — it exercises neither the HLC fold nor the PG guard, the two layers whose
+disagreement IS the bug.
+
+**Repro (current `staging`):**
+`packages/operator-core/lib/sync/hyperbee/__tests__/lww-hlc-fedts-divergence.test.ts`
+(fast, real merge + faithful guard), its `.integration.test.ts` twin (real PG
+projection), and the seeded `convergence-fuzz.test.ts` (monotone sweep GREEN,
+skew sweep finds it). The fix is one ordering-key of record end to end — make the
+PG guard order by HLC (carry an `hlc` column / compare it), or derive `fed_ts`
+from the HLC physical. Cross-cutting (18 projections + capture) → needs a design
+call + migration, NOT a low-risk in-lane patch.

@@ -141,7 +141,7 @@ const VISIBILITY_OPTIONS: ReadonlyArray<{
     value: 'private',
     label: 'Private',
     Icon: Lock,
-    copy: 'Not shared. A previously published listing is withdrawn and its Comb rows unlisted; peers drop the announce.',
+    copy: 'Stops sharing via discovery: the published listing is withdrawn and Comb rows unlisted, and peers drop the announce. Members who already joined keep reading new content over the existing topic — only Dissolve cuts off an existing reader.',
   },
 ];
 

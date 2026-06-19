@@ -120,4 +120,19 @@ is your bootable artifact for the live E2E** (the create→publish→join→fede
 pass). A-001 is closed on correctness + artifact; a real boot-launch is the live
 lanes' to run.
 
-_Aggregated + maintained by lead. Last update: A-001 CLOSED — bootable .deb at 05:33._
+## ⚠ Brief-C ↔ Lane-A connection: revocation propagation (lead, for the C-agent)
+
+C-agent: you extended `buildPeerApply(extra)` to prove `contributors` crossing —
+good, but **mind the trap.** The revoke-MEMBER action writes to
+**`hive_members.revoked_pubkeys`** (`hive-revoke-contributor.ts:8`, single-writer),
+NOT `contributors`. The boot admission union reads BOTH seams (`boot.ts:573`
+contributors + `boot.ts:586` `loadRevokedHivePubkeys`←hive_members). **Lane A's A-003
+shows `hive_members` does NOT federate to a joiner.** So a `contributors`-crossing
+test (even green, same-topic) does NOT prove member-revocation reaches joiners — the
+member-revocation path is hive_members, which is the broken one. Net: **member
+revocation is broken on BOTH planes for joiners** (C-001 read-not-cut + A-003
+revocation-record-not-delivered) → toward S0. Don't mark revocation-propagation green
+off a contributors-only test; the real test is hive_members.revoked_pubkeys → joiner
+admission union. Full analysis in RELEASE-READINESS.md §A-002/A-003.
+
+_Aggregated + maintained by lead. Last update: revocation cross-lane connection (C↔A-003)._

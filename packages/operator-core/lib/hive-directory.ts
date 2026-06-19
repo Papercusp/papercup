@@ -163,12 +163,16 @@ export interface HiveDirectoryDeps {
   /** Broadcast a signed frame onto a topic (prod: swarm send to the topic's peers). */
   broadcast(topicHex: string, frame: SignedHiveAnnounce): Promise<void>;
   /** How many swarm peers the announce can actually REACH right now (prod: the
-   *  directory-swarm's connectionCount). Deceptive-publish fix: `broadcast`
+   *  directory-swarm's paired-channel count). Deceptive-publish fix: `broadcast`
    *  returns void, so a frame "announced" to a swarm with ZERO connections looks
    *  identical to a real broadcast. Surfacing this lets the publish result — and
    *  the UI — be honest ("announced, 0 peers connected" vs "broadcasting to N").
-   *  Optional/additive: omitted seams report 0. */
-  reachablePeers?(): number;
+   *  G-001: `topicHex` SCOPES the count to the announce's OWN topic — an announce
+   *  goes to exactly one topic (public=global, invite=secret), so the count must
+   *  be that topic's peers, not every joined topic's (which over-reports reach for
+   *  an invite publish on a box also browsing the global directory). Omit `topicHex`
+   *  for the legacy all-topics total. Optional/additive: omitted seams report 0. */
+  reachablePeers?(topicHex?: string): number;
   /** Load the cached discovered set (prod: PG). Optional — omit for in-memory only. */
   loadCache?(): Promise<DiscoveredHive[]>;
   /** Persist the discovered set (prod: PG). Optional. */
@@ -217,9 +221,23 @@ export class HiveDirectory {
   }
 
   /** Swarm peers an announce can reach right now (0 = broadcasting into the void).
-   *  Deceptive-publish fix — see HiveDirectoryDeps.reachablePeers. */
-  reachablePeers(): number {
-    return this.deps.reachablePeers?.() ?? 0;
+   *  Deceptive-publish fix — see HiveDirectoryDeps.reachablePeers. Pass `topicHex`
+   *  to scope the count to ONE topic (the announce's own); omit for all topics. */
+  reachablePeers(topicHex?: string): number {
+    return this.deps.reachablePeers?.(topicHex) ?? 0;
+  }
+
+  /** G-001: peers reachable for the announce of ONE owned hive — i.e. peers on
+   *  THAT hive's announce topic (public=global, invite=secret), not every joined
+   *  topic. Returns 0 for an unknown/private hive (private never announces). This
+   *  is what the publish path must report so an invite publish does not count the
+   *  global-directory peers the invite announce never reaches. */
+  reachablePeersForHive(hiveId: string): number {
+    const desc = this.owned.get(hiveId);
+    if (!desc) return 0;
+    const topic = this.topicForLocalHive(desc); // null = private (never announces)
+    if (!topic) return 0;
+    return this.reachablePeers(hiveTopicAsHex(topic));
   }
 
   /** Hydrate the in-memory set from the PG cache (offline listing before the swarm reconnects). */

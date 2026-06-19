@@ -209,7 +209,21 @@ per-member encrypted. Acked with su-963ee; release notes should carry ONE honest
 statement: *membership/visibility changes do not cut off a reader already connected
 to the topic.*
 
-### Dimension verdict (su-b62fa) — RED on the strict rubric, reducible to YELLOW by a documented decision
+### C-001 DISPOSITION — owner chose option (d) (2026-06-19) → verdict YELLOW (achieved)
+
+The owner decided: **do NOT change behavior this release; make the UI honest** (C-001
+option (d)). LANDED — two user-facing strings reworded (no logic change):
+- `apps/operator/app/harness/ShareHiveDialog.tsx` — the "Private" visibility consequence
+  copy now says members who already joined keep reading new content over the existing
+  topic; only Dissolve cuts off an existing reader.
+- `apps/operator/app/_components/HowSharingWorks.tsx` — the revoke explainer now says
+  revocation stops your *writes* across every member repo; if you already joined you
+  keep *read* access to new content until the hive is dissolved.
+`ShareHiveDialog.test.tsx` re-run green (17 tests); no test asserted the old copy. The
+read-cutoff fix (b/c/a) stays on the roadmap as the path to GREEN. So the verdict is now
+**YELLOW**: a documented, in-UI limitation rather than a silent leak.
+
+### Dimension verdict (su-b62fa) — was RED on the strict rubric; now YELLOW after the option-(d) honest-copy fix
 
 By the program's S0 definition ("privacy leak = non-member reads private data") and
 its rule ("if any privacy leak exists, verdict is RED regardless"), **C-001 is RED**:
@@ -221,7 +235,9 @@ writes + discovery; it does NOT cut off an already-connected reader — only dis
 does") AND the UI stops implying full cutoff. It is **GREEN** only when option (b)
 [replication gated on admission], (c) [connection-level device eviction], or (a)
 [re-key on boundary change] actually closes the read path. Every OTHER threat
-(#2,#3,#4,#5,#6,#7,#8) is defended with teeth-verified coverage. The single gate to
-release is the C-001 product/security call — it is the owner's to make.
+(#2,#3,#4,#5,#6,#7,#8) is defended with teeth-verified coverage. **UPDATE 2026-06-19:**
+the owner made the call — option (d), honest copy landed (see the disposition above), so
+the dimension verdict is now **YELLOW** (documented limitation). GREEN remains gated on
+the read-cutoff fix (b/c/a), tracked as roadmap, not a v1 blocker.
 
 Full release-notes threat model: **`shared-hive-release-testing/threat-model-C.md`**.

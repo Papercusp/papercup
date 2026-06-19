@@ -115,10 +115,13 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
     }
     gossip.broadcast(topicHex, frame);
   };
-  // Deceptive-publish fix: hand the directory the live reach signal (currently-
-  // paired channels across all topics) so a publish can honestly report whether
-  // the announce reached anyone, instead of claiming success on a void broadcast.
-  setHiveDirectoryTransport(transport, opts.keychainId, () => gossip.openChannelCount());
+  // Deceptive-publish fix: hand the directory the live reach signal so a publish
+  // can honestly report whether the announce reached anyone, instead of claiming
+  // success on a void broadcast. G-001: pass the announce's topic through so the
+  // count is THAT topic's paired channels — `openChannelCount(topicHex)` — not
+  // every joined topic's (which over-reports an invite publish's reach). With no
+  // topic it returns the all-topics total (back-compat).
+  setHiveDirectoryTransport(transport, opts.keychainId, (topicHex) => gossip.openChannelCount(topicHex));
 
   // 3. Register + announce owned hives (transport is set, so public + invite go out).
   for (const hive of opts.ownedHives ?? []) {

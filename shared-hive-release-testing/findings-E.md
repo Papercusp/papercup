@@ -138,11 +138,14 @@ open caveat that *wrong/absent-secret rejection* on the join path is only partia
    2-peer rigs (`_cross-peer-rig`, `_hive-substrate-rig`, `composition-rig`) wire both peers
    onto a matching `local:` binding directly and stub admission (`verifyBindingOverride`,
    `loadRevokedOverride`), so none exercises `defaultResolveSwarmBinding` resolving a
-   *joiner's* topic from the file-based `.papercusp/shared.json`. Partially de-risked by the
-   already-verified topic-split fix (`derive-swarm-topic.test.ts`,
-   `default-swarm-binding-p007.test.ts`) + Lane A's live multi-peer join. A dedicated
-   integration test of the file-resolution path remains valuable — flagged for Lane A/B
-   follow-up (it straddles join + data-completeness).
+   *joiner's* topic from the file-based `.papercusp/shared.json`. **UPDATE: now covered at
+   the LIVE level** — Lane A's findings-A (federation proof table) explicitly exercises "the
+   real joiner-resolves-its-own-topic path (the topic-split bug's home) that the 2-peer
+   integration rigs bypass" via `POST /api/discovery/join-hive` on the real packaged binary
+   (topic-equality PASS). Combined with the verified topic-split unit tests
+   (`derive-swarm-topic.test.ts`, `default-swarm-binding-p007.test.ts`), the blind spot is
+   closed for release. An *in-process* integration test of the file-resolution path remains
+   a nice-to-have faster regression guard (belt-and-suspenders), not an open coverage gap.
 3. **Dissolve federated teardown (D1 / G24)** & **leave membership teardown (L1 / G27)** —
    both already *documented* as real gaps by
    `lifecycle-membership-teardown.gap.integration.test.ts` +

@@ -71,3 +71,40 @@ describe('convergence fuzz — skew regime FINDS the D-001 divergence', () => {
     expect(failures).toEqual([]);
   });
 });
+
+describe('D-001 fix VALIDATION — an LWW-ordered guard converges even under skew', () => {
+  // Same skew sweep that diverges above, but the materialised store's guard
+  // orders by the merge's own comparator (`lwwPick`) instead of `fed_ts` — the
+  // proposed fix ("one ordering key of record end to end", put AND del). This
+  // proves the fix DIRECTION empirically on the very harness that exposes the
+  // bug: convergence is restored across the whole seed sweep. (De-risks the
+  // owner's design decision; it does NOT change production code.)
+  it(`skew regime converges on all ${SWEEP} seeds when the guard orders by lwwPick (not fed_ts)`, async () => {
+    const failures: Array<{ seed: number; distinct: string[] }> = [];
+    for (let seed = 1; seed <= SWEEP; seed++) {
+      const r = await runConvergenceFuzz({
+        seed,
+        peers: 4,
+        ops: 40,
+        keys: 6,
+        regime: 'skew',
+        skewProb: 0.6,
+        guardOrder: 'lww', // ← the fix
+      });
+      if (!r.converged) failures.push({ seed, distinct: r.distinct });
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('the SAME seeds that diverge under fed_ts converge under lww (paired A/B)', async () => {
+    let divergedUnderFedTs = 0;
+    let divergedUnderLww = 0;
+    for (let seed = 1; seed <= SWEEP; seed++) {
+      const base = { seed, peers: 4, ops: 40, keys: 6, regime: 'skew' as const, skewProb: 0.6 };
+      if (!(await runConvergenceFuzz({ ...base, guardOrder: 'fed_ts' })).converged) divergedUnderFedTs++;
+      if (!(await runConvergenceFuzz({ ...base, guardOrder: 'lww' })).converged) divergedUnderLww++;
+    }
+    expect(divergedUnderFedTs).toBeGreaterThan(0); // the bug is present today…
+    expect(divergedUnderLww).toBe(0); // …and the lwwPick-ordered guard fixes every one
+  });
+});

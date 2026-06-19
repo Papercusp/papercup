@@ -5,15 +5,24 @@
 (write green → neuter the invariant → confirm RED → restore → confirm GREEN).
 No live-instance harness needed (pure integration/perf).
 
-## Verdict: **GREEN** (ready) — with three documented, non-blocking caveats
+## Verdict: **GREEN** (ready) — one out-of-scope caveat (WAN latency)
 
-Reconnect, restart/cold-boot, long-offline backfill, and outbox-failure all
-converge with **no loss**; the stale-reclaim bound holds; scale numbers are
-strong (idle merge stays ~0.01 ms at 16 peers / 800k ops); and schema-skew is
-**known and safe** for rolling public upgrades (old peers drop + alert newer
-ops without corruption; upgraded peers recover dropped ops via the restart's
-fresh-cursor re-fold). One stale, load-bearing doc comment was found and **fixed
-in-lane**, with a regression guard added. No S0/S1 found in this dimension.
+Reconnect (final **and per-cycle**), restart/cold-boot, long-offline backfill,
+and outbox-failure all converge with **no loss**; the stale-reclaim bound holds;
+scale numbers are strong (idle merge stays ~0.01 ms at 16 peers / 800k ops); and
+schema-skew is **known and safe** for rolling public upgrades (old peers drop +
+alert newer ops without corruption; upgraded peers recover dropped ops via the
+restart's fresh-cursor re-fold — **including** when compaction snapshots have
+buried the dropped op's prefix). One stale, load-bearing doc comment was found
+and **fixed in-lane**, with a regression guard added. No S0/S1 found in this
+dimension.
+
+> **Update (continuation):** the two test-gap caveats from the first pass — C1
+> (per-cycle no-missed-ops + presence recovery) and C2 (snapshot-compaction ×
+> schema-skew recovery) — have since been **closed** with new teeth-verified
+> tests (`reconnect-per-cycle.test.ts`, `schema-skew-snapshot-recovery.test.ts`).
+> Only the inherently-out-of-scope C3 (WAN convergence latency, owned by the perf
+> netem rig + the live lanes) remains.
 
 > Cross-lane note: Lane A reported an **S0 in the packaged `.deb`** (does not
 > boot — luxon `createRequire` not bundled). That is a packaging blocker for the
@@ -26,13 +35,13 @@ in-lane**, with a regression guard added. No S0/S1 found in this dimension.
 
 | # | Scenario | Status | Evidence |
 |---|----------|--------|----------|
-| 1 | **Reconnect** (kill/restore swarm repeatedly) | 🟢 GREEN (caveat) | `swarm-chaos.test.ts` ✅ live — 6 seeded kill/reconnect rounds over a **real DHT**, converges with no loss/no dup, admission + mid-session revocation stay enforced. Caveat C1 below. |
+| 1 | **Reconnect** (kill/restore swarm repeatedly) | 🟢 GREEN | `swarm-chaos.test.ts` ✅ live — 6 seeded kill/reconnect rounds over a **real DHT**, converges with no loss/no dup, admission + mid-session revocation enforced. **NEW** `reconnect-per-cycle.test.ts` ✅ (teeth-verified, deterministic, stable ×2) adds the **per-cycle** invariant: every disconnect-window op is delivered AND the presence heartbeat resumes after EACH of 6 sever/reconnect cycles, watermarks monotonic. (C1 closed.) |
 | 2 | **Restart / cold boot** (kill mid-sync, reboot) | 🟢 GREEN | **NEW** `cold-boot-resume.test.ts` ✅ (teeth-verified) — persisted own log survives the restart (same key + length read from disk), fresh-cursor re-fold re-applies the **identical winner set** (no loss/corruption, del still wins), revocation set **re-seeds from its loader on boot**, idle skip survives the restart. |
 | 3 | **Long-offline catch-up / backfill** | 🟢 GREEN | **NEW** `multi-peer-scale.test.ts` (50k-op-gap rejoin) ✅ — full backfill then **10 idle ticks decode/apply 0**; extends existing `merge-scaling.test.ts` (20k, own-log) to a large remote gap. |
 | 4 | **Outbox drain exactly-once under failure** | 🟢 GREEN | `outbox-drain.integration.test.ts` ✅ live (15) + 6 more seams. `drained_at` is the idempotency anchor — set **only after** the hypercore append succeeds; a crash between append and `drained_at` re-appends on restart (at-least-once at the log) but the projection apply is **fed_ts-LWW idempotent**, so it lands **exactly-once at PG**. Stop-on-error, fan-out isolation, coalescing, bounded GC, stress-convergence all covered. |
 | 5 | **Stale-reclaim / dead-letter bound** | 🟢 GREEN | `work-items-stale-claims.integration.test.ts` ✅ live (22). cap=3 (env-overridable): a dead holder's mid-flight item requeues to `todo` up to the cap, then **dead-letters to `blocked` with requeue_count≥cap**; `blocked` is never requeued again → **no poison loop**. Alias-aware liveness (coord_presence ∪ RUNNING spawned_agents) + `FOR UPDATE SKIP LOCKED` re-check (no double-bump). |
 | 6 | **Scale** (8–16 peers, 10k–50k ops) | 🟢 GREEN | **NEW** `multi-peer-scale.test.ts` ✅ (teeth-verified). Numbers below. Convergence exact (winner-map size = Σ distinct keys); idle tick **O(#logs), not O(history)** — stays 0.01–0.03 ms at every scale. |
-| 7 | **Schema-version skew** (adjacent versions, rolling upgrade) | 🟢 GREEN (constraint) | **NEW** `schema-skew-rolling-upgrade.test.ts` ✅ (teeth-verified) + `version-gate-merge.integration.test.ts` ✅. Safe + recoverable; one stale doc fixed. Detail + constraint C2 below. |
+| 7 | **Schema-version skew** (adjacent versions, rolling upgrade) | 🟢 GREEN (documented constraint) | **NEW** `schema-skew-rolling-upgrade.test.ts` ✅ (teeth-verified) + **NEW** `schema-skew-snapshot-recovery.test.ts` ✅ (C2 closed — recovery holds even when compaction buries the dropped op's prefix) + `version-gate-merge.integration.test.ts` ✅. Safe + recoverable; one stale doc fixed. Detail + the restart-recovery constraint below. |
 
 ---
 
@@ -104,31 +113,34 @@ invited a future S0. Now closed.
 
 ---
 
-## Gaps left open (caveats — none release-blocking)
+## Caveats — status
 
-- **C1 (Scenario 1):** `swarm-chaos` asserts convergence **once after all churn**
-  and no-dup, with revocation enforced under churn — but not **per-cycle** "no
-  missed ops", and presence/heartbeat recovery is implicit in convergence, not an
-  explicit assertion. *Recommend* a follow-up extending the real-DHT rig to assert
-  per-cycle no-missed-ops + an explicit heartbeat-recovery check. Not blocking:
-  the strong properties (no-dup, final convergence, revocation-under-churn) hold.
-- **C2 (Scenario 7):** the **snapshot-compaction × schema-skew** interaction is
-  untested — an upgraded peer recovering a gate-dropped op whose log prefix was
-  later compacted behind a `__snapshot__` op (so the fresh cursor seeds *past* the
-  dropped index). Recovery should still hold via the snapshot's reconstituted
-  rows, but it is unverified. Snapshots are **flag-gated** (off by default), so
-  this is only relevant if snapshot compaction ships enabled. *Recommend* a test
-  before enabling snapshots in a public release.
-- **C3 (Scenario 6):** the scale numbers measure the **merge core** (CPU/memory/
-  fold) over synthetic logs — not WAN replication/convergence latency. That
-  latency is additive and is exercised by the perf rig's netem scenarios + the
-  live lanes (A/E). The merge core is the scale-critical piece; this bounds it.
+- **C1 (Scenario 1) — ✅ CLOSED.** `reconnect-per-cycle.test.ts` now asserts the
+  **per-cycle** invariant on the deterministic severable-pipe rig: across 6
+  sever/reconnect cycles, every disconnect-window op is delivered AND each peer
+  sees the other's latest presence **heartbeat** after EACH reconnect, with
+  monotonic watermarks. (Chosen over extending the real-DHT rig — a multi-cycle
+  real-DHT test is flaky, per swarm-chaos's own documented hazards; the invariant
+  is transport-agnostic and the real transport is covered once by swarm-chaos.)
+- **C2 (Scenario 7) — ✅ CLOSED (positive, no bug).** `schema-skew-snapshot-recovery.test.ts`
+  proves the **snapshot-compaction × schema-skew** path: an old peer drops the
+  whole v2 snapshot op (op-level gate — no v2 row leaks); an upgraded peer seeds
+  its cursor **at the snapshot, past the original op's index**, and recovers the
+  key **solely** from the snapshot's reconstituted row. Compaction does not cause
+  loss across a rolling upgrade. (Teeth-verified by neutering snapshot-row
+  expansion → recovery fails.)
+- **C3 (Scenario 6) — open, out of scope.** The scale numbers measure the **merge
+  core** (CPU/memory/fold) over synthetic logs — not WAN replication/convergence
+  latency. That latency is additive and is owned by the perf rig's netem scenarios
+  + the live lanes (A/E). The merge core is the scale-critical piece; this bounds it.
 
 ## New tests added (all teeth-verified)
 
 - `packages/operator-core/lib/sync/hyperbee/__tests__/schema-skew-rolling-upgrade.test.ts` (4)
+- `packages/operator-core/lib/sync/hyperbee/__tests__/schema-skew-snapshot-recovery.test.ts` (2) — C2
 - `packages/operator-core/lib/sync/hyperbee/__tests__/cold-boot-resume.test.ts` (1)
 - `packages/operator-core/lib/sync/hyperbee/__tests__/multi-peer-scale.test.ts` (5)
+- `packages/operator-core/lib/sync/hyperbee/__tests__/reconnect-per-cycle.test.ts` (1) — C1
 
 ## Source change (in-lane, low-risk, comment-only)
 

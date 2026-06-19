@@ -82,30 +82,26 @@ describe('publishHiveToDirectory (P-004)', () => {
     expect(r3.reachablePeers).toBe(3);
   });
 
-  // ── G-001 (Brief G findings) — reachablePeers is TOPIC-BLIND ───────────────
-  // CHARACTERIZATION test (C-001 pattern): documents a known honesty gap; the
-  // assertions FLIP when the count-by-topic fix lands. publishHiveToDirectory
-  // calls dir.reachablePeers() with NO topic, so even a topic-AWARE reach fn is
-  // never asked for the announce's topic — it returns the all-topics total. An
-  // invite publish therefore reports peers that are on OTHER topics (e.g. the
-  // global directory the box joined to browse), not the invite topic the
-  // announce went to. This is the deceptive-publish lie, resurrected for invite.
-  // The honest infra already exists (directory-swarm openChannelCount(topicHex),
-  // proven in directory-swarm.test.ts:228-235); the publish path just never
-  // passes the topic. Fix: thread the announce topic → assert 0 below.
-  it('G-001: reachablePeers ignores the announce topic — invite reports global peers (NOT the invite topic)', async () => {
+  // ── G-001 (Brief G) — reachablePeers is SCOPED to the announce topic (FIXED) ─
+  // Was the deceptive-publish lie resurrected for invite: the publish path counted
+  // peers across ALL joined topics, so an invite publish on a box also browsing the
+  // global directory reported the GLOBAL peers the invite announce never reached.
+  // Fixed by threading the announce topic (reachablePeersForHive → the topic's own
+  // count). This test pins the honest behavior: the count fn is asked for the INVITE
+  // topic, and the reported reach is that topic's (0), not the all-topics sum (3).
+  // Teeth: revert publishHiveToDirectory to dir.reachablePeers() (no topic) → RED.
+  it('G-001: reachablePeers is scoped to the announce topic — invite reports the invite topic (0), not global peers (3)', async () => {
     const GLOBAL = hiveTopicAsHex(deriveDirectoryTopic());
     const INVITE = hiveTopicAsHex(deriveInviteTopic('s'));
-    // The HONEST, topic-aware count the infra is capable of: 3 peers on the
-    // global topic (browsing public hives), 0 on this invite's topic. No-arg
-    // (the call the publish path makes) returns the all-topics SUM — mirroring
-    // gossip.openChannelCount()'s no-arg behavior, which is how it's wired.
+    // Topic-aware reach: 3 peers on the global topic (browsing public hives), 0 on
+    // this invite's topic. No-arg returns the all-topics SUM (3) — the OLD bug's
+    // value; an honest publish must NOT report it for an invite announce.
     const peersByTopic: Record<string, number> = { [GLOBAL]: 3, [INVITE]: 0 };
     const d = deps(0);
     let askedTopic: string | undefined = 'NEVER_CALLED';
     (d as { reachablePeers: (t?: string) => number }).reachablePeers = (topicHex?: string) => {
       askedTopic = topicHex;
-      return topicHex === undefined ? 3 /* all-topics sum, the no-arg path */ : (peersByTopic[topicHex] ?? 0);
+      return topicHex === undefined ? 3 /* all-topics sum — must NOT be used here */ : (peersByTopic[topicHex] ?? 0);
     };
     const res = await publishHiveToDirectory(
       new HiveDirectory(d),
@@ -115,12 +111,30 @@ describe('publishHiveToDirectory (P-004)', () => {
     // The announce went to the INVITE topic — where 0 peers are.
     expect(res.announced).toBe(true);
     expect(d.broadcasts[0].topic).toBe(INVITE);
-    // BUG: the publish path never threads the announce topic into the count.
-    expect(askedTopic).toBeUndefined();
-    // → it reports the all-topics count (3), not the invite topic's real reach (0).
-    // HONEST value is 0; "announced to 3 connected peers" for this publish is a lie.
-    // When G-001 is fixed (thread the topic), askedTopic === INVITE and this is 0.
-    expect(res.reachablePeers).toBe(3);
+    // FIXED: the publish path threads the announce topic into the count …
+    expect(askedTopic).toBe(INVITE);
+    // … so it reports the invite topic's real reach (0), NOT the all-topics sum (3).
+    expect(res.reachablePeers).toBe(0);
+  });
+
+  // Symmetric to the invite case: a PUBLIC publish must report the GLOBAL topic's
+  // peers, not the all-topics sum — a box browsing other hives' invite topics must
+  // not inflate a public publish's reported reach.
+  it('G-001: a PUBLIC publish reports the global topic count, not the all-topics sum', async () => {
+    const GLOBAL = hiveTopicAsHex(deriveDirectoryTopic());
+    const OTHER_INVITE = hiveTopicAsHex(deriveInviteTopic('other')); // another hive's invite topic this box also joined
+    const peersByTopic: Record<string, number> = { [GLOBAL]: 2, [OTHER_INVITE]: 5 };
+    const d = deps(0);
+    let askedTopic: string | undefined = 'NEVER_CALLED';
+    (d as { reachablePeers: (t?: string) => number }).reachablePeers = (topicHex?: string) => {
+      askedTopic = topicHex;
+      return topicHex === undefined ? 7 /* 2+5 all-topics sum — must NOT be used */ : (peersByTopic[topicHex] ?? 0);
+    };
+    const res = await publishHiveToDirectory(new HiveDirectory(d), meta({ visibility: 'public' }), owner());
+    expect(res.announced).toBe(true);
+    expect(d.broadcasts[0].topic).toBe(GLOBAL);
+    expect(askedTopic).toBe(GLOBAL); // scoped to the global directory topic …
+    expect(res.reachablePeers).toBe(2); // … so 2, NOT the 7-peer all-topics sum.
   });
 
   it('private → registers but NEVER announces (opt-in floor)', async () => {

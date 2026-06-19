@@ -109,10 +109,14 @@ A public network means **untrusted peers can reach you**. This is the trust mode
 
 ## Release verdict (security/privacy dimension)
 
-**RED** on the program's strict rubric (C-001 is a non-member read-of-private-data
-path). Reduces to **YELLOW** the moment the owner makes + documents the conscious
-trust-model decision above (and the UI wording matches it). **GREEN** only when the
-read path is actually closed (re-key on boundary change, replication gated on
-admission, or connection-level device eviction). Every other threat is defended with
-teeth-verified coverage. The gate is the C-001 product/security call — the owner's to
-make.
+**YELLOW** (achieved 2026-06-19). C-001 would be RED on the strict rubric (a non-member
+read-of-private-data path), but the owner has made the conscious trust-model decision —
+**option (d): keep write+discovery-plane revocation for this release and make the UI
+honest** — and the honest copy has landed: the "Make private" consequence text
+(`ShareHiveDialog.tsx`) and the revoke explainer (`HowSharingWorks.tsx`) now state that
+members who already joined keep reading new content until the hive is dissolved (the
+trust-assumptions paragraph above is the canonical wording). So the leak is now a
+documented, in-UI limitation rather than a silent one → **YELLOW**. **GREEN** still
+requires actually closing the read path (re-key on boundary change, replication gated
+on admission, or connection-level device eviction) — on the roadmap, not in this
+release. Every other threat is defended with teeth-verified coverage.
