@@ -6,7 +6,11 @@
  * every boot):
  *   1. ensurePapercuspWorkspace() — registry.json entry.
  *   2. registerPapercupHarness() — PG row in harness_shared.harness_registry
- *      scoped to the sentinel workspace.
+ *      scoped to the sentinel workspace (the papercup REPO as a private coding
+ *      harness — the standalone-flow leg).
+ *   3. ensurePapercupHive() — ship Papercusp as a shared HIVE by default
+ *      (domain-generic-hive P-029, D-010): a generic `coding` (kind:'hive') hive
+ *      `papercup-hive`, idempotent + private/no-announce. The shared-hive-flow leg.
  *
  * Run with:
  *   cd apps/operator && npx tsx scripts/run-dogfood-bootstrap.mts
@@ -14,6 +18,7 @@
 
 import { ensurePapercuspWorkspace, PAPERCUSP_WORKSPACE_ID } from '@papercusp/operator-core/lib/harness/papercusp-workspace';
 import { registerPapercupHarness } from '@papercusp/operator-core/lib/harness/register-papercup';
+import { ensurePapercupHive, PAPERCUP_HIVE_SLUG } from '@papercusp/operator-core/lib/harness/ensure-papercup-hive';
 import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
 import { readRegistry } from '@papercusp/operator-core/lib/workspace-registry';
 
@@ -37,7 +42,13 @@ async function main(): Promise<void> {
   console.log(`path: ${result.path ?? '(null)'}`);
   if (result.reason) console.log(`reason: ${result.reason}`);
 
-  console.log('\n=== STEP 3: verify PG row ===');
+  console.log('\n=== STEP 3: ensurePapercupHive (ship Papercusp as a shared hive by default) ===');
+  const hiveRes = await ensurePapercupHive();
+  console.log(`state: ${hiveRes.state}`);
+  console.log(`slug: ${hiveRes.slug ?? '(null)'}`);
+  if (hiveRes.reason) console.log(`reason: ${hiveRes.reason}`);
+
+  console.log('\n=== STEP 4: verify PG rows ===');
   const hReg = await loadHarnessRegistry(PAPERCUSP_WORKSPACE_ID);
   console.log(`harness_registry@${PAPERCUSP_WORKSPACE_ID}: ${hReg.projects.length} projects`);
   for (const p of hReg.projects) {
@@ -49,6 +60,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`✓ papercup registered in sentinel workspace`);
+  // The shared hive is best-effort (skipped in a packaged install / on a transient
+  // PG hiccup) — present it, but do NOT fail the bootstrap on a non-'skipped' miss.
+  const papercupHive = hReg.projects.find((p) => p.slug === PAPERCUP_HIVE_SLUG);
+  console.log(
+    papercupHive
+      ? `✓ ${PAPERCUP_HIVE_SLUG} shared hive present (${hiveRes.state})`
+      : `· ${PAPERCUP_HIVE_SLUG} shared hive not present (${hiveRes.state}${hiveRes.reason ? `: ${hiveRes.reason}` : ''})`,
+  );
 
   console.log('\n=== PASS — dogfooding flipped on ===');
   process.exit(0);
