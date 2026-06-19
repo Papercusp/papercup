@@ -22,6 +22,7 @@ import type { HiveEpochCrypto } from './hive-epoch-crypto';
 import { advanceEpochAndWrap, type WrappedEpochKeyRow } from './hive-epoch-boundary';
 import { resolveHiveEpochCrypto } from './hive-epoch-serving';
 import { putWrappedKeys } from './hive-epoch-keys-store';
+import { getHiveEpoch } from './hive-epoch-state';
 import { listHiveMembers } from '../../hive-membership-store';
 import { loadHivePubkey } from '../../identity/hive-keypair';
 
@@ -129,4 +130,69 @@ export async function advanceEpochOnHiveBoundary(
     opts.sql,
   );
   return { applied: true, newEpoch, distributed };
+}
+
+/**
+ * Member-ADD key distribution (shared-hive-rekey-2026-06-19, su-ee7e9) — the complement of
+ * the boundary trigger that closes the join-time gap. When the OWNER recognizes a NEW
+ * member, wrap EVERY epoch key [0..current] to that member's device(s) so they can decrypt
+ * ALL existing hive content (the project: features/plans/etc.), WITHOUT advancing the epoch
+ * (adding a member cuts no one off).
+ *
+ * Why [0..current], not current-only (c2a63's v1 CORRECTNESS call, 2026-06-19): content is
+ * encrypted ONCE at write under the then-current epoch + is NEVER re-encrypted on advance,
+ * so a current-epoch-only joiner holds the ciphertext for all history but can decrypt ZERO
+ * pre-join content. The shared-hive is a COLLABORATION substrate — a new member joins to
+ * read the EXISTING project. C-001 is unaffected (removal still advances + withholds the NEW
+ * key, cutting FUTURE reads); barring a member from history = a future forward-secrecy
+ * policy (ed300 + owner). Owner-only (`deriveEpochKey` needs the hive key). Flag-gated;
+ * idempotent per (epoch, member). Cost bounded — epochs advance only on a membership change.
+ */
+export async function grantEpochKeysToMembers(
+  opts: {
+    workspaceId: string;
+    hiveHomeSlug: string;
+    enabled: boolean;
+    /** the new member's device pubkeys (base64) to grant the current epoch key. */
+    newMemberPubkeys: readonly string[];
+    sql?: Sql;
+  },
+  seams: Pick<BoundaryRekeySeams, 'resolveCrypto' | 'resolveAuthorPubkey' | 'persistWrappedKeys'> & {
+    getCurrentEpoch?: (ws: string, slug: string, sql?: Sql) => Promise<number>;
+  } = {},
+): Promise<BoundaryRekeyResult> {
+  if (!opts.enabled) return { applied: false };
+  const fresh = [...new Set(opts.newMemberPubkeys.filter((pk) => pk))];
+  if (fresh.length === 0) return { applied: false };
+  const {
+    resolveCrypto = resolveHiveEpochCrypto,
+    resolveAuthorPubkey = loadHivePubkey,
+    persistWrappedKeys = putWrappedKeys,
+    getCurrentEpoch = getHiveEpoch,
+  } = seams;
+
+  // Owner-only SELF-GATE: only the box holding the hive key can derive epoch keys.
+  // resolveAuthorPubkey (loadHivePubkey) is null/empty on a non-owner box, so the helper
+  // no-ops there — safe to call from the admit path on EVERY peer (328af's DUAL hook:
+  // upsertHiveMember owner-side + the open-mode admittedIdentities.set, which fires on every
+  // box) without the caller re-checking owner-ness.
+  const author = await resolveAuthorPubkey(opts.workspaceId, opts.hiveHomeSlug);
+  if (!author) return { applied: false };
+
+  const crypto = await resolveCrypto(true);
+  const current = await getCurrentEpoch(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+
+  // Grant EVERY epoch key [0..current] — content is encrypted-once per epoch + never
+  // re-encrypted on advance, so a joiner needs all prior keys to read existing content
+  // (c2a63's v1 correctness call). Owner derives each; the member unwraps to read history.
+  let distributed = 0;
+  for (let epoch = 0; epoch <= current; epoch++) {
+    const key = await crypto.deriveEpochKey(opts.hiveHomeSlug, epoch);
+    const wrapped: WrappedEpochKeyRow[] = [];
+    for (const pk of fresh) {
+      wrapped.push({ memberDevicePubkey: pk, wrappedKey: await crypto.wrapKeyToMember(key, pk) });
+    }
+    distributed += await persistWrappedKeys(opts.workspaceId, opts.hiveHomeSlug, epoch, wrapped, author, opts.sql);
+  }
+  return { applied: true, newEpoch: current, distributed };
 }

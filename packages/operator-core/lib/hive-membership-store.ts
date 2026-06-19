@@ -232,7 +232,41 @@ export async function upsertHiveMember(
       input.bindingStatus ?? 'unverified',
     ],
   )) as unknown as HiveMemberPgRow[];
-  return rowToRecord(rows[0]);
+  const record = rowToRecord(rows[0]);
+  // Re-key member-add (shared-hive-rekey-2026-06-19): the owner's trust-admit of a member
+  // funnels through here, so grant the new member's devices every epoch key [0..current] →
+  // they can decrypt EXISTING hive content (the project), closing the join-time gap (content
+  // is encrypted-once per epoch + never re-encrypted, so current-epoch-only wouldn't read
+  // history — c2a63's correctness call). grantEpochKeysToMembers SELF-GATES to the owner
+  // (no-op without the hive key), is flag-gated (papercusp-hive-rekey), and is idempotent per
+  // (epoch, member). Best-effort: a grant failure must NOT fail the membership write (the row
+  // is the source of truth; the grant retries on the next admission). DYNAMIC import avoids the
+  // hive-membership-store ↔ hive-epoch-boundary-wiring cycle.
+  try {
+    const newMemberPubkeys = (input.deviceAttestations ?? [])
+      .map((d) => d.device_pubkey)
+      .filter((pk): pk is string => typeof pk === 'string' && pk.length > 0);
+    if (newMemberPubkeys.length > 0) {
+      const { grantEpochKeysToMembers, isHiveRekeyEnabled } = await import(
+        './sync/hyperbee/hive-epoch-boundary-wiring'
+      );
+      await grantEpochKeysToMembers({
+        workspaceId: input.workspaceId,
+        hiveHomeSlug: input.hiveHomeSlug,
+        enabled: await isHiveRekeyEnabled(),
+        newMemberPubkeys,
+        sql,
+      });
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[hive-rekey] grantEpochKeysToMembers on upsertHiveMember failed (best-effort): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+  return record;
 }
 
 /**

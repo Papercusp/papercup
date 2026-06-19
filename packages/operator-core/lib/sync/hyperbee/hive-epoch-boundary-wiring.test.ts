@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   advanceEpochOnHiveBoundary,
+  grantEpochKeysToMembers,
   type BoundaryRekeySeams,
 } from './hive-epoch-boundary-wiring';
 import type { WrappedEpochKeyRow } from './hive-epoch-boundary';
@@ -89,5 +90,66 @@ describe('advanceEpochOnHiveBoundary', () => {
     );
     expect([...seenRemaining].sort()).toEqual(['A', 'B']);
     expect(r.applied).toBe(true);
+  });
+});
+
+describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
+  it('flag OFF ⇒ no-op', async () => {
+    const persist = vi.fn(async () => 1);
+    const r = await grantEpochKeysToMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: false, newMemberPubkeys: ['B'] },
+      { persistWrappedKeys: persist },
+    );
+    expect(r).toEqual({ applied: false });
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('empty members ⇒ no-op', async () => {
+    const r = await grantEpochKeysToMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: [] },
+      { getCurrentEpoch: async () => 2 },
+    );
+    expect(r).toEqual({ applied: false });
+  });
+
+  it('flag ON, current=2 ⇒ wraps EVERY epoch [0..2] to each UNIQUE new member', async () => {
+    const derivedEpochs: number[] = [];
+    const persistedEpochs: number[] = [];
+    const r = await grantEpochKeysToMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true, newMemberPubkeys: ['B', 'B', 'C'] },
+      {
+        resolveCrypto: async () =>
+          ({
+            deriveEpochKey: async (_h: string, e: number) => {
+              derivedEpochs.push(e);
+              return `K${e}` as never;
+            },
+            wrapKeyToMember: async () => new Uint8Array([1]),
+          }) as never,
+        resolveAuthorPubkey: async () => 'owner',
+        persistWrappedKeys: async (_w, _s, epoch, rows) => {
+          persistedEpochs.push(epoch);
+          return rows.length;
+        },
+        getCurrentEpoch: async () => 2,
+      },
+    );
+    expect(derivedEpochs).toEqual([0, 1, 2]); // a key for EVERY epoch [0..current]
+    expect(persistedEpochs).toEqual([0, 1, 2]);
+    expect(r).toEqual({ applied: true, newEpoch: 2, distributed: 6 }); // 3 epochs × 2 unique members (B,C)
+  });
+
+  it('non-owner box (resolveAuthorPubkey null) ⇒ no-op — self-gates, safe to call from the admit path anywhere', async () => {
+    const derive = vi.fn();
+    const r = await grantEpochKeysToMembers(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'] },
+      {
+        resolveAuthorPubkey: async () => null, // this box does not hold the hive key
+        getCurrentEpoch: async () => 2,
+        resolveCrypto: async () => ({ deriveEpochKey: derive }) as never,
+      },
+    );
+    expect(r).toEqual({ applied: false });
+    expect(derive).not.toHaveBeenCalled(); // owner-gate short-circuits BEFORE any derive
   });
 });

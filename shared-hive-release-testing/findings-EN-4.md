@@ -107,12 +107,23 @@ named value at the `applyImpl:` line only (flag-gated to `papercusp-hive-rekey`)
 construction. `enforcedApply` re-reads the CURRENT `scopedApply` per pass, so it survives the
 rekey rebind. One owner per expression ⇒ no clobber.
 
-**STATUS (landed 2026-06-19):** the indirection stub is now in `boot.ts` —
-`const rekeyOn: boolean = false; const decryptGate = (inner) => inner; … applyImpl: rekeyOn ?
-decryptGate(enforcedApply) : enforcedApply` (TODO(su-ee7e9) on both symbols). Identity today ⇒
-`applyImpl === enforcedApply` byte-for-byte (boot.test + apply-contract 20/20, tsc-clean). The
-re-key lane (su-ee7e9, op-path division 2026-06-19) owns flipping `rekeyOn` to the
-`papercusp-hive-rekey` flag + dropping in the real epoch decrypt-gate.
+**STATUS (REAL gate WIRED 2026-06-19):** the stub has been replaced by the live re-key
+decrypt-gate (su-ee7e9). boot.ts now builds the deps ONCE at boot scope —
+`const rekeyDeps = await buildHiveRekeyBootDeps({ workspaceId, harnessSlug })` (line ~639,
+`Promise<HiveRekeyBootDeps | null>`, null on flag-off/non-hive/no-device, flag checked FIRST so
+the off-path is one cached read) — and the seam is
+`applyImpl: rekeyDeps ? rekeyDeps.epochGate(enforcedApply) : enforcedApply` (line ~1167).
+All three invariants hold: epochGate OUTERMOST (inv-1), built once (inv-2), null ⇒ enforcedApply
+byte-for-byte (inv-3). Flag-dark until `papercusp-hive-rekey` (FLAGS.HIVE_REKEY) flips.
+
+The compose order is pinned by a regression test (su-328af):
+`lib/sync/hyperbee/rekey-enforcement-compose-order.test.ts` (6/6) — a banned-pattern present in
+the PLAINTEXT but absent from the ciphertext is dropped by EN-4 ONLY because decrypt ran first
+(teeth: decrypt-off ⇒ EN-4 sees ciphertext, misses the rule, the op wrongly lands); an
+undecryptable op (read-cut/defer) drops at the gate before EN-4/EN-2; the full chain
+(decrypt → EN-4 ban) verified. Full `lib/sync/hyperbee` backbone GREEN with the gate wired:
+136/137 files, 1081 passed | 1 expected-fail | 2 skipped. The real gate's crypto (round-trip /
+defer=removed-member-cut / drop=wrong-key/tampered-AAD) is covered by hive-epoch-op-gate.test.ts (7/7).
 
 ## Honest residuals / not-yet
 

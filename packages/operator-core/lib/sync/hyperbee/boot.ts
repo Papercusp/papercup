@@ -982,6 +982,33 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             peerLabel(frame.log_core_key),
           );
           emitAdmitted(frame.log_core_key);
+          // Re-key member-add (open-mode, shared-hive-rekey-2026-06-19): when the OWNER admits
+          // a NEW peer — including OPEN-mode auto-admit, which never goes through upsertHiveMember
+          // (the other grant seam) — grant that peer's device every epoch key [0..current] so it
+          // can decrypt EXISTING hive content. Fire-and-forget: drainAdmissionQueue runs under the
+          // merge gate, so this must NOT block it. grantEpochKeysToMembers self-gates to the owner
+          // (no-op on a joiner / without the hive key — so this is safe on every box), is flag-gated
+          // (papercusp-hive-rekey), idempotent per (epoch, member), and best-effort.
+          void (async () => {
+            try {
+              const { grantEpochKeysToMembers, isHiveRekeyEnabled } = await import(
+                './hive-epoch-boundary-wiring'
+              );
+              await grantEpochKeysToMembers({
+                workspaceId: opts.workspaceId,
+                hiveHomeSlug: opts.harnessSlug,
+                enabled: await isHiveRekeyEnabled(),
+                newMemberPubkeys: [frame.device_pubkey],
+              });
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.error(
+                `[hive-rekey] grantEpochKeysToMembers on admit failed (best-effort): ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+            }
+          })();
         }
       } catch (e) {
         recordBootEvent(

@@ -53,7 +53,7 @@ describe('hive-epoch-keys projection — demux + drain callback', () => {
     const { sql, calls } = makeFakeSql();
     const onEpochKeyApplied = vi.fn();
     const proj = buildHiveEpochKeysProjection({ workspaceId: 'default', harnessSlug: HOME, sql, onEpochKeyApplied });
-    await proj.writeToPg(goodRow, { origin: 'remote', ts: 5, fedHlc: '000000000000005:00000' });
+    await proj.writeToPg(goodRow, { origin: 'remote', authorPubkey: 'remote-author', ts: 5, fedHlc: '000000000000005:00000' });
     expect(calls.filter((c) => c.kind === 'tag')).toHaveLength(1); // the INSERT ran
     expect(onEpochKeyApplied).toHaveBeenCalledWith(HOME, 2);
   });
@@ -61,7 +61,7 @@ describe('hive-epoch-keys projection — demux + drain callback', () => {
     const { sql, calls } = makeFakeSql();
     const onEpochKeyApplied = vi.fn();
     const proj = buildHiveEpochKeysProjection({ workspaceId: 'default', harnessSlug: HOME, sql, onEpochKeyApplied });
-    await proj.writeToPg({ ...goodRow, harness_slug: 'other-hive' }, { origin: 'remote' });
+    await proj.writeToPg({ ...goodRow, harness_slug: 'other-hive' }, { origin: 'remote', authorPubkey: 'remote-author' });
     expect(calls).toHaveLength(0);
     expect(onEpochKeyApplied).not.toHaveBeenCalled();
   });

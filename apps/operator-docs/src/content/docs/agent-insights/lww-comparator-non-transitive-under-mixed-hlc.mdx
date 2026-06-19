@@ -1,0 +1,96 @@
+---
+title: The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
+description: lwwPick / the fed_hlc PG guard use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLES when a no-HLC (pre-314) op sits between two skewed HLC ops, so the fold winner becomes order-dependent and peers can diverge. Latent today; the fix is to compare in one HLC space.
+discovered: 2026-06-19
+tags: [federation, hlc, lww, merge, projection, fed_hlc, version-skew, re-key, convergence]
+status: active
+---
+
+## What
+
+`lwwPick` (`packages/operator-core/lib/sync/hyperbee/projection.ts`) and the PG
+`fed_hlc` guard (each mutable projection's `ON CONFLICT … WHERE` / `DELETE WHERE`,
+mig-314) decide the LWW winner with the SAME rule:
+
+> if **both** ops carry an `hlc` → compare HLC; **else** → compare `ts` (wall clock).
+
+That rule is **NOT transitive** when HLC presence is *mixed* (some ops carry an
+HLC, some don't) AND clocks are skewed (an HLC op's HLC order inverts its `ts`
+order — the recv-advance case HLC was built for). A non-transitive comparator
+makes the reduce-fold winner depend on **delivery order**, so two peers folding
+the same ops in different orders **diverge** on a contended key.
+
+This is **EI-1698** (filed 2026-06-19, severity minor/**latent**).
+
+## The cycle (deterministic minimal repro)
+
+```
+X = { hlc: HIGH, ts: 100 }   // upgraded peer, recv-advanced HLC, low ts
+Y = { hlc: none, ts: 150 }   // pre-314 peer, NO hlc, mid ts
+Z = { hlc: LOW,  ts: 200 }   // upgraded peer, low HLC, high ts
+
+lwwPick(X, Y) = Y   // mixed → ts fallback: 150 > 100
+lwwPick(Y, Z) = Z   // mixed → ts fallback: 200 > 150
+lwwPick(X, Z) = X   // both HLC  → HIGH > LOW
+⇒ X > Z, Z > Y, Y > X   — a 3-cycle.
+
+reduce(lwwPick, [X,Y,Z]) = Z     // but
+reduce(lwwPick, [Z,Y,X]) = X     // ⇒ order-dependent winner = divergence
+```
+
+## Why it's LATENT (don't panic, but don't leave it for the re-key)
+
+The cycle needs a no-HLC op with `ts` **between** two HLC ops. Post-P-010,
+`stampOpHlc` stamps **every** LWW write, so no-HLC LWW ops are only **pre-P-010
+history = the OLDEST `ts`** on a key. An oldest no-HLC op sits at the *bottom* of
+the key's `ts` order (loses every mixed comparison on `ts`), so the comparator
+degenerates to a transitive HLC-ordering among the newer ops → it converges. The
+divergence is reachable only if a no-HLC op has a mid/recent `ts` — which the
+production "no-HLC = oldest" distribution does not produce. So: a proven defect,
+not an active incident.
+
+It still matters because the same comparator is **load-bearing for the C-001
+re-key** (a member needs epoch-N's key before epoch-N content, ordered by
+`fed_hlc`). Adding epoch complexity on top of a non-transitive mixed comparator is
+risk worth removing first.
+
+## The fix (proven)
+
+Compare in **one order space**: synthesize an HLC from `ts` for a no-HLC op at
+compare time, in BOTH `lwwPick` and the PG guard:
+
+```ts
+const key = op.hlc ?? encodeHlc({ ms: op.ts ?? 0, count: 0 }); // missing hlc → ts-as-HLC
+```
+
+Then every comparison is HLC-space → a single total order → transitive →
+order-independent for ANY HLC-presence mix. Equivalent: **backfill** the
+`fed_hlc` column to `encodeHlc({ ms: fed_ts, count: 0 })` for pre-314 rows so the
+guard never hits the NULL-fallback at all. (Backfill touches the data; the
+compare-time synth touches `lwwPick` + ~19 projection guard clauses — see EI-1678
+for why a registry-level guard check would make that sweep safe.)
+
+This is **verified**, not argued — see
+`__tests__/fed-hlc-transitivity-fix-proof.test.ts`: a 600-run sweep shows the
+synth-HLC comparator is ALWAYS a strict total order (`win-counts {0,1,2}`) while
+the current rule cycles (`{1,1,1}`).
+
+## How to test / reproduce
+
+- Comparator + cycle: `fed-hlc-transitivity-fix-proof.test.ts` (PG-free, the proof-of-fix).
+- End-to-end through the real merge + `fed_hlc` guard:
+  `version-skew-mixed-hlc-backcompat.test.ts` (Brief Y / AC scenario 6). Note
+  MONOTONE-clock mixed universes DO converge (rolling-upgrade back-compat holds in
+  the normal case); only SKEW + mixed reaches the cycle.
+
+## Gotcha for new work
+
+Any new comparison or LWW path that treats "has HLC" and "no HLC" with *different*
+comparison **modes** (rather than mapping both into one order) re-introduces this
+non-transitivity. Map a missing HLC into HLC-space (synth from `ts`) instead of
+switching to a `ts`-mode branch.
+
+## Refs
+
+- EI-1698 (the finding + the proof-of-fix comment) · `shared-hive-release-testing/findings-Y.md`
+- Adjacent: D-001 `fed_hlc` ordering (`lww-hlc-fedts-divergence.test.ts`), mig-314, `hlc-stamp.ts`, `@papercusp/locks-core/hlc.ts`.
