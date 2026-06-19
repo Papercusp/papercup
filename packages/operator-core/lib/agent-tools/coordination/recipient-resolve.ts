@@ -53,7 +53,12 @@ export function resolveRecipientsAgainst(
       resolved.push(id);
       continue;
     }
-    const matches = knownOwnerIds.filter((k) => k.startsWith(id));
+    // Prefix match (e.g. 'su-93a38' → 'su-93a3872a-…'), then a SUBSTRING fallback so
+    // the SHORT HANDLE shown in the [coord+N] injection / inbox — a mid-uuid segment
+    // like '93a38' for 'su-93a3872a-…', which is NOT a prefix — resolves directly,
+    // without a separate coord:presence lookup to reply (owner ask 2026-06-19).
+    let matches = knownOwnerIds.filter((k) => k.startsWith(id));
+    if (matches.length === 0) matches = knownOwnerIds.filter((k) => k.includes(id));
     if (matches.length === 1) resolved.push(matches[0]);
     else if (matches.length > 1) ambiguous.push({ id, matches });
     else unknown.push(id);
@@ -99,7 +104,8 @@ export function resolveBestEffort(
   const known = new Set(knownOwnerIds);
   return to.map((id) => {
     if (isSelectorOrWildcard(id) || known.has(id)) return id;
-    const matches = knownOwnerIds.filter((k) => k.startsWith(id));
+    let matches = knownOwnerIds.filter((k) => k.startsWith(id));
+    if (matches.length === 0) matches = knownOwnerIds.filter((k) => k.includes(id));
     return matches.length === 1 ? matches[0] : id;
   });
 }

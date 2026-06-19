@@ -33,7 +33,7 @@ export default defineTool({
     to: z
       .array(z.string().min(1), {
         error:
-          'coord:send needs `to`: an array of recipient ownerIds — ["*"] broadcasts, ["human"] surfaces to the user. Look up a full ownerId via coord:presence.',
+          'coord:send needs `to`: recipient ids. Accepts the SHORT HANDLE shown in the [coord+N] injection / inbox (e.g. "93a38"), the "su-…" prefix, OR the full ownerId — all resolve against the live roster, so NO coord:presence lookup is needed to reply to a peer. ["*"] broadcasts, ["human"] surfaces to the user. (To make a peer who is waiting on your reply act NOW rather than on their next turn, set wake:"required" — a plain send only injects.)',
       })
       .min(
         1,
@@ -90,7 +90,8 @@ export default defineTool({
                   error: 'unknown_recipient',
                   message:
                     'coord:send addressed agent(s) not in the roster — nothing was sent. ' +
-                    'Look up the full ownerId with coord:presence and retry.',
+                    'Use the short handle from [coord+N]/inbox, the su- prefix, or the full ownerId ' +
+                    '(coord:presence lists them); a substring of a live ownerId also resolves.',
                   ...(r.unknown.length ? { unknown_recipients: r.unknown } : {}),
                   ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
                 }),

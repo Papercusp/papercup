@@ -21,6 +21,25 @@ describe('resolveRecipientsAgainst', () => {
     expect(r.ambiguous).toEqual([]);
   });
 
+  it('resolves a SHORT HANDLE (mid-uuid segment shown in [coord+N]) via substring — not a prefix', () => {
+    // The injection shows '93a38' for 'su-93a3872a-…' (the post-'su-' segment, NOT a
+    // prefix). Owner ask 2026-06-19: reply without a separate coord:presence lookup.
+    // Here 'df009' is the mid-segment of the first agent; 'beb4d' a tail segment.
+    expect(resolveRecipientsAgainst(['df009'], KNOWN).resolved).toEqual([
+      'su-df00939e-1f16-410d-ac0d-ef1aebd41d96',
+    ]);
+    expect(resolveRecipientsAgainst(['beb4d'], KNOWN).resolved).toEqual([
+      'su-fc2fd592-e760-42bd-8057-beb4d06eef52',
+    ]);
+  });
+
+  it('prefers a PREFIX match over substring (prefix tried first)', () => {
+    // exact-prefix still wins; substring is only the fallback when prefix yields none.
+    expect(resolveRecipientsAgainst(['su-df00939e'], KNOWN).resolved).toEqual([
+      'su-df00939e-1f16-410d-ac0d-ef1aebd41d96',
+    ]);
+  });
+
   it('keeps an exact ownerId match unchanged', () => {
     const id = 'su-fc2fd592-e760-42bd-8057-beb4d06eef52';
     expect(resolveRecipientsAgainst([id], KNOWN).resolved).toEqual([id]);
@@ -72,6 +91,11 @@ describe('resolveBestEffort (the silent shared-layer twin)', () => {
   it('rewrites a unique prefix to the full ownerId', () => {
     expect(resolveBestEffort(['su-df00939e'], KNOWN)).toEqual([
       'su-df00939e-1f16-410d-ac0d-ef1aebd41d96',
+    ]);
+  });
+  it('resolves a short handle (mid-uuid substring) to the full ownerId', () => {
+    expect(resolveBestEffort(['fc2fd'], KNOWN)).toEqual([
+      'su-fc2fd592-e760-42bd-8057-beb4d06eef52',
     ]);
   });
   it('leaves an UNKNOWN id unchanged (best-effort never rejects)', () => {
