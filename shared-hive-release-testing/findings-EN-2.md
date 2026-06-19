@@ -137,3 +137,17 @@ effect when no policy is set, proven under an adversarial flood + cross-peer
 convergence + anti-OOM — at the merge level. Remaining for full release: EN-4's
 `policy-admission` boot wiring (in flight) + EN-1's GUI panel reading
 `limiter.snapshot()` for the "member X at N/cap" surface.
+
+## Re-verification (continuation, 2026-06-19, su-68c96)
+
+Re-ran the composed seam on the CURRENT staging tree AFTER boot.ts/A-003 churn (boot.ts
+held + edited by su-c2a63/su-53f39 for A-003 receive-side): **62/62 green** (rate-limiter
+21, rate-limit-admission 14, rate-limit-enforcement 7, policy-admission 18,
+policy-admission.apply 2). Typecheck: ALL EN-2/EN-4 enforcement files
+(`rate-limiter.ts`, `rate-limit-admission.ts`, `policy-admission.ts` + tests) are
+**TS-clean** — the 56 `lib/sync/hyperbee` + 519 repo tsc errors are pre-existing baseline
+in OTHER files (`ProvenanceContext`/mock-typing in integration tests, `test-config`
+import-extension), none in this lane. EN-2 module + EN-1 type integration (`RateCaps =
+HivePolicyRate`) confirmed complete. The single remaining integration is the boot.ts
+`mergeOpts.applyImpl` wiring — EN-4's lane, contended with the live A-003 boot.ts edit,
+coordinated by su-328af; ready-to-apply composition contract handed to su-328af via coord.
