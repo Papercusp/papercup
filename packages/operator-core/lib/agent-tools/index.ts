@@ -121,6 +121,16 @@ import './hive/beacon_consent';
 import './hive/ask';
 import './hive/request_work';
 import './hive/asks';
+// shared-hive-owner-enforcement-2026-06-19 (EN-3) — the claimed owner's control surface:
+// P-MEMBER approval-mode (membership_pending / membership_decide) + P-MOD report→queue→
+// takedown / ban (report / moderation_queue / moderation_resolve / takedown / ban_member).
+import './hive/membership_pending';
+import './hive/membership_decide';
+import './hive/report';
+import './hive/moderation_queue';
+import './hive/moderation_resolve';
+import './hive/takedown';
+import './hive/ban_member';
 // hive-network-surface-2026-06-11 P-006 (B-08) — the aggregate Network board
 // (C-3 rows) over the capability-tier ladder; the agent twin of the
 // `network.board` named sync query that backs the dock Network tab:
