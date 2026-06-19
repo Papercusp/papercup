@@ -6,7 +6,7 @@
  * papercup-hive's WORKSPACE-WIDE survey treated them as ready→"Queen-unresolvable"→a ~13k aging-
  * escalation storm. The durable fix is for the bench driver to retire its own items at run end
  * (success, crash, AND signal-teardown paths). Idempotent + guarded: it only ever touches BENCHMARK
- * harnesses (xbench* / *instance_*), NEVER a real `papercup*` harness.
+ * harnesses (xbench* / *instance_*), NEVER a real dogfood-home harness (`papercup*` / `papercusp*`).
  */
 
 /** Non-terminal feature states that, for a benchmark harness, are stale debris once the run is over. */
@@ -22,14 +22,15 @@ export const BENCH_NONTERMINAL_STATUSES = [
 /**
  * PURE: is this (harness_slug, status) a stale BENCHMARK work-item the run-end teardown should retire?
  * True iff it's a benchmark harness (xbench* or contains `instance_`) in a non-terminal state and NOT
- * a protected `papercup*` harness (the guard that makes a bulk retire safe). Mirrors the guarded SQL
- * in {@link retireBenchDebris} so the scope is unit-testable without PG.
+ * a protected dogfood-home harness — `papercup*` (legacy) OR `papercusp*` (the home hive + its members,
+ * post papercup→papercusp generalization). That guard is what makes a bulk retire safe. Mirrors the
+ * guarded SQL in {@link retireBenchDebris} so the scope is unit-testable without PG.
  */
 export function isStaleBenchDebris(harnessSlug: string, status: string): boolean {
   // Benchmark harness naming across drivers: `xbench*` (su/queen), `xbq*` (hive-member slugs),
   // `extbench*` (external-bench scratch), or anything carrying `instance` (the SWE-bench instance id).
   const isBench = /^(xbench|xbq|extbench)/.test(harnessSlug) || harnessSlug.includes('instance');
-  const isProtected = harnessSlug.startsWith('papercup');
+  const isProtected = /^papercu(p|sp)/.test(harnessSlug);
   return isBench && !isProtected && (BENCH_NONTERMINAL_STATUSES as readonly string[]).includes(status);
 }
 
@@ -61,6 +62,7 @@ export async function retireBenchDebris(
              SET status = 'deprecated', updated_ts = ${nowMs}
            WHERE harness_slug LIKE ${opts.slugPrefix + '%'}
              AND harness_slug NOT LIKE 'papercup%'
+             AND harness_slug NOT LIKE 'papercusp%'
              AND status IN ('todo', 'failing', 'in_progress', 'validating', 'pending', 'failed')
           RETURNING feature_id`
       : await sql<{ feature_id: string }>`
@@ -69,6 +71,7 @@ export async function retireBenchDebris(
            WHERE (harness_slug LIKE 'xbench%' OR harness_slug LIKE 'xbq%' OR harness_slug LIKE 'extbench%'
                   OR harness_slug LIKE '%instance\\_%' OR feature_id LIKE 'F-INSTANCE%')
              AND harness_slug NOT LIKE 'papercup%'
+             AND harness_slug NOT LIKE 'papercusp%'
              AND status IN ('todo', 'failing', 'in_progress', 'validating', 'pending', 'failed')
           RETURNING feature_id`;
     return rows.length;

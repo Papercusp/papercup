@@ -587,6 +587,8 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | PlanItemAssignmentRow
     | HiveSettingRow
     | HivePolicyRow
+    | ReportWireRow
+    | PendingJoinWireRow
     | HiveMemberRow
     | EngineerIssueRow
     | PlanPartWireRow;

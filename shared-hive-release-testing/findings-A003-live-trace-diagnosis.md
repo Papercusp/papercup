@@ -121,3 +121,50 @@ window), if never → a real directory-federation regression for the directory l
 A-003 is the one live-red federation blocker. Everything downstream is staged (re-key built
 + 32 teeth-tests, held on A-003 green; owner-enforcement EN-2 built; PR-system/dogfood planned).
 hive_settings crossing on the binary = A-003 GREEN = the next domino.
+
+---
+
+## RESOLUTION — RE-LAND + GUARD (su-53f39, 2026-06-19 ~17:13 EDT)
+
+**A-003 is GREEN and pinned at HEAD.** Sequence of record:
+
+1. **fix-b = onAnnounce BUFFER + retryPendingOnce SCOPE-RECHECK** (both halves). A hive-home
+   announce racing in during the joiner-member's `home=<none>` window is BUFFERED (`pendingPeers.set`,
+   reason `pending`, `announce_pending scope_unresolved`) not conclusive-rejected; `retryPendingOnce`
+   re-checks `announceSlugInScope` against the resolved `hiveHomeProjectionSlug` after the rekey rebind
+   and admits iff in-scope. **ee7e9's live from-repo witness on the 16:19 fix-b serve.mjs PROVED this
+   correct** (hive_settings crossed owner→joiner origin=remote, backfill=2 + incremental;
+   findings-A003-GREEN-witness-2026-06-19.md).
+
+2. **REGRESSION:** a later rewrite (3bce97bf7 / 4d82a53b3) DROPPED both halves (left only the comment
+   markers) → HEAD RED. This was the ~3rd silent revert; c2a63's deterministic regression test caught it.
+
+3. **RE-LANDED (su-53f39):** both halves restored VERBATIM from the known-good 0d2067204.
+
+4. **fix-c (latency hardening) ON TOP:** `rekey()` `await retryPendingOnce()` immediately after the
+   home rebind → the buffered hive-home frame replays SYNCHRONOUSLY on rebind instead of waiting up to
+   `DEFAULT_PENDING_RETRY_MS` (5s) for the periodic tick. Closes the fast-sampler window. Confirmed by
+   ee7e9 as latency hardening, NOT a correctness gate. + a `joinerHiveHomeSlugOverride` boot-opt test
+   seam (prod path unchanged).
+
+5. **GUARD:** c2a63's `__tests__/a003-scope-buffer-replay.test.ts` pins the buffer→replay contract —
+   RED on the revert, GREEN on the re-land. This is what stops a 4th silent revert.
+
+**On su-9140a's revert CAVEAT** (above: "retryPendingOnce change gates the D-006 identity-pending admit
+path → could disrupt other harnesses' federation incl. directory"): ADDRESSED, not ignored. The caveat
+was precautionary — su-9140a reverted because the box OOM'd mid-witness and the fix "could not be
+validated," NOT because a regression was confirmed (see the LIVE-WITNESS INFRA FRAGILITY note above).
+It is refuted by: (a) the scope-recheck is TRANSPARENT to the D-006 path — an absent harness_slug
+(legacy/the admission-pending-retry tests) → `announceSlugInScope` returns true → admitted; an
+in-scope peer (`origin===own`) → admitted; only a PRESENT-FOREIGN-slug frame is held, which SHOULD be
+held (it belongs to a different on-topic harness); (b) ee7e9's from-repo smoke (feature federation +
+the directory join path) passed bidirectionally on this exact code; (c) two-hive-shared-swarm +
+announce-channel-multihive + read-admission + admission-pending-retry all GREEN.
+
+**Verification (HEAD):** a003-scope-buffer-replay + boot(18) + admission-pending-retry(5) +
+two-hive-shared-swarm + two-peer-swarm-bidi + announce-channel-multihive + read-admission = 46 passed.
+`tsc --noEmit` boot.ts CLEAN (the ~521 operator-core errors are pre-existing baseline type-debt in
+voice/plugin-loader/test-mock files — zero in boot.ts).
+
+**Remaining:** ee7e9 to re-run the A003_MEMBERSHIP_PROBE from-repo witness on a FRESH-HEAD sidecar/.deb
+to lock in fix-c on the binary (correctness already proven on the 16:19 build).

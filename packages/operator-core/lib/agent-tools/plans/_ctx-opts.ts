@@ -6,12 +6,13 @@
  * readAllPlans) which take a PlanSourceOpts override. This helper
  * derives the right opts from ctx.harnessSlug:
  *
- *   - No ctx.harnessSlug, ctx.harnessSlug === 'papercup', OR
- *     ctx.harnessSlug === '*' (SU wildcard from http-projection when
- *     no ?harness= is in the URL) → return `{}`. source.ts's legacy
- *     sync cwd-walk handles the papercup-default location
- *     (`apps/operator/docs/plans/`) — same behavior as before
- *     per-harness-plans-and-docs.
+ *   - No ctx.harnessSlug, ctx.harnessSlug === the operator-home slug
+ *     (operatorHomeHarnessSlug() — PAPERCUSP_HIVE_HOME_SLUG when set,
+ *     else the legacy 'papercup'), OR ctx.harnessSlug === '*' (SU
+ *     wildcard from http-projection when no ?harness= is in the URL) →
+ *     return `{}`. source.ts's legacy sync cwd-walk handles the
+ *     operator-home-default location (`apps/operator/docs/plans/`) —
+ *     same behavior as before per-harness-plans-and-docs.
  *
  *   - ctx.harnessSlug set to a real slug → look up via the harness
  *     registry (resolveHarnessPlansDir), return `{ plansDir, archiveDir }`
@@ -26,7 +27,7 @@ import { PAPERCUP_HARNESS_SLUG } from '../../harness/register-papercup';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 export interface CtxHarnessOpts extends PlanSourceOpts {
-  /** Resolved harness slug. 'papercup' (default) or the registered name. */
+  /** Resolved harness slug. The operator-home slug (operatorHomeHarnessSlug(), default) or the registered name. */
   harnessSlug: string;
 }
 

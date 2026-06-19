@@ -49,6 +49,7 @@ import {
 import { wakeParentOnChildDeath } from './parent-wake';
 import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /**
  * The deterministic SAFETY-FLOOR ceiling on concurrently-running spawns — the
@@ -649,9 +650,10 @@ export async function spawnAgentInHarness(
     // EI-429: the Queen sometimes passes its SU MCP server slug ("<project>-su",
     // or the legacy "papercusp-su") as a spawn target instead of the project.
     // Remap a KNOWN -su MCP slug to its project — strip the "-su" suffix, aliasing
-    // the legacy "papercusp-su" to the dogfood project "papercup". Deterministic
+    // the legacy "papercusp-su" to the operator-home project (operatorHomeHarnessSlug() —
+    // PAPERCUSP_HIVE_HOME_SLUG when set, else the legacy "papercup"). Deterministic
     // remap of the known MCP slugs ONLY, never a silent normalize of arbitrary slugs.
-    const suBase = slug === 'papercusp-su' ? 'papercup' : /^(.+)-su$/.exec(slug)?.[1];
+    const suBase = slug === 'papercusp-su' ? operatorHomeHarnessSlug() : /^(.+)-su$/.exec(slug)?.[1];
     if (suBase && suBase !== slug) {
       const remapped = (await resolveProject(suBase, input.workspaceId)) ?? (await resolveProject(suBase));
       if (remapped) {

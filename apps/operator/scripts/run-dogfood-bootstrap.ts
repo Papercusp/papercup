@@ -21,6 +21,7 @@ import { registerPapercupHarness } from '@papercusp/operator-core/lib/harness/re
 import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from '@papercusp/operator-core/lib/harness/ensure-papercusp-hive';
 import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
 import { readRegistry } from '@papercusp/operator-core/lib/workspace-registry';
+import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 
 async function main(): Promise<void> {
   console.log('=== STEP 1: ensurePapercuspWorkspace ===');
@@ -54,12 +55,13 @@ async function main(): Promise<void> {
   for (const p of hReg.projects) {
     console.log(`  - ${p.slug}  →  ${p.path}`);
   }
-  const papercup = hReg.projects.find((p) => p.slug === 'papercup');
-  if (!papercup) {
-    console.error('FAIL: papercup not in sentinel workspace registry');
+  const homeSlug = operatorHomeHarnessSlug();
+  const homeProject = hReg.projects.find((p) => p.slug === homeSlug);
+  if (!homeProject) {
+    console.error(`FAIL: ${homeSlug} not in sentinel workspace registry`);
     process.exit(1);
   }
-  console.log(`✓ papercup registered in sentinel workspace`);
+  console.log(`✓ ${homeSlug} registered in sentinel workspace`);
   // The shared hive is best-effort (skipped in a packaged install / on a transient
   // PG hiccup) — present it, but do NOT fail the bootstrap on a non-'skipped' miss.
   const papercuspHive = hReg.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG);

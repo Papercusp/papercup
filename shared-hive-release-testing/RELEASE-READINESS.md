@@ -5,6 +5,31 @@ public production?
 
 # ❌ NOT YET — but as of 2026-06-19 PM the path is a known, owned BUILD list (no open S0s, no unknowns).
 
+> ## ✅ UPDATE — A-003 CLOSED (2026-06-19 PM/eve, su-c2a63 + su-ee7e9 + su-53f39 + su-690fe)
+> The A-003 line in su-9140a's block below is SUPERSEDED. A-003 (`hive_members`/`hive_settings`
+> federate to a joiner) is **CLOSED**, three independent ways:
+> 1. **Live-witnessed green on the binary** — su-ee7e9 ran the FROM-REPO join
+>    (`two-instance-hive-from-repo-smoke.sh` + a new opt-in A003_MEMBERSHIP_PROBE), and
+>    `hive_settings` crossed owner→joiner (backfill=2 + incremental, origin=remote). Prior
+>    content-matrix RED witnesses were the WRONG flow (discovery-join never engages the hive-home
+>    binding; it also died at a stale `{hiveId,memberLinks}` join contract). See
+>    `findings-A003-GREEN-witness-2026-06-19.md`.
+> 2. **The fix is RECEIVE-side, not send-side** — su-9140a's onAnnounce BUFFER (a hive-home
+>    announce racing in while the joiner's home slug is unresolved is held, not conclusive-rejected)
+>    + `retryPendingOnce` slug-scope re-check + the rekey rebind. su-53f39 re-landed it VERBATIM from
+>    `0d2067204` (after a boot.ts rewrite, 3bce97bf7, briefly reverted the buffer) + added fix-c
+>    (immediate replay-on-rebind, a ≤5s latency win) + a `joinerHiveHomeSlugOverride` test seam.
+> 3. **Pinned in CI** — a new deterministic, hermetic regression test
+>    (`packages/operator-core/lib/sync/hyperbee/__tests__/a003-scope-buffer-replay.test.ts`) is
+>    teeth-verified (RED on the buffer revert → GREEN on the fix) and runs in the green-checkpoint,
+>    so the buffer can no longer silently regress out. (It was the ONLY guard that caught the revert
+>    — the rest of the suite stayed green through it.) Corroborated by su-690fe's pre-gate on committed
+>    HEAD 366a4072a (a003-scope-buffer-replay + admission-pending-retry green; EN-4 + backbone 1076 green).
+>
+> NET: A-003 was the last live-RED federation blocker. With it closed, the receive/merge/projection
+> federation path the **C-001 re-key (Move 2)** rides is proven. Optional belt-and-suspenders: a fresh
+> full-`.deb` HEAD re-witness (byte-identical fix-b + suite-covered fix-c) if the owner wants it.
+
 > ## CURRENT STATE (2026-06-19 PM, su-9140a — supersedes the A–G synthesis below)
 > Live-witnessed on the **real packaged binary** this session (see
 > `ROLLUP-continuation-2026-06-19.md` + `findings-LIVE-WITNESS-INTEGRATED-2026-06-19.md`):

@@ -21,6 +21,9 @@ test('isStaleBenchDebris — benchmark non-terminal = debris; terminal + papercu
   // real papercup harnesses are PROTECTED — never retired, even non-terminal
   assert.equal(isStaleBenchDebris('papercup', 'todo'), false);
   assert.equal(isStaleBenchDebris('papercup-hive', 'failing'), false);
+  // the papercusp home hive + its members are PROTECTED too (papercup→papercusp generalization)
+  assert.equal(isStaleBenchDebris('papercusp', 'todo'), false);
+  assert.equal(isStaleBenchDebris('papercusp-hive', 'failing'), false);
   // a non-benchmark harness is ignored
   assert.equal(isStaleBenchDebris('some-real-harness', 'todo'), false);
 });
@@ -35,6 +38,7 @@ test('retireBenchDebris — guarded UPDATE, returns count, never throws', async 
   assert.equal(n, 2);
   assert.ok(sqlText.includes('UPDATE harness_shared.harness_features_consolidated'));
   assert.ok(sqlText.includes("NOT LIKE 'papercup%'"), 'must guard real papercup harnesses');
+  assert.ok(sqlText.includes("NOT LIKE 'papercusp%'"), 'must guard the papercusp home hive + members');
   assert.ok(sqlText.includes("SET status = 'deprecated'"));
   // the broadened slug families are in the guarded predicate (mirrors isStaleBenchDebris)
   assert.ok(sqlText.includes("LIKE 'xbench%'") && sqlText.includes("LIKE 'xbq%'") && sqlText.includes("LIKE 'extbench%'"),

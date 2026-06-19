@@ -201,6 +201,12 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // EN-1's owner-SIGNED hive_policy, not this table — reports go member→owner so they
   // cannot ride the owner signature.)
   'hive_reports',
+  // shared-hive-rekey-2026-06-19 (P-005): per-member WRAPPED epoch keys for the read-plane
+  // re-key (projections/hive-epoch-keys.ts). Keyed (workspace_id, harness_slug = the Hive
+  // home, epoch, member_device_pubkey) → workspace-owned + peer-log; rides the Hive-pubkey
+  // topic. DARK until papercusp-hive-rekey flips (the boundary trigger + producer are
+  // flag-gated, so the table stays empty + its capture trigger never fires locally).
+  'hive_epoch_keys',
   // fed-reanchor B5: the work-queue's issue/task family (work_items kind ∈ bug|change|
   // task) federates over the Hive peer-log — closes engineer-issues-2026-06-03 D-009's
   // "federation deferred". Keyed (workspace_id, issue_id); the capture trigger (mig 197)

@@ -13,6 +13,61 @@ as Brief G covered its honesty render.
 
 ---
 
+## UPDATE (continuation, su-1c8bc) — EI-1618 drain/sync-health WIRED into G-004
+
+A continuation session (su-1c8bc, with the coord MCP the prior Brief-M session lacked)
+picked up su-9140a's explicit handoff: the drain-health DETECTION logic
+(`assessHarnessSubstrateHealth(drainStats)` in `health.ts` + `resolveDrainStats` /
+per-harness `drain` in `in-process-status.ts`, 18 tests, already landed + teeth-verified
+by su-9140a) was DONE but **not wired into the live G-004 read** — the route called
+`getInProcessSubstrateStatus()` with no resolver, so a stalled outbox (captured but not
+federating — the EI-681 class) still reported "healthy" through `/api/discovery/
+federation-status`. That last-mile is **now landed + teeth-verified**, making G-004
+honest about **SYNC**, not just boot/reach:
+
+- **New loader** `packages/operator-core/lib/sync/hyperbee/load-drain-stats.ts`
+  (`loadSubstrateDrainStats`) — one grouped read
+  `SELECT workspace_id, harness_slug, COUNT(*) AS undrained, MIN(ts) AS oldest_ts FROM
+  harness_shared.substrate_outbox WHERE drained_at IS NULL GROUP BY 1,2` → a Map for the
+  route's sync resolver; `oldestUndrainedAgeMs = now - MIN(ts)`. **COLUMN CORRECTION**
+  (verified against `000-baseline.sql` + `outbox-drain.ts`): the real columns are `ts`
+  (capture epoch-ms) + `drained_at` (epoch-ms, NULL = undrained) — NOT the `created_ts`
+  (handoff recipe) / `captured_ts` (in-process comment) either doc named; the recipe's
+  `EXTRACT(EPOCH FROM now()-MIN(created_ts))` SQL would have errored. 6 tests
+  (teeth-shaped: exact age math, drained_at-only filter, skew clamp, throw→empty).
+- **Route** `federation-status.ts` — prefetches the drain map via
+  `getOrgPg().sql.unsafe` and passes `resolveDrainStats`, so a stalled harness now flips
+  off `healthy` AND rolls into a new `substrate.drain { stalledHarnesses,
+  worstUndrainedCount, worstOldestUndrainedAgeMs }` summary (stall lag mirrors
+  `health.ts`'s 60s `drainStalledThresholdMs`). Best-effort: a PG failure degrades to
+  zero-drain (honest), never throws the read. Test: 7 (was 4; +3) — teeth-verified
+  (drop the resolver → the wiring test RED).
+- **Component** `HiveFederationStatus.tsx` — new pure `drainLabel` + a `fed-drain`
+  sync-stall row that renders ONLY when stalled ("⚠ not syncing — N harness(es) with
+  content captured but not federating…"), down dot; **never** a positive "synced"
+  claim (silence = the honest healthy state). Scope note updated (sync-health is
+  install-wide; per-hive content-sync peer counts still not surfaced). Test: 15 (was 10;
+  +5) — teeth-verified (neuter `drainLabel` to claim "synced" → 3 RED).
+- **Verification:** loader 6/6, route 7/7, component 15/15, neighbors (HivesTab,
+  WorkbenchHiveDirectoryPanel) 12/12 — all GREEN; touched files tsc-clean (operator-core
+  + operator-vite). Both honesty layers teeth-verified (each lie → RED → restore →
+  GREEN). NOT committed by me — git-sync owns commit+push; left clean in the tree.
+
+**EI status after this wiring:**
+- **EI-1618** (silent-stall observability gap — "a stuck outbox reports healthy"):
+  proposed items **1 (per-harness undrained metric → off-healthy) + 3 (honest desktop
+  "not syncing" copy)** are DONE + tested. Item **2 (a periodic ACTIVE federation
+  reconcile / self-check)** is a separate proactive mechanism, not part of the on-read
+  surface — carried forward as a follow-up (the on-READ silent-stall is now visible;
+  an active periodic reconcile that auto-detects without a reader is the residual).
+- **EI-1599** (per-hive content-replication peer count): **PARTIALLY** addressed — the
+  desktop can now honestly show install-wide "not syncing" when an outbox stalls. The
+  full ask (a TRUE per-hive content-peer count + last-merge timestamp) still needs Brief
+  H's per-hive swarm/topic connection accounting — EI-1599 stays OPEN for that, scope
+  note unchanged.
+
+---
+
 ## What shipped (G-004 — the live federation status surface)
 
 The brief's G-004 directive: *"design + implement a minimal peer/sync indicator

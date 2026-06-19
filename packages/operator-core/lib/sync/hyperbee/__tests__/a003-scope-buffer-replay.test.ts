@@ -32,10 +32,12 @@
  * the `announce_pending scope_unresolved` event is never recorded.
  *
  * The REPLAY half (a buffered frame is admitted once `rekey` resolves `home`) is
- * the deterministic complement to su-ee7e9's live from-repo witness; it is written
- * against the `joinerHiveHomeSlugOverride` boot seam (su-53f39, boot.ts source) so
- * `home` can transition undefined→slug without real PG/Hyperswarm. Kept `it.skip`
- * until that seam lands; see the placeholder below.
+ * proven end-to-end LIVE on the real binary by su-ee7e9's from-repo witness
+ * (findings-A003-GREEN-witness-2026-06-19.md). A unit duplicate would require a real
+ * Hyperswarm join (the `joinerHiveHomeSlugOverride` seam is gated on a hive binding →
+ * `rekey` → `joinForBinding`), so it self-excludes from the green-checkpoint and adds
+ * no gate protection beyond the BUFFER test below — it is therefore a documented
+ * `it.skip`, not a gap (see the rationale at that test).
  */
 
 import { afterEach, describe, it, expect } from 'vitest';
@@ -205,16 +207,34 @@ describe('A-003 receive-side slug-scope buffer (Brief I)', () => {
     5000,
   );
 
-  // REPLAY half — completed once su-53f39's `joinerHiveHomeSlugOverride` boot seam
-  // + immediate-replay-on-rebind land in boot.ts source. Then: boot with the
-  // override → null (home=<none>), buffer the owner hive-home frame, call
-  // `handle.rekey(hiveBinding)` (override now returns '<hive-home>'); with the
-  // immediate replay, assert `handle.admitted.has(frameKey)` is true with NO poll
-  // (rekey awaits retryPendingOnce). Teeth: revert boot.ts:1310-1321 → RED.
+  // REPLAY half — DELIBERATELY not a unit test here (documented scoping decision).
+  //
+  // The `joinerHiveHomeSlugOverride` boot seam (boot.ts) + immediate-replay-on-rebind
+  // (rekey → `await retryPendingOnce()`) DO exist, so a deterministic replay test is
+  // *possible*: boot a member with `swarmBinding.kind:'hive'` +
+  // `joinerHiveHomeSlugOverride` → null (home=<none>) → onAnnounce buffers the owner
+  // hive-home frame → flip the override to '<hive-home>' → `handle.rekey(binding)`
+  // resolves home, re-admits the buffered frame → assert `handle.admitted.has(key)`.
+  //
+  // BUT the seam is gated on `binding.kind === 'hive'` (boot.ts resolveHiveHome…),
+  // and a hive binding routes `rekey` through `joinForBinding` → a REAL Hyperswarm
+  // join (only `swarmOverride` = a live in-process testnet swarm satisfies it; there
+  // is no hermetic fake). That makes the replay test a real-DHT test that
+  // self-excludes from the green-checkpoint (GREEN_CHECKPOINT=1) — so it would add NO
+  // gate protection beyond the BUFFER test above, while duplicating coverage the
+  // replay path already has end-to-end:
+  //   - the BUFFER test above is the gate-protected guard against the exact silent
+  //     revert that regressed A-003 (commit 3bce97bf7);
+  //   - the rebind→replay→cross is proven LIVE on the real binary by the from-repo
+  //     witness (su-ee7e9, findings-A003-GREEN-witness-2026-06-19.md: hive_settings
+  //     crosses owner→joiner) — the authoritative replay proof.
+  // A flaky real-Hyperswarm unit duplicate would lower suite quality, not raise it.
+  // If the live witness is ever retired, re-land this as a testnet test mirroring
+  // feature-content-federation.integration.test.ts (makeSwarm + announceIdentityOverride).
   it.skip(
-    'REPLAY: a buffered hive-home frame is admitted once rekey resolves the joiner hive-home slug (needs joinerHiveHomeSlugOverride seam)',
+    'REPLAY (covered by the live from-repo witness + the buffer guard above): a buffered hive-home frame is admitted once rekey resolves the joiner hive-home slug',
     async () => {
-      /* pending su-53f39's boot.ts seam — see file header */
+      /* intentionally skipped — see the rationale comment above */
     },
   );
 });

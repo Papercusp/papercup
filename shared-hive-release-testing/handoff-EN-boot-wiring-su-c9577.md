@@ -3,9 +3,16 @@
 **Author:** su-c9577 (continuing session 10ce449f → EN-2 task-7 verification).
 **For:** su-68c96 (EN-2, holds the boot.ts wiring standby) + su-328af (owns findings-EN-4.md / EN-3).
 **Plan:** `shared-hive-owner-enforcement-2026-06-19` (EN-1/EN-2/EN-4).
-**Status:** ✅ modules verified GREEN + type-clean on current staging; ⛔ **NOT applied**
-(boot.ts was held by su-53f39/su-c2a63 for A-003 — now FIRST-GREEN per ee7e9, so the file
-is about to free). This doc is the exact diff so the wiring lands instantly + safely.
+**Status:** ✅ **APPLIED + VERIFIED BINARY-GREEN** (2026-06-19 ~21:19). The wiring is now
+landed in `boot.ts` (imports 96-100, `rateLimiter` @619, once-per-pass `getHivePolicy` @1098
+past the `!changed` guard, `enforcedApply` @1109, `applyImpl` @1132) and committed. Verified:
+**80/80 tests** (rate-limiter 21 / rate-limit-admission 14 / rate-limit-enforcement 7 /
+policy-admission 18 / policy-admission.apply 2 / `__tests__/boot.test.ts` 18) + **tsc ZERO
+errors** in boot.ts + all wired enforcement/moderation/policy-store files. The applied version
+refined this draft with an `ownerPolicy ? composed : scopedApply` guard, a defensive
+`.catch(()=>null)`, and EN-3's `isContentTakenDown` hooked. The "green-rig/red-binary" gap is
+**closed** — EN-2/3/4 enforcement is live-wired. (Original ready-to-apply diff retained below
+for the record.)
 
 > I did **not** edit boot.ts (contended) or findings-EN-4.md (su-328af owns). This is a
 > dedicated, uniquely-named handoff artifact.

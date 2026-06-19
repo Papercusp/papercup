@@ -7,13 +7,19 @@
  * teeth-shaped — neuter the age math or the undrained filter and a test goes RED.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { loadSubstrateDrainStats } from './load-drain-stats';
+import { loadSubstrateDrainStats, type LoadSubstrateDrainStatsOpts } from './load-drain-stats';
 
 const NOW = 1_700_000_000_000;
 
+/** A typed `runQuery` mock matching the loader's generic signature. */
+function fakeRunQuery(rows: unknown[]) {
+  const fn = vi.fn(async (_query: string, _params: unknown[]) => rows);
+  return fn as typeof fn & LoadSubstrateDrainStatsOpts['runQuery'];
+}
+
 describe('loadSubstrateDrainStats', () => {
   it('maps each (workspace, harness) to undrainedCount + age = now - MIN(ts)', async () => {
-    const runQuery = vi.fn(async () => [
+    const runQuery = fakeRunQuery([
       { workspace_id: 'ws', harness_slug: 'a', undrained: '4', oldest_ts: String(NOW - 120_000) },
       { workspace_id: 'ws', harness_slug: 'b', undrained: '1', oldest_ts: String(NOW - 5_000) },
     ]);
@@ -23,9 +29,9 @@ describe('loadSubstrateDrainStats', () => {
   });
 
   it('queries ONLY undrained rows (drained_at IS NULL) grouped by scope', async () => {
-    const runQuery = vi.fn(async () => []);
+    const runQuery = fakeRunQuery([]);
     await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
-    const sql = runQuery.mock.calls[0][0] as string;
+    const sql = runQuery.mock.calls[0][0];
     expect(sql).toMatch(/substrate_outbox/);
     expect(sql).toMatch(/drained_at IS NULL/);
     expect(sql).toMatch(/MIN\(ts\)/); // the real column is `ts`, NOT created_ts/captured_ts
@@ -33,7 +39,7 @@ describe('loadSubstrateDrainStats', () => {
   });
 
   it('skips harnesses with a fully-drained outbox (0 undrained → absent from the map)', async () => {
-    const runQuery = vi.fn(async () => [
+    const runQuery = fakeRunQuery([
       { workspace_id: 'ws', harness_slug: 'clean', undrained: '0', oldest_ts: null },
     ]);
     const map = await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
@@ -41,7 +47,7 @@ describe('loadSubstrateDrainStats', () => {
   });
 
   it('clamps clock skew (capture ts ahead of now) to age 0, never negative', async () => {
-    const runQuery = vi.fn(async () => [
+    const runQuery = fakeRunQuery([
       { workspace_id: 'ws', harness_slug: 'skew', undrained: '2', oldest_ts: String(NOW + 3_000) },
     ]);
     const map = await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
@@ -49,7 +55,7 @@ describe('loadSubstrateDrainStats', () => {
   });
 
   it('null oldest_ts → undrained counted, age null (not measured)', async () => {
-    const runQuery = vi.fn(async () => [
+    const runQuery = fakeRunQuery([
       { workspace_id: 'ws', harness_slug: 'n', undrained: '3', oldest_ts: null },
     ]);
     const map = await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
@@ -57,9 +63,9 @@ describe('loadSubstrateDrainStats', () => {
   });
 
   it('defensive: a query error → empty map (honest zero-drain, never throws)', async () => {
-    const runQuery = vi.fn(async () => {
+    const runQuery = (vi.fn(async () => {
       throw new Error('relation "substrate_outbox" does not exist');
-    });
+    }) as unknown) as LoadSubstrateDrainStatsOpts['runQuery'];
     const map = await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
     expect(map.size).toBe(0);
   });
