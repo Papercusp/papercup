@@ -178,6 +178,17 @@ export interface LocalWriteOp {
    * captured HLC.
    */
   hlc?: string;
+  /**
+   * Hive epoch RE-KEY (C-001 read-plane revocation, shared-hive-rekey-2026-06-19,
+   * gated on `papercusp-hive-rekey`): the epoch this op's `value` payload was
+   * encrypted under. Stamped by the capture-wire (outbox-drain) from the injected
+   * EpochEncryptCapability's returned `{ epoch }` for selected hive-content ops;
+   * the apply-side decrypt-gate reads it to resolve the wrapped epoch key
+   * (EpochKeyProvider) + `decryptOpPayload`. Absent ⇒ plaintext op (today's path +
+   * the admission/key/policy ops that must stay readable). The read-side twin is
+   * `OpEnvelope.epoch`.
+   */
+  epoch?: number;
 }
 
 export interface BootHarnessOpts {

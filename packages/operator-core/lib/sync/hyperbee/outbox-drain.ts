@@ -28,9 +28,10 @@
  */
 
 import type postgres from 'postgres';
-import type { BootedHarnessHandle } from './boot';
+import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
+import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
 
 /**
  * The projection tableTag for federated plans (harness-plans.ts:199 — the value
