@@ -32,7 +32,7 @@ export const DBOS_TERMINAL_STATUSES = [
   'CANCELLED',
 ] as const;
 
-const DEFAULT_RETENTION_DAYS = 14;
+const DEFAULT_RETENTION_DAYS = 2; // keep ~2d of terminal history — small enough that a daily GC holds workflow_status far under the ~300k freeze threshold (re-bloat prevention; owner durable-stability directive 2026-06-19). Tune via PAPERCUSP_DBOS_WORKFLOW_GC_DAYS.
 const DEFAULT_BATCH_LIMIT = 5000;
 const MAX_BATCHES = 2000; // hard backstop: ≤ 2000 × 5000 = 10M rows/run
 

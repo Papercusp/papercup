@@ -1,19 +1,27 @@
 # Findings S — Substrate durability & crash/restart recovery
 
 **Lane:** Brief S (Wave 3, S0/S1). **Author:** su-c318e. **Date:** 2026-06-19.
-**Status:** 🟡 IN PROGRESS — **#1 + #4 LANDED GREEN** (teeth-verified,
-`crash-recovery-drain.integration.test.ts`); #5/#6 + the live legs (#2/#3)
-remaining. (Continuation of my Brief N work — recovery is the crash flip-side of
-N-peer backfill/cursor-refold.)
+**Status:** 🟡 YELLOW — the **deterministic recovery CORE is COMPLETE + GREEN**
+(#1/#4/#5/#6, all teeth-verified, `crash-recovery-drain.integration.test.ts`); only
+the **live legs #2/#3** (real embedded-PG WAL crash, real box/instance restart)
+remain, gated on the live harness (:195+). (Continuation of my Brief N work —
+recovery is the crash flip-side of N-peer backfill/cursor-refold.)
 **Method:** deterministic integration (`*.integration.test.ts`, real testcontainer
 PG + the REAL mig-102 capture trigger + `substrate_outbox` + `drainOutboxOnce` +
 real corestore persistence across a close→reopen "restart") for the drain/recovery
 core; live legs (#2 embedded-PG WAL, #3 real box/instance restart) on the live
 harness (display :195+) later. Every new test teeth-verified.
 
-## Verdict: _pending_ (target: GREEN only when federation recovers cleanly from
-instance/PG/box crash mid-drain with no loss/dup, the outbox resumes, the topic
-re-joins, and HLC stays monotonic).
+## Verdict: 🟡 **YELLOW** (interim) — the deterministic recovery CORE is GREEN
+(4/6: drain-resume after crash, at-least-once dedup, large-backlog catch-up,
+HLC-survives-restart — all teeth-verified). The two **LIVE legs** (#2 embedded-PG
+WAL crash, #3 real box/instance restart) remain, gated on the live harness
+(display :195+). They exercise the OS/PG-process layer the deterministic core
+cannot (WAL recovery, real SIGKILL re-boot, topic re-join) — so the recovery
+*logic* is proven, but a full GREEN waits on the live crash legs. No S0/S1 found in
+the core: every crash/restart path tested recovers with no loss/dup and monotone
+HLC. (Target: GREEN when federation also recovers cleanly from a real instance/PG/
+box crash mid-drain — outbox resumes, topic re-joins, HLC monotone — live.)
 
 ---
 
@@ -41,7 +49,7 @@ idempotent LWW dedup. Neither half (resume-no-loss, re-append-deduped) is tested
 | 1 | **Instance crash mid-drain → restart → outbox resumes, no loss/dup** | deterministic integration (single-peer: real outbox+capture+drain) | 🟢 GREEN — `crash-recovery-drain.integration.test.ts` |
 | 4 | **Torn write / at-least-once re-append → idempotent dedup** | deterministic integration | 🟢 GREEN — same file |
 | 5 | **Long-downtime backfill catch-up** (a large accumulated outbox drains FULLY across multi-pass drain on restart) | deterministic integration | 🟢 GREEN — `crash-recovery-drain.integration.test.ts` |
-| 6 | **HLC monotonicity across restart** (mig-314 `hlc_clock` survives a reboot → no clock regression → no D-001-class divergence post-restart) | integration (real PG hlc_clock) | planned |
+| 6 | **HLC monotonicity across restart** (mig-314 `hlc_clock` survives a reboot → no clock regression → no D-001-class divergence post-restart) | deterministic integration (real PG hlc_clock) | 🟢 GREEN — `crash-recovery-drain.integration.test.ts` |
 | 2 | **Embedded-PG crash → WAL recovery + substrate re-attach** | LIVE (display :195+) | live, later |
 | 3 | **Real box/instance restart mid-federation → re-boot + re-join topic + re-drain + converge** (the session's actual failure — make it a test; post-A-003 the hive-home harness must also re-boot onto the topic) | LIVE (display :195+) | live, later |
 
@@ -72,10 +80,18 @@ injected fault is the crash (a Proxy making `handle.append` throw after K rows).
   deferral path), all 250 `drained_at` set, own log holds exactly 250 ops (no dup),
   and the joiner materializes the full gap — not a truncated head. Teeth: cap the
   drain at one pass → `expected 1 to be ≥ 5` RED.
+- **#6 HLC monotonicity across restart.** Applies the REAL mig-314 `hlc_clock`
+  section (the singleton clock + `hlc_now`/`hlc_recv`, verbatim from the migration).
+  `hlc_now()` is monotone; a `hlc_recv()` of a FUTURE HLC (year ~2286, above
+  wall-clock) advances + PERSISTS the clock in the durable `hlc_clock` table; a
+  post-"restart" `hlc_now()` reads the persisted value and continues
+  strictly-greater than the future — it does NOT regress to wall-clock (which a
+  process-memory clock would, re-opening the D-001 divergence post-restart). Teeth:
+  inject the regression (`UPDATE hlc_clock SET last_ms=0` = a restart that lost the
+  clock) → `hlc_now` regresses below the future → `expected false to be true` RED.
 
-## Status: 3 of 6 scenarios GREEN. Remaining: **#6** (HLC monotonicity across
-restart — needs the mig-314 `hlc_clock`/`hlc_now`/`hlc_recv` schema; deterministic
-integration, next) + the **live legs #2/#3** (embedded-PG WAL crash, real box/
+## Status: 4 of 6 scenarios GREEN (the deterministic recovery CORE — #1/#4/#5/#6).
+Remaining: the **live legs #2/#3** (embedded-PG WAL crash, real box/
 instance restart — need the live harness on display :195+, coordinate via coord:*).
 
 ## First-test design (implemented above) — #1 crash mid-drain

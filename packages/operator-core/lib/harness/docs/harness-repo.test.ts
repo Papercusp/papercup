@@ -8,6 +8,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const reg = vi.hoisted(() => ({ projects: [] as Array<{ slug: string; path: string }> }));
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: async () => ({ projects: reg.projects }),
+  // harness-repo resolves the content path through this (hive → member repo, else
+  // the harness's own path). Pure over the registry — mirror it for the fixtures.
+  resolveHarnessContentPath: (
+    r: { projects: Array<{ slug: string; path: string }> },
+    slug: string,
+  ) => r.projects.find((p) => p.slug === slug)?.path,
 }));
 vi.mock('../../endpoint-route/routes/harness/project-docs', () => ({
   resolveDocsRoot: async (repoRoot: string) => `${repoRoot}/docs`,

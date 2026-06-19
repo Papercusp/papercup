@@ -237,6 +237,22 @@ export interface DeployHealth {
   /** Integration-branch HEAD commit time — a git-sync lag proxy. */
   lastCommitAtMs: number | null;
   errors: string[];
+  // ── git-sync UPSTREAM delivery (EI-18 routine metadata) ──────────────────────
+  // The refs above measure the DOWNSTREAM half (staging→main→live). These measure
+  // the UPSTREAM half: is the local tree's work actually reaching origin? New local
+  // commits keep landing while a push FAILS, so `lastCommitAtMs` stays fresh and the
+  // refs alone are blind to a stalled push — the EI-18 silent-failure class (a push
+  // failed every tick for ~20h with zero fleet-visible signal). Read from the worst
+  // active `system:git-sync` routine's metadata that git-sync-action.ts persists.
+  /** Worst active git-sync routine's last push outcome, or null if none/unreadable. */
+  gitSyncStatus: 'synced' | 'conflict' | 'error' | 'nothing' | 'skipped' | null;
+  /** Max consecutive git-sync ticks whose push FAILED across active routines —
+   *  >= 3 means local commits are NOT reaching origin (EI-18 escalation threshold). */
+  gitSyncConsecutiveErrorTicks: number;
+  /** ms epoch of the freshest successful git-sync (metadata.last_synced_at), or null. */
+  gitSyncLastSyncedAtMs: number | null;
+  /** Oversized files git-sync EXCLUDED from the auto-commit (they will never push). */
+  gitSyncOversizedCount: number;
 }
 
 /** Plans. */

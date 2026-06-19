@@ -22,6 +22,7 @@ import {
   QUEEN_STALL_MS,
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
+  GIT_SYNC_PUSH_FAIL_CRIT,
 } from './thresholds';
 import type {
   QueenHealth,
@@ -195,7 +196,9 @@ describe('deployStatus', () => {
   const dp = (o: Partial<DeployHealth> = {}): DeployHealth => ({
     deployedShortSha: 'abcd1234', deployedBehindMain: 2, readyBehindMain: 0,
     deployedBehindReady: 2, readyAtMainHead: true, deployedAtMs: now - 1000,
-    lastCommitAtMs: now - 60_000, errors: [], ...o,
+    lastCommitAtMs: now - 60_000, errors: [],
+    gitSyncStatus: 'synced', gitSyncConsecutiveErrorTicks: 0,
+    gitSyncLastSyncedAtMs: now - 60_000, gitSyncOversizedCount: 0, ...o,
   });
   it('unknown when no refs resolved (a box without the release checkout)', () => {
     expect(deployStatus(dp({ deployedShortSha: null, lastCommitAtMs: null }), now)).toBe('unknown');
@@ -208,6 +211,20 @@ describe('deployStatus', () => {
   });
   it('ok when fresh + caught up', () => {
     expect(deployStatus(dp(), now)).toBe('ok');
+  });
+  // EI-18 git-sync UPSTREAM-delivery signal (F3/P-032): a failing push is the deploy
+  // panel's ONLY crit path — local commits silently not reaching origin.
+  it('crit when git-sync push has failed >= the escalation threshold (commits not reaching origin)', () => {
+    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT }), now)).toBe('crit');
+  });
+  it('crit on push-failure even with no release refs (push-fail outranks unknown)', () => {
+    expect(deployStatus(dp({ deployedShortSha: null, lastCommitAtMs: null, gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT + 2 }), now)).toBe('crit');
+  });
+  it('warn (not crit) on a single git-sync error tick below the threshold', () => {
+    expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: 1 }), now)).toBe('warn');
+  });
+  it('warn when git-sync excluded an oversized blob (it will never push)', () => {
+    expect(deployStatus(dp({ gitSyncOversizedCount: 1 }), now)).toBe('warn');
   });
 });
 

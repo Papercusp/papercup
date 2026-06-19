@@ -220,18 +220,34 @@ with ed300's REAL crypto** (P1+P2+P4 composed): a remaining member unwraps the n
 is the C-001 read-cut mechanic, demonstrated at the unit/integration level — what the
 LIVE witness (P-008) will prove on the real binary once the federation seam lands.
 
+## EpochKeyProvider — ✅ LANDED (K, P-005 consumer half)
+`packages/operator-core/lib/sync/hyperbee/hive-epoch-key-provider.ts` —
+`createEpochKeyProvider(crypto, loader, localDevice)` → `keyForEpoch(hiveId, epoch)`: the
+member-side resolver the apply-path decrypt-gate (46b7a) calls. Re-unwraps the device's
+wrapped `hive_epoch_keys` row (ed300 `unwrapEpochKey`) + caches in-process; FAILS CLOSED
+with `EpochKeyUnavailableError` when no row — which is BOTH the C-001 cut-off (removed →
+forever) AND 46b7a's defer signal (not-yet-arrived → defer + drain on key arrival). The
+`WrappedKeyLoader` seam is the only tie to the (gated) `hive_epoch_keys` table — injected,
+so it runs ahead. Tests `hive-epoch-key-provider.test.ts` **4/4, teeth-verified** (neuter
+the fail-closed guard → the cut-off test flips RED).
+
+## P-005 co-build (with 46b7a / J)
+Division ACCEPTED: **K** = `hive_epoch_keys` table (migration) + projection (mirror
+hive-settings) + the `EpochKeyProvider` (✅ shipped); **J (46b7a)** = the key-before-content
+ORDERING gate + the op-path decrypt-gate — J already shipped the `pending-epoch-content`
+buffer (defer-until-key-then-drain; removed member defers forever = bounded cut-off, 6/6).
+J's 3 design-Qs answered (envelope `epoch?`+producer-encrypt pairing; `keyForEpoch` via the
+shipped provider; the `onEpochKeyApplied(hiveId,epoch)` drain callback my projection will fire).
+
 ## Status
-- ✅ crypto foundation (P-001); ✅ serving glue (deriveOpId + AAD wrappers + flag-gate, 7/7);
-  ✅ epoch model (P-003, 8/8); ✅ boundary CORE (P-004 core, 3/3, e2e cut-off proven) —
-  all LANDED + teeth-verified (22 tests), built AHEAD of the dependency. The re-key
-  mechanic works; what remains is FEDERATION wiring + the live proof.
-- A-003 send-side = **approach (a′)** — REASSIGNED 2026-06-19: **46b7a now OWNS + drives**
-  the bounded announce-channel extension (dc9db went idle); d2230 staged to re-apply the
-  hive-home re-key + re-witness the instant it lands. THE single gate. OWNED + in progress,
-  NOT yet landed.
-- REMAINING for K, BLOCKED on **P-002 (a′)** — all FEDERATION-wiring (coordinate the
-  capture path with 46b7a's seam + d2230's re-key): P-004 wiring (call `advanceEpochAndWrap`
-  from `revokeHiveContributor`/`setHiveListing` + persist+emit the wrapped rows), P-005
-  `hive_epoch_keys` table + projection capture + migration + the `EpochKeyProvider` impl
-  (member re-unwrap-from-blob), and the op-path encrypt/decrypt wiring into the projection.
-  Then P-007/P-008: the flipped `revoked-swarm` test + the LIVE cut-off witness (release gate).
+- ✅ crypto (P-001); ✅ serving glue (7/7); ✅ epoch model (P-003, 8/8); ✅ boundary CORE
+  (P-004 core, 3/3, e2e cut-off proven); ✅ EpochKeyProvider (P-005 consumer, 4/4) — **5
+  modules, 26 tests, all teeth-verified, built AHEAD of the gate.** Plus J's pending-buffer (6/6).
+- A-003 (a′): dc9db's swarm/announce N-log-per-topic + signed `harness_slug` **LANDED**
+  (925 suite green). The LAST A-003 piece = **d2230's boot.ts half** (populate `harness_slug`
+  + slug-aware onAnnounce filter + re-apply hive-home re-key) → then 9140a's integrated
+  re-witness flips A-003 green. In progress.
+- REMAINING for K, gated on d2230's boot.ts + the live hive-home seam: the `hive_epoch_keys`
+  migration + projection (+ `onEpochKeyApplied` callback + register-all registration), the
+  P-004 boundary WIRING + the op-path encrypt/decrypt (paired with J), then P-007/P-008:
+  the flipped `revoked-swarm` test + the LIVE cut-off witness (release gate).

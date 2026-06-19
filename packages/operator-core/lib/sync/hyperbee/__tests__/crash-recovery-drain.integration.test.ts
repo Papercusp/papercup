@@ -380,4 +380,45 @@ describe('Brief S — crash/restart recovery: drain resume (#1) + at-least-once 
       SELECT count(*)::int AS c FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${HARNESS_SLUG}`;
     expect(c, 'joiner backfilled the full long-downtime gap — no loss/truncation').toBe(M);
   }, 120_000);
+
+  it('#6 HLC clock survives restart — hlc_now() never regresses, even after a future recv-advance (mig-314, no D-001-class divergence post-restart)', async () => {
+    const db: FreshPgDb = await createFreshPgDb('hlcRestart');
+    cleanups.push(() => db.cleanup());
+    await db.sql.unsafe(FRAMEWORK_ROLES_DDL);
+    // Apply ONLY section 1 of the real mig-314 (the hlc_clock singleton + hlc_now /
+    // hlc_recv), verbatim from the migration file (no drift) — the fed_hlc column
+    // ALTERs (section 2+) need the consolidated tables, which this clock test doesn't.
+    const mig314 = readFileSync(join(SQL_DIR, '314-d001-hlc-ordering-key.sql'), 'utf8');
+    const hlcSection = mig314.split('-- ── 2. fed_hlc ordering column')[0];
+    await db.sql.unsafe(hlcSection);
+
+    const now = async () => (await db.sql<Array<{ h: string }>>`SELECT harness_shared.hlc_now() AS h`)[0].h;
+
+    // Monotonic within a session: successive stamps strictly increase (fixed-width
+    // encoding → string `>` equals causal order).
+    const h1 = await now();
+    const h2 = await now();
+    expect(h2 > h1, 'hlc_now is monotonic').toBe(true);
+
+    // A peer observes a remote HLC far in the FUTURE (well above wall-clock) — the
+    // recv-advance (observeRemoteHlc, PG-side). This is the exact mechanism that, if
+    // the clock reset on restart, would let a later write get a LOWER HLC → D-001.
+    const FUTURE_MS = 9_999_999_999_999; // ~year 2286
+    const futureHlc = `${String(FUTURE_MS).padStart(15, '0')}:00042`;
+    await db.sql`SELECT harness_shared.hlc_recv(${futureHlc})`;
+
+    // The advance is PERSISTED in the singleton clock — THIS is what survives a
+    // process restart (it is durable table state, not operator memory).
+    const [clock] = await db.sql<Array<{ last_ms: number }>>`
+      SELECT last_ms FROM harness_shared.hlc_clock WHERE id = 1`;
+    expect(Number(clock.last_ms), 'the future advance is durably stored').toBe(FUTURE_MS);
+
+    // "RESTART": the operator process restarts and reconnects to the SAME PG. The
+    // next hlc_now() reads the PERSISTED advanced clock and continues STRICTLY-GREATER
+    // than the future — it does NOT regress to wall-clock. (A process-memory clock
+    // would reset here → a later write under-stamps → divergence.)
+    const h3 = await now();
+    expect(h3 > futureHlc, 'hlc_now after restart must exceed the advanced future (no regression)').toBe(true);
+    expect(h3.startsWith(String(FUTURE_MS).padStart(15, '0')), 'its ms is the future ms, not wall-clock').toBe(true);
+  }, 60_000);
 });

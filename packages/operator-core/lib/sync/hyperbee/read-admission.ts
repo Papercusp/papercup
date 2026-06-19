@@ -56,7 +56,14 @@ export interface AdmissionInput {
 
 export type AdmissionResult =
   | { admit: true }
-  | { admit: false; reason: 'bad_sig' | 'binding_invalid' | 'revoked' | 'pending' };
+  | { admit: false; reason: 'bad_sig' | 'binding_invalid' | 'revoked' | 'pending' | 'out_of_scope' };
+// `out_of_scope` is NOT returned by `makeAdmissionDecider` (the D-004 identity
+// decider only emits bad_sig/binding_invalid/revoked/pending). It is the
+// caller-level (boot.ts onAnnounce) verdict for A-003 (a′) slug-aware admission:
+// the announce is identity-valid but its signed `harness_slug` belongs to a
+// harness scope THIS handler should not hold (the normal broadcast-filtering
+// outcome when one topic carries multiple local harnesses' log announces). It is
+// CONCLUSIVE (never retried — distinct from `pending`).
 
 export interface AdmissionDeciderOptions {
   /**
@@ -109,4 +116,33 @@ export function makeAdmissionDecider(
     if (bindingResult === 'pending') return { admit: false, reason: 'pending' };
     return { admit: false, reason: 'binding_invalid' };
   };
+}
+
+/**
+ * A-003 (a′) — slug-aware admission scope. When one hive topic carries MULTIPLE
+ * local harnesses' log announces (dc9db's (a′) swarm.ts broadcasts the hive-home
+ * log alongside a member's on the single channel), the D-004 identity decider
+ * alone would let any identity-valid frame be admitted by EVERY on-topic handler.
+ * Since every harness registers ALL projections, a wrong-scope log would then
+ * cross-merge (e.g. the OWNER's hive-home harness applying a member-log's features
+ * into the hive-home schema). This predicate decides whether an inbound log's
+ * SIGNED origin-slug belongs to THIS harness's scope:
+ *   - its OWN slug (the normal same-harness peer log), OR
+ *   - the hive-home slug it rebinds — for a JOINER's member harness, which applies
+ *     the hive-home log's hive_members/hive_settings under the home (the receive-
+ *     side rebind: `joinerHiveHomeSlug(self)`). `null`/absent for any other harness.
+ * An ABSENT origin-slug (legacy / single-harness peer — the field post-dates the
+ * feature) is admitted, so single-harness federation + the existing two-hive
+ * integration test are byte-for-byte unchanged (backward-compatible).
+ *
+ * Pure: no I/O. The caller (boot.ts onAnnounce) applies it AFTER the D-004 identity
+ * decision, returning reason `out_of_scope` (conclusive — never retried) on a miss.
+ */
+export function announceSlugInScope(
+  originSlug: string | null | undefined,
+  ownSlug: string,
+  rebindHomeSlug: string | null | undefined,
+): boolean {
+  if (originSlug == null) return true; // legacy / absent → admit (backward-compatible)
+  return originSlug === ownSlug || (rebindHomeSlug != null && originSlug === rebindHomeSlug);
 }

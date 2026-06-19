@@ -76,6 +76,7 @@ import {
 } from './announce';
 import {
   makeAdmissionDecider,
+  announceSlugInScope,
   type AdmissionInput,
   type AdmissionResult,
 } from './read-admission';
@@ -1267,6 +1268,32 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
       return decision;
     }
+    // A-003 (a′): slug-aware admission scope. The decider above is IDENTITY-only
+    // (sig + channel-2 binding + revocation) and every harness registers ALL
+    // projections — so on a topic carrying MULTIPLE local harnesses' log announces
+    // (dc9db's (a′) swarm.ts: the hive-home log broadcast alongside a member's on
+    // the one channel), an identity-valid frame for ANOTHER harness's scope would
+    // be admitted + cross-merged (e.g. the OWNER's hive-home harness applying a
+    // member-log's features into the hive-home schema = pollution). The frame
+    // carries a SIGNED `harness_slug`; admit a remote log ONLY into the harness
+    // scope that should hold it: this harness's OWN slug, OR — for a JOINER's
+    // member harness — the hive-home slug it rebinds (`hiveHomeProjectionSlug` =
+    // joinerHiveHomeSlug(self), the receive-side rebind; live across rekey). ABSENT
+    // (legacy / single-harness peer) → admit (backward-compatible: the field
+    // post-dates single-harness federation + the two-hive integration test).
+    const originSlug = frame.harness_slug ?? null;
+    if (!announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug)) {
+      // The NORMAL broadcast-filtering outcome (one topic, many harnesses) — not an
+      // alarm. Recorded for observability; NOT forwarded to the admission-rejection
+      // telemetry (it is not a forgery / binding failure). Conclusive (never retried).
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'announce_rejected',
+        `out-of-scope origin=${originSlug} own=${slug} ${peerLabel(frame.log_core_key)}`,
+      );
+      return { admit: false, reason: 'out_of_scope' };
+    }
     return admitPeer(frame);
   }
 
@@ -1448,6 +1475,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           github_login: identity.githubLogin,
           attestation_gist_id: identity.attestationGistId,
           log_core_key: ownLog.keyHex,
+          // A-003 (a′): the SIGNED origin-harness slug. When multiple local
+          // harnesses share one hive topic (the hive-home log alongside a
+          // member's — dc9db's swarm.ts broadcasts each on the single channel),
+          // the peer's onAnnounce slug-filter uses this to admit a log only into
+          // the harness scope that should hold it. Absent on legacy peers → the
+          // filter treats absent as admit (backward-compatible).
+          harness_slug: opts.harnessSlug,
         },
         (bytes) => signAnnounce(identity.keychainId, bytes),
       );

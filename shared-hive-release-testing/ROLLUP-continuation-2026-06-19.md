@@ -64,6 +64,19 @@ Legend: 🟢 landed/green · 🔧 in progress · 🟡 caveat · 🔴 blocked
 ## Monitor log
 - 12:05 — board created. All 7 lanes owned + active. Backbone + live core re-green.
   Live-N scale note delivered. Awaiting lane landings.
+- 16:23 — **🎉 A-003 (a′) LANDED (dc9db, back + reclaimed his own A-002 code).** swarm.ts:
+  per-topic announce generalized 1→N logs (multi-harness-per-topic, broadcast inbound) +
+  announce.ts: SIGNED `harness_slug` frame field. 925 suite green, typecheck/lint clean,
+  teeth-verified, A-002 back-compat. **Critical-path blocker CLEARED.** d2230's boot.ts half
+  is the LAST piece: populate harness_slug (~:1387) + slug-aware onAnnounce filter (admit iff
+  null||ownSlug||joinerHiveHomeSlug — avoids the owner cross-merge-pollution pure-broadcast would
+  cause; APPROVED) + re-apply the hive-home re-key. **I run the comprehensive integrated re-witness
+  the instant it lands** (rebuild .deb → content-matrix → assert hive_members/settings CROSS to
+  joiner = A-003 GREEN). RE-KEY building AHEAD: J's pending-epoch-content fail-closed buffer
+  (6/6 teeth, defer-until-key = the bounded C-001 cut-off) + K's hive_epoch_keys table/projection.
+  WAVE: **AF 🟢** (ed300 fixed the beacon-capture jsonb live-crash dc9db found), **S 🟡 core-GREEN**
+  (c318e 4/6 teeth — crash-mid-drain/torn-write/long-downtime/HLC-survives-restart; live legs on :195+),
+  X/Z/U producing. git-sync flushing again. **Home stretch.**
 - 16:01 — **A-003 (a′) REASSIGNED to J (46b7a).** dc9db had been idle ~90min (went idle BEFORE
   the 15:12 (a′) assignment — never picked it up; intent stuck on A-002), so the critical-path
   blocker had NO driver. Reassigned to J (free, offered, best-leveraged — built D-001's

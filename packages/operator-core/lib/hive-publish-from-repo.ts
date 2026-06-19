@@ -462,6 +462,25 @@ async function publishListingForMeta(
       deps.rekeyHarness ??
       (async (ws: string, slug: string) =>
         (await import('./sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
+    // A-003 (a′): re-key the hive-HOME harness (`meta.hiveId`) onto the Hive topic
+    // too, so its substrate joins the topic + drains its outbox → hive_members /
+    // hive_settings federate to joiners. The hive-home is repo-less (not in
+    // `members`), so the per-member re-key below skips it. Now SAFE on the shared
+    // topic: dc9db's (a′) announce extension carries MULTIPLE log announces per
+    // topic (member-log + hive-home-log), and the boot.ts onAnnounce slug-filter
+    // scopes admission so the owner's hive-home never cross-merges a member-log. A
+    // joiner's member harness admits the hive-home log (its `joinerHiveHomeSlug`
+    // rebind) + applies hive_members/hive_settings under the home slug. Re-key IN
+    // PLACE with the same owner-safe `rekeyHarness` as the members (a full reboot
+    // would break the owner's corestore replication-serving — EI-681). NOT
+    // `onlyRepoIds`-gated: the hive itself re-keys on every (re)publish. Best-effort
+    // + fire-and-forget, like the member loop.
+    try {
+      const ph = rekeyHarness(opts.workspaceId, meta.hiveId) as Promise<unknown> | undefined;
+      if (ph && typeof ph.catch === 'function') ph.catch(() => {});
+    } catch {
+      /* a sync throw from the hive-home re-key must never fail or slow publish */
+    }
     for (const m of members) {
       if (typeof m.github_repository_id !== 'number' || !m.github_remote) continue;
       if (opts.onlyRepoIds && !opts.onlyRepoIds.includes(m.github_repository_id)) continue;

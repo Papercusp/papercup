@@ -309,19 +309,22 @@ describe('publishCreatedHive (P-007)', () => {
 // start the outbox drain for the just-bound local member harnesses, or an
 // owner's feature writes sit in substrate_outbox undrained and never federate.
 describe('hive publish — go-shared reboot of local member harnesses (EI-681)', () => {
-  it('reboots exactly the id-bearing local members (not the hive home, not id-less members)', async () => {
+  it('re-keys the HIVE-HOME harness (A-003 a′) + the id-bearing local members (not id-less members)', async () => {
     const { deps, calls } = fakes();
     await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
-    // members(): shop (id=100) reboots; docs (no repo id) is skipped (step 6
-    // bound no row for it); shop-hive (the home, no github_remote) is not a member.
-    // A-003 NOTE: the hive-home is DELIBERATELY not re-keyed onto the member topic —
-    // dc9db (A-002) proved member+hive-home on one topic collide (announce keyed by
-    // topic). Hive-home-scoped content (hive_members/hive_settings) federates via the
-    // member log instead (option b — capture re-scope), not via the hive-home substrate.
-    expect(calls.rekeyed).toEqual([{ ws: 'ws', slug: 'shop' }]);
+    // A-003 (a′): the hive-HOME harness (meta.hiveId='shop-hive') is re-keyed FIRST
+    // so its hive_members/hive_settings outbox drains + it joins the topic. This is
+    // SAFE on the shared topic now — dc9db's (a′) announce extension carries multiple
+    // log announces per topic + the boot.ts slug-filter prevents cross-merge. Then the
+    // members: shop (id=100) re-keys; docs (no repo id) is skipped (step 6 bound no
+    // row for it).
+    expect(calls.rekeyed).toEqual([
+      { ws: 'ws', slug: 'shop-hive' },
+      { ws: 'ws', slug: 'shop' },
+    ]);
   });
 
-  it('republishHiveAfterMemberAdd: reboots ONLY the new member (onlyRepoIds scope)', async () => {
+  it('republishHiveAfterMemberAdd: re-keys the hive-home (A-003) + ONLY the new member (onlyRepoIds scope)', async () => {
     const { deps, calls } = fakes({
       getMeta: async () => ({
         hiveId: 'shop-hive',
@@ -349,7 +352,12 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
       { workspaceId: 'ws', hiveSlug: 'shop-hive', onlyRepoIds: [200] },
       deps,
     );
-    expect(calls.rekeyed).toEqual([{ ws: 'ws', slug: 'newrepo' }]);
+    // A-003 (a′): the hive-home re-keys on EVERY (re)publish (NOT onlyRepoIds-gated);
+    // the member re-key stays onlyRepoIds-scoped to the new member.
+    expect(calls.rekeyed).toEqual([
+      { ws: 'ws', slug: 'shop-hive' },
+      { ws: 'ws', slug: 'newrepo' },
+    ]);
   });
 
   it('a reboot failure (sync throw or async reject) NEVER fails the publish, and never skips a later member', async () => {
@@ -378,7 +386,9 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
     });
     const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
     expect(out.announced).toBe(true); // publish unaffected by the reboot throw
-    expect(rekeyed).toEqual(['extra']); // the throw on 'shop' did not skip 'extra'
+    // hive-home ('shop-hive') re-keys first, then the member loop: 'shop' throws
+    // (caught), 'extra' still re-keys. The throw on 'shop' skips neither.
+    expect(rekeyed).toEqual(['shop-hive', 'extra']);
   });
 
   it('async-rejecting reboot does not fail the publish', async () => {

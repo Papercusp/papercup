@@ -190,6 +190,7 @@ describe('announce', () => {
           device_pubkey: Buffer.from('short').toString('base64'),
           github_user_id: 1,
           github_login: 'x',
+          attestation_gist_id: TEST_GIST_ID,
           log_core_key: 'a'.repeat(64),
           ts: FIXED_NOW_MS,
           sig: Buffer.alloc(64).toString('base64'),

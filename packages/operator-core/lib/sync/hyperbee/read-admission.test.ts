@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { makeAdmissionDecider, type AdmissionInput } from './read-admission';
+import { makeAdmissionDecider, announceSlugInScope, type AdmissionInput } from './read-admission';
 
 /** Build an AdmissionInput with defaults; override per test. */
 function mkInput(over: Partial<AdmissionInput> = {}): AdmissionInput {
@@ -113,5 +113,43 @@ describe('read-admission', () => {
     expect(
       await admit(mkInput({ device_pubkey: 'anyone', github_login: 'random-outsider' })),
     ).toEqual({ admit: true });
+  });
+});
+
+// A-003 (a′): slug-aware admission scope — the broadcast-filtering predicate the
+// boot.ts onAnnounce applies AFTER the D-004 identity decision, so one hive topic can
+// carry MULTIPLE local harnesses' log announces without cross-merge. Admit a log iff
+// its signed origin-slug is THIS harness's own slug, OR the hive-home slug it rebinds
+// (a joiner's member harness), OR absent (legacy / single-harness peer).
+describe('announceSlugInScope (A-003 a′)', () => {
+  it('admits a log from THIS harness own slug', () => {
+    expect(announceSlugInScope('member-a', 'member-a', undefined)).toBe(true);
+  });
+
+  it("admits the hive-home log into a JOINER's member harness (the rebind slug)", () => {
+    // B's member harness (ownSlug member-a) rebinds the hive-home → it MUST admit the
+    // hive-home log so its merge applies hive_members/hive_settings under the home.
+    expect(announceSlugInScope('the-hive', 'member-a', 'the-hive')).toBe(true);
+  });
+
+  it("REJECTS a member-log on the OWNER's hive-home harness (no rebind) — the no-cross-merge gate", () => {
+    // A's hive-home harness (ownSlug the-hive, no rebind) must NOT admit B's member-log
+    // (origin member-a) — else it cross-merges member features into the hive-home schema.
+    expect(announceSlugInScope('member-a', 'the-hive', null)).toBe(false);
+  });
+
+  it('REJECTS an unrelated third harness slug', () => {
+    expect(announceSlugInScope('other-harness', 'member-a', 'the-hive')).toBe(false);
+  });
+
+  it('admits an ABSENT origin-slug (legacy / single-harness peer) — backward-compatible', () => {
+    expect(announceSlugInScope(null, 'member-a', undefined)).toBe(true);
+    expect(announceSlugInScope(undefined, 'member-a', 'the-hive')).toBe(true);
+  });
+
+  it('does NOT treat a null rebind slug as a wildcard (only own-slug admits)', () => {
+    // A null rebindHomeSlug must never accidentally match a null/absent compare — an
+    // origin that is a real string but ≠ own slug, with no rebind, is rejected.
+    expect(announceSlugInScope('member-b', 'member-a', null)).toBe(false);
   });
 });

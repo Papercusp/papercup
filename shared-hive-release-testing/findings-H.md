@@ -203,3 +203,43 @@ local harness/log on that topic; the `onAnnounce` handler already admits
 per-frame, so it's a bounded extension of the per-topic state in `swarm.ts` —
 owned by this lane). Either way the A-002 fix itself is correct + complete for its
 own brief; this is a forward-compat note for the overlapping A-003/Move-1 work.
+
+## 9. (a′) — the multi-log-per-topic announce extension (BUILT, for A-003 send-side)
+
+Decision (9140a, 2026-06-19): A-003 send-side = **(a′)** — option (b) is DEAD
+(d2230: restart-regression + SQL-can't-resolve-member). dc9db owns the swarm.ts
+half; d2230 owns the boot.ts half. Built + teeth-verified:
+
+**swarm.ts (landed):** the per-topic announce state generalized from ONE log to
+MANY. `announceTopicStateByMuxer` keys per `muxer × topicHex`; each topic's
+`TopicAnnounceState.entries` maps each local harness (by its `log_core_key`) to
+its opts. The single `(protocol, topic)` channel now flushes EVERY local log's
+`ourAnnounce` (on `onopen` + for a late-joining harness), and delivers each
+inbound announce to EVERY registered `onAnnounce` on the topic (broadcast).
+Channel `id` stays = topic, so cross-peer pairing is unchanged. Backward-compatible
+(one entry per topic = the A-002 behavior, unchanged).
+
+**announce.ts (landed):** the broadcast is NOT benign without slug-scoping —
+`read-admission` is identity-only and every harness registers all projections, so
+A's hive-home harness would admit + apply B's member features (cross-merge
+pollution). Fix: a **signed origin-slug on the frame**. Added
+`harness_slug?: string` to `AnnounceBody`/`SignedAnnounce`, folded into
+`announceSigningBytes` conditionally (like `nonce`) → SIGNED (tamper-evident;
+swapping it fails `verifyAnnounce`) + backward-compatible (absent → byte-identical
+canonical bytes; existing sigs/tests unchanged).
+
+**d2230's boot.ts half (the contract — their lane, NOT edited here):**
+1. **Populate:** in the `buildAnnounce` body (~`boot.ts:1387`) add
+   `harness_slug: opts.harnessSlug`.
+2. **Filter (onAnnounce):** admit iff `frame.harness_slug == null` (legacy/absent)
+   OR `=== ownSlug` OR `=== joinerHiveHomeSlug(self)`. → A's hive-home REJECTS B's
+   member-log (no cross-merge); B's member admits A's member + hive-home logs (the
+   rebind). Treat ABSENT as admit so single-harness federation + the
+   two-hive-shared-swarm integration test keep passing until populate lands.
+   Generalizes to multi-member hives — the real value of (a′).
+
+Tests (teeth-verified): `announce-channel-multihive.test.ts` adds the same-topic
+2-harness case (both announced on one channel; neuter the late-join flush → RED,
+A-002 cases stay green); `announce.test.ts` adds harness_slug round-trip + signed
++ tamper-breaks-verify + absent-backward-compat. A-002 integration + real-protomux
+two-peer/bidi/chaos + full hyperbee suite: no regression.

@@ -127,13 +127,25 @@ export function watchdogStatus(d: WatchdogHealth): PanelStatus {
   return 'ok';
 }
 
+/** Consecutive failed git-sync ticks that red the deploy panel — mirrors
+ *  PUSH_FAILURE_ESCALATION_TICKS in git-sync-escalation.ts (EI-18: ~30 min of the
+ *  push not reaching origin). Kept as a sibling constant so the standing health
+ *  signal and the escalation fire on the same threshold. */
+export const GIT_SYNC_PUSH_FAIL_CRIT = 3;
+
 /**
- * Deploy. unknown = no refs resolved (a box without the release checkout). warn =
- * git-sync lag (no recent staging commit) or the live host far behind staging.
- * ok otherwise. Not crit — a stale deploy degrades, it doesn't break the system.
+ * Deploy. crit = git-sync push FAILING (>= GIT_SYNC_PUSH_FAIL_CRIT consecutive ticks:
+ * local commits are NOT reaching origin — the EI-18 silent-failure class, the one
+ * deploy condition severe enough to red the system; the ref-based checks below are
+ * blind to it because new local commits keep `lastCommitAtMs` fresh). unknown = no
+ * refs resolved (a box without the release checkout). warn = git-sync erroring or
+ * excluding oversized blobs, git-sync lag (no recent staging commit), or the live
+ * host far behind staging. ok otherwise.
  */
 export function deployStatus(d: DeployHealth, now: number): PanelStatus {
+  if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT) return 'crit';
   if (d.deployedShortSha === null && d.lastCommitAtMs === null) return 'unknown';
+  if (d.gitSyncStatus === 'error' || d.gitSyncOversizedCount > 0) return 'warn';
   if (d.lastCommitAtMs !== null && now - d.lastCommitAtMs > SYNC_LAG_WARN_MS) return 'warn';
   if (d.deployedBehindMain !== null && d.deployedBehindMain > DEPLOY_BEHIND_WARN) return 'warn';
   return 'ok';

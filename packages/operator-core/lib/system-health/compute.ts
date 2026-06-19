@@ -495,6 +495,33 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
   return panelSafe<DeployHealth>('deploy', async () => {
     const { devDeployState } = await import('../dev-deploy-state');
     const s = await devDeployState();
+    // git-sync UPSTREAM delivery (EI-18): the worst active `system:git-sync` routine's
+    // last push outcome. The deploy refs above are blind to a FAILING push — new local
+    // commits keep landing so `lastCommitAtMs` stays fresh — so read the metadata
+    // git-sync-action.ts persists. Fail-soft: leave the delivery fields at safe
+    // defaults (never-crit) when the routine metadata is unreadable.
+    let gitSyncStatus: DeployHealth['gitSyncStatus'] = null;
+    let gitSyncConsecutiveErrorTicks = 0;
+    let gitSyncLastSyncedAtMs: number | null = null;
+    let gitSyncOversizedCount = 0;
+    try {
+      const { sql } = getOrgPg();
+      const rows = await sql<Array<{ metadata: Record<string, unknown> | null }>>`
+        SELECT metadata FROM harness_shared.routines
+         WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${ctx.ws}`;
+      for (const r of rows) {
+        const md = (r.metadata ?? {}) as Record<string, unknown>;
+        const et = Number(md.consecutive_error_ticks ?? 0) || 0;
+        // worst-wins: the most-failing routine drives the panel status.
+        if (gitSyncStatus === null || et > gitSyncConsecutiveErrorTicks) {
+          gitSyncStatus = (md.last_status as DeployHealth['gitSyncStatus']) ?? 'nothing';
+          gitSyncConsecutiveErrorTicks = et;
+        }
+        const ls = typeof md.last_synced_at === 'string' ? Date.parse(md.last_synced_at) : NaN;
+        if (!Number.isNaN(ls) && (gitSyncLastSyncedAtMs === null || ls > gitSyncLastSyncedAtMs)) gitSyncLastSyncedAtMs = ls;
+        if (Array.isArray(md.last_oversized)) gitSyncOversizedCount += md.last_oversized.length;
+      }
+    } catch { /* routine metadata unreadable — leave git-sync delivery fields at defaults */ }
     const data: DeployHealth = {
       deployedShortSha: s.deployed?.shortSha ?? null,
       deployedBehindMain: s.deployedBehindMain,
@@ -504,11 +531,18 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
       deployedAtMs: s.deployedAtMs,
       lastCommitAtMs: s.mainHead?.committedAtMs ?? null,
       errors: s.errors,
+      gitSyncStatus,
+      gitSyncConsecutiveErrorTicks,
+      gitSyncLastSyncedAtMs,
+      gitSyncOversizedCount,
     };
     const status = deployStatus(data, ctx.now);
+    const pushFailing = status === 'crit'; // deployStatus reds ONLY on git-sync push-failure
     return {
       status,
-      summary: status === 'unknown'
+      summary: pushFailing
+        ? `git-sync PUSH FAILING ${data.gitSyncConsecutiveErrorTicks} ticks — commits NOT reaching origin`
+        : status === 'unknown'
         ? 'release refs unreadable on this host'
         : `live ${data.deployedShortSha ?? '?'}, ${data.deployedBehindMain ?? '?'} behind staging, sync ${agoMin(data.lastCommitAtMs, ctx.now)}`,
       data,
@@ -518,6 +552,7 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
         m('not-green', data.readyBehindMain ?? '?'),
         m('last sync', agoMin(data.lastCommitAtMs, ctx.now)),
         m('green tip', data.readyAtMainHead === null ? '?' : data.readyAtMainHead ? 'yes' : 'no'),
+        m('git-sync push', pushFailing ? `FAILING ${data.gitSyncConsecutiveErrorTicks}t` : (data.gitSyncStatus ?? 'n/a'), pushFailing ? 'crit' : (data.gitSyncOversizedCount > 0 ? 'warn' : undefined)),
       ],
     };
   });
