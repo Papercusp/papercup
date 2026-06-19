@@ -42,7 +42,17 @@ const TOPIC_PREFIX = 'papercusp-substrate-v1:';
 export type SwarmBinding =
   | { kind: 'gh'; github_repository_id: number | string }
   | { kind: 'local'; workspace_id: string; harness_slug: string }
-  | { kind: 'hive'; hive_pubkey: string };
+  | { kind: 'hive'; hive_pubkey: string }
+  // The EXPLICIT, already-derived 32-byte topic (hex). A joiner learns a Hive's
+  // topic from its invite/member link but NOT the Hive's pubkey — so it cannot
+  // reconstruct a `hive:` binding and would otherwise re-derive a `gh:` topic
+  // that DOESN'T match the owner's `hive:` topic (the join-vs-owner topic-split
+  // bug: owner on hive:<pubkey>, joiner on gh:<repo_id> → incremental writes
+  // never cross). This carrier lets the joiner federate on EXACTLY the link's
+  // topic — the same one the owner is on.
+  | { kind: 'topic'; topic_hex: string };
+
+const TOPIC_HEX_RE = /^[0-9a-f]{64}$/i;
 
 export function serializeBinding(b: SwarmBinding): string {
   if (b.kind === 'gh') {
@@ -55,12 +65,26 @@ export function serializeBinding(b: SwarmBinding): string {
     if (!b.hive_pubkey) throw new Error('serializeBinding: hive binding requires hive_pubkey');
     return `hive:${b.hive_pubkey}`;
   }
+  if (b.kind === 'topic') {
+    if (!TOPIC_HEX_RE.test(b.topic_hex)) {
+      throw new Error('serializeBinding: topic binding requires a 32-byte (64-hex) topic');
+    }
+    return `topic:${b.topic_hex.toLowerCase()}`;
+  }
   if (!b.workspace_id) throw new Error('serializeBinding: local binding requires workspace_id');
   if (!b.harness_slug) throw new Error('serializeBinding: local binding requires harness_slug');
   return `local:${b.workspace_id}/${b.harness_slug}`;
 }
 
 export function deriveSwarmTopic(binding: SwarmBinding): Buffer {
+  // An explicit topic IS the topic — use it verbatim (NOT hashed) so the joiner
+  // lands on the owner's exact Hive topic from the link, not a re-derived one.
+  if (binding.kind === 'topic') {
+    if (!TOPIC_HEX_RE.test(binding.topic_hex)) {
+      throw new Error('deriveSwarmTopic: topic binding requires a 32-byte (64-hex) topic');
+    }
+    return Buffer.from(binding.topic_hex, 'hex');
+  }
   const key = TOPIC_PREFIX + serializeBinding(binding);
   return createHash('sha256').update(key, 'utf8').digest();
 }

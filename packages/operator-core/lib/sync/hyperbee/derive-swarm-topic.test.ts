@@ -30,6 +30,31 @@ describe('derive-swarm-topic', () => {
     expect(topicAsHex(deriveHiveFederationTopic('AAAA'))).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  describe('explicit topic binding (the join-vs-owner topic-split fix)', () => {
+    const PUB = Buffer.alloc(32, 9).toString('base64');
+    it('uses the topic VERBATIM (not hashed) so a joiner lands on the exact link topic', () => {
+      const hex = deriveHiveFederationTopic(PUB).toString('hex'); // the owner's hive topic
+      const viaExplicit = deriveSwarmTopic({ kind: 'topic', topic_hex: hex });
+      expect(viaExplicit.equals(Buffer.from(hex, 'hex'))).toBe(true);
+    });
+    it('a joiner with only the link topic matches the owner HIVE topic — NOT the gh-repo topic', () => {
+      // Owner federates on hive:<pubkey>; the member link carries THAT topic.
+      const ownerHive = deriveSwarmTopic({ kind: 'hive', hive_pubkey: PUB });
+      const linkTopicHex = topicAsHex(ownerHive);
+      // Joiner only has the topic (no pubkey) → explicit-topic binding.
+      const joiner = deriveSwarmTopic({ kind: 'topic', topic_hex: linkTopicHex });
+      // THE BUG this guards: re-deriving gh:<repo_id> would split them apart.
+      const ghRepo = deriveSwarmTopic({ kind: 'gh', github_repository_id: 1300192 });
+      expect(joiner.equals(ownerHive)).toBe(true); // joiner == owner ✓ (sync works)
+      expect(joiner.equals(ghRepo)).toBe(false); // and NOT the gh-repo topic (the split)
+    });
+    it('serializeBinding round-trips + validates the 64-hex topic', () => {
+      const hex = 'a'.repeat(64);
+      expect(serializeBinding({ kind: 'topic', topic_hex: hex })).toBe(`topic:${hex}`);
+      expect(() => deriveSwarmTopic({ kind: 'topic', topic_hex: 'nothex' })).toThrow();
+    });
+  });
+
   describe('hive binding (P-003 — federation topic = Hive pubkey)', () => {
     // a stand-in raw-32-byte base64 pubkey (the encoding hive-keypair.ts returns)
     const PUB = Buffer.alloc(32, 7).toString('base64');

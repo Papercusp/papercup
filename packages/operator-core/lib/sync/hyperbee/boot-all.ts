@@ -277,12 +277,23 @@ export async function defaultResolveSwarmBinding(
     const hiveBinding = await resolveHiveSwarmBinding(workspaceId, harnessSlug);
     if (hiveBinding) return hiveBinding;
 
-    // (2) Existing per-harness gh binding from a committed shared.json.
+    // (2) A committed shared.json. PREFER the EXPLICIT topic it carries: a
+    // joiner learns a Hive's topic from its member/invite link (persisted here
+    // by join-shared-harness) but NOT the Hive's pubkey, so it cannot rebuild a
+    // `hive:` binding. Re-deriving a `gh:<repo_id>` topic would split the joiner
+    // onto a DIFFERENT topic than the owner's `hive:<pubkey>` topic — the
+    // join-vs-owner topic-split bug where the initial join-handshake merge lands
+    // but no incremental write ever crosses. Honoring the stored topic lands the
+    // joiner on the owner's EXACT topic. For a plain shared harness this is just
+    // the gh-repo topic (== what gh:<repo_id> derives), so no behavior change.
     const { resolveHarnessPaths } = await import('../../resolve-harness-paths');
     const { projectDir } = await resolveHarnessPaths(harnessSlug, workspaceId);
     if (projectDir.startsWith('/tmp/papercusp-unresolved/')) return null;
     const cfg = loadSharedConfigFromProjectDir(projectDir);
     if (!cfg) return null;
+    if (cfg.topic && /^[0-9a-f]{64}$/i.test(cfg.topic)) {
+      return { kind: 'topic', topic_hex: cfg.topic };
+    }
     return { kind: 'gh', github_repository_id: cfg.github_repository_id };
   } catch {
     return null;
