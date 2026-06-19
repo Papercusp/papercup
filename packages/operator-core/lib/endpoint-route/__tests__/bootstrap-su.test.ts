@@ -195,6 +195,14 @@ async function callBrainGet(): Promise<Response> {
   return get.handler(req, CTX);
 }
 
+async function callAccountEnv(query = ''): Promise<Response> {
+  const get = (await routesOf()).find((r) => r.method === 'GET' && (r as any).path?.endsWith('/account-env'))!;
+  const req = new Request(`http://localhost:3070/api/agent-mcp/console/bootstrap-su/account-env${query}`, {
+    method: 'GET',
+  });
+  return get.handler(req, CTX);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(42);
@@ -616,6 +624,33 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     expect(json.accountNotice).toBeNull();
     expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  // GET /account-env (resume re-pin): the launcher's resume path resolves the pin
+  // env here WITHOUT minting a session row, so `psu --resume` re-applies the
+  // gateway account the resume would otherwise drop. Same resolveAccountPin gating.
+  it('GET /account-env → pins the gateway account when on + valid', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const json = await (await callAccountEnv('?account=aviynw6')).json();
+    expect(json.status).toBe('ok');
+    expect(json.account).toBe('aviynw6');
+    expect(json.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+    expect(json.env.ANTHROPIC_CUSTOM_HEADERS).toContain('aviynw6');
+    expect(json.env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
+    expect(json.notice).toMatch(/pinned to account aviynw6/i);
+  });
+
+  it('GET /account-env → fail-soft (empty env + notice) when the gateway is off', async () => {
+    getFlagMock.mockResolvedValue(false);
+    const json = await (await callAccountEnv('?account=aviynw6')).json();
+    expect(json.env).toEqual({});
+    expect(json.notice).toMatch(/gateway is off/i);
+  });
+
+  it('GET /account-env without an account → empty env, no notice (byte-identical resume)', async () => {
+    const json = await (await callAccountEnv()).json();
+    expect(json.env).toEqual({});
+    expect(json.notice).toBeNull();
   });
 });
 

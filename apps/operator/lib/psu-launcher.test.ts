@@ -9,6 +9,8 @@ import {
   presetsFromArgs,
   resumeArgsFor,
   resumeEnvFor,
+  resumeAccountPlan,
+  buildResumeEnv,
   addDirArgs,
   forkBootstrapBody,
   forkSeedPaths,
@@ -269,6 +271,16 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
+  it('forkBootstrapBody folds a chosen account so the server re-pins the gateway (byte-identical when omitted)', () => {
+    // A tracked fork mints a fresh session, so the account pin is resolved
+    // server-side (resolveAccountPin) — the launcher only forwards the chosen id.
+    expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' }, 'aviynw6')).toEqual({
+      agent: 'claude', workspace: null, harness_slug: null, plan_slug: null, cwd: '/repo', account: 'aviynw6',
+    });
+    // No account → NO `account` key at all (byte-identical to the pre-account body).
+    expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' }, null)).not.toHaveProperty('account');
+  });
+
   it('forkSeedPaths points at the projects/ subtree of each config dir', () => {
     expect(forkSeedPaths('/orig/cfg', '/fork/cfg')).toEqual({
       src: '/orig/cfg/projects',
@@ -312,6 +324,46 @@ describe('psu-launcher arg parsing', () => {
       PAPERCUSP_SID: 'su-fork',
       PAPERCUSP_WORKSPACE: 'ws1',
     });
+  });
+
+  it('resumeAccountPlan: --account is honored in ANY mode (no prompt)', () => {
+    // The pin is spawn-env only and dropped on resume; an explicit flag re-applies
+    // it directly — both interactive and scripting (--no-picker) modes.
+    expect(resumeAccountPlan({ account: 'aviynw6', picker: true })).toEqual({ source: 'flag', account: 'aviynw6', prompt: false });
+    expect(resumeAccountPlan({ account: 'aviynw6', picker: false })).toEqual({ source: 'flag', account: 'aviynw6', prompt: false });
+  });
+
+  it('resumeAccountPlan: interactive resume PROMPTS; scripting (--no-picker) does NOT (option 1)', () => {
+    expect(resumeAccountPlan({ account: null, picker: true })).toEqual({ source: 'prompt', account: null, prompt: true });
+    // --no-picker: no surprise prompt in scripts → default credential (byte-identical resume).
+    expect(resumeAccountPlan({ account: null, picker: false })).toEqual({ source: 'none', account: null, prompt: false });
+  });
+
+  it('buildResumeEnv: account env LAYERS onto the resume identity/scope; absent → byte-identical', () => {
+    const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
+    // No account → exactly resumeEnvFor (the re-pin is opt-in; the default resume is unchanged).
+    expect(buildResumeEnv(session)).toEqual(resumeEnvFor(session));
+    // A resolved account env folds on top (the gateway pin the resume would otherwise lose).
+    expect(
+      buildResumeEnv(session, {
+        accountEnv: { env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', ANTHROPIC_CUSTOM_HEADERS: 'anthropic-account-id: aviynw6', PAPERCUSP_ACCOUNT_ID: 'aviynw6' }, notice: 'pinned' },
+      }),
+    ).toEqual({
+      PAPERCUSP_AGENT: 'claude',
+      PAPERCUSP_SID: 'su-abc',
+      PAPERCUSP_WORKSPACE: 'ws1',
+      PAPERCUSP_ADV_SESSION_ID: '7',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
+      ANTHROPIC_CUSTOM_HEADERS: 'anthropic-account-id: aviynw6',
+      PAPERCUSP_ACCOUNT_ID: 'aviynw6',
+    });
+  });
+
+  it('buildResumeEnv: the brain agent-session marker still rides alongside the account env', () => {
+    const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
+    const env = buildResumeEnv(session, { brain: true, accountEnv: { env: { PAPERCUSP_ACCOUNT_ID: 'avi' }, notice: null } });
+    expect(env.PAPERCUSP_AGENT_SESSION).toBe('1');
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBe('avi');
   });
 
   it('planValue maps the NO_PLAN sentinel + empties to null', () => {

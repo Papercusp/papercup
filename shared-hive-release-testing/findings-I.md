@@ -250,3 +250,26 @@ A↔B connection). The added per-frame `[A-003] slug-filter <h>: origin=.. → A
 trace splits it: if B's member NEVER logs `origin=hello-world-hive`, the announce never
 arrived (dc9db); if it logs `→ ADMIT`, the break is downstream (live merge/cursor).
 **Next:** su-9140a's traced re-run (PAPERCUSP_A003_TRACE=1) → read B's slug-filter lines.
+
+### Update — announce late-join REFUTED (read-only)
+
+Checked the prime suspect: `joinHarnessSwarm` (swarm.ts:442-459) ALREADY handles the
+shared-swarm late-join — after `swarm.on('connection', handler)` it iterates
+`swarm.connections` and calls `handler(socket)` for every EXISTING socket, which runs
+`openAnnounceChannel` → registers the harness's entry on the existing muxer's topic
+state + `if (state.opened) flushTopicAnnounces`. So A's hive-home, even joining the topic
+LATE (after the A↔B connection), DOES register + flush its announce on the existing
+connection. The comment names this exact case. **So a late-join is not the gap.**
+
+Every step now traces as correct on read: announce accumulation + late-join flush (dc9db,
+verified) → B's slug-filter ADMITs (home resolves, verified via runtime traces) → admit
+opens the remote log → shared-muxer cross-corestore replication (same mechanism the 28
+member types use successfully) → rebind apply (integration-green). The ONE thing not
+yet observed live is **whether B's member's onAnnounce actually receives + ADMITs A's
+hive-home frame** — the `[A-003] slug-filter` trace answers it directly. Reduced
+hypotheses, in order: (1) B never receives the hive-home announce despite the late-join
+handling (a runtime/timing reason the static read can't see — e.g. the hive-home joins
+the topic but A↔B never re-pairs the announce channel for the 2nd log; or the fire-and-
+forget re-key boots the hive-home AFTER the matrix has already sampled); (2) B receives
+but the merge doesn't replicate the hive-home's separate corestore log. BLOCKED on
+su-9140a's traced re-run (coord down + not in /tmp); staying armed.
