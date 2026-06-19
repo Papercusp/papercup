@@ -11,6 +11,17 @@ import {
   __resetComputerExec,
   type ComputerExec,
 } from './computer';
+import {
+  ensureHiveDesktop,
+  releaseAllHiveDesktops,
+  __setProvisionerForTests,
+  __resetProvisioner,
+} from './desktop-lease';
+
+/** A fake leased desktop on a sandbox display — no live Xvfb. */
+function fakeLease(display: string, width = 1024, height = 768) {
+  return { display, width, height, release: async () => {} };
+}
 
 /** A minimal valid PNG (magic + padding) so the capture passes the magic check. */
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 1)]);
@@ -38,11 +49,14 @@ describe('runComputerAction — capability:computer handler', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_COMPUTER_DISPLAY = ':99';
   });
-  afterEach(() => {
+  afterEach(async () => {
     __resetComputerExec();
+    await releaseAllHiveDesktops();
+    __resetProvisioner();
     delete process.env.PAPERCUSP_COMPUTER_DISPLAY;
     delete process.env.PAPERCUSP_COMPUTER_WIDTH;
     delete process.env.PAPERCUSP_COMPUTER_HEIGHT;
+    delete process.env.PAPERCUSP_AGENT_DISPLAY;
   });
 
   it('screenshot → a single image content block (base64 PNG)', async () => {
@@ -108,5 +122,48 @@ describe('runComputerAction — capability:computer handler', () => {
     await runComputerAction({ action: 'mouse_move', coordinate: [99999, 99999] });
     const xd = calls.find((c) => c.bin === 'xdotool');
     expect(xd?.args).toEqual(['mousemove', '--sync', '799', '599']); // clamped to 800x600
+  });
+
+  // open-Q#2: the handler runs in the OPERATOR process (a fleet bee's call lands at
+  // /api/mcp), so it CANNOT read the bee's spawn-env. It must resolve the caller's hive
+  // desktop from ctx.harnessSlug against the in-process lease Map.
+  it('resolves the caller hive in-process lease via ctx.harnessSlug (no env needed)', async () => {
+    __setProvisionerForTests(async () => fakeLease(':150', 1280, 720));
+    await ensureHiveDesktop('demo-hive');
+    delete process.env.PAPERCUSP_COMPUTER_DISPLAY; // prove the display comes from the lease, not env
+
+    const { exec, calls } = recordingExec();
+    __setComputerExecForTests(exec);
+    await runComputerAction({ action: 'left_click', coordinate: [10, 20] }, { harnessSlug: 'demo-hive' });
+
+    const xd = calls.find((c) => c.bin === 'xdotool');
+    expect(xd?.env).toEqual({ DISPLAY: ':150' }); // the hive's leased sandbox display
+    const cap = calls.find((c) => c.bin === 'import');
+    expect(cap?.args.some((a) => a.includes(':150'))).toBe(true); // capture bound to the lease too
+  });
+
+  it('the caller hive lease takes priority over a stray process.env display', async () => {
+    process.env.PAPERCUSP_COMPUTER_DISPLAY = ':99'; // set by beforeEach — a different display
+    __setProvisionerForTests(async () => fakeLease(':151'));
+    await ensureHiveDesktop('hive-a');
+
+    const { exec, calls } = recordingExec();
+    __setComputerExecForTests(exec);
+    await runComputerAction({ action: 'mouse_move', coordinate: [5, 5] }, { harnessSlug: 'hive-a' });
+
+    const xd = calls.find((c) => c.bin === 'xdotool');
+    expect(xd?.env).toEqual({ DISPLAY: ':151' }); // ctx hive lease wins, NOT env :99
+  });
+
+  it('falls back to the frame per-slot marker PAPERCUSP_AGENT_DISPLAY when no hive lease', async () => {
+    delete process.env.PAPERCUSP_COMPUTER_DISPLAY;
+    process.env.PAPERCUSP_AGENT_DISPLAY = ':7'; // a desktop-frame leased slot (acquireAgentDisplay)
+
+    const { exec, calls } = recordingExec();
+    __setComputerExecForTests(exec);
+    await runComputerAction({ action: 'left_click', coordinate: [1, 1] }, { harnessSlug: 'no-lease-hive' });
+
+    const xd = calls.find((c) => c.bin === 'xdotool');
+    expect(xd?.env).toEqual({ DISPLAY: ':7' });
   });
 });

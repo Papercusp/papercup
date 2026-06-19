@@ -33,6 +33,7 @@ import {
   type ComputerActionInput,
   type DesktopTarget,
 } from './desktop-driver';
+import { hiveDesktop } from './desktop-lease';
 
 /** The canonical computer-use resolution (best model grounding accuracy). */
 const DEFAULT_W = 1024;
@@ -82,18 +83,48 @@ export function __resetComputerExec(): void {
   execImpl = realExec;
 }
 
+/** The per-caller identity the resolver needs (a slice of the MCP ToolContext). */
+export interface ComputerCtx {
+  signal?: AbortSignal;
+  /** The caller's harness slug == the hive home-harness slug for a fleet bee. */
+  harnessSlug?: string | null;
+}
+
 /**
- * Resolve the agent's leased SANDBOX display — SERVER-SIDE only. Read from the
- * per-agent lease env the desktop provisioner writes (Phase 2). NEVER from the
- * model's args (a model must not be able to name `:0`), and `:0` is refused.
+ * Resolve the agent's leased SANDBOX display — SERVER-SIDE only. NEVER from the
+ * model's args (a model must not be able to name `:0`), and `:0` is always refused.
+ *
+ * Resolution order (computer-tool-plan open-Q#2 — "where the per-bee display binding
+ * lives in ctx"):
+ *   1. PRIMARY — the CALLER'S HIVE in-process desktop lease, keyed by `ctx.harnessSlug`.
+ *      This is the operative path for a fleet bee: its capability:computer call lands at
+ *      the operator's `/api/mcp`, so the handler runs in the OPERATOR process and the
+ *      bee's spawn-env never reaches it — but `ensureHiveDesktop` stores the lease in
+ *      THIS process's Map, and `ctx.harnessSlug` identifies the caller's hive. So the
+ *      right display is found here regardless of which bee called.
+ *   2. FALLBACK — a display in THIS process's env, for the direct / SU / dev path and a
+ *      single-tenant (per-frame) operator. `PAPERCUSP_COMPUTER_DISPLAY` is the explicit
+ *      provisioner marker; `PAPERCUSP_AGENT_DISPLAY` is the frame per-slot lease marker
+ *      (`acquireAgentDisplay`). BOTH are deliberate capability markers — never raw
+ *      `DISPLAY`, which can leak a dev box's own `:0` session.
  */
-function resolveBoundDisplay(): DesktopTarget {
-  const display = (process.env.PAPERCUSP_COMPUTER_DISPLAY ?? '').trim();
+function resolveBoundDisplay(ctx: ComputerCtx): DesktopTarget {
+  // 1. The caller's hive lease (operator-process Map).
+  const hive = (ctx.harnessSlug ?? '').trim();
+  if (hive) {
+    const leased = hiveDesktop(hive);
+    if (leased) {
+      assertSandboxDisplay(leased.display); // belt-and-suspenders: a lease is never :0
+      return { display: leased.display, width: leased.width, height: leased.height };
+    }
+  }
+  // 2. Process-env fallback (direct/SU/dev + frame per-slot marker).
+  const display = (process.env.PAPERCUSP_COMPUTER_DISPLAY ?? process.env.PAPERCUSP_AGENT_DISPLAY ?? '').trim();
   if (!display) {
     throw new Error(
       'capability:computer — no sandbox desktop is leased to this agent. A desktop must be ' +
-        'provisioned (a leased Xvfb/VNC display) before the agent can operate it. (Refusing to ' +
-        'default to any display — the host :0 is never operable.)',
+        'provisioned (a leased Xvfb/VNC display) for this hive before the agent can operate it. ' +
+        '(Refusing to default to any display — the host :0 is never operable.)',
     );
   }
   assertSandboxDisplay(display); // throws on :0 / malformed
@@ -144,9 +175,9 @@ interface ComputerToolResult {
  */
 export async function runComputerAction(
   args: ComputerArgs,
-  ctx: { signal?: AbortSignal } = {},
+  ctx: ComputerCtx = {},
 ): Promise<ComputerToolResult> {
-  const target = resolveBoundDisplay(); // throws loudly if no lease / refuses :0
+  const target = resolveBoundDisplay(ctx); // throws loudly if no lease / refuses :0
   const signal = ctx.signal;
   const input = args as ComputerActionInput;
   const plan = planAction(input, target);
@@ -192,5 +223,5 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'bee'],
   timeoutSec: 30,
   args: computerArgs,
-  handler: (args, ctx) => runComputerAction(args, ctx as { signal?: AbortSignal }),
+  handler: (args, ctx) => runComputerAction(args, ctx as ComputerCtx),
 });
