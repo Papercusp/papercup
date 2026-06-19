@@ -11,6 +11,7 @@ function makeHost(postReviewResult: { ok: true; data: undefined } | { ok: false;
     kind: 'github',
     openPr: vi.fn(),
     getPr: vi.fn(),
+    getPrDiff: vi.fn(),
     postReview: vi.fn().mockResolvedValue(postReviewResult),
     merge: vi.fn(),
     listOpenPrs: vi.fn(),

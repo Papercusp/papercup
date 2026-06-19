@@ -179,6 +179,27 @@ export class GitHubPrHost implements PrHost {
     }
   }
 
+  async getPrDiff(ref: { remote: string; number: number }): Promise<PrHostResult<string>> {
+    const parsed = parseRemote(ref.remote);
+    if (!parsed) {
+      return err({ kind: 'validation', message: `Cannot parse remote: ${ref.remote}` });
+    }
+    try {
+      // `mediaType.format: 'diff'` makes GitHub return the raw unified
+      // diff as the response body. Octokit still types `data` as the PR
+      // object, so cast — at runtime it is the diff string.
+      const res = await this.oc.pulls.get({
+        owner: parsed.owner,
+        repo: parsed.repo,
+        pull_number: ref.number,
+        mediaType: { format: 'diff' },
+      });
+      return ok(res.data as unknown as string);
+    } catch (e) {
+      return mapOctokitError(e);
+    }
+  }
+
   async postReview(args: PostReviewArgs): Promise<PrHostResult<void>> {
     const parsed = parseRemote(args.ref.remote);
     if (!parsed) {

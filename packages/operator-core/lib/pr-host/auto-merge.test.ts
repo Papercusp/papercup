@@ -18,6 +18,7 @@ function makeHost(
     kind: 'github',
     openPr: vi.fn(),
     getPr: vi.fn(),
+    getPrDiff: vi.fn(),
     postReview: vi.fn(),
     merge: vi.fn().mockResolvedValue(mergeResult),
     listOpenPrs: vi.fn(),

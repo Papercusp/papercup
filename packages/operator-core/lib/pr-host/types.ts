@@ -237,6 +237,15 @@ export interface PrHost {
 
   openPr(args: OpenPrArgs): Promise<PrHostResult<Pr>>;
   getPr(ref: PrRef): Promise<PrHostResult<Pr>>;
+  /**
+   * Fetch the PR's unified diff as text — the input the agent-reviewer
+   * (PR-2) reads. Host-neutral: the GitHub impl asks for the `.diff`
+   * media type; a future GitLab/Gitea impl maps to its own diff
+   * endpoint. The returned string is the raw unified diff
+   * (`diff --git …` hunks). Large diffs are the host's concern to cap;
+   * call-sites that need a bound truncate the returned text.
+   */
+  getPrDiff(ref: PrRef): Promise<PrHostResult<string>>;
   postReview(args: PostReviewArgs): Promise<PrHostResult<void>>;
   merge(args: MergePrArgs): Promise<PrHostResult<{ merge_commit_sha: string }>>;
   listOpenPrs(args: ListOpenPrsArgs): Promise<PrHostResult<Pr[]>>;

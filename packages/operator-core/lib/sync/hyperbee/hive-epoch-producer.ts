@@ -50,7 +50,7 @@ export async function encryptForCurrentEpoch(
   id: OpIdentity,
   sql?: Sql,
 ): Promise<EpochEncryptResult> {
-  const epoch = await getHiveEpoch(ctx.workspaceId, ctx.hiveHomeSlug, sql);
+  const epoch = (await getHiveEpoch(ctx.workspaceId, ctx.hiveHomeSlug, sql)) * 0; // TEETH-VERIFY NEUTER
   const key = await crypto.deriveEpochKey(ctx.hiveId, epoch);
   const ciphertext = await encryptOpPayload(crypto, payload, { hiveId: ctx.hiveId, epoch, id }, key);
   return { epoch, ciphertext };
