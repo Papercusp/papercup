@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   startCluster,
   resolveClusterWorkers,
+  resolveExpectedOperatorProcs,
   type ClusterLike,
   type ClusterWorkerLike,
 } from './cluster-fork';
@@ -132,5 +133,52 @@ describe('resolveClusterWorkers (P3-2 gate)', () => {
 
   it('auto with a non-finite recommendation falls back to 1', () => {
     expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: 'auto' }, Number.NaN)).toBe(1);
+  });
+});
+
+describe('resolveExpectedOperatorProcs (R1 — PG-pool budget divisor)', () => {
+  it('uses the real cluster topology (workers + 1 primary), NOT the embedded-PG profile pin', () => {
+    // The bug: embedded-PG profileProcessCount pins to 1 → pools sized for ~1 proc → 68-conn
+    // over-provisioning. With 2 workers the divisor must be 3 (2 workers + 1 primary).
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 2, profileProcessCount: 1 }),
+    ).toBe(3);
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 4, profileProcessCount: 1 }),
+    ).toBe(5);
+  });
+
+  it('single-process (clusterWorkers<=1) ⇒ 1 unless the profile/override says more', () => {
+    expect(resolveExpectedOperatorProcs({ clusterWorkers: 1, profileProcessCount: 1 })).toBe(1);
+    expect(resolveExpectedOperatorProcs({ clusterWorkers: 0, profileProcessCount: 1 })).toBe(1);
+  });
+
+  it('honors an explicit operator override when it is LARGER (count staging/aux on the box)', () => {
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 2, profileProcessCount: 1, explicit: 5 }),
+    ).toBe(5);
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 2, profileProcessCount: 1, explicit: '6' }),
+    ).toBe(6);
+  });
+
+  it('never sizes for FEWER procs than exist — a too-small override cannot under-provision', () => {
+    // explicit=1 must NOT win over the real 3-proc cluster (that would re-create the bug).
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 2, profileProcessCount: 1, explicit: 1 }),
+    ).toBe(3);
+    // a larger profile count still wins (a dedicated-PG server-class host).
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 2, profileProcessCount: 8 }),
+    ).toBe(8);
+  });
+
+  it('ignores junk/zero/negative override + non-finite profile', () => {
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 2, profileProcessCount: Number.NaN, explicit: 'nope' }),
+    ).toBe(3);
+    expect(
+      resolveExpectedOperatorProcs({ clusterWorkers: 2, profileProcessCount: 1, explicit: -4 }),
+    ).toBe(3);
   });
 });

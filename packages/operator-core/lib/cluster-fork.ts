@@ -91,6 +91,41 @@ export function resolveClusterWorkers(
   return Number.isFinite(n) && n >= 1 ? n : 1; // 0<x<1 floors to 0 ⇒ fall back to 1
 }
 
+/**
+ * The PG-pool-budget divisor (R1 — infra-perf-robustness-audit-2026-06-18): the count
+ * of operator processes that SHARE this Postgres, so each process sizes its org pools
+ * for `pool·procs ≤ max_connections` and can't multiply into the 2026-06-17 exhaustion.
+ *
+ * The bug it fixes: a clustered EMBEDDED-PG host took the divisor straight from
+ * `resource-profile.processCount`, which pins to ~1 there (httpWorkers clamps to 1) — so
+ * each pool was sized for ~1 proc and ballooned (≈68 conns held across 3 cluster procs
+ * that each used <10 → ~89% saturation, the audit's R1). Size for the REAL cluster
+ * topology — `clusterWorkers + 1` (the N request workers + the one background primary) —
+ * never fewer than the profile's own count, and honor an explicit operator override (the
+ * systemd drop-in, which may RAISE it to also count co-resident staging/aux operators on
+ * the box). `max(...)` guarantees the divisor is never SMALLER than the processes that
+ * actually exist — shrinking it is what re-creates the over-provisioning.
+ *
+ * Pure + exported for tests; the caller passes `process.env` + the profile.
+ */
+export function resolveExpectedOperatorProcs(opts: {
+  clusterWorkers: number;
+  profileProcessCount: number;
+  explicit?: number | string | undefined;
+}): number {
+  const clusterProcs = opts.clusterWorkers > 1 ? Math.floor(opts.clusterWorkers) + 1 : 1;
+  const profile =
+    Number.isFinite(opts.profileProcessCount) && opts.profileProcessCount > 0
+      ? Math.floor(opts.profileProcessCount)
+      : 1;
+  const explicit = Number(opts.explicit);
+  return Math.max(
+    profile,
+    clusterProcs,
+    Number.isFinite(explicit) && explicit > 0 ? Math.floor(explicit) : 0,
+  );
+}
+
 export function startCluster(opts: StartClusterOpts): ClusterHandle {
   const cluster = opts.cluster ?? (nodeCluster as unknown as ClusterLike);
   const log = opts.log ?? ((m) => console.log(m));

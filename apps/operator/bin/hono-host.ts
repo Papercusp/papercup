@@ -26,7 +26,11 @@ import { getFlag } from '@papercusp/flags/server';
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
-import { startCluster, resolveClusterWorkers } from '@papercusp/operator-core/lib/cluster-fork';
+import {
+  startCluster,
+  resolveClusterWorkers,
+  resolveExpectedOperatorProcs,
+} from '@papercusp/operator-core/lib/cluster-fork';
 import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
 import { isBenignHostError } from './host-benign-errors';
 
@@ -195,16 +199,31 @@ function startRequestServers(): void {
 // ENABLING is owner-gated: cross-process sync-invalidate needs the pg-listen-hub on,
 // and it should be validated under the Tauri shell / a staging restart first.
 const clusterWorkers = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
+// PG-pool budget (R1 — infra-perf-robustness-audit-2026-06-18 conn-saturation). Every
+// process sizes its org pools so `pool·procs ≤ max_connections`; the divisor is the
+// count of operator processes sharing this PG. The bug it fixes: on an EMBEDDED-PG host
+// `resource-profile.processCount` pins to ~1 (httpWorkers clamps to 1), so a clustered
+// host sized each pool for ~1 proc → 68-conn pools across 3 cluster procs that each used
+// <10 → ~89% saturation (the audit's R1). Size for the REAL cluster topology instead —
+// `clusterWorkers + 1` (the N request workers + the background primary) — and honor an
+// explicit operator override (the systemd drop-in, which can raise it to also account
+// for the co-resident staging/aux operators on this box). `max(...)` so we never size
+// for FEWER procs than actually exist (which would re-create the over-provisioning).
+const expectedOperatorProcs = resolveExpectedOperatorProcs({
+  clusterWorkers,
+  profileProcessCount: getResourceProfile().processCount,
+  explicit: process.env.PAPERCUSP_EXPECTED_OPERATOR_PROCS,
+});
 if (clusterWorkers > 1) {
-  // Size THIS (primary) process's pools for the fleet too; workers inherit + the
-  // fork env reinforces it.
-  process.env.PAPERCUSP_EXPECTED_OPERATOR_PROCS = String(getResourceProfile().processCount);
+  // Size THIS (primary) process's pools for the whole cluster; workers inherit via
+  // the fork env below.
+  process.env.PAPERCUSP_EXPECTED_OPERATOR_PROCS = String(expectedOperatorProcs);
 }
 const clusterHandle = startCluster({
   workers: clusterWorkers,
   workerEnv: {
     PAPERCUSP_BACKGROUND_WORKERS: '0',
-    PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(getResourceProfile().processCount),
+    PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
   },
   onPrimary: () => runBootstrap(), // background machinery (single process in cluster mode)
   onWorker: () => {
