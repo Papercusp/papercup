@@ -157,11 +157,15 @@ sync (as a local mirror; it never direct-pushes — consistent with the S0 invar
   `trunk` (resolved from `origin/HEAD`/HEAD), and git-sync does **not** invent a `main` ref. Every
   existing rig hardcodes `main`; this closes the brief's explicit edge. Teeth-verified (forcing the
   last-resort `defaultBranch` turns it RED).
-- **Oversized file (>95 MB):** covered — `oversized-blob-boundary.test.ts` +
-  `findOversizedDirtyFiles` (strict `>` boundary, `-uall` so an oversized file inside a brand-new
-  dir is still excluded; EI-18 class). The rest of the tree still federates.
-- **Content-guard exclusions:** covered — broken files (`.mdx` that won't compile, etc.) are
-  quarantined from the commit, the rest still federates (`content-guard.test.ts`).
+- **Oversized file (>95 MB):** covered with **real git E2E** — `run-git-sync.test.ts`
+  "EXCLUDES an oversized file from the auto-commit, still syncs the rest, and reports it"
+  (asserts the oversized `big.bin` is absent on the bare origin while the rest is pushed, and the
+  blob stays untracked locally), plus the untracked-dir bypass guard (`-uall`; the EI-18 class) and
+  the oversized-only "nothing" case. Boundary unit: `oversized-blob-boundary.test.ts` +
+  `findOversizedDirtyFiles` (strict `>` ).
+- **Content-guard exclusions:** covered with **real git E2E** — `run-git-sync.test.ts` asserts a
+  broken file (`bad.md`) does NOT reach the origin (quarantined) while the rest federates; unit
+  coverage in `content-guard.test.ts`.
 - **GAP-4 superproject-waits-for-submodules (never publish a gitlink to an unpushed submodule
   commit):** covered with **real git** — `run-git-sync.test.ts` "GAP-4: a submodule unreachable
   while ahead → errors + DEFERS the superproject (no broken gitlink)", plus submodule-push-first

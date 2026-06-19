@@ -41,6 +41,24 @@ export function requiredAddonsFromEnv(env: NodeJS.ProcessEnv = process.env): str
   return [...DEFAULT_REQUIRED_ADDONS];
 }
 
+/**
+ * Packages that run under the Bare runtime (Pear/holepunch), NOT Node. They
+ * throw "Bare is not defined" / "require.addon is not a function" under Node's
+ * `require` by design, and the operator (a Node process) never require()s them
+ * directly — so a require-load test reports a spurious failure. Skipped from the
+ * advisory scan so the report stays trustworthy (A1's no-false-alarms goal).
+ */
+export const DEFAULT_SKIP_PREFIXES = ['bare-'] as const;
+
+/** True if `name` matches a skip prefix (scope-aware: `@scope/bare-x` → `bare-x`). */
+export function shouldSkipAddon(
+  name: string,
+  prefixes: readonly string[] = DEFAULT_SKIP_PREFIXES,
+): boolean {
+  const bare = name.startsWith('@') ? name.split('/')[1] ?? name : name;
+  return prefixes.some((p) => bare.startsWith(p));
+}
+
 export interface AddonLoadResult {
   name: string;
   /** true = loaded; false = threw; null = indeterminate (e.g. ESM-only, can't
@@ -128,6 +146,9 @@ export function checkNativeAddons(opts: {
   requireFn: (s: string) => unknown;
   required: string[];
   advisory?: string[];
+  /** Advisory-only skip predicate (e.g. Bare-runtime packages). Required addons
+   *  are NEVER skipped — if you mark it required, it is always tested. */
+  skipAdvisory?: (name: string) => boolean;
 }): PreflightReport {
   const required = new Set(opts.required);
   // Advisory minus anything already required (required wins).
@@ -139,6 +160,10 @@ export function checkNativeAddons(opts: {
     results.push({ name, ok, required: true, error });
   }
   for (const name of advisory) {
+    if (opts.skipAdvisory?.(name)) {
+      results.push({ name, ok: null, required: false, error: 'skipped (not Node-loadable)' });
+      continue;
+    }
     const { ok, error } = loadAddon(name, opts.requireFn);
     results.push({ name, ok, required: false, error });
   }

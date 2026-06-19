@@ -106,6 +106,7 @@
     "test:all:integration": "node scripts/affected-tests.mjs --all --integration",
     "test:doctor": "node scripts/test-doctor.mjs",
     "check:fleet-auth": "node scripts/check-fleet-auth.mjs",
+    "preflight:addons": "tsx scripts/preflight-native-addons.ts",
     "lint:knip": "knip --no-config-hints",
     "lint:knip:fix": "knip --fix --no-config-hints",
     "lint:drizzle-drift": "node scripts/check-drizzle-drift.mjs",

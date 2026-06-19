@@ -270,6 +270,7 @@ import publishCredentials from './publish-credentials/index';
 import publishCredentialsRotate from './publish-credentials/rotate';
 import miscHealth from './misc/health';
 import miscHealthReady from './misc/health-ready';
+import miscHealthDeep from './misc/health-deep';
 import miscToastLog from './misc/toast-log';
 import miscWikiBacklinks from './misc/wiki-backlinks';
 import miscProfile from './misc/profile';
@@ -683,6 +684,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(publishCredentialsRotate as AnyRoute),
   ...flatten(miscHealth as AnyRoute),
   ...flatten(miscHealthReady as AnyRoute),
+  ...flatten(miscHealthDeep as AnyRoute),
   ...flatten(miscToastLog as AnyRoute[]),
   ...flatten(miscWikiBacklinks as AnyRoute),
   ...flatten(miscProfile as AnyRoute[]),
