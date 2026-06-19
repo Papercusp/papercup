@@ -107,6 +107,8 @@ import './platform/enable';
 import './platform/contribute';
 // pr-system-completion-dogfood PR-5 (D-3) — GC abandoned contribution forks (KEEP-on-merge + stale-fork sweep):
 import './platform/fork_gc';
+// pr-system-completion-dogfood PR-5 (item 2) — assert the fork→PR dogfood loop round-tripped (WI shipped + linked PR):
+import './platform/dogfood_verify';
 import './hive/dissolve';
 // shared-hive-hardening-2026-06-13 P-012 — a joiner cleanly LEAVES a shared hive:
 import './hive/leave';
