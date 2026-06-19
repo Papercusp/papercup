@@ -91,3 +91,37 @@ export async function hiveHomeSlugForHarness(
   const member = reg.projects.find((x) => x.slug === harnessSlug);
   return member?.hive_slug ?? null;
 }
+
+/**
+ * A-003 (shared-hive-release-testing Brief I): the HIVE-HOME slug a JOINER's
+ * member harness must bind its `hive_members` / `hive_settings` projections to,
+ * else null (no rebind — today's behavior).
+ *
+ * Returns the home slug iff this harness's Hive home is a `remote_hive` (joined)
+ * VIEW — the joiner topology. In that topology the joiner boots the MEMBER harness
+ * (the home view itself is never booted by the join flow, which only re-keys
+ * members), so the home-grained `hive_members`/`hive_settings` ops the member's
+ * merge reads off the shared Hive topic are dropped by the member-slug projection
+ * guard → the member list/settings never reach the joiner, and
+ * `loadRevokedHivePubkeys(<home>)` is empty so a revoked member is never refused.
+ * Binding those two projections to the home slug (register-all's `hiveHomeSlug`)
+ * lets the running member merge land them.
+ *
+ * Returns null when the Hive home is OWNED (not a remote view): the owner's home
+ * harness owns the write side + applies the rows `origin='local'`, so an
+ * owned-hive member must NOT rebind (it would double-apply the owner's own rows as
+ * `origin='remote'`). Also null for a non-Hive harness. Uses the SAME
+ * `remote_hive` registry signal `resolveHiveSwarmBinding` keys the joiner topic on
+ * — so the rebind triggers exactly when the joiner topic does. Pure resolution
+ * (a PG identity read + a registry read); fail-open is the caller's job.
+ */
+export async function joinerHiveHomeSlug(
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<string | null> {
+  const home = await hiveHomeSlugForHarness(workspaceId, harnessSlug);
+  if (!home) return null;
+  const reg = await loadHarnessRegistry(workspaceId);
+  const isRemoteJoined = reg.projects.find((p) => p.slug === home)?.remote_hive === true;
+  return isRemoteJoined ? home : null;
+}

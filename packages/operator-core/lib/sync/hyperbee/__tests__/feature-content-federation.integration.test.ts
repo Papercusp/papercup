@@ -285,7 +285,9 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   // re-enqueues every own-log merge-back forever — the convergence guard below).
   await sql.unsafe(`
     ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
       AFTER UPDATE ON harness_shared.harness_features_consolidated
       FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))

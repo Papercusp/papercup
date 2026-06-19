@@ -45,10 +45,40 @@ vi.mock('protomux', () => ({
 
 const { wireHiveDirectoryAtBoot } = await import('./hive-directory-boot');
 const { HiveDirectory } = await import('./hive-directory');
+const { buildHiveAnnounce } = await import('./sync/hyperbee/hive-announce');
 import type { HiveDirectoryDeps } from './hive-directory';
 import type { HiveDirectoryMeta, HiveOwnerIdentity } from './hive-publish';
+import type { HiveVisibility } from './sync/hyperbee/hive-announce';
 
 const NOW = 1_700_000_000_000;
+
+/** Build a VALID signed announce frame (passes verifyHiveAnnounce + the fake
+ *  verifyAttestation) so dir.ingestAnnounce actually lands it in `discovered`. */
+async function signedAnnounce(
+  hiveId: string,
+  visibility: HiveVisibility,
+): Promise<Awaited<ReturnType<typeof buildHiveAnnounce>>> {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const pubkey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
+    .subarray(-32)
+    .toString('base64');
+  return buildHiveAnnounce(
+    {
+      hive_id: hiveId,
+      title: hiveId,
+      description: 'd',
+      owner_github_login: 'bob',
+      owner_github_user_id: 99,
+      owner_device_pubkey: pubkey,
+      attestation_gist_id: 'g',
+      member_topics: [],
+      visibility,
+      created_at: NOW - 1,
+      ts: NOW,
+    },
+    (b) => Promise.resolve(nodeSign(null, b, privateKey)),
+  );
+}
 
 function ownerIdentity(): HiveOwnerIdentity {
   const { publicKey } = generateKeyPairSync('ed25519');
@@ -249,5 +279,58 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
     await wiring.joinInviteTopic('an-invite-secret');
     expect(f.joined).toHaveLength(2); // + the invite topic
     await wiring.stop();
+  });
+
+  // ── G-002 honest-join: confirmInviteAnnounce (the REAL bounded-confirm logic,
+  //    not a route-level mock) ─────────────────────────────────────────────────
+  describe('confirmInviteAnnounce (G-002 bounded confirm)', () => {
+    it('found:false when NOTHING announces on the invite topic (the dead-secret case)', async () => {
+      const f = fakeSwarm();
+      const dir = new HiveDirectory(fakeDirDeps());
+      const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
+      const res = await wiring.confirmInviteAnnounce('dead-secret', { timeoutMs: 120, pollMs: 20 });
+      expect(res.found).toBe(false);
+      expect(res.hive).toBeUndefined();
+      await wiring.stop();
+    });
+
+    it('found:true when a NEW invite hive appears on the topic DURING the wait', async () => {
+      const f = fakeSwarm();
+      const dir = new HiveDirectory(fakeDirDeps());
+      const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
+      const frame = await signedAnnounce('remote-invite', 'invite');
+      // Snapshot is taken synchronously when the promise starts (empty) — ingest
+      // the invite hive AFTER, so it registers as "freshly materialized".
+      const p = wiring.confirmInviteAnnounce('a-real-secret', { timeoutMs: 2000, pollMs: 20 });
+      await dir.ingestAnnounce(frame);
+      const res = await p;
+      expect(res.found).toBe(true);
+      expect(res.hive?.hiveId).toBe('remote-invite');
+      expect(res.hive?.visibility).toBe('invite');
+      await wiring.stop();
+    });
+
+    it('does NOT confirm off a PUBLIC announce — only invite hives count', async () => {
+      const f = fakeSwarm();
+      const dir = new HiveDirectory(fakeDirDeps());
+      const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
+      const pub = await signedAnnounce('remote-public', 'public');
+      const p = wiring.confirmInviteAnnounce('a-secret', { timeoutMs: 120, pollMs: 20 });
+      await dir.ingestAnnounce(pub); // a public hive shows up — must NOT satisfy an invite confirm
+      const res = await p;
+      expect(res.found).toBe(false);
+      await wiring.stop();
+    });
+
+    it('snapshot excludes a PRE-EXISTING invite hive (conservative: a re-join is not a fresh materialization)', async () => {
+      const f = fakeSwarm();
+      const dir = new HiveDirectory(fakeDirDeps());
+      const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
+      // Already-known invite hive: in the snapshot, so it is NOT a fresh appearance.
+      await dir.ingestAnnounce(await signedAnnounce('already-known-invite', 'invite'));
+      const res = await wiring.confirmInviteAnnounce('a-secret', { timeoutMs: 120, pollMs: 20 });
+      expect(res.found).toBe(false);
+      await wiring.stop();
+    });
   });
 });

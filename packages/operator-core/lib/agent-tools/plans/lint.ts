@@ -34,8 +34,14 @@ import type { ParsedPlan } from './parser';
 import { parsePromotePolicy } from './promote-policy';
 
 const argsSchema = z.object({
-  slug: z.string().optional().describe('Lint one plan. Omit for all plans.'),
+  slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
   includeArchived: z.boolean().optional().describe('Lint plans under archive/. Default false.'),
+  full: z
+    .boolean()
+    .optional()
+    .describe(
+      'All-plans mode only: return the COMPLETE per-plan reports (every error AND warning message) instead of the bounded summary. The complete dump can exceed the agent result-size cap on a real workspace (hundreds of plans × hundreds of warnings → 170KB+), so it is OFF by default — prefer the summary, then lint a single `slug` for a plan’s full warning detail. Safe for HTTP/in-process callers that can handle the size.',
+    ),
   harness: harnessArg,
 });
 
@@ -512,15 +518,91 @@ export async function lintParsed(
   return report;
 }
 
+/** One plan's row in the bounded all-plans summary: identity + finding
+ *  counts, with the ERROR findings inlined (few + actionable, the CI-gating
+ *  signal) but WARNINGS collapsed to a count (they are advisory + the bulk of
+ *  the bytes — ~400 verbose messages on a real workspace). Drill into a plan's
+ *  full warnings by linting its single `slug`. */
+export interface LintSummaryPlan {
+  slug: string;
+  archived?: true;
+  legacy?: true;
+  exempt?: true;
+  errorCount: number;
+  warningCount: number;
+  errors?: LintFinding[];
+}
+
+export interface LintSummary {
+  ok: boolean;
+  mode: 'summary';
+  totalErrors: number;
+  totalWarnings: number;
+  exempt: number;
+  planCount: number;
+  errorsByCode: Record<string, number>;
+  warningsByCode: Record<string, number>;
+  /** Only plans with ≥1 finding (errors inlined, warnings as a count). */
+  plans: LintSummaryPlan[];
+  hint: string;
+}
+
+/**
+ * Collapse the full per-plan reports into a BOUNDED summary that fits the
+ * agent result-size cap (F-FIX-034 / EI-… : `plans:lint` over a real workspace
+ * returned 170KB+ in one line → "exceeds maximum allowed tokens" → an unusable
+ * blob). Errors gate (kept in full); warnings advise (kept as per-plan counts +
+ * a workspace-wide code rollup). Pure — unit-testable without PG. The complete
+ * reports stay available via `full: true` (HTTP) or a single-`slug` lint.
+ */
+export function summarizeLintReports(reports: PlanLintReport[]): LintSummary {
+  const errorsByCode: Record<string, number> = {};
+  const warningsByCode: Record<string, number> = {};
+  let totalErrors = 0;
+  let totalWarnings = 0;
+  let exempt = 0;
+  const plans: LintSummaryPlan[] = [];
+  for (const r of reports) {
+    totalErrors += r.errors.length;
+    totalWarnings += r.warnings.length;
+    if (r.exempt) exempt += 1;
+    for (const e of r.errors) errorsByCode[e.code] = (errorsByCode[e.code] ?? 0) + 1;
+    for (const w of r.warnings) warningsByCode[w.code] = (warningsByCode[w.code] ?? 0) + 1;
+    if (r.errors.length === 0 && r.warnings.length === 0) continue;
+    plans.push({
+      slug: r.slug,
+      ...(r.archived ? { archived: true as const } : {}),
+      ...(r.legacy ? { legacy: true as const } : {}),
+      ...(r.exempt ? { exempt: true as const } : {}),
+      errorCount: r.errors.length,
+      warningCount: r.warnings.length,
+      ...(r.errors.length > 0 ? { errors: r.errors } : {}),
+    });
+  }
+  return {
+    ok: totalErrors === 0,
+    mode: 'summary',
+    totalErrors,
+    totalWarnings,
+    exempt,
+    planCount: reports.length,
+    errorsByCode,
+    warningsByCode,
+    plans,
+    hint:
+      'Bounded summary (errors inlined; warnings as counts). Lint one plan for its full warning detail: plans:lint { slug }. For the complete per-plan dump: plans:lint { full: true } (may exceed the agent result-size cap on large workspaces).',
+  };
+}
+
 export default defineTool({
   name: 'plans:lint',
   description:
-    "Validate plan files. Legacy plans are exempt. Returns errors + warnings per plan. CI should fail on any error; warnings are informational.",
+    "Validate plan files. Legacy plans are exempt. CI should fail on any error; warnings are informational. With a `slug`: the full single report (errors + warnings). Without a slug: a BOUNDED summary across all plans (totals + per-code rollups + per-plan finding counts, with errors inlined) — warnings are collapsed to counts so the result never blows the agent size cap. Pass `full: true` for the complete per-plan dump (HTTP-safe; may overflow an agent caller on a large workspace).",
   guidance: {
     when: 'You\'re editing a plan and want to verify it parses cleanly, or you\'re running the doc-tree health check.',
     notWhen:
       'You just want to read plans — use plans:list/get.',
-    chaining: 'plans:lint → plans:get { slug } for the failing plan to see context.',
+    chaining: 'All-plans summary flags a plan with errors → plans:lint { slug } for its full findings → plans:get { slug } for context.',
   },
   capability: 'plans:read',
   requirePrincipal: false,
@@ -564,17 +646,21 @@ export default defineTool({
       exempt,
     });
 
+    // Single-slug: the full report (one plan is always small). All-plans with
+    // `full:true`: the legacy complete dump (HTTP-safe; may overflow an agent
+    // caller). All-plans default: the BOUNDED summary — warnings collapsed to
+    // counts so a real workspace (484 plans × ~380 warnings → 170KB+) no longer
+    // blows the agent result-size cap and returns an unusable blob (F-FIX-034).
+    const payload =
+      args.slug || args.full === true
+        ? { ok: totalErrors === 0, totalErrors, totalWarnings, exempt, reports }
+        : summarizeLintReports(reports);
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({
-            ok: totalErrors === 0,
-            totalErrors,
-            totalWarnings,
-            exempt,
-            reports,
-          }),
+          text: JSON.stringify(payload),
         },
       ],
     };

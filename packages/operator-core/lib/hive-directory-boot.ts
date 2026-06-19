@@ -18,7 +18,7 @@
  * sync/hyperbee/__tests__/hive-directory-live-two-peer.test.ts.
  */
 
-import { deriveDirectoryTopic, deriveInviteTopic } from './sync/hyperbee/derive-hive-topic';
+import { deriveDirectoryTopic, deriveInviteTopic, hiveTopicAsHex } from './sync/hyperbee/derive-hive-topic';
 import {
   createDirectoryGossip,
   type DirectoryGossipHandle,
@@ -50,12 +50,42 @@ export interface WireHiveDirectoryOpts {
   dir?: HiveDirectory;
 }
 
+/**
+ * G-002 honest-join: the bounded-confirmation result. `found` is the truth the
+ * UI/route reports — did a hive ACTUALLY materialize on the invite topic within
+ * the wait, or did we merely subscribe to a topic nobody is announcing on (a
+ * withdrawn / wrong / offline-owner invite)?
+ */
+export interface InviteAnnounceConfirm {
+  /** A verified invite hive announced on this secret's topic within the wait. */
+  found: boolean;
+  /** The discovered hive, when found (for an honest "Found 'X' — joining" copy). */
+  hive?: { hiveId: string; title: string; visibility: string };
+  /** Swarm peers currently paired on the invite topic (0 = nobody is home — the
+   *  announce can never arrive). Informational; `found` is the decision. */
+  peersOnTopic: number;
+}
+
 export interface HiveDirectoryWiring {
   /** The directory gossip (all topics — global + invite-scoped). */
   gossip: DirectoryGossipHandle;
   /** Join an invite-scoped directory topic from a received invite secret (the
    *  invitee side). Idempotent. */
   joinInviteTopic(inviteSecret: string): Promise<void>;
+  /**
+   * G-002 honest-join: after joining the invite topic, BOUNDED-WAIT for the
+   * invite hive to actually announce on it — instead of the route claiming
+   * `joined:true` on a bare topic subscribe (which is a lie for a withdrawn /
+   * wrong / offline-owner invite, where nothing ever appears). Reuses the
+   * already-landed per-topic reach signal (`openChannelCount(topicHex)`, the
+   * G-001 mechanism) as the "is anyone home" gate and the discovered set as the
+   * "it materialized" confirmation. Resolves as soon as the hive appears, or
+   * after `timeoutMs`. Best-effort: any failure resolves `found:false`.
+   */
+  confirmInviteAnnounce(
+    inviteSecret: string,
+    opts?: { timeoutMs?: number; pollMs?: number },
+  ): Promise<InviteAnnounceConfirm>;
   /**
    * The topic-routing broadcast — the same closure handed to
    * setHiveDirectoryTransport. Exposed so an injected (non-singleton) directory
@@ -143,6 +173,48 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
      *  hive's announce is ingested + listed). Idempotent. */
     async joinInviteTopic(inviteSecret: string): Promise<void> {
       gossip.joinTopic(deriveInviteTopic(inviteSecret));
+    },
+    // G-002 honest-join: bounded-wait for the invite hive to ACTUALLY appear on
+    // the topic we just joined, instead of reporting success on a bare subscribe.
+    async confirmInviteAnnounce(inviteSecret, opts = {}) {
+      const timeoutMs = Math.max(0, opts.timeoutMs ?? 6000);
+      const pollMs = Math.max(50, opts.pollMs ?? 400);
+      let topicHex: string;
+      try {
+        topicHex = hiveTopicAsHex(deriveInviteTopic(inviteSecret));
+      } catch {
+        return { found: false, peersOnTopic: 0 };
+      }
+      const peersOnTopic = (): number => {
+        try {
+          return gossip.openChannelCount(topicHex);
+        } catch {
+          return 0;
+        }
+      };
+      // Snapshot the invite hives already known. We just joined EXACTLY this one
+      // invite topic, so any invite hive that newly appears is this invite
+      // materializing — the honest "it actually showed up" signal (vs a bare
+      // topic subscribe, which always "succeeds" even for a dead secret).
+      const seen = new Set(
+        dir
+          .listDiscoveredHives({ includeExpired: true })
+          .filter((h) => h.visibility === 'invite')
+          .map((h) => h.hiveId),
+      );
+      const findFresh = (): { hiveId: string; title: string; visibility: string } | null => {
+        const h = dir
+          .listDiscoveredHives()
+          .find((d) => d.visibility === 'invite' && !seen.has(d.hiveId));
+        return h ? { hiveId: h.hiveId, title: h.title, visibility: h.visibility } : null;
+      };
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const fresh = findFresh();
+        if (fresh) return { found: true, hive: fresh, peersOnTopic: peersOnTopic() };
+        if (Date.now() >= deadline) return { found: false, peersOnTopic: peersOnTopic() };
+        await new Promise((r) => setTimeout(r, pollMs));
+      }
     },
     transport,
     async stop() {

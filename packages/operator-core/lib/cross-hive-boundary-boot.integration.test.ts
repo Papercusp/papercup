@@ -40,6 +40,7 @@ const HIVE_SETTINGS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.hive_settings (
     workspace_id text NOT NULL, harness_slug text NOT NULL, setting_key text NOT NULL,
     value text, author_pubkey text, origin text NOT NULL DEFAULT 'local', fed_ts bigint,
+    fed_hlc text,
     created_at bigint NOT NULL, updated_at bigint NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, harness_slug, setting_key))`;
 // Mirrors migration 196 (minus psql directives + role grants the test DB lacks).

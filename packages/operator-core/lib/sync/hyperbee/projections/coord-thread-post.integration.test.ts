@@ -54,6 +54,7 @@ beforeAll(async () => {
       created_at timestamptz DEFAULT now() NOT NULL,
       post_msg_id text, harness_slug text,
       origin text DEFAULT 'local' NOT NULL, author_pubkey text, fed_ts bigint,
+      fed_hlc text,
       CONSTRAINT coord_thread_posts_workspace_nonempty CHECK (workspace_id <> '')
     )`);
   // The partial unique index that is the ON CONFLICT target.

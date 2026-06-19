@@ -81,6 +81,58 @@ export function assertSandboxDisplay(display: string): void {
   if (d === ':0' || d === ':0.0') {
     throw new Error('capability:computer — refusing to operate the HOST display :0 (sandbox display required)');
   }
+  // Also refuse the operator's OWN live session display — it is NOT always :0 (a seat
+  // can be :1, and the operator process here runs with DISPLAY=:0 inherited from gdm).
+  // A sandbox display is one WE provisioned (≥ :99), never the seat the fleet's agent
+  // TUIs run on. This is what stops keystrokes leaking into another agent's terminal.
+  const hostDisplay = (process.env.DISPLAY ?? '').trim();
+  if (hostDisplay && (d === hostDisplay || `${d}.0` === hostDisplay || d === hostDisplay.replace(/\.\d+$/, ''))) {
+    throw new Error(
+      `capability:computer — refusing to operate the operator's host display ${hostDisplay} (sandbox display required)`,
+    );
+  }
+}
+
+/**
+ * X11 / Wayland env keys that bind a process to the operator's HOST session.
+ * Agent-driven subprocesses (xdotool, `import`, every capability:bash shell) must
+ * NEVER inherit these: doing so lets a sandbox action reach the operator's real
+ * `:0` — the seat where the live fleet's agent TUIs run (the 2026-06-19 keystroke
+ * -leak incident). Stripping them is the load-bearing isolation invariant.
+ */
+export const HOST_X_ENV_KEYS: readonly string[] = ['DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY'];
+
+/**
+ * A copy of `env` with every host X-session key removed — the base env for ANY
+ * agent-driven subprocess, so it can no longer inherit the operator's `:0` /
+ * Xauthority. Callers that legitimately drive a sandbox add `DISPLAY=<sandbox>`
+ * back explicitly (see `sandboxXEnv`).
+ */
+export function stripHostX(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v == null) continue;
+    if (HOST_X_ENV_KEYS.includes(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * The X env for driving a SANDBOX display: host-stripped base + `DISPLAY` bound to
+ * the sandbox (+ its own `XAUTHORITY` when the sandbox is access-controlled).
+ * Refuses `:0` / the host display via `assertSandboxDisplay`.
+ */
+export function sandboxXEnv(
+  display: string,
+  xauthority?: string,
+  base: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  assertSandboxDisplay(display);
+  const env = stripHostX(base);
+  env.DISPLAY = display;
+  if (xauthority) env.XAUTHORITY = xauthority;
+  return env;
 }
 
 /** Validate + normalize a coordinate against the target bounds. */

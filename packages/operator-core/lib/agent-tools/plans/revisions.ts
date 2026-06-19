@@ -26,6 +26,7 @@ import {
   type AgentIdentity,
   type ResolveIdentityCtx,
 } from '../coordination/identity';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 /** Who authored a revision. `human` = a person driving the
  *  `/admin/plans` editor or operator chat; `agent` = an agent's own
@@ -46,11 +47,10 @@ export interface RecordPlanRevisionArgs {
   /** The plan whose write this revision records. */
   planSlug: string;
   /**
-   * Harness scope for this revision. Default = 'papercup' (preserves
-   * the pre-per-harness-plans-and-docs behavior where every revision
-   * lived under the papercup harness). Per-harness write tools pass
-   * the resolved ctx.harnessSlug; cross-harness writes pass the
-   * target explicitly.
+   * Harness scope for this revision. Default = the operator-home hive
+   * (`operatorHomeHarnessSlug()` — the single pointer; papercup→papercusp
+   * generalization). Per-harness write tools pass the resolved
+   * ctx.harnessSlug; cross-harness writes pass the target explicitly.
    */
   harnessSlug?: string;
   /**
@@ -108,7 +108,7 @@ export async function recordPlanRevision(
     const authorKind = classifyAuthor(args.identity);
     const createdAt = Date.now();
 
-    const harnessSlug = args.harnessSlug?.trim() || 'papercup';
+    const harnessSlug = args.harnessSlug?.trim() || operatorHomeHarnessSlug();
     // WI-148: resolve the revision's workspace from the SAME projects source of
     // truth resolvePlanScope uses, instead of a silent `|| DEFAULT_WORKSPACE_ID`.
     // An explicit workspaceId still wins (withPlanLock threads the resolved
@@ -384,7 +384,7 @@ export async function listPlanRevisions(
   planSlug: string,
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<PlanRevisionRow[]> {
-  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
+  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
   const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<PlanRevisionDbRow[]>`
@@ -576,7 +576,7 @@ export async function countPlanRevisions(
   planSlug: string,
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<number> {
-  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
+  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
   const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
   return withWorkspace(workspaceId, async (tx) => {
     const rows = await tx<{ n: number }[]>`
@@ -625,7 +625,7 @@ export async function insertBackfillRevisions(
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<number> {
   if (revisions.length === 0) return 0;
-  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
+  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
   const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
   return withWorkspace(workspaceId, async (tx) => {
     let seq = 0;
@@ -660,7 +660,7 @@ export async function insertBackfillRevisionsIfEmpty(
   revisions: BackfillRevisionInput[],
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<{ inserted: number; skippedExisting: boolean }> {
-  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
+  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
   const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
   return withWorkspace(workspaceId, async (tx) => {
     const rows = await tx<{ n: number }[]>`

@@ -51,6 +51,7 @@ const HFC_DDL = `
     swarm_affinity text, feature_order integer,
     redundancy integer,
     author_pubkey text, fed_ts bigint,
+    fed_hlc text,
     origin text NOT NULL DEFAULT 'local',
     audit_verdict text,
     verified_author_github_user_id bigint,

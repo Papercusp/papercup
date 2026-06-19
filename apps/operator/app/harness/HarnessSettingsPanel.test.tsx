@@ -1,0 +1,190 @@
+// @vitest-environment jsdom
+/**
+ * HarnessSettingsPanel.test.tsx — render-tier coverage for the legacy
+ * per-harness Settings panel (whole-app-test-coverage-breadth). The panel
+ * gates rendering behind `loaded` (config.json via useSyncQuery), so the test
+ * feeds a config row to flip it loaded, then exercises: the loading gate, the
+ * always-on sections (Workers / AI backend / chunk-loop knobs / debugger
+ * threshold / Save bar), the testing-flag-gated controls (workers-per-feature
+ * mode, tiers section), the tiers add/remove row flow, the Discord
+ * shared/not-shared branch, and a successful Save (toast.success).
+ *
+ * Mocked: useFlag (controls the testing flag), @papercusp/flags (FLAGS),
+ * useSyncQuery, sonner, RichGrid (stub list), and the two heavy children
+ * (SavedPromptsSection / HarnessPluginsSection). fetch is stubbed for the spec
+ * REST back-stop, /discord, /adaptive-telemetry, and the /spec PUT.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import type { ReactElement } from 'react';
+
+/* ── Mocks ─────────────────────────────────────────────────────────── */
+let syncData: unknown[];
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ data: syncData, error: null, loading: false, fetching: false, invalidate: vi.fn() }),
+}));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('@papercusp/flags', () => ({ FLAGS: { TESTING: 'papercusp-testing' } }));
+
+let testingFlagValue = false;
+vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => testingFlagValue }));
+
+// RichGrid is a heavy virtualized grid — stub to a simple row list.
+vi.mock('@papercusp/grid-core', () => ({
+  RichGrid: ({ rows, getRowId }: { rows: { feature_id: string }[]; getRowId: (r: unknown) => string }) => (
+    <div data-testid="telemetry-grid">{rows.map((r) => <div key={getRowId(r)}>{r.feature_id}</div>)}</div>
+  ),
+}));
+vi.mock('./SavedPromptsSection', () => ({ default: () => <div data-testid="saved-prompts" /> }));
+vi.mock('./HarnessPluginsSection', () => ({ default: () => <div data-testid="plugins-section" /> }));
+
+import { toast } from 'sonner';
+import HarnessSettingsPanel from './HarnessSettingsPanel';
+
+/* ── Helpers ───────────────────────────────────────────────────────── */
+function renderPanel(ui: ReactElement, searchParams = '') {
+  return render(<NuqsTestingAdapter searchParams={searchParams}>{ui}</NuqsTestingAdapter>);
+}
+
+/** Make useSyncQuery hand back a config.json row so the panel flips `loaded`. */
+function loadedConfigRow(cfg: Record<string, unknown> = {}) {
+  return [{ harnessSlug: 'h', config: JSON.stringify(cfg) }];
+}
+
+/** Stub the panel's network: spec back-stop, discord, telemetry, PUT. */
+function stubFetch(opts: { isShared?: boolean } = {}) {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (typeof url === 'string' && url.includes('/discord')) {
+      return new Response(JSON.stringify({ isShared: opts.isShared ?? false, discord: null }), { status: 200 });
+    }
+    if (typeof url === 'string' && url.includes('/adaptive-telemetry')) {
+      return new Response(JSON.stringify({ rows: [] }), { status: 200 });
+    }
+    // /spec GET back-stop + /spec PUT.
+    return new Response(JSON.stringify({ ok: true, config: '{}' }), { status: 200 });
+  }));
+}
+
+beforeEach(() => {
+  syncData = [];
+  testingFlagValue = false;
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  vi.clearAllMocks();
+});
+
+describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
+  it('shows the loading state before config has resolved', () => {
+    // No sync data + a never-resolving fetch back-stop → stays loading.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    syncData = [];
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    expect(screen.getByText('Loading…')).toBeTruthy();
+  });
+
+  it('renders the always-on sections once config loads (flag OFF)', async () => {
+    stubFetch();
+    syncData = loadedConfigRow();
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Workers' })).toBeTruthy());
+    // The slug appears in the header.
+    expect(screen.getByText(/Settings — h/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'AI backend' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Discord' })).toBeTruthy();
+    // Chunk-loop checkbox + debugger-threshold input render.
+    expect(screen.getByRole('checkbox', { name: 'chunk loop enabled' })).toBeTruthy();
+    // Save bar present.
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+    // The flag-gated "workers / feature" mode control is hidden when the flag is off.
+    expect(screen.queryByText('workers / feature')).toBeNull();
+  });
+
+  it('reveals the flag-gated worker-count controls when the testing flag is ON', async () => {
+    stubFetch();
+    testingFlagValue = true;
+    syncData = loadedConfigRow();
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByText('workers / feature')).toBeTruthy());
+    expect(screen.getByText('features cap')).toBeTruthy();
+    // Synthesizer knob is also flag-gated.
+    expect(screen.getByRole('checkbox', { name: 'synthesize single-worker output' })).toBeTruthy();
+  });
+
+  it('renders the tiers section + telemetry empty state when config selects tier mode', async () => {
+    stubFetch();
+    testingFlagValue = true;
+    // adaptive present → applyLoadedConfig infers workerCountMode 'tiers'.
+    syncData = loadedConfigRow({
+      parallelWorkers: { max: 4, adaptive: { tiers: [1, 2, 4], labels: ['a', 'b', 'c'], rubric: 'r' } },
+    });
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Worker count tiers' })).toBeTruthy());
+    expect(screen.getByRole('heading', { name: 'Recent worker decisions' })).toBeTruthy();
+    expect(screen.getByText(/No worker decisions recorded yet/i)).toBeTruthy();
+    // The "+ Add tier" control is present.
+    expect(screen.getByRole('button', { name: /Add tier/i })).toBeTruthy();
+  });
+
+  it('adds a tier row when "+ Add tier" is clicked', async () => {
+    stubFetch();
+    testingFlagValue = true;
+    syncData = loadedConfigRow({
+      parallelWorkers: { max: 4, adaptive: { tiers: [1, 2], labels: ['a', 'b'], rubric: 'r' } },
+    });
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByText('Tier 1')).toBeTruthy());
+    expect(screen.getByText('Tier 2')).toBeTruthy();
+    expect(screen.queryByText('Tier 3')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Add tier/i }));
+    expect(screen.getByText('Tier 3')).toBeTruthy();
+  });
+
+  it('shows the not-shared Discord notice when the harness is private', async () => {
+    stubFetch({ isShared: false });
+    syncData = loadedConfigRow();
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByText(/only available for shared harnesses/i)).toBeTruthy());
+    // The guild-id input only renders in the shared branch.
+    expect(screen.queryByPlaceholderText(/1509111829471690783/)).toBeNull();
+  });
+
+  it('renders the Discord guild/invite inputs for a shared harness', async () => {
+    stubFetch({ isShared: true });
+    syncData = loadedConfigRow();
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByPlaceholderText(/1509111829471690783/)).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Save Discord/i })).toBeTruthy();
+  });
+
+  it('adds an AI backend role-override row', async () => {
+    stubFetch();
+    syncData = loadedConfigRow();
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByText('default (all roles)')).toBeTruthy());
+    // One default row → its cmd input uses the "omp -p" placeholder.
+    expect(screen.getByPlaceholderText('omp -p')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Add role override/i }));
+    // A new override row gives an "(inherits default)" cmd placeholder.
+    expect(screen.getByPlaceholderText('(inherits default)')).toBeTruthy();
+  });
+
+  it('Save persists the config and toasts success', async () => {
+    stubFetch();
+    syncData = loadedConfigRow();
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Settings saved'));
+  });
+
+  it('mounts the saved-prompts and plugins sections', async () => {
+    stubFetch();
+    syncData = loadedConfigRow();
+    renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByTestId('saved-prompts')).toBeTruthy());
+    expect(screen.getByTestId('plugins-section')).toBeTruthy();
+  });
+});

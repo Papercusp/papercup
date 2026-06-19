@@ -120,6 +120,15 @@ export interface OutboxRow {
   /** Epoch ms of the capture (the outbox row's `ts` BIGINT). */
   ts: number;
   row: Record<string, unknown> | null;
+  /**
+   * D-001 (Brief J): the op's HLC ordering key (`encodeHlc` string), stamped at
+   * capture from the ONE PG clock of record (`substrate_outbox.op_hlc`) — put →
+   * the row's `fed_hlc`; del → a fresh `hlc_now()`. Threaded onto the wire op as
+   * `op.hlc` so the remote peer's projection writes the SAME `fed_hlc` the local
+   * row carries → identical ordering key on both peers. `undefined` for a pre-314
+   * outbox row / append-only table → `stampOpHlc` generates a fallback at append.
+   */
+  op_hlc?: string;
 }
 
 /** Per-harness Hyperbee key for a feature == its feature_id (mirrors the
@@ -489,6 +498,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       hbKey: outboxRow.key,
       ts,
       schema_version: CURRENT_SCHEMA_VERSION,
+      // D-001: carry the capture-stamped HLC so the del orders against puts by the
+      // same causal key the merge fold does (stampOpHlc preserves a preset hlc).
+      ...(outboxRow.op_hlc ? { hlc: outboxRow.op_hlc } : {}),
     };
   }
 
@@ -555,5 +567,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     value,
     ts,
     schema_version: CURRENT_SCHEMA_VERSION,
+    // D-001: carry the local row's PG-stamped HLC (substrate_outbox.op_hlc =
+    // row.fed_hlc) so the remote peer materialises an IDENTICAL fed_hlc — the
+    // write-time-HLC half that makes local-vs-remote conflicts converge.
+    ...(outboxRow.op_hlc ? { hlc: outboxRow.op_hlc } : {}),
   };
 }

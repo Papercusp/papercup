@@ -21,6 +21,7 @@ import { withWorkspace } from '@papercusp/db-org';
 // workspaces. Stamp + scope to the ACTIVE workspace instead (migration 303 adds the
 // workspace_id column; RLS is a Phase-2 follow-up — see the migration header).
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 /**
  * A run's lifecycle status (P-016):
@@ -60,9 +61,10 @@ export type PlanRunTurnRole = 'user' | 'assistant';
 export interface InsertPlanRunArgs {
   planSlug: string;
   /**
-   * Harness scope for the launch. Default = 'papercup' (preserves the
-   * pre-per-harness-plans-and-docs behavior). Per-harness callers
-   * (plans:launch from a harness-context agent) pass their harness slug.
+   * Harness scope for the launch. Default = the operator-home hive
+   * (`operatorHomeHarnessSlug()` — the single pointer; papercup→papercusp
+   * generalization). Per-harness callers (plans:launch from a
+   * harness-context agent) pass their harness slug.
    */
   harnessSlug?: string;
   /** `hashPlanContent` of the plan doc that seeded the launch — P-023's
@@ -84,7 +86,7 @@ export interface InsertPlanRunArgs {
  *  launch with no run record genuinely failed. */
 export async function insertPlanRun(args: InsertPlanRunArgs): Promise<number> {
   const now = Date.now();
-  const harnessSlug = args.harnessSlug?.trim() || 'papercup';
+  const harnessSlug = args.harnessSlug?.trim() || operatorHomeHarnessSlug();
   return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<{ id: number }[]>`
       INSERT INTO harness_shared.plan_runs (
@@ -362,7 +364,7 @@ export async function listPlanRuns(
   planSlug: string,
   opts: { harnessSlug?: string } = {},
 ): Promise<PlanRunSummary[]> {
-  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
+  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
   return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<
       (RawPlanRunRow & {

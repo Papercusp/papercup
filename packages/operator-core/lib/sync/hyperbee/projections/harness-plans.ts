@@ -144,6 +144,7 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   // plan-federation-regrain D-004: when per-part federation is ON, the per-part
   // recompose owns content + scalars. This whole-blob path drops to BOOTSTRAP-
   // ONLY: INSERT a never-seen plan (so a brand-new plan still lands on a remote
@@ -155,11 +156,11 @@ async function writeToPg(
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, content_hash, version,
          title, status, created, updated, owner, initiative, supersedes, superseded_by,
-         archived, is_legacy, author_pubkey, origin, fed_ts)
+         archived, is_legacy, author_pubkey, origin, fed_ts, fed_hlc)
       VALUES
         (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
          ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null}, ${row.supersedes}, ${row.superseded_by},
-         ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs})
+         ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
       ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
     `;
     flagPlanClobber(row.plan_slug, provenance);
@@ -174,11 +175,11 @@ async function writeToPg(
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version,
        title, status, created, updated, owner, initiative, supersedes, superseded_by,
-       archived, is_legacy, author_pubkey, origin, fed_ts)
+       archived, is_legacy, author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
        ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null}, ${row.supersedes}, ${row.superseded_by},
-       ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs})
+       ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
       content       = EXCLUDED.content,
       content_hash  = EXCLUDED.content_hash,
@@ -195,10 +196,14 @@ async function writeToPg(
       is_legacy     = EXCLUDED.is_legacy,
       author_pubkey = EXCLUDED.author_pubkey,
       origin        = EXCLUDED.origin,
-      fed_ts        = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
-    WHERE harness_shared.harness_plans.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= harness_shared.harness_plans.fed_ts
+      fed_ts        = EXCLUDED.fed_ts,
+      fed_hlc       = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard — order by HLC, fall back to fed_ts.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_shared.harness_plans.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= harness_shared.harness_plans.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR harness_shared.harness_plans.fed_hlc IS NULL)
+             AND (harness_shared.harness_plans.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= harness_shared.harness_plans.fed_ts))
   `;
   flagPlanClobber(row.plan_slug, provenance);
 }
@@ -207,17 +212,23 @@ async function deleteFromPg(
   opts: HarnessPlansProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.harness_plans
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND plan_slug = ${key}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the same HLC-then-fed_ts order.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -231,7 +242,7 @@ export function buildHarnessPlansProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

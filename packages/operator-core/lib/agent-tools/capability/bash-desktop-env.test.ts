@@ -48,7 +48,7 @@ function fakeLease(display: string) {
 describe('capability:bash — DISPLAY from the hive desktop lease (Gap C)', () => {
   beforeEach(() => {
     savedDisplay = process.env.DISPLAY;
-    process.env.DISPLAY = ':5'; // a sentinel inherited value, to prove override vs passthrough
+    process.env.DISPLAY = ':5'; // a sentinel host-seat value: proves the lease overrides it, and that it is otherwise stripped
   });
   afterEach(async () => {
     if (savedDisplay === undefined) delete process.env.DISPLAY;
@@ -65,15 +65,20 @@ describe('capability:bash — DISPLAY from the hive desktop lease (Gap C)', () =
     expect(r.content[0].text).toContain('D=[:222]'); // the leased sandbox display, not :5
   });
 
-  it('does NOT inject a display when the caller hive has no desktop (passes inherited env through)', async () => {
+  it('strips the inherited host display when the caller hive has no desktop (no seat leak)', async () => {
     const r = await bash.handler({ command: 'echo "D=[$DISPLAY]"' }, makeCtx('no-desktop-hive'));
-    expect(r.content[0].text).toContain('D=[:5]'); // inherited sentinel — the tool added nothing
+    // 2026-06-19 keystroke-leak fix: bash-jobs' stripHostX removes the inherited host
+    // DISPLAY (:5 here standing in for the host seat :0), so with no lease there is NO
+    // DISPLAY — the bee shell can never inherit the operator's X session.
+    expect(r.content[0].text).toContain('D=[]');
   });
 
-  it('does NOT inject a display when there is no harnessSlug on the ctx', async () => {
+  it('strips the inherited host display when there is no harnessSlug on the ctx', async () => {
     fakeLease(':223');
     await ensureHiveDesktop('some-hive'); // a lease exists, but this caller is not in that hive
     const r = await bash.handler({ command: 'echo "D=[$DISPLAY]"' }, makeCtx(undefined));
-    expect(r.content[0].text).toContain('D=[:5]'); // no ctx.harnessSlug → no lease lookup
+    // No ctx.harnessSlug → no lease lookup → no DISPLAY bound; the inherited host seat
+    // (:5) is stripped, never passed through.
+    expect(r.content[0].text).toContain('D=[]');
   });
 });

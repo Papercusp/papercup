@@ -92,6 +92,7 @@ const PROVENANCE = new Set<string>([
   'workspace_id', // op envelope → projection (the harness/workspace demux)
   'origin', // projection stamps 'local' | 'remote' (the echo-loop guard column)
   'fed_ts', // projection stamps from op provenance.ts (EI-79 LWW cursor)
+  'fed_hlc', // projection stamps from op provenance.fedHlc (= op.hlc) — the D-001 HLC ordering key
   'author_pubkey', // projection stamps from the op's writerPubkey
   'verified_author_github_user_id', // projection derives via verified hive_members attestation (features; P-008)
   'schema_version', // rides the op envelope, not the row value

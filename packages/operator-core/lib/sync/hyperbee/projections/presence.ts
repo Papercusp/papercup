@@ -82,15 +82,16 @@ async function writeToPg(
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   await sql`
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
-       intent, current_view, last_seen_at, schema_version, hive_slug, fed_ts)
+       intent, current_view, last_seen_at, schema_version, hive_slug, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.machine_label},
        ${row.device_pubkey}, ${row.intent}, ${row.current_view},
        to_timestamp(${row.last_seen_at} / 1000.0),
-       ${row.schema_version}, ${row.hive_slug ?? null}, ${fedTs})
+       ${row.schema_version}, ${row.hive_slug ?? null}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, machine_label) DO UPDATE SET
       device_pubkey = EXCLUDED.device_pubkey,
       intent = EXCLUDED.intent,
@@ -98,10 +99,14 @@ async function writeToPg(
       last_seen_at = EXCLUDED.last_seen_at,
       schema_version = EXCLUDED.schema_version,
       hive_slug = EXCLUDED.hive_slug,
-      fed_ts = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
-    WHERE shared_presence.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= shared_presence.fed_ts
+      fed_ts = EXCLUDED.fed_ts,
+      fed_hlc = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME HLC key the
+    -- merge fold uses; fall back to wall-clock fed_ts when either side lacks one.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND shared_presence.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= shared_presence.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR shared_presence.fed_hlc IS NULL)
+             AND (shared_presence.fed_ts IS NULL OR EXCLUDED.fed_ts >= shared_presence.fed_ts))
   `;
 }
 
@@ -109,6 +114,7 @@ async function deleteFromPg(
   opts: PresenceProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   // key shape: `<github_user_id>/<machine_label>`
   const sepIdx = key.indexOf('/');
@@ -119,14 +125,20 @@ async function deleteFromPg(
   if (!Number.isFinite(userId) || userId <= 0 || !machineLabel) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.shared_presence
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND machine_label = ${machineLabel}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
+      -- as the put guard; fall back to the ts-guard when either side lacks an HLC.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -136,7 +148,7 @@ export function buildPresenceProjection(opts: PresenceProjectionOpts): TableProj
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

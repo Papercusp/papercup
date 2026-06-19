@@ -157,26 +157,31 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   await sql`
     INSERT INTO harness_shared.feature_working_set
       (workspace_id, harness_slug, github_user_id, feature_id, started_at, cleared_at, schema_version,
-       author_pubkey, origin, fed_ts)
+       author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.feature_id},
        to_timestamp(${row.started_at} / 1000.0),
        ${row.cleared_at == null ? null : sql`to_timestamp(${row.cleared_at} / 1000.0)`},
-       ${row.schema_version}, ${authorPubkey}, ${origin}, ${fedTs})
+       ${row.schema_version}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, feature_id) DO UPDATE SET
       started_at = EXCLUDED.started_at,
       cleared_at = EXCLUDED.cleared_at,
       schema_version = EXCLUDED.schema_version,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
-      fed_ts = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op. (recompute
-    -- below stays unconditional: it re-derives the live set from current rows.)
-    WHERE feature_working_set.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= feature_working_set.fed_ts
+      fed_ts = EXCLUDED.fed_ts,
+      fed_hlc = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME HLC key the
+    -- merge fold uses; fall back to wall-clock fed_ts when either side lacks one.
+    -- (recompute below stays unconditional: it re-derives the live set.)
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND feature_working_set.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= feature_working_set.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR feature_working_set.fed_hlc IS NULL)
+             AND (feature_working_set.fed_ts IS NULL OR EXCLUDED.fed_ts >= feature_working_set.fed_ts))
   `;
   // Reconcile the canonical working_users[] array (Phase 8 P-038): a put may
   // start work (cleared_at NULL) or tombstone it (cleared_at set), both of
@@ -188,6 +193,7 @@ async function deleteFromPg(
   opts: FeatureWorkingSetProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   // key shape: `<github_user_id>/<feature_id>`
   const sepIdx = key.indexOf('/');
@@ -198,14 +204,20 @@ async function deleteFromPg(
   if (!Number.isFinite(userId) || userId <= 0 || !featureId) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.feature_working_set
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND feature_id = ${featureId}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
+      -- as the put guard; fall back to the ts-guard when either side lacks an HLC.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
   // A hard delete removes a worker → recompute the canonical array (idempotent;
   // safe to run even when the guarded DELETE above matched nothing).
@@ -220,7 +232,7 @@ export function buildFeatureWorkingSetProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

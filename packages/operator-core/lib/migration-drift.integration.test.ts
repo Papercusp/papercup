@@ -32,6 +32,22 @@ describe('checkMigrationDrift', () => {
       expect(appliedSet.has(e)).toBe(true);
       expect(onDiskSet.has(e)).toBe(false);
     }
-    expect(d.inSync).toBe(d.missing.length === 0 && d.extra.length === 0);
+    // inSync reflects ACTIONABLE drift ONLY (infra round-3 F14): it is driven by
+    // `missing` (on-disk migrations awaiting an apply), NOT by `extra`
+    // (squashed/renamed-migration history). A non-empty `extra` must NOT flip
+    // inSync false — that used to make in_sync permanently false on this fleet
+    // and masked real `missing` drift.
+    expect(d.inSync).toBe(d.missing.length === 0);
+  });
+
+  it('extra (squashed-history) rows do not flip inSync false', async () => {
+    const d = await checkMigrationDrift();
+    if (d.extra.length > 0 && d.missing.length === 0) {
+      // The exact live condition this fix targets: history present, nothing
+      // awaiting apply ⇒ in sync.
+      expect(d.inSync).toBe(true);
+    }
+    // And the invariant always holds regardless of `extra`.
+    expect(d.inSync).toBe(d.missing.length === 0);
   });
 });

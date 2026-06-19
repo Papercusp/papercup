@@ -29,6 +29,7 @@ import {
   assertSandboxDisplay,
   captureCommand,
   planAction,
+  stripHostX,
   xdotoolCommand,
   type ComputerActionInput,
   type DesktopTarget,
@@ -56,7 +57,11 @@ export type ComputerExec = (
 const realExec: ComputerExec = (bin, args, opts) =>
   new Promise((resolveExec, reject) => {
     const child = spawn(bin, args, {
-      env: { ...process.env, ...(opts.env ?? {}) },
+      // ISOLATION (2026-06-19 keystroke-leak fix): strip the operator's host X
+      // session (DISPLAY=:0 / gdm XAUTHORITY) before binding the sandbox display in
+      // opts.env, so xdotool/import can ONLY reach the leased sandbox — never the
+      // operator's real :0 where the live fleet's agent TUIs run.
+      env: { ...stripHostX(process.env), ...(opts.env ?? {}) },
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
     const out: Buffer[] = [];

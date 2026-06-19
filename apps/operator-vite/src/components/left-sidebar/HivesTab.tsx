@@ -10,6 +10,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import LocalHivesControl from './LocalHivesControl';
+import HiveFederationStatus from './HiveFederationStatus';
 
 interface FederatedRow {
   ownerId: string;
@@ -82,6 +83,9 @@ export default function HivesTab({ active }: { active: boolean }) {
   return (
     <div className="pclsb-panel" data-testid="left-sidebar-hives">
       {hiveControlOn && <LocalHivesControl />}
+      {/* G-004 (Brief M): the live federation status surface — my published hives'
+          peer reach + install substrate health. Polls only while the tab is open. */}
+      {active && <HiveFederationStatus />}
       <div className="pclsb-panel__bar">
         <span className="pclsb-panel__bar-label">
           p2p swarm · {groups.length} joined · {live} live

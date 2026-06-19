@@ -204,6 +204,29 @@ export function hiveMemberHarnessScopes(
 }
 
 /**
+ * The filesystem path whose repo-backed content (docs, source, tests-as-files)
+ * belongs to a harness. A `harness_kind:'hive'` harness is repo-LESS — its `path`
+ * is the Hive's state dir, NOT a code checkout — so its repo-backed content lives
+ * in its MEMBER repo (git-sync-any-hive: a coding Hive's files ARE its member's).
+ * Returns the member repo's path for such a Hive, else the harness's own path.
+ * Pure over the registry projects; returns undefined when the slug isn't registered.
+ */
+export function resolveHarnessContentPath(
+  reg: Pick<HarnessRegistry, 'projects'>,
+  slug: string,
+): string | undefined {
+  const project = reg.projects.find((p) => p.slug === slug);
+  if (!project) return undefined;
+  if (project.harness_kind === 'hive') {
+    const member = reg.projects.find(
+      (p) => p.hive_slug === slug && p.harness_kind !== 'hive' && p.path,
+    );
+    if (member) return member.path;
+  }
+  return project.path;
+}
+
+/**
  * Append an audit_log row recording every registry size change, so a
  * future wipe is traceable to its actor + timestamp (the 2026-05-25
  * incident left no trail because this write was silent). Best-effort —

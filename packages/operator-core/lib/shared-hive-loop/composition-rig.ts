@@ -207,6 +207,7 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       audit_verdict       TEXT,
       verified_author_github_user_id BIGINT,
       fed_ts              BIGINT,
+      fed_hlc             TEXT,
       -- migration 136: the work-item family discriminator claim_next filters on
       item_kind           TEXT NOT NULL DEFAULT 'feature',
       -- migration 136-era payload column FEATURE_COLS returns
@@ -250,6 +251,7 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       author_pubkey       text,
       origin              text NOT NULL DEFAULT 'local',
       fed_ts              bigint,
+      fed_hlc             text,
       PRIMARY KEY (workspace_id, github_user_id)
     );
     CREATE TABLE harness_shared.harness_issues_consolidated (
@@ -273,6 +275,7 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       author_pubkey     TEXT,
       origin            TEXT NOT NULL DEFAULT 'local',
       fed_ts            BIGINT,
+      fed_hlc           TEXT,
       PRIMARY KEY (harness_slug, issue_id)
     );
     CREATE TABLE harness_shared.projects (

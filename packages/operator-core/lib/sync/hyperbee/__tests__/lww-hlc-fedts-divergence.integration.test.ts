@@ -150,10 +150,11 @@ async function mergeIntoPg(harnessSlug: string, logs: AdmittedLog[]): Promise<vo
   await mergeAdmittedLogsIncremental(logs, cursor, { applyImpl: apply, getTimeoutMs: 0 });
 }
 
-describe('D-001 real-PG — HLC-merge vs fed_ts-guard divergence', () => {
-  // EXPECTED-RED on the release invariant (see the fast twin). `it.fails` keeps
-  // CI green while the S0 stands; it flips RED when the comparators are unified.
-  it.fails('two peers (real PG projection) MUST converge on the contested key — they do not', async () => {
+describe('D-001 real-PG — HLC-merge vs fed_ts-guard divergence (FIXED: fed_hlc guard)', () => {
+  // RELEASE INVARIANT, now GREEN (migration 314 + the projection fed_hlc guard):
+  // the two cells fold the SAME contested ops in opposite orders and CONVERGE.
+  // Flipped from `it.fails` once the comparators were unified onto `fed_hlc`.
+  it('two peers (real PG projection) converge on the contested key', async () => {
     // Cell A (loser's author): folds its own write first → [logL, logW].
     const a = invertedPair('cellA');
     await mergeIntoPg('cellA', [singleOpLog('logL', a.opL), singleOpLog('logW', a.opW)]);
@@ -164,13 +165,15 @@ describe('D-001 real-PG — HLC-merge vs fed_ts-guard divergence', () => {
     expect(await statusOf('cellA')).toBe(await statusOf('cellB'));
   });
 
-  it('characterises it on real PG: cellA materialises L, cellB materialises W', async () => {
+  it('both cells materialise W (the HLC winner) — the guard now orders by fed_hlc', async () => {
     const a = invertedPair('cellA2');
     await mergeIntoPg('cellA2', [singleOpLog('logL', a.opL), singleOpLog('logW', a.opW)]);
     const b = invertedPair('cellB2');
     await mergeIntoPg('cellB2', [singleOpLog('logW', b.opW), singleOpLog('logL', b.opL)]);
 
-    expect(await statusOf('cellA2')).toBe('L'); // guard rejected W (fed_ts 1000 < 5000)
+    // cellA: applies L, then W — W.fed_hlc(9000…) >= L.fed_hlc(5000…) → W lands
+    // (the guard no longer rejects the fold-winner on the lower fed_ts 1000<5000).
+    expect(await statusOf('cellA2')).toBe('W');
     expect(await statusOf('cellB2')).toBe('W'); // merge suppressed L (HLC lower)
   });
 

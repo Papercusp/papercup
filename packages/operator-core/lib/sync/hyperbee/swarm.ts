@@ -32,8 +32,9 @@ import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
 
-/** Protomux protocol id for the signed-announce exchange (Model B Stage 4b). */
-const ANNOUNCE_PROTOCOL = 'papercusp/announce';
+/** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
+ *  Exported for the A-002 multi-hive demonstrator test. */
+export const ANNOUNCE_PROTOCOL = 'papercusp/announce';
 
 export interface SwarmHandle {
   /** Leave the topic + detach this harness's connection handler.
@@ -107,23 +108,54 @@ export interface JoinHarnessSwarmOpts {
   onAnnounce?: (frame: SignedAnnounce) => Promise<AdmissionResult> | void;
 }
 
-/** Muxers that already carry our announce pair-notifier (one per muxer). */
-const announcePairedMuxers = new WeakSet<object>();
-/** Latest announce-channel opts per muxer, for the lazy-accept notifier. On a
- *  shared swarm the same socket serves several topics; the announce channel is
- *  protocol-keyed (one per socket), so last-writer-wins is the existing
- *  duplicate-channel semantics, now visible to the notifier too. */
-const announceOptsByMuxer = new WeakMap<
+/** Announce-channel opts for one hive on one peer connection. */
+export type AnnounceChannelOpts = {
+  ourAnnounce?: SignedAnnounce;
+  onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'];
+};
+
+/**
+ * Per-muxer → per-hive announce-channel state (A-002 fix).
+ *
+ * A shared-swarm muxer serves MANY hives over one socket. The announce channel
+ * MUST be discriminated per hive — protomux keys `createChannel`/`pair` by
+ * `(protocol, id)`, so we use the hive's 32-byte topic as the channel `id`
+ * (both peers derive the SAME per-hive topic, so they agree on it). Keying this
+ * state by `muxer × topicHex` (not `muxer` alone) is the heart of the A-002 fix:
+ * previously a 2nd hive on the muxer (a) OVERWROTE the 1st hive's opts in the
+ * lazy-accept notifier (last-writer-wins WeakMap) and (b) collided on the
+ * protocol-only channel key so its `createChannel` returned null → its
+ * admission exchange was silently dropped → that hive never federated, BOTH
+ * directions, while `peer_connected` + topic-equal still looked healthy.
+ *
+ * `paired` records whether THIS hive's lazy-accept pair-notifier is already
+ * registered on the muxer (once per muxer × hive). `opts` is refreshed on a
+ * reconnect so the notifier re-creates the channel with the current announce.
+ */
+const announceHiveStateByMuxer = new WeakMap<
   object,
-  { ourAnnounce?: SignedAnnounce; onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'] }
+  Map<string, { opts: AnnounceChannelOpts; paired: boolean }>
 >();
+
+/** Get-or-create the per-hive announce-state map for a muxer. */
+function announceHiveStateFor(
+  mux: object,
+): Map<string, { opts: AnnounceChannelOpts; paired: boolean }> {
+  let m = announceHiveStateByMuxer.get(mux);
+  if (!m) {
+    m = new Map();
+    announceHiveStateByMuxer.set(mux, m);
+  }
+  return m;
+}
 
 /** Create + open the announce channel on a muxer (returns silently when the
  *  channel already exists on it). Split from openAnnounceChannel so the
  *  protomux pair-notifier can re-create the channel synchronously. */
-function createAnnounceChannel(
+export function createAnnounceChannel(
   mux: ReturnType<typeof Protomux.from>,
-  opts: { ourAnnounce?: SignedAnnounce; onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'] },
+  channelId: Buffer,
+  opts: AnnounceChannelOpts,
 ): void {
   // Send OUR announce from the channel's `onopen` — Protomux invokes onopen
   // only once the channel is fully paired (the remote opened the matching
@@ -145,9 +177,14 @@ function createAnnounceChannel(
   };
   const channel = mux.createChannel({
     protocol: ANNOUNCE_PROTOCOL,
+    // Discriminate the announce channel PER HIVE by its topic (A-002). Without
+    // an id, a 2nd hive on the same muxer collides on the protocol-only key and
+    // createChannel returns null — silently dropping its admission exchange so
+    // that hive never federates (both directions).
+    id: channelId,
     onopen: sendOurAnnounce,
   });
-  if (!channel) return; // already open on this muxer (duplicate) — nothing to do
+  if (!channel) return; // already open on this muxer for this hive — nothing to do
   message = channel.addMessage<SignedAnnounce>({
     encoding: c.json,
     onmessage: (frame: SignedAnnounce) => {
@@ -167,9 +204,10 @@ function createAnnounceChannel(
  *  connection, wire inbound announces to `onAnnounce`, and send `ourAnnounce`.
  *  Defensive: any protomux error is swallowed — a peer that can't speak the
  *  announce protocol still replicates over the same connection. */
-function openAnnounceChannel(
+export function openAnnounceChannel(
   socket: unknown,
-  opts: { ourAnnounce?: SignedAnnounce; onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'] },
+  topic: Buffer,
+  opts: AnnounceChannelOpts,
 ): void {
   if (!opts.onAnnounce && !opts.ourAnnounce) return;
   try {
@@ -180,23 +218,34 @@ function openAnnounceChannel(
     const mux = Protomux.from(socket);
     const s = socket as { userData?: unknown };
     if (!s.userData) s.userData = mux;
-    announceOptsByMuxer.set(mux, opts);
-    // LAZY-ACCEPT pair-notifier (once per muxer): on a SHARED swarm the two
-    // ends attach to an existing socket at different times (the socket may
-    // predate both, opened by the hive-directory gossip). The earlier end's
-    // channel-open reaches the later end before any matching channel exists,
-    // and protomux REJECTS it — permanently, opens are never re-sent — so the
-    // earlier end could never pair. The notifier accepts a pending open by
-    // creating our channel SYNCHRONOUSLY (the directory-gossip late-join
-    // lesson — see directory-swarm.ts).
-    if (!announcePairedMuxers.has(mux)) {
-      announcePairedMuxers.add(mux);
+    // Discriminate per hive by its topic id (A-002): keep each hive's opts +
+    // pair-notifier under its own topicHex so a 2nd hive on this muxer neither
+    // overwrites the 1st's opts nor collides on the announce channel.
+    const topicHex = topic.toString('hex');
+    const hiveStates = announceHiveStateFor(mux);
+    const existing = hiveStates.get(topicHex);
+    const st = existing ?? { opts, paired: false };
+    if (existing) existing.opts = opts; // refresh on reconnect for this hive
+    else hiveStates.set(topicHex, st);
+    // LAZY-ACCEPT pair-notifier, ONCE per (muxer, hive-topic). Registered with
+    // id = topic so protomux dispatches a remote announce-open for THIS hive to
+    // THIS notifier (_requestSession keys _notify by toKey(protocol, id), with a
+    // null-id fallback). On a SHARED swarm the two ends attach to an existing
+    // socket at different times (the socket may predate both, opened by the
+    // hive-directory gossip). The earlier end's channel-open reaches the later
+    // end before any matching channel exists, and protomux REJECTS it —
+    // permanently, opens are never re-sent — so the earlier end could never
+    // pair. The notifier accepts a pending open by creating our channel
+    // SYNCHRONOUSLY (the directory-gossip late-join lesson — see
+    // directory-swarm.ts).
+    if (!st.paired) {
+      st.paired = true;
       try {
-        mux.pair({ protocol: ANNOUNCE_PROTOCOL }, () => {
-          const cur = announceOptsByMuxer.get(mux);
+        mux.pair({ protocol: ANNOUNCE_PROTOCOL, id: topic }, () => {
+          const cur = hiveStates.get(topicHex);
           if (cur) {
             try {
-              createAnnounceChannel(mux, cur);
+              createAnnounceChannel(mux, topic, cur.opts);
             } catch {
               // best-effort — a failed lazy accept degrades to the old reject
             }
@@ -206,7 +255,7 @@ function openAnnounceChannel(
         // pair() unsupported on this muxer build — connect-time channels still pair
       }
     }
-    createAnnounceChannel(mux, opts);
+    createAnnounceChannel(mux, topic, opts);
   } catch {
     // Announce channel is best-effort; replication still proceeds.
   }
@@ -329,7 +378,7 @@ export async function joinHarnessSwarm(
       opts.store.replicate(socket);
       // Open the announce channel on the SAME connection's muxer: exchange
       // signed announces so admitted peer logs get aggregated (Model B Stage 4b).
-      openAnnounceChannel(socket, {
+      openAnnounceChannel(socket, opts.topic, {
         ourAnnounce: opts.ourAnnounce,
         onAnnounce: opts.onAnnounce,
       });

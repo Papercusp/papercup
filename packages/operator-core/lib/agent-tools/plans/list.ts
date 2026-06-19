@@ -209,8 +209,25 @@ export default defineTool({
       for (const [harnessSlug, rows] of byHarness) batches.push({ harnessSlug, rows });
     } else {
       for (const harnessSlug of perHarness) {
-        const rows = await listPlanIndexRows({ harnessSlug, includeArchived, includeInstances });
-        batches.push({ harnessSlug, rows });
+        try {
+          const rows = await listPlanIndexRows({ harnessSlug, includeArchived, includeInstances });
+          batches.push({ harnessSlug, rows });
+        } catch (err) {
+          // infra round-3 F5: a stale/unregistered slug must not spike the
+          // error-rate on plans:list (the highest-volume tool — ~2% of calls
+          // were `resolvePlanScope: harness '…' is not registered`, from callers
+          // querying a deregistered/stale hive slug). A LIST read of a
+          // nonexistent harness is empty, not an error — match the harness_slugs
+          // fan-out path above (which already catches → unknownHarnesses). Only
+          // the not-registered resolve failure is swallowed; any OTHER error
+          // (a real DB/query fault) still throws so genuine failures stay loud.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/not registered/i.test(msg)) {
+            unknownHarnesses.push(harnessSlug);
+          } else {
+            throw err;
+          }
+        }
       }
     }
 

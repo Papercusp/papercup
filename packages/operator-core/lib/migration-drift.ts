@@ -39,10 +39,18 @@ export interface MigrationDrift {
   sqlDir: string | null;
   onDisk: string[];
   applied: string[];
-  /** On disk + runner-eligible but NOT yet applied — awaiting an operator restart. */
+  /** On disk + runner-eligible but NOT yet applied — awaiting an operator restart.
+   *  This is the ACTIONABLE drift and the sole driver of `inSync`. */
   missing: string[];
-  /** Recorded applied but the file is gone from disk (unusual — investigate). */
+  /** Recorded applied but the file is gone from disk. Almost always benign
+   *  squashed/renamed-migration history (and the operator commonly runs from a
+   *  release checkout that lags the canonical tree). INFORMATIONAL only — it does
+   *  NOT flip `inSync` (infra round-3 F14: it used to, so in_sync was permanently
+   *  false and masked real `missing` drift). Surface it for awareness; investigate
+   *  only if a file you expected on disk is gone. */
   extra: string[];
+  /** True when the live DB has applied every on-disk migration — i.e. `missing`
+   *  is empty. NOT affected by `extra` (see above). */
   inSync: boolean;
 }
 
@@ -76,6 +84,11 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
     applied,
     missing,
     extra,
-    inSync: missing.length === 0 && extra.length === 0,
+    // ACTIONABLE drift only: a non-empty `missing` means the live DB lags the
+    // on-disk migrations (restart / db:migrate to apply). `extra` is benign
+    // squashed-history noise and must NOT flip this false — doing so made
+    // in_sync permanently false on this fleet, masking real `missing` drift
+    // (infra round-3 F14).
+    inSync: missing.length === 0,
   };
 }

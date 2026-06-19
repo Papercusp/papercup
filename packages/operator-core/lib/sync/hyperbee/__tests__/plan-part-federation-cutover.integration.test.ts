@@ -144,6 +144,7 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       author_pubkey TEXT,
       origin        TEXT NOT NULL DEFAULT 'local',
       fed_ts        BIGINT,
+      fed_hlc       TEXT,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
   `);
@@ -154,14 +155,14 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
   // Mig 214 attaches its stamp trigger to all 11 CDC tables (strict — no silent
   // skip on a typo'd name), so cheap stubs stand in for the ones not written here.
   await sql.unsafe(`
-    CREATE TABLE harness_shared.coord_event_log (id INT, origin TEXT, fed_ts BIGINT);
-    CREATE TABLE harness_shared.coord_conversations (id INT, origin TEXT, fed_ts BIGINT);
-    CREATE TABLE harness_shared.coord_threads (id INT, origin TEXT, fed_ts BIGINT);
-    CREATE TABLE harness_shared.coord_thread_posts (id INT, origin TEXT, fed_ts BIGINT);
-    CREATE TABLE harness_shared.plan_item_assignments (id INT, origin TEXT, fed_ts BIGINT);
-    CREATE TABLE harness_shared.hive_settings (id INT, origin TEXT, fed_ts BIGINT);
-    CREATE TABLE harness_shared.hive_members (id INT, origin TEXT, fed_ts BIGINT);
-    CREATE TABLE harness_shared.engineer_issues (id INT, origin TEXT, fed_ts BIGINT);
+    CREATE TABLE harness_shared.coord_event_log (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
+    CREATE TABLE harness_shared.coord_conversations (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
+    CREATE TABLE harness_shared.coord_threads (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
+    CREATE TABLE harness_shared.coord_thread_posts (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
+    CREATE TABLE harness_shared.plan_item_assignments (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
+    CREATE TABLE harness_shared.hive_settings (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
+    CREATE TABLE harness_shared.hive_members (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
+    CREATE TABLE harness_shared.engineer_issues (id INT, origin TEXT, fed_ts BIGINT, fed_hlc TEXT);
   `);
   await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '214-federated-fed-ts-local-stamp.sql'), 'utf8')));
 }

@@ -45,6 +45,8 @@ beforeAll(async () => {
   for (const m of ['184-hives-table.sql', '185-hive-members-admission.sql', '189-hive-members-federation-cols.sql']) {
     await db.sql.unsafe(readFileSync(join(SQL_DIR, m), 'utf8'));
   }
+  // D-001 (mig 314): the fed_hlc ordering column the projection now writes.
+  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_members ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
 });
 afterAll(async () => {
   await db?.cleanup();

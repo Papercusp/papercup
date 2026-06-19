@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { lintParsed } from './lint';
+import { lintParsed, summarizeLintReports, type PlanLintReport } from './lint';
 import { parsePlan } from './parser';
 
 /**
@@ -423,5 +423,63 @@ describe('plans:lint — owner_ask_not_needs_human (EI-44)', () => {
   it('does NOT warn on an ordinary Now block with no owner/human mention', async () => {
     const r = await lintDoc(planDoc({ nowState: 'building phase 2', nowNext: 'wire the resolver' }));
     expect(has(r)).toBe(false);
+  });
+});
+
+describe('summarizeLintReports — bounded all-plans output (F-FIX-034 overflow regression)', () => {
+  // Mirror the real bug input: many plans, a few errors, hundreds of verbose
+  // warnings. The full reports were 170KB+ in one line → exceeded the agent
+  // result-size cap → unusable blob. The summary must stay well under it.
+  const longMsg = (code: string, i: number) =>
+    `${code}: a verbose advisory sentence that explains the finding in detail for plan index ${i}, ` +
+    'padded to resemble the real ~250-char lint warning messages that dominate the output bytes.';
+  const reports: PlanLintReport[] = [];
+  for (let i = 0; i < 484; i++) {
+    const errors =
+      i < 17
+        ? [{ level: 'error' as const, code: 'missing_now_section', message: longMsg('missing_now_section', i) }]
+        : [];
+    const warnings = Array.from({ length: i % 5 === 0 ? 3 : 1 }, (_, k) => ({
+      level: 'warning' as const,
+      code: k === 0 ? 'unphased_item' : 'owner_ask_not_needs_human',
+      message: longMsg('warn', i),
+    }));
+    reports.push({ slug: `plan-${i}`, archived: false, legacy: false, exempt: false, errors, warnings });
+  }
+
+  it('preserves error totals + inlines error findings, collapses warnings to counts', () => {
+    const s = summarizeLintReports(reports);
+    expect(s.mode).toBe('summary');
+    expect(s.ok).toBe(false); // 17 plans carry an error
+    expect(s.totalErrors).toBe(17);
+    expect(s.planCount).toBe(484);
+    expect(s.errorsByCode.missing_now_section).toBe(17);
+    expect(s.warningsByCode.unphased_item).toBeGreaterThan(0);
+    // every error finding is inlined (CI-gating signal kept in full)
+    const inlinedErrors = s.plans.reduce((n, p) => n + (p.errors?.length ?? 0), 0);
+    expect(inlinedErrors).toBe(17);
+    // warnings are NOT inlined anywhere — only counted
+    expect(s.plans.every((p) => p.warningCount >= 0 && !('warnings' in p))).toBe(true);
+  });
+
+  it('omits clean plans and stays far under the ~80KB result-size cap', () => {
+    const s = summarizeLintReports(reports);
+    // only plans with ≥1 finding appear
+    expect(s.plans.every((p) => p.errorCount > 0 || p.warningCount > 0)).toBe(true);
+    const summaryBytes = JSON.stringify(s).length;
+    const fullBytes = JSON.stringify({ reports }).length;
+    expect(summaryBytes).toBeLessThan(60_000);
+    expect(summaryBytes).toBeLessThan(fullBytes / 2);
+  });
+
+  it('reports ok:true with no errors (warnings alone do not gate)', () => {
+    const warnOnly: PlanLintReport[] = [
+      { slug: 'p1', archived: false, legacy: false, exempt: false, errors: [], warnings: [{ level: 'warning', code: 'unphased_item', message: 'x' }] },
+      { slug: 'p2', archived: false, legacy: false, exempt: false, errors: [], warnings: [] },
+    ];
+    const s = summarizeLintReports(warnOnly);
+    expect(s.ok).toBe(true);
+    expect(s.totalWarnings).toBe(1);
+    expect(s.plans.map((p) => p.slug)).toEqual(['p1']); // p2 (clean) omitted
   });
 });

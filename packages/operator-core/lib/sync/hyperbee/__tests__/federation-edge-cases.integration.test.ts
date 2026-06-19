@@ -42,6 +42,7 @@ import type { OpEnvelope } from '../op-envelope-types';
 import { _resetBootHistoryForTests } from '../boot-history';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
 import { drainOutboxOnce } from '../outbox-drain';
+import { encodeHlc } from '@papercusp/locks-core';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
 import { buildHarnessFeaturesProjection } from '../projections/harness-features';
 import { buildIssuesProjection } from '../projections/issues';
@@ -191,6 +192,7 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
       author_pubkey       TEXT,
       origin              TEXT NOT NULL DEFAULT 'local',
       fed_ts              BIGINT,
+      fed_hlc             TEXT,
       verified_author_github_user_id BIGINT,
       PRIMARY KEY (harness_slug, feature_id)
     );
@@ -215,6 +217,7 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
       author_pubkey     TEXT,
       origin            TEXT NOT NULL DEFAULT 'local',
       fed_ts            BIGINT,
+      fed_hlc           TEXT,
       PRIMARY KEY (harness_slug, issue_id)
     );
     CREATE TABLE harness_shared.projects (
@@ -266,7 +269,12 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   // fed_ts or every own-log merge-back re-enqueues forever).
   await sql.unsafe(`
     ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
+    -- D-001 (mig 314): the outbox carries the op's HLC; G1b forces it to make a
+    -- del HLC-stale (the new ordering key — fed_ts is now only the fallback).
+    ALTER TABLE harness_shared.substrate_outbox             ADD COLUMN IF NOT EXISTS op_hlc TEXT;
     CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
       AFTER UPDATE ON harness_shared.harness_features_consolidated
       FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
@@ -560,14 +568,16 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
     90_000,
   );
 
-  // ── G1b [P1]: the fed_ts del-guard — a STALE delete must NOT erase a NEWER put ──
+  // ── G1b [P1]: the del-guard — an HLC-STALE delete must NOT erase a NEWER put ──
   // The complement of G1: deletes leave no PG tombstone, so the "stale op doesn't
-  // clobber" floor for deletes lives in `deleteFromPg`'s ts-guard
-  // (`fed_ts IS NULL OR fed_ts <= delTs`). Here B holds a fresh put (high fed_ts);
-  // a del op carrying a STALE ts (below that fed_ts) arrives over the wire — the
-  // guard must REFUSE it so the row survives. (The merge fold may select the del
-  // as the per-key winner by HLC; the PG-level guard is the independent second
-  // floor read-merge.ts documents at lines 459-463.)
+  // clobber" floor for deletes lives in `deleteFromPg`'s guard. D-001 (mig 314)
+  // made that guard order by the HLC key (`fed_hlc`) — the same key the merge
+  // fold uses — with a `fed_ts` fallback. So "stale" now means HLC-stale: B holds
+  // a fresh put (high fed_hlc); a del op carrying a LOWER (older) HLC arrives over
+  // the wire — the guard must REFUSE it so the row survives. (We force BOTH the
+  // outbox ts AND op_hlc to construct the inversion. The merge fold may select the
+  // del as the per-key winner; the PG-level guard is the independent second floor
+  // read-merge.ts documents.)
   it(
     'G1b: a STALE delete (older fed_ts than B’s existing put) does NOT erase the row from B',
     async () => {
@@ -577,9 +587,12 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
       await insertFeature(peerA.pg, 'F-keep', { title: 'must survive stale del', ts: 1_000 });
       // Force the put's outbox capture-ts to a large value → B's fed_ts is large.
       const HIGH_TS = 9_000_000_000_000; // far-future epoch-ms
+      // D-001: also force the put's HLC HIGH so B stores a high fed_hlc — the new
+      // ordering key the del-guard compares (fed_ts is now only the fallback).
+      const HIGH_HLC = encodeHlc({ ms: HIGH_TS, count: 0 });
       await peerA.pg`
         UPDATE harness_shared.substrate_outbox
-           SET ts = ${HIGH_TS}
+           SET ts = ${HIGH_TS}, op_hlc = ${HIGH_HLC}
          WHERE table_name = 'harness_features_consolidated' AND key = 'F-keep'
            AND op = 'put' AND drained_at IS NULL
       `;
@@ -601,7 +614,7 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
       `;
       await peerA.pg`
         UPDATE harness_shared.substrate_outbox
-           SET ts = ${HIGH_TS - 5_000_000}
+           SET ts = ${HIGH_TS - 5_000_000}, op_hlc = ${encodeHlc({ ms: HIGH_TS - 5_000_000, count: 0 })}
          WHERE table_name = 'harness_features_consolidated' AND key = 'F-keep'
            AND op = 'del' AND drained_at IS NULL
       `;

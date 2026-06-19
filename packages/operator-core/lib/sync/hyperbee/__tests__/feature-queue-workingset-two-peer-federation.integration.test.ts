@@ -51,6 +51,7 @@ const FEATURE_QUEUE_DDL = `
     origin text DEFAULT 'local'::text NOT NULL,
     schema_version bigint DEFAULT 1 NOT NULL,
     fed_ts bigint,
+    fed_hlc text,
     PRIMARY KEY (workspace_id, harness_slug, github_user_id, feature_id)
   )`;
 const FEATURE_WORKING_SET_DDL = `
@@ -65,6 +66,7 @@ const FEATURE_WORKING_SET_DDL = `
     origin text DEFAULT 'local'::text NOT NULL,
     schema_version bigint DEFAULT 1 NOT NULL,
     fed_ts bigint,
+    fed_hlc text,
     PRIMARY KEY (workspace_id, harness_slug, github_user_id, feature_id)
   )`;
 /** Minimal real-shape features table so the working_set apply's working_users[]

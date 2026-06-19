@@ -95,12 +95,13 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   await sql`
     INSERT INTO harness_shared.harness_issues_consolidated
       (harness_slug, issue_id, title, severity, source, status,
        found_at, found_during, repro, evidence, suggested_fix,
        code_pointer, linked_feature_id, attempts, notes,
-       created_ts, updated_ts, author_pubkey, origin, fed_ts)
+       created_ts, updated_ts, author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${row.harness_slug}, ${row.issue_id}, ${row.title}, ${row.severity}, ${row.source}, ${row.status},
        to_timestamp(${row.found_at} / 1000.0),
@@ -109,7 +110,7 @@ async function writeToPg(
        -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under the getOrgPg runtime
        -- client (agent-insights/postgres-js-jsonb-binding).
        ${JSON.stringify(normalizeJsonbInput(row.notes) ?? [])}::text::jsonb,
-       ${row.created_ts}, ${row.updated_ts}, ${authorPubkey}, ${origin}, ${fedTs})
+       ${row.created_ts}, ${row.updated_ts}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
       title = EXCLUDED.title,
       severity = EXCLUDED.severity,
@@ -127,10 +128,14 @@ async function writeToPg(
       updated_ts = EXCLUDED.updated_ts,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
-      fed_ts = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
-    WHERE harness_issues_consolidated.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= harness_issues_consolidated.fed_ts
+      fed_ts = EXCLUDED.fed_ts,
+      fed_hlc = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard — order by HLC, fall back to fed_ts.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_issues_consolidated.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= harness_issues_consolidated.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR harness_issues_consolidated.fed_hlc IS NULL)
+             AND (harness_issues_consolidated.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= harness_issues_consolidated.fed_ts))
   `;
   void opts.workspaceId;
 }
@@ -139,16 +144,22 @@ async function deleteFromPg(
   opts: IssuesProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.harness_issues_consolidated
     WHERE harness_slug = ${opts.harnessSlug}
       AND issue_id = ${key}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the same HLC-then-fed_ts order.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -160,7 +171,7 @@ export function buildIssuesProjection(opts: IssuesProjectionOpts): TableProjecti
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

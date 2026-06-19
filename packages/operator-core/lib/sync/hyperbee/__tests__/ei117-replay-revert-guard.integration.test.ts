@@ -129,6 +129,7 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
         author_pubkey TEXT,
         origin        TEXT NOT NULL DEFAULT 'local',
         fed_ts        BIGINT,
+        fed_hlc       TEXT,
         PRIMARY KEY (workspace_id, harness_slug, plan_slug)
       );
     `);

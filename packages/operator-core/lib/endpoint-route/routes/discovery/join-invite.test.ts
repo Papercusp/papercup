@@ -12,7 +12,11 @@ import { formatHiveInviteLink } from '../../../harness/hive-invite-link';
 import type { HiveDirectoryWiring } from '../../../hive-directory-boot';
 
 const joined: string[] = [];
-let wiring: Pick<HiveDirectoryWiring, 'joinInviteTopic'> | null = null;
+let confirmResult: Awaited<ReturnType<HiveDirectoryWiring['confirmInviteAnnounce']>> = {
+  found: false,
+  peersOnTopic: 0,
+};
+let wiring: Pick<HiveDirectoryWiring, 'joinInviteTopic' | 'confirmInviteAnnounce'> | null = null;
 
 vi.mock('../../../hive-directory-boot', () => ({
   ensureHiveDirectoryWired: vi.fn(async () => wiring),
@@ -35,10 +39,12 @@ async function post(body: unknown) {
 
 beforeEach(() => {
   joined.length = 0;
+  confirmResult = { found: false, peersOnTopic: 0 };
   wiring = {
     joinInviteTopic: async (s: string) => {
       joined.push(s);
     },
+    confirmInviteAnnounce: async () => confirmResult,
   };
 });
 
@@ -47,7 +53,13 @@ describe('POST /api/discovery/join-invite (P-006)', () => {
     expect((joinInviteRoute as { auth?: unknown }).auth).toBe('loopback');
   });
 
-  it('joins the invite topic from a full artifact and reports joined', async () => {
+  it('G-002: reports joined ONLY when the hive actually announces on the topic', async () => {
+    // The bounded-confirmation found a real announce on the invite topic.
+    confirmResult = {
+      found: true,
+      hive: { hiveId: 'hive-acme', title: 'Acme Shop', visibility: 'invite' },
+      peersOnTopic: 2,
+    };
     const link = formatHiveInviteLink({
       pubkeyBase64: Buffer.alloc(32, 7).toString('base64'),
       secret: SECRET,
@@ -55,11 +67,31 @@ describe('POST /api/discovery/join-invite (P-006)', () => {
     });
     const { status, body } = await post({ link });
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, joined: true });
+    expect(body).toMatchObject({
+      ok: true,
+      joined: true,
+      found: true,
+      subscribed: true,
+      peersOnTopic: 2,
+      hive: { hiveId: 'hive-acme', title: 'Acme Shop' },
+    });
     expect(joined).toEqual([SECRET]); // the EXACT secret string — topic derivation is verbatim
   });
 
-  it('accepts a secret-only link (pubkey/title optional)', async () => {
+  it('G-002: a well-formed-but-dead secret is HONEST — subscribed, NOT joined (no fake success)', async () => {
+    // Default confirmResult = { found:false } — joined the topic, but nothing
+    // announces on it (withdrawn / wrong secret / owner offline).
+    const { status, body } = await post({ link: formatHiveInviteLink({ secret: SECRET }) });
+    expect(status).toBe(200);
+    // The CORE honesty assertion: NOT joined, NOT found — the old lie was
+    // `{ ok:true, joined:true }` for exactly this case.
+    expect(body).toMatchObject({ ok: true, joined: false, found: false, subscribed: true });
+    expect(body?.message).toMatch(/withdrawn|wrong|announc/i);
+    expect(body?.joined).not.toBe(true);
+    expect(joined).toEqual([SECRET]); // we DID subscribe (idempotent topic join)
+  });
+
+  it('accepts a secret-only link (pubkey/title optional) and still subscribes', async () => {
     const { status } = await post({ link: formatHiveInviteLink({ secret: SECRET }) });
     expect(status).toBe(200);
     expect(joined).toEqual([SECRET]);
@@ -91,6 +123,7 @@ describe('POST /api/discovery/join-invite (P-006)', () => {
       joinInviteTopic: async () => {
         throw new Error('swarm closed');
       },
+      confirmInviteAnnounce: async () => ({ found: false, peersOnTopic: 0 }),
     };
     const { status, body } = await post({ link: formatHiveInviteLink({ secret: SECRET }) });
     expect(status).toBe(500);

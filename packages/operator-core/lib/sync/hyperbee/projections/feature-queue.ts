@@ -76,25 +76,30 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   await sql`
     INSERT INTO harness_shared.feature_queue
       (workspace_id, harness_slug, github_user_id, feature_id, queued_at, removed_at, schema_version,
-       author_pubkey, origin, fed_ts)
+       author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.feature_id},
        to_timestamp(${row.queued_at} / 1000.0),
        ${row.removed_at == null ? null : sql`to_timestamp(${row.removed_at} / 1000.0)`},
-       ${row.schema_version}, ${authorPubkey}, ${origin}, ${fedTs})
+       ${row.schema_version}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, feature_id) DO UPDATE SET
       queued_at = EXCLUDED.queued_at,
       removed_at = EXCLUDED.removed_at,
       schema_version = EXCLUDED.schema_version,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
-      fed_ts = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
-    WHERE feature_queue.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= feature_queue.fed_ts
+      fed_ts = EXCLUDED.fed_ts,
+      fed_hlc = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME HLC key the
+    -- merge fold uses; fall back to wall-clock fed_ts when either side lacks one.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND feature_queue.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= feature_queue.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR feature_queue.fed_hlc IS NULL)
+             AND (feature_queue.fed_ts IS NULL OR EXCLUDED.fed_ts >= feature_queue.fed_ts))
   `;
 }
 
@@ -102,6 +107,7 @@ async function deleteFromPg(
   opts: FeatureQueueProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   // key shape: `<github_user_id>/<feature_id>`
   const sepIdx = key.indexOf('/');
@@ -112,14 +118,20 @@ async function deleteFromPg(
   if (!Number.isFinite(userId) || userId <= 0 || !featureId) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.feature_queue
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND feature_id = ${featureId}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
+      -- as the put guard; fall back to the ts-guard when either side lacks an HLC.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -131,7 +143,7 @@ export function buildFeatureQueueProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

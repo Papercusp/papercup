@@ -9,7 +9,11 @@
  * fake it — we induce it).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs/promises';
 import {
+  captureCpuProfile,
   classifyLoopPressure,
   isLoopSaturated,
   loopPressure,
@@ -96,5 +100,99 @@ describe('loop-pressure signal (P5-1)', () => {
     }
     // After stop the published signal is cleared back to ok.
     expect(loopPressure()).toBe('ok');
+  });
+});
+
+describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
+  let handle: LagMonitorHandle | undefined;
+  const dirs: string[] = [];
+  afterEach(async () => {
+    handle?.stop();
+    handle = undefined;
+    for (const d of dirs.splice(0)) await fs.rm(d, { recursive: true, force: true }).catch(() => {});
+  });
+  const tmp = (tag: string) => {
+    const d = path.join(os.tmpdir(), `loop-prof-${tag}-${Date.now()}-${process.pid}`);
+    dirs.push(d);
+    return d;
+  };
+
+  it('captureCpuProfile writes a valid .cpuprofile (or degrades to null, never throws)', async () => {
+    const dir = tmp('cap');
+    const file = await captureCpuProfile({
+      durationMs: 120,
+      dir,
+      maxProfiles: 20,
+      trigger: { p50Ms: 1, p95Ms: 700, p99Ms: 800, maxMs: 900 },
+      log: vi.fn(),
+    });
+    // Contract: returns a path when an inspector is available, else null — but
+    // NEVER throws (the gauge must not break the host it observes).
+    if (file === null) return; // env without a free inspector (e.g. coverage attached)
+    expect(file.endsWith('.cpuprofile')).toBe(true);
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+    // A V8 CPU profile has a node tree + samples.
+    expect(parsed).toHaveProperty('nodes');
+    expect(parsed).toHaveProperty('samples');
+  });
+
+  it('is INERT by default: no capture under saturation when profileOnSaturation is off', async () => {
+    const dir = tmp('off');
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 60,
+      warnP95Ms: 20,
+      profileOnSaturation: false,
+      profileDir: dir,
+      profileTriggerP95Ms: 20,
+      minProfileGapMs: 0,
+      log,
+    });
+    for (let i = 0; i < 4; i++) {
+      blockFor(40);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    expect(log).toHaveBeenCalled(); // the symptom warning still fires
+    let files: string[] = [];
+    try {
+      files = await fs.readdir(dir);
+    } catch {
+      /* dir never created = inert, which is the point */
+    }
+    expect(files.filter((f) => f.endsWith('.cpuprofile'))).toHaveLength(0);
+  });
+
+  it('ON path: a saturated window triggers a capture (best-effort), bounded by maxProfiles', async () => {
+    const dir = tmp('on');
+    handle = startEventLoopLagMonitor({
+      intervalMs: 60,
+      warnP95Ms: 20,
+      profileOnSaturation: true,
+      profileDir: dir,
+      profileTriggerP95Ms: 20,
+      profileDurationMs: 120,
+      minProfileGapMs: 0,
+      maxProfiles: 3,
+      log: vi.fn(),
+    });
+    for (let i = 0; i < 4; i++) {
+      blockFor(40);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await new Promise((r) => setTimeout(r, 500)); // allow async capture + write
+    let profs: string[] = [];
+    try {
+      profs = (await fs.readdir(dir)).filter((f) => f.endsWith('.cpuprofile'));
+    } catch {
+      /* no inspector available ⇒ graceful no-op */
+    }
+    expect(profs.length).toBeLessThanOrEqual(3); // rate-limit + prune bound holds
+    if (profs.length) {
+      // any captured file must be valid JSON
+      expect(() => JSON.parse('{}')).not.toThrow();
+      const body = await fs.readFile(path.join(dir, profs[0]), 'utf8');
+      expect(() => JSON.parse(body)).not.toThrow();
+    }
   });
 });

@@ -179,6 +179,9 @@ export async function setupHivePeerSchema(sql: postgres.Sql): Promise<void> {
   ]) {
     await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, m), 'utf8')));
   }
+  // D-001 (mig 314): the fed_hlc ordering column the hive projections now write.
+  await sql.unsafe(`ALTER TABLE harness_shared.hive_members  ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  await sql.unsafe(`ALTER TABLE harness_shared.hive_settings ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
 }
 
 /** Per-peer apply over the REAL hive_members + hive_settings projections bound to

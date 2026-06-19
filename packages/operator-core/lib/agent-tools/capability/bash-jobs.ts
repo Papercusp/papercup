@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { buildCapabilitySandboxCommand } from './exec-sandbox';
+import { stripHostX } from '../computer/desktop-driver';
 
 /** Inline output cap (chars). Output beyond this spills to the scratch log and
  *  the inline result carries head+tail + the log path. Mirrors the native
@@ -98,7 +99,11 @@ function spawnShell(
   }
   const child = childSpawn(decision.binary, decision.argv, {
     cwd,
-    env: { ...process.env, ...(env ?? {}), PATH: spawnPath },
+    // ISOLATION (2026-06-19 keystroke-leak fix): strip the operator's host X session
+    // (DISPLAY=:0 / gdm XAUTHORITY) so a bee shell can NEVER inherit the seat. A GUI
+    // command only reaches a display when the caller (bash.ts) explicitly bound a
+    // LEASED sandbox DISPLAY in `env`; with no lease there is no DISPLAY at all.
+    env: { ...stripHostX(process.env), ...(env ?? {}), PATH: spawnPath },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   return child;

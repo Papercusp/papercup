@@ -497,6 +497,65 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // (+ admitted remote logs) into PG.
   const ownLog = await openOwnLog(store);
 
+  // ── A-003 (shared-hive-release-testing Brief I): joiner hive-home projection
+  // scope. ── When THIS harness is a member of a JOINED (remote_hive) Hive, its
+  // `hive_members`/`hive_settings` projections must bind to the HIVE-HOME slug, not
+  // the member slug — else the home-grained ops this member's merge reads off the
+  // shared Hive topic are dropped (the member list/settings never reach the joiner,
+  // and `loadRevokedHivePubkeys(<home>)` stays empty so a revoked member is never
+  // refused). `joinerHiveHomeSlug` returns the home slug ONLY for a true joiner
+  // (the home is a remote_hive view) — null for an OWNED hive's member (whose home
+  // harness owns the write side) or a non-hive harness. Gated on a `hive` swarm
+  // binding so non-hive boots (every rig + most tests) skip the registry/identity
+  // read entirely; fail-open — any error leaves today's member-slug binding.
+  //
+  // Resolved at boot AND re-resolved on `rekey`: a FIRST join boots the member on
+  // the gh topic (no hive_slug yet → null) then re-keys onto the Hive topic AFTER
+  // join stamps hive_slug + the remote_hive home (join-hive.ts steps 2/2b before
+  // the 2c re-key), so the re-key is where the rebind actually engages. A later
+  // restart boots straight onto the Hive topic with hive_slug set, engaging it here.
+  const resolveHiveHomeProjectionSlug = async (
+    binding: SwarmBinding | null | undefined,
+  ): Promise<string | undefined> => {
+    if (binding?.kind !== 'hive') return undefined;
+    try {
+      const { joinerHiveHomeSlug } = await import('../../hive-federation');
+      const resolved = (await joinerHiveHomeSlug(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+      if (process.env.PAPERCUSP_A003_TRACE === '1') {
+        // eslint-disable-next-line no-console
+        console.error(`[A-003] resolve ${opts.harnessSlug}: joinerHiveHomeSlug=${resolved ?? '<null>'}`);
+      }
+      return resolved;
+    } catch (e) {
+      if (process.env.PAPERCUSP_A003_TRACE === '1') {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[A-003] resolve ${opts.harnessSlug}: joinerHiveHomeSlug THREW: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      return undefined; // fail-open: fall back to member-slug binding (today's behavior)
+    }
+  };
+  const buildScopedApply = (hiveHomeSlug: string | undefined) =>
+    buildHarnessProjectionApply({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      ownLogKeyHex: ownLog.keyHex,
+      hiveHomeSlug,
+    });
+
+  let hiveHomeProjectionSlug = await resolveHiveHomeProjectionSlug(opts.swarmBinding);
+  // A-003 diagnostic (env-gated, off by default → zero test impact): show the
+  // boot-time hive-home binding decision in the harness log so a live witness can
+  // grep `[A-003]` to see whether the joiner rebind engaged + which slug. Set
+  // PAPERCUSP_A003_TRACE=1 on the instance to enable.
+  if (process.env.PAPERCUSP_A003_TRACE === '1') {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[A-003] boot ${opts.harnessSlug}: swarmBinding.kind=${opts.swarmBinding?.kind ?? '<none>'} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'}`,
+    );
+  }
+
   // Wire the per-table PG projection writers into the GLOBAL registry too —
   // some non-Model-B callers (CLI introspection, single-harness contexts) still
   // read the global registry via `applyHyperbeeOpToPg`. Idempotent (re-running
@@ -504,6 +563,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   registerAllHarnessProjections({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
+    hiveHomeSlug: hiveHomeProjectionSlug,
   });
 
   // ── Per-harness scoped projection apply (D-021 collision fix). ──
@@ -516,13 +576,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   //
   // G1 Provenance (P-002): pass ownLogKeyHex so the apply path can determine
   // origin from log-source (own log → 'local', admitted remote log → 'remote').
-  const scopedApply =
-    opts.applyOverride ??
-    buildHarnessProjectionApply({
-      workspaceId: opts.workspaceId,
-      harnessSlug: opts.harnessSlug,
-      ownLogKeyHex: ownLog.keyHex,
-    });
+  // A-003: `let` (not `const`) so `rekey` can rebind the two hive projections when a
+  // first-join re-keys this member onto the Hive topic (mergeOnePass reads the
+  // CURRENT scopedApply each pass). An `applyOverride` (the rigs) is never rebuilt.
+  let scopedApply = opts.applyOverride ?? buildScopedApply(hiveHomeProjectionSlug);
 
   // ── Admitted-set ── keyHex → log. Seeded with the own log (which is
   // structurally an AdmittedLog). Remote logs are added on admit (4b).
@@ -1511,6 +1568,33 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
       await joinForBinding(binding);
+      // A-003: a FIRST join re-keys this member onto the Hive topic AFTER stamping
+      // hive_slug + the remote_hive home view (join-hive.ts 2/2b precede the 2c
+      // re-key), so re-resolve the joiner hive-home scope now and rebind the two
+      // hive projections if it changed. An `applyOverride` (the rigs) is never
+      // rebuilt — the rig owns its apply. The next merge pass reads the new
+      // scopedApply (mergeOnePass re-evaluates `applyImpl` each pass).
+      if (!opts.applyOverride) {
+        const next = await resolveHiveHomeProjectionSlug(binding);
+        if (process.env.PAPERCUSP_A003_TRACE === '1') {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[A-003] rekey ${opts.harnessSlug}: binding.kind=${binding?.kind ?? '<none>'} next=${next ?? '<none>'} prev=${hiveHomeProjectionSlug ?? '<none>'} rebind=${next !== hiveHomeProjectionSlug}`,
+          );
+        }
+        if (next !== hiveHomeProjectionSlug) {
+          hiveHomeProjectionSlug = next;
+          scopedApply = buildScopedApply(next);
+          registerAllHarnessProjections({
+            workspaceId: opts.workspaceId,
+            harnessSlug: opts.harnessSlug,
+            hiveHomeSlug: next,
+          });
+        }
+      } else if (process.env.PAPERCUSP_A003_TRACE === '1') {
+        // eslint-disable-next-line no-console
+        console.error(`[A-003] rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`);
+      }
     },
     registerCloseHook(hook: () => void | Promise<void>): () => void {
       closeHooks.add(hook);

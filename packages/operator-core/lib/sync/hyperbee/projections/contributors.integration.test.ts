@@ -65,6 +65,7 @@ beforeAll(async () => {
       channel1_verified_at timestamptz, channel2_verified_at timestamptz,
       channel2_branch_ref text, binding_last_checked_at timestamptz,
       fed_ts bigint,
+      fed_hlc text,
       CONSTRAINT contributors_pkey PRIMARY KEY (workspace_id, harness_slug, github_user_id)
     )`);
   h.sql = rootSql;

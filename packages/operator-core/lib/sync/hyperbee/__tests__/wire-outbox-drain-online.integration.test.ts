@@ -115,6 +115,7 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       author_pubkey       TEXT,
       origin              TEXT NOT NULL DEFAULT 'local',
       fed_ts              BIGINT,
+      fed_hlc             TEXT,
       PRIMARY KEY (harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.harness_issues_consolidated (
@@ -138,6 +139,7 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       author_pubkey     TEXT,
       origin            TEXT NOT NULL DEFAULT 'local',
       fed_ts            BIGINT,
+      fed_hlc           TEXT,
       PRIMARY KEY (harness_slug, issue_id)
     );
     CREATE TABLE harness_shared.projects (

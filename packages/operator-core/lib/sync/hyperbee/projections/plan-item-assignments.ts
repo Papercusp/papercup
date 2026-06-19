@@ -82,14 +82,15 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   await sql`
     INSERT INTO harness_shared.plan_item_assignments
       (workspace_id, harness_slug, plan_slug, item_id, assignee_name, assigned_by_user,
-       assigned_ts, released_ts, strategy, note, author_pubkey, origin, fed_ts)
+       assigned_ts, released_ts, strategy, note, author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.item_id},
        ${row.assignee_name}, ${row.assigned_by_user}, ${row.assigned_ts}, ${row.released_ts},
-       ${row.strategy}, ${row.note}, ${authorPubkey}, ${origin}, ${fedTs})
+       ${row.strategy}, ${row.note}, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, plan_slug, item_id) DO UPDATE SET
       assignee_name    = EXCLUDED.assignee_name,
       assigned_by_user = EXCLUDED.assigned_by_user,
@@ -99,10 +100,14 @@ async function writeToPg(
       note             = EXCLUDED.note,
       author_pubkey    = EXCLUDED.author_pubkey,
       origin           = EXCLUDED.origin,
-      fed_ts           = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
-    WHERE plan_item_assignments.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= plan_item_assignments.fed_ts
+      fed_ts           = EXCLUDED.fed_ts,
+      fed_hlc          = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard — order by HLC, fall back to fed_ts.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND plan_item_assignments.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= plan_item_assignments.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR plan_item_assignments.fed_hlc IS NULL)
+             AND (plan_item_assignments.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= plan_item_assignments.fed_ts))
   `;
 }
 
@@ -110,6 +115,7 @@ async function deleteFromPg(
   opts: PlanItemAssignmentsProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
@@ -120,14 +126,19 @@ async function deleteFromPg(
   const itemId = key.slice(cut + 1);
   if (!planSlug || !itemId) return;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.plan_item_assignments
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND plan_slug = ${planSlug}
       AND item_id = ${itemId}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the same HLC-then-fed_ts order.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -141,7 +152,7 @@ export function buildPlanItemAssignmentsProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

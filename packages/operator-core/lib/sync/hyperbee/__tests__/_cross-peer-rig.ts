@@ -62,6 +62,7 @@ export const SHARED_PRESENCE_DDL = `
     schema_version bigint DEFAULT 1 NOT NULL,
     hive_slug      text,
     fed_ts         bigint,
+    fed_hlc        text,
     PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
   )`;
 // The 000-baseline coord_event_log + the migration-150 federation columns/index,
@@ -71,7 +72,7 @@ export const COORD_EVENT_LOG_DDL = `
     id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
     writer_key text, msg_id text NOT NULL, body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now(),
     harness_slug text, origin text NOT NULL DEFAULT 'local', author_pubkey text,
-    fed_ts bigint);
+    fed_ts bigint, fed_hlc text);
   CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_fed_uq ON harness_shared.coord_event_log (workspace_id, msg_id)
     WHERE harness_slug IS NOT NULL AND (body->>'notify_kind') IS NULL`;
 export const WORK_ITEM_CLAIMS_DDL = `

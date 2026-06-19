@@ -274,6 +274,45 @@ state the desktop does not yet surface live federation status.
 
 ---
 
+## LIVE desktop pass (real packaged binary) — G-001 + G-002 confirmed live
+
+**Ran 2026-06-19.** Reused Lane A's harness (`two-instance-content-matrix-smoke.sh`)
+to bring up a **2-peer pair of the shipped `.deb`** (`Papercusp_0.0.2_amd64.deb`, the
+05:33 luxon-fixed build, 50 luxon entries) under **Xvfb `:156` — fleet-halt-safe, never
+`:0`**, single public hive to dodge A-002, halt-safe curl+psql method (Lane E's pattern).
+Held the `shared-hive-live-instances` lock for the run; pair torn down + lock released
+after.
+
+- A (papercupai) `:23594`, B (aviynw) `:22637`. A created+published a public hive
+  (`hello-world-hive`), B discovered + joined it; features federate both ways,
+  topic-equal PASS, negative-isolation PASS — so A & B are **live peers on the global
+  directory topic**.
+
+**⚠ The binary predates my G-001/G-002 fixes** (still pending git-sync). So this pass
+**live-confirms the BUGS on the shipped binary** (the C-001 pattern — proving the fix is
+necessary), and verifies the unchanged flows; it does **not** live-prove my fixes (not
+deployed). A GREEN live re-verification needs a binary built with the fix.
+
+| Flow | Live result | Verdict |
+|---|---|---|
+| **Discover accuracy** | B's `GET /api/discovery/hives` lists A's public hive with correct title/owner/visibility/pubkey + member-link topic; A doesn't re-discover its own | ✅ **live-correct** |
+| **G-002 — invite-join fake-success** | `POST /api/discovery/join-invite` with a **well-formed-but-dead** secret → `{"ok":true,"joined":true}` (HTTP 200); `GET /hives` 2s later → the ghost **never appears** (count stays 1) | ❌ **bug LIVE-CONFIRMED** — the route reports success for an invite that never materializes (= the old UI's "✓ accepted … appears shortly") |
+| **G-001 — reachablePeers over-report** | `set-hive` **public** → `reachablePeers=1` (correct — B *is* on the global topic). Flip to **invite** (fresh secret B never had → true reach **0**) → `reachablePeers=1` (over-reports by 1 — counted the global peer the invite announce never reached) | ❌ **bug LIVE-CONFIRMED** — the deceptive-publish lie, on the real binary |
+| **Visibility flip + restore** | public → invite → public round-trip clean; A restored to public, B's view consistent (count 1, public), both sidecars HTTP 200 — no damage | ✅ **works live** |
+
+**Ground truth for G-001:** I freshly minted the invite secret; B never had it and joined
+via the *public* link — so the invite topic provably has **0** peers. `reachablePeers=1`
+for that invite publish is an over-report of exactly the global-topic peer (B). My fix
+reports 0 here.
+
+**What the live pass did NOT cover** (deferred): driving the actual **Tauri GUI render**
+(the `:0` fleet-halt restricts GUI automation; the honesty *render* is covered by the
+component tests, and a sandboxed GUI drive can confirm the rendered copy once the halt
+lifts); and **re-verifying the FIXED flows live** (needs a binary built with my fix —
+git-sync push is engine-gated). Multi-hive (A-002) was intentionally avoided (SKIP_INVITE).
+
+---
+
 ## Brief G dimension verdict: **YELLOW (trending GREEN — every honesty LIE is now fixed)**
 
 **No S0, no S1-by-rubric blocker** — and crucially the S0 "synced while stranded" lie
@@ -293,11 +332,14 @@ weights heavily are now **fixed + teeth-verified in code**:
    honest, so the user is no longer *actively misled*; but a positive status surface (or
    a documented limitation) is still wanted. Small, in-lane (operator-vite) or a
    release-note. NOT a lie — an absence.
-2. **The live desktop pass has not been run for lane G.** Now unblocked (A-001 fixed,
-   bootable `.deb`), but queued behind Brief E's live pair and the `:0` fleet-halt (drive
-   a sandbox Xvfb, never `:0`). The brief's GREEN bar requires confirming these fixed
-   flows in the *actual running desktop*; the honesty *logic* is proven by the
-   component/unit tests, but the live render has not yet been witnessed.
+2. **The live desktop pass HAS now run** (see the section above) — on the shipped
+   binary, halt-safe under Xvfb. It **live-confirmed G-001 + G-002 as real bugs** and
+   verified discover/visibility live. Two threads remain before this counts as a GREEN
+   live confirmation: (a) re-run the same pass against a binary **built with my fix** (to
+   see `reachablePeers=0` for the invite case + the honest join copy) — blocked on
+   git-sync push (engine-gated) + a `.deb` rebuild; and (b) a **GUI render** drive
+   (currently `:0`-halt-restricted; the render is covered by component tests in the
+   meantime).
 
 **Flip to GREEN when:** (a) a live desktop pass confirms publish/join/discover/status
 render the now-honest copy against ground truth, and (b) G-004 is implemented or

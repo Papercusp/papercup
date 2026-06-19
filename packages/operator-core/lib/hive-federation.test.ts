@@ -131,3 +131,42 @@ describe('resolveHiveSwarmBinding — JOINED (remote) Hive (EI-681)', () => {
     expect(await resolve('ownedhive')).toBeNull();
   });
 });
+
+// A-003 (shared-hive-release-testing Brief I): the joiner-rebind GATE. Boot uses
+// this to decide whether a member harness must bind its hive_members/hive_settings
+// projections to the HIVE-HOME slug — true (the home slug) ONLY in the joiner
+// topology (the home is a `remote_hive` VIEW), null for an owner's own hive (whose
+// home harness owns the write side) or a non-hive harness.
+describe('joinerHiveHomeSlug — the member-projection rebind gate', () => {
+  async function joinerHome(slug: string) {
+    const { joinerHiveHomeSlug } = await import('./hive-federation');
+    return joinerHiveHomeSlug('ws', slug);
+  }
+
+  it('a member of a JOINED (remote_hive) hive → the HIVE-HOME slug (rebind)', async () => {
+    hives.set('remotehive', { homeSlug: 'remotehive', pubkeyBase64: PUBKEY });
+    projects = [
+      { slug: 'remotehive', remote_hive: true },
+      { slug: 'joined-member', hive_slug: 'remotehive' },
+    ];
+    expect(await joinerHome('joined-member')).toBe('remotehive');
+    // The remote_hive home VIEW itself resolves to its own slug (harmless no-op rebind).
+    expect(await joinerHome('remotehive')).toBe('remotehive');
+  });
+
+  it('a member of an OWNED hive → null (the owner home owns the write side; no rebind)', async () => {
+    hives.set('ownedhive', { homeSlug: 'ownedhive', pubkeyBase64: PUBKEY });
+    publishHive('ownedhive', 'public'); // even a PUBLISHED owned hive must not rebind its members
+    projects = [
+      { slug: 'ownedhive' }, // owned home — not remote_hive
+      { slug: 'member-x', hive_slug: 'ownedhive' },
+    ];
+    expect(await joinerHome('member-x')).toBeNull();
+    expect(await joinerHome('ownedhive')).toBeNull();
+  });
+
+  it('a non-hive harness → null', async () => {
+    projects = [{ slug: 'loner' }];
+    expect(await joinerHome('loner')).toBeNull();
+  });
+});

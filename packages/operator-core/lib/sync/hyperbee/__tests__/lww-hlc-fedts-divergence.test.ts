@@ -1,10 +1,10 @@
 /**
- * lww-hlc-fedts-divergence.test.ts — Brief D (shared-hive-release-testing),
- * finding D-001. PROVES that the 2026-06-14 HLC/fed_ts convergence fix
- * (agent-insights/hlc-merge-vs-fed-ts-guard-divergence) is INCOMPLETE: two
- * honest peers still converge their in-memory winner-fold to the SAME op yet
- * MATERIALISE DIFFERENT rows for the same key — a silent split-brain — whenever
- * the merge's HLC order disagrees with the projection's PG `fed_ts` order.
+ * lww-hlc-fedts-divergence.test.ts — Brief D/J (shared-hive-release-testing),
+ * finding D-001. Now PROVES the SHIPPED FIX (migration 314 + the projection
+ * `fed_hlc` guard): two honest peers folding a contested key in opposite orders
+ * CONVERGE, because the PG guard now orders by the same HLC key the merge fold
+ * does. A companion test keeps the LEGACY `fed_ts`-guard divergence as a
+ * characterisation of the pre-314 S0 the fix removed.
  *
  * The two ordering decisions a federated write passes through:
  *   1. merge winners-fold  (read-merge `beatsStored` ≡ `lwwPick`) — orders by HLC
@@ -42,20 +42,42 @@ function singleOpLog(keyHex: string, op: PeerLogOp): AdmittedLog {
 }
 
 /**
- * A faithful in-memory transcription of EVERY mutable projection's PG LWW
- * guard: `INSERT … ON CONFLICT … WHERE stored.fed_ts IS NULL OR
- * EXCLUDED.fed_ts >= stored.fed_ts`, with `fed_ts = provenance.ts = op.ts`
- * (projection.ts:249,255 → harness-features.ts:140 + the identical line in all
- * 17 sibling projections). Returns whether the row was (re)written — same
- * boolean the real `applyOpVia` returns.
+ * A faithful in-memory transcription of EVERY mutable projection's PG LWW guard.
+ *
+ * `mode: 'fed_hlc'` (DEFAULT, the SHIPPED D-001 fix — migration 314 + the
+ * projection `ON CONFLICT … WHERE EXCLUDED.fed_hlc >= stored.fed_hlc` with a
+ * `fed_ts` fallback): orders by the op's HLC when both sides carry one. This is
+ * what unifies the merge fold's order and the PG guard's order, so the guard
+ * never rejects a fold-winner under skew → convergence.
+ *
+ * `mode: 'fed_ts'` (LEGACY, the pre-314 bug surface): orders by `fed_ts = op.ts`
+ * wall clock only — kept to characterise the divergence the fix removed.
+ *
+ * Returns whether the row was (re)written — same boolean the real `applyOpVia`
+ * returns.
  */
 class FedTsGuardedStore {
-  readonly rows = new Map<string, { fedTs: number | null; value: unknown }>();
+  readonly rows = new Map<string, { fedTs: number | null; hlc?: string; value: unknown }>();
+  constructor(private readonly mode: 'fed_ts' | 'fed_hlc' = 'fed_hlc') {}
   apply = async (op: OpEnvelope): Promise<boolean> => {
     if (op.type !== 'put' || !op.hbKey) return false;
     const incoming = op.ts ?? null; // fed_ts = provenance.ts = op.ts
+    const incHlc = op.hlc ?? null;
     const cur = this.rows.get(op.hbKey);
-    // Guard: applies iff no stored row, stored fed_ts is NULL, or incoming >= stored.
+    if (this.mode === 'fed_hlc') {
+      // SHIPPED guard: HLC compare when both present, else fed_ts fallback.
+      if (cur) {
+        const curHlc = cur.hlc ?? null;
+        const beats =
+          incHlc !== null && curHlc !== null
+            ? incHlc >= curHlc
+            : cur.fedTs === null || (incoming !== null && incoming >= cur.fedTs);
+        if (!beats) return false;
+      }
+      this.rows.set(op.hbKey, { fedTs: incoming, hlc: incHlc ?? undefined, value: op.value });
+      return true;
+    }
+    // LEGACY fed_ts guard: applies iff no stored row, stored fed_ts NULL, or incoming >= stored.
     if (cur && cur.fedTs !== null && (incoming === null || incoming < cur.fedTs)) {
       return false; // strictly-older op rejected — the row is NOT clobbered
     }
@@ -83,9 +105,13 @@ function stampedPut(opts: { marker: string; ts: number; clock: HlcClock }): Peer
 }
 
 /** Run the REAL incremental merge of two logs in a given order into a fresh
- *  fed_ts-guarded store, and return the store's converged value for KEY. */
-async function mergeInto(logs: AdmittedLog[]): Promise<FedTsGuardedStore> {
-  const store = new FedTsGuardedStore();
+ *  guarded store (default the SHIPPED `fed_hlc` guard; pass 'fed_ts' for the
+ *  legacy bug surface), and return the store's converged value for KEY. */
+async function mergeInto(
+  logs: AdmittedLog[],
+  mode: 'fed_ts' | 'fed_hlc' = 'fed_hlc',
+): Promise<FedTsGuardedStore> {
+  const store = new FedTsGuardedStore(mode);
   const cursor = createMergeCursor();
   // Two passes — idempotent; the second proves quiescence (applies nothing new).
   await mergeAdmittedLogsIncremental(logs, cursor, { applyImpl: store.apply, getTimeoutMs: 0 });
@@ -124,37 +150,32 @@ describe('D-001 — HLC-merge vs fed_ts-guard divergence (recv-advance trigger)'
     expect(opW.hlc! > opL.hlc!).toBe(true);
   });
 
-  // EXPECTED-RED: this asserts the release-required invariant (all honest peers
-  // converge to the SAME materialised row). It currently FAILS — that failure
-  // IS finding D-001 (S0 non-convergence). `it.fails` keeps CI green while the
-  // bug stands; when the merge fold and the PG guard are unified, the assertion
-  // will pass and `it.fails` will go RED, forcing this guard to be removed.
-  it.fails(
-    'S0 (D-001): two peers folding the contested key in opposite orders MUST converge — they do not',
-    async () => {
-      const { opW, opL } = buildInvertedPair();
-      const logW = singleOpLog('logW', opW);
-      const logL = singleOpLog('logL', opL);
-
-      // Peer A (e.g. L's author) folds its own log first: [logL, logW].
-      const peerA = await mergeInto([logL, logW]);
-      // Peer B (e.g. W's author) folds its own log first: [logW, logL].
-      const peerB = await mergeInto([logW, logL]);
-
-      // CONVERGENCE: both honest peers must materialise the SAME winner.
-      expect(peerA.marker(KEY)).toBe(peerB.marker(KEY));
-    },
-  );
-
-  it('characterises the divergence: peerA keeps L, peerB keeps W (both quiescent)', async () => {
+  // RELEASE INVARIANT, now GREEN (the shipped `fed_hlc` guard): both honest peers
+  // converge to the SAME materialised row regardless of fold order. Flipped from
+  // `it.fails` once migration 314 + the projection guard unified the merge fold's
+  // order and the PG guard's order onto the HLC key. W (higher HLC) wins on both.
+  it('S0 (D-001) FIXED: two peers folding the contested key in opposite orders converge', async () => {
     const { opW, opL } = buildInvertedPair();
     const logW = singleOpLog('logW', opW);
     const logL = singleOpLog('logL', opL);
 
-    const peerA = await mergeInto([logL, logW]); // folds L first → guard rejects W
-    const peerB = await mergeInto([logW, logL]); // folds W first → suppresses L
+    const peerA = await mergeInto([logL, logW]); // folds L first
+    const peerB = await mergeInto([logW, logL]); // folds W first
 
-    // The concrete split-brain: divergent materialised rows for the same key.
+    expect(peerA.marker(KEY)).toBe(peerB.marker(KEY)); // converge
+    expect(peerA.marker(KEY)).toBe('W'); // …on the HLC winner
+  });
+
+  it('LEGACY fed_ts guard characterises the OLD divergence: peerA keeps L, peerB keeps W', async () => {
+    const { opW, opL } = buildInvertedPair();
+    const logW = singleOpLog('logW', opW);
+    const logL = singleOpLog('logL', opL);
+
+    // The pre-314 bug surface: the fed_ts-ordered guard diverges (this is the S0
+    // the fix removed; kept as a teeth/characterisation of the legacy behaviour).
+    const peerA = await mergeInto([logL, logW], 'fed_ts'); // folds L first → guard rejects W
+    const peerB = await mergeInto([logW, logL], 'fed_ts'); // folds W first → suppresses L
+
     expect(peerA.marker(KEY)).toBe('L');
     expect(peerB.marker(KEY)).toBe('W');
     expect(peerA.marker(KEY)).not.toBe(peerB.marker(KEY));

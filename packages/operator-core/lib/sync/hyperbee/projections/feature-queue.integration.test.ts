@@ -57,6 +57,7 @@ beforeAll(async () => {
       origin text DEFAULT 'local' NOT NULL,
       schema_version bigint DEFAULT 1 NOT NULL,
       fed_ts bigint,
+      fed_hlc text,
       CONSTRAINT feature_queue_pkey PRIMARY KEY (workspace_id, harness_slug, github_user_id, feature_id)
     )`);
   h.sql = rootSql;

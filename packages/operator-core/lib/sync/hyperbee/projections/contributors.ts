@@ -68,6 +68,7 @@ async function writeToPg(
   }
   const sql = opts.sql ?? getOrgPg().sql;
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   await sql`
     INSERT INTO harness_shared.contributors
       (workspace_id, harness_slug, github_user_id, github_username,
@@ -76,7 +77,7 @@ async function writeToPg(
        joined_at, last_seen_at,
        binding_status, channel1_verified_at, channel2_verified_at,
        channel2_branch_ref, binding_last_checked_at,
-       schema_version, fed_ts)
+       schema_version, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.github_username},
        ${row.display_name}, ${row.avatar_url},
@@ -89,7 +90,7 @@ async function writeToPg(
        ${row.channel2_verified_at == null ? null : sql`to_timestamp(${row.channel2_verified_at} / 1000.0)`},
        ${row.channel2_branch_ref},
        ${row.binding_last_checked_at == null ? null : sql`to_timestamp(${row.binding_last_checked_at} / 1000.0)`},
-       ${row.schema_version}, ${fedTs})
+       ${row.schema_version}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, github_user_id) DO UPDATE SET
       github_username = EXCLUDED.github_username,
       display_name = EXCLUDED.display_name,
@@ -103,10 +104,14 @@ async function writeToPg(
       channel2_branch_ref = EXCLUDED.channel2_branch_ref,
       binding_last_checked_at = EXCLUDED.binding_last_checked_at,
       schema_version = EXCLUDED.schema_version,
-      fed_ts = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
-    WHERE contributors.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= contributors.fed_ts
+      fed_ts = EXCLUDED.fed_ts,
+      fed_hlc = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME HLC key the
+    -- merge fold uses; fall back to wall-clock fed_ts when either side lacks one.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND contributors.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= contributors.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR contributors.fed_hlc IS NULL)
+             AND (contributors.fed_ts IS NULL OR EXCLUDED.fed_ts >= contributors.fed_ts))
   `;
 }
 
@@ -114,18 +119,25 @@ async function deleteFromPg(
   opts: ContributorsProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   const userId = Number(key);
   if (!Number.isFinite(userId) || userId <= 0) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.contributors
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
+      -- as the put guard; fall back to the ts-guard when either side lacks an HLC.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -139,7 +151,7 @@ export function buildContributorsProjection(opts: ContributorsProjectionOpts): T
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

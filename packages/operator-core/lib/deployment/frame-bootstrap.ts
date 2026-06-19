@@ -321,6 +321,12 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       // password on re-runs).
       'sudo -u postgres psql -qc "CREATE ROLE harness_admin LOGIN SUPERUSER" || true',
       'sudo -u postgres psql -qc "ALTER ROLE harness_admin WITH LOGIN SUPERUSER PASSWORD \'$HARNESS_ADMIN_PWD\'"',
+      // Bound idle-in-transaction sessions: a leaked/dropped tx (e.g. an MCP transport-drop
+      // mid plans:* write) must not hold its locks forever — the documented plans:* lock-leak
+      // fleet-wedge class (infra round-3 F2). The host box runs this operationally; provisioned
+      // frames inherit it here. Safe for boot-apply (only kills sessions IDLE in a tx, never a
+      // running migration). statement_timeout deliberately NOT set — migrations run as this role.
+      'sudo -u postgres psql -qc "ALTER ROLE harness_admin SET idle_in_transaction_session_timeout = \'60s\'"',
       // harness_app (the RLS-subject role getOrgPgApp dispatches on) gets the
       // same per-frame treatment; its DSN is exported as HARNESS_DATABASE_URL
       // below — without that export connection.ts would fall back to the
@@ -328,6 +334,8 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       'HARNESS_APP_PWD="${PAPERCUSP_FRAME_PG_APP_PASSWORD:-$(openssl rand -hex 24)}"',
       'sudo -u postgres psql -qc "CREATE ROLE harness_app LOGIN" || true',
       'sudo -u postgres psql -qc "ALTER ROLE harness_app WITH LOGIN PASSWORD \'$HARNESS_APP_PWD\'"',
+      // Same idle-in-transaction bound on the RLS-subject app role (infra round-3 F2).
+      'sudo -u postgres psql -qc "ALTER ROLE harness_app SET idle_in_transaction_session_timeout = \'60s\'"',
       // harness_zero belongs to the RETIRED Zero/web path — nothing on a
       // frame ever logs in as it, but ~40 migrations GRANT to the role so it
       // must exist. Random throwaway password, no DSN exported anywhere.

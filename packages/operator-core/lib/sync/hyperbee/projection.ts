@@ -53,6 +53,18 @@ export interface ProvenanceContext {
    * treat a NULL stored fed_ts as "older than anything", so such a write lands).
    */
   ts?: number;
+  /**
+   * D-001 (shared-hive-release-testing Brief J): the op's HLC ordering key — the
+   * SAME causal clock `lwwPick`/`beatsStored` order the merge fold by. Writers
+   * persist it as the table's `fed_hlc` column and guard their `ON CONFLICT …`
+   * with `EXCLUDED.fed_hlc >= <table>.fed_hlc` (falling back to `fed_ts` when
+   * either side is NULL — pre-P-010 / pre-314 history). This is what unifies the
+   * fold's order and the PG guard's order onto ONE key, so the guard never
+   * rejects a fold-winner under clock skew (the D-001 split-brain). `undefined`
+   * for an op without an `hlc` (the append-only claim path; legacy ops) — the
+   * writer stores NULL and the guard falls back to `fed_ts`.
+   */
+  fedHlc?: string;
 }
 
 export interface TableProjection<Row> {
@@ -100,8 +112,14 @@ export interface TableProjection<Row> {
    * making the deleter PG-level LWW independent of the merge cursor's fold.
    * `undefined` for a del op built without a ts (unguarded → deletes, the
    * pre-step-2 behavior).
+   *
+   * D-001 (Brief J): `delHlc` is the del op's HLC ordering key. The deleter
+   * guards its DELETE with the SAME HLC-then-fed_ts order as the put guard (a
+   * stale del — lower HLC — must not erase a row a newer put recreated), falling
+   * back to the `delTs` ts-guard when either side lacks an hlc. `undefined` for a
+   * del op without an `hlc` (legacy / claim path) → the ts-guard alone applies.
    */
-  deleteFromPg: (key: string, delTs?: number) => Promise<void>;
+  deleteFromPg: (key: string, delTs?: number, delHlc?: string) => Promise<void>;
 }
 
 const registry = new Map<string, TableProjection<unknown>>();
@@ -209,9 +227,10 @@ export async function applyOpVia(
   }
   if (op.type === 'del') {
     if (!op.hbKey) return false;
-    // EI-79 step 2: thread the del op's wire ts so the deleter can ts-guard the
-    // DELETE (a stale del must not erase a row a newer put recreated).
-    await p.deleteFromPg(op.hbKey, op.ts);
+    // EI-79 step 2 + D-001: thread the del op's wire ts AND its HLC so the
+    // deleter can guard the DELETE by the same HLC-then-fed_ts order as the put
+    // guard (a stale del must not erase a row a newer put recreated).
+    await p.deleteFromPg(op.hbKey, op.ts, op.hlc);
     return true;
   }
   const row = p.decodeValue(op.value);
@@ -246,13 +265,15 @@ export async function applyOpVia(
     // operator's OWN write — trustworthy, and the meaningful device pubkey.
     const authorPubkey =
       origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
-    provenance = { authorPubkey, origin, ts: op.ts };
+    // D-001: thread the op's HLC so the writer stamps `fed_hlc` and the PG guard
+    // orders by the SAME causal key the merge fold does (the convergence fix).
+    provenance = { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc };
   } else if (typeof op.ts === 'number') {
     // EI-79 step 2: even a write with no provenance (synthetic / single-harness
     // legacy op without writerPubkey or ownLogKeyHex) must carry its `ts` so the
     // writer stamps `fed_ts` and the PG-level LWW guard works. Default the
-    // attribution fields to a local self-write.
-    provenance = { authorPubkey: op.writerPubkey ?? '', origin: 'local', ts: op.ts };
+    // attribution fields to a local self-write. D-001: carry `hlc` too.
+    provenance = { authorPubkey: op.writerPubkey ?? '', origin: 'local', ts: op.ts, fedHlc: op.hlc };
   }
 
   await p.writeToPg(row, provenance);

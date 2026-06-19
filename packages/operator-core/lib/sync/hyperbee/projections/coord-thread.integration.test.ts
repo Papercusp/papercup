@@ -56,6 +56,7 @@ beforeAll(async () => {
       last_post_at timestamptz,
       post_count integer DEFAULT 0 NOT NULL,
       harness_slug text, origin text DEFAULT 'local' NOT NULL, author_pubkey text, fed_ts bigint,
+      fed_hlc text,
       CONSTRAINT coord_threads_pkey PRIMARY KEY (workspace_id, thread_id),
       CONSTRAINT coord_threads_parent_nonempty CHECK (parent_ref <> '' AND parent_kind <> '')
     )`);

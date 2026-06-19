@@ -108,6 +108,10 @@ interface OutboxDbRow {
   key: string;
   row: Record<string, unknown> | null;
   ts: string | number;
+  /** D-001: the op's HLC ordering key (the PG clock of record), threaded onto the
+   *  wire op so the remote peer's projection materialises an identical fed_hlc.
+   *  NULL on a pre-314 outbox row / an append-only table → stampOpHlc fallback. */
+  op_hlc: string | null;
 }
 
 /**
@@ -162,7 +166,12 @@ export async function drainOutboxOnce(
   }
 
   const rows = await pg<OutboxDbRow[]>`
-    SELECT id, table_name, op, key, row, ts
+    SELECT id, table_name, op, key, row, ts,
+           -- D-001: read op_hlc RESILIENTLY via to_jsonb so an outbox provisioned
+           -- before migration 314 (an older boot snapshot / a hand-rolled test rig)
+           -- degrades to NULL (stampOpHlc fallback) instead of the drain crashing
+           -- on a missing op_hlc column. Production (314 applied) returns the value.
+           (to_jsonb(substrate_outbox.*) ->> 'op_hlc') AS op_hlc
       FROM harness_shared.substrate_outbox
      WHERE workspace_id = ${handle.workspaceId}
        AND harness_slug = ${handle.harnessSlug}
@@ -180,6 +189,9 @@ export async function drainOutboxOnce(
         key: r.key,
         ts: typeof r.ts === 'number' ? r.ts : Number(r.ts),
         row: r.row,
+        // D-001: the PG-clock HLC stamped at capture → op.hlc (stampOpHlc
+        // preserves a preset hlc). NULL → stampOpHlc generates a fallback.
+        op_hlc: r.op_hlc ?? undefined,
       } satisfies OutboxRow);
     } catch (e) {
       // Forward-compat: a NEWER capture trigger may enqueue a table this (older,

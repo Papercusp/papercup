@@ -61,6 +61,8 @@ export async function coordCellSetup(sql: postgres.Sql): Promise<void> {
   if (!fed) throw new Error('coord federation migration file not found (147/150)');
   await sql.unsafe(stripMeta(fed));
   await sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
+  // D-001 (mig 314): the HLC ordering key the coord-message projection now writes.
+  await sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
   await ensureCoordWatermarksTable(sql);
 }
 
@@ -79,6 +81,7 @@ export async function presenceCellSetup(sql: postgres.Sql): Promise<void> {
       schema_version bigint      NOT NULL DEFAULT 1,
       hive_slug      text,
       fed_ts         bigint,
+      fed_hlc        text,
       PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
     );
   `);

@@ -96,18 +96,20 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  // D-001: the op's HLC ordering key — the SAME causal key the merge fold uses.
+  const fedHlc = provenance?.fedHlc ?? null;
   await sql`
     INSERT INTO harness_shared.hive_members
       (workspace_id, hive_home_slug, github_user_id, github_username,
        device_attestations, revoked_pubkeys, binding_status,
-       author_pubkey, origin, fed_ts)
+       author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.hive_home_slug}, ${row.github_user_id}, ${row.github_username},
        -- jsonb: JSON.stringify(x)::text::jsonb — sql.json THROWS under getOrgPg
        ${JSON.stringify(row.device_attestations ?? [])}::text::jsonb,
        ${row.revoked_pubkeys as unknown as string},
        ${row.binding_status},
-       ${authorPubkey}, ${origin}, ${fedTs})
+       ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, hive_home_slug, github_user_id) DO UPDATE SET
       github_username     = EXCLUDED.github_username,
       device_attestations = EXCLUDED.device_attestations,
@@ -115,10 +117,15 @@ async function writeToPg(
       binding_status      = EXCLUDED.binding_status,
       author_pubkey       = EXCLUDED.author_pubkey,
       origin              = EXCLUDED.origin,
-      fed_ts              = EXCLUDED.fed_ts
-    -- PG-level LWW guard — drop a strictly-older op.
-    WHERE harness_shared.hive_members.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= harness_shared.hive_members.fed_ts
+      fed_ts              = EXCLUDED.fed_ts,
+      fed_hlc             = EXCLUDED.fed_hlc
+    -- PG-level LWW guard (D-001): order by the HLC (fed_hlc) when BOTH sides carry
+    -- one, else fall back to the wall-clock fed_ts guard (pre-314 history).
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_shared.hive_members.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= harness_shared.hive_members.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR harness_shared.hive_members.fed_hlc IS NULL)
+             AND (harness_shared.hive_members.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= harness_shared.hive_members.fed_ts))
   `;
 }
 
@@ -126,18 +133,24 @@ async function deleteFromPg(
   opts: HiveMembersProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   const userId = Number(key);
   if (!Number.isFinite(userId) || userId <= 0) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.hive_members
     WHERE workspace_id = ${opts.workspaceId}
       AND hive_home_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
-      -- ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- D-001: guard the delete by the same HLC-then-fed_ts order as the put guard.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -151,7 +164,7 @@ export function buildHiveMembersProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

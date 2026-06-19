@@ -65,6 +65,26 @@ export interface RegisterAllOpts {
    * dispatches through `applyHyperbeeOpToPg`, not the scoped apply.
    */
   ownLogKeyHex?: string;
+  /**
+   * A-003 (shared-hive-release-testing Brief I): the HIVE-HOME slug to scope the
+   * two hive-home-grained projections — `hive_members` + `hive_settings` — to,
+   * INSTEAD of `harnessSlug`. The other ~16 projections always stay on
+   * `harnessSlug`.
+   *
+   * Why: those two tables demux on the hive-HOME slug (the op carries
+   * `hive_home_slug`/`harness_slug` = the Hive's home), but a JOINER boots a
+   * MEMBER harness, so a member-slug-bound projection drops every hive-home-scoped
+   * op the member's merge reads off the shared Hive topic — the member-list +
+   * settings never reach the joiner, AND `loadRevokedHivePubkeys(<home>)` finds an
+   * empty set so a revoked member is never refused by the joiner's admission union
+   * (the revocation half). Binding ONLY these two to the home slug lets the
+   * already-running member merge land them. Boot sets this iff the harness's Hive
+   * home is a `remote_hive` (joined) view — the owner's home harness owns the
+   * write side, so an owned-hive member must NOT rebind (it would double-apply the
+   * owner's own rows as `origin='remote'`). Undefined ⇒ today's behavior
+   * (member-slug binding for all projections).
+   */
+  hiveHomeSlug?: string;
 }
 
 /**
@@ -119,7 +139,15 @@ export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number
  * (`registerAllHarnessProjections`) and the per-harness scoped apply
  * (`buildHarnessProjectionApply`) derive from it, so they never drift.
  */
-function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown>[] {
+export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown>[] {
+  // A-003: the two hive-home-grained projections scope to the HIVE-HOME slug when
+  // boot supplies one (a joiner's member harness), else to this harness's own slug
+  // (the home harness itself, or today's non-rebind default). Every OTHER
+  // projection always stays on `harnessSlug` — the rebind is surgical to these two.
+  const hiveScoped: RegisterAllOpts =
+    opts.hiveHomeSlug && opts.hiveHomeSlug !== opts.harnessSlug
+      ? { ...opts, harnessSlug: opts.hiveHomeSlug }
+      : opts;
   return [
     buildContributorsProjection(opts),
     buildFeatureClaimsProjection(opts),
@@ -135,8 +163,10 @@ function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown
     buildCoordThreadProjection(opts),
     buildCoordThreadPostProjection(opts),
     buildPlanItemAssignmentsProjection(opts),
-    buildHiveSettingsProjection(opts),
-    buildHiveMembersProjection(opts),
+    // A-003: hive_settings + hive_members demux on the hive-HOME slug — scope them
+    // to `hiveScoped` so a joiner's member harness lands the home-grained ops.
+    buildHiveSettingsProjection(hiveScoped),
+    buildHiveMembersProjection(hiveScoped),
     buildEngineerIssuesProjection(opts),
     // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
     // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation

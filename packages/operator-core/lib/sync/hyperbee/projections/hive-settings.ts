@@ -68,24 +68,31 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  // D-001: the op's HLC ordering key — the SAME causal key the merge fold uses.
+  const fedHlc = provenance?.fedHlc ?? null;
   const now = Date.now();
   // workspace_id is the LOCAL projection's bound workspace. created_at is set on
   // first insert + preserved on update; only value/provenance/updated_at move.
   await sql`
     INSERT INTO harness_shared.hive_settings
-      (workspace_id, harness_slug, setting_key, value, author_pubkey, origin, fed_ts, created_at, updated_at)
+      (workspace_id, harness_slug, setting_key, value, author_pubkey, origin, fed_ts, fed_hlc, created_at, updated_at)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.setting_key}, ${row.value},
-       ${authorPubkey}, ${origin}, ${fedTs}, ${now}, ${now})
+       ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${now}, ${now})
     ON CONFLICT (workspace_id, harness_slug, setting_key) DO UPDATE SET
       value         = EXCLUDED.value,
       author_pubkey = EXCLUDED.author_pubkey,
       origin        = EXCLUDED.origin,
       fed_ts        = EXCLUDED.fed_ts,
+      fed_hlc       = EXCLUDED.fed_hlc,
       updated_at    = ${now}
-    -- PG-level LWW guard — drop a strictly-older op.
-    WHERE harness_shared.hive_settings.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= harness_shared.hive_settings.fed_ts
+    -- PG-level LWW guard (D-001): order by the HLC (fed_hlc) when BOTH sides carry
+    -- one, else fall back to the wall-clock fed_ts guard (pre-314 history).
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_shared.hive_settings.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= harness_shared.hive_settings.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR harness_shared.hive_settings.fed_hlc IS NULL)
+             AND (harness_shared.hive_settings.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= harness_shared.hive_settings.fed_ts))
   `;
 }
 
@@ -93,17 +100,23 @@ async function deleteFromPg(
   opts: HiveSettingsProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.hive_settings
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND setting_key = ${key}
-      -- ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- D-001: guard the delete by the same HLC-then-fed_ts order as the put guard.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -117,7 +130,7 @@ export function buildHiveSettingsProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

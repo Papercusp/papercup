@@ -138,6 +138,10 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  // D-001: the op's HLC ordering key — the SAME causal key the merge fold orders
+  // by. Stored as `fed_hlc` and compared by the LWW guard below (with a `fed_ts`
+  // fallback when either side is NULL — pre-P-010 / pre-314 history).
+  const fedHlc = provenance?.fedHlc ?? null;
   // P-008 (shared-hive-trust-admission): stamp the VERIFIED author identity on
   // REMOTE rows only — resolve author_pubkey → github_user_id via a verified,
   // non-revoked hive_members device attestation (NEVER a self-claimed id). NULL
@@ -154,7 +158,7 @@ async function writeToPg(
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
        ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,
        item_kind, feature_order, swarm_affinity, redundancy, payload,
-       author_pubkey, origin, fed_ts, verified_author_github_user_id)
+       author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
        -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
@@ -169,7 +173,7 @@ async function writeToPg(
        -- op that doesn't carry it (pre-2026-06-10 history) inserts the default.
        ${row.item_kind ?? 'feature'}, ${row.feature_order ?? null}, ${row.swarm_affinity ?? null}, ${row.redundancy ?? null},
        ${row.payload == null ? null : JSON.stringify(normalizeJsonbInput(row.payload))}::text::jsonb,
-       ${authorPubkey}, ${origin}, ${fedTs}, ${verifiedAuthorGithubUserId})
+       ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
       summary = EXCLUDED.summary,
@@ -203,14 +207,19 @@ async function writeToPg(
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,
+      fed_hlc = EXCLUDED.fed_hlc,
       verified_author_github_user_id = EXCLUDED.verified_author_github_user_id
-    -- EI-79 step 2: PG-level LWW guard. Drop a strictly-older op so the
-    -- incremental merge cursor is correct even when an out-of-order / backfilled
-    -- op arrives after a newer row already landed. A NULL STORED fed_ts applies
-    -- (first write after the migration); a ts-less op cannot clobber a stamped
-    -- row (EI-117 — the EXCLUDED-side NULL disjunct was the revert hole).
-    WHERE harness_features_consolidated.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= harness_features_consolidated.fed_ts
+    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME key the merge
+    -- fold uses. When BOTH ops carry an HLC, order by it (the causal key — so a
+    -- skewed-clock fold-winner is never silently rejected, the D-001 split-brain).
+    -- When either side lacks an HLC (pre-P-010 / pre-314 history, or an append-
+    -- path op), fall back to the wall-clock fed_ts guard (today's behaviour: a
+    -- NULL stored fed_ts applies; a ts-less op cannot clobber a stamped row).
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_features_consolidated.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= harness_features_consolidated.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR harness_features_consolidated.fed_hlc IS NULL)
+             AND (harness_features_consolidated.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= harness_features_consolidated.fed_ts))
   `;
 }
 
@@ -218,16 +227,25 @@ async function deleteFromPg(
   opts: HarnessFeaturesProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.harness_features_consolidated
     WHERE harness_slug = ${opts.harnessSlug}
       AND feature_id = ${key}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
+      -- as the put guard. A stale del (lower HLC) must not erase a row a newer put
+      -- recreated; on an HLC tie del beats put (>=). Fall back to the ts-guard
+      -- when either side lacks an HLC.
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
   // workspaceId is captured for future per-workspace partitioning of the
   // consolidated view; the table is currently shared across the workspace.
@@ -244,7 +262,7 @@ export function buildHarnessFeaturesProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

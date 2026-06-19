@@ -3,11 +3,13 @@
  * action→xdotool argv mapping, the host-display safety guard, coordinate
  * clamping, and the capture command. No live display required.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   assertSandboxDisplay,
   planAction,
   captureCommand,
+  sandboxXEnv,
+  stripHostX,
   xdotoolCommand,
   type DesktopTarget,
 } from './desktop-driver';
@@ -110,6 +112,59 @@ describe('planAction — canonical action → xdotool argv', () => {
   it("throws when 'type' has no text and 'key' has no chord", () => {
     expect(() => planAction({ action: 'type' }, T)).toThrow(/requires text/);
     expect(() => planAction({ action: 'key' }, T)).toThrow(/requires text/);
+  });
+});
+
+describe('ISOLATION — no agent exec inherits the operator host X session (2026-06-19 leak fix)', () => {
+  const saved = { DISPLAY: process.env.DISPLAY, XAUTHORITY: process.env.XAUTHORITY };
+  afterEach(() => {
+    for (const k of ['DISPLAY', 'XAUTHORITY'] as const) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('REFUSES the operator host display even when it is NOT :0 (a seat can be :1/:7)', () => {
+    process.env.DISPLAY = ':7';
+    expect(() => assertSandboxDisplay(':7')).toThrow(/host display :7/);
+    // a genuinely provisioned sandbox display still passes
+    expect(() => assertSandboxDisplay(':110')).not.toThrow();
+  });
+
+  it('stripHostX removes DISPLAY / XAUTHORITY / WAYLAND_DISPLAY, keeps everything else', () => {
+    const out = stripHostX({
+      DISPLAY: ':0',
+      XAUTHORITY: '/run/user/1000/gdm/Xauthority',
+      WAYLAND_DISPLAY: 'wayland-0',
+      PATH: '/usr/bin',
+      HOME: '/home/x',
+    } as NodeJS.ProcessEnv);
+    expect(out).not.toHaveProperty('DISPLAY');
+    expect(out).not.toHaveProperty('XAUTHORITY');
+    expect(out).not.toHaveProperty('WAYLAND_DISPLAY');
+    expect(out.PATH).toBe('/usr/bin');
+    expect(out.HOME).toBe('/home/x');
+  });
+
+  it('sandboxXEnv binds ONLY the sandbox display + drops the inherited gdm XAUTHORITY', () => {
+    const env = sandboxXEnv(':110', undefined, {
+      DISPLAY: ':0',
+      XAUTHORITY: '/run/user/1000/gdm/Xauthority',
+      PATH: '/usr/bin',
+    } as NodeJS.ProcessEnv);
+    expect(env.DISPLAY).toBe(':110');
+    expect(env).not.toHaveProperty('XAUTHORITY'); // the host gdm cookie never reaches the child
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('sandboxXEnv refuses :0 / the host display', () => {
+    expect(() => sandboxXEnv(':0')).toThrow(/HOST display :0/);
+  });
+
+  it('sandboxXEnv attaches a sandbox-owned XAUTHORITY when given (access-controlled sandbox)', () => {
+    const env = sandboxXEnv(':110', '/tmp/sandbox-110.Xauth', { PATH: '/usr/bin' } as NodeJS.ProcessEnv);
+    expect(env.XAUTHORITY).toBe('/tmp/sandbox-110.Xauth');
+    expect(env.DISPLAY).toBe(':110');
   });
 });
 

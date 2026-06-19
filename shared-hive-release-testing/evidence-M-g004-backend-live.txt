@@ -1,0 +1,14 @@
+# G-004 backend-live proof — MY route on 9140a's integrated .deb pair, 2026-06-19T13:22:35Z
+# Integrated .deb: /tmp/integrated-witness/Papercusp_integrated.deb (686M, federation-status=3 in serve.mjs)
+# Pair: A=papercupai :18754 (PG 21378) / B=aviynw :23498 (PG 22503), DHT :49737, DISPLAY :158
+
+## A (owner) GET /api/discovery/federation-status:
+{"ok":true,"substrate":{"active":true,"bootedHarnesses":2,"healthy":2,"booting":0,"degraded":0},"hives":[{"hiveId":"spoon-knife-hive","title":"octocat/Spoon-Knife","visibility":"public","memberCount":0,"reachablePeers":1},{"hiveId":"hello-world-hive","title":"octocat/Hello-World","visibility":"public","memberCount":0,"reachablePeers":1}]}
+
+## B (joiner) GET /api/discovery/federation-status:
+{"ok":true,"substrate":{"active":true,"bootedHarnesses":1,"healthy":1,"booting":0,"degraded":0},"hives":[]}
+
+## ground-truth: A GET /api/discovery/hives (A doesn't re-discover its OWN):
+{"count":0,"rows":[]}
+## ground-truth: B GET /api/discovery/hives (B discovered A's hives):
+{"count":2,"rows":[{"hiveId":"spoon-knife-hive","title":"octocat/Spoon-Knife","description":"Hive for https://github.com/octocat/Spoon-Knife.git","owner":"papercupai","visibility":"public","memberTopics":[],"memberLinks":["papercusp://harness?topic=8f27571659e534cf9390097740cf59e8af941df270d1d48e821c3c2e178188c0&github=octocat%2FSpoon-Knife&repo_id=1300192"],"memberCount":0,"createdAt":1781874787696,"lastSeenMs":1781875080284,"hivePubkey":"VXZL+cAexvFmQsgp11sogqjeNN+dgX8nvlYyrwgIoy0="},{"hiveId"

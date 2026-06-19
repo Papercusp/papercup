@@ -27,15 +27,25 @@ afterEach(() => {
   else process.env.PAPERCUSP_PROJECT_DOCS_ROOT = ORIGINAL_ENV;
 });
 
+// resolveAdapter's harness branch resolves the content path through this
+// (hive → member repo, else the harness's own path). It is pure over the
+// registry, so mirror it for the simple {slug,path} fixtures used here.
+const resolveHarnessContentPath = (
+  reg: { projects: Array<{ slug: string; path?: string }> },
+  slug: string,
+) => reg.projects.find((p) => p.slug === slug)?.path;
+
 function mockEmptyRegistry() {
   vi.doMock('../../../harness-registry', () => ({
     loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
+    resolveHarnessContentPath,
   }));
 }
 
 function mockRegistryWith(slug: string, path: string) {
   vi.doMock('../../../harness-registry', () => ({
     loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug, path }] })),
+    resolveHarnessContentPath,
   }));
 }
 

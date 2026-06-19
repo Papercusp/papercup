@@ -104,6 +104,7 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   // payload: bind via JSON.stringify(x)::text::jsonb — sql.json THROWS under the
   // getOrgPg runtime client (agent-insights/postgres-js-jsonb-binding). null stays null.
   const payloadText = row.payload == null ? null : JSON.stringify(row.payload);
@@ -111,13 +112,13 @@ async function writeToPg(
     INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, scope, kind, title, body, severity, source, state,
        assignee, assigned_by, assigned_at, payload, found_during, linked_feature_id,
-       created_by, created_at, updated_at, author_pubkey, origin, fed_ts)
+       created_by, created_at, updated_at, author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.issue_id}, ${row.scope}, ${row.kind}, ${row.title},
        ${row.body}, ${row.severity}, ${row.source}, ${row.state},
        ${row.assignee}, ${row.assigned_by}, ${row.assigned_at}, ${payloadText}::text::jsonb,
        ${row.found_during}, ${row.linked_feature_id}, ${row.created_by},
-       ${row.created_at}, now(), ${authorPubkey}, ${origin}, ${fedTs})
+       ${row.created_at}, now(), ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, issue_id) DO UPDATE SET
       scope             = EXCLUDED.scope,
       kind              = EXCLUDED.kind,
@@ -136,10 +137,14 @@ async function writeToPg(
       updated_at        = now(),
       author_pubkey     = EXCLUDED.author_pubkey,
       origin            = EXCLUDED.origin,
-      fed_ts            = EXCLUDED.fed_ts
+      fed_ts            = EXCLUDED.fed_ts,
+      fed_hlc           = EXCLUDED.fed_hlc
     -- PG-level LWW guard — drop a strictly-older op (created_at is immutable, preserved).
-    WHERE harness_shared.engineer_issues.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= harness_shared.engineer_issues.fed_ts
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_shared.engineer_issues.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= harness_shared.engineer_issues.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR harness_shared.engineer_issues.fed_hlc IS NULL)
+             AND (harness_shared.engineer_issues.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= harness_shared.engineer_issues.fed_ts))
   `;
 }
 
@@ -147,16 +152,22 @@ async function deleteFromPg(
   opts: EngineerIssuesProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.engineer_issues
     WHERE workspace_id = ${opts.workspaceId}
       AND issue_id = ${key}
       -- ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -170,7 +181,7 @@ export function buildEngineerIssuesProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

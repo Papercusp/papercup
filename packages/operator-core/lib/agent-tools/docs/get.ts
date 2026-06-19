@@ -14,7 +14,7 @@ import {
   withPreamble,
   type DocSource,
 } from '@papercusp/docs-engine';
-import { loadHarnessRegistry } from '../../harness-registry';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter as engineeringBase } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
 
@@ -79,7 +79,11 @@ export async function resolveAdapter(
     };
   }
   return {
-    adapter: wrapWithPreamble(harnessFsAdapter(project.path, { name: `harness:${harnessSlug}` })),
+    adapter: wrapWithPreamble(
+      harnessFsAdapter(resolveHarnessContentPath(reg, harnessSlug) ?? project.path, {
+        name: `harness:${harnessSlug}`,
+      }),
+    ),
     surface: 'harness',
   };
 }

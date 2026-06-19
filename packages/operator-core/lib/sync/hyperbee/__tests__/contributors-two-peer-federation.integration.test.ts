@@ -55,6 +55,7 @@ const CONTRIBUTORS_DDL = `
     channel2_branch_ref text,
     binding_last_checked_at timestamp with time zone,
     fed_ts bigint,
+    fed_hlc text,
     PRIMARY KEY (workspace_id, harness_slug, github_user_id)
   )`;
 

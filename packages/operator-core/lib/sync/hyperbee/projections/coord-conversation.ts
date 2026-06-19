@@ -112,6 +112,7 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  const fedHlc = provenance?.fedHlc ?? null;
   // workspace_id is the LOCAL projection's bound workspace (not the sender's).
   // accepted_post_id is NOT federated (local bigserial) — NULL on insert,
   // preserved on update (the SET list omits it).
@@ -119,7 +120,7 @@ async function writeToPg(
     INSERT INTO harness_shared.coord_conversations
       (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, state,
        accepted_answer, capture_target, promoted_issue_id,
-       created_at, updated_at, resolved_at, origin, author_pubkey, fed_ts)
+       created_at, updated_at, resolved_at, origin, author_pubkey, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.id}, ${row.kind}, 'harness', ${row.harness_slug}, ${row.asker_id},
        ${row.title}, ${row.body}, ${row.state}, ${row.accepted_answer}, ${row.capture_target},
@@ -127,7 +128,7 @@ async function writeToPg(
        to_timestamp(${row.created_at} / 1000.0),
        to_timestamp(${row.updated_at} / 1000.0),
        ${row.resolved_at === null ? null : sql`to_timestamp(${row.resolved_at} / 1000.0)`},
-       ${origin}, ${authorPubkey}, ${fedTs})
+       ${origin}, ${authorPubkey}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, id) DO UPDATE SET
       kind              = EXCLUDED.kind,
       asker_id          = EXCLUDED.asker_id,
@@ -141,10 +142,15 @@ async function writeToPg(
       resolved_at       = EXCLUDED.resolved_at,
       origin            = EXCLUDED.origin,
       author_pubkey     = EXCLUDED.author_pubkey,
-      fed_ts            = EXCLUDED.fed_ts
-    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
-    WHERE coord_conversations.fed_ts IS NULL
-       OR EXCLUDED.fed_ts >= coord_conversations.fed_ts
+      fed_ts            = EXCLUDED.fed_ts,
+      fed_hlc           = EXCLUDED.fed_hlc
+    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME HLC key the
+    -- merge fold uses. When both ops carry an HLC, order by it; fall back to the
+    -- wall-clock fed_ts guard when either side lacks one.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND coord_conversations.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= coord_conversations.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR coord_conversations.fed_hlc IS NULL)
+             AND (coord_conversations.fed_ts IS NULL OR EXCLUDED.fed_ts >= coord_conversations.fed_ts))
   `;
 }
 
@@ -152,16 +158,23 @@ async function deleteFromPg(
   opts: CoordConversationProjectionOpts,
   key: string,
   delTs?: number,
+  delHlc?: string,
 ): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
+  const hlc = delHlc ?? null;
   await sql`
     DELETE FROM harness_shared.coord_conversations
     WHERE workspace_id = ${opts.workspaceId}
       AND id = ${key}
-      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
-      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
+      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
+      -- as the put guard (fall back to the ts-guard when either side lacks an HLC).
+      AND (
+        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
+        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
+              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+      )
   `;
 }
 
@@ -175,7 +188,7 @@ export function buildCoordConversationProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
+    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 

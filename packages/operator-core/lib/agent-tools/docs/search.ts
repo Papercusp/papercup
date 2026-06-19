@@ -13,7 +13,7 @@ import {
   harnessFsAdapter,
   type DocSource,
 } from '@papercusp/docs-engine';
-import { loadHarnessRegistry } from '../../harness-registry';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
 
@@ -64,7 +64,9 @@ export async function resolveAdapter(
     };
   }
   return {
-    adapter: harnessFsAdapter(project.path, { name: `harness:${harnessSlug}` }),
+    adapter: harnessFsAdapter(resolveHarnessContentPath(reg, harnessSlug) ?? project.path, {
+      name: `harness:${harnessSlug}`,
+    }),
     surface: 'harness',
   };
 }

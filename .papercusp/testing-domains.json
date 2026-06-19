@@ -1352,6 +1352,78 @@
       ]
     },
     {
+      "id": "rust",
+      "label": "Rust (Cargo)",
+      "description": "First-party Rust crates: the pui/TUI workbench, the pui companion proto + zellij plugin, and the papercusp-desktop Tauri shell. Run via `cargo test` (shell runners — the repo has no root Cargo workspace). The desktop crate needs the Tauri system deps (webkit2gtk/gtk) installed to build.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "pui",
+          "label": "pui (apps/tui)",
+          "description": "The Rust TUI / pui workbench (cargo pkg `pui`) — 35 files carry #[cfg(test)] modules.",
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "-c",
+                "cd apps/tui && cargo test"
+              ],
+              "label": "cargo test (pui)"
+            }
+          ]
+        },
+        {
+          "id": "pui-companion-proto",
+          "label": "pui-companion-proto",
+          "description": "The pui companion wire-protocol crate.",
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "-c",
+                "cd apps/pui-companion-proto && cargo test"
+              ],
+              "label": "cargo test (pui-companion-proto)"
+            }
+          ]
+        },
+        {
+          "id": "pui-companion",
+          "label": "pui-companion (zellij plugin)",
+          "description": "The zellij companion plugin crate (cargo pkg `pui-companion`, dir apps/pui-zellij-plugin).",
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "-c",
+                "cd apps/pui-zellij-plugin && cargo test"
+              ],
+              "label": "cargo test (pui-companion)"
+            }
+          ]
+        },
+        {
+          "id": "desktop",
+          "label": "papercusp-desktop (Tauri shell)",
+          "description": "The Tauri desktop shell (papercusp-desktop/src-tauri) — 11 files carry #[cfg(test)] modules. Needs the Tauri system deps to build.",
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "-c",
+                "cd papercusp-desktop/src-tauri && cargo test"
+              ],
+              "label": "cargo test (papercusp-desktop)"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "hive",
       "label": "Hive (Queen/bee loop)",
       "description": "The local-hive orchestration loop: tracked Queen launch, bee placement + nursery, the deliver-and-wake / parent-wake liveness chain, spawn reclaim, host self-recycle, and the Apiary IQ battery. Many files also appear under operator-core (overlap intentional); this is the cohesive subsystem view.",

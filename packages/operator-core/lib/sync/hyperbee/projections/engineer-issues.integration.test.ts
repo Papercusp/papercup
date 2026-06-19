@@ -88,6 +88,8 @@ beforeAll(async () => {
   ]) {
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, m), 'utf8')));
   }
+  // D-001 (mig 314): the fed_hlc ordering column the projection now writes.
+  await db.sql.unsafe(`ALTER TABLE harness_shared.engineer_issues ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
 });
 afterAll(async () => {
   await db?.cleanup();

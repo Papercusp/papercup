@@ -3,12 +3,13 @@
  * property-based convergence sweep over the REAL merge core + a faithful PG
  * `fed_ts`-guard transcription. See `_convergence-fuzz-rig.ts`.
  *
- * Two regimes:
+ * Two regimes (the rig's DEFAULT guard now models the SHIPPED production guard,
+ * `fed_hlc` — migration 314 + the projection writeToPg, D-001 fix):
  *   - 'monotone' (no clock skew): HLC order == fed_ts order. Convergence MUST
  *     hold over a large seed sweep — this is the reusable regression guard.
- *   - 'skew' (recv-advance inversions, the production reality): the fuzzer FINDS
- *     the D-001 split-brain. Asserted as a known divergence (will flip to
- *     "converges" once the merge fold + PG guard are unified — see findings-D).
+ *   - 'skew' (recv-advance inversions, the production reality): with the unified
+ *     `fed_hlc` guard the sweep now CONVERGES (the D-001 fix). The pre-314 bug is
+ *     pinned by an explicit `guardOrder:'fed_ts'` characterisation/teeth test.
  */
 import { describe, expect, it } from 'vitest';
 import { runConvergenceFuzz, type FuzzOptions } from './_convergence-fuzz-rig';
@@ -36,19 +37,17 @@ describe('convergence fuzz — monotone regime (no clock skew) MUST always conve
   });
 });
 
-describe('convergence fuzz — skew regime FINDS the D-001 divergence', () => {
-  // EXPECTED-RED on the convergence invariant: with recv-advance inversions the
-  // sweep produces divergent peers. We assert the fuzzer DETECTS this (≥1 seed
-  // diverges) — i.e. the property-based harness has teeth. When D-001 is fixed
-  // (one ordering key of record), this sweep will converge on every seed and the
-  // `expect(...).toBeGreaterThan(0)` below flips RED, signalling the guard's
-  // removal. The companion `it.fails` makes the intent explicit for CI.
-  it('detects at least one divergent seed under skew (the fuzzer has teeth)', async () => {
+describe('convergence fuzz — skew regime: the LEGACY fed_ts guard diverges, the shipped fed_hlc guard converges', () => {
+  // Characterisation/teeth (the pre-314 bug): under the LEGACY `fed_ts`-ordered
+  // guard, recv-advance inversions still produce divergent peers — the D-001 S0.
+  // Pinned with an explicit `guardOrder:'fed_ts'` so the harness keeps its teeth
+  // (a generator that stops creating inversions would silently pass otherwise).
+  it('LEGACY fed_ts guard: detects at least one divergent seed under skew (teeth)', async () => {
     let diverged = 0;
     const example: { seed: number; distinct: string[] } | null = await (async () => {
       let found: { seed: number; distinct: string[] } | null = null;
       for (let seed = 1; seed <= SWEEP; seed++) {
-        const r = await runConvergenceFuzz({ seed, peers: 4, ops: 40, keys: 6, regime: 'skew', skewProb: 0.6 });
+        const r = await runConvergenceFuzz({ seed, peers: 4, ops: 40, keys: 6, regime: 'skew', skewProb: 0.6, guardOrder: 'fed_ts' });
         if (!r.converged) {
           diverged++;
           if (!found) found = { seed, distinct: r.distinct };
@@ -56,17 +55,19 @@ describe('convergence fuzz — skew regime FINDS the D-001 divergence', () => {
       }
       return found;
     })();
-    // The fuzzer must surface the S0 — if this is ever 0, either the bug is fixed
-    // (good — invert this test) or the generator stopped creating inversions.
     expect(diverged).toBeGreaterThan(0);
     expect(example).not.toBeNull();
   });
 
-  it.fails('S0 (D-001): the skew sweep MUST fully converge (release invariant) — it does not', async () => {
-    const failures: number[] = [];
+  // RELEASE INVARIANT (D-001 fix): the SAME skew sweep, against the SHIPPED
+  // production guard (`fed_hlc`, the rig default), now FULLY CONVERGES on every
+  // seed. This is the gate flipped from `it.fails` → passing once migration 314 +
+  // the projection guard change landed (findings-J).
+  it('S0 (D-001) FIXED: the skew sweep fully converges under the shipped fed_hlc guard', async () => {
+    const failures: Array<{ seed: number; distinct: string[] }> = [];
     for (let seed = 1; seed <= SWEEP; seed++) {
       const r = await runConvergenceFuzz({ seed, peers: 4, ops: 40, keys: 6, regime: 'skew', skewProb: 0.6 });
-      if (!r.converged) failures.push(seed);
+      if (!r.converged) failures.push({ seed, distinct: r.distinct });
     }
     expect(failures).toEqual([]);
   });

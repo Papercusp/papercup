@@ -165,6 +165,7 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(stripMeta(readFileSync(join(SQL_DIR, '145-plan-item-assignments-federation.sql'), 'utf8')));
   // EI-79 step 2 (mig 181): the PG-level LWW guard column the writer stamps.
   await sql.unsafe(`ALTER TABLE harness_shared.plan_item_assignments ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
+  await sql.unsafe(`ALTER TABLE harness_shared.plan_item_assignments ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
 }
 
 /** Per-peer projection apply bound to THIS peer's sql — only the assignment projection. */

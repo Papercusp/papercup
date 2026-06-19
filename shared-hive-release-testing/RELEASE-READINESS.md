@@ -3,9 +3,30 @@
 **Question:** Can we confidently ship the shared-hive (P2P federated) feature to
 public production?
 
-# ❌ NOT YET. Two hard blockers + one product decision stand in the way.
+# ❌ NOT YET — but as of 2026-06-19 PM the path is a known, owned BUILD list (no open S0s, no unknowns).
 
-This is the synthesis of the 7-lane adversarial test program (briefs A–G). The
+> ## CURRENT STATE (2026-06-19 PM, su-9140a — supersedes the A–G synthesis below)
+> Live-witnessed on the **real packaged binary** this session (see
+> `ROLLUP-continuation-2026-06-19.md` + `findings-LIVE-WITNESS-INTEGRATED-2026-06-19.md`):
+> - ✅ **D-001 (the S0) — FULLY CLOSED, code + LIVE.** Federated LWW converges under real
+>   clock skew on the shipped binary (Migration 314 `fed_hlc` HLC-of-record + write-time HLC).
+> - ✅ **A-001** boot, **A-002** multi-hive no-stall, **core federation** (8/11 bidirectional),
+>   **N** scale/churn, **G-001/G-002** honesty (live), **G-004** status surface (live) — all GREEN.
+> - 🔧 **A-003** — root-caused LIVE to a **SEND-side gap**: the owner's hive-home harness never
+>   federates its own `hive_members`/`hive_settings` (outbox not drained, not on the topic) =
+>   su-963ee's Move-1 "increment 2". (The receive-side rebind is correct.) Fix in progress (d2230).
+> - 🔴 **C-001 read-revocation — OWNER DECIDED: RE-KEY** (cut reads on member-remove/go-private).
+>   Now a REQUIRED BUILD = **Move 2** (epoch group key + content encryption; `brief-REKEY-c001-move2.md`),
+>   owned by ed300 (crypto foundation) + K (boundary/distribution/live-cutoff witness). The
+>   critical-path-to-release item. One open sub-decision for the owner: MLS/TreeKEM vs per-epoch wrap.
+>
+> **ROADMAP TO GREEN (2 layers, one thread):** (1) complete **Move 1** — wire the hive-home harness
+> to federate (fixes A-003 + lays the substrate); (2) build **Move 2** — the C-001 re-key on top.
+> The test program is complete; everything testable is GREEN; what remains is this build + its live witness.
+
+---
+### Earlier synthesis (A–G program, now partly superseded by the live results above)
+This was the synthesis of the 7-lane adversarial test program (briefs A–G). The
 testing is **complete and converged** — it found and characterized every blocker.
 What remains is **not more testing**; it's a small set of human/engineer actions.
 
@@ -43,7 +64,21 @@ What remains is **not more testing**; it's a small set of human/engineer actions
   by a passing test (`federation-adversarial` C-001 case).
 - **Needs:** a **product decision** — must "remove member"/"make private" cut READ
   access? If yes → re-key/evict (real fix). If no → document loudly + honest UI.
-- **Status:** documented + confirmed; awaiting the decision.
+- **Status (updated — Brief K, su-313d1):** **DECIDED — option (d)** (document +
+  honest UI; real cutoff = roadmap, DESIGN Move 2). Both legs now witnessed LIVE on
+  the real `.deb`: public→private (Brief E) **and member-remove (Brief K)** — a
+  genuine `revokeHiveContributor` of the member's REAL device key (authorized via the
+  owner's **superuser bearer**, which elevates past Brief E's `unverified-loopback`
+  403) returned `{live:false}` and the removed member still read new owner content
+  (`origin=remote`). Guards: integration `federation-threat-model` (C-001) + new
+  static `hive-revoke-contributor.live-gap.test.ts` (K-1, teeth-verified). See
+  `findings-K.md`.
+- **Brief K also surfaced two NEW defects (filed; compound A-003 → toward S0):**
+  **K-1** the Hive-scope revoke is `live:false` — PG-write-only, no live `h.revoke`
+  (harness-scope does); **K-2** the revocation never federates to the joiner (P-004
+  peer-log publish unwired) — so member revocation is broken on BOTH planes for
+  joiners (read-not-cut + revoke-record-not-delivered). Fix = Move 1 (federate the
+  revoke record, Brief I) + P-004 live-revoke wiring; READ cutoff = Move 2.
 
 ### 3. A-001 — the `.deb` didn't boot (S0) — ✅ FIX VERIFIED (lead re-built the sidecar)
 

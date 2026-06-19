@@ -24,8 +24,30 @@ export interface LagMonitorOpts {
   intervalMs?: number;
   /** Log a warning when p95 loop lag (ms) over the window exceeds this. Default 100. */
   warnP95Ms?: number;
-  /** Sink for the structured warning line. Default console.warn. */
-  log?: (line: string, detail: Record<string, number>) => void;
+  /** Sink for the structured warning line. Default console.warn. (Values are
+   *  numbers for the lag gauge; the profiler also passes the profile `file` path.) */
+  log?: (line: string, detail: Record<string, number | string>) => void;
+  /**
+   * infra round-3 F1: when a window crosses `profileTriggerP95Ms`, capture a short
+   * V8 CPU profile (`.cpuprofile`) so the SYNCHRONOUS culprit eating the loop is
+   * identifiable — the histogram says "the loop is blocked", the profile says "by
+   * what". Default OFF (the p2p-perf SLO instrument + tests must not be perturbed
+   * by a profiler); the production host turns it on. Saturation is sustained
+   * (350-630 windows/hr observed), so a profile started just AFTER a critical
+   * window reliably catches the ongoing block. All inspector use is best-effort:
+   * any failure degrades silently to today's symptom-only logging.
+   */
+  profileOnSaturation?: boolean;
+  /** Dir for `.cpuprofile` artifacts. Default ~/.papercusp/loop-profiles. */
+  profileDir?: string;
+  /** p95 loop-delay (ms) that triggers a capture. Default = the critical band (600ms). */
+  profileTriggerP95Ms?: number;
+  /** How long each capture samples (ms). Default 3000. */
+  profileDurationMs?: number;
+  /** Minimum gap between captures (ms) — rate-limit so a long burst can't profile-storm. Default 300_000 (5 min). */
+  minProfileGapMs?: number;
+  /** Retain at most this many `.cpuprofile` files (oldest pruned). Default 20. */
+  maxProfiles?: number;
 }
 
 export interface LagMonitorHandle {
@@ -112,6 +134,19 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   // P5-1: publish the live read so loopPressure()/isLoopSaturated() work fleet-wide.
   _liveRead = read;
 
+  // infra round-3 F1: lag-triggered CPU-profile capture state.
+  const profileOnSaturation =
+    opts.profileOnSaturation ??
+    (process.env.PAPERCUSP_LOOP_PROFILER === '1' || process.env.PAPERCUSP_LOOP_PROFILER === 'true');
+  const profileTriggerP95Ms = opts.profileTriggerP95Ms ?? CRITICAL_P95_MS;
+  const profileDurationMs = opts.profileDurationMs ?? 3000;
+  const minProfileGapMs = opts.minProfileGapMs ?? 300_000;
+  const maxProfiles = opts.maxProfiles ?? 20;
+  const profileDir = opts.profileDir;
+  let profiling = false;
+  let lastProfileAt = 0;
+  let stopped = false;
+
   const timer = setInterval(() => {
     const s = read();
     if (s.p95Ms >= warnP95Ms) {
@@ -123,6 +158,22 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         windowMs: intervalMs,
       });
     }
+    // F1: when saturated, capture a short CPU profile so the synchronous culprit
+    // is identifiable. Rate-limited + single-flight; fully best-effort.
+    if (
+      profileOnSaturation &&
+      !profiling &&
+      s.p95Ms >= profileTriggerP95Ms &&
+      Date.now() - lastProfileAt >= minProfileGapMs
+    ) {
+      profiling = true;
+      lastProfileAt = Date.now();
+      captureCpuProfile({ durationMs: profileDurationMs, dir: profileDir, maxProfiles, trigger: s, log })
+        .catch(() => {})
+        .finally(() => {
+          if (!stopped) profiling = false;
+        });
+    }
     // Reset so each window is independent (a one-off spike doesn't pin the
     // gauge high forever).
     h.reset();
@@ -133,10 +184,81 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
 
   return {
     stop() {
+      stopped = true;
       clearInterval(timer);
       h.disable();
       if (_liveRead === read) _liveRead = null;
     },
     sample: read,
   };
+}
+
+/**
+ * infra round-3 F1 — capture a short V8 CPU profile and persist it as a
+ * `.cpuprofile` (loadable in Chrome DevTools / speedscope). The V8 sampling
+ * profiler interrupts even synchronous JS, so unlike a JS timer it captures the
+ * frames blocking the loop. Entirely best-effort: any failure (no inspector,
+ * an attached debugger, fs error) resolves quietly — the gauge must never break
+ * the host it is observing.
+ */
+export async function captureCpuProfile(args: {
+  durationMs: number;
+  dir?: string;
+  maxProfiles: number;
+  trigger: { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number };
+  log: (line: string, detail: Record<string, number | string>) => void;
+}): Promise<string | null> {
+  const { durationMs, maxProfiles, trigger, log } = args;
+  try {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const fs = await import('node:fs/promises');
+    const inspector = await import('node:inspector/promises');
+
+    const dir = args.dir ?? path.join(os.homedir(), '.papercusp', 'loop-profiles');
+    await fs.mkdir(dir, { recursive: true });
+
+    const session = new inspector.Session();
+    session.connect();
+    try {
+      await session.post('Profiler.enable');
+      await session.post('Profiler.start');
+      await new Promise((r) => setTimeout(r, durationMs));
+      const { profile } = (await session.post('Profiler.stop')) as { profile: unknown };
+      // Timestamp without Date.now-in-name collisions: epoch ms + pid.
+      const stamp = `${Date.now()}-pid${process.pid}-p95_${Math.round(trigger.p95Ms)}ms`;
+      const file = path.join(dir, `loop-saturation-${stamp}.cpuprofile`);
+      await fs.writeFile(file, JSON.stringify(profile));
+      log('[event-loop-lag] captured CPU profile of the saturated loop — load in DevTools/speedscope', {
+        p95Ms: trigger.p95Ms,
+        maxMs: trigger.maxMs,
+        durationMs,
+        file,
+      });
+
+      // Prune to the most-recent maxProfiles to bound disk use.
+      try {
+        const entries = (await fs.readdir(dir))
+          .filter((f) => f.endsWith('.cpuprofile'))
+          .sort();
+        const excess = entries.length - maxProfiles;
+        for (let i = 0; i < excess; i++) {
+          await fs.rm(path.join(dir, entries[i]), { force: true }).catch(() => {});
+        }
+      } catch {
+        /* prune is best-effort */
+      }
+      return file;
+    } finally {
+      try {
+        session.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    // No inspector available, a debugger already attached, or an fs error —
+    // degrade silently to symptom-only logging.
+    return null;
+  }
 }

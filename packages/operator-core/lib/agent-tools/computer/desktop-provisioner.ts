@@ -17,6 +17,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { sandboxXEnv } from './desktop-driver';
 
 const DEFAULT_W = 1024;
 const DEFAULT_H = 768;
@@ -107,7 +108,9 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     procs.push(xvfb);
     await waitForDisplay(display, opts.readyTimeoutMs ?? 8000);
 
-    const env = { ...process.env, DISPLAY: display };
+    // ISOLATION: the WM + apps run with a host-stripped env bound to the sandbox
+    // display only — never the operator's inherited DISPLAY=:0 / gdm XAUTHORITY.
+    const env = sandboxXEnv(display);
     if (opts.windowManager !== false) {
       procs.push(spawn('openbox', [], { env, stdio: 'ignore' }));
     }

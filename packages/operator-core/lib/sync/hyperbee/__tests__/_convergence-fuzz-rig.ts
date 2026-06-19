@@ -32,13 +32,20 @@ import type { OpEnvelope } from '../op-envelope-types';
 
 /**
  * The materialised-store guard ordering key:
- *   'fed_ts' — TODAY's behaviour: order by op.ts wall clock (the bug surface).
- *   'lww'    — the PROPOSED FIX: order by the SAME comparator the merge fold uses
- *              (`lwwPick`: HLC → del>put → sourceLogKeyHex). When the guard and the
- *              merge share one ordering key of record, the guard never rejects a
- *              merge-winner, so the skew sweep converges. (Validates D-001's fix.)
+ *   'fed_hlc' — the SHIPPED D-001 fix (production, migration 314): the PG guard
+ *               orders by the op's HLC (`fed_hlc` column) when BOTH sides carry
+ *               one, falling back to the wall-clock `fed_ts` guard when either is
+ *               NULL (pre-P-010 / pre-314 / append-path ops). This is the rig's
+ *               DEFAULT because it models the live projection guard.
+ *   'fed_ts'  — LEGACY (the pre-314 bug surface): order by op.ts wall clock only.
+ *               Kept for the characterisation/teeth test that the skew sweep DID
+ *               diverge before the fix.
+ *   'lww'     — order by the FULL merge comparator (`lwwPick`: HLC → del>put →
+ *               sourceLogKeyHex). A strict superset of 'fed_hlc' (adds the exact-
+ *               HLC-tie tiebreak, which the fold pre-resolves before apply). Kept
+ *               as the upper-bound validation that the merge's own order converges.
  */
-export type GuardOrder = 'fed_ts' | 'lww';
+export type GuardOrder = 'fed_ts' | 'lww' | 'fed_hlc';
 
 /** Deterministic PRNG (mulberry32). Seed-controlled — never `Math.random`. */
 export function makeRng(seed: number): () => number {
@@ -82,11 +89,11 @@ interface GenOp {
  *   - 'lww' is the PROPOSED FIX: the guard orders by the merge's own comparator
  *     (`lwwPick`), so it never rejects a merge-winner (put AND del). */
 export class FedTsGuardedStore {
-  readonly rows = new Map<string, { fedTs: number | null; value: unknown }>();
+  readonly rows = new Map<string, { fedTs: number | null; hlc?: string; value: unknown }>();
   /** 'lww' mode only: the winning envelope per key (incl. del tombstones) — the
    *  guard's order-of-record, mirroring the merge's cursor.winners. */
   private winners = new Map<string, OpEnvelope>();
-  constructor(private readonly order: GuardOrder = 'fed_ts') {}
+  constructor(private readonly order: GuardOrder = 'fed_hlc') {}
   private key(op: OpEnvelope): string {
     return `${op.table}::${op.hbKey}`;
   }
@@ -101,10 +108,41 @@ export class FedTsGuardedStore {
       if (prev && lwwPick(prev, op) !== op) return false;
       this.winners.set(k, op);
       if (op.type === 'del') this.rows.delete(k);
-      else this.rows.set(k, { fedTs: op.ts ?? null, value: op.value });
+      else this.rows.set(k, { fedTs: op.ts ?? null, hlc: op.hlc, value: op.value });
       return true;
     }
-    // TODAY (the bug surface): order by fed_ts = op.ts (wall clock).
+    if (this.order === 'fed_hlc') {
+      // SHIPPED PRODUCTION GUARD (migration 314 + the projection writeToPg): order
+      // by `fed_hlc` (the op's HLC) when BOTH the stored row and the incoming op
+      // carry one; else fall back to the wall-clock `fed_ts` guard. A line-for-line
+      // transcription of the projections' new ON CONFLICT / DELETE WHERE.
+      const incHlc = op.hlc ?? null;
+      const incTs = op.ts ?? null;
+      const cur = this.rows.get(k);
+      if (op.type === 'del') {
+        if (!cur) return true; // nothing stored → idempotent
+        const curHlc = cur.hlc ?? null;
+        const beats =
+          incHlc !== null && curHlc !== null
+            ? incHlc >= curHlc // both HLC → del wins iff its HLC ≥ stored (del>put on tie via ≥)
+            : incTs === null || cur.fedTs === null || cur.fedTs <= incTs; // fed_ts fallback
+        if (beats) this.rows.delete(k);
+        return true;
+      }
+      if (!cur) {
+        this.rows.set(k, { fedTs: incTs, hlc: incHlc ?? undefined, value: op.value });
+        return true;
+      }
+      const curHlc = cur.hlc ?? null;
+      const beats =
+        incHlc !== null && curHlc !== null
+          ? incHlc >= curHlc // both HLC → causal compare (the D-001 fix)
+          : cur.fedTs === null || (incTs !== null && incTs >= cur.fedTs); // fed_ts fallback
+      if (!beats) return false;
+      this.rows.set(k, { fedTs: incTs, hlc: incHlc ?? undefined, value: op.value });
+      return true;
+    }
+    // LEGACY 'fed_ts' (the pre-314 bug surface): order by fed_ts = op.ts (wall clock).
     if (op.type === 'del') {
       const cur = this.rows.get(k);
       const delTs = op.ts ?? null;
@@ -208,7 +246,7 @@ export async function runConvergenceFuzz(opts: FuzzOptions): Promise<FuzzResult>
 
   const digests: string[] = [];
   for (let p = 0; p < opts.peers; p++) {
-    const store = new FedTsGuardedStore(opts.guardOrder ?? 'fed_ts');
+    const store = new FedTsGuardedStore(opts.guardOrder ?? 'fed_hlc');
     const cursor = createMergeCursor();
     // This peer eventually receives EVERY op (the post-heal fixed point) but in
     // its OWN seeded fold order — one stable AdmittedLog per origin op (keyHex =
