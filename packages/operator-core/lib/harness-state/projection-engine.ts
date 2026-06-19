@@ -66,6 +66,12 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // hive_pending_joins). Both hive-home-grained (scoped to the Hive home slug).
   'hive-reports': 'hive_reports',
   'hive-pending-joins': 'hive_pending_joins',
+  // shared-hive-rekey-2026-06-19 (P-005): per-member WRAPPED epoch keys for the read-plane
+  // re-key federate over the peer-log (projections/hive-epoch-keys.ts → hive_epoch_keys;
+  // tableTag 'hive-epoch-keys'). Hive-home-grained (keyed workspace_id, harness_slug = the
+  // Hive home, epoch, member_device_pubkey). DARK until papercusp-hive-rekey flips — the
+  // boundary trigger + producer are flag-gated, so the table stays empty until then.
+  'hive-epoch-keys': 'hive_epoch_keys',
   // fed-reanchor B5: the work-queue's issue/task family federates over the peer-log
   // (projections/engineer-issues.ts → engineer_issues; key == issue_id).
   'engineer-issues': 'engineer_issues',
