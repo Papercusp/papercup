@@ -52,6 +52,10 @@ export interface HiveShareMeta {
 export interface SetHiveOutcome {
   ok: boolean;
   announced?: boolean;
+  /** Deceptive-publish fix: swarm peers the announce actually reached. 0 (with
+   *  announced=true) means it was broadcast into the void — registered, not yet
+   *  discoverable — so the UI says so instead of claiming a successful publish. */
+  reachablePeers?: number;
   withdrawn?: boolean;
   error?: string;
 }
@@ -96,7 +100,7 @@ export async function defaultSetHiveListing(input: {
     });
     const body = (await res.json().catch(() => ({}))) as SetHiveOutcome & { error?: string };
     if (!res.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
-    return { ok: true, announced: body.announced, withdrawn: body.withdrawn };
+    return { ok: true, announced: body.announced, reachablePeers: body.reachablePeers, withdrawn: body.withdrawn };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -362,7 +366,9 @@ export function ShareHiveForm({
             ? outcome.withdrawn
               ? `Withdrawn — the ${hiveLabel} is no longer shared.`
               : outcome.announced
-                ? 'Published and announced to the directory.'
+                ? (outcome.reachablePeers ?? 0) > 0
+                  ? `Published — announced to ${outcome.reachablePeers} connected peer${outcome.reachablePeers === 1 ? '' : 's'}.`
+                  : 'Published & registered, but no peers are connected yet — it becomes discoverable once peers come online.'
                 : 'Saved (announce pending transport).'
             : `Failed: ${outcome.error ?? 'unknown error'}`}
         </div>

@@ -31,6 +31,10 @@ export interface SetHiveListingResult {
   visibility: HiveDirectoryMeta['visibility'];
   saved: true;
   announced: boolean;
+  /** Deceptive-publish fix: swarm peers the announce reached (0 = registered but
+   *  broadcast into the void — NOT discoverable yet). The UI must distinguish
+   *  this from a real broadcast instead of flatly saying "announced". */
+  reachablePeers?: number;
   withdrawn?: boolean;
   /** P-005: the signed unlist tombstone reached the wire (false = TTL-only). */
   tombstoneSent?: boolean;
@@ -102,6 +106,7 @@ export async function setHiveListing(
   // count as rowsExisted) + local binding rows. Lazily wire the transport
   // first (a box that gh-authed after boot).
   let announced = false;
+  let reachablePeers = 0;
   let publishOutcome: Record<string, unknown> | undefined;
   let announceError: string | undefined;
   try {
@@ -113,6 +118,7 @@ export async function setHiveListing(
       announceError = `publish skipped: ${res.skipped}`;
     } else {
       announced = res.announced;
+      reachablePeers = res.reachablePeers; // deceptive-publish: real swarm reach
       publishOutcome = res as unknown as Record<string, unknown>;
     }
   } catch (e) {
@@ -125,6 +131,7 @@ export async function setHiveListing(
     visibility: meta.visibility,
     saved: true,
     announced,
+    reachablePeers,
     ...(publishOutcome ? { publish: publishOutcome } : {}),
     ...(announceError ? { announceError } : {}),
   };

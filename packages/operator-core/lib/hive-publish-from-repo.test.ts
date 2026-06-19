@@ -61,7 +61,7 @@ function fakes(over: Partial<PublishCreatedHiveDeps> = {}) {
     deriveMemberRepos: async () => ['acme/shop#100', 'acme/docs'],
     publishDirectory: async (_dir, meta) => {
       calls.published.push(meta as unknown as Record<string, unknown>);
-      return { registered: true, announced: true, visibility: meta.visibility };
+      return { registered: true, announced: true, reachablePeers: 2, visibility: meta.visibility };
     },
     getDirectory: () => ({}) as never,
     publishListing: async (input) => {

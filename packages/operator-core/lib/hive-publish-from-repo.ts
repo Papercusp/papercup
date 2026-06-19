@@ -41,6 +41,9 @@ import type { HiveVisibility } from './sync/hyperbee/hive-announce';
 
 export interface PublishCreatedHiveOutcome {
   announced: boolean;
+  /** Deceptive-publish fix: swarm peers the announce actually reached (0 = the
+   *  frame was broadcast into the void; registered but not yet discoverable). */
+  reachablePeers: number;
   /** Returned for invite hives so the creator can hand the secret to invitees. */
   inviteSecret?: string;
   /**
@@ -201,6 +204,7 @@ export async function publishCreatedHive(
   } catch (e) {
     return {
       announced: false,
+      reachablePeers: 0,
       cupboard: { attempted: false },
       error: `save_meta_failed: ${e instanceof Error ? e.message : e}`,
       ...(inviteSecret
@@ -321,6 +325,7 @@ async function publishListingForMeta(
 
   // 4 — directory announce (the content authority, D-004).
   let announced = false;
+  let reachablePeers = 0;
   let announceError: string | undefined;
   try {
     const owner = await resolveOwner();
@@ -335,6 +340,7 @@ async function publishListingForMeta(
       owner,
     );
     announced = res.announced;
+    reachablePeers = res.reachablePeers; // deceptive-publish: real swarm reach
   } catch (e) {
     announceError = e instanceof Error ? e.message : String(e);
   }
@@ -470,6 +476,7 @@ async function publishListingForMeta(
 
   return {
     announced,
+    reachablePeers,
     cupboard,
     localBindings,
     ...(hivePubkey ? { hivePubkey } : {}),

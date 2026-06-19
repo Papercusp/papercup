@@ -35,18 +35,26 @@ import { HiveDirectory, type DiscoveredHive, type HiveDirectoryDeps, type Signed
 let _singleton: HiveDirectory | null = null;
 let _transport: ((topicHex: string, frame: SignedHiveAnnounce) => Promise<void>) | null = null;
 let _keychainId: string | null = null;
+let _reachablePeers: (() => number) | null = null;
 
 /**
  * Wire the live swarm transport + device keychain id (called by the substrate
  * boot path). Until this runs, `broadcast` is a no-op and `sign` throws — the
  * endpoint still serves the (empty) discovered list without crashing.
+ *
+ * `reachablePeers` (deceptive-publish fix) reports the directory-swarm's live
+ * connectionCount so a publish can honestly say whether the announce reached
+ * anyone. Optional: until wired (or with no transport) it reports 0 — which is
+ * the truthful answer (broadcasting into the void).
  */
 export function setHiveDirectoryTransport(
   broadcast: (topicHex: string, frame: SignedHiveAnnounce) => Promise<void>,
   keychainId: string,
+  reachablePeers?: () => number,
 ): void {
   _transport = broadcast;
   _keychainId = keychainId;
+  _reachablePeers = reachablePeers ?? null;
 }
 
 function productionDeps(): HiveDirectoryDeps {
@@ -64,6 +72,8 @@ function productionDeps(): HiveDirectoryDeps {
     broadcast: async (topicHex, frame) => {
       if (_transport) await _transport(topicHex, frame);
     },
+    // Deceptive-publish fix: real swarm reach (0 until the transport is wired).
+    reachablePeers: () => _reachablePeers?.() ?? 0,
     // PG offline cache (migration 182, hive_directory_cache state table). Reads/
     // writes via getOrgPg (admin, RLS-bypass) like the rest of operator-state.
     // Best-effort — a cache failure must never break ingest/listing.
