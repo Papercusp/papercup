@@ -15,6 +15,9 @@
  *      (per-hive-learning-loops-2026-06-14 P-021; D-003). Best-effort: a failure
  *      WARNS but never fails the dissolve. Without it per-hive routines leak past
  *      dissolve.
+ *   3.6. release the hive's leased sandbox desktop (capability:computer) if any —
+ *      kill the in-process Xvfb child + free the display (inverse of
+ *      ensureHiveDesktop). Idempotent + best-effort (WARNS, never fails dissolve).
  *   4. OPTIONALLY drop the harness PG schema (default keep — deregister only).
  *
  * ROOT-ONLY (D-002) + confirm-gated (destructive). Does NOT call
@@ -33,6 +36,7 @@ import { dropHarnessSchema } from '../../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../../harness-membership';
 import { requireHiveTier } from '../../hive/member-tier-gate';
 import { teardownHiveLearningLoop } from '../../hive/provision-learning-loop';
+import { releaseHiveDesktop } from '../computer/desktop-lease';
 import { resolveHive } from './_resolve';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -165,6 +169,22 @@ export default defineTool({
       steps.learningLoopError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
       console.warn(
         `[hive:dissolve] learning-loop teardown for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+
+    // 3.6. Release the hive's leased sandbox desktop, if any (capability:computer /
+    // computer-tool-plan 2.4 — the inverse of ensureHiveDesktop). The Xvfb child lives in
+    // THIS operator loop; releaseHiveDesktop kills it + frees the display. Idempotent +
+    // best-effort: a no-op when the hive never leased a desktop, and a failure WARNS but
+    // never fails the dissolve (same contract as the learning-loop teardown above).
+    try {
+      await releaseHiveDesktop(hive.slug);
+      steps.desktopReleased = true;
+    } catch (e) {
+      steps.desktopReleased = false;
+      steps.desktopError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+      console.warn(
+        `[hive:dissolve] desktop release for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
       );
     }
 
