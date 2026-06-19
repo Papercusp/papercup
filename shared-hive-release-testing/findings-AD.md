@@ -39,6 +39,18 @@ PG-row isolation, multi-ws-per-box) is **integration** and is deferred to a calm
   captures under the harness's REAL workspace_id end-to-end (capture + outbox +
   projection), never silently `'default'`. This is the highest-value AD case (EI-126 was
   a 102 GB blowup from exactly this mis-route) and needs the real capture→drain→PG path.
+  **SCOPING NARROWED (su-860d3, 2026-06-19):** the mis-route is NOT in boot/capture — they
+  are FAITHFUL. `boot.ts` takes an explicit required `opts.workspaceId` and sets
+  `handle.workspaceId = opts.workspaceId` (boot.ts:583/606/679/…); `wire-outbox` +
+  `outbox-drain` capture under `handle.workspaceId` verbatim. So the EI-126 silent-default
+  happened UPSTREAM — in whatever resolves the `workspace_id` PASSED TO `bootHarness`
+  (the boot-orchestration call site / `activeWorkspaceId()`'s global fallback, the P-021
+  fall-through the ALS `isInRequestScope()` exists to flag). The guard therefore belongs at
+  the boot-CALLER's workspace resolution (does the orchestrator ever boot a harness with a
+  resolved-to-`'default'`/global workspace while the real one was available?), NOT at the
+  substrate-internal capture path. This is in the area c2a63/53f39/ee7e9 are actively
+  reworking (boot/merge/snapshot) — best owned by someone with that subsystem loaded, or a
+  deliberate assignment, not picked up blind.
 - **Scenario 6 — default-workspace trap:** a missing/ambiguous workspace_id must error or
   resolve, not silently default-and-orphan. (The ALS side is covered — `isInRequestScope`
   exists precisely to flag the P-021 fall-through; the WRITE side guard is the untested half.)

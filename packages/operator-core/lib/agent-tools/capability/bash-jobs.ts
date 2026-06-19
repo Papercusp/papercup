@@ -194,10 +194,9 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       settled = true;
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
-      try { logStream?.end(); } catch { /* ignore */ }
       const truncated = buffer.length > INLINE_OUTPUT_CAP;
       const output = truncated ? headTail(buffer) : buffer;
-      resolvePromise({
+      const result: ForegroundResult = {
         status,
         exitCode,
         output,
@@ -205,7 +204,25 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
         truncated: truncated || totalBytes > Buffer.byteLength(buffer, 'utf8'),
         logPath,
         durationMs: Date.now() - startedAt,
-      });
+      };
+      // Resolve only AFTER the spill log has fully flushed to disk: a fire-and-forget
+      // `end()` returns before createWriteStream's buffered writes reach the file, so a
+      // caller (or test) that reads `logPath` synchronously could see a partially
+      // flushed prefix — the tail is missing under I/O load. `end(cb)` fires the
+      // callback on the stream's 'finish' event (flush complete). Resolve exactly once,
+      // whether the flush completes or the stream errors (spill is best-effort).
+      let resolved = false;
+      const settleOnce = (): void => {
+        if (resolved) return;
+        resolved = true;
+        resolvePromise(result);
+      };
+      if (logStream) {
+        logStream.on('error', settleOnce);
+        try { logStream.end(settleOnce); } catch { settleOnce(); }
+      } else {
+        settleOnce();
+      }
     };
 
     child.on('error', (err) => {

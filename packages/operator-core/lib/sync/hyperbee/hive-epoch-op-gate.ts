@@ -24,7 +24,7 @@ import type { OpEnvelope } from './op-envelope-types';
 import type { LocalWriteOp } from './boot';
 import type { EpochEncryptCapability } from './outbox-drain';
 import type { PendingEpochContent } from './pending-epoch-content';
-import type { EpochKeyProvider } from './hive-epoch-key-provider';
+import type { EpochKeyProvider } from './hive-epoch-serving';
 import { encryptOpPayload, decryptOpPayload } from './hive-epoch-serving';
 
 /** Resolve the epoch key for `(hiveId, epoch)` on THIS peer: owner derives, member

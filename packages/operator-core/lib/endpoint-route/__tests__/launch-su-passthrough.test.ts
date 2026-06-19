@@ -14,7 +14,7 @@
  * spawn / fs / os are mocked (no terminal opens); buildKickoffPromptFile is
  * mocked so no /dev/shm file is written and we can force the failure path.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
@@ -65,6 +65,18 @@ function lastOneliner(): string {
   const args = call[1];
   return args[args.length - 1];
 }
+
+// Warm the heavy route module ONCE, outside any timed test body. The first
+// `await import('../routes/adv/launch-su')` pulls in a large transform graph
+// (~6s cold); paying it here under the 60s hook budget keeps every `it` body
+// trivial. Without this the cost lands inside the FIRST test, and a load-induced
+// slowdown on the loaded gate can push it past the 60s test timeout — which then
+// also poisons the NEXT test: the killed-but-still-running handler invokes the
+// shared `buildKickoffPromptFileMock` after the next test's `clearAllMocks`,
+// making a "factory not called" assertion see a stale call. Warming removes both.
+beforeAll(async () => {
+  await import('../routes/adv/launch-su');
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

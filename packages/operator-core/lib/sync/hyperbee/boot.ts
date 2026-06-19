@@ -47,6 +47,7 @@ import {
 } from './read-merge';
 import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
+import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
@@ -629,6 +630,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // sets a rate cap (no caps ⇒ the wrapper is a pure passthrough).
   const rateLimiter = new MemberRateLimiter();
 
+  // ── C-001 re-key apply deps (shared-hive-rekey-2026-06-19, su-ee7e9) ── Built ONCE here
+  // (like the rateLimiter): the decrypt gate + its pending-content buffer are stateful
+  // across passes. null when the re-key is OFF for this harness (flag off / non-hive / no
+  // device identity) ⇒ the per-pass applyImpl stays `enforcedApply`, byte-for-byte today.
+  // The boot-deps helper owns the LocalDevice/crypto build + the cheap flag-FIRST off-path,
+  // so a non-rekey harness pays one cached flag read here.
+  const rekeyDeps = await buildHiveRekeyBootDeps({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+  });
+
   // ── Admitted-set ── keyHex → log. Seeded with the own log (which is
   // structurally an AdmittedLog). Remote logs are added on admit (4b).
   const admitted = new Map<string, AdmittedLog>();
@@ -1144,15 +1156,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // + flips `rekeyOn` to the papercusp-hive-rekey flag (and may hoist both to boot scope
       // with the epoch-key deps). Identity stub today ⇒ `applyImpl === enforcedApply`,
       // byte-for-byte unchanged. ONE owner per this expression — never raced.
-      const rekeyOn: boolean = false; // TODO(su-ee7e9): getFlag(FLAGS.<papercusp-hive-rekey>)
-      const decryptGate = (inner: (op: OpEnvelope) => Promise<boolean>) => inner; // TODO(su-ee7e9): real epoch decrypt-gate
-
       const mergeOpts = {
         // D-021: route through THIS harness's scoped projection apply, not the
         // global registry (which the last-booted harness would own). EN-4: wrapped by
         // the owner-enforcement seam above (passthrough = scopedApply when no policy); the
-        // C-001 re-key decrypt-gate wraps THAT outermost when armed (rekeyOn).
-        applyImpl: rekeyOn ? decryptGate(enforcedApply) : enforcedApply,
+        // C-001 re-key decrypt-gate (su-ee7e9) wraps THAT OUTERMOST when armed — built once
+        // at boot scope (`rekeyDeps`, null ⇒ enforcedApply byte-for-byte). decrypt → EN-4 →
+        // EN-2 → scopedApply, so policy/rate see PLAINTEXT and an undecryptable op (the
+        // read-cut / defer) drops before spending rate budget / content checks.
+        applyImpl: rekeyDeps ? rekeyDeps.epochGate(enforcedApply) : enforcedApply,
         // The old per-author cap, reshaped: a per-PASS read budget. A log with
         // more backlog than this advances chunk-by-chunk across the 1Hz poll
         // (≈50k ops/sec/log ingest ceiling) instead of losing its tail (EI-91).

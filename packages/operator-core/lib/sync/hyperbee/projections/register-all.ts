@@ -89,6 +89,15 @@ export interface RegisterAllOpts {
    * (member-slug binding for all projections).
    */
   hiveHomeSlug?: string;
+  /**
+   * shared-hive-rekey-2026-06-19 (drain hook): fired `(hiveHomeSlug, epoch)` when a
+   * `hive_epoch_keys` row applies, so the apply loop can drain J's PendingEpochContent for
+   * that `(hive, epoch)` + re-apply the deferred content (now decryptable). Boot wires this
+   * when the re-key is active; undefined otherwise (no drain — the buffer just isn't fed).
+   * Flows to `buildHiveEpochKeysProjection` via the `hiveScoped` spread (the other
+   * projections ignore the extra field).
+   */
+  onEpochKeyApplied?: (hiveHomeSlug: string, epoch: number) => void;
 }
 
 /**

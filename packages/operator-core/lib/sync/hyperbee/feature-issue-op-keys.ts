@@ -613,6 +613,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | ReportWireRow
     | PendingJoinWireRow
     | HiveMemberRow
+    | HiveEpochKeyRow
     | EngineerIssueRow
     | PlanPartWireRow;
   switch (outboxRow.table_name) {

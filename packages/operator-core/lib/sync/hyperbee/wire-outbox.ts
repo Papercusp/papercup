@@ -32,6 +32,7 @@ import {
   type OutboxDrainHandle,
 } from './outbox-drain';
 import { fanoutOutboxRow } from './fanout-projection';
+import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { registerPlanClobberNotifier } from './plan-clobber-notify';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
@@ -80,11 +81,25 @@ export async function wireOutboxForHarness(
   );
 
   const backfill = deps.backfillLocalState ?? realBackfillLocalState;
-  // Default drain wires the local subscribe→inject fan-out as a per-row consumer
-  // on the SAME drain (coordination-substrate Phase 2). Tests override
-  // startOutboxDrain to opt out of the fan-out.
+  // Re-key encrypt-on-capture (C-001, shared-hive-rekey-2026-06-19): resolve this
+  // hive's re-key boot deps ONCE. Returns null (cheap, flag-first) when the re-key
+  // is off / this is a non-hive harness / no local device — so epochEncrypt stays
+  // undefined and the drain federates plaintext (byte-identical to today). On an
+  // active re-key hive it returns the EpochEncryptCapability the drain encrypts the
+  // selected hive-content ops with. A throw (unexpected crypto/device error on an
+  // active hive) propagates rather than silently falling back to plaintext — fail
+  // safe, never federate post-boundary content in the clear.
+  const rekeyDeps = await buildHiveRekeyBootDeps({
+    workspaceId: handle.workspaceId,
+    harnessSlug: handle.harnessSlug,
+  });
+  // Default drain wires the local subscribe→inject fan-out as a per-row consumer on
+  // the SAME drain (coordination-substrate Phase 2) PLUS the re-key encrypt
+  // capability (undefined ⇒ plaintext). Tests override startOutboxDrain to opt out.
   const start =
-    deps.startOutboxDrain ?? ((h: BootedHarnessHandle, p: postgres.Sql) => realStartOutboxDrain(h, p, { fanout: fanoutOutboxRow }));
+    deps.startOutboxDrain ??
+    ((h: BootedHarnessHandle, p: postgres.Sql) =>
+      realStartOutboxDrain(h, p, { fanout: fanoutOutboxRow, epochEncrypt: rekeyDeps?.epochEncrypt }));
 
   // (1) Best-effort one-time backfill. A failure here must not stop the drain —
   // the backfill catches up rows that PRE-DATE federation; the drain handles
