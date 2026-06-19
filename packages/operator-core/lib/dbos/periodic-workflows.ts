@@ -20,6 +20,7 @@ import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc } from '../scratch-gc';
 import { runCompletionRefVerifierOnce } from '../harness/completion-ref-verifier';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
+import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '../agent-tools/coordination/notify-gc';
 import { runServiceHealthTick } from '../service-health';
@@ -325,6 +326,22 @@ const harnessStatusSweepWorkflow = DBOS.registerWorkflow(harnessStatusSweepTick,
   name: 'harnessStatusSweep', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(harnessStatusSweepWorkflow, { name: 'harnessStatusSweep', crontab: '*/30 * * * * *' });
+
+// Hourly (:23, off the stampede): surface silently-dead DBOS workflows
+// (MAX_RECOVERY_ATTEMPTS_EXCEEDED / ERROR) — the embedBackfill/systemHealth class the
+// infra audit (F4) found dying with ZERO alerting (185 dead + 229 errored instances).
+// READ-ONLY (SELECTs dbos.workflow_status) and never throws, so the monitor can't
+// affect the workflows it watches. Logs a WARN summary; not a per-instance human
+// escalation (round-1 D-005: don't flood the human channel with operational noise).
+async function deadWorkflowMonitorTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    await runDeadWorkflowMonitorOnce();
+  }, { name: 'dead-workflow-monitor' });
+}
+const deadWorkflowMonitorWorkflow = DBOS.registerWorkflow(deadWorkflowMonitorTick, {
+  name: 'deadWorkflowMonitor', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(deadWorkflowMonitorWorkflow, { name: 'deadWorkflowMonitor', crontab: '0 23 * * * *' });
 
 // Every minute: reclaim orphaned spawn rows — 'running'/'restarting'
 // spawned_agents whose launching operator host died and stopped heartbeating, so
