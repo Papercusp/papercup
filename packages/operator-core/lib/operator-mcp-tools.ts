@@ -178,6 +178,8 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__hive:list',
   'mcp__agentmcp__hive:get',
   'mcp__agentmcp__hive:create',
+  // EI-1582 — wire an existing harness in as a Hive member (sets hive_slug).
+  'mcp__agentmcp__hive:add-member',
   'mcp__agentmcp__hive:update',
   'mcp__agentmcp__hive:dissolve',
   // shared-hive-hardening-2026-06-13 P-012 — a joiner leaves a shared hive (root-only).

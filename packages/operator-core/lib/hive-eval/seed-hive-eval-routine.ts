@@ -19,8 +19,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
-const SLUG = process.env.HIVE_EVAL_HARNESS ?? 'papercup';
+const SLUG = process.env.HIVE_EVAL_HARNESS ?? operatorHomeHarnessSlug();
 // Monthly at 06:50:00 on the 1st — :50 is OFFSET from the deploy rhythm (release-trigger
 // :00/:15/:30/:45, hourly green-checkpoint ~:30), the gym (:10/:40), and the iq-battery (:20):
 // a battery is a long-running in-host job a deploy-restart at a shared boundary would kill.

@@ -21,8 +21,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.CLAIM_DISCIPLINE_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.CLAIM_DISCIPLINE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Every 10 minutes — the cadence IS the grace period before a first nudge. */
 const CRON = '0 */10 * * * *';
 

@@ -25,8 +25,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.WAKE_BRAIN_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.WAKE_BRAIN_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Every 30 minutes — a conservative default: ~48 Queen turns/day at most,
  *  and only while HIVE_AGENT_TABS is on AND a brain session is live. */
 const CRON = '0 */30 * * * *';

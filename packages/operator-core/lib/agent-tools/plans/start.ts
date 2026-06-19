@@ -25,6 +25,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const argsSchema = z.object({
   slug: z.string().min(1).describe('Plan slug to start (filename without .md).'),
@@ -73,7 +74,7 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
     const now = new Date().toISOString();
 
     // Cross-store invariant: refuse to start a plan that is already terminal

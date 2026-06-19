@@ -22,8 +22,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.TELEMETRY_RETENTION_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.TELEMETRY_RETENTION_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Daily at 04:00 — off the busy hours; off-set from session-dir-gc (04:30). */
 const CRON = '0 0 4 * * *';
 

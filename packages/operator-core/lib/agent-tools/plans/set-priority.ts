@@ -16,6 +16,7 @@ import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const argsSchema = z.object({
   slug: z.string().min(1).describe('Plan slug to prioritize.'),
@@ -41,7 +42,7 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
     const now = new Date().toISOString();
 
     await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {

@@ -200,6 +200,34 @@ describe('ShareHiveForm — submit (P-004)', () => {
     expect(screen.queryByTestId('share-hive-invite-link')).toBeNull();
   });
 
+  // Deceptive-publish honesty — the 0-peer "broadcast into the void" case was
+  // UNTESTED (only reachablePeers:3 was). This is the core of the fix: announced
+  // with 0 reachable peers must NOT claim "announced to 0 peers" — it must say
+  // the hive is registered-but-not-yet-discoverable. (Brief G — findings-G G-001.)
+  it('announced with 0 reachable peers says registered-not-discoverable, NOT "announced to 0 peers"', async () => {
+    const user = userEvent.setup();
+    const s = seams({ meta: meta({ found: false }), outcome: { ok: true, announced: true, reachablePeers: 0 } });
+    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    await screen.findByTestId('share-hive-current');
+    await user.click(screen.getByTestId('share-hive-submit'));
+    await screen.findByText(
+      'Published & registered, but no peers are connected yet — it becomes discoverable once peers come online.',
+    );
+    // The lie the deceptive-publish fix kills: never claim a peer broadcast at 0.
+    expect(screen.queryByText(/announced to 0 connected peer/)).toBeNull();
+    expect(screen.queryByText(/announced to .* connected peer/)).toBeNull();
+  });
+
+  it('an announce that did not go out (announced:false) says "pending transport", not published', async () => {
+    const user = userEvent.setup();
+    const s = seams({ meta: meta({ found: false }), outcome: { ok: true, announced: false, reachablePeers: 0 } });
+    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    await screen.findByTestId('share-hive-current');
+    await user.click(screen.getByTestId('share-hive-submit'));
+    await screen.findByText('Saved (announce pending transport).');
+    expect(screen.queryByText(/Published/)).toBeNull();
+  });
+
   it('fires onSaved with the saved visibility (the chrome refresh hook)', async () => {
     const user = userEvent.setup();
     const saved: string[] = [];

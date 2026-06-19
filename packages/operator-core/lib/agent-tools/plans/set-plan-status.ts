@@ -26,6 +26,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
 const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
@@ -220,7 +221,7 @@ export default defineTool({
     // paused) row, and plans:list self-heals on read if this misses.
     if (result.value.ok && isTerminalPlanStatus(status)) {
       try {
-        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+        await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

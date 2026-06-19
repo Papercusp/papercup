@@ -22,8 +22,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.SCAN_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.SCAN_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Every 4 hours — matches the `scan` blueprint's declared `triggers.schedule`. */
 const CRON = '0 0 */4 * * *';
 const KICKOFF =

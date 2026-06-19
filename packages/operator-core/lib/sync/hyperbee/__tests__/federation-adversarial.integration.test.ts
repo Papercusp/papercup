@@ -724,6 +724,98 @@ describe('federation adversarial — admission + revocation gate the data plane'
     },
     45_000,
   );
+
+  it(
+    'C-001 (release gap): a removed member can no longer WRITE, but STILL READS new content (write-only revocation)',
+    async () => {
+      // Demonstrates finding C-001 (shared-hive-release-testing/findings-C.md):
+      // revoking a member drops its log from OTHER peers' admitted sets (so its
+      // WRITES stop propagating hive-wide), but does NOT stop the removed member
+      // from READING — its own admission of the owner's log is untouched and
+      // corestore replication is unconditional for any topic peer. So "remove
+      // member" silences B's writes yet B keeps reading everything new.
+      //
+      // ⚠ When read-plane revocation lands (re-key / gate-replication / evict —
+      // see findings-C.md fix options), the "STILL reads" assertion below MUST
+      // flip to .toBeUndefined(). Until then this pins the gap as a regression guard.
+      const testnet = await makeTestnet();
+      const idA = makeIdentityOverride('owner', 42, 'kc-owner');
+      const idB = makeIdentityOverride('member', 7, 'kc-member');
+
+      let aRevoked = new Set<string>(); // the owner's published revocations
+      const peerA = await bootCapturePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'c001-A-',
+        identity: idA,
+        verify: (uid) => (uid === idB.userId ? 'verified' : 'fail'),
+        loadRevoked: async () => new Set(aRevoked),
+      });
+      const peerB = await bootCapturePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'c001-B-',
+        identity: idB,
+        verify: (uid) => (uid === idA.userId ? 'verified' : 'fail'),
+        // a removed member revokes no one — its read path stays fully open.
+      });
+      expect(peerA.handle.swarm!.topicHex).toBe(peerB.handle.swarm!.topicHex);
+
+      // Baseline: B reads the owner's content while still a member.
+      await peerA.handle.append({
+        type: 'put', table: FEATURE_TAG, hbKey: 'F-member',
+        value: { harness_slug: HARNESS_SLUG, feature_id: 'F-member', title: 'member-era', status: 'todo' },
+        ts: 5000, schema_version: 1, writerPubkey: idA.devicePubkey,
+      });
+      const baseline = await pollUntil(
+        async () => {
+          await peerB.handle.mergeNow();
+          return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-member')?.[0];
+        },
+        { timeoutMs: 25_000, intervalMs: 250 },
+      );
+      expect(baseline, 'baseline: a member reads owner content').toBeTruthy();
+
+      // Owner REMOVES B (publishes a revocation of B's device pubkey).
+      aRevoked = new Set([idB.devicePubkey]);
+      await peerA.handle.mergeNow(); // owner drops the removed member's log
+      expect(peerA.handle.admitted.size, 'owner dropped the removed member’s log').toBe(1);
+
+      // (1) WRITE plane IS cut — B's NEW write must NOT reach the owner.
+      await peerB.handle.append({
+        type: 'put', table: FEATURE_TAG, hbKey: 'G-after-remove',
+        value: { harness_slug: HARNESS_SLUG, feature_id: 'G-after-remove', title: 'removed-write', status: 'todo' },
+        ts: 5001, schema_version: 1, writerPubkey: idB.devicePubkey,
+      });
+      for (let i = 0; i < 10; i++) {
+        await peerA.handle.mergeNow();
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      expect(
+        peerA.apply.mock.calls.find((c) => c[0].hbKey === 'G-after-remove'),
+        'WRITE plane: a removed member’s new write must NOT reach the owner',
+      ).toBeUndefined();
+
+      // (2) READ plane is NOT cut (THE GAP) — the owner's NEW content STILL reaches B.
+      await peerA.handle.append({
+        type: 'put', table: FEATURE_TAG, hbKey: 'F-after-remove',
+        value: { harness_slug: HARNESS_SLUG, feature_id: 'F-after-remove', title: 'post-removal', status: 'todo' },
+        ts: 5002, schema_version: 1, writerPubkey: idA.devicePubkey,
+      });
+      const stillReads = await pollUntil(
+        async () => {
+          await peerB.handle.mergeNow();
+          return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-after-remove')?.[0];
+        },
+        { timeoutMs: 25_000, intervalMs: 250 },
+      );
+      // ⚠ GAP: today this is truthy (B still reads after removal). Flip to
+      // .toBeUndefined() when read-plane revocation is implemented (C-001 fixed).
+      expect(
+        stillReads,
+        'C-001 GAP: a removed member STILL reads owner content (write-only revocation) — flip when fixed',
+      ).toBeTruthy();
+    },
+    60_000,
+  );
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -806,5 +898,76 @@ describe('federation adversarial — no cross-instance duplication', () => {
       ).toBe(1);
     },
     45_000,
+  );
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5. Poisoning / DoS — a malicious peer's malformed ops must not crash or WEDGE
+//    an honest peer's merge pipeline (Brief C #6). Liveness check: a valid op
+//    after a garbage barrage still federates.
+// ════════════════════════════════════════════════════════════════════════════
+describe('federation adversarial — malformed/poisoning ops do not crash or wedge an honest peer', () => {
+  it(
+    'garbage ops (NaN ts, oversized payload, junk schema, null value) cannot wedge the pipeline — a later valid op still federates',
+    async () => {
+      const testnet = await makeTestnet();
+      const idA = makeIdentityOverride('attacker', 42, 'kc-atk');
+      const idB = makeIdentityOverride('honest', 7, 'kc-honest');
+      const peerB = await bootCapturePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'mal-B-',
+        identity: idB,
+        verify: (uid) => (uid === idA.userId ? 'verified' : 'fail'),
+      });
+      const peerA = await bootCapturePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'mal-A-',
+        identity: idA,
+        verify: () => 'verified',
+      });
+      expect(peerA.handle.swarm!.topicHex).toBe(peerB.handle.swarm!.topicHex);
+
+      // A appends a barrage of malformed ops. `as never` bypasses the compile-time
+      // envelope shape — the attacker controls its own log bytes.
+      const garbage = [
+        { type: 'put', table: FEATURE_TAG, hbKey: 'M-nan', value: { harness_slug: HARNESS_SLUG, feature_id: 'M-nan' }, ts: Number.NaN, schema_version: 1, writerPubkey: idA.devicePubkey },
+        { type: 'put', table: FEATURE_TAG, hbKey: 'M-big', value: { harness_slug: HARNESS_SLUG, feature_id: 'M-big', title: 'x'.repeat(1_000_000) }, ts: 1, schema_version: 1, writerPubkey: idA.devicePubkey },
+        { type: 'put', table: FEATURE_TAG, hbKey: 'M-junkschema', value: { harness_slug: HARNESS_SLUG, feature_id: 'M-junkschema' }, ts: 2, schema_version: 999_999, writerPubkey: idA.devicePubkey },
+        { type: 'put', table: FEATURE_TAG, hbKey: '', value: null, ts: 3, schema_version: 1, writerPubkey: idA.devicePubkey },
+        { type: 'weird-op-type', table: FEATURE_TAG, hbKey: 'M-badtype', value: {}, ts: 4, schema_version: 1, writerPubkey: idA.devicePubkey },
+      ];
+      for (const g of garbage) {
+        try {
+          await peerA.handle.append(g as never);
+        } catch {
+          /* append may itself reject malformed input — that's a valid defense too */
+        }
+      }
+      // Drive merges over the garbage — must not throw or hang.
+      for (let i = 0; i < 8; i++) {
+        await peerB.handle.mergeNow();
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      // LIVENESS: a subsequent VALID op STILL federates — the garbage did not wedge
+      // the merge/decode/dispatch pipeline (the DoS-resistance invariant).
+      await peerA.handle.append({
+        type: 'put', table: FEATURE_TAG, hbKey: 'M-valid',
+        value: { harness_slug: HARNESS_SLUG, feature_id: 'M-valid', title: 'good', status: 'todo' },
+        ts: 100, schema_version: 1, writerPubkey: idA.devicePubkey,
+      });
+      const got = await pollUntil(
+        async () => {
+          await peerB.handle.mergeNow();
+          return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'M-valid')?.[0];
+        },
+        { timeoutMs: 75_000, intervalMs: 250 },
+      );
+      expect(
+        got,
+        'a valid op after a malformed barrage must still federate (pipeline not wedged by garbage)',
+      ).toBeTruthy();
+    },
+    120_000,
   );
 });

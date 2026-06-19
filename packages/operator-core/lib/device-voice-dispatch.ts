@@ -17,6 +17,7 @@ import { setPaused, setResumed } from './device-operator-actions';
 import { fireLaunchBlueprint } from './blueprint/launch-blueprint';
 import { activeWorkspaceId } from './workspace-registry';
 import type { DeviceClaims } from './device-jwt';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 
 /**
  * Outgoing frame shape. The phone interprets `source` for attribution
@@ -143,7 +144,7 @@ export async function runStandingApprove(
 }
 
 /** Mirrors seed-scan-routine.ts: the workspace the scan blueprint sweeps. */
-const SCAN_SLUG = process.env.SCAN_ROUTINE_SLUG ?? 'papercup';
+const SCAN_SLUG = process.env.SCAN_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 
 export async function runOperatorScan(query: string, send: SendFrame): Promise<void> {
   // D-005 (unify-agent-launches): a voice scan fires the `scan` launch

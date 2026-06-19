@@ -23,6 +23,7 @@
 
 import { type PlanSourceOpts } from './source';
 import { PAPERCUP_HARNESS_SLUG } from '../../harness/register-papercup';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 export interface CtxHarnessOpts extends PlanSourceOpts {
   /** Resolved harness slug. 'papercup' (default) or the registered name. */
@@ -37,7 +38,7 @@ export interface CtxHarnessOpts extends PlanSourceOpts {
  * (`listPlanRuns`, `listPlanRevisions`, etc.) — passing `'*'` through
  * unfiltered makes those queries match nothing instead of falling
  * back to the papercup default. Returns `undefined` so callers can
- * keep their `opts.harnessSlug ?? 'papercup'` defaulting logic.
+ * keep their `opts.harnessSlug ?? operatorHomeHarnessSlug()` defaulting logic.
  */
 export function resolveCtxHarnessSlug(ctx: unknown): string | undefined {
   const c = ctx as { harnessSlug?: string };

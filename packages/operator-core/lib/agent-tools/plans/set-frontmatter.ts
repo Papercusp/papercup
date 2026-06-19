@@ -32,6 +32,7 @@ import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -188,7 +189,7 @@ export default defineTool({
     // legacy plans seldom have one — but cheap and keeps the rule total.)
     if (isTerminalPlanStatus(args.status)) {
       try {
-        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+        await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

@@ -7,15 +7,34 @@
  * "upgrade Papercusp available" toast.
  *
  * Per-harness, per-process state:
- *   knownMaxSchemaVersion(harnessSlug)   — read by the apply gate
- *   notedHigherSchemaVersion(...)        — write whenever a higher
- *                                           one arrives; emits the
- *                                           alert exactly once per
- *                                           (slug, version) pair
+ *   getKnownMaxSchemaVersion(harnessSlug) — read by the merge gate
+ *                                           (boot.ts `versionGatedLog`)
+ *   acceptOpVersion(slug, version)        — the gate decision; drops an
+ *                                           unknown-newer op + emits the
+ *                                           "upgrade Papercusp available"
+ *                                           alert once per (slug, version)
  *
- * The "known_schema_versions" LOCAL table eventually persists this
- * across restarts; for now the in-process map is sufficient — the
- * worst case on restart is one extra alert per session.
+ * LOAD-BEARING INVARIANT — read before changing how `known` grows:
+ * `known` is `CURRENT_SCHEMA_VERSION` (a compile-time const) until a NEW
+ * BUILD raises it; raising the build means a PROCESS RESTART. There is
+ * deliberately NO in-session writer that grows `knownByHarness` (an earlier
+ * draft of this doc referenced a `notedHigherSchemaVersion` — it was never
+ * built, on purpose). This matters because the merge driver ADVANCES THE
+ * CURSOR PAST a version-gated drop (read-merge.ts: `if (!op) continue;`),
+ * and the merge cursor is in-memory + non-persisted (boot.ts creates a
+ * FRESH one every boot). So an op gate-dropped earlier in a session is NOT
+ * re-read later in that same session — it is recovered ONLY by the cursor
+ * rebuild a restart performs. Because the only way `known` rises IS a
+ * restart, the upgraded peer re-folds every log from 0 and recovers every
+ * formerly-newer op → rolling public upgrades lose nothing.
+ *
+ * THEREFORE: if you ever add in-session schema-version learning (raise
+ * `known` without a restart), you MUST reset every live merge cursor in the
+ * same step, or every op gate-dropped earlier in the session is lost
+ * permanently. Regression guard: __tests__/schema-skew-rolling-upgrade.test.ts
+ * (Phase 3). The "known_schema_versions" LOCAL table may one day persist
+ * `known` across restarts; the worst case today is one extra alert per
+ * session.
  */
 
 import { EventEmitter } from 'node:events';

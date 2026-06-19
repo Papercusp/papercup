@@ -257,6 +257,48 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   };
 }
 
+// ── EI-1524/1518 pure decider: stale cursed/stranded escalation GC ────────────
+
+/**
+ * EI-1524 / EI-1518 — the backstop GC decider for a `cursed`/`stranded` placement
+ * that still carries an OPEN advisory escalation.
+ *
+ * The candidate sweep ({@link evaluatePlacement}) only resolves a cursed escalation
+ * when the item is STILL a placement candidate this tick — i.e. a live bee anchors
+ * or holds it (`completed` path → {@link suppressCursedEscalation}). A cursed/stranded
+ * item that later reaches terminal (or is retired) with NO live bee re-anchoring it
+ * FALLS OUT of the candidate set, so its escalation is never closed — the root of the
+ * ~13k stale-escalation residue (a curse-storm leaves one open escalation per failed
+ * re-place attempt, and they never GC once the items go terminal). The breaker was
+ * correct; the lifecycle had no closing edge for the no-live-holder case.
+ *
+ *   - escalation present + cursed/stranded + unit GONE      → resolve-abandoned
+ *   - escalation present + cursed/stranded + unit TERMINAL  → resolve-completed
+ *   - otherwise (still genuinely open, or not our concern)  → keep
+ *
+ * Pure; exported for the decider unit tests.
+ */
+export type StaleEscalationDecision = 'resolve-completed' | 'resolve-abandoned' | 'keep';
+
+export interface StalePlacementEscalationObs {
+  /** The placement row carries an escalation_msg_id (an open advisory). */
+  hasEscalation: boolean;
+  /** The placement's current status — only `cursed`/`stranded` are GC candidates. */
+  placementStatus: string;
+  /** The subject work-item row still exists. */
+  unitExists: boolean;
+  /** The subject work-item reached a terminal state. */
+  unitTerminal: boolean;
+}
+
+export function evaluateStalePlacementEscalation(obs: StalePlacementEscalationObs): StaleEscalationDecision {
+  if (!obs.hasEscalation) return 'keep';
+  if (obs.placementStatus !== 'cursed' && obs.placementStatus !== 'stranded') return 'keep';
+  if (!obs.unitExists) return 'resolve-abandoned';
+  if (obs.unitTerminal) return 'resolve-completed';
+  return 'keep';
+}
+
 // ── PG: the sweep ─────────────────────────────────────────────────────────────
 
 export interface PlacementSweepResult {
@@ -696,6 +738,11 @@ export async function reconcileOneHive(
 
   // 3. P-022 — stranded-work resolution: stuck blockers gating downstream work.
   out.push(...(await reconcileStrandedWork(sql, workspaceId, installSlug, queenOwner, placeById, now)));
+
+  // 4. EI-1524/1518 — backstop escalation GC: close cursed/stranded advisories
+  //    whose subject item went terminal/gone with no live bee re-anchoring it
+  //    (the candidate sweep above never revisits those, so they would leak).
+  out.push(...(await reconcileStalePlacementEscalations(sql, workspaceId, installSlug, now)));
   return out;
 }
 
@@ -803,22 +850,118 @@ async function escalateCursedPlacement(unitId: string, harness: string | null, f
   }
 }
 
-/** EI-972 — suppress/auto-resolve a cursed-placement escalation when the work
- *  item reaches a terminal state (passed, resolved, etc.). Best-effort; never throws. */
-async function suppressCursedEscalation(escalationMsgId: string, unitId: string): Promise<void> {
+/** Resolve a watchdog-owned placement escalation (cursed / stranded advisory).
+ *  The ONE close path — shared by the per-candidate suppression (EI-972) and the
+ *  backstop GC (EI-1524). Best-effort; never throws. */
+async function resolvePlacementEscalation(escalationMsgId: string, unitId: string, note: string): Promise<void> {
   if (!escalationMsgId) return;
   try {
     await resolveEscalation({
       msg_id: escalationMsgId,
       choice: 'item-now-terminal',
       resolver: WATCHDOG_OWNER,
-      note: `auto-resolved: work-item ${unitId} reached terminal state, cursed advisory is no longer relevant`,
+      note,
     });
   } catch (e) {
     console.warn(
-      `[hive-placement-watchdog] suppressing cursed escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`,
+      `[hive-placement-watchdog] resolving placement escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`,
     );
   }
+}
+
+/** EI-972 — suppress/auto-resolve a cursed-placement escalation when the work
+ *  item reaches a terminal state (passed, resolved, etc.). Best-effort; never throws. */
+async function suppressCursedEscalation(escalationMsgId: string, unitId: string): Promise<void> {
+  await resolvePlacementEscalation(
+    escalationMsgId,
+    unitId,
+    `auto-resolved: work-item ${unitId} reached terminal state, cursed advisory is no longer relevant`,
+  );
+}
+
+/**
+ * EI-1524 / EI-1518 — the backstop escalation GC sweep. The per-candidate
+ * suppression only fires while a live bee anchors the item; a cursed/stranded
+ * item that later reaches terminal (or is retired) with NO live holder falls out
+ * of the candidate set and keeps its advisory escalation OPEN forever — the root
+ * of the ~13k stale-escalation residue. This sweep runs every tick over the
+ * hive's `cursed`/`stranded` placements that still carry an escalation, and for
+ * any whose subject work-item is now terminal (→ completed) or gone (→ abandoned),
+ * resolves the escalation and flips the placement out of the open set. Bounded:
+ * only escalation-carrying cursed/stranded rows are read (few — the breaker only
+ * trips on genuinely stuck items), and a still-open item is left untouched.
+ * Fail-soft; one row's failure never aborts the sweep.
+ */
+async function reconcileStalePlacementEscalations(
+  sql: Sql,
+  workspaceId: string,
+  installSlug: string,
+  now: number,
+): Promise<PlacementSweepResult[]> {
+  const out: PlacementSweepResult[] = [];
+  const staleRows = await sql<
+    { work_item_id: string; status: string; escalation_msg_id: string | null; harness_slug: string | null; fail_count: number }[]
+  >`
+    SELECT work_item_id, status, escalation_msg_id, harness_slug, fail_count
+      FROM harness_shared.hive_placements
+     WHERE workspace_id = ${workspaceId}
+       AND install_slug = ${installSlug}
+       AND status IN ('cursed', 'stranded')
+       AND escalation_msg_id IS NOT NULL`;
+  if (staleRows.length === 0) return out;
+
+  // Current unit status for each, keyed by feature_id within the workspace (the
+  // same key the candidate sweep uses — see the unitById map above).
+  const ids = [...new Set(staleRows.map((r) => r.work_item_id))];
+  const unitRows = await sql<{ feature_id: string; status: string }[]>`
+    SELECT feature_id, status
+      FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${ids})`;
+  const unitStatusById = new Map<string, string>(unitRows.map((u) => [u.feature_id, u.status]));
+
+  for (const r of staleRows) {
+    const unitStatus = unitStatusById.get(r.work_item_id);
+    const decision = evaluateStalePlacementEscalation({
+      hasEscalation: Boolean(r.escalation_msg_id),
+      placementStatus: r.status,
+      unitExists: unitStatus != null,
+      unitTerminal: isUnitTerminal(unitStatus),
+    });
+    if (decision === 'keep') continue;
+
+    const terminal = decision === 'resolve-completed';
+    await resolvePlacementEscalation(
+      r.escalation_msg_id!,
+      r.work_item_id,
+      terminal
+        ? `auto-resolved (placement GC, EI-1524): work-item ${r.work_item_id} reached terminal state (${unitStatus}); the ${r.status} advisory is no longer relevant`
+        : `auto-resolved (placement GC, EI-1524): work-item ${r.work_item_id} no longer exists; the ${r.status} advisory is no longer relevant`,
+    );
+    // Flip the placement out of the open (cursed/stranded) set so hive:status +
+    // summarizeOpenPlacements stop counting it. queen/bee fields are preserved
+    // (COALESCE keeps the existing values on null).
+    await upsertPlacement(sql, {
+      workspaceId,
+      installSlug,
+      workItemId: r.work_item_id,
+      harnessSlug: r.harness_slug,
+      queenOwnerId: null,
+      beeSpawnId: null,
+      beeOwnerId: null,
+      status: terminal ? 'completed' : 'abandoned',
+      failCount: r.fail_count,
+      disposition: terminal ? 'completed' : 'abandoned',
+      now,
+    });
+    out.push({
+      workspaceId,
+      installSlug,
+      workItemId: r.work_item_id,
+      decision: terminal ? 'completed' : 'abandon',
+      detail: `gc: stale ${r.status} escalation auto-resolved (unit ${terminal ? unitStatus : 'gone'})`,
+    });
+  }
+  return out;
 }
 
 /**

@@ -22,8 +22,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.IDLE_SESSION_REAPER_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.IDLE_SESSION_REAPER_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Hourly at :05 — cheap (one SELECT + a few UPDATEs); dead sessions accrue all day. */
 const CRON = '0 5 * * * *';
 

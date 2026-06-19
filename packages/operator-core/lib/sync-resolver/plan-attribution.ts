@@ -29,6 +29,7 @@ import {
   type PlanAuthorInput,
   type ResolvedAuthor,
 } from '../identity/resolve-plan-author-identity';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** Part authors that carry no real identity (single-box origin sentinels). */
 const SENTINEL_AUTHORS = new Set(['', 'local', 'remote']);
@@ -222,7 +223,7 @@ export async function enrichPlanDetail(
   const sql = pg(opts?.sql);
   const workspaceId = opts?.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const slug = typeof p.frontmatter.slug === 'string' ? p.frontmatter.slug : '';
-  const harnessSlug = opts?.harnessSlug ?? 'papercup';
+  const harnessSlug = opts?.harnessSlug ?? operatorHomeHarnessSlug();
   if (!slug) return plan;
 
   let latest = new Map<string, { authorId: string; authorKind: 'human' | 'agent' }>();

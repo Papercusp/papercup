@@ -26,6 +26,7 @@ import { hashPlanContent } from './content-hash';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
@@ -179,7 +180,7 @@ export default defineTool({
 
     // P-006: Build a map of plan-item-id → { featureId, status } so the UI
     // can show live feature status badges next to each P-NNN item.
-    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
     let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
     try {
       const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {

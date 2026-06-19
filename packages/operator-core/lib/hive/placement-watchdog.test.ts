@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   deriveBeeLiveness,
   evaluatePlacement,
+  evaluateStalePlacementEscalation,
   isReaperReclaim,
   isUnitTerminal,
   isStuckBlockerState,
@@ -388,5 +389,75 @@ describe('reconcileHivePlacements — the all-started-hives sweep (orchestration
     expect(out).toEqual([{ workItemId: 'F-hiveB', decision: 'completed' }]); // hiveA's failure is swallowed
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('evaluateStalePlacementEscalation — EI-1524/1518 backstop escalation GC', () => {
+  it('resolves (completed) a cursed escalation whose unit reached terminal', () => {
+    expect(
+      evaluateStalePlacementEscalation({
+        hasEscalation: true,
+        placementStatus: 'cursed',
+        unitExists: true,
+        unitTerminal: true,
+      }),
+    ).toBe('resolve-completed');
+  });
+
+  it('resolves (completed) a STRANDED escalation whose blocker reached terminal', () => {
+    expect(
+      evaluateStalePlacementEscalation({
+        hasEscalation: true,
+        placementStatus: 'stranded',
+        unitExists: true,
+        unitTerminal: true,
+      }),
+    ).toBe('resolve-completed');
+  });
+
+  it('resolves (abandoned) a cursed escalation whose unit no longer exists', () => {
+    expect(
+      evaluateStalePlacementEscalation({
+        hasEscalation: true,
+        placementStatus: 'cursed',
+        unitExists: false,
+        unitTerminal: false,
+      }),
+    ).toBe('resolve-abandoned');
+  });
+
+  it('KEEPS a genuinely-open cursed escalation (unit non-terminal, still exists)', () => {
+    expect(
+      evaluateStalePlacementEscalation({
+        hasEscalation: true,
+        placementStatus: 'cursed',
+        unitExists: true,
+        unitTerminal: false,
+      }),
+    ).toBe('keep');
+  });
+
+  it('KEEPS when there is no escalation to resolve', () => {
+    expect(
+      evaluateStalePlacementEscalation({
+        hasEscalation: false,
+        placementStatus: 'cursed',
+        unitExists: true,
+        unitTerminal: true,
+      }),
+    ).toBe('keep');
+  });
+
+  it('KEEPS a non-cursed/stranded status (e.g. working/recovering) — not our concern', () => {
+    for (const placementStatus of ['working', 'recovering', 'completed', 'abandoned']) {
+      expect(
+        evaluateStalePlacementEscalation({
+          hasEscalation: true,
+          placementStatus,
+          unitExists: true,
+          unitTerminal: true,
+        }),
+      ).toBe('keep');
+    }
   });
 });

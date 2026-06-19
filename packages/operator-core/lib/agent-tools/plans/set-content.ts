@@ -42,6 +42,7 @@ import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const argsSchema = z.object({
   slug: z.string().min(1),
@@ -350,7 +351,7 @@ export default defineTool({
     // never counted as "waiting". Best-effort — plans:list self-heals on read.
     if (isTerminalPlanStatus(parsePlan(args.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
       try {
-        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+        await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

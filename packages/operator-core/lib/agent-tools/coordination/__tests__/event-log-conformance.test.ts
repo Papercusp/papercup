@@ -97,3 +97,48 @@ describeCoordEventLogConformance(
     await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id IN ('wsA', 'wsB')`;
   });
 });
+
+// EI-1576 regression: ensureCoordEventLogTable must be idempotent WITHOUT a
+// destructive DROP/CREATE window. It runs against the LIVE org DB (here via
+// connectionString, and in the operator's getOrgPg seam), so dropping an
+// already-correct index — even momentarily — makes every concurrent putEvent
+// upsert fail with `42P10: there is no unique or exclusion constraint matching
+// the ON CONFLICT specification`. An index's OID is stable iff it was NOT
+// dropped+recreated, so a second call that leaves the OID unchanged proves the
+// window is gone.
+(pgOk ? describe : describe.skip)('ensureCoordEventLogTable idempotency (EI-1576)', () => {
+  it('does not drop+recreate an already-correct partial unique index', async () => {
+    // First call guarantees the index exists in its correct, scoped shape.
+    await ensureCoordEventLogTable(sql!);
+    const oidOf = async (): Promise<string | undefined> =>
+      (
+        await sql!<{ oid: string }[]>`
+          SELECT c.oid::text AS oid
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'harness_shared'
+             AND c.relname = 'coord_event_log_event_uq'
+        `
+      )[0]?.oid;
+    const before = await oidOf();
+    expect(before).toBeTruthy(); // the partial unique index is present
+
+    // A redundant call must be a no-op for the index — same OID, no churn,
+    // no ACCESS-EXCLUSIVE window for concurrent upserts to fall into.
+    await ensureCoordEventLogTable(sql!);
+    expect(await oidOf()).toBe(before);
+
+    // And the upsert the index backs still works end-to-end (would raise the
+    // 42P10 above if the arbiter index were missing/mismatched).
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    await log.putEvent('escalations', 'ei1576', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'ei1576', kind: 'escalation', from: 'a', to: ['human'],
+    });
+    await log.putEvent('escalations', 'ei1576', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'ei1576', kind: 'escalation', from: 'b', to: ['human'],
+    });
+    expect((await log.getEvent('escalations', 'ei1576'))?.from).toBe('b');
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+  });
+});

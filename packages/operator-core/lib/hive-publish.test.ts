@@ -82,6 +82,47 @@ describe('publishHiveToDirectory (P-004)', () => {
     expect(r3.reachablePeers).toBe(3);
   });
 
+  // ── G-001 (Brief G findings) — reachablePeers is TOPIC-BLIND ───────────────
+  // CHARACTERIZATION test (C-001 pattern): documents a known honesty gap; the
+  // assertions FLIP when the count-by-topic fix lands. publishHiveToDirectory
+  // calls dir.reachablePeers() with NO topic, so even a topic-AWARE reach fn is
+  // never asked for the announce's topic — it returns the all-topics total. An
+  // invite publish therefore reports peers that are on OTHER topics (e.g. the
+  // global directory the box joined to browse), not the invite topic the
+  // announce went to. This is the deceptive-publish lie, resurrected for invite.
+  // The honest infra already exists (directory-swarm openChannelCount(topicHex),
+  // proven in directory-swarm.test.ts:228-235); the publish path just never
+  // passes the topic. Fix: thread the announce topic → assert 0 below.
+  it('G-001: reachablePeers ignores the announce topic — invite reports global peers (NOT the invite topic)', async () => {
+    const GLOBAL = hiveTopicAsHex(deriveDirectoryTopic());
+    const INVITE = hiveTopicAsHex(deriveInviteTopic('s'));
+    // The HONEST, topic-aware count the infra is capable of: 3 peers on the
+    // global topic (browsing public hives), 0 on this invite's topic. No-arg
+    // (the call the publish path makes) returns the all-topics SUM — mirroring
+    // gossip.openChannelCount()'s no-arg behavior, which is how it's wired.
+    const peersByTopic: Record<string, number> = { [GLOBAL]: 3, [INVITE]: 0 };
+    const d = deps(0);
+    let askedTopic: string | undefined = 'NEVER_CALLED';
+    (d as { reachablePeers: (t?: string) => number }).reachablePeers = (topicHex?: string) => {
+      askedTopic = topicHex;
+      return topicHex === undefined ? 3 /* all-topics sum, the no-arg path */ : (peersByTopic[topicHex] ?? 0);
+    };
+    const res = await publishHiveToDirectory(
+      new HiveDirectory(d),
+      meta({ visibility: 'invite', inviteSecret: 's' }),
+      owner(),
+    );
+    // The announce went to the INVITE topic — where 0 peers are.
+    expect(res.announced).toBe(true);
+    expect(d.broadcasts[0].topic).toBe(INVITE);
+    // BUG: the publish path never threads the announce topic into the count.
+    expect(askedTopic).toBeUndefined();
+    // → it reports the all-topics count (3), not the invite topic's real reach (0).
+    // HONEST value is 0; "announced to 3 connected peers" for this publish is a lie.
+    // When G-001 is fixed (thread the topic), askedTopic === INVITE and this is 0.
+    expect(res.reachablePeers).toBe(3);
+  });
+
   it('private → registers but NEVER announces (opt-in floor)', async () => {
     const d = deps();
     const dir = new HiveDirectory(d);

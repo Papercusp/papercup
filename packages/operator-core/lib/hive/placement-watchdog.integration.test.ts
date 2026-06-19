@@ -323,6 +323,82 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(out.find((r) => r.workItemId === 'F-CURED-2')?.decision).toBe('completed');
   });
 
+  it('EI-1524: backstop GC closes a cursed escalation when its unit went terminal with NO bee re-anchoring it', async () => {
+    // The exact gap the per-candidate suppression misses (cf. the EI-972 test's note):
+    // a cursed item reaches terminal but no live bee anchors it, so it is NOT a
+    // placement candidate this sweep. Without the backstop its escalation leaks forever
+    // (the ~13k stale residue). NO bee is seeded here — the per-candidate path can't run.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-STALE', ${HIVE}, ${QUEEN},
+              'cursed', 3, 'esc-stale', now(), now(), now())`;
+    await seedUnit({ id: 'F-STALE', status: 'deprecated' }); // terminal, no bee
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-STALE'))?.status).toBe('completed');
+    expect(mocks.resolveEscalation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        msg_id: 'esc-stale',
+        choice: 'item-now-terminal',
+        resolver: 'system:hive-placement-watchdog',
+      }),
+    );
+    expect(out.find((r) => r.workItemId === 'F-STALE')?.decision).toBe('completed');
+  });
+
+  it('EI-1524: backstop GC also closes a STRANDED escalation once its blocker reaches terminal', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-STRAND', ${HIVE}, ${QUEEN},
+              'stranded', 0, 'esc-strand', now(), now(), now())`;
+    await seedUnit({ id: 'F-STRAND', status: 'resolved' }); // blocker now terminal
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-STRAND'))?.status).toBe('completed');
+    expect(mocks.resolveEscalation).toHaveBeenCalledWith(
+      expect.objectContaining({ msg_id: 'esc-strand' }),
+    );
+  });
+
+  it('EI-1524: backstop GC abandons a cursed escalation whose unit no longer exists', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-GONE', ${HIVE}, ${QUEEN},
+              'cursed', 3, 'esc-gone', now(), now(), now())`;
+    // No unit row seeded — the item was hard-retired.
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-GONE'))?.status).toBe('abandoned');
+    expect(mocks.resolveEscalation).toHaveBeenCalledWith(
+      expect.objectContaining({ msg_id: 'esc-gone' }),
+    );
+    expect(out.find((r) => r.workItemId === 'F-GONE')?.decision).toBe('abandon');
+  });
+
+  it('EI-1524: backstop GC LEAVES a genuinely-open cursed escalation (unit non-terminal) untouched', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-OPEN', ${HIVE}, ${QUEEN},
+              'cursed', 3, 'esc-open', now(), now(), now())`;
+    await seedUnit({ id: 'F-OPEN', status: 'failing' }); // still cursed, no bee, not terminal
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-OPEN'))?.status).toBe('cursed'); // untouched
+    expect(mocks.resolveEscalation).not.toHaveBeenCalled();
+  });
+
   it('P-022: a stuck failing blocker gating a non-terminal downstream → stranded + one escalation', async () => {
     await seedUnit({ id: 'F-300', status: 'failing' }); // the stuck blocker
     await seedUnit({ id: 'F-301', status: 'todo' }); // the gated downstream

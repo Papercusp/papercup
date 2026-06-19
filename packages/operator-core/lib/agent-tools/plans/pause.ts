@@ -19,6 +19,7 @@ import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const argsSchema = z.object({
   slug: z.string().min(1).describe('Plan slug to pause.'),
@@ -43,7 +44,7 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
     const now = new Date().toISOString();
 
     // op_status is null until a plan has been started — so a pause that matches

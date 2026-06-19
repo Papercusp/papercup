@@ -31,8 +31,9 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { isCliEntry } from '../../util/cli-entry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const ROUTINES = [
   { name: 'improvement-watchdog', target: 'system:improvement-watchdog', cron: '0 */15 * * * *', arm: 'safe' }, // every 15 min
   // The scheduled triage pass (learning-system-audit P-011): persists the

@@ -22,8 +22,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const CRON = '0 30 13 * * 1'; // weekly, Monday 13:30 UTC
 
 async function main(): Promise<void> {

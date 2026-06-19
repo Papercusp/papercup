@@ -19,8 +19,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.TOKEN_TELEMETRY_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.TOKEN_TELEMETRY_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const ROUTINES = [
   {
     name: 'interactive-usage-ingest',

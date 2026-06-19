@@ -122,19 +122,53 @@ export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
   // EVENT surfaces are keyed: exactly one immutable record per (workspace_id,
   // surface, msg_id). LINE surfaces (messages/plan-events) are pure append —
   // the partial predicate keeps them out of the uniqueness constraint so the
-  // upsert below targets only the event rows. DROP-then-CREATE so a narrower
-  // pre-D-007 index (without workspace_id) is widened rather than kept.
-  await sql`DROP INDEX IF EXISTS harness_shared.coord_event_log_event_uq`;
-  await sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_event_uq
-      ON harness_shared.coord_event_log (workspace_id, surface, msg_id)
-      WHERE surface IN ('handoffs', 'escalations')
+  // upsert below targets only the event rows.
+  //
+  // These indexes are (re)built ONLY when missing or in the legacy pre-D-007
+  // shape (without `workspace_id`). A blind DROP-then-CREATE on EVERY call is
+  // NOT concurrency-safe: this DDL runs against the LIVE org DB — both the
+  // operator's `getOrgPg` and the conformance / integration suites that
+  // resolve the same `connectionString()` — and during the brief
+  // ACCESS-EXCLUSIVE window between DROP and CREATE every concurrent
+  // `putEvent` upsert fails with `42P10: there is no unique or exclusion
+  // constraint matching the ON CONFLICT specification` (EI-1576; the window
+  // widens under PG congestion, where the DROP itself waits on a lock). The
+  // index already exists with the right shape on every migrated DB, so the
+  // common path now leaves it untouched — the window only ever opens once, to
+  // widen a genuinely legacy index. (Pre-alpha: no production data on this
+  // table, so that one-time legacy rebuild remains safe.)
+  if (await indexNeedsRebuild(sql, 'coord_event_log_event_uq')) {
+    await sql`DROP INDEX IF EXISTS harness_shared.coord_event_log_event_uq`;
+    await sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_event_uq
+        ON harness_shared.coord_event_log (workspace_id, surface, msg_id)
+        WHERE surface IN ('handoffs', 'escalations')
+    `;
+  }
+  if (await indexNeedsRebuild(sql, 'coord_event_log_surface_id')) {
+    await sql`DROP INDEX IF EXISTS harness_shared.coord_event_log_surface_id`;
+    await sql`
+      CREATE INDEX IF NOT EXISTS coord_event_log_surface_id
+        ON harness_shared.coord_event_log (workspace_id, surface, id)
+    `;
+  }
+}
+
+/**
+ * True when the named `harness_shared.coord_event_log` index is absent or in
+ * the legacy pre-D-007 shape (lacking `workspace_id`) and so must be
+ * (re)built; false when it already carries the scoped definition and MUST be
+ * left in place. Reading `pg_indexes.indexdef` lets `ensureCoordEventLogTable`
+ * skip the destructive DROP/CREATE in the steady state — the fix for the
+ * recurring 42P10 upsert failures of EI-1576.
+ */
+async function indexNeedsRebuild(sql: Sql, indexName: string): Promise<boolean> {
+  const rows = await sql<{ indexdef: string }[]>`
+    SELECT indexdef FROM pg_indexes
+     WHERE schemaname = 'harness_shared' AND indexname = ${indexName}
   `;
-  await sql`DROP INDEX IF EXISTS harness_shared.coord_event_log_surface_id`;
-  await sql`
-    CREATE INDEX IF NOT EXISTS coord_event_log_surface_id
-      ON harness_shared.coord_event_log (workspace_id, surface, id)
-  `;
+  if (rows.length === 0) return true; // missing → build
+  return !/\bworkspace_id\b/.test(rows[0].indexdef); // legacy narrow → widen
 }
 
 export class PgCoordLog implements CoordEventLog {

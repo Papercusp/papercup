@@ -21,8 +21,9 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.CROSS_HIVE_DRAIN_SLUG ?? 'papercup';
+const SLUG = process.env.CROSS_HIVE_DRAIN_SLUG ?? operatorHomeHarnessSlug();
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');

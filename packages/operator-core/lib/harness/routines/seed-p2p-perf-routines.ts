@@ -19,8 +19,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.P2P_PERF_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.P2P_PERF_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const ROUTINES = [
   // Nightly 02:30 local — clear of the hourly green-checkpoint (:15) and the
   // daily GC jobs (03:00/04:00 UTC), so bench numbers aren't polluted by

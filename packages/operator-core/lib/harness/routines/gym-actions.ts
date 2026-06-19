@@ -26,7 +26,7 @@
  * cycles = double spend). A replayed tick sees the row at status 'running' and
  * skips it. The per-hive gym autoloop ROWS it sweeps are now provisioned inline
  * at hive:create (lib/hive/provision-learning-loop.ts, dark by default) — the
- * standalone `?? 'papercup'` seed-gym-routine.ts env-slug script was RETIRED
+ * standalone `?? operatorHomeHarnessSlug()` seed-gym-routine.ts env-slug script was RETIRED
  * (per-hive-learning-loops-2026-06-14 P-022 / D-003).
  */
 import { getOrgPg } from '@papercusp/db-org';
@@ -43,6 +43,7 @@ import {
 import { readImprovementItems } from '../improvements/read-items';
 import { finalizePendingChampionOutcomes } from '../../gym/post-acceptance-outcomes';
 import { recordGymTickToGovernor } from '../../learning-governor/registrants';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 /** The autoloop_state role the gym tick's fire-gate/backoff is keyed under. */
 export const GYM_CYCLE_FIRE_ROLE = 'gym-cycle';

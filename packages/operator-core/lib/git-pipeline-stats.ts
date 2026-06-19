@@ -26,9 +26,10 @@ import {
   type PipelineWindowSummary,
   type PipelineEventRow,
 } from './harness/git-sync/pipeline-events';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 
 /** The operator's own integration harness (its git-sync/release routines). */
-const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? 'papercup';
+const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 
 export interface RoutineInfo {
   name: string;

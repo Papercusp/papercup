@@ -18,8 +18,9 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.COORD_WATCH_SLUG ?? 'papercup';
+const SLUG = process.env.COORD_WATCH_SLUG ?? operatorHomeHarnessSlug();
 const ROUTINES = [
   // 30s cycle SLO: a 10s budget was unrealistic for a shared dev box at peak fleet
   // load — the EI-401 breach was a transient ~23s coord-write spike (NOTIFY-queue

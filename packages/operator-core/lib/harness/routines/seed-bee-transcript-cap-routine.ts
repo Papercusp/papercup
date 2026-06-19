@@ -21,8 +21,9 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
-const SLUG = process.env.BEE_TRANSCRIPT_CAP_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.BEE_TRANSCRIPT_CAP_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Every 30 min at :15/:45 — cheap (a few SELECTs + on-disk line counts); a bloated
  *  session is not urgent, but shouldn't linger a whole hour past the cap. */
 const CRON = '0 15,45 * * * *';

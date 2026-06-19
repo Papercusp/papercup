@@ -22,6 +22,7 @@ import { evaluateSetContent, type SetContentValue } from './set-content';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { parsePlan } from './parser';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const MAX_CHUNK_CHARS = 24_000;
 const DRAFT_ID = /^[a-zA-Z0-9_-]{8,80}$/;
@@ -381,7 +382,7 @@ export default defineTool({
     // plan is never counted as "waiting". Best-effort — plans:list self-heals.
     if (isTerminalPlanStatus(parsePlan(draft.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
       try {
-        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+        await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), args.slug);
       } catch {
         /* recovered by reconcileStartStatus on the next plans:list read */
       }

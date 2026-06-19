@@ -26,7 +26,7 @@
  * returns an `undo` that joins the create's rollback stack so a LATER create
  * step failure removes the rows we laid down — and a summary the result reports.
  *
- * Keyed on the hive's OWN slug throughout — there is NO `?? 'papercup'` env
+ * Keyed on the hive's OWN slug throughout — there is NO `?? operatorHomeHarnessSlug()` env
  * default here (P-022 retires those env-slug seed scripts for gym/scout). The
  * matching teardown at hive:dissolve (delete both rows + the governor
  * registrants) is P-021.
@@ -35,6 +35,7 @@ import type { Sql } from 'postgres';
 import { setAutoloop } from '../gym/control-plane';
 import { gymLoopId, scoutLoopId } from '../learning-governor/core';
 import { deleteLearningLoop } from '../learning-governor/store';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** The scout routine name a per-hive loop fires from (under the hive install_slug). */
 export const HIVE_SCOUT_ROUTINE_NAME = 'scout-cycle';
@@ -108,7 +109,7 @@ export const DEFAULT_HIVE_SCOUT_MAX_COST_USD = 0.5;
 export interface ProvisionHiveLearningLoopInput {
   sql: Sql;
   workspaceId: string;
-  /** The new hive's OWN home install_slug (NOT a `?? 'papercup'` default). */
+  /** The new hive's OWN home install_slug (NOT a `?? operatorHomeHarnessSlug()` default). */
   hiveSlug: string;
   /** Override the per-cycle scout budget cap (USD). Default 0.5. */
   scoutMaxCostUsd?: number;
