@@ -174,11 +174,19 @@ export async function pollUntil<T>(
 
 /** A per-peer apply that routes federated ops through the REAL projections bound to
  *  THIS peer's `sql`: `presence` (the roster) and `coord-messages` (the
- *  wake-carrying rail) — each peer projects into its OWN throwaway PG. */
-export function buildPeerApply(sql: postgres.Sql, ownLogKeyHex: string): (op: OpEnvelope) => Promise<boolean> {
+ *  wake-carrying rail) — each peer projects into its OWN throwaway PG. `extra`
+ *  appends additional REAL projections (already bound to this peer's `sql`) so a
+ *  caller can prove a non-presence table's crossing over the same real rig
+ *  (e.g. the log-first feature_claims/queue/working-set/contributors). */
+export function buildPeerApply(
+  sql: postgres.Sql,
+  ownLogKeyHex: string,
+  extra: TableProjection<unknown>[] = [],
+): (op: OpEnvelope) => Promise<boolean> {
   const projections = [
     buildPresenceProjection({ sql, workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG }) as TableProjection<unknown>,
     buildCoordMessageProjection({ sql, workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG }) as TableProjection<unknown>,
+    ...extra,
   ];
   const scoped = new Map<string, TableProjection<unknown>>(projections.map((p) => [p.tableTag, p]));
   const lookup: ProjectionLookup = (tag) => scoped.get(tag) ?? null;
@@ -196,6 +204,10 @@ export async function bootPresencePeer(opts: {
   sql: postgres.Sql;
   /** Conclusive admission predicate over the announcing peer's userId. */
   verify: (userId: number) => 'verified' | 'pending' | 'fail';
+  /** Extra REAL projections (bound to THIS peer's `sql`) to wire into the apply
+   *  alongside presence + coord-messages — lets a caller prove another table's
+   *  crossing over the same real rig. */
+  extraProjections?: TableProjection<unknown>[];
 }): Promise<PresencePeer> {
   const root = makeWorkspaceRoot(opts.rootPrefix);
   let handle: BootedHarnessHandle | undefined;
@@ -208,7 +220,7 @@ export async function bootPresencePeer(opts: {
     swarmOverride: makeSwarm(opts.testnetBootstrap),
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
     applyOverride: (op) => {
-      apply ??= buildPeerApply(opts.sql, handle!.ownLog.keyHex);
+      apply ??= buildPeerApply(opts.sql, handle!.ownLog.keyHex, opts.extraProjections ?? []);
       return apply(op);
     },
     mergePollMs: 0,
@@ -267,7 +279,12 @@ export function electionDeps(
  * return both peers' handles + DBs once each peer's `shared_presence` holds the
  * OTHER Swarm (federation complete). The shared fixture for every test below.
  */
-export async function federateTwoPeerPresence() {
+export async function federateTwoPeerPresence(
+  /** Optional builder for EXTRA real projections to wire into each peer's apply
+   *  (bound to that peer's `sql`) — lets a caller prove a non-presence table's
+   *  crossing over the same connected two-peer rig. */
+  extraProjections?: (sql: postgres.Sql) => TableProjection<unknown>[],
+) {
   const dbA: FreshPgDb = await createFreshPgDb('xpeerA');
   cleanups.push(() => dbA.cleanup());
   const dbB: FreshPgDb = await createFreshPgDb('xpeerB');
@@ -288,6 +305,7 @@ export async function federateTwoPeerPresence() {
     identity: idB,
     sql: dbB.sql,
     verify: (uid) => (uid === idA.userId ? 'verified' : 'fail'),
+    extraProjections: extraProjections?.(dbB.sql),
   });
   const peerA = await bootPresencePeer({
     testnetBootstrap: testnet.bootstrap,
@@ -295,6 +313,7 @@ export async function federateTwoPeerPresence() {
     identity: idA,
     sql: dbA.sql,
     verify: (uid) => (uid === idB.userId ? 'verified' : 'fail'),
+    extraProjections: extraProjections?.(dbA.sql),
   });
 
   expect(peerA.handle.swarm).not.toBeNull();

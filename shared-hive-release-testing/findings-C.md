@@ -104,18 +104,21 @@ off a prior pubkey-holder; coordinate so we file ONE finding, not two.)
 
 | # | Threat | Status |
 |---|--------|--------|
-| 1 | Privacy leak — non-member reads private hive | topic-secrecy holds for NEVER-members (topic = hash(pubkey), pubkey only in links). **BUT** read-revocation gap → **C-001**. Still to test: never-member who guesses gh:repo can't derive topic (should be safe post topic-split). |
+| 1 | Privacy leak — non-member reads private hive | **COVERED for NEVER-members (unit + END-TO-END).** topic = hash(pubkey), pubkey only in links: unit `derive-swarm-topic.test.ts` (hive ≠ gh topic; distinct pubkeys → distinct topics; domain-sep) + NEW over-wire `federation-threat-model.test.ts` "never-member on a guessed gh: topic reads nothing": a guesser booting on `gh:<repo_id>` never connects to a private hive on `hive:<pubkey>` (admits 0 remote logs, reads nothing) while a legit member on the hive topic reads it. Teeth-verified. **The one open path is the FORMER-member read-revocation gap → C-001** (S0 on the strict rubric). |
 | 2 | Unauthorized write (non-member) | COVERED — `federation-adversarial` admission gate (verifyBinding fail → not admitted). Verify the REAL gate (no override) is next. |
 | 3 | Revoked member still WRITES | COVERED — `revocation-*` (refused announce + dropped log). |
 | 4 | Identity spoofing — forged sig | **COVERED — unit + OVER-WIRE.** unit (`announce.test.ts`: bad key, garbage sig, tampered field/ts/nonce/gist, stale/future ts) + NEW end-to-end `federation-threat-model.test.ts` "forged-signature announce never federates": a peer advertising a valid device_pubkey but signing with a DIFFERENT key is never admitted (bad_sig) over the real wire **with the binding gate wide open** (verify→'verified'), isolating the sig gate; a correctly-signed control peer crosses. Author-substitution (user_id/pubkey mismatch) → 'fail' (`verify-binding-adapter.test.ts`). Teeth-verified (un-forge → forger crosses → RED). |
-| 5 | Replay | `ei117-replay-revert-guard` exists — verify it covers replay across reboot. |
+| 5 | Replay | **COVERED (incl. across reboot, structurally).** `announce.test.ts` freshness window (±5min; stale/future → reject) blocks replay-ANNOUNCE; `ei117-replay-revert-guard` (6 cases) blocks replay-OP. The guard is PG-persisted (`fed_ts`/`origin` columns, read per-op — not in-memory), so it holds across a process restart by construction. *Residual:* no explicit "replay after restart" cell (low priority — guard state is durable in PG). |
 | 6 | Malformed/poisoning ops | **COVERED — ROBUST.** New test "garbage ops … cannot wedge the pipeline" (federation-adversarial): NaN ts, null value, junk schema_version, unknown op-type, AND a 1MB oversized payload all fail to crash or wedge an honest peer — a valid op always still federates. (Initial 25s-poll failure was load-induced slowness, NOT a wedge — confirmed transient with a 75s poll.) Minor note **C-002 (S3)**: no explicit op-SIZE bound — huge ops replicate but slow sync under load (head-of-line); consider a payload cap to blunt a slowness-DoS. Not a blocker. |
-| 7 | Workspace isolation | partial (EI-1534 + pending-wakes fixes). Federation-layer cross-workspace test to add. |
-| 8 | Invite-secret enforcement | partial (`hive-directory-live-two-peer` invite no-leak). Wrong/absent secret rejection to add. |
+| 7 | Workspace isolation | **COVERED at the topic layer** — `derive-swarm-topic.test.ts` "different workspace → different topic even for same slug" (`local:` binding embeds `workspace_id`); apply-side EI-1534 (conversations) + `crossworkspace-invariant.test.ts` (memory). *Assumption (documented):* `hive:<pubkey>` topics are workspace-INDEPENDENT by design (a Hive is the cross-workspace unit; pubkey minted once per hive → no same-pubkey-in-two-workspaces federation). |
+| 8 | Invite-secret enforcement | **COVERED.** `derive-hive-topic.test.ts` ("deriveInviteTopic differs per secret AND differs from the global topic"; "rejects an empty secret"; exact sha256) + `visibility-content-topic-separation.test.ts` E-002 ("invite directory topic ≠ global → non-secret-holder never sees it"; "per-secret isolation — two secrets → two topics"). Wrong secret → different topic; absent secret → rejected; not derivable from the public directory. |
 
-**Next actions (this lane):** (1) write the C-001 demonstrating test; (2) the real
-admission-gate-without-override test (#2); (3) forged-sig end-to-end (#4); (4)
-malformed-op robustness (#6).
+**Next actions (this lane):** ALL of (1) C-001 demonstrating test, (2) real
+admission-gate (covered by composition — see su-b62fa assessment), (3) forged-sig
+end-to-end (#4), (4) malformed-op robustness (#6), plus #1 topic-secrecy end-to-end —
+are DONE + teeth-verified (see the su-b62fa section below). **The only remaining gate
+is the C-001 product/security decision** (write+discovery-plane revocation vs full
+read cutoff) — owner's call.
 
 **Dimension verdict so far: YELLOW → trending RED** pending the C-001 product
 decision. A public-release privacy story with write-only revocation must be a
@@ -126,7 +129,7 @@ conscious, documented choice — not a silent gap.
 ## su-b62fa additions (2026-06-19) — over-wire sig gate, unit-layer complements, coverage assessment
 
 New dedicated test file: **`packages/operator-core/lib/sync/hyperbee/__tests__/federation-threat-model.test.ts`**
-(3 tests, all GREEN + teeth-verified; **unit layer** — capture-sink, no PG, so they
+(4 tests, all GREEN + teeth-verified; **unit layer** — capture-sink, no PG, so they
 run in the green gate that the sibling `*.integration.test.ts` cases do NOT).
 
 1. **Threat #4 — forged-signature over the wire (NET-NEW).** Closes the matrix-#4
@@ -152,6 +155,13 @@ run in the green gate that the sibling `*.integration.test.ts` cases do NOT).
    and no malformed-shape op reaches the projection writer. Complements the lead's
    integration "garbage ops cannot wedge the pipeline" + C-002 (op-size). **Teeth:**
    widen `decodeValue` to accept anything → poisoned ops reach the writer → RED.
+
+4. **Threat #1 — topic-secrecy end-to-end (NET-NEW).** A never-member booting on the
+   GUESSED `gh:<repo_id>` topic never connects to a private hive federating on
+   `hive:<pubkey>` (admits 0 remote logs, reads nothing), while a legit member on the
+   hive topic reads the content. Lifts the unit topic-divergence (`derive-swarm-topic`)
+   to an over-wire proof that a topic-guesser gets nothing. **Teeth:** put the guesser
+   on the real hive binding → topics collide → RED.
 
 ### Coverage assessment of the remaining "partial" matrix rows (no new test needed)
 
