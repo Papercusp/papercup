@@ -1,8 +1,11 @@
 # Brief Z — Data-integrity edges (findings)
 
 **Owner:** su-d2230 (the del-guard / delete-resurrection class is mine — Z is built on it).
-**Status:** H-Z1 **CONFIRMED S0** (deterministic test, su-53f39 2026-06-19 — A-003 closed,
-picked this up). Z#3–Z#6 (payload/encoding/boundary/tombstone-churn legs) not yet run.
+**Status:** H-Z1 **CONFIRMED S0 → FIXED + VERIFIED** (found+proved su-53f39 2026-06-19;
+EI-1688; fixed by c2a63 via the snapshot del-tombstone — no PG migration — and verified
+green by the proof test snapshot-stale-resurrection-s0.test.ts: S0-FIXED + CONVERGENCE).
+Z#3 done (the blast-radius matrix, on EI-1688). Z#4/Z#5 = LOW-sev self-healing NUL nit
+(characterized below). Z#6 not run (low priority).
 **Verdict:** **S0 CONFIRMED — snapshot-seeded folds PERMANENTLY resurrect a key deleted
 before the snapshot** when a stale lower-clock put arrives past the snapshot horizon. The
 read-merge "BOUNDED TRANSIENT" (put-after-del has no PG tombstone) is NOT bounded with
@@ -70,8 +73,21 @@ what EI-79/D-001 already did for the del-after-put direction.
 
 ---
 
-## Remaining Z legs (not yet started)
-- Z#3 tombstone propagation / `leave-hive` + contributor-tombstone under churn.
-- Z#4 large/binary payload round-trip (find the ceiling; graceful failure past it).
-- Z#5 encoding/unicode/NUL/RTL/emoji round-trip through capture→drain→projection.
-- Z#6 empty/null/boundary fields + numeric extremes (the B-001 column-completeness class).
+## Z legs — progress (su-53f39, 2026-06-19)
+- **Z#1 → CONFIRMED S0 = EI-1688** (snapshot-seeded resurrection; see Status above + the blast-radius matrix on EI-1688). The centerpiece "S0 if resurrection" finding.
+- **Z#3 (tombstone / delete-shape audit) → done as the EI-1688 blast-radius matrix:** ~19 of 21 federated projections delete via a bare `DELETE` (all resurrectable); feature-claims is append-only (never-delete model); full per-type list on EI-1688. (Tombstone-under-churn behavior is moot until the EI-1688 fix lands.)
+- **Z#4 / Z#5 (large/binary payload + encoding/unicode/NUL) → LOW-severity nit, NOT an S1:**
+  the severe "poison-pill federation stall" hypothesis was REFUTED by test. A NUL (0x00) in a
+  string field (no sanitization in the value path; PG rejects it in TEXT + JSONB; applyOpVia +
+  the merge have no try/catch around apply) causes a TRANSIENT throw on the first merge pass that
+  reaches it — but `cursor.winners` records the op BEFORE the throwing apply, so the NEXT pass
+  skips it via stale-dedup and the merge SELF-HEALS (later good ops apply; the NUL op's content is
+  never stored, which is consistent across peers since PG can't hold a NUL). Net: an avoidable
+  transient error + log noise per restart, not a stall or divergence. Proof:
+  `__tests__/poison-op-merge-stall-s1.test.ts`. Recommendation (low priority): sanitize NUL at the
+  value boundary, or quarantine a throwing apply (record + skip, no throw) — adjacent to the
+  EI-1688 merge-apply work, flagged to c2a63. Large/non-NUL payloads + RTL/emoji round-trip
+  untested but lower-risk (jsonb/text handle them); the NUL edge was the real risk and is now
+  characterized.
+- **Z#6 (empty/null/boundary fields, numeric extremes) → not yet run** (low priority; the
+  column-completeness class is partly covered by the B-001 work + existing projection tests).

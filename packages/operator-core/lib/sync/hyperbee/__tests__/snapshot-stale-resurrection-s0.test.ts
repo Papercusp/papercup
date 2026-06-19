@@ -140,28 +140,32 @@ describe('Brief Z H-Z1 — snapshot-seeded stale-PUT-after-DELETE resurrection (
     expect(pg['queue::B']).toEqual({ v: 'b' });
   });
 
-  // S0: the production snapshot-seeded fold RESURRECTS A. Marked `it.fails` because the
-  // invariant below is VIOLATED today (the body throws → it.fails passes → file green).
-  // When the durable-tombstone fix lands, the invariant holds, this body passes, and
-  // it.fails flips RED — change `it.fails` → `it` at that point.
-  it.fails(
-    'S0: the snapshot-seeded fold MUST keep the deleted key absent (resurrects today — H-Z1)',
+  // EI-1688 FIXED (su-c2a63): log-snapshot.ts buildSnapshotRows now reconstitutes a
+  // deleted key as a TOMBSTONE row (carrying the del's ts/hlc) instead of omitting it,
+  // and read-merge.ts snapshotRowToEnvelope emits a `del` env for it. So the
+  // snapshot-seeded fold seeds winners[A]=del(ts5) → the stale put(A, ts2) loses the
+  // per-op winner-gate (read-merge.ts `!beatsStored → continue`) → A stays absent.
+  // (Was `it.fails` while the resurrection stood.)
+  it(
+    'S0 FIXED: the snapshot-seeded fold keeps the deleted key absent (EI-1688 — del-tombstone carried)',
     async () => {
       const { logA, logB } = await buildScenario();
       const pgSeeded = await foldSeededFromSnapshots([logA, logB]);
-      // INVARIANT Z: A was deleted (ts5) → it must STAY gone, even though A's del sits
-      // behind logA's snapshot horizon and the only A-op in this fold is the stale put.
+      // INVARIANT Z: A was deleted (ts5) → it STAYS gone, even though A's del sits
+      // behind logA's snapshot horizon — the snapshot carries A's del-tombstone.
       expect(pgSeeded['queue::A']).toBeUndefined();
     },
   );
 
-  it('DIVERGENCE WITNESS: seeded fold and full fold disagree on the deleted key (the bug, asserted)', async () => {
+  it('CONVERGENCE (EI-1688 fixed): seeded fold and full fold now AGREE — the deleted key stays absent', async () => {
     const { logA, logB } = await buildScenario();
     const fromZero = await foldToPg([logA, logB], 0);
     const seeded = await foldSeededFromSnapshots([logA, logB]);
-    // snapshot-fold.test.ts proves seeded === full-fold for the cases it covers; this is
-    // the counterexample. Pinning the CURRENT (buggy) divergence so the gap is explicit:
-    expect(fromZero['queue::A']).toBeUndefined(); // correct
-    expect(seeded['queue::A']).toEqual({ v: 'STALE' }); // RESURRECTED — the S0
+    // EI-1688 was the counterexample where the snapshot-seeded fold diverged from the
+    // full fold (it RESURRECTED A with the stale put). With A's del carried as a
+    // snapshot tombstone, the seeded fold matches the full fold — A absent on BOTH.
+    expect(fromZero['queue::A']).toBeUndefined(); // correct (the del wins)
+    expect(seeded['queue::A']).toBeUndefined(); // now ALSO absent — no resurrection
+    expect(seeded['queue::B']).toEqual({ v: 'b' }); // a live key still reconstitutes
   });
 });

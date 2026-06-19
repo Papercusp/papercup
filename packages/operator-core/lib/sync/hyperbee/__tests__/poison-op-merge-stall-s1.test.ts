@@ -6,39 +6,32 @@ import {
 import type { OwnLog, PeerLogOp } from '../peer-log';
 
 /**
- * Brief Z (shared-hive-release-testing) — Z#4/Z#5: the POISON-OP federation STALL.
+ * Brief Z (shared-hive-release-testing) — Z#4/Z#5: NUL-bearing federated op handling.
  *
- * A single federated op whose PG apply THROWS is a poison pill: it permanently stalls
- * the incremental merge for its log AND cascades to every log ordered after it in the
- * pass — because nothing quarantines a throwing apply.
+ * FINDING (LOW severity — the severe "permanent poison-pill stall" hypothesis was
+ * REFUTED by this test; recorded accurately):
  *
- * Grounded chain (current code):
- *   1. NO NUL/control-char sanitization anywhere in the federation value path.
- *   2. title/summary/notes bind to PG TEXT columns; metadata/tags cast to JSONB — PG
- *      REJECTS a NUL (0x00) byte in either ("invalid byte sequence for encoding UTF8:
- *      0x00" / "unsupported Unicode escape sequence"). So a federated op with a NUL in
- *      any string field makes the projection write throw. (Binary / odd-unicode content
- *      pasted into a title/notes can carry it; nothing strips it on the way in or out.)
- *   3. projection.ts applyOpVia has NO try/catch around putToPg/deleteFromPg → the PG
- *      throw propagates out of `apply`.
- *   4. read-merge.ts mergeAdmittedLogsIncremental calls `await apply(env)` with NO
- *      try/catch (L~563) and sets `cursor.positions` only AFTER the per-op loop (L~565).
- *      So a throwing apply means the cursor NEVER advances past the poison op.
- *   5. The throw also aborts the outer `for (const log of logs)` loop → every log after
- *      the poison op's log in that pass is blocked too.
- * Net: the poison op re-throws every pass → permanent federation stall (a content-driven
- * liveness DoS), not a graceful skip/quarantine.
+ * A federated op whose PG apply THROWS (e.g. a NUL 0x00 byte in a title/notes — PG
+ * rejects it in TEXT and JSONB; nothing in the federation value path sanitizes it, and
+ * projection.ts applyOpVia has no try/catch around the write) causes the incremental
+ * merge to throw on the FIRST pass that reaches it (read-merge.ts ~L563 `await apply`
+ * is not wrapped, and `cursor.positions` is only set after the per-op loop). BUT it is
+ * NOT a permanent stall: `cursor.winners.set` records the op as the key's winner BEFORE
+ * the apply (L~562), so on the NEXT pass the op matches the stale-dedup guard
+ * (`if (prev && !beatsStored) continue`) and is SKIPPED without re-applying — the merge
+ * self-heals and subsequent good ops apply.
  *
- * PG-free + faithful: the applyImpl THROWS on a value carrying a literal NUL exactly as
- * the real PG write would on `${row.title}` — the merge cannot tell the difference, and
- * the defect under test is the merge's lack of quarantine, independent of the cause.
- * (We detect the NUL by scanning string fields, NOT via JSON.stringify — that escapes
- *   the NUL to a 6-char sequence and would never match the real failure.)
+ * Net behavior: (a) one TRANSIENT throw per process lifetime that first reaches the op
+ * (winners is in-memory → re-incurred once per restart), which also delays co-pass logs
+ * by one pass; (b) the NUL op's content is never written — but PG fundamentally cannot
+ * store a NUL, so EVERY peer drops it identically → no divergence. So this is a
+ * robustness nit (avoidable transient error + log noise), not a correctness or liveness
+ * S1. Recommendation: sanitize NUL at the value boundary, or wrap `apply` so a poison op
+ * is skipped cleanly (recorded, no throw). Owner/lead's call; not applied here.
  *
- * FIX SHAPE (owner/lead's call — NOT applied here): quarantine a throwing apply — catch
- * it, record the poison op (boot-history / dead-letter), ADVANCE the cursor past it so
- * the rest of the log + the other logs keep draining; and sanitize NUL at the value
- * boundary so well-formed content never poisons. When fixed, flip the `it.fails` case.
+ * PG-free + faithful: the applyImpl throws on a literal-NUL value exactly as the real PG
+ * write would on `${row.title}` (detected by scanning string fields — NOT JSON.stringify,
+ * which escapes the NUL to a 6-char sequence and would never match the real failure).
  */
 
 const NUL = String.fromCharCode(0); // a literal NUL char at runtime; no special byte in source
@@ -68,15 +61,14 @@ function memLog(keyHex: string): OwnLog {
   };
 }
 
-/** True iff any (nested) string field holds a literal NUL — what PG rejects when the
- *  projection binds `${row.title}` etc. */
+/** True iff any (nested) string field holds a literal NUL — what PG rejects on bind. */
 function hasNul(value: unknown): boolean {
   if (typeof value === 'string') return value.includes(NUL);
   if (value && typeof value === 'object') return Object.values(value).some(hasNul);
   return false;
 }
 
-/** applyImpl that throws on any put whose value carries a NUL (mimics the PG rejection). */
+/** applyImpl that throws on any put whose value carries a NUL (mimics PG's rejection). */
 function pgLikeApply(pg: Map<string, unknown>) {
   return async (env: { table: string; hbKey: string; type: string; value?: unknown }) => {
     if (env.type === 'put' && hasNul(env.value)) {
@@ -97,55 +89,46 @@ async function buildLog(): Promise<OwnLog> {
   return log;
 }
 
-describe('Brief Z Z#4/Z#5 — poison-op federation merge stall', () => {
-  it('CURRENT (buggy): a throwing apply propagates out of the merge — uncaught', async () => {
-    const log = await buildLog();
-    const pg = new Map<string, unknown>();
-    const cursor = createMergeCursor();
-    await expect(
-      mergeAdmittedLogsIncremental([log], cursor, {
-        getTimeoutMs: 0,
-        maxOpsPerPass: 0,
-        applyImpl: pgLikeApply(pg),
-      }),
-    ).rejects.toThrow(/invalid byte sequence/);
-  });
+const PASS = { getTimeoutMs: 0, maxOpsPerPass: 0 } as const;
 
-  it('CURRENT (buggy): the cursor never advances past the poison op → re-throws every pass (stall)', async () => {
+describe('Brief Z Z#4/Z#5 — NUL-bearing federated op (transient throw, self-healing)', () => {
+  it('first pass: a throwing apply propagates out of the merge (uncaught — the transient error)', async () => {
     const log = await buildLog();
     const pg = new Map<string, unknown>();
     const cursor = createMergeCursor();
     await expect(
-      mergeAdmittedLogsIncremental([log], cursor, { getTimeoutMs: 0, maxOpsPerPass: 0, applyImpl: pgLikeApply(pg) }),
-    ).rejects.toThrow();
-    // Cursor for this log is still at/before the poison op (index 1), NOT advanced to 3.
+      mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: pgLikeApply(pg) }),
+    ).rejects.toThrow(/invalid byte sequence/);
+    // The cursor did not advance past the poison op this pass; GOOD-2 not yet applied.
     expect(cursor.positions.get(log.keyHex) ?? 0).toBeLessThanOrEqual(1);
-    // GOOD-1 (before the poison) applied; GOOD-2 (after) did NOT — it is blocked.
     expect(pg.has('queue::GOOD-1')).toBe(true);
     expect(pg.has('queue::GOOD-2')).toBe(false);
-    // Pass 2 re-hits the same poison op → throws again (poison pill, never drains).
-    await expect(
-      mergeAdmittedLogsIncremental([log], cursor, { getTimeoutMs: 0, maxOpsPerPass: 0, applyImpl: pgLikeApply(pg) }),
-    ).rejects.toThrow();
-    expect(pg.has('queue::GOOD-2')).toBe(false); // still blocked
   });
 
-  // DESIRED invariant (violated today): the merge QUARANTINES a poison op — survives,
-  // advances past it, applies the good ops on the same log. it.fails because today the
-  // merge throws before GOOD-2 is reached. Flip to `it` when the quarantine fix lands.
-  it.fails(
-    'DESIRED: the merge quarantines a poison op and still applies the surrounding good ops',
-    async () => {
-      const log = await buildLog();
-      const pg = new Map<string, unknown>();
-      const cursor = createMergeCursor();
-      await mergeAdmittedLogsIncremental([log], cursor, {
-        getTimeoutMs: 0,
-        maxOpsPerPass: 0,
-        applyImpl: pgLikeApply(pg),
-      });
-      expect(pg.has('queue::GOOD-1')).toBe(true);
-      expect(pg.has('queue::GOOD-2')).toBe(true);
-    },
-  );
+  it('self-heals on the NEXT pass: the poison op is skipped via winners-dedup (no re-throw) and later good ops apply', async () => {
+    const log = await buildLog();
+    const pg = new Map<string, unknown>();
+    const cursor = createMergeCursor();
+    const apply = pgLikeApply(pg);
+    // Pass 1 throws (poison op recorded as its key's winner BEFORE the apply throws).
+    await expect(mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: apply })).rejects.toThrow();
+    // Pass 2 does NOT throw — the poison op matches the stale-dedup guard and is skipped;
+    // the merge proceeds and GOOD-2 lands. (winners is in-memory → recovery is per-lifetime.)
+    await mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: apply });
+    expect(pg.has('queue::GOOD-2')).toBe(true); // recovered
+    expect(pg.has('queue::POISON')).toBe(false); // NUL content never stored (PG can't anyway) — consistent across peers
+    expect(cursor.positions.get(log.keyHex) ?? 0).toBe(log.length); // caught up
+  });
+
+  // The residual robustness gap: a NUL op SHOULD be skipped cleanly with no throw at all
+  // (no transient error / log noise / one-pass co-log delay). it.fails because pass 1
+  // still throws today. Flip to `it` if NUL-sanitization / clean-skip handling lands.
+  it.fails('DESIRED: a NUL-bearing op is skipped WITHOUT any throw (no transient error)', async () => {
+    const log = await buildLog();
+    const pg = new Map<string, unknown>();
+    const cursor = createMergeCursor();
+    await mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: pgLikeApply(pg) });
+    expect(pg.has('queue::GOOD-1')).toBe(true);
+    expect(pg.has('queue::GOOD-2')).toBe(true);
+  });
 });

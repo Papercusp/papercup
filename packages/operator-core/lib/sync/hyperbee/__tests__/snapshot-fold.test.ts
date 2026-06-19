@@ -85,7 +85,7 @@ describe('snapshot fold (P-005 + P-007, design A)', () => {
     const res = await produceLogSnapshot(log, { now: 100, schemaVersion: 1 });
     expect(res.appended).toBe(true);
     expect(res.coversUpTo).toBe(5);
-    expect(res.rowCount).toBe(2); // F-1, F-3 live; F-2 del'd out
+    expect(res.rowCount).toBe(3); // F-1, F-3 live + F-2 del-tombstone (EI-1688: del'd keys carried)
 
     // Tail after the snapshot: F-3 updated, F-4 new.
     await log.append(put('queue', 'F-3', { v: 33 }, 6));

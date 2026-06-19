@@ -13,6 +13,10 @@
 import { saveOwnedHiveMeta } from './hive-directory-meta';
 import type { HiveDirectoryMeta } from './hive-publish';
 import { getHiveDirectory } from './hive-directory-deps';
+import {
+  advanceEpochOnHiveBoundary,
+  isHiveRekeyEnabled,
+} from './sync/hyperbee/hive-epoch-boundary-wiring';
 
 export interface SetHiveListingInput {
   hiveId: string;
@@ -85,6 +89,21 @@ export async function setHiveListing(
       })) as unknown as Record<string, unknown>;
     } catch (e) {
       unlist = { failed: true, error: e instanceof Error ? e.message : String(e) };
+    }
+    // P-004 (shared-hive-rekey-2026-06-19): go-private is a READ boundary too. Advance the
+    // hive epoch + re-key to ALL current members (no cutOff — every admitted member keeps
+    // access) so a peer that grabbed the PUBLIC link but never became a member can't decrypt
+    // post-private content. The content topic is immutable (E-001 first half), so the cut is
+    // at the CRYPTO layer, not the topic. Flag-gated (papercusp-hive-rekey); best-effort —
+    // the directory withdrawal already landed. OFF ⇒ no-op (today's directory-only withdraw).
+    try {
+      await advanceEpochOnHiveBoundary({
+        workspaceId,
+        hiveHomeSlug: meta.hiveId,
+        enabled: await isHiveRekeyEnabled(),
+      });
+    } catch {
+      /* re-key best-effort — the directory withdrawal already succeeded */
     }
     return {
       ok: true,

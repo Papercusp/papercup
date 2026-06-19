@@ -72,7 +72,7 @@ describe('E-001: a hive content topic is independent of, and distinct from, ever
   });
 });
 
-describe('E-001 (static): the public→private flip has NO federation-cutoff leg', () => {
+describe('E-001 (static): the public→private flip NOW wires the re-key cutoff (gap CLOSED)', () => {
   // Same proven pattern as the G24 dissolve static finding
   // (lifecycle-membership-teardown.gap.integration.test.ts): a source assertion that
   // a lifecycle op does NOT reach for the substrate. setHiveListing's private branch
@@ -98,15 +98,15 @@ describe('E-001 (static): the public→private flip has NO federation-cutoff leg
     expect(/unlistHiveCupboardRows|unlist-hive-rows/.test(privateBranch)).toBe(true);
   });
 
-  it('and the private branch references NO content-swarm cutoff mechanism (no revoke / re-key / evict / replicate / boot / leaveTopic)', () => {
-    // If a true cryptographic cutoff is ever added to the private flip (fix option
-    // (a)/(c) from C-001 — re-key on transition / connection eviction), one of these
-    // tokens appears in the private branch and this assertion flips RED — the signal the
-    // gap closed. (Scoped to the private branch so it is robust to publish-path edits.)
+  it('NOW wires the P-004 re-key cutoff on the private flip (advanceEpochOnHiveBoundary, gated by isHiveRekeyEnabled)', () => {
+    // P-004 landed (su-ee7e9 2026-06-19): the public→private flip advances the hive epoch +
+    // re-keys the current members — a non-member link-holder never gets the new key = the
+    // C-001 read cut at the CRYPTO layer (the content TOPIC stays immutable, asserted in the
+    // describe above). This FLIPPED from "no cutoff leg" to "the re-key cutoff stays wired":
+    // a regression guard so the read cut can't silently leave the go-private path.
     expect(privTo).toBeGreaterThan(privFrom); // the public/invite branch marker exists → slice is the private branch
-    const cutoffLeg =
-      /\brevoke\b|\bre-?key\b|\bevict\b|\.replicate\b|bootHarnessSubstrate|closeBootedHarness|\bleaveTopic\b/;
-    expect(cutoffLeg.test(privateBranch)).toBe(false);
+    expect(/advanceEpochOnHiveBoundary\s*\(/.test(privateBranch)).toBe(true);
+    expect(/isHiveRekeyEnabled\s*\(/.test(privateBranch)).toBe(true);
   });
 });
 

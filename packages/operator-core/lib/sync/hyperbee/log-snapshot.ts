@@ -28,9 +28,11 @@ import type { OwnLog, PeerLogOp } from './peer-log';
  *  it, so non-snapshot-aware readers drop it (harmless). */
 export const SNAPSHOT_TABLE_TAG = '__snapshot__';
 
-/** One row in a snapshot — a put that reconstitutes a single key's current state.
- *  Preserves the winning op's ORIGINAL ts/hlc so cross-peer LWW at the reader
- *  compares by the real write time, not snapshot-creation time. */
+/** One row in a snapshot — reconstitutes a single key's current state. Usually a
+ *  live `put`; a `deleted: true` row is a TOMBSTONE (EI-1688) reconstituting a key
+ *  whose current state is DELETED, carrying the del's ts/hlc. Preserves the winning
+ *  op's ORIGINAL ts/hlc so cross-peer LWW at the reader compares by the real write
+ *  time, not snapshot-creation time. */
 export interface SnapshotRow {
   table: string;
   hbKey: string;
@@ -39,6 +41,15 @@ export interface SnapshotRow {
   schema_version: number;
   /** The winning op's HLC (P-010), preserved verbatim. */
   hlc?: string;
+  /**
+   * EI-1688 — a TOMBSTONE row: the key's latest op is a `del`, so it reconstitutes
+   * as DELETED (the reader's `snapshotRowToEnvelope` emits a `del` env, seeding the
+   * merge winner with the del's HLC so a later-arriving stale lower-clock PUT loses
+   * the per-op winner-gate and is never re-applied — the put-after-del resurrection
+   * fix). `value` is null on a tombstone (an old, pre-fix reader treats it as a
+   * put(null) → decodeValue → null → dropped harmlessly; no resurrection-with-garbage).
+   */
+  deleted?: boolean;
 }
 
 /** The `value` of a snapshot op. */
@@ -59,20 +70,39 @@ export function isSnapshotOp(op: { table?: string } | null | undefined): boolean
 }
 
 /**
+ * EI-1688 — how long a snapshot keeps a TOMBSTONE row for a deleted key. A snapshot
+ * must reconstitute a delete (not omit it) so a later-arriving stale lower-clock PUT
+ * that federates past the snapshot horizon loses the merge winner-gate instead of
+ * resurrecting the key. Past this horizon the tombstone is GC'd (the key reverts to
+ * omitted) — a delayed put that old is beyond any realistic partition-heal window, so
+ * it is unrecoverable anyway. Conservative default: 14 days. Tunable, not a constant
+ * of correctness (any value ≥ the max partition-heal delay is correct; larger only
+ * keeps a few more tombstone rows in the snapshot).
+ */
+export const SNAPSHOT_TOMBSTONE_HORIZON_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
  * P-004 — the pure builder. Fold a peer's OWN-LOG ops to the minimal current-state
- * put-set:
+ * set:
  *   - latest op per (table, hbKey) wins — the own log is single-writer, so the
  *     highest-index op for a key IS its current state (no LWW needed within one log);
- *   - a key whose latest op is a `del` is OMITTED (current state = absent; the
- *     snapshot is the new baseline, so absence reconstitutes correctly);
- *   - a PRIOR snapshot op is EXPANDED (its rows fold in first), so re-snapshotting a
- *     log that already carries a snapshot is correct + idempotent;
+ *   - a key whose latest op is a `del` is reconstituted as a TOMBSTONE row
+ *     (`deleted: true`, value null, the del's ts/hlc) rather than OMITTED — EI-1688:
+ *     a snapshot-seeded reader must learn the key was deleted (with the del's HLC) so
+ *     a stale lower-clock PUT arriving past the horizon loses the merge winner-gate.
+ *     A tombstone older than `opts.tombstoneHorizonMs` (relative to `opts.now`) is
+ *     GC'd back to OMITTED (the pre-EI-1688 behavior — acceptable past the horizon);
+ *   - a PRIOR snapshot op is EXPANDED (its rows — live AND tombstone — fold in first),
+ *     so re-snapshotting a log that already carries a snapshot is correct + idempotent;
  *   - each emitted row preserves its winning op's value/ts/hlc verbatim.
  * Output is sorted (table, then hbKey) for deterministic, testable bytes. Pure.
  */
-export function buildSnapshotRows(ops: readonly PeerLogOp[]): SnapshotRow[] {
-  // key → row, or null when the key's latest op is a del (omitted from output).
-  const latest = new Map<string, SnapshotRow | null>();
+export function buildSnapshotRows(
+  ops: readonly PeerLogOp[],
+  opts?: { now?: number; tombstoneHorizonMs?: number },
+): SnapshotRow[] {
+  // key → its current-state row (live put OR a `deleted` tombstone).
+  const latest = new Map<string, SnapshotRow>();
   for (const op of ops) {
     if (isSnapshotOp(op)) {
       const payload = op.value as SnapshotPayload | undefined;
@@ -92,11 +122,28 @@ export function buildSnapshotRows(ops: readonly PeerLogOp[]): SnapshotRow[] {
         ...(op.hlc ? { hlc: op.hlc } : {}),
       });
     } else if (op.type === 'del') {
-      latest.set(key, null);
+      // EI-1688: reconstitute the delete as a tombstone (carry the del's ts/hlc),
+      // NOT omitted — so the reader's winner-fold knows the key was deleted.
+      latest.set(key, {
+        table: op.table,
+        hbKey: op.hbKey,
+        value: null,
+        ts: op.ts,
+        schema_version: op.schema_version,
+        ...(op.hlc ? { hlc: op.hlc } : {}),
+        deleted: true,
+      });
     }
   }
+  // GC tombstones older than the horizon (revert them to omitted). `now` undefined
+  // ⇒ no GC (carry all tombstones — safe; only a snapshot producer supplies `now`).
+  const now = opts?.now;
+  const horizon = opts?.tombstoneHorizonMs ?? SNAPSHOT_TOMBSTONE_HORIZON_MS;
   const rows: SnapshotRow[] = [];
-  for (const r of latest.values()) if (r) rows.push(r);
+  for (const r of latest.values()) {
+    if (r.deleted && now != null && r.ts < now - horizon) continue; // GC'd tombstone
+    rows.push(r);
+  }
   rows.sort((a, b) =>
     a.table === b.table ? cmpStr(a.hbKey, b.hbKey) : cmpStr(a.table, b.table),
   );
@@ -121,7 +168,8 @@ export function buildSnapshotOp(opts: {
   ts: number;
   schema_version: number;
 }): PeerLogOp {
-  const rows = buildSnapshotRows(opts.ops);
+  // EI-1688: pass `now` (= the snapshot ts) so old tombstones GC out at production.
+  const rows = buildSnapshotRows(opts.ops, { now: opts.ts });
   const payload: SnapshotPayload = { coversUpTo: opts.coversUpTo, rows };
   return {
     type: 'put',

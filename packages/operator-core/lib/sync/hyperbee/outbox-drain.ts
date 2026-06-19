@@ -83,6 +83,27 @@ export interface OutboxFanoutRow {
  *  Runs per row on the SAME drain as federation (not a second consumer). */
 export type OutboxFanoutFn = (row: OutboxFanoutRow) => Promise<unknown>;
 
+/**
+ * The encrypt-on-capture capability for the read-plane re-key (C-001,
+ * shared-hive-rekey-2026-06-19). Built at boot from the hive's crypto + epoch-key
+ * resolver (owner derives / member unwraps) + localDevice, and THREADED into the
+ * drain. The drain calls `encryptOp` for the hive-CONTENT ops it selects
+ * (`shouldEncryptOpForRekey`), then stamps the returned `{ epoch }` + sets the
+ * encrypted `value` on the op before append. ABSENT ⇒ the re-key is off for this
+ * harness and every op federates plaintext (today's behavior, byte-identical).
+ */
+export interface EpochEncryptCapability {
+  /**
+   * Encrypt a selected content op's payload under the hive's CURRENT epoch key.
+   * Returns `{ epoch, value }` — the epoch to stamp + the json-safe encrypted value
+   * to set on `op.value` — or `null` to leave the op plaintext. MAY reject
+   * (e.g. `EpochKeyUnavailableError`) when the current epoch key has not yet reached
+   * this device; the drain treats that like an append failure (halt + retry) so the
+   * op federates once the key arrives — it is never dropped or sent in the clear.
+   */
+  encryptOp(op: LocalWriteOp): Promise<{ epoch: number; value: unknown } | null>;
+}
+
 export interface DrainOptions {
   /** Max rows to drain this pass. Default `DEFAULT_DRAIN_BATCH`. */
   batch?: number;
@@ -93,6 +114,10 @@ export interface DrainOptions {
    *  BEFORE drained_at (at-least-once: a failure re-runs; the insert is
    *  idempotent). Omitted → no fan-out (federation-only, the pre-Phase-2 behavior). */
   fanout?: OutboxFanoutFn;
+  /** Re-key encrypt-on-capture capability (C-001). When present, the drain encrypts
+   *  the payload of selected hive-CONTENT ops under the current epoch + stamps
+   *  `op.epoch` before append. Omitted ⇒ no encryption (plaintext, today's path). */
+  epochEncrypt?: EpochEncryptCapability;
   /** Test seam: override the inline-GC batch size (`OUTBOX_GC_BATCH`). Lets a
    *  test exercise the batched/bounded loop + early-break without seeding 100k+
    *  rows. Production omits it. */
@@ -216,6 +241,24 @@ export async function drainOutboxOnce(
       throw e;
     }
 
+    // Re-key encrypt-on-capture (C-001, shared-hive-rekey-2026-06-19): when the
+    // re-key is active for this harness (capability threaded) AND this is a
+    // hive-CONTENT put with a payload (admission/key/policy ops + dels stay
+    // plaintext — shouldEncryptOpForRekey), encrypt the payload under the current
+    // epoch + stamp op.epoch BEFORE append. A null result leaves the op plaintext;
+    // a rejection (the epoch key is not yet on this device) propagates like an
+    // append failure (halt + retry) so the op federates once the key arrives — it
+    // is never dropped or sent in the clear.
+    if (
+      opts.epochEncrypt &&
+      op.type === 'put' &&
+      op.value !== undefined &&
+      shouldEncryptOpForRekey(op.table)
+    ) {
+      const enc = await opts.epochEncrypt.encryptOp(op);
+      if (enc) op = { ...op, value: enc.value, epoch: enc.epoch };
+    }
+
     // AT-LEAST-ONCE: append FIRST. If this throws we stop here, leaving this
     // row + all later rows undrained for the next pass to re-attempt.
     await handle.append(op);
@@ -272,6 +315,8 @@ export interface StartDrainOptions {
   batch?: number;
   /** Local subscribe→inject fan-out consumer, run per row (Phase 2). */
   fanout?: OutboxFanoutFn;
+  /** Re-key encrypt-on-capture capability (C-001) — threaded to each drain pass. */
+  epochEncrypt?: EpochEncryptCapability;
 }
 
 export interface OutboxDrainHandle {
@@ -301,6 +346,7 @@ export function startOutboxDrain(
   const pollMs = Number.isFinite(opts.pollMs as number) ? (opts.pollMs as number) : DEFAULT_POLL_MS;
   const batch = opts.batch;
   const fanout = opts.fanout;
+  const epochEncrypt = opts.epochEncrypt;
   const wantPayload = `${handle.workspaceId}::${handle.harnessSlug}`;
 
   let stopped = false;
@@ -322,6 +368,7 @@ export function startOutboxDrain(
         const drainOpts: DrainOptions = {};
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
+        if (epochEncrypt !== undefined) drainOpts.epochEncrypt = epochEncrypt;
         await drainOutboxOnce(handle, pg, drainOpts);
       } while (runAgain && !stopped);
     } catch (e) {

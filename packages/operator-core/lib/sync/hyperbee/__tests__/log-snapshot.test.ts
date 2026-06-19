@@ -32,9 +32,22 @@ describe('buildSnapshotRows (P-004)', () => {
     expect(rows[0].ts).toBe(2);
   });
 
-  it('omits a key whose latest op is a del (current state = absent)', () => {
+  it('EI-1688: carries a TOMBSTONE for a key whose latest op is a del (not omitted)', () => {
     const rows = buildSnapshotRows([put('queue', 'F-1', { v: 1 }, 1), del('queue', 'F-1', 2)]);
-    expect(rows).toEqual([]);
+    // Reconstituted as a deleted tombstone carrying the del's ts — NOT omitted — so a
+    // snapshot-seeded reader learns the key was deleted (the put-after-del resurrection fix).
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ table: 'queue', hbKey: 'F-1', ts: 2, deleted: true, value: null });
+  });
+
+  it('EI-1688: GC drops a tombstone older than the horizon (reverts to omitted)', () => {
+    const ops = [put('queue', 'F-1', { v: 1 }, 1_000), del('queue', 'F-1', 2_000)];
+    // del ts=2000; now=10000, horizon=5000 → 2000 < 10000-5000=5000 → GC'd (omitted).
+    expect(buildSnapshotRows(ops, { now: 10_000, tombstoneHorizonMs: 5_000 })).toEqual([]);
+    // Within the horizon (now=4000) → tombstone kept.
+    expect(buildSnapshotRows(ops, { now: 4_000, tombstoneHorizonMs: 5_000 })).toHaveLength(1);
+    // No `now` → no GC, tombstone always kept.
+    expect(buildSnapshotRows(ops)).toHaveLength(1);
   });
 
   it('keeps a key that was put → del → put again', () => {
@@ -71,7 +84,7 @@ describe('buildSnapshotRows (P-004)', () => {
     expect(rows).toHaveLength(3);
   });
 
-  it('a tail del of a snapshotted key omits it', () => {
+  it('EI-1688: a tail del of a snapshotted key TOMBSTONES it (not omitted)', () => {
     const prior = buildSnapshotOp({
       ops: [put('queue', 'F-1', { v: 'snap' }, 1)],
       coversUpTo: 1,
@@ -80,7 +93,9 @@ describe('buildSnapshotRows (P-004)', () => {
       schema_version: 1,
     });
     const rows = buildSnapshotRows([prior, del('queue', 'F-1', 10)]);
-    expect(rows).toEqual([]);
+    // The prior snapshot's live F-1 is superseded by the tail del → a tombstone (ts=10).
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ table: 'queue', hbKey: 'F-1', ts: 10, deleted: true });
   });
 
   it('is deterministic — sorted by (table, hbKey)', () => {
@@ -113,8 +128,11 @@ describe('buildSnapshotOp (P-005 wrapper)', () => {
     expect(isSnapshotOp(op)).toBe(true);
     const payload = op.value as SnapshotPayload;
     expect(payload.coversUpTo).toBe(3);
-    expect(payload.rows).toHaveLength(1); // F-1 collapsed to latest; F-2 del'd out
-    expect(payload.rows[0].value).toEqual({ v: 2 });
+    // F-1 collapsed to its latest live value; F-2's del reconstituted as a tombstone (EI-1688).
+    expect(payload.rows).toHaveLength(2);
+    const byKey = Object.fromEntries(payload.rows.map((r) => [r.hbKey, r]));
+    expect(byKey['F-1'].value).toEqual({ v: 2 });
+    expect(byKey['F-2']).toMatchObject({ deleted: true, ts: 3 });
   });
 
   it('isSnapshotOp is false for ordinary ops', () => {

@@ -15,12 +15,13 @@
  * ("C-001 — revocation is write-plane only"); THIS file guards the narrower K-1
  * invariant so the no-op-beyond-PG behavior can't silently change.
  *
- * Same proven static-source idiom as
- * `sync/hyperbee/visibility-content-topic-separation.test.ts`'s
- * "E-001 (static): the public→private flip has NO federation-cutoff leg": a source
- * assertion that the lever does NOT reach for the substrate. When the P-004 wiring
- * lands (live-revoke + peer-log federation — the real fix), one of the cutoff/federate
- * tokens appears in `realPublishRevocation` and this flips RED: the signal the gap closed.
+ * UPDATE (P-004 landed, su-ee7e9 2026-06-19): the gap is CLOSED. `realPublishRevocation`
+ * now wires the substrate re-key (`advanceEpochOnHiveBoundary`, flag-gated by
+ * `isHiveRekeyEnabled`) — member-remove advances the epoch + distributes the new key to
+ * the REMAINING members = the C-001 read cut. This test FLIPPED from "asserts the gap
+ * exists" to "asserts the re-key stays wired": a regression guard, so the read cut can't
+ * silently be removed from the revoke path. (The cut activates only with the flag on; the
+ * wiring is present regardless.)
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -41,28 +42,28 @@ const realPublish = from > -1 ? src.slice(from) : '';
 // can never satisfy a leg assertion — only real CODE tokens count.
 const realPublishCode = realPublish.replace(/\/\/[^\n]*/g, '');
 
-describe('K-1 (static): Hive-scope revoke is PG-write-only — no live-revoke, no federation', () => {
+describe('K-1 (static): Hive-scope revoke NOW wires the P-004 re-key (the gap is CLOSED)', () => {
   it('locates the default realPublishRevocation seam', () => {
     expect(from).toBeGreaterThan(-1);
   });
 
-  it('writes the revoked set to PG (addRevokedHivePubkeys) — the local effect', () => {
+  it('still writes the revoked set to PG (addRevokedHivePubkeys) — the write-plane effect', () => {
     expect(/addRevokedHivePubkeys\s*\(/.test(realPublishCode)).toBe(true);
   });
 
-  it('reports live:false — it does NOT apply the revoke on a booted handle', () => {
-    // The hardcoded `return { live: false }` is the no-op marker. A real fix that
-    // live-revokes computes `live` (e.g. after `h.revoke`) and this literal disappears.
-    expect(/return\s*\{\s*live:\s*false\s*\}/.test(realPublishCode)).toBe(true);
+  it('wires the P-004 re-key on revoke (advanceEpochOnHiveBoundary, gated by isHiveRekeyEnabled)', () => {
+    // The C-001 fix: member-remove advances the hive epoch + distributes the new key to the
+    // REMAINING members (cutOff = the revoked pubkeys) so the removed peer can't decrypt
+    // post-boundary content. If this regresses out of the revoke path, the read cut
+    // silently stops working — the assertion that guards it.
+    expect(/advanceEpochOnHiveBoundary\s*\(/.test(realPublishCode)).toBe(true);
+    expect(/isHiveRekeyEnabled\s*\(/.test(realPublishCode)).toBe(true);
   });
 
-  it('references NO live-revoke or peer-log federation leg (no h.revoke / publishContributorRow / booted-handle publish)', () => {
-    // Contrast sync/hyperbee/revoke-contributor.ts (harness scope), whose
-    // realPublishRevocation DOES call `await h.revoke(pk)` + `publishContributorRow`.
-    // When P-004 wires the Hive-scope live-revoke + peer-log publish (closing K-1/K-2),
-    // one of these CODE tokens appears here and this assertion flips RED.
-    const federateOrLiveRevokeLeg =
-      /\.revoke\s*\(|publishContributorRow\s*\(|publishHiveContributorRow\s*\(|getBootedHive\w*\s*\(|\bh\.revoke\b/;
-    expect(federateOrLiveRevokeLeg.test(realPublishCode)).toBe(false);
+  it('computes `live` from the re-key (no hardcoded live:false no-op marker)', () => {
+    // Was `return { live: false }` (the K-1 no-op). Now `return { live: applied }` — the
+    // removal is live (a read cut) exactly when the flag is on + the re-key distributed.
+    expect(/return\s*\{\s*live:\s*applied\s*\}/.test(realPublishCode)).toBe(true);
+    expect(/return\s*\{\s*live:\s*false\s*\}/.test(realPublishCode)).toBe(false);
   });
 });

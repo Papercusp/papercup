@@ -24,6 +24,10 @@
 
 import { loadHivePubkey } from './identity/hive-keypair';
 import { loadHiveMemberDevicePubkeys, addRevokedHivePubkeys } from './hive-membership-store';
+import {
+  advanceEpochOnHiveBoundary,
+  isHiveRekeyEnabled,
+} from './sync/hyperbee/hive-epoch-boundary-wiring';
 
 export type RevokeHiveContributorResult =
   | {
@@ -127,7 +131,18 @@ async function realPublishRevocation(
   if (!row) {
     throw new Error('owner has no hive_members row — join the Hive before revoking');
   }
-  // PG row written (local admission union is now correct). The Hive peer-log publish
-  // that replicates it to peers is wired by the P-004 substrate re-key.
-  return { live: false };
+  // P-004 (shared-hive-rekey-2026-06-19): the substrate re-key — the peer-log publish the
+  // K-1 gap was waiting on. Advance the epoch + distribute the new key to the REMAINING
+  // members (cutOff = the just-revoked device pubkeys). The `hive_epoch_keys` rows federate
+  // (mig 316 capture → hive-epoch-keys projection over the A-003 hive-home seam), so the
+  // revoked member replicates post-boundary ciphertext it can never decrypt = the C-001
+  // READ cut. Flag-gated (papercusp-hive-rekey): OFF ⇒ no-op, today's PG-only behavior →
+  // `live:false`. ON ⇒ the removal is a live read-cut → `live:true`.
+  const { applied } = await advanceEpochOnHiveBoundary({
+    workspaceId,
+    hiveHomeSlug,
+    enabled: await isHiveRekeyEnabled(),
+    cutOffPubkeys: pubkeys,
+  });
+  return { live: applied };
 }

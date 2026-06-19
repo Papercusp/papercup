@@ -160,7 +160,11 @@ function snapshotRowToEnvelope(
   authorPubkey: string,
 ): OpEnvelope {
   return {
-    type: 'put',
+    // EI-1688: a tombstone row reconstitutes a DELETE. Emitting a `del` env seeds the
+    // merge winner with the del's ts/hlc, so a later-arriving stale lower-clock PUT
+    // loses the per-op winner-gate (`!beatsStored(env, prev) → continue`) and is never
+    // re-applied — the put-after-del resurrection fix, fold-level (no PG tombstone).
+    type: row.deleted ? 'del' : 'put',
     table: row.table,
     hbKey: row.hbKey,
     value: row.value,
