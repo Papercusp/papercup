@@ -52,7 +52,14 @@ describe('resolveTargets', () => {
 });
 
 describe('system:telemetry-retention action', () => {
-  beforeEach(() => pruneMock.mockReset());
+  beforeEach(() => {
+    pruneMock.mockReset();
+    // The action logs warn() on the invalid/failed-prune branches exercised below;
+    // the repo's vitest-fail-on-console treats an un-mocked warn as a failure, so
+    // capture it (the real assertions are on pruneMock / non-throwing).
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it('prunes each default target with its retention window + workspace', async () => {
