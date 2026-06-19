@@ -187,6 +187,18 @@ export interface GymTickDeps {
   /** Run ONE bounded gym cycle (live wiring: runOneAutoloopCycle, in-process). */
   runCycle(req: GymCycleRequest): Promise<GymCycleResult>;
   /**
+   * P-020 cross-node SINGLE-RUNNER gate (live wiring: checkHiveSingleRunner). In a
+   * SHARED Hive each NODE runs its OWN `system:gym-cycle` against its OWN embedded
+   * PG over its OWN (node-local) `gym_autoloop_config` rows, so two nodes can each
+   * pick + run a cycle for the SAME Hive member ⇒ double spend. This predicate keeps
+   * in the candidate pool ONLY the autoloops whose Hive THIS node is the elected
+   * authority for (lowest-live-pubkey, lockAuthorityForHive); a non-runner node's
+   * candidate is dropped, so only one node fires the Hive's gym cycle. Optional:
+   * unwired ⇒ no filter (the hermetic unit-test contract); at N=1 / standalone it
+   * always resolves true (authority / not-in-hive), so behaviour is unchanged.
+   */
+  isHiveRunner?(harnessSlug: string): Promise<boolean>;
+  /**
    * P-030 (B-09): finalize due post-acceptance champion-outcome windows
    * (live wiring: finalizePendingChampionOutcomes — cheap SQL, no LLM).
    * Optional; returns the finalized count. Failures log, never fail the tick.
@@ -198,8 +210,10 @@ export interface GymTickDeps {
 
 export interface GymTickOutcome {
   action: 'idle' | 'ran' | 'error';
-  /** Why an idle tick did nothing. */
-  reason?: 'no-eligible-autoloop' | 'fire-gate-backoff';
+  /** Why an idle tick did nothing. 'not-hive-runner' (P-020): eligible autoloops
+   *  existed but every one belongs to a SHARED Hive another node is the elected
+   *  single runner for, so THIS node stood down. */
+  reason?: 'no-eligible-autoloop' | 'fire-gate-backoff' | 'not-hive-runner';
   harnessSlug?: string;
   /** How many autoloops were eligible this tick (before the fire-gate walk). */
   eligibleCount: number;
@@ -285,7 +299,34 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
     ...(outcomesFinalized !== undefined ? { outcomesFinalized } : {}),
   };
 
-  const eligible = orderByLeastRecentlyRun(pool.filter((c) => isEligibleAutoloop(c, floor)));
+  let eligiblePool = pool.filter((c) => isEligibleAutoloop(c, floor));
+
+  // P-020 cross-node single-runner: drop candidates whose Hive THIS node is not the
+  // elected authority for, so a SHARED Hive's gym cycle fires on exactly one node
+  // (the per-NODE eligibility above can't see across nodes — each node sweeps its
+  // own embedded PG). Per-candidate fail-open (mirrors the fire-gate check below):
+  // a gate error keeps the candidate rather than starving the loop. Unwired ⇒ no
+  // filter (the hermetic unit-test contract; at N=1 every verdict is true anyway).
+  if (deps.isHiveRunner && eligiblePool.length > 0) {
+    const verdicts = await Promise.all(
+      eligiblePool.map(async (c) => {
+        try {
+          return await deps.isHiveRunner!(c.harnessSlug);
+        } catch (e) {
+          log(`hive-runner gate check failed for ${c.harnessSlug} — allowing: ${e instanceof Error ? e.message : e}`);
+          return true; // fail-open: never stall the loop on an unresolvable gate
+        }
+      }),
+    );
+    const filtered = eligiblePool.filter((_, i) => verdicts[i]);
+    if (filtered.length === 0) {
+      // Candidates existed, but every one belongs to a Hive another node runs.
+      return { action: 'idle', reason: 'not-hive-runner', eligibleCount: 0, gateBlocked: [], ...reclaimExtra };
+    }
+    eligiblePool = filtered;
+  }
+
+  const eligible = orderByLeastRecentlyRun(eligiblePool);
   if (eligible.length === 0) {
     return { action: 'idle', reason: 'no-eligible-autoloop', eligibleCount: 0, gateBlocked: [], ...reclaimExtra };
   }

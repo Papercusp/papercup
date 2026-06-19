@@ -145,6 +145,11 @@ export interface RunIdeatorsOptions extends BuildRosterInput {
    * discovered elites. Empty/absent ⇒ cold start (no priming).
    */
   priming?: string;
+  /**
+   * Per-blueprint ideator MISSION framing (P-010). Forwarded to every ideator's
+   * prompt; absent ⇒ the default coding-platform framing (byte-identical).
+   */
+  mission?: string;
 }
 
 /** Per-ideator outcome (forced-diversity audit + provenance + failure isolation). */
@@ -249,6 +254,7 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
         digest,
         seedDomain: slot.seedDomain,
         maxIdeas,
+        ...(opts.mission ? { mission: opts.mission } : {}),
         ...(opts.priming ? { priming: opts.priming } : {}),
       });
       try {

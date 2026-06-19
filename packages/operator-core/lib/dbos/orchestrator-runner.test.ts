@@ -133,7 +133,7 @@ describe('debuggerGateDecision — fire the debugger before the worker (P-012)',
 
 describe('pickReactiveBeforeWorkerRole — debugger launch is declarative (unify-launches D-001/D-003)', () => {
   test("the coding blueprint's reactive-before-worker role IS the debugger", () => {
-    const coding = loadBuiltinBlueprint('coding').blueprint;
+    const coding = loadBuiltinBlueprint('coding-factory').blueprint;
     expect(pickReactiveBeforeWorkerRole(coding.reactive)).toBe('debugger');
   });
 

@@ -263,7 +263,28 @@ impl OperatorClient {
 
     // --- raw ---
     pub async fn roster(&self) -> Result<serde_json::Value> {
-        self.get_json("/api/adv/roster").await
+        self.roster_scoped(None).await
+    }
+
+    /// The live roster, optionally scoped to ONE workspace (`?workspace=<id>`);
+    /// `None` keeps the unscoped fleet-wide default. The brain-view panes pass
+    /// the active workspace so the ♛ queen / 👁 overwatch tails follow it.
+    pub async fn roster_scoped(&self, workspace: Option<&str>) -> Result<serde_json::Value> {
+        self.get_json(&roster_path(workspace)).await
+    }
+
+    /// The active workspace id from the operator registry (`GET /api/workspaces`
+    /// → `current`). `None` when the registry has no current (dev / webapp), so
+    /// callers fall back to the unscoped roster. A workspace SWITCH rewrites
+    /// `registry.current` (desktop `workspaces::switch`), so re-reading this
+    /// follows the switch — which is how the brain panes re-scope live.
+    pub async fn current_workspace(&self) -> Result<Option<String>> {
+        let v = self.get_json("/api/workspaces").await?;
+        Ok(v.get("current")
+            .and_then(|c| c.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string))
     }
 
     /// Invoke any palette-eligible server tool over the loopback run-tool route
@@ -339,7 +360,16 @@ impl OperatorClient {
     /// roster (rendered); `pending` is the recorded-but-not-running workbench-
     /// launch tier the reducer diffs to reactively open panes (D-006).
     pub async fn roster_typed(&self) -> Result<(Vec<RosterEntry>, Vec<RosterEntry>)> {
-        let v = self.roster().await?;
+        self.roster_typed_scoped(None).await
+    }
+
+    /// `roster_typed` scoped to one workspace (`None` → fleet-wide). The brain
+    /// panes pass the active workspace so queen/overwatch follow a switch.
+    pub async fn roster_typed_scoped(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<(Vec<RosterEntry>, Vec<RosterEntry>)> {
+        let v = self.roster_scoped(workspace).await?;
         let resp = serde_json::from_value::<RosterResponse>(v).context("decode roster")?;
         Ok((resp.active, resp.pending))
     }
@@ -1741,6 +1771,16 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// Build the roster route, scoping to `workspace` when a non-empty id is given
+/// (`?workspace=<id>`), else the unscoped fleet-wide path. Pure so the brain-view
+/// workspace scoping has a regression guard without a live operator.
+fn roster_path(workspace: Option<&str>) -> String {
+    match workspace.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(ws) => format!("/api/adv/roster?workspace={}", urlencode(ws)),
+        None => "/api/adv/roster".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1753,6 +1793,24 @@ mod tests {
         );
         assert_eq!(urlencode("a b.md"), "a%20b.md");
         assert_eq!(urlencode("x?y&z"), "x%3Fy%26z");
+    }
+
+    #[test]
+    fn roster_path_scopes_to_workspace_else_fleet_wide() {
+        // No / empty / whitespace workspace → the unscoped fleet-wide path
+        // (preserves the prior behavior for dev / webapp with no registry).
+        assert_eq!(roster_path(None), "/api/adv/roster");
+        assert_eq!(roster_path(Some("")), "/api/adv/roster");
+        assert_eq!(roster_path(Some("   ")), "/api/adv/roster");
+        // A concrete workspace id scopes the roster — this is what makes the
+        // brain panes show THAT workspace's queen/overwatch, not the fleet-wide
+        // newest. (Regression guard for the workspace-switch bug.)
+        assert_eq!(
+            roster_path(Some("papercusp-workspace")),
+            "/api/adv/roster?workspace=papercusp-workspace"
+        );
+        // Ids needing escaping are percent-encoded (space → %20).
+        assert_eq!(roster_path(Some("ws 1")), "/api/adv/roster?workspace=ws%201");
     }
 
     #[test]

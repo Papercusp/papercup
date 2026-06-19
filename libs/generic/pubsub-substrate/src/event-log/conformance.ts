@@ -80,5 +80,21 @@ export function describeCoordEventLogConformance(
       expect(await log.readLines('messages')).toEqual([]);
       expect(await log.readEvents('handoffs')).toEqual([]);
     });
+
+    it('readEventsBounded: newest-first, limit, and kind filter (EI-1548)', async () => {
+      // Distinct ascending ts so every backend agrees on newest-first: PG/InMemory
+      // by append order, Fs by the ts approximation.
+      await log.putEvent('escalations', 'e1', envelope({ msg_id: 'e1', kind: 'escalation', from: 'A', to: ['human'], ts: '2026-01-01T00:00:01.000Z' }));
+      await log.putEvent('escalations', 'e2', envelope({ msg_id: 'e2', kind: 'escalation', from: 'A', to: ['human'], ts: '2026-01-01T00:00:02.000Z' }));
+      await log.putEvent('escalations', 'r1', envelope({ msg_id: 'r1', kind: 'escalation_resolved', from: 'A', to: ['human'], ts: '2026-01-01T00:00:03.000Z' }));
+      // Newest-first (append order), bounded to the limit.
+      expect((await log.readEventsBounded('escalations', { limit: 2 })).map((r) => r.msg_id)).toEqual(['r1', 'e2']);
+      expect((await log.readEventsBounded('escalations', { limit: 1 })).map((r) => r.msg_id)).toEqual(['r1']);
+      // Kind filter selects only matching envelopes.
+      const opens = await log.readEventsBounded('escalations', { limit: 10, kinds: ['escalation'] });
+      expect(opens.map((r) => r.msg_id).sort()).toEqual(['e1', 'e2']);
+      // Empty surface → [].
+      expect(await log.readEventsBounded('handoffs', { limit: 5 })).toEqual([]);
+    });
   });
 }

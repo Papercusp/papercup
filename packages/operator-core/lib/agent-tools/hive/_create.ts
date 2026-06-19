@@ -72,7 +72,7 @@ export interface CreateHiveOpts {
   provisionLearningLoop?: boolean;
   /**
    * The kind:'hive' blueprint id to provision + launch (hive-blueprint-generalization
-   * P-006). Default HIVE_BLUEPRINT_ID ('hive', the coding hive); 'generic-hive' for a
+   * P-006). Default HIVE_BLUEPRINT_ID ('hive', the coding hive); 'work' for a
    * non-coding hive. Resolved local → installed → built-in.
    */
   blueprintId?: string;
@@ -117,7 +117,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
   }
 
   // Resolve + validate the chosen kind:'hive' blueprint (default the coding `hive`;
-  // 'generic-hive' for a non-coding hive — hive-blueprint-generalization P-006).
+  // 'work' for a non-coding hive — hive-blueprint-generalization P-006).
   const blueprintId = opts.blueprintId ?? HIVE_BLUEPRINT_ID;
   const resolver = operatorResolveExtends({ localDirs: [] });
   const childObj: Record<string, unknown> = { id: opts.slug, extends: blueprintId };
@@ -364,6 +364,40 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         console.warn(`[hive:create] per-hive learning-loop provision failed (${opts.slug}): ${msg}`);
         provisionedLoop = { error: msg.slice(0, 200) };
       }
+    }
+
+    // 6b. Record the QUEEN-HOME device pubkey (domain-generic-hive P-021 / I2 /
+    //     closes queen-guard.ts D-008). The creating node IS this Hive's Queen home
+    //     in the local flow, so stamp its device pubkey into hive_settings — a
+    //     federated setting the steering lease asserts HOME-SWARM against before a
+    //     cross-Swarm steer (steering-lease.checkSteeringLease → evaluateQueenTurnGate),
+    //     so a second Swarm with a lower pubkey can't silently usurp steering from the
+    //     node the owner actually deployed the Queen on. Best-effort + undo (a later
+    //     step failure rolls it back); a resolution failure WARNS and leaves the home
+    //     unset (the lease then falls back to the lock-authority election — unchanged).
+    //     NOTE: a cloud deploy:hive that places the Queen on a DIFFERENT node should
+    //     override this at placement time (the cloud-placement follow-on; the local
+    //     create flow — the only one exercisable today — is correct here).
+    try {
+      const { resolveUsageActor } = await import('../../harness/usage-actor');
+      const self = await resolveUsageActor();
+      if (self?.devicePubkey) {
+        const { setQueenHomePubkey, deleteHiveSetting, QUEEN_HOME_PUBKEY_SETTING_KEY } = await import(
+          '../../hive-settings-store'
+        );
+        await setQueenHomePubkey(ws, opts.slug, self.devicePubkey);
+        undo.push(async () => {
+          try {
+            await deleteHiveSetting(ws, opts.slug, QUEEN_HOME_PUBKEY_SETTING_KEY);
+          } catch {
+            /* best-effort rollback */
+          }
+        });
+      }
+    } catch (e) {
+      console.warn(
+        `[hive:create] queen-home-pubkey record failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
 
     // 7. Initial wake (optional): fire the Queen now, or declare a time wake.

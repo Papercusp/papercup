@@ -84,6 +84,7 @@ export const coordLog: CoordEventLog = {
   readLines: (surface, opts) => impl.readLines(surface, opts),
   putEvent: (surface, msgId, record) => impl.putEvent(surface, msgId, record),
   readEvents: (surface) => impl.readEvents(surface),
+  readEventsBounded: (surface, opts) => impl.readEventsBounded(surface, opts),
   getEvent: (surface, msgId) => impl.getEvent(surface, msgId),
 };
 

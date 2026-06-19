@@ -5,7 +5,7 @@
  * (./liveness), and dispatch (loopbackFetch) seams are mocked. These pin C-3's
  * contract: the action is INERT until flag+started, it injects the computed brief
  * into a role=overwatch launch on the OVERWATCH wake channel (bpkind=overwatch,
- * BLUEPRINT_ID=hive), it is fail-soft (a degraded brief still launches; the handler
+ * BLUEPRINT_ID=coding), it is fail-soft (a degraded brief still launches; the handler
  * never throws — a throw after firing would double-launch on the DBOS-step retry),
  * it registers the `system:overwatch-launch` action, and it wires the B-07 waker.
  */
@@ -27,7 +27,7 @@ const declareOverwatchTimeWake = vi.fn();
 const clearOverwatchTimeWake = vi.fn();
 vi.mock('./liveness', () => ({
   OVERWATCH_ROLE: 'overwatch',
-  OVERWATCH_BLUEPRINT_ID: 'hive',
+  OVERWATCH_BLUEPRINT_ID: 'coding',
   OVERWATCH_WAKE_TARGET_ACTION: 'system:overwatch-launch',
   declareOverwatchTimeWake: (...a: unknown[]) => declareOverwatchTimeWake(...a),
   clearOverwatchTimeWake: (...a: unknown[]) => clearOverwatchTimeWake(...a),
@@ -128,7 +128,7 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
 });
 
 describe('the default fire — the real launch wiring (URL + body shape)', () => {
-  it('POSTs the invoke route on the OVERWATCH channel with the brief + BLUEPRINT_ID=hive', async () => {
+  it('POSTs the invoke route on the OVERWATCH channel with the brief + BLUEPRINT_ID=coding', async () => {
     // no injected fire → exercise defaultOverwatchFire
     await handleOverwatchLaunch(ctx);
     expect(loopbackFetch).toHaveBeenCalledTimes(1);
@@ -137,7 +137,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     expect(opts.method).toBe('POST');
     const body = JSON.parse(opts.body);
     expect(body.kickoff).toBe('why-i-woke');
-    expect(body.extra).toEqual(['BLUEPRINT_ID=hive']); // persona resolves at blueprints/hive/prompts/overwatch.md
+    expect(body.extra).toEqual(['BLUEPRINT_ID=coding']); // persona resolves at blueprints/coding/prompts/overwatch.md
     expect(body.overwatchBrief).toBe('RENDERED-BRIEF');
   });
 

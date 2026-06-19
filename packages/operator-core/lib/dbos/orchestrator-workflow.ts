@@ -238,7 +238,7 @@ export function setPipelineLeaseHeartbeatHook(fn: PipelineLeaseHeartbeatHook): v
 // harness (research, Phase E) passes its own resolved spine via PipelineInput.spine.
 let _codingSpine: BlueprintSpine | null = null;
 function codingSpine(): BlueprintSpine {
-  return (_codingSpine ??= loadBuiltinBlueprint('coding').blueprint.spine);
+  return (_codingSpine ??= loadBuiltinBlueprint('coding-factory').blueprint.spine);
 }
 
 const key = (slug: string, feature: string, role: string, turn: number): string =>

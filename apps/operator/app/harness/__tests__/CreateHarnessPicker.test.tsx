@@ -99,13 +99,17 @@ function lastCreateBody(): Record<string, unknown> {
 
 // ── P-006/P-007 — the hive-native Create / Join layout (flag on) ────────────
 
-describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
-  it('renders the Create cards + the Join cards with outcome explainers', () => {
+describe('P-006 — domain-first hive-native picker layout (flag on)', () => {
+  it('renders the coding/work/comb-blueprint cards + the Join cards with outcome explainers', () => {
     renderPicker();
-    // Create group — getByText throws if not found (presence assert, no jest-dom).
+    // New coding hive — getByText throws if not found (presence assert, no jest-dom).
     screen.getByText('New local directory');
     screen.getByText('Existing local repo');
     screen.getByText('Search GitHub or enter URL');
+    // New work hive (the single sub-option, distinct from its heading).
+    screen.getByText('Start a work hive');
+    // New hive from a Comb blueprint.
+    screen.getByText('Search the Comb');
     // Join group — the demoted underline affordances are gone; these are cards now.
     screen.getByText('Browse the Comb');
     screen.getByText('Hive invite');
@@ -118,17 +122,23 @@ describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
     expect(screen.queryByText(/I have a hive invite/)).toBeNull();
   });
 
-  it('groups entries under Create and Join headings (not Local/Shared)', () => {
+  it('groups entries under the four domain headings (coding / work / Comb blueprint / Join)', () => {
     renderPicker();
-    screen.getByRole('heading', { name: 'Create' });
+    screen.getByRole('heading', { name: 'New coding hive' });
+    screen.getByRole('heading', { name: 'New work hive' });
+    screen.getByRole('heading', { name: 'New hive from a Comb blueprint' });
     screen.getByRole('heading', { name: 'Join' });
+    // The legacy Create / Local / Shared headings are gone.
+    expect(screen.queryByRole('heading', { name: 'Create' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Local' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Shared' })).toBeNull();
   });
 
-  it('shows the Create + Join subheadings (hive-framed copy)', () => {
+  it('shows the per-domain subheadings (hive-framed copy)', () => {
     renderPicker();
-    screen.getByText('Start a new hive, or add a repository to one.');
+    screen.getByText('A hive that writes code against a repository.');
+    screen.getByText('Non-coding work — research, writing, ops. Judged against a rubric; no repo.');
+    screen.getByText('Start a hive from a published blueprint.');
     screen.getByText('Collaborate on a hive someone else published.');
   });
 
@@ -152,6 +162,127 @@ describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
   it('renders no Phase 1b badge in the picker (label removed)', () => {
     renderPicker();
     expect(screen.queryByText('Phase 1b')).toBeNull();
+  });
+});
+
+// ── P-006 — New work hive (domain-generic-hive Brief 3) ─────────────────────
+
+describe('P-006 — New work hive', () => {
+  it('opens the work form and POSTs /api/harness/hives with blueprintId generic-hive', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    mockCreateOk({ slug: 'my-work', path: '/tmp/my-work' });
+    renderPicker({ onCreated });
+
+    await user.click(screen.getByText('Start a work hive'));
+    // Work-framed heading + placeholder (distinct from the coding form).
+    screen.getByRole('heading', { name: 'New work hive' });
+    await user.type(screen.getByPlaceholderText('my-work-hive'), 'my-work');
+    await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('my-work'));
+    // The work domain sends the work blueprint id; coding would omit it.
+    expect(lastCreateBody()).toMatchObject({ slug: 'my-work', blueprintId: 'work' });
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('a work hive ignores any selected hive scope (always a NEW top-level hive)', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    mockCreateOk({ slug: 'my-work', path: '/tmp/my-work' });
+    // Even with a hive scope selected, work creates a new hive (no into-hive member).
+    renderPicker({ onCreated, hiveScope: 'parent-hive' });
+
+    await user.click(screen.getByText('Start a work hive'));
+    await user.type(screen.getByPlaceholderText('my-work-hive'), 'my-work');
+    await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('my-work'));
+    // Single-arg onCreated (a root hive), not the {hive} member shape.
+    expect(onCreated).toHaveBeenCalledWith('my-work');
+    // Posts to the hives route (new hive), never the member projects route.
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
+    expect(mockFetch).not.toHaveBeenCalledWith('/api/harness/projects', expect.anything());
+  });
+});
+
+// ── P-006 — New hive from a Comb blueprint (search + instantiate) ────────────
+
+describe('P-006 — New hive from a Comb blueprint', () => {
+  it('searches blueprint listings, installs the picked blueprint, then creates a hive with its id', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes('/api/viewer')) return new Response(JSON.stringify({}), { status: 200 });
+      if (url.includes('/api/cupboard/listings')) {
+        return new Response(
+          JSON.stringify({
+            listings: [
+              { id: 7, slug: 'research-hive', title: 'Research Hive', description: 'A hive for deep research.', listing_ref: 'research-hive', blueprint_kind: 'hive' },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes('/api/cupboard/install-blueprint')) {
+        return new Response(JSON.stringify({ ok: true, id: 'research-hive' }), { status: 200 });
+      }
+      // /api/harness/hives
+      return new Response(JSON.stringify({ ok: true, project: { slug: 'my-research', path: '/tmp/my-research' } }), { status: 200 });
+    });
+    renderPicker({ onCreated });
+
+    await user.click(screen.getByText('Search the Comb'));
+    await user.type(screen.getByPlaceholderText(/research, writing/), 'research');
+    // Debounced search → the result renders.
+    const result = await screen.findByText('Research Hive');
+    await user.click(result);
+    // The selected-blueprint create form takes over.
+    await user.type(screen.getByPlaceholderText('my-hive'), 'my-research');
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('my-research'));
+    // Install fired, then the hive was created with the installed blueprint id.
+    expect(mockFetch).toHaveBeenCalledWith('/api/cupboard/install-blueprint', expect.objectContaining({ method: 'POST' }));
+    const hivesCall = mockFetch.mock.calls.find((c) => {
+      const u = typeof c[0] === 'string' ? c[0] : (c[0] as URL).toString();
+      return u.includes('/api/harness/hives');
+    });
+    expect(hivesCall).toBeDefined();
+    expect(JSON.parse((hivesCall![1] as RequestInit).body as string)).toMatchObject({
+      slug: 'my-research',
+      blueprintId: 'research-hive',
+    });
+  });
+
+  it('drops a known kind:harness blueprint from the results (hive-instantiable only)', async () => {
+    const user = userEvent.setup();
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes('/api/viewer')) return new Response(JSON.stringify({}), { status: 200 });
+      if (url.includes('/api/cupboard/listings')) {
+        return new Response(
+          JSON.stringify({
+            listings: [
+              { id: 1, slug: 'hive-bp', title: 'Hive BP', description: '', blueprint_kind: 'hive' },
+              { id: 2, slug: 'harness-bp', title: 'Harness BP', description: '', blueprint_kind: 'harness' },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    renderPicker();
+
+    await user.click(screen.getByText('Search the Comb'));
+    await user.type(screen.getByPlaceholderText(/research, writing/), 'bp');
+    await screen.findByText('Hive BP');
+    // The harness-kind blueprint can't be a hive home, so it is filtered out.
+    expect(screen.queryByText('Harness BP')).toBeNull();
   });
 });
 

@@ -89,7 +89,7 @@ export interface EmitCodexSlashResult {
 export async function emitCodexSlashToolPrompts(
   codexHome: string,
   role?: AgentRole,
-  profile?: 'engineer' | 'power',
+  profile?: 'engineer' | 'power' | 'generic',
 ): Promise<EmitCodexSlashResult> {
   const start = performance.now();
   const dir = join(codexHome, 'prompts');
@@ -100,7 +100,9 @@ export async function emitCodexSlashToolPrompts(
   let written = 0;
   let skipped = 0;
   const keep = new Set<string>();
-  for (const listing of listMcpProjections(role, profile)) {
+  // GENERIC profile (P-025) gets engineer-like tool visibility (the filter only gates
+  // power); coerce so the narrow listMcpProjections profile param need not carry 'generic'.
+  for (const listing of listMcpProjections(role, profile === 'generic' ? 'engineer' : profile)) {
     const tool = lookupByMcpName(listing.name);
     if (!tool || resolveSlashExposure(tool) === null) continue;
     const promptName = slashPromptNameFor(tool);

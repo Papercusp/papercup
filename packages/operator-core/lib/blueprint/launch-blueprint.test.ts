@@ -70,7 +70,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       // local-hive P-071 (2026-06-10): the hive's decider is the QUEEN — the
       // operator specialized for placement (D-001); `operator` remains the
       // deciderAlternative for decision-tree-only wakes (blueprint.yaml).
-      hive: 'queen',
+      coding: 'queen',
       // local-hive P-010/P-011: the bee launch blueprint's decider IS the bee role.
       bee: 'bee',
       // unify-launch-mechanics D-004: the sentinel watcher's decider IS the sentinel role.
@@ -154,7 +154,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
-    const target = await fireLaunchBlueprint('hive', { ...opts, kickoff: 'go' });
+    const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
     expect(target.role).toBe('queen');
     expect(fired).toHaveLength(1);
     // Her OWN model is now tier-driven — resolved from the owner's menu, not her sonnet default.
@@ -166,7 +166,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     // default getOwnerSteering mock = un-steered; readAgentConfig = empty menu.
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
-    await fireLaunchBlueprint('hive', { ...opts, kickoff: 'go' });
+    await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
     expect(fired).toHaveLength(1);
     expect((fired[0]!.bodyExtra as { spawnModel?: string } | undefined)?.spawnModel).toBeUndefined();
   });
@@ -179,7 +179,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
-    await fireLaunchBlueprint('hive', { ...opts, kickoff: 'go', bodyExtra: { spawnModel: 'opus:max' } });
+    await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go', bodyExtra: { spawnModel: 'opus:max' } });
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max'); // not overridden
   });
 
@@ -244,7 +244,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
     // hive is kind:'hive' — firing it WITH a parent context must throw + never fire.
     await expect(
-      fireLaunchBlueprint('hive', { ...opts, parent: { spawnId: 's-parent-1', role: 'bee' } }),
+      fireLaunchBlueprint('coding', { ...opts, parent: { spawnId: 's-parent-1', role: 'bee' } }),
     ).rejects.toThrow(/cannot be nested|hives are peers/i);
     expect(fired).toHaveLength(0);
   });
@@ -255,10 +255,10 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       fired.push(input);
     });
     // No `parent` → root launch → the guard does not trip; the hive fires normally.
-    const target = await fireLaunchBlueprint('hive', { ...opts, kickoff: 'wake' });
+    const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'wake' });
     expect(target.role).toBe('queen'); // hive decider since P-071 (2026-06-10)
     expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'hive', role: 'queen' });
+    expect(fired[0]).toMatchObject({ blueprintId: 'coding', role: 'queen' });
     // queen-brief-cache-assembly B-03: the Queen's precomputed wake brief is threaded
     // into the fire body (bodyExtra.queenBrief), computed with the kickoff as wokeBy.
     expect(computeQueenWakeBrief).toHaveBeenCalledWith('ws_test', 'papercup', { wokeBy: 'wake' });
@@ -280,7 +280,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     setLaunchBlueprintFire((input) => {
       fired.push(input);
     });
-    await fireLaunchBlueprint('hive', { ...opts, kickoff: 'wake', bodyExtra: { queenBrief: 'PRECOMPUTED' } });
+    await fireLaunchBlueprint('coding', { ...opts, kickoff: 'wake', bodyExtra: { queenBrief: 'PRECOMPUTED' } });
     expect(computeQueenWakeBrief).not.toHaveBeenCalled();
     expect(fired[0].bodyExtra?.queenBrief).toBe('PRECOMPUTED');
   });
@@ -351,7 +351,7 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
     delete process.env[MODEL];
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
-    await fireLaunchBlueprint('hive', { installSlug: 'xbqabc123', workspaceId: 'ws_test', kickoff: 'survey' });
+    await fireLaunchBlueprint('coding', { installSlug: 'xbqabc123', workspaceId: 'ws_test', kickoff: 'survey' });
     expect(fired).toHaveLength(1);
     expect(fired[0]!.role).toBe('queen');
     expect((fired[0]!.bodyExtra as Record<string, unknown>)?.spawnModel).toBe('opus:xhigh');
@@ -362,7 +362,7 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
     process.env[MODEL] = 'opus:high';
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
-    await fireLaunchBlueprint('hive', { installSlug: 'xbqdef456', workspaceId: 'ws_test', kickoff: 'survey' });
+    await fireLaunchBlueprint('coding', { installSlug: 'xbqdef456', workspaceId: 'ws_test', kickoff: 'survey' });
     expect((fired[0]!.bodyExtra as Record<string, unknown>)?.spawnModel).toBe('opus:high');
   });
 
@@ -370,7 +370,7 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
     delete process.env[KEY];
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
-    await fireLaunchBlueprint('hive', { installSlug: 'xbqghi789', workspaceId: 'ws_test', kickoff: 'survey' });
+    await fireLaunchBlueprint('coding', { installSlug: 'xbqghi789', workspaceId: 'ws_test', kickoff: 'survey' });
     expect((fired[0]!.bodyExtra as Record<string, unknown> | undefined)?.spawnModel).toBeUndefined();
   });
 
@@ -378,7 +378,7 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
     process.env[KEY] = 'bench directive';
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
-    await fireLaunchBlueprint('hive', { installSlug: 'papercup', workspaceId: 'ws_test', kickoff: 'survey' });
+    await fireLaunchBlueprint('coding', { installSlug: 'papercup', workspaceId: 'ws_test', kickoff: 'survey' });
     expect((fired[0]!.bodyExtra as Record<string, unknown> | undefined)?.spawnModel).toBeUndefined();
   });
 });

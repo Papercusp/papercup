@@ -55,7 +55,7 @@ vi.mock('../workspace-registry', async () => {
 
 // The loopback boundary: a hive launch is an HTTP POST to the invoke route.
 // Mocking fireLaunchBlueprint keeps the WHOLE upstream chain real.
-const fireLaunchBlueprint = vi.fn(async () => ({ blueprintId: 'hive', role: 'operator' }));
+const fireLaunchBlueprint = vi.fn(async () => ({ blueprintId: 'coding', role: 'operator' }));
 vi.mock('../blueprint/launch-blueprint', async () => {
   const actual = await vi.importActual<typeof import('../blueprint/launch-blueprint')>(
     '../blueprint/launch-blueprint',
@@ -229,7 +229,7 @@ describe('the declared event wake, end to end (P-008)', () => {
       string,
       { installSlug: string; kickoff?: string },
     ];
-    expect(blueprintId).toBe('hive');
+    expect(blueprintId).toBe('coding');
     expect(launchOpts.installSlug).toBe('papercup');
     expect(launchOpts.kickoff).toContain('subscribed event');
     expect(launchOpts.kickoff).toContain('P-008 burst test');

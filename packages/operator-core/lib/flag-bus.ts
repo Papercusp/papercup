@@ -21,6 +21,7 @@ import {
 import type { FlagKey } from '@papercusp/flags';
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { activeWorkspaceId } from './workspace-registry';
 
 import {
   getPosthogConfig,
@@ -91,6 +92,11 @@ watchPosthogConfig();
 // PAPERCUSP_FLAG_* env var + process restart. The flags lib layers these
 // between test overrides and PostHog, behind a short read cache.
 initFlagOverrideStore({
+  // Partition the override read-cache by workspace: load() reads
+  // `WHERE workspace_id = activeWorkspaceId()`, so without this the first
+  // workspace to load would serve its overrides to every other workspace
+  // for the cache TTL (a cross-workspace flag bleed).
+  cacheKey: () => activeWorkspaceId(),
   async load() {
     return (
       (await readOperatorState<Partial<Record<FlagKey, boolean>>>(

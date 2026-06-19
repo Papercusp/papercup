@@ -170,6 +170,25 @@ export class FsCoordLog implements CoordEventLog {
     return out;
   }
 
+  async readEventsBounded(
+    surface: EventSurface,
+    opts: { limit: number; kinds?: string[] },
+  ): Promise<CoordEnvelope[]> {
+    // Fs stores one file per event with no append-order column, so approximate
+    // NEWEST-FIRST by the envelope `ts` (creation time ≈ append order), tie-broken
+    // by msg_id for a stable order. (PG/InMemory have true append order; this is
+    // the portable best-effort — EI-1548.) Reads the dir once, then bounds.
+    const all = await this.readEvents(surface);
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const filtered = kinds && kinds.length ? all.filter((r) => kinds.includes(r.kind)) : all;
+    filtered.sort((a, b) => {
+      const byTs = String(b.ts ?? '').localeCompare(String(a.ts ?? ''));
+      return byTs !== 0 ? byTs : String(b.msg_id ?? '').localeCompare(String(a.msg_id ?? ''));
+    });
+    const limit = Math.max(1, Math.floor(opts.limit) || 1);
+    return filtered.slice(0, limit);
+  }
+
   async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {
     const file = join(this.eventDir(surface), `${sanitise(msgId)}.json`);
     try {

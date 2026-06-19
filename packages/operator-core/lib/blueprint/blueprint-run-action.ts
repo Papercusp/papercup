@@ -114,11 +114,11 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
     .catch(() => {});
 };
 
-/** Lazily-loaded built-in `coding` blueprint — the fallback when a harness has no blueprint
+/** Lazily-loaded built-in `coding-factory` blueprint — the fallback when a harness has no blueprint
  *  (behavior-preserving for every pre-blueprint harness: decider `director`, kind `feature`). */
 let _codingFallback: Blueprint | null = null;
 function codingFallback(): Blueprint {
-  return (_codingFallback ??= loadBuiltinBlueprint('coding').blueprint);
+  return (_codingFallback ??= loadBuiltinBlueprint('coding-factory').blueprint);
 }
 
 /**

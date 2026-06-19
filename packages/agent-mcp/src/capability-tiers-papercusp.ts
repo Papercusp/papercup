@@ -91,6 +91,11 @@ const EXACT: Record<string, CapabilityTier> = {
   // that executes code, mutates the tree, or reaches the network; low for the
   // read-only file read. The capability-envelope (B-06) keys on these strings.
   'capability:bash': 'high',
+  // capability:computer (computer-tool-plan) — bee-operated SANDBOX desktop
+  // (screenshot/click/type via xdotool against a leased Xvfb display, never the
+  // host :0). High: it drives a GUI that can run arbitrary apps. Display is
+  // resolved server-side from the lease env; the tool hard-refuses :0.
+  'capability:computer': 'high',
   'capability:fs-read': 'low',
   // capability:inspect (EI-524 / P-035) — read-only verification (typecheck/test)
   // via FIXED commands, no free-form exec. Low: it's the read-only sibling of

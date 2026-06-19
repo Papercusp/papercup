@@ -8,7 +8,7 @@
  *   - **Time wake** — a ONE-SHOT `hive-wake` routine row (`harness_shared.routines`,
  *     cron-kind with NO cron expr + an explicit `next_fire_at`). The shipped
  *     durable `routinesTick` claims it once (deactivating it — see
- *     `claimDueRoutine`) and fires `system:blueprint-run { blueprintId: 'hive' }`,
+ *     `claimDueRoutine`) and fires `system:blueprint-run { blueprintId: 'coding' }`,
  *     which launches the hive blueprint's decider (the operator role) via the
  *     launch-blueprint primitive. Durable: a host restart never loses the wake.
  *
@@ -34,8 +34,8 @@ import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { registerReactionRule, unregisterReactionRule, listReactionRules } from '../events/registry';
 
-/** The hive launch blueprint id (blueprints/hive/blueprint.yaml). */
-export const HIVE_BLUEPRINT_ID = 'hive';
+/** The hive launch blueprint id (blueprints/coding/blueprint.yaml — renamed from `hive`). */
+export const HIVE_BLUEPRINT_ID = 'coding';
 /** The one-shot wake routine's name (per-harness unique with install_slug). */
 export const HIVE_WAKE_ROUTINE_NAME = 'hive-wake';
 

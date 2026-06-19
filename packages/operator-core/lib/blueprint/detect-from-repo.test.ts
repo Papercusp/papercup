@@ -155,7 +155,7 @@ describe('detectionToOverride → valid extends:coding blueprint (ACCEPTANCE)', 
     const det = detectFromRepo(root, { runTests: false });
     const override = detectionToOverride('my-app', det);
 
-    expect(override.extends).toBe('coding');
+    expect(override.extends).toBe('coding-factory');
     expect(override.id).toBe('my-app');
     const knobs = override.knobs as Record<string, unknown>;
     expect(knobs.testCommand).toBe('npm test');

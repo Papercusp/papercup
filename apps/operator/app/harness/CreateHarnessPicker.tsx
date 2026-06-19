@@ -40,6 +40,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { EntryGithubSearchForm } from './EntryGithubSearchForm';
+import { CombBlueprintForm } from './CombBlueprintForm';
 import { PublishHiveCard } from './PublishHiveCard';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
 
@@ -50,12 +51,24 @@ const ENTRY_STEPS = [
   'new-local',
   'existing-local',
   'github-url',
+  'work-hive',
+  'comb-blueprint',
   'hive-invite',
   'share-offer',
 ] as const;
 type EntryStep = (typeof ENTRY_STEPS)[number];
 
 type Step = 'picker' | EntryStep;
+
+/**
+ * Blueprint id for the "New work hive" domain heading (domain-generic-hive
+ * P-006 / Brief 3). The coding path OMITS blueprintId — `/api/harness/hives`
+ * + createHiveHarness default to the coding `hive`, so only the work id is
+ * sent from the UI. Brief 6 (rename `hive`→`coding`, `generic-hive`→`work`)
+ * updates this constant; its extends-resolver alias keeps the old id resolving
+ * during the transition so a missed update still works.
+ */
+const WORK_HIVE_BLUEPRINT_ID = 'work';
 
 /**
  * The creation fork (harnesses-tab-hive-model D-005 / P-010). A `standalone`
@@ -182,9 +195,14 @@ function ErrorBanner({ message }: { message: string }) {
 // When a `hive` scope IS passed (into-hive member) it posts a plain member
 // harness to /api/harness/projects, reusing the slug as the folder name. The
 // folder is the slug in both branches — there is no separate folder-name field.
-function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string; hiveLabel: string }) {
+function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', blueprintId }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string; hiveLabel: string; domain?: 'coding' | 'work'; blueprintId?: string }) {
   const t = useLexicon();
   const hiveLower = hiveLabel.toLowerCase();
+  // P-006: a "work" hive is the same fresh-dir create, just a non-coding domain
+  // (a different blueprint, judged-not-tested, repo-less). Only the new-hive
+  // branch (`!hive`) reads `domain`/`blueprintId` — an into-hive member inherits
+  // its parent hive's blueprint, so the domain fork there is moot.
+  const isWork = domain === 'work' && !hive;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // learning-packs P-006: pack selection — default = the Papercusp pack (D-004).
@@ -228,7 +246,9 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => vo
         : await fetch('/api/harness/hives', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ slug, parentDir, learningPack: learningPack === 'none' ? null : learningPack }),
+            // P-006: a work hive passes its blueprintId; coding omits it (the
+            // route + createHiveHarness default to the coding `hive`).
+            body: JSON.stringify({ slug, parentDir, learningPack: learningPack === 'none' ? null : learningPack, ...(blueprintId ? { blueprintId } : {}) }),
           });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -262,7 +282,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => vo
     <form onSubmit={(e) => void handleSubmit(e)}>
       <BackBtn onBack={onBack} />
       <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
-        {hive ? 'New local directory' : `New ${hiveLower} from a local directory`}
+        {hive ? 'New local directory' : isWork ? `New work ${hiveLower}` : `New ${hiveLower} from a local directory`}
       </h2>
       {error && <ErrorBanner message={error} />}
       {hive ? (
@@ -295,15 +315,25 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => vo
             color: 'var(--fg-dim)',
           }}
         >
-          <span style={{ marginRight: 6 }}>👑</span>
-          Stands up a fresh folder as a new {hiveLower} home running the{' '}
-          <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a Queen that surveys the work
-          frontier and places it onto a fleet of bees. You can add members into it afterward.
+          <span style={{ marginRight: 6 }}>{isWork ? '📋' : '👑'}</span>
+          {isWork ? (
+            <>
+              Stands up a fresh folder as a new <strong style={{ color: 'var(--fg)' }}>work</strong> {hiveLower} home — a
+              Queen that decomposes non-coding work (research, writing, ops) by topic, places it onto a fleet of bees,
+              and judges deliverables against a rubric. No repository or test suite required.
+            </>
+          ) : (
+            <>
+              Stands up a fresh folder as a new {hiveLower} home running the{' '}
+              <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a Queen that surveys the work
+              frontier and places it onto a fleet of bees. You can add members into it afterward.
+            </>
+          )}
         </div>
       )}
       <Label>
         <FieldLabel>{t('pot')} slug</FieldLabel>
-        <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
+        <input ref={slugRef} type="text" placeholder={isWork ? 'my-work-hive' : 'my-project'} style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
         <HintText>Lowercase, hyphens OK. Used as the folder name created inside the parent directory.</HintText>
       </Label>
       <Label>
@@ -669,9 +699,10 @@ interface PickerSection {
 }
 
 /**
- * Sections are built per-render: the hive-native Create/Join layout (P-006)
- * lights up on HIVE_FROM_GITHUB_URL; flag OFF keeps the legacy Local/Shared
- * layout (coming-soon GitHub stub). Labels are
+ * Sections are built per-render: the domain-first hive-native layout
+ * (domain-generic-hive P-006 — New coding hive · New work hive · New hive from a
+ * Comb blueprint · Join) lights up on HIVE_FROM_GITHUB_URL; flag OFF keeps the
+ * legacy Local/Shared layout (coming-soon GitHub stub). Labels are
  * lexicon-bound; every card carries a one-line OUTCOME explainer (P-007).
  */
 function buildSections(opts: {
@@ -721,18 +752,21 @@ function buildSections(opts: {
     ];
   }
 
-  // Hive-native layout (P-006): Create + Join, each card a one-line outcome.
+  // Domain-first hive-native layout (domain-generic-hive P-006 / Brief 3): four
+  // headings — New coding hive (its 3 mechanism sub-options), New work hive,
+  // New hive from a Comb blueprint, and Join. The domain is the FIRST choice;
+  // the coding mechanism (local/repo/github) nests under its heading.
   return [
     {
-      heading: 'Create',
-      subheading: `Start a new ${hiveLower}, or add a repository to one.`,
+      heading: `New coding ${hiveLower}`,
+      subheading: `A ${hiveLower} that writes code against a repository.`,
       showForkToggle: true,
       entries: [
         {
           key: 'new-local',
           step: 'new-local',
           label: 'New local directory',
-          description: `A fresh folder, git-initialised and registered as a ${hiveLower}.`,
+          description: `A fresh folder, git-initialised and registered as a coding ${hiveLower}.`,
           icon: '📁',
         },
         {
@@ -748,6 +782,32 @@ function buildSections(opts: {
           label: 'Search GitHub or enter URL',
           description: `Find any repo on GitHub and create or join a ${hiveLower} from it.`,
           icon: '🔎',
+        },
+      ],
+    },
+    {
+      heading: `New work ${hiveLower}`,
+      subheading: `Non-coding work — research, writing, ops. Judged against a rubric; no repo.`,
+      entries: [
+        {
+          key: 'work-hive',
+          step: 'work-hive',
+          label: `Start a work ${hiveLower}`,
+          description: `A fresh ${hiveLower} for non-coding work — the Queen judges deliverables, no repo needed.`,
+          icon: '📋',
+        },
+      ],
+    },
+    {
+      heading: `New ${hiveLower} from a ${combLabel} blueprint`,
+      subheading: `Start a ${hiveLower} from a published blueprint.`,
+      entries: [
+        {
+          key: 'comb-blueprint',
+          step: 'comb-blueprint',
+          label: `Search the ${combLabel}`,
+          description: `Search published blueprints and instantiate one as a new ${hiveLower}.`,
+          icon: '🧩',
         },
       ],
     },
@@ -1047,6 +1107,18 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
     else void setNav({ picker: 'share-offer', slug, harness: null });
   };
 
+  // P-006: work + Comb-blueprint ALWAYS create a NEW top-level hive — never an
+  // into-hive member, regardless of any selected hiveScope. They use this
+  // dedicated success path that treats the result as a root hive (focus it via
+  // ?slug and advance to the share-offer/publish step), bypassing the
+  // memberHive fork in handleSuccess.
+  const handleNewHiveSuccess = (slug: string) => {
+    onCreated?.(slug);
+    setCreatedSlug(slug);
+    setCreatedHiveSlug(slug);
+    void setNav({ picker: 'share-offer', slug, harness: null });
+  };
+
   const goBack = () => setStep('picker');
 
   // For Entries 1/3 (new-local, existing-local) the harness is freshly
@@ -1077,6 +1149,17 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
         )}
         {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} hiveLabel={hiveLabel} />}
         {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} hiveLabel={hiveLabel} />}
+        {/* P-006: a work hive is a fresh-dir create with the work blueprint —
+            always a NEW top-level hive (no into-hive), so it uses
+            handleNewHiveSuccess. Reuses NewLocalForm with domain="work". */}
+        {step === 'work-hive' && (
+          <NewLocalForm onBack={goBack} onSuccess={handleNewHiveSuccess} hiveLabel={hiveLabel} domain="work" blueprintId={WORK_HIVE_BLUEPRINT_ID} />
+        )}
+        {/* P-006: instantiate a published Comb blueprint — install it (installed
+            tier) then create a hive running it. Always a NEW top-level hive. */}
+        {step === 'comb-blueprint' && (
+          <CombBlueprintForm onBack={goBack} onCreated={handleNewHiveSuccess} hiveLabel={hiveLabel} />
+        )}
         {step === 'github-url' && !githubUrlEnabled && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
         {step === 'github-url' && githubUrlEnabled && (
           <EntryGithubSearchForm

@@ -40,6 +40,18 @@ export class InMemoryCoordLog implements CoordEventLog {
     return [...(this.events.get(surface)?.values() ?? [])];
   }
 
+  async readEventsBounded(
+    surface: EventSurface,
+    opts: { limit: number; kinds?: string[] },
+  ): Promise<CoordEnvelope[]> {
+    const all = [...(this.events.get(surface)?.values() ?? [])];
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const filtered = kinds && kinds.length ? all.filter((r) => kinds.includes(r.kind)) : all;
+    // Newest-first (insertion order = append order), bounded — mirrors PgCoordLog.
+    const limit = Math.max(1, Math.floor(opts.limit) || 1);
+    return filtered.reverse().slice(0, limit);
+  }
+
   async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {
     return this.events.get(surface)?.get(msgId) ?? null;
   }

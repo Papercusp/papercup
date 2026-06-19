@@ -4,7 +4,7 @@
  * Proves, against a real Postgres (testcontainer) with migration 158 applied +
  * the baseline `routines` table shape, that the self-declared wake round-trips:
  *   - declareHiveTimeWake: one-shot routine row (no cron) with the clamped
- *     explicit next_fire_at, payload {blueprintId:'hive'}, target system:blueprint-run.
+ *     explicit next_fire_at, payload {blueprintId:'coding'}, target system:blueprint-run.
  *   - listDueCronRoutines + claimDueRoutine: the one-shot is not-due in the
  *     future, due once past, DEACTIVATED on claim (no refire loop), and a
  *     second claim loses. A cron routine stays active and advances.
@@ -131,7 +131,7 @@ describe('declareHiveTimeWake (the one-shot time wake)', () => {
     expect(rows[0].active).toBe(true);
     expect(rows[0].trigger_config.cron).toBeUndefined();
     expect(rows[0].target_role).toBe('system:blueprint-run');
-    expect(rows[0].payload_template.blueprintId).toBe('hive');
+    expect(rows[0].payload_template.blueprintId).toBe('coding');
     expect(new Date(rows[0].next_fire_at).getTime()).toBe(requested.getTime());
   });
 

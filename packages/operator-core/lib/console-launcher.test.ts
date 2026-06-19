@@ -4,7 +4,7 @@
  * [0-9a-f-]; throws (rather than escaping) on anything else.
  */
 import { describe, expect, it } from 'vitest';
-import { shellSafeId } from './console-launcher';
+import { shellSafeId, buildSuperuserMcpUrl } from './console-launcher';
 
 describe('shellSafeId', () => {
   it('accepts a UUID-shaped id', () => {
@@ -24,5 +24,18 @@ describe('shellSafeId', () => {
     ['empty', ''],
   ])('throws on %s', (_label, bad) => {
     expect(() => shellSafeId(bad)).toThrow(/unsafe session id/);
+  });
+});
+
+describe('buildSuperuserMcpUrl (scoped-superuser-workspace-clamp D-004)', () => {
+  it('scoped-by-default: bakes the concrete workspace so the dispatch clamp confines the session', () => {
+    const url = new URL(buildSuperuserMcpUrl('http://localhost:3070', 'generic-test'));
+    expect(url.searchParams.get('superuser')).toBe('1');
+    expect(url.searchParams.get('workspace')).toBe('generic-test');
+  });
+
+  it('allWorkspaces: bakes the UNSCOPED wildcard (the only door past the clamp)', () => {
+    const url = new URL(buildSuperuserMcpUrl('http://localhost:3070', 'generic-test', true));
+    expect(url.searchParams.get('workspace')).toBe('*');
   });
 });

@@ -21,7 +21,7 @@ import {
 import { setLaunchBlueprintFire, type LaunchFireFn } from './launch-blueprint';
 import { setNegativeSpaceScanDeps } from '../blueprint-steps/ops/negative-space-scan';
 
-const coding = loadBuiltinBlueprint('coding').blueprint;
+const coding = loadBuiltinBlueprint('coding-factory').blueprint;
 const withDecider = (role: string): Blueprint => ({ ...coding, spine: { ...coding.spine, decider: role } });
 
 const ctx = (over: Partial<SystemActionCtx> = {}): SystemActionCtx => ({

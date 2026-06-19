@@ -34,13 +34,13 @@ describe('generateBlueprintForClone (P-010)', () => {
     expect(existsSync(res.blueprintFile)).toBe(true);
     const bp = parseYaml(readFileSync(res.blueprintFile, 'utf8')) as Record<string, unknown>;
     expect(bp.id).toBe('node-repo');
-    expect(bp.extends).toBe('coding');
+    expect(bp.extends).toBe('coding-factory');
   });
 
   it('skips a repo that already carries a blueprint', async () => {
     const repo = join(workDir, 'has-bp');
     await mkdir(join(repo, '.papercusp'), { recursive: true });
-    await writeFile(join(repo, '.papercusp', 'blueprint.yaml'), 'id: has-bp\nextends: coding\n');
+    await writeFile(join(repo, '.papercusp', 'blueprint.yaml'), 'id: has-bp\nextends: coding-factory\n');
     const res = await generateBlueprintForClone('has-bp', repo);
     expect(res).toEqual({ generated: false, reason: 'already_has_blueprint' });
   });

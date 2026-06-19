@@ -76,7 +76,7 @@ export function resolveSlashToolForPrompt(promptName: string): ProjectedTool | u
 export function slashToolVisibleTo(
   tool: ProjectedTool,
   role?: AgentRole,
-  profile?: 'engineer' | 'power',
+  profile?: 'engineer' | 'power' | 'generic',
 ): boolean {
   if (!tool.expose.mcp || resolveSlashExposure(tool) === null) return false;
   if (role && tool.agentRoles && !tool.agentRoles.includes(role)) return false;

@@ -45,15 +45,35 @@ export type FlagOverrideStore = {
   load(): Promise<Partial<Record<FlagKey, boolean>>>;
   /** Persist one override; `null` clears it. */
   set(key: FlagKey, enabled: boolean | null): Promise<void>;
+  /**
+   * Optional scope key for the read cache (e.g. the active workspace id).
+   * `load()` resolves the overrides for whatever scope is active *at call
+   * time* — Papercusp's PG store reads `WHERE workspace_id = activeWorkspaceId()`.
+   * Without partitioning, a single process serving multiple workspaces would
+   * cache the FIRST-loaded workspace's overrides and serve them to every other
+   * workspace for the TTL window (a cross-workspace flag bleed). Returning the
+   * scope here keys the cache per scope. Omit for a single-scope store
+   * (one shared cache, the historical behavior).
+   */
+  cacheKey?(): string;
 };
 
 let overrideStore: FlagOverrideStore | null = null;
-let overrideCache: { flags: Partial<Record<FlagKey, boolean>>; ts: number } | null = null;
+// Keyed by the store's cacheKey() (e.g. workspace id) so one process serving
+// many workspaces never bleeds one workspace's overrides into another's reads.
+const overrideCache = new Map<
+  string,
+  { flags: Partial<Record<FlagKey, boolean>>; ts: number }
+>();
 const OVERRIDE_CACHE_TTL_MS = 5_000;
+
+function currentCacheKey(): string {
+  return overrideStore?.cacheKey?.() ?? '';
+}
 
 export function initFlagOverrideStore(store: FlagOverrideStore | null): void {
   overrideStore = store;
-  overrideCache = null;
+  overrideCache.clear();
 }
 
 export function isOverrideStoreConfigured(): boolean {
@@ -62,18 +82,20 @@ export function isOverrideStoreConfigured(): boolean {
 
 async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>> {
   if (!overrideStore) return {};
+  const ck = currentCacheKey();
   const t = Date.now();
-  if (overrideCache && t - overrideCache.ts < OVERRIDE_CACHE_TTL_MS) {
-    return overrideCache.flags;
+  const hit = overrideCache.get(ck);
+  if (hit && t - hit.ts < OVERRIDE_CACHE_TTL_MS) {
+    return hit.flags;
   }
   try {
     const flags = await overrideStore.load();
-    overrideCache = { flags, ts: t };
+    overrideCache.set(ck, { flags, ts: t });
     return flags;
   } catch {
-    // Store unreachable — serve the last good map (or none); never block
-    // flag evaluation on the override layer.
-    return overrideCache?.flags ?? {};
+    // Store unreachable — serve the last good map for THIS scope (or none);
+    // never block flag evaluation on the override layer.
+    return overrideCache.get(ck)?.flags ?? {};
   }
 }
 
@@ -84,7 +106,8 @@ export async function setFlagOverride(
   if (!overrideStore) return { ok: false, reason: "override-store-not-configured" };
   try {
     await overrideStore.set(key, enabled);
-    overrideCache = null;
+    // set() writes the active scope's row → bust only that scope's cache.
+    overrideCache.delete(currentCacheKey());
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : "unknown" };
@@ -109,11 +132,11 @@ export async function clearAllFlagOverrides(): Promise<FlagKey[]> {
     for (const key of keys) {
       await overrideStore.set(key, null);
     }
-    overrideCache = null;
+    overrideCache.clear();
     return keys;
   } catch {
     // Never block the leave-testing path on the override layer.
-    overrideCache = null;
+    overrideCache.clear();
     return [];
   }
 }

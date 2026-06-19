@@ -93,6 +93,61 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
   });
 });
 
+// P-021 (I2 / queen-guard D-008): a recorded queen-home device pubkey OVERRIDES the
+// lock-authority election — the owner deployed the Queen on a chosen Swarm, so that
+// Swarm steers regardless of incidental pubkey ordering. Unset (every Hive today) ⇒
+// fall through to the election, so behaviour is unchanged until a home is recorded.
+describe('checkSteeringLease — P-021 queen-home override of the election', () => {
+  it('home == self ⇒ holder (reason queen-home), election NOT consulted', async () => {
+    const v = await checkSteeringLease(WS, 'member', {
+      resolveHive: async () => 'the-hive',
+      resolveQueenHome: async () => 'pk-home',
+      resolveSelfPubkey: async () => 'pk-home',
+      hiveAuthority: async () => {
+        throw new Error('election must not be consulted when home decides');
+      },
+    });
+    expect(v).toMatchObject({ holder: true, reason: 'queen-home', hiveSlug: 'the-hive' });
+  });
+
+  it('home != self ⇒ non-holder (reason not-queen-home), labelled by the recorded home', async () => {
+    const v = await checkSteeringLease(WS, 'member', {
+      resolveHive: async () => 'the-hive',
+      resolveQueenHome: async () => 'pk-home-abcdef0123456789',
+      resolveSelfPubkey: async () => 'pk-other',
+      hiveAuthority: async () => {
+        throw new Error('election must not be consulted when home decides');
+      },
+    });
+    expect(v.holder).toBe(false);
+    expect(v.reason).toBe('not-queen-home');
+    expect(v.holderLabel).toContain('pk-home-abcd'); // short form of the recorded home
+  });
+
+  it('home SET but self UNRESOLVED ⇒ falls through to the election (never strand a lone box)', async () => {
+    const v = await checkSteeringLease(WS, 'member', {
+      resolveHive: async () => 'the-hive',
+      resolveQueenHome: async () => 'pk-home',
+      resolveSelfPubkey: async () => null, // gh-unauthenticated / no device identity
+      hiveAuthority: async () => ({ isSelf: true, liveCount: 1 }),
+    });
+    expect(v).toMatchObject({ holder: true, reason: 'authority' });
+  });
+
+  it('home UNSET ⇒ unchanged: the election decides (today’s universal state)', async () => {
+    const v = await checkSteeringLease(WS, 'member', {
+      resolveHive: async () => 'the-hive',
+      resolveQueenHome: async () => null,
+      resolveSelfPubkey: async () => {
+        throw new Error('self must not be resolved when no home is recorded');
+      },
+      hiveAuthority: async () => ({ isSelf: false, liveCount: 2 }),
+    });
+    expect(v.holder).toBe(false);
+    expect(v.reason).toBe('remote-holder');
+  });
+});
+
 describe('recordSteeringProposal — the propose half (comment + escalation)', () => {
   it('lands both sinks with the request, the holder, and the dispose instruction', async () => {
     const comments: { featureId: string; harness: string; body: string }[] = [];

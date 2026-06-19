@@ -458,7 +458,7 @@ export function detectionToOverride(slug: string, det: DetectionResult): Record<
     knobs.projectInstructions = Object.fromEntries(det.harvestedDocs.map((d) => [d.file, d.content]));
   }
 
-  const override: Record<string, unknown> = { id: slug, extends: 'coding', knobs };
+  const override: Record<string, unknown> = { id: slug, extends: 'coding-factory', knobs };
 
   // monorepo → sub-harness per sub-project (D-016/D-023). `recursion` is a typed
   // object so it deep-merges cleanly; declare a trigger so it isn't a no-op

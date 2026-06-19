@@ -228,6 +228,35 @@ export class PgCoordLog implements CoordEventLog {
     return rows.map((r) => parseBody(r.body));
   }
 
+  async readEventsBounded(
+    surface: EventSurface,
+    opts: { limit: number; kinds?: string[] },
+  ): Promise<CoordEnvelope[]> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // Hard-clamp the LIMIT so a caller can never re-open the unbounded-read hole
+    // this method exists to close (EI-1548). ORDER BY id DESC rides the
+    // coord_event_log_surface_id (workspace_id, surface, id) index.
+    const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const rows =
+      kinds && kinds.length
+        ? await sql<{ body: unknown }[]>`
+            SELECT body FROM harness_shared.coord_event_log
+             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+               AND body->>'kind' = ANY(${kinds}::text[])
+             ORDER BY id DESC
+             LIMIT ${limit}
+          `
+        : await sql<{ body: unknown }[]>`
+            SELECT body FROM harness_shared.coord_event_log
+             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+             ORDER BY id DESC
+             LIMIT ${limit}
+          `;
+    return rows.map((r) => parseBody(r.body));
+  }
+
   async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();

@@ -71,7 +71,7 @@ export interface WakeBlueprintOptions {
 
 /**
  * The throwaway harness's `.papercusp/blueprint.yaml`: extends the built-in
- * `coding` blueprint and declares its OWN autoloop trigger — enablement per the
+ * `coding-factory` blueprint and declares its OWN autoloop trigger — enablement per the
  * production model ("the blueprint carries its own autoloop", lib/autoloop.ts).
  * Pure (unit-tested through the real blueprint loader + trigger derivation).
  */
@@ -80,7 +80,7 @@ export function wakeBlueprintYaml(slug: string, opts: WakeBlueprintOptions): str
     '# hive-loop-e2e P-006 wake-mode — a throwaway coding harness whose blueprint',
     '# declares its OWN autoloop trigger (the autonomous chain under test).',
     `id: ${slug}`,
-    'extends: coding',
+    'extends: coding-factory',
     'version: 0.0.1',
     'triggers:',
     '  schedule:',

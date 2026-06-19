@@ -48,6 +48,19 @@ export interface CoordEventLog {
   /** Read every per-event record in a surface. */
   readEvents(surface: EventSurface): Promise<CoordEnvelope[]>;
 
+  /**
+   * Read per-event records in a surface, BOUNDED — capped at `opts.limit` rows
+   * at the storage layer (so a huge surface never loads whole into memory) and
+   * returned NEWEST-FIRST (descending append order). `opts.kinds`, when
+   * non-empty, filters on the envelope `kind`. Use for paginated reads (e.g.
+   * coord:escalations over a large backlog) where the unbounded `readEvents`
+   * would return — and buffer — the entire history. (EI-1548.)
+   */
+  readEventsBounded(
+    surface: EventSurface,
+    opts: { limit: number; kinds?: string[] },
+  ): Promise<CoordEnvelope[]>;
+
   /** Read one per-event record by msg_id, or null. */
   getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null>;
 }

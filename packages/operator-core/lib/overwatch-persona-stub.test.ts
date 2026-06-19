@@ -3,7 +3,7 @@
  * (overwatch-role-2026-06-15 B-01, the EI-611 lesson).
  *
  * EI-611: the Queen has TWO full personas — a fallback and the blueprint
- * `blueprints/hive/prompts/queen.md` — that silently DRIFT; shared instructions
+ * `blueprints/coding/prompts/queen.md` — that silently DRIFT; shared instructions
  * repeatedly land in the dead fallback while the live blueprint Queen runs without
  * them. The overwatch must NOT repeat that: its canonical persona ships ONCE in the
  * hive blueprint (B-05), and the base-library fallback
@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { harnessPath } from './harness-paths';
 
 const STUB = harnessPath('blueprints', 'base', 'prompts', 'overwatch.md');
-const CANONICAL = harnessPath('blueprints', 'hive', 'prompts', 'overwatch.md');
+const CANONICAL = harnessPath('blueprints', 'coding', 'prompts', 'overwatch.md');
 
 describe('overwatch persona — one canonical home, the fallback stays a stub (D-007 / EI-611)', () => {
   it('the canonical persona lives in the hive blueprint and is a SUBSTANTIAL persona', () => {
@@ -48,6 +48,6 @@ describe('overwatch persona — one canonical home, the fallback stays a stub (D
     // The explicit anti-drift instruction (D-007's prescribed wording).
     expect(stub).toMatch(/do not add/i);
     // Points readers/authors at the one canonical home.
-    expect(stub).toContain('blueprints/hive/prompts/overwatch.md');
+    expect(stub).toContain('blueprints/coding/prompts/overwatch.md');
   });
 });

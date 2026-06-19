@@ -35,11 +35,30 @@ import { parseLlmJson } from './llm-json';
  */
 export const DEFAULT_CRITIC_MODEL = 'claude-haiku-4-5';
 
+/**
+ * The default critic MISSION framing (P-010 scout prompt-overlay seam,
+ * domain-generic-hive-architecture-2026-06-18 D-004) — the adversarial-critics
+ * intro line naming the domain the idea is judged FOR. Coding/Papercusp-flavored by
+ * default; a `work` hive overrides it via the blueprint `scout.framing.criticMission`
+ * block. This is the DOMAIN framing only — the two-axis novelty/feasibility critic
+ * MECHANISM + the JSON output contract stay hardcoded (P-011).
+ *
+ * Exported so {@link DEFAULT_SCOUT_FRAMING} (config.ts) is built FROM it (anti-drift).
+ */
+export const DEFAULT_CRITIC_MISSION =
+  'You are TWO adversarial critics judging ONE creative idea proposed for the Papercusp "Hive" (a multi-agent coding platform). You pull against each other on purpose:';
+
 export interface CriticContext {
   /** Project / architecture summary the feasibility critic weighs against. */
   projectContext?: string;
   model?: string;
   thinkingBudgetTokens?: number;
+  /**
+   * Per-blueprint MISSION framing override (P-010). Replaces the default
+   * adversarial-critics intro with the hive's domain framing. Absent ⇒
+   * {@link DEFAULT_CRITIC_MISSION} (byte-identical to the pre-seam prompt).
+   */
+  mission?: string;
 }
 
 export interface CriticRawScores {
@@ -83,7 +102,9 @@ export function buildCriticPrompt(
   ctx: CriticContext,
 ): { system: string; user: string } {
   const system = [
-    'You are TWO adversarial critics judging ONE creative idea proposed for the Papercusp "Hive" (a multi-agent coding platform). You pull against each other on purpose:',
+    // P-010: the domain MISSION framing is blueprint-overridable; the two-critic
+    // mechanism + JSON output contract below stay hardcoded.
+    ctx.mission ?? DEFAULT_CRITIC_MISSION,
     '',
     '• NOVELTY critic (skeptic): is this genuinely NEW, or the obvious move dressed up / something already tried? Be harsh — penalise ideas close to what already exists. Score conceptualNovelty 0 (obvious / already done) … 1 (a real leap).',
     '• FEASIBILITY critic: could this actually work in THIS architecture, and is the cost worth the upside? Score feasibility 0 (impractical / no clear payoff) … 1 (clearly buildable, high payoff).',

@@ -71,8 +71,18 @@ impl Scope {
 /// which persists on disk after the process exits). Taking the FIRST match
 /// instead pinned the pane to the OLDEST stale wake — the wrong-session symptom.
 async fn resolve_session(client: &OperatorClient, scope: &Scope) -> Option<(String, PathBuf)> {
-    let (active, ended) = client.roster_typed().await.ok()?;
-    let entries: Vec<RosterEntry> = active.into_iter().chain(ended).collect();
+    // Scope the roster to THIS desktop's ACTIVE workspace so the pane shows that
+    // workspace's queen/overwatch — NOT the fleet-wide newest across every
+    // workspace. Re-read each resolve (the run loop calls this ~every 1.5s) so a
+    // workspace SWITCH (which rewrites registry.current) rolls the pane to the
+    // new workspace's agent within a tick. A switch reloads the desktop webview
+    // but does NOT re-spawn this pane, so the scope MUST be resolved live here,
+    // not baked in at launch. Unknown workspace (dev / webapp with no registry)
+    // → unscoped, preserving the prior fleet-wide behavior. A failed workspace
+    // read also degrades to unscoped (never blanks the pane).
+    let workspace = client.current_workspace().await.ok().flatten();
+    let (active, pending) = client.roster_typed_scoped(workspace.as_deref()).await.ok()?;
+    let entries: Vec<RosterEntry> = active.into_iter().chain(pending).collect();
     select_newest_with_transcript(entries, scope, locate_session_transcript)
 }
 

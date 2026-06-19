@@ -26,9 +26,9 @@ const MINIMAL = {
 
 describe('blueprint:validate', () => {
   it('validates the built-in coding blueprint', async () => {
-    const r = await run(validateTool, { id: 'coding' });
+    const r = await run(validateTool, { id: 'coding-factory' });
     expect(r.ok).toBe(true);
-    expect(r.summary.id).toBe('coding');
+    expect(r.summary.id).toBe('coding-factory');
     expect(r.summary.spineVerbs).toContain('DONE');
     expect(r.summary.spineVerbs).toContain('NEXT_WORKER');
   });
@@ -66,11 +66,11 @@ describe('blueprint:create', () => {
 
 describe('blueprint:extend', () => {
   it('authors a child extending coding (knob override)', async () => {
-    const r = await run(extendTool, { id: 'my-coding', parent: 'coding', overrides: { knobs: { maxCostUsd: 5 } } });
+    const r = await run(extendTool, { id: 'my-coding', parent: 'coding-factory', overrides: { knobs: { maxCostUsd: 5 } } });
     expect(r.ok).toBe(true);
     const child = parseYaml(r.yaml);
     expect(child.id).toBe('my-coding');
-    expect(child.extends).toBe('coding');
+    expect(child.extends).toBe('coding-factory');
     expect(child.knobs.maxCostUsd).toBe(5);
   });
 
@@ -128,9 +128,9 @@ describe('installed (non-built-in) parents', () => {
   });
 
   it('built-ins still resolve when the installed tier lacks the id (bundle floor, D-004)', async () => {
-    const r = await run(validateTool, { id: 'coding' });
+    const r = await run(validateTool, { id: 'coding-factory' });
     expect(r.ok).toBe(true);
-    expect(r.summary.id).toBe('coding');
+    expect(r.summary.id).toBe('coding-factory');
   });
 });
 
@@ -142,7 +142,7 @@ describe('installed (non-built-in) parents', () => {
 // returned YAML via {source} resolves it through the real engine.
 describe('blueprint:extend — merge semantics (deep-merge objects, replace arrays)', () => {
   it('an array override (roles) REPLACES the parent array — resolved has ONLY the override', async () => {
-    const r = await run(extendTool, { id: 'c', parent: 'coding', overrides: { roles: [{ id: 'solo' }] } });
+    const r = await run(extendTool, { id: 'c', parent: 'coding-factory', overrides: { roles: [{ id: 'solo' }] } });
     expect(r.ok).toBe(true);
     // The returned child YAML carries the override verbatim (one role) …
     const child = parseYaml(r.yaml);
@@ -161,7 +161,7 @@ describe('blueprint:extend — merge semantics (deep-merge objects, replace arra
   it('an object override (spine.edges) DEEP-MERGES — resolved retains parent edges AND adds the new one', async () => {
     const r = await run(extendTool, {
       id: 'c2',
-      parent: 'coding',
+      parent: 'coding-factory',
       overrides: { spine: { edges: { CUSTOM: { to: 'role', role: 'worker' } } } },
     });
     expect(r.ok).toBe(true);

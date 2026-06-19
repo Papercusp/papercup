@@ -349,6 +349,13 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(res.isError).not.toBe(true);
     expect(textOf(res)).toContain('gatingtest:crossworkspace-ok');
   });
+
+  it('flag ON: rejects the harness:\'all\' global escape for a (workspace-)scoped session', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'all' }, superuserExtra('&workspace=ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
 });
 
 /* ─── scoped-superuser HIVE clamp (P-014a — auto-confine on harness) ──── */

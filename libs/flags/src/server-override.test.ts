@@ -123,6 +123,42 @@ describe('flag override store', () => {
     expect(loads()).toBe(1);
   });
 
+  it('partitions the read-cache per scope — no cross-workspace bleed', async () => {
+    // load() resolves overrides for whatever scope is active at call time
+    // (Papercusp: WHERE workspace_id = activeWorkspaceId()). A single global
+    // cache would serve the first-loaded scope's overrides to every other
+    // scope for the TTL window; cacheKey() partitions the cache so a scope
+    // only ever sees its own row.
+    let scope = 'ws-a';
+    const rows: Record<string, Partial<Record<FlagKey, boolean>>> = {
+      'ws-a': { [KEY]: true }, // ws-a overrides KEY ON
+      'ws-b': {}, // ws-b has no override → resolves to the default
+    };
+    const store: FlagOverrideStore = {
+      async load() {
+        return { ...(rows[scope] ?? {}) };
+      },
+      async set(key, enabled) {
+        rows[scope] ??= {};
+        if (enabled === null) delete rows[scope][key];
+        else rows[scope][key] = enabled;
+      },
+      cacheKey: () => scope,
+    };
+    initFlagOverrideStore(store);
+
+    scope = 'ws-a';
+    expect(await getFlag(KEY, 'u')).toBe(true); // ws-a override, now cached
+
+    // Switch scope WITHIN the TTL window — must NOT inherit ws-a's cached value.
+    scope = 'ws-b';
+    expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]); // ws-b → default, no bleed
+
+    // ws-a still resolves its own override (its cache entry is independent).
+    scope = 'ws-a';
+    expect(await getFlag(KEY, 'u')).toBe(true);
+  });
+
   it('getAllFlags overlays stored overrides onto defaults', async () => {
     const { store } = makeFakeStore({ [KEY]: !FLAG_DEFAULTS[KEY] });
     initFlagOverrideStore(store);

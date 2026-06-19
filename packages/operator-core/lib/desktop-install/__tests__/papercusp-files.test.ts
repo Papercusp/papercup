@@ -289,6 +289,15 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
       /papercusp-su-ghost\.tools\.md/,
     );
   });
+
+  // domain-generic-hive-architecture-2026-06-18 P-025 — the GENERIC profile (non-coding work
+  // hive) has no bespoke base file by design; it falls back to the engineer base (its DISTINCT
+  // behavior — no papercup CLAUDE.md splice — lives in role-launch-spec, not here). Unlike a
+  // typo'd profile ('ghost' above), 'generic' must NOT throw.
+  it('P-025: generic profile falls back to the engineer base (does not throw)', async () => {
+    const generic = await renderSuPlaybook({ agent: 'claude', profile: 'generic', operatorAppRoot: tmpAppRoot });
+    expect(generic.text).toContain('# Engineer base');
+  });
 });
 
 describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', () => {

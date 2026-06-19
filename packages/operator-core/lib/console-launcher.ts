@@ -66,6 +66,14 @@ export interface BuildEnvelopeOpts {
   /** The operator's own base URL (e.g. http://localhost:3070). */
   operatorBaseUrl: string;
   /**
+   * scoped-superuser-workspace-clamp D-004 — deliberate cross-workspace ("god
+   * mode") console. Default false ⇒ the MCP url bakes the concrete `&workspace=`
+   * (scoped-by-default; the flag-gated dispatch clamp then confines the session).
+   * true ⇒ bake `&workspace=*` (UNSCOPED) — the explicit opt-in that spans
+   * workspaces past the clamp. The caller (Tauri launch UI / psu CLI) sets this.
+   */
+  allWorkspaces?: boolean;
+  /**
    * plan-agent-launch P-023: when set, the shell console resumes an existing
    * session (`<agent-cli> -r <sessionId>`) instead of opening fresh.
    */
@@ -104,6 +112,23 @@ function resolveScriptsDir(): string | null {
     if (existsSync(join(c, 'papercup-status.mjs'))) return c;
   }
   return null;
+}
+
+/**
+ * Build the superuser MCP url the engineer console's agent connects to.
+ * scoped-superuser-workspace-clamp D-004: scoped-by-default bakes the concrete
+ * `&workspace=`; `allWorkspaces` opts into `&workspace=*` (UNSCOPED — the only
+ * door past the flag-gated dispatch clamp). Exported for unit tests.
+ */
+export function buildSuperuserMcpUrl(
+  operatorBaseUrl: string,
+  workspaceId: string,
+  allWorkspaces = false,
+): string {
+  const url = new URL(`${operatorBaseUrl}/api/mcp`);
+  url.searchParams.set('superuser', '1');
+  url.searchParams.set('workspace', allWorkspaces ? '*' : workspaceId);
+  return url.toString();
 }
 
 /** Read the superuser bearer token. Returns null if not yet installed. */
@@ -175,14 +200,12 @@ export async function buildConsoleEnvelope(
   // '*' which most first-party tools reject. Baking &workspace=<slug>
   // gives the user's agent useful defaults; tool-by-tool override via
   // args still works.
-  const mcpUrl = new URL(`${opts.operatorBaseUrl}/api/mcp`);
-  mcpUrl.searchParams.set('superuser', '1');
-  mcpUrl.searchParams.set('workspace', opts.workspaceId);
+  const mcpUrl = buildSuperuserMcpUrl(opts.operatorBaseUrl, opts.workspaceId, opts.allWorkspaces);
   const mcpJsonContents = JSON.stringify(
     {
       mcpServers: {
         papercusp: {
-          url: mcpUrl.toString(),
+          url: mcpUrl,
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         },
       },

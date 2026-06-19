@@ -201,7 +201,7 @@ describe('planFinalization — declarative recipe (unify-launches P-007)', () =>
   };
 
   test('DEFAULT_FINALIZE_RECIPE matches the coding blueprint gates.finalize', () => {
-    const coding = loadBuiltinBlueprint('coding').blueprint;
+    const coding = loadBuiltinBlueprint('coding-factory').blueprint;
     expect(coding.gates.finalize).toEqual(DEFAULT_FINALIZE_RECIPE);
   });
 

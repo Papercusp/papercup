@@ -13,6 +13,7 @@ const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
   '/settings/autonomy':   FLAGS.QUEEN_AUTONOMY_SETTINGS,
   '/settings/storage':    FLAGS.STORAGE_SETTINGS,
+  '/settings/hive-customization': FLAGS.BLUEPRINT_AWARE_SETTINGS,
 };
 
 interface SettingsLink {
@@ -49,6 +50,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/oracle', label: 'Oracle assistant', keywords: ['oracle', 'assistant', 'prompt', 'memory'] },
       { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
       { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'queen', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
+      { href: '/settings/hive-customization', label: 'Hive customization', keywords: ['hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'bee', 'overwatch', 'su', 'tuning', 'per-hive', 'domain'] },
       { href: '/settings/trust', label: 'Trusted users', keywords: ['trust', 'trusted', 'github', 'author', 'admission', 'auto-run', 'shared hive', 'security', 'grant', 'verified', 'remote'] },
       { href: '/settings/voice', label: 'Voice & speech', keywords: ['voice', 'speech', 'stt', 'tts', 'microphone', 'wake word', 'elevenlabs', 'openai', 'cartesia', 'deepgram'] },
     ],
@@ -127,13 +129,18 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
   const autonomySettingsEnabled = useFlag(FLAGS.QUEEN_AUTONOMY_SETTINGS);
   const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
+  const blueprintAwareSettingsEnabled = useFlag(FLAGS.BLUEPRINT_AWARE_SETTINGS);
 
-  const flagEnabled: Record<FlagKey, boolean> = {
+  // Keys are FlagKey values; this is the subset of flags that gate a settings path
+  // (SETTINGS_PATH_FLAGS), not an exhaustive map — so `Record<string, boolean>`, not
+  // `Record<FlagKey, boolean>` (which would (wrongly) require every flag).
+  const flagEnabled: Record<string, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.TESTING]: testingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
     [FLAGS.QUEEN_AUTONOMY_SETTINGS]: autonomySettingsEnabled,
     [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,
+    [FLAGS.BLUEPRINT_AWARE_SETTINGS]: blueprintAwareSettingsEnabled,
     [FLAGS.HARNESS_PHASES]: true,
   };
 

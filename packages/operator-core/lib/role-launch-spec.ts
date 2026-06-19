@@ -401,7 +401,7 @@ export interface BuildSuLaunchSpecInput {
   operatorBaseUrl: string;
   /** Harness scope, or null/omitted for a workspace-level su session. */
   harnessSlug?: string | null;
-  /** Playbook profile: 'engineer' (default) | 'power'. */
+  /** Playbook profile: 'engineer' (default) | 'power' | 'generic'. */
   profile?: string;
   /** Plan binding for the launch-context addendum (optional). */
   planSlug?: string | null;
@@ -493,8 +493,17 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   //    CLAUDE.md/AGENTS.md — resolved here and passed explicitly; '' (no guide)
   //    when the managed repo carries neither, so we never splice papercup's
   //    guide into a session steering a different repo.
+  //    The GENERIC profile (domain-generic-hive-architecture P-025) is a
+  //    NON-CODING work hive: it splices NO repo guide at all (projectGuideSource '')
+  //    — its domain context comes from the per-hive su override appended below
+  //    (D-010: papercup specifics live in the hive override, never the base). This
+  //    is the ADDITIVE half of P-025; the engineer-profile default is unchanged
+  //    (dropping engineer's papercup CLAUDE.md splice is gated to the dogfood pass).
+  const launchProfile = input.profile ?? 'engineer';
   let projectGuideSource: string | undefined;
-  if ((input.profile ?? 'engineer') === 'power') {
+  if (launchProfile === 'generic') {
+    projectGuideSource = ''; // non-coding hive → no repo guide; domain rides the hive override
+  } else if (launchProfile === 'power') {
     projectGuideSource = '';
     for (const cand of [path.join(cwd, 'CLAUDE.md'), path.join(cwd, 'AGENTS.md')]) {
       try {

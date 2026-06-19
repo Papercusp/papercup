@@ -230,7 +230,7 @@ test('C4 evidence — a coordination arm whose agents never coordinated reports 
 });
 
 test('central pole (hive) resolves to plain workers with an empty coordination directive', async () => {
-  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('hive').blueprint);
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('coding').blueprint);
   assert.equal(spec.central, true);
   const { seam } = fakeSeam();
   const { run, calls } = fakeAgent();

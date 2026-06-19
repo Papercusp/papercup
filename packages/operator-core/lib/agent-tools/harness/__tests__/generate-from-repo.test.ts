@@ -43,13 +43,13 @@ describe('harness:generate-from-repo', () => {
     const r = await run({ slug: 'my-app', path: root, dryRun: true, runTests: false });
     expect(r.ok).toBe(true);
     expect(r.dryRun).toBe(true);
-    expect(r.override.extends).toBe('coding');
+    expect(r.override.extends).toBe('coding-factory');
     expect(r.override.knobs.testCommand).toBe('pnpm test');
     expect(r.override.knobs.uiQa).toEqual({ enabled: true }); // vue → frontend → ui-qa
     expect(r.validation.ok).toBe(true);
     expect(r.validation.errors).toEqual([]);
     // The previewed YAML round-trips.
-    expect(parseYaml(r.yaml).extends).toBe('coding');
+    expect(parseYaml(r.yaml).extends).toBe('coding-factory');
     expect(r.detection.testCommand.verified).toBeNull(); // runTests:false
     expect(r.detection.flags.frontend).toBe(true);
   });

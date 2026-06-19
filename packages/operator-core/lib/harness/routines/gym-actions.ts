@@ -115,6 +115,15 @@ registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
       // (payload.ideaLifecycle.triageDecision='gym') → proposer candidate directions.
       readRoutedIdeas: async () => selectRoutedGymIdeas(await readImprovementItems({ state: 'open' })),
       runCycle: _runCycle ?? defaultRunCycle,
+      // P-020 cross-node single-runner: in a SHARED Hive each node sweeps its own
+      // node-local autoloop rows, so without this two nodes could each fire a cycle
+      // for the same Hive member (double spend). Keep only autoloops whose Hive THIS
+      // node is the elected authority for. At N=1 / standalone this is always true
+      // (authority / not-in-hive), so the standalone gym path is unchanged.
+      isHiveRunner: async (slug) => {
+        const { checkHiveSingleRunner } = await import('../../hive-single-runner');
+        return (await checkHiveSingleRunner(ctx.workspaceId, slug)).run;
+      },
       // P-030 (B-09): settle elapsed post-acceptance champion-outcome windows each tick.
       finalizeOutcomes: () =>
         finalizePendingChampionOutcomes(sql, { workspaceId: ctx.workspaceId, log: (m) => console.log(`[gym-cycle] ${m}`) }),

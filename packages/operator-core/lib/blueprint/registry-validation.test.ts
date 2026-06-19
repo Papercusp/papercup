@@ -59,7 +59,7 @@ describe('every built-in blueprint stays valid under the live registries (P-001 
   const sets = blueprintRegistrySets();
   it('discovers built-in blueprints to check', () => {
     expect(builtinIds.length).toBeGreaterThan(10);
-    expect(builtinIds).toContain('coding');
+    expect(builtinIds).toContain('coding-factory');
     expect(builtinIds).toContain('vote');
     expect(builtinIds).toContain('negative-space');
   });

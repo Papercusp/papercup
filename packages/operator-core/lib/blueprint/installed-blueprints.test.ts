@@ -48,10 +48,10 @@ describe('availableHiveBlueprintIds (P-019 — the hive:create picker set)', () 
   it('lists the built-in kind:hive blueprints and excludes kind:harness ones', () => {
     // Reads the REAL built-in blueprints dir (the install tier is mocked-empty).
     const hives = availableHiveBlueprintIds();
-    expect(hives).toContain('hive');
-    expect(hives).toContain('generic-hive');
-    // research / coding are kind:harness — never offered as a hive template.
+    expect(hives).toContain('coding');
+    expect(hives).toContain('work');
+    // research / coding-factory are kind:harness — never offered as a hive template.
     expect(hives).not.toContain('research');
-    expect(hives).not.toContain('coding');
+    expect(hives).not.toContain('coding-factory');
   });
 });

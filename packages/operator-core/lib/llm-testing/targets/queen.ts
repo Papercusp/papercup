@@ -1,6 +1,8 @@
 /**
  * `queen` ChatTarget — in-process behavioral SUT for the **hive Queen's
- * spawn prompt** (`libs/papercusp/packages/harness/blueprints/hive/prompts/queen.md`).
+ * spawn prompt**, composed the same way the live spawn composes it: the shared
+ * generic method `blueprints/base/prompts/queen.base.md` + the coding decomposition
+ * delta `blueprints/coding/prompts/queen.md` (P-007/P-008; see `loadQueenPrompt`).
  *
  * scout-idea-grading-2026-06-12 B-06/B-08 follow-on: the Queen's grading
  * responsibility (D-004 — grade ungraded routed Scout drafts 1–5 while
@@ -10,7 +12,7 @@
  * triage turn. This target reuses the `su` in-process Anthropic tool loop
  * (prompt-from-SOURCE + stubbed executor — see ./su for the full rationale)
  * with the Queen's blueprint prompt and a curated slice of her blueprint
- * tool surface (`blueprints/hive/blueprint.yaml` dependencies.tools).
+ * tool surface (`blueprints/coding/blueprint.yaml` dependencies.tools).
  *
  * Catalog fidelity notes (mirrors su-catalog's reasoning):
  *   - Names + load-bearing args are real; the slice covers the verbs a triage
@@ -30,7 +32,7 @@ import { SuTarget } from './su';
 import { buildCatalog, type SuCatalogEntry } from './su-catalog';
 
 const QUEEN_PROMPT_REL = join(
-  'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'hive', 'prompts', 'queen.md',
+  'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'coding', 'prompts', 'queen.md',
 );
 
 function resolveQueenPromptPath(): string {
@@ -54,11 +56,29 @@ function resolveQueenPromptPath(): string {
 
 let _promptCache: string | undefined;
 
-/** Load the Queen's prompt from SOURCE (the blueprint file B-06 edited), so
- *  the scenario exercises the file we maintain, not a rendered spawn copy. */
+/**
+ * Compose the Queen's prompt from SOURCE the SAME way the live spawn does
+ * (domain-generic-hive-architecture-2026-06-18 P-007/P-008): the generic
+ * orchestration method now lives in the shared base prefix
+ * `blueprints/base/prompts/queen.base.md`, and `blueprints/coding/prompts/queen.md`
+ * is the thin coding decomposition DELTA. `resolvePromptFiles` composes them as
+ * `[base/queen.base.md, hive/queen.md]` joined by `\n\n---\n\n`; this target must
+ * mirror that, or the behavioral SUT would run against the delta alone (missing
+ * the triage/grading method the scenarios assert). The base prefix is derived as
+ * a sibling of the resolved hive main, so it follows the `PAPERCUSP_QUEEN_PROMPT_PATH`
+ * override too; an absent prefix (older tree / out-of-blueprints override) falls
+ * back to the main alone — byte-identical to the pre-split behavior.
+ */
 export function loadQueenPrompt(): string {
   if (_promptCache !== undefined) return _promptCache;
-  const body = readFileSync(resolveQueenPromptPath(), 'utf8');
+  const mainPath = resolveQueenPromptPath();
+  const main = readFileSync(mainPath, 'utf8');
+  // …/blueprints/coding/prompts/queen.md → …/blueprints → base/prompts/queen.base.md
+  const blueprintsDir = dirname(dirname(dirname(mainPath)));
+  const basePrefixPath = join(blueprintsDir, 'base', 'prompts', 'queen.base.md');
+  const body = existsSync(basePrefixPath)
+    ? `${readFileSync(basePrefixPath, 'utf8').trim()}\n\n---\n\n${main.trim()}`
+    : main;
   _promptCache =
     'You are the Queen of a Papercusp Hive (a spawned placement/triage agent turn). ' +
     'The following is your operating prompt — follow it exactly.\n\n' +
@@ -76,7 +96,7 @@ const obj = (
 });
 
 /**
- * Curated Queen catalog — a faithful slice of blueprints/hive/blueprint.yaml
+ * Curated Queen catalog — a faithful slice of blueprints/coding/blueprint.yaml
  * dependencies.tools, sized for cheap matrix runs (su-catalog's bounded-cost
  * reasoning). The triage-relevant spread plus believable neighbors.
  */

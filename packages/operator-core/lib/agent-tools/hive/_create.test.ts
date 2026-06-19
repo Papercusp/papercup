@@ -19,6 +19,7 @@ let tmpParent: string;
 let ensureCalls: Array<[string, string]>;
 let deleteHiveCalls: Array<[string, string]>;
 let provisionCalls: Array<{ workspaceId: string; hiveSlug: string }>;
+let queenHomeCalls: Array<{ workspaceId: string; hiveSlug: string; devicePubkey: string }>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -28,6 +29,7 @@ beforeEach(() => {
   ensureCalls = [];
   deleteHiveCalls = [];
   provisionCalls = [];
+  queenHomeCalls = [];
 
   vi.doMock('../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
@@ -107,6 +109,23 @@ beforeEach(() => {
       return { ok: true, hiveSlug: input.hiveSlug, gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5, undo: async () => {} };
     },
   }));
+  // P-021 (domain-generic-hive): the queen-home-pubkey record step is mocked (its
+  // own behavior is pinned in hive-settings-store + steering-lease tests). Without
+  // this the real setQueenHomePubkey → setHiveSetting → getHiveBySlug hits the
+  // hive-store mock above (which omits getHiveBySlug) and console.warns, which
+  // vitest-fail-on-console treats as a failure.
+  vi.doMock('../../hive-settings-store', () => ({
+    setQueenHomePubkey: async (ws: string, slug: string, pk: string) => {
+      queenHomeCalls.push({ workspaceId: ws, hiveSlug: slug, devicePubkey: pk });
+    },
+    deleteHiveSetting: async () => true,
+    QUEEN_HOME_PUBKEY_SETTING_KEY: 'queen-home-pubkey',
+  }));
+  // P-021: a deterministic self identity so the queen-home record step fires (the
+  // real resolveUsageActor reads the OS keychain/gh and is env-dependent).
+  vi.doMock('../../harness/usage-actor', () => ({
+    resolveUsageActor: async () => ({ githubUserId: 1, devicePubkey: 'pk-creator' }),
+  }));
 });
 
 afterEach(() => {
@@ -120,6 +139,8 @@ afterEach(() => {
   vi.doUnmock('../../learning-packs/load-packs');
   vi.doUnmock('../../learning-packs/seed');
   vi.doUnmock('../../hive/provision-learning-loop');
+  vi.doUnmock('../../hive-settings-store');
+  vi.doUnmock('../../harness/usage-actor');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {
@@ -145,6 +166,9 @@ describe('createHiveHarness', () => {
     // per-hive-learning-loops P-020: the per-hive loop is provisioned, keyed to the
     // hive's OWN slug, and reported in the result.
     expect(provisionCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'test-hive' }]);
+    // domain-generic-hive P-021: the creating node IS the local Queen home — its
+    // device pubkey is recorded as the hive's queen-home-pubkey (the split-brain guard).
+    expect(queenHomeCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'test-hive', devicePubkey: 'pk-creator' }]);
     expect(res.provisionedLoop).toEqual({ gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5 });
   });
 
@@ -210,7 +234,7 @@ describe('createHiveHarness', () => {
     });
     expect(res.ok).toBe(false);
     expect(res.error).toBe('not_a_hive_blueprint');
-    expect(res.message).toMatch(/generic-hive/); // surfaces the available hive templates
+    expect(res.message).toMatch(/work/); // surfaces the available hive templates
     expect(existsSync(join(tmpParent, 'wrong-kind'))).toBe(false); // no side effect
     expect(ensureCalls).toEqual([]); // rejected before identity mint
   });

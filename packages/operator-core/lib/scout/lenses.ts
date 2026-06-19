@@ -211,6 +211,24 @@ export function renderDigest(digest: CorpusDigest): string {
   return lines.join('\n');
 }
 
+/**
+ * The default ideator MISSION framing (P-010 scout prompt-overlay seam,
+ * domain-generic-hive-architecture-2026-06-18 D-004) — who the scout is + what it
+ * scouts FOR. Coding/Papercusp-flavored by default; a `work` hive overrides it via
+ * the blueprint `scout.framing.ideatorMission` block so ideation is framed for its
+ * domain. This is the DOMAIN framing only — the lens stances, grounding rules, and
+ * JSON output contract are the engine MECHANISM and stay hardcoded (P-011).
+ *
+ * Exported so {@link DEFAULT_SCOUT_FRAMING} (config.ts) is built FROM it (anti-drift,
+ * same discipline as DEFAULT_SCOUT_CONFIG). The literal newline separates the two
+ * framing lines, so substituting it back yields byte-identical output to the
+ * pre-seam prompt.
+ */
+export const DEFAULT_IDEATOR_MISSION = [
+  'You are a SCOUT — an autonomous ideator for the Hive, a multi-agent coding platform that improves itself.',
+  'Your job is the deliberate creative LEAP: broad, novel ideas that day-to-day work never surfaces.',
+].join('\n');
+
 /** Inputs to building one ideator's prompt. */
 export interface BuildIdeatorPromptInput {
   lens: CreativeLens;
@@ -219,6 +237,12 @@ export interface BuildIdeatorPromptInput {
   seedDomain?: DistantDomain;
   /** Max ideas this ideator should return (default 3). */
   maxIdeas?: number;
+  /**
+   * Per-blueprint MISSION framing override (P-010). Replaces the default
+   * coding-platform framing with the hive's domain framing. Absent ⇒
+   * {@link DEFAULT_IDEATOR_MISSION} (byte-identical to the pre-seam prompt).
+   */
+  mission?: string;
   /**
    * Optional gym-QD stepping-stone priming (P-012 archive→Scout): a formatted block
    * of diverse elites the gym has already discovered, appended to the grounded
@@ -239,9 +263,10 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
   const def = LENS_REGISTRY[input.lens];
   const maxIdeas = input.maxIdeas ?? 3;
 
+  // P-010: the domain MISSION framing is blueprint-overridable; the lens stance +
+  // rules + output contract below are the engine mechanism and stay hardcoded.
   const system: string[] = [
-    'You are a SCOUT — an autonomous ideator for the Hive, a multi-agent coding platform that improves itself.',
-    'Your job is the deliberate creative LEAP: broad, novel ideas that day-to-day work never surfaces.',
+    input.mission ?? DEFAULT_IDEATOR_MISSION,
     '',
     `## Your lens: ${def.label}`,
     def.stance,

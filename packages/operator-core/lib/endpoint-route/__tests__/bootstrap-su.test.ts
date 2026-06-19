@@ -473,6 +473,12 @@ describe('bootstrap-su', () => {
     expect(buildLaunchSpecMock).not.toHaveBeenCalled();
   });
 
+  it('P-025: accepts the generic profile (non-coding work hive) and threads it through', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', profile: 'generic' });
+    expect(res.status).toBe(200);
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ profile: 'generic' }));
+  });
+
   it('options (no harness) lists the active-workspace harnesses', async () => {
     const res = await callGet();
     expect(res.status).toBe(200);

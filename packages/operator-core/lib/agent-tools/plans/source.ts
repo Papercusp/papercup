@@ -25,7 +25,7 @@ import type { Sql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
-import { resolveProject } from '../../harness-core';
+import { resolveProject, resolveWorkspaceForHarnessSlug } from '../../harness-core';
 import { detectPapercupRoot, PAPERCUP_HARNESS_SLUG } from '../../harness/register-papercup';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 
@@ -227,15 +227,28 @@ function isPapercupScope(raw: string | undefined): boolean {
  *  the DISTINCT set of workspace_ids that carry the slug. */
 export type ProjectsWorkspaceLookup = (slug: string) => Promise<string[]>;
 
+/** Injectable seam for the AUTHORITATIVE-registry fallback (resolveWorkspaceForHarnessSlug):
+ *  slug → its workspace_id (or null), used when the projects projection has no row.
+ *  Overridden in unit tests so the fallback branch is exercised without a live PG. */
+export type RegistryWorkspaceResolver = (slug: string) => Promise<string | null>;
+
 /**
- * The canonical projects/registry lookup: which workspace_id(s) carry
- * `harness_slug` in `harness_shared.projects`. That table is the authoritative
- * slug→workspace mapping (migration 221 leg 1 — "the registry; authoritative
- * where present"; UNIQUE (workspace_id, slug)), so a slug appears at most once
- * per workspace but MAY appear in several (a same-name collision across
- * workspaces). The cross-workspace read uses the admin-bypass connection
- * (harness_admin, RLS off) because the calling context's workspace GUC is not
- * necessarily the one that owns the slug.
+ * Which workspace_id(s) carry `harness_slug` in `harness_shared.projects`.
+ *
+ * NB (2026-06-18): `harness_shared.projects` is NOT the universal harness
+ * registry — it is the org/department blueprint's PROJECTION (business columns
+ * owning_dept/vertical/budget_cents; the sole non-test writer is the
+ * `execute-action.ts` project-create action), so it is sparse and a hive/generic
+ * harness never appears in it. The de-facto AUTHORITATIVE slug→workspace registry
+ * is `harness_shared.harness_registry` (resolveProject / resolveWorkspaceForHarnessSlug),
+ * which hive:create/harness:create write and the work-items path reads. The older
+ * "projects is authoritative" framing (migration 221 leg 1) is STALE — kept here
+ * only as the FIRST consult; `fill_workspace_id_from_projects` falls back to the
+ * registry when this returns 0 (peers su-a7f66 / su-632e0166, sibling EI-1511).
+ * UNIQUE (workspace_id, slug) still holds, so a slug appears at most once per
+ * workspace but MAY appear in several (a same-name collision). The cross-workspace
+ * read uses the admin-bypass connection (harness_admin, RLS off) because the
+ * calling context's workspace GUC is not necessarily the one that owns the slug.
  */
 async function lookupProjectWorkspaceIds(slug: string): Promise<string[]> {
   return withWorkspace(
@@ -274,7 +287,7 @@ async function lookupProjectWorkspaceIds(slug: string): Promise<string[]> {
  */
 export async function fill_workspace_id_from_projects(
   harnessSlug: string | undefined,
-  opts: { lookup?: ProjectsWorkspaceLookup } = {},
+  opts: { lookup?: ProjectsWorkspaceLookup; registryFallback?: RegistryWorkspaceResolver } = {},
 ): Promise<string | null> {
   const raw = harnessSlug?.trim();
   // WI-148 part-B cutover (owner GO 2026-06-16): papercup → PAPERCUSP_WORKSPACE_ID,
@@ -284,7 +297,6 @@ export async function fill_workspace_id_from_projects(
   const lookup = opts.lookup ?? lookupProjectWorkspaceIds;
   const matches = await lookup(raw!);
   const distinct = [...new Set(matches.filter((w) => w && w.trim()))];
-  if (distinct.length === 0) return null;
   if (distinct.length > 1) {
     throw new Error(
       `fill_workspace_id_from_projects: harness slug '${raw}' resolves to ` +
@@ -292,7 +304,17 @@ export async function fill_workspace_id_from_projects(
         `collision across workspaces — pass an explicit workspaceId to disambiguate.`,
     );
   }
-  return distinct[0]!;
+  if (distinct.length === 1) return distinct[0]!;
+  // 0 rows in harness_shared.projects — expected for a hive/generic harness, which
+  // lives only in the AUTHORITATIVE harness registry (the projects table is just
+  // the org/department projection — see lookupProjectWorkspaceIds). Fall back to
+  // that registry, which is what the work-items path already resolves through, so
+  // a hive's plans resolve the same way its work-items do. Active-workspace-first +
+  // collision-aware (su-a7f66 / su-632e0166, EI-1511 / P-017). Additive: only turns
+  // a former null (→ caller throw) into a resolution; never regresses papercup
+  // (isPapercupScope) or explicit-workspaceId callers (both short-circuit earlier).
+  const registryFallback = opts.registryFallback ?? resolveWorkspaceForHarnessSlug;
+  return await registryFallback(raw!);
 }
 
 /**
@@ -304,7 +326,10 @@ export async function fill_workspace_id_from_projects(
  * an unresolvable slug THROWS (no silent cross-workspace default — WI-148).
  */
 export async function resolvePlanScope(
-  opts: PlanSourceOpts & { lookup?: ProjectsWorkspaceLookup } = {},
+  opts: PlanSourceOpts & {
+    lookup?: ProjectsWorkspaceLookup;
+    registryFallback?: RegistryWorkspaceResolver;
+  } = {},
 ): Promise<{ workspaceId: string; harnessSlug: string }> {
   const raw = opts.harnessSlug?.trim();
   if (isPapercupScope(raw)) {
@@ -318,18 +343,21 @@ export async function resolvePlanScope(
   }
   // A concrete non-papercup slug. An explicit workspaceId pins the scope.
   if (opts.workspaceId) return { workspaceId: opts.workspaceId, harnessSlug: raw! };
-  // Otherwise resolve via the projects source of truth — and FAIL LOUD when the
-  // slug doesn't resolve, instead of silently defaulting to 'default' (which
-  // wrote a named harness's plans into the wrong workspace — the WI-148 bug).
+  // Otherwise resolve the workspace: first the projects projection, then (when it
+  // has no row — the common case for a hive/generic harness) the AUTHORITATIVE
+  // harness registry. FAIL LOUD only when NEITHER resolves, instead of silently
+  // defaulting to 'default' (which wrote a named harness's plans into the wrong
+  // workspace — the WI-148 bug).
   const workspaceId = await fill_workspace_id_from_projects(raw, {
     ...(opts.lookup ? { lookup: opts.lookup } : {}),
+    ...(opts.registryFallback ? { registryFallback: opts.registryFallback } : {}),
   });
   if (workspaceId === null) {
     throw new Error(
-      `resolvePlanScope: harness '${raw}' is not registered in harness_shared.projects ` +
-        `in any workspace, so its plan workspace cannot be resolved. Register the harness, ` +
-        `or pass an explicit workspaceId. (Refusing to silently default to ` +
-        `'${DEFAULT_WORKSPACE_ID}' — WI-148.)`,
+      `resolvePlanScope: harness '${raw}' is not registered in the harness registry ` +
+        `(harness_shared.harness_registry) or harness_shared.projects in any workspace, so ` +
+        `its plan workspace cannot be resolved. Register the harness, or pass an explicit ` +
+        `workspaceId. (Refusing to silently default to '${DEFAULT_WORKSPACE_ID}' — WI-148.)`,
     );
   }
   return { workspaceId, harnessSlug: raw! };

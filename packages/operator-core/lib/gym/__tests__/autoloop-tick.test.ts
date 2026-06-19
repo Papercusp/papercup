@@ -459,3 +459,59 @@ describe('runGymAutoloopTick — stale-running reclaim (crash recovery)', () => 
     expect(out.reclaimed).toEqual(['alpha']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P-020: cross-node single-runner filter (domain-generic-hive-architecture).
+// In a shared Hive each node sweeps its own node-local autoloop rows; the gate
+// keeps only the autoloops whose Hive THIS node is the elected authority for.
+// ---------------------------------------------------------------------------
+describe('runGymAutoloopTick — P-020 isHiveRunner single-runner filter', () => {
+  it('runs an eligible autoloop when this node IS the hive runner', async () => {
+    const { deps, rec } = makeDeps([autoloop({ harnessSlug: 'alpha' })], {
+      isHiveRunner: async () => true,
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('alpha');
+    expect(rec.cycleReqs).toHaveLength(1);
+  });
+
+  it('stands down (not-hive-runner) when this node is NOT the runner for the only candidate', async () => {
+    const { deps, rec } = makeDeps([autoloop({ harnessSlug: 'alpha' })], {
+      isHiveRunner: async () => false,
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('idle');
+    expect(out.reason).toBe('not-hive-runner');
+    expect(rec.cycleReqs).toEqual([]); // no cycle fired on the non-runner node
+  });
+
+  it('keeps only the candidates this node runs (one of two Hives)', async () => {
+    const { deps, rec } = makeDeps(
+      [autoloop({ harnessSlug: 'mine' }), autoloop({ harnessSlug: 'theirs' })],
+      { isHiveRunner: async (slug) => slug === 'mine' },
+    );
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('mine');
+    expect(rec.cycleReqs.map((r) => r.harnessSlug)).toEqual(['mine']);
+  });
+
+  it('FAILS OPEN per candidate: a gate error keeps the candidate (never stalls the loop)', async () => {
+    const { deps } = makeDeps([autoloop({ harnessSlug: 'alpha' })], {
+      isHiveRunner: async () => {
+        throw new Error('presence outage');
+      },
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran'); // fail-open → candidate retained → cycle runs
+    expect(out.harnessSlug).toBe('alpha');
+  });
+
+  it('unwired (no isHiveRunner) ⇒ no filter — standalone behaviour unchanged', async () => {
+    const { deps } = makeDeps([autoloop({ harnessSlug: 'alpha' })]); // no override
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('alpha');
+  });
+});

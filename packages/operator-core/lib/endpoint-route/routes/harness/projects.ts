@@ -425,12 +425,17 @@ const createHive = defineTool({
   path: '/harness/hives',
   auth: 'loopback',
   async handler(req) {
-    let body: { slug?: string; path?: string; parentDir?: string; wakeInSeconds?: number; learningPack?: string | null } = {};
+    let body: { slug?: string; path?: string; parentDir?: string; wakeInSeconds?: number; learningPack?: string | null; blueprintId?: string } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const slug = String(body.slug ?? '').trim();
     if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
       return Response.json({ error: 'a valid lowercase slug is required', code: 'invalid_slug' }, { status: 400 });
     }
+    // domain-generic-hive P-006: the picker's domain headings (work hive,
+    // Comb-blueprint) pick a NON-default kind:'hive' blueprint. Absent ⇒
+    // createHiveHarness's default (the coding `hive`). createHiveHarness
+    // resolves + validates kind:'hive', so an invalid id surfaces as a 400.
+    const blueprintId = typeof body.blueprintId === 'string' && body.blueprintId.trim() ? body.blueprintId.trim() : undefined;
     const { createHiveHarness } = await import('../../../agent-tools/hive/_create');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     // LINK-EXISTING ("every created Pot is a hive"): a `path` body field links an
@@ -449,6 +454,7 @@ const createHive = defineTool({
       ...(body.learningPack === null || typeof body.learningPack === 'string'
         ? { learningPack: body.learningPack === '' ? null : body.learningPack }
         : {}),
+      ...(blueprintId ? { blueprintId } : {}),
     });
     if (!res.ok) {
       const status = res.error === 'slug_exists' || res.error === 'dest_exists' ? 409 : 400;

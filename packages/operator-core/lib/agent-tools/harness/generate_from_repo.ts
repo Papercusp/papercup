@@ -1,7 +1,7 @@
 /**
  * harness:generate-from-repo — kind #1 harness creation (P-009 / D-023).
  *
- * Given an EXISTING git repo, deterministically infer an `extends: coding`
+ * Given an EXISTING git repo, deterministically infer an `extends: coding-factory`
  * blueprint override (cheap; no LLM — the gym optimizes the seed later, D-022),
  * validate it through the frozen engine, then COMPOSE `harness:create` to
  * scaffold the harness. The detection (`detectFromRepo`) covers the four D-023
@@ -57,7 +57,7 @@ function summarizeDetection(det: DetectionResult) {
 export default defineTool({
   name: 'harness:generate-from-repo',
   description:
-    'Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding` blueprint override; validates it; then creates the harness via harness:create. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation}.',
+    'Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding-factory` blueprint override; validates it; then creates the harness via harness:create. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation}.',
   guidance: {
     when: 'Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.',
     notWhen: 'The repo already has a .papercusp/blueprint.yaml (it is skipped — edit the file instead). Creating a repo-less / research harness, or one whose blueprint you author explicitly — harness:create with blueprintId/blueprint. Generate-from-plan (kinds #2/#3) is out of scope.',
@@ -92,7 +92,7 @@ export default defineTool({
       return text({ ok: true, skipped: true, reason: det.skip.reason, detection: summarizeDetection(det) });
     }
 
-    // 2. Map detection → an `extends: coding` override, and validate it through the engine.
+    // 2. Map detection → an `extends: coding-factory` override, and validate it through the engine.
     const override = detectionToOverride(args.slug, det);
     const validation = resolveAndValidate(override);
     if (validation.parseError || !validation.ok) {

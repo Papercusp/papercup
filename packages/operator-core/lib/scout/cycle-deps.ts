@@ -209,6 +209,8 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
           ...roster,
           ...weighting,
           ...(primingBlocks.length ? { priming: primingBlocks.join('\n\n') } : {}),
+          // P-010: per-blueprint ideator mission framing (default ⇒ byte-identical).
+          mission: scoutConfig.framing.ideatorMission,
         })
       ).ideas;
     },
@@ -217,6 +219,8 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
         await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall }, {
           novelty: scoutConfig.novelty,
           bucket: scoutConfig.buckets,
+          // P-010: per-blueprint critic mission framing (default ⇒ byte-identical).
+          critic: { mission: scoutConfig.framing.criticMission },
         })
       ).critiques,
     recombine: async (scored, ctx) =>

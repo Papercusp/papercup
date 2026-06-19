@@ -256,15 +256,29 @@ function resolveOperatorAppRoot(): string {
  * Tauri sidecar layout where `__dirname` collapses to `sidecar/`.
  */
 function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean, profile = 'engineer'): string[] {
-  const file = `papercusp-su-${profile}.tools.md`;
-  const fromRoot = [path.join(operatorAppRoot, 'prompts', file)];
-  if (explicitRoot) return fromRoot;
-  const sidecarRoot = process.cwd();
-  return [
-    ...fromRoot,
-    path.join(sidecarRoot, 'apps', 'operator', 'prompts', file),
-    path.join(sidecarRoot, 'prompts', file),
-  ];
+  // Profile-specific base, then the ENGINEER base as a graceful fallback for any
+  // non-engineer profile (domain-generic-hive-architecture P-025): a `generic`
+  // (non-coding work-hive) launch has no `papercusp-su-generic.tools.md` of its own
+  // yet, so it degrades to the engineer base playbook — its domain context comes from
+  // the per-hive su override + a NO repo-guide splice (role-launch-spec, profile=generic),
+  // not a bespoke base. `power` has its own file so the fallback never triggers for it.
+  // Only GENERIC gets the engineer fallback (it has no bespoke file by design). Every
+  // OTHER profile keeps the strict single-candidate behavior so a typo'd/missing profile
+  // file still THROWS (defense-in-depth alongside the bootstrap-su allow-list) rather than
+  // silently masking to engineer.
+  const files = profile === 'generic'
+    ? [`papercusp-su-${profile}.tools.md`, 'papercusp-su-engineer.tools.md']
+    : [`papercusp-su-${profile}.tools.md`];
+  const roots = explicitRoot
+    ? [path.join(operatorAppRoot, 'prompts')]
+    : [
+        path.join(operatorAppRoot, 'prompts'),
+        path.join(process.cwd(), 'apps', 'operator', 'prompts'),
+        path.join(process.cwd(), 'prompts'),
+      ];
+  // Specificity-first: try the profile-specific file in every root before the
+  // engineer fallback in every root, so a real generic file (if later authored) wins.
+  return files.flatMap((file) => roots.map((r) => path.join(r, file)));
 }
 
 function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {

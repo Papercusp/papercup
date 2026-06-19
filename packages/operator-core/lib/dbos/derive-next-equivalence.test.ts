@@ -20,7 +20,7 @@ import { classifyDecision } from './orchestrator-decide';
 // The spine under test = the real shipped coding blueprint, parsed through the
 // validator-of-record (not a hand-built fixture).
 const codingYaml = parseYaml(
-  readFileSync(harnessPath('blueprints', 'coding', 'blueprint.yaml'), 'utf8'),
+  readFileSync(harnessPath('blueprints', 'coding-factory', 'blueprint.yaml'), 'utf8'),
 );
 const spine = BlueprintSchema.parse(codingYaml).spine;
 

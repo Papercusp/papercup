@@ -753,3 +753,47 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
     unmockSteeringDeps();
   });
 });
+
+describe('resolveNamedQueryV2 — fleetAssignments.byHarness (workspace scoping)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('is registered in knownQueryNamesV2', () => {
+    expect(knownQueryNamesV2()).toContain('fleetAssignments.byHarness');
+  });
+
+  // Regression: the "Working" Agents panel rides a request stamped with THIS
+  // window's workspace (x-papercusp-workspace → ALS → activeWorkspaceId()). The
+  // resolver must thread that workspace into listFleetAssignments — filtering by
+  // the harness slug ALONE surfaced fleet rows from every workspace, so the panel
+  // never re-scoped on a workspace switch (the same bug class as the unscoped
+  // sessions roster). Mirrors the sibling hiveRoster.byHarness, which already
+  // scopes this way.
+  it('threads the active workspace into the fleet read (not just the harness slug)', async () => {
+    const listFleetAssignments = vi.fn(async () => []);
+    vi.doMock('../fleet/assignments', () => ({
+      listFleetAssignments,
+      groupByAgent: vi.fn(() => []),
+    }));
+    vi.doMock('../adv-sessions', () => ({ listAdvSessions: vi.fn(async () => []) }));
+    vi.doMock('@papercusp/agent-mcp', () => ({
+      classifyAgentPane: vi.fn(() => ({ kind: 'su', driveMode: 'manual' })),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('fleetAssignments.byHarness', { harnessSlug: 'myharn' })) as unknown[];
+    expect(rows).toEqual([]);
+    expect(listFleetAssignments).toHaveBeenCalledTimes(1);
+    expect(listFleetAssignments.mock.calls[0]?.[0]).toEqual({
+      harness: 'myharn',
+      workspaceId: 'ws-active',
+    });
+
+    vi.doUnmock('../fleet/assignments');
+    vi.doUnmock('../adv-sessions');
+    vi.doUnmock('@papercusp/agent-mcp');
+    vi.doUnmock('../workspace-registry');
+  });
+});

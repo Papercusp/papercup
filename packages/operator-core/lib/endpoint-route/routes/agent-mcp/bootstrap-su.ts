@@ -433,12 +433,14 @@ const post = defineTool({
     const harnessSlug = body.harness_slug?.trim() || null;
     const planSlug = body.plan_slug?.trim() || null;
     const callerCwd = body.cwd?.trim() || null;
-    // P-023: playbook profile. Only 'engineer' | 'power' are valid base
-    // playbooks (prompts/papercusp-su-<profile>.tools.md); anything else → 400
-    // so a typo doesn't silently fall back. Omitted → engineer.
+    // P-023: playbook profile. Valid base playbooks (prompts/papercusp-su-<profile>.tools.md):
+    // 'engineer' (working ON papercusp) | 'power' (managing an external repo) |
+    // 'generic' (a NON-CODING work hive — domain-generic-hive-architecture P-025: skips
+    // papercup's repo CLAUDE.md, pulls domain context from the per-hive su override).
+    // Anything else → 400 so a typo doesn't silently fall back. Omitted → engineer.
     const profileRaw = body.profile?.trim() || null;
-    if (profileRaw && profileRaw !== 'engineer' && profileRaw !== 'power') {
-      return jsonRes({ status: 'error', error: `profile must be engineer|power (got ${profileRaw.slice(0, 24)})` }, 400);
+    if (profileRaw && profileRaw !== 'engineer' && profileRaw !== 'power' && profileRaw !== 'generic') {
+      return jsonRes({ status: 'error', error: `profile must be engineer|power|generic (got ${profileRaw.slice(0, 24)})` }, 400);
     }
     const profile = profileRaw ?? 'engineer';
 

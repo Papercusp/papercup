@@ -23,7 +23,14 @@ import type { ArmAttempt, BenchTask, GradeResult } from '../types';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
-const MIGRATIONS = ['291-benchmark-reproducibility.sql', '292-benchmark-hive-layer.sql'];
+// 302 adds benchmark_run_result.score (standalone ALTER, no dep on 296) — emitRollout
+// now writes it, so the fresh-container schema must include it or the test errors with
+// `column "score" of relation "benchmark_run_result" does not exist`.
+const MIGRATIONS = [
+  '291-benchmark-reproducibility.sql',
+  '292-benchmark-hive-layer.sql',
+  '302-bench-run-score.sql',
+];
 const WS = 'bench-repro-test-ws';
 const RUN = 'run-pilot-1';
 

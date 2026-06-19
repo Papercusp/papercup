@@ -308,6 +308,11 @@ import './capability/fetch';
 // Read-only verification exec (EI-524 / P-035): typecheck/test via fixed commands,
 // the sanctioned inspect path for confined bees (capability:bash is envelope-gated).
 import './capability/inspect';
+// Bee-operated SANDBOX desktop (computer-tool-plan): screenshot/click/type via
+// xdotool against a LEASED Xvfb display (never host :0). Display resolved
+// server-side from the lease env; dormant (errors "no desktop leased") until a
+// hive desktop is provisioned. Pairs with deployment/desktop provisioning.
+import './computer/computer';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './dev/service_health';
@@ -587,6 +592,10 @@ import './substrate/revoke-contributor';
 import './blueprint/validate';
 import './blueprint/create';
 import './blueprint/extend';
+// domain-generic-hive-architecture-2026-06-18 P-016 — blueprint:publish, the
+// publish entry point (mirror of learning_packs:publish): promote a local/private
+// blueprint to the published/installed tier via the shared Cupboard core.
+import './blueprint/publish';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';

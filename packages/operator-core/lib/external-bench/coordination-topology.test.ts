@@ -41,7 +41,7 @@ test('resolveCoordinationSpec — per-task arms carry the aggregate field (ensem
 });
 
 test('resolveCoordinationSpec — the hive blueprint is the CENTRAL pole', () => {
-  const hive = resolveCoordinationSpec(loadBuiltinBlueprint('hive').blueprint);
+  const hive = resolveCoordinationSpec(loadBuiltinBlueprint('coding').blueprint);
   assert.equal(hive.central, true, 'kind:hive ⇒ central Queen');
   assert.equal(hive.claimModel, 'decider-dispatch', 'central = decider-dispatch, not self-claim');
 });

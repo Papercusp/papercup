@@ -97,25 +97,29 @@ export async function listEscalations(
 export async function listEscalationsPaginated(
   opts: { status?: 'open' | 'resolved'; maxRecords?: number } = {},
 ): Promise<{ escalations: EscalationRecord[]; truncated: boolean; total: number }> {
-  const all = await coordLog.readEvents('escalations');
-  const maxRecords = opts.maxRecords ?? 1000; // Default 1000 per call
-  const truncated = all.length > maxRecords;
-  
+  // EI-1548: bound the READ at the storage layer instead of loading the ENTIRE
+  // escalations surface into memory and truncating after. Read a NEWEST-FIRST
+  // window of recent events (opens + their sibling resolves) and fold within it;
+  // `truncated` flags that older escalations exist beyond the window. The old
+  // 1000-default returned a ~9MB dump over a ~13k backlog.
+  const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
+  const recent = await coordLog.readEventsBounded('escalations', { limit: maxRecords });
+  const truncated = recent.length >= maxRecords;
+
   const opens: EscalationRecord[] = [];
   const resolves: EscalationResolvedEvent[] = [];
-  
-  // Load up to maxRecords events, split into opens + resolves
-  for (let i = 0; i < Math.min(all.length, maxRecords); i++) {
-    const rec = all[i];
+  for (const rec of recent) {
     if (rec.kind === 'escalation') opens.push(rec as EscalationRecord);
     else if (rec.kind === 'escalation_resolved') {
       const ev = rec as EscalationResolvedEvent;
       if (typeof ev.related_msg_id === 'string') resolves.push(ev);
     }
   }
-  
+
   const escalations = foldEscalations(opens, resolves, opts);
-  return { escalations, truncated, total: all.length };
+  // `total` = events SCANNED in the bounded window (NOT the full backlog — that
+  // would need an unbounded count); `truncated` signals more exist beyond it.
+  return { escalations, truncated, total: recent.length };
 }
 
 /**

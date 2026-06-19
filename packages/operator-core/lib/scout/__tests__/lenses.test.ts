@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import type { CorpusDigest } from '../types';
 import { CREATIVE_LENSES } from '../types';
 import {
+  DEFAULT_IDEATOR_MISSION,
   DISTANT_DOMAINS,
   LENS_REGISTRY,
   assignDistantDomain,
@@ -171,6 +172,33 @@ describe('stepping-stone priming (P-012, D-008 — archive→Scout)', () => {
   it('keeps the four lens system prompts pairwise-distinct even under priming', () => {
     const systems = CREATIVE_LENSES.map(
       (lens) => buildIdeatorPrompt({ lens, digest, seedDomain: assignDistantDomain(0), priming }).system,
+    );
+    expect(new Set(systems).size).toBe(CREATIVE_LENSES.length);
+  });
+});
+
+describe('buildIdeatorPrompt — mission framing (P-010 prompt-overlay seam)', () => {
+  it('defaults to the coding-platform mission when none is supplied (byte-identical lead)', () => {
+    const sys = buildIdeatorPrompt({ lens: 'first-principles', digest }).system;
+    expect(sys.startsWith(DEFAULT_IDEATOR_MISSION)).toBe(true);
+    expect(sys).toContain('multi-agent coding platform');
+  });
+
+  it('a blueprint mission replaces the default lead, leaving the lens stance + JSON contract intact', () => {
+    const mission = 'You are a SCOUT for a WORK hive that ships deliverables — leap, do not iterate.';
+    const sys = buildIdeatorPrompt({ lens: 'first-principles', digest, mission }).system;
+    expect(sys.startsWith(mission)).toBe(true);
+    expect(sys).not.toContain('multi-agent coding platform');
+    // the engine MECHANISM (lens stance + grounding rules + JSON output contract) is untouched
+    expect(sys).toContain(LENS_REGISTRY['first-principles'].stance);
+    expect(sys).toContain('addressesPatternRefs');
+    expect(sys).toContain('"ideas"');
+  });
+
+  it('the mission override does not collapse forced diversity across lenses', () => {
+    const mission = 'WORK-hive scout mission.';
+    const systems = CREATIVE_LENSES.map(
+      (lens) => buildIdeatorPrompt({ lens, digest, seedDomain: assignDistantDomain(0), mission }).system,
     );
     expect(new Set(systems).size).toBe(CREATIVE_LENSES.length);
   });

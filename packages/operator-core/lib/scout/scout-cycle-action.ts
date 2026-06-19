@@ -79,8 +79,36 @@ export function makeScoutCycleAction(
       console.log(`[scout-cycle] ${ctx.installSlug}: skipped — owner idle-activity toggle (scout) is OFF`);
       return;
     }
+    // P-015 (domain-generic-hive-architecture-2026-06-18 / D-005): layer the hive's
+    // settings-resident STRUCTURED scout delta (hive_settings.localBlueprint.scout)
+    // onto the routine payload's `scout` block, so the per-hive scout tuning the owner
+    // sets in /settings/hive-customization reaches the cycle — run.ts reads
+    // payload.scout → parseScoutConfigBlock → resolveScoutConfig. The per-hive scout
+    // routine ticks under the hive's HOME install_slug (provision-learning-loop.ts), so
+    // ctx.installSlug IS the hive home slug (the hive_settings scope). Fail-soft: any
+    // read failure (no hive row / PG down) ⇒ the payload is used unchanged — so this is
+    // behavior-neutral when no per-hive scout delta is set (the common case) and never
+    // breaks a tick. Shallow per-section merge: a hive delta section overrides the
+    // payload's (today the payload carries no scout block, so the delta layers over the
+    // engine defaults — exactly the D-005 per-hive-over-default intent).
+    let payloadTemplate = ctx.payloadTemplate;
+    try {
+      const { getHiveLocalBlueprintConfig } = await import('../hive-settings-store');
+      const delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, ctx.installSlug, 'scout');
+      if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+        const base = (payloadTemplate ?? {}) as Record<string, unknown>;
+        const baseScout =
+          base.scout && typeof base.scout === 'object' && !Array.isArray(base.scout)
+            ? (base.scout as Record<string, unknown>)
+            : {};
+        payloadTemplate = { ...base, scout: { ...baseScout, ...(delta as Record<string, unknown>) } };
+      }
+    } catch {
+      // hive_settings unavailable → use the routine payload as-is (behavior-neutral).
+    }
+
     const result = await runScoutCycleTick(
-      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payloadTemplate: ctx.payloadTemplate },
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payloadTemplate },
       {
         runCycle,
         buildDeps,

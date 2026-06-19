@@ -24,7 +24,7 @@ import {
 } from './harness/harness-shared-config-types';
 
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
-import { readRegistry } from './workspace-registry';
+import { readRegistry, activeWorkspaceId } from './workspace-registry';
 import { type Phase, phasePath } from './harness-phases';
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -232,6 +232,58 @@ export async function resolveProject(
     }
   } catch { /* registry unreadable → fall through to null */ }
   return null;
+}
+
+/**
+ * Resolve a harness slug → the workspace_id that carries it, via the AUTHORITATIVE
+ * harness registry (`harness_shared.harness_registry` — what hive:create /
+ * harness:create write and the work-items path reads). This is the de-facto
+ * source of truth for the generic/hive world; `harness_shared.projects` is only
+ * the org/department blueprint's PROJECTION (business cols owning_dept/vertical/
+ * budget; the sole non-test writer is execute-action.ts' project-create), so a
+ * non-papercup harness is resolvable HERE but absent THERE. Plan-scope resolution
+ * (resolvePlanScope → fill_workspace_id_from_projects) falls back to this so a
+ * hive's plans resolve the same way its work-items already do (closes the
+ * split-registry asymmetry — peers su-a7f66 / su-632e0166, sibling EI-1511).
+ *
+ * Deterministic + confined-by-default:
+ *   1. ACTIVE-workspace-FIRST — if the active session workspace carries the slug,
+ *      return it, so a scoped session resolves its OWN workspace and never a
+ *      foreign one (composes with the scoped-superuser workspace clamp, P-017 —
+ *      do not turn this into a cross-workspace read vector).
+ *   2. else cross-workspace fallback for an UNSCOPED caller — scan every
+ *      workspace's registry: exactly one carrier → that workspace; TWO+ → THROW
+ *      (a genuine cross-workspace slug collision, never picked silently); none →
+ *      null (the caller fails loud).
+ */
+export async function resolveWorkspaceForHarnessSlug(slug: string): Promise<string | null> {
+  const raw = slug?.trim();
+  if (!raw) return null;
+  // 1. Active-workspace-first (confined by default).
+  const activeWs = activeWorkspaceId();
+  try {
+    const activeReg = await loadHarnessRegistry(activeWs);
+    if (activeReg.projects.some((p) => p.slug === raw)) return activeWs;
+  } catch { /* active registry unreadable → fall through to the cross-ws scan */ }
+  // 2. Cross-workspace fallback (unscoped caller) — collision-aware.
+  const carriers = new Set<string>();
+  try {
+    for (const ws of readRegistry().workspaces) {
+      if (ws.id === activeWs) continue; // already checked in step 1
+      const reg = await loadHarnessRegistry(ws.id);
+      if (reg.projects.some((p) => p.slug === raw)) carriers.add(ws.id);
+    }
+  } catch { /* registry unreadable → treat as no cross-ws carriers */ }
+  if (carriers.size === 0) return null;
+  if (carriers.size > 1) {
+    throw new Error(
+      `resolveWorkspaceForHarnessSlug: harness slug '${raw}' is registered in ` +
+        `${carriers.size} workspaces (${[...carriers].join(', ')}) and none is the active ` +
+        `workspace ('${activeWs}'). Ambiguous cross-workspace collision — pass an explicit ` +
+        `workspaceId to disambiguate.`,
+    );
+  }
+  return [...carriers][0]!;
 }
 
 export function harnessDir(project: ProjectEntry): string {

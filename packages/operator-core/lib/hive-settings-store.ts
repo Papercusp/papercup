@@ -188,6 +188,17 @@ export async function setHiveInstancePromptOverride(
   );
 }
 
+/** Delete a Hive instance's prompt override for a role (idempotent). Federates so a
+ *  removed override leaves no stale materialized file on any peer. */
+export async function deleteHiveInstancePromptOverride(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  role: string,
+  sql?: Sql,
+): Promise<boolean> {
+  return deleteHiveSetting(workspaceId, hiveHomeSlug, promptOverrideSettingKey(role), sql);
+}
+
 /** All per-role prompt overrides set on a Hive instance (role -> markdown). */
 export async function listHiveInstancePromptOverrides(
   workspaceId: string,
@@ -203,4 +214,117 @@ export async function listHiveInstancePromptOverrides(
     }
   }
   return out;
+}
+
+// ── Hive-INSTANCE structured config deltas (the local-tier blueprint config) ──────
+// domain-generic-hive-architecture-2026-06-18 P-015 / D-005. A role's PROSE persona
+// rides `promptOverride.<role>` above; but the hive's STRUCTURED tuning (e.g. how the
+// scout loop ideates/critiques/routes for this domain — a `ScoutConfigOverride`) is
+// config, not prose, so prose-only `promptOverride` can't express it (D-005). Each
+// config section is stored as a JSON-serializable `hive_settings` value under key
+// `localBlueprint.<section>` — the settings-resident, federated local-tier delta. It is
+// canonical + syncs over the Hive peer-log like any other setting; the consuming loop
+// (e.g. scout) reads/parses it defensively (scout/config.ts parseScoutConfigBlock).
+
+export const LOCAL_BLUEPRINT_CONFIG_PREFIX = 'localBlueprint.';
+
+/** The `hive_settings` key a structured config section is stored under. */
+export function localBlueprintConfigKey(section: string): string {
+  return `${LOCAL_BLUEPRINT_CONFIG_PREFIX}${section}`;
+}
+
+/** Get a Hive instance's structured config delta for a section (null when unset). */
+export async function getHiveLocalBlueprintConfig(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  section: string,
+  sql?: Sql,
+): Promise<unknown | null> {
+  const rec = await getHiveSetting(workspaceId, hiveHomeSlug, localBlueprintConfigKey(section), sql);
+  return rec ? rec.value : null;
+}
+
+/**
+ * Set (upsert) a Hive instance's structured config delta for a section. The value is
+ * any JSON-serializable object (e.g. a `ScoutConfigOverride`). Federates. Pass
+ * `value: null`/`undefined` (or call {@link deleteHiveLocalBlueprintConfig}) to clear.
+ */
+export async function setHiveLocalBlueprintConfig(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  section: string,
+  value: unknown,
+  sql?: Sql,
+): Promise<void> {
+  await setHiveSetting(
+    { workspaceId, hiveHomeSlug, settingKey: localBlueprintConfigKey(section), value },
+    sql,
+  );
+}
+
+/** Delete a Hive instance's structured config delta for a section (idempotent). Federates. */
+export async function deleteHiveLocalBlueprintConfig(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  section: string,
+  sql?: Sql,
+): Promise<boolean> {
+  return deleteHiveSetting(workspaceId, hiveHomeSlug, localBlueprintConfigKey(section), sql);
+}
+
+/** All structured config deltas set on a Hive instance (section -> value). */
+export async function listHiveLocalBlueprintConfig(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  sql?: Sql,
+): Promise<Record<string, unknown>> {
+  const all = await listHiveSettings(workspaceId, hiveHomeSlug, sql);
+  const out: Record<string, unknown> = {};
+  for (const rec of all) {
+    if (rec.settingKey.startsWith(LOCAL_BLUEPRINT_CONFIG_PREFIX) && rec.value != null) {
+      const section = rec.settingKey.slice(LOCAL_BLUEPRINT_CONFIG_PREFIX.length);
+      out[section] = rec.value;
+    }
+  }
+  return out;
+}
+
+// ── Queen-home pubkey (the split-brain-Queen guard) ──────────────────────────
+// domain-generic-hive-architecture-2026-06-18 P-021 (I2 / closes queen-guard.ts
+// D-008). The DEVICE PUBKEY of the Swarm that runs this Hive's Queen — recorded at
+// hive:create (the creating node IS the local Queen home) so a steering turn can
+// assert HOME-SWARM before steering (queen-guard.evaluateQueenTurnGate, consulted by
+// steering-lease.checkSteeringLease). It rides `hive_settings` so it federates to
+// every Swarm of the Hive like any other setting. Unset ⇒ the steering lease falls
+// back to the lock-authority election (today's behaviour — the gate fails open, so a
+// convention-only Hive keeps working). SAME identity space as lockAuthorityForHive's
+// election key + the announce identity: the raw 32-byte Ed25519 device pubkey, base64
+// (resolveUsageActor's `devicePubkey`).
+
+/** The `hive_settings` key the Hive's queen-home device pubkey is stored under. */
+export const QUEEN_HOME_PUBKEY_SETTING_KEY = 'queen-home-pubkey';
+
+/** Get the Hive's recorded queen-home device pubkey (null when unset). */
+export async function getQueenHomePubkey(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  sql?: Sql,
+): Promise<string | null> {
+  const rec = await getHiveSetting(workspaceId, hiveHomeSlug, QUEEN_HOME_PUBKEY_SETTING_KEY, sql);
+  if (!rec || rec.value == null) return null;
+  const v = typeof rec.value === 'string' ? rec.value : String(rec.value);
+  return v.length > 0 ? v : null;
+}
+
+/** Record (upsert) the Hive's queen-home device pubkey. Federates. */
+export async function setQueenHomePubkey(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  devicePubkey: string,
+  sql?: Sql,
+): Promise<void> {
+  await setHiveSetting(
+    { workspaceId, hiveHomeSlug, settingKey: QUEEN_HOME_PUBKEY_SETTING_KEY, value: devicePubkey },
+    sql,
+  );
 }

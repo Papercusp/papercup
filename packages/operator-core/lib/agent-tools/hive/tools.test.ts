@@ -293,7 +293,7 @@ describe('hive:wake', () => {
       string,
       { installSlug: string; workspaceId: string; kickoff: string },
     ];
-    expect(bp).toBe('hive');
+    expect(bp).toBe('coding');
     expect(input.installSlug).toBe('papercup');
     expect(input.workspaceId).toBe('ws-test');
     expect(input.kickoff).toContain('prod fire');

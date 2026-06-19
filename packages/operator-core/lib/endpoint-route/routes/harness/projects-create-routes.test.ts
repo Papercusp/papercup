@@ -211,4 +211,23 @@ describe('POST /api/harness/hives — createHive error→status map (Gap 8)', ()
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: 'path_not_found' });
   });
+
+  // domain-generic-hive P-006: the picker's domain headings (work hive,
+  // Comb-blueprint) pass a non-default kind:'hive' blueprint id; absent ⇒
+  // createHiveHarness's own default (the coding `hive`).
+  it('passes a trimmed blueprintId through when the body carries one', async () => {
+    createHiveHarness.mockResolvedValue({ ok: true, slug: 'good-slug', path: '/p', waked: false });
+    await post(createHiveRoute, { slug: 'good-slug', parentDir: '/h', blueprintId: '  work  ' });
+    expect(createHiveHarness).toHaveBeenCalledTimes(1);
+    const arg = createHiveHarness.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).toMatchObject({ slug: 'good-slug', blueprintId: 'work' }); // trimmed
+  });
+
+  it('omits blueprintId (createHiveHarness defaults to coding) when the body has none', async () => {
+    createHiveHarness.mockResolvedValue({ ok: true, slug: 'good-slug', path: '/p', waked: false });
+    await post(createHiveRoute, { slug: 'good-slug', parentDir: '/h' });
+    expect(createHiveHarness).toHaveBeenCalledTimes(1);
+    const arg = createHiveHarness.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).not.toHaveProperty('blueprintId');
+  });
 });

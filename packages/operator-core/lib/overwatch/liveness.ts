@@ -37,7 +37,7 @@ import { computeNextFireAt } from '../harness/routines/cron';
 export const OVERWATCH_ROLE = 'overwatch';
 
 /** The hive blueprint overwatch monitors (D-005 per-hive scope; v1 = one hive). */
-export const OVERWATCH_BLUEPRINT_ID = 'hive';
+export const OVERWATCH_BLUEPRINT_ID = 'coding';
 
 /** The one-shot wake routine's name (per-harness unique with install_slug).
  *  Deliberately distinct from `hive-wake` so the two wake channels never

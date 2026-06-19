@@ -126,6 +126,17 @@ export interface ScoutCycleDeps {
    * unit-test contract — runScoutTick's structural self-gates still bound it).
    */
   workspaceCeilingGate?: typeof scoutWorkspaceCeilingGate;
+  /**
+   * P-019 cross-node SINGLE-RUNNER gate (boot wires checkHiveSingleRunner).
+   * Consulted FIRST — before any cadence/budget work: in a SHARED Hive scout's
+   * single-flight claim (autoloop.claimFire) is per-NODE only, so each node's
+   * embedded PG wins its own claim and N nodes run N scout loops. This gate makes
+   * only the per-Hive ELECTED authority (lowest-live-pubkey, lockAuthorityForHive)
+   * run the cycle; non-runner nodes stand down with reason 'not-hive-runner'.
+   * Unwired ⇒ no gate (the hermetic unit-test contract); at N=1 / standalone the
+   * gate resolves to run:true (authority / not-in-hive), so behaviour is unchanged.
+   */
+  hiveRunnerGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ run: boolean; reason?: string }>;
 }
 
 /**
@@ -139,6 +150,22 @@ export async function runScoutCycleTick(
   deps: ScoutCycleDeps,
 ): Promise<ScoutTickResult> {
   const cfg = parseScoutCycleConfig(input.payloadTemplate);
+
+  // P-019 (I3): the cross-node SINGLE-RUNNER gate — consulted FIRST, before any
+  // cadence/budget/ceiling work. Scout's single-flight (autoloop.claimFire) is a
+  // per-NODE CAS, so in a SHARED Hive every node's embedded PG wins its own claim
+  // and N nodes run N scout loops (duplicate ideation + duplicate routed backlog +
+  // divergent learning). This gate stands a non-runner node down so only the
+  // elected per-Hive authority (lowest-live-pubkey) fires the cycle. Fail-open by
+  // contract (checkHiveSingleRunner never throws → run:true on any resolution
+  // error); unwired ⇒ no gate (hermetic unit tests); at N=1 / standalone it always
+  // resolves run:true, so the standalone path is byte-for-byte unchanged.
+  if (deps.hiveRunnerGate) {
+    const gate = await deps.hiveRunnerGate({ workspaceId: input.workspaceId, installSlug: input.installSlug });
+    if (!gate.run) {
+      return { fired: false, reason: 'not-hive-runner' };
+    }
+  }
 
   // P-051 (D-005): the WORKSPACE-WIDE scout spend ceiling — consulted BEFORE the
   // tick. The per-hive per-cycle cap bounds ONE cycle but cannot see the fleet;

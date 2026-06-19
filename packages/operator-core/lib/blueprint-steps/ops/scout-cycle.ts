@@ -86,11 +86,21 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
     // routine path (behavior-neutral, D-004). Lazy: only when no test deps wired.
     let deps = _deps;
     if (!deps) {
-      const [{ productionScoutRunner }, { recordScoutTickToGovernor }] = await Promise.all([
-        import('../../scout/register-scout-action.js'),
-        import('../../learning-governor/registrants.js'),
-      ]);
-      deps = { runCycle: productionScoutRunner, recordGovernor: recordScoutTickToGovernor };
+      const [{ productionScoutRunner }, { recordScoutTickToGovernor }, { checkHiveSingleRunner }] =
+        await Promise.all([
+          import('../../scout/register-scout-action.js'),
+          import('../../learning-governor/registrants.js'),
+          import('../../hive-single-runner.js'),
+        ]);
+      deps = {
+        runCycle: productionScoutRunner,
+        recordGovernor: recordScoutTickToGovernor,
+        // P-019: stand down on a SHARED-Hive node that is not the elected per-Hive
+        // single runner, so only ONE node's scout loop fires across the Hive. At
+        // N=1 / standalone this always resolves run:true (authority / not-in-hive).
+        hiveRunnerGate: ({ workspaceId: ws, installSlug }) =>
+          checkHiveSingleRunner(ws, installSlug),
+      };
     }
 
     const tick = await runScoutCycleTick(

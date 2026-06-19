@@ -108,10 +108,18 @@ export interface ScoutTickResult {
   fired: boolean;
   /**
    * Cadence reason when fired/withheld, or a structural-gate refusal:
-   * 'circuit' / 'claim-lost' / 'cycle-error', or 'workspace-ceiling' (P-051 —
-   * the workspace-wide scout spend ceiling refused this cycle BEFORE the tick).
+   * 'circuit' / 'claim-lost' / 'cycle-error', 'workspace-ceiling' (P-051 — the
+   * workspace-wide scout spend ceiling refused this cycle BEFORE the tick), or
+   * 'not-hive-runner' (P-019 — a SHARED-Hive node that is NOT the elected per-Hive
+   * single runner stood down so only ONE node's scout loop fires across the Hive).
    */
-  reason: ScoutCadenceVerdict['reason'] | 'circuit' | 'claim-lost' | 'cycle-error' | 'workspace-ceiling';
+  reason:
+    | ScoutCadenceVerdict['reason']
+    | 'circuit'
+    | 'claim-lost'
+    | 'cycle-error'
+    | 'workspace-ceiling'
+    | 'not-hive-runner';
   cycleId?: string;
   routedCount?: number;
   /** The fired cycle's reported LLM spend (cycle.costUsd) — FB-01 learning-governor ledgering. */

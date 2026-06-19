@@ -17,6 +17,7 @@ import {
   type RosterFilters,
 } from '@/app/adv/sessions/SessionsRosterView';
 import { SessionsRosterProvider } from '@/app/adv/sessions/SessionsRosterContext';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useCreateScope, usePlanListMaps, useItemPlanFilter } from './use-create-data';
 
 export default function SessionsPanel(_props?: Partial<PanelComponentProps>) {
@@ -29,9 +30,14 @@ export default function SessionsPanel(_props?: Partial<PanelComponentProps>) {
   const [sRole, setSRole] = useQueryState('sRole', parseAsString);
   const [sFile, setSFile] = useQueryState('sFile', parseAsString.withDefault(''));
   const [sStale, setSStale] = useQueryState('sStale', parseAsBoolean.withDefault(false));
+  // Scope the roster poll to THIS window's workspace so queen/scout/overwatch
+  // (and every live agent) re-resolve when the workspace is switched. Omitting
+  // it makes `/api/adv/roster` unscoped ("every workspace") — the switch then
+  // appears to do nothing.
+  const workspaceId = useWorkspaceId();
 
   return (
-    <SessionsRosterProvider enabled>
+    <SessionsRosterProvider workspaceId={workspaceId} enabled>
       <TwoPaneShell
         className="pc-twopane--sessions"
         list={

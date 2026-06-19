@@ -47,6 +47,7 @@ import {
   type RosterFilters,
 } from '@/app/adv/sessions/SessionsRosterView';
 import { SessionsRosterProvider } from '@/app/adv/sessions/SessionsRosterContext';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import TwoPaneShell from '@/app/_components/layout/TwoPaneShell';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
@@ -149,6 +150,11 @@ const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
 
 export default function PlansClient() {
   const t = useLexicon();
+  // The roster (queen/scout/overwatch + all live agents) must be scoped to the
+  // workspace THIS window is in — `/api/adv/roster?workspace=<id>`. Without it
+  // the fetch is unscoped ("every workspace") and switching workspaces never
+  // changes the roster. Read the window's active workspace and thread it in.
+  const workspaceId = useWorkspaceId();
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — AdvShell owns
   // `?slug=` for the active harness (a global query param shared across
   // every /adv tab).
@@ -851,7 +857,7 @@ export default function PlansClient() {
             needsDecisionPlans={needsDecisionPlans}
           />
         ) : (
-          <SessionsRosterProvider enabled={view === 'sessions'}>
+          <SessionsRosterProvider workspaceId={workspaceId} enabled={view === 'sessions'}>
             <TwoPaneShell
               className={view === 'sessions' ? 'pc-twopane--sessions' : undefined}
               list={

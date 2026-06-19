@@ -12,7 +12,7 @@ import {
 
 const baseSpec = (): InstanceSpec => ({
   specVersion: 1,
-  blueprintRef: { id: 'coding' },
+  blueprintRef: { id: 'coding-factory' },
   repoSha: 'sha123',
   deploymentConfig: {} as InstanceSpec['deploymentConfig'],
   genome: { prompts: {}, config: {} },

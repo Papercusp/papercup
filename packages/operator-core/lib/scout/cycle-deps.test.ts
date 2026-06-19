@@ -11,13 +11,14 @@
  */
 import { describe, it, expect } from 'vitest';
 import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
+import { resolveScoutConfig } from './config';
 import { makeFakeScoutLlm, fixtureProposal } from './test-support';
 import { GRADER_FEEDBACK_HEADING, type GradedIdeaView } from './ideator-feedback-priming';
 import type { StateOfHiveReaders } from './corpus-digest';
 import type { CorpusEntry } from './critique-core';
 import type { ArchiveEliteView, ArchivePort } from './gym-bridge';
 import type { PlanDraftCreator } from './router-deps';
-import type { CorpusDigest, ScoutLlmCall } from './types';
+import type { CorpusDigest, Idea, ScoutLlmCall } from './types';
 
 const EMPTY_READERS: StateOfHiveReaders = {
   completions: async () => [],
@@ -181,6 +182,69 @@ describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading
       expect(prompt).not.toContain(GYM_HEADING);
       expect(prompt).not.toContain(GRADER_FEEDBACK_HEADING);
     }
+  });
+});
+
+describe('buildScoutCycleDeps — P-010 per-blueprint scout framing', () => {
+  const DIGEST: CorpusDigest = {
+    recurringFriction: [{ summary: 'lock contention on shared tree', ref: 'wi:F-1' }],
+    timeTokenSinks: [],
+    chronicDeferrals: [],
+    capabilityGaps: [],
+    headline: 'busy week',
+  };
+  // Hermetic ideate inputs: empty archive + empty grader reader ⇒ no PG, no priming.
+  const HERMETIC = {
+    archive: { listElites: () => [], seed: () => ({ admitted: false, nicheKey: '' }) } as ArchivePort,
+    graderFeedbackReader: async () => [] as GradedIdeaView[],
+  };
+  const WORK = {
+    ideatorMission: 'You are a SCOUT for a WORK hive that ships deliverables.',
+    criticMission: 'You are TWO critics judging an idea proposed for a WORK hive.',
+  };
+
+  /** Capturing fake recording each call's SYSTEM prompt; returns the shape each step needs. */
+  function capturingSystems(): { systems: string[]; llmCall: ScoutLlmCall } {
+    const systems: string[] = [];
+    const llmCall: ScoutLlmCall = async (opts) => {
+      const system = opts.system ?? '';
+      systems.push(system);
+      const json = system.includes('NOVELTY critic')
+        ? { conceptualNovelty: 0.9, feasibility: 0.9, rationale: 'ok' }
+        : { ideas: [{ title: 'T', body: 'B', mechanism: 'M', addressesPatternRefs: ['wi:F-1'] }] };
+      return { text: '', json, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+    };
+    return { systems, llmCall };
+  }
+
+  it('threads framing.ideatorMission into every ideator system prompt', async () => {
+    const { deps } = build({ ...HERMETIC, scoutConfig: resolveScoutConfig({ framing: WORK }) });
+    const { systems, llmCall } = capturingSystems();
+    await deps.ideate(DIGEST, { llmCall, maxIdeators: 2 });
+    expect(systems).toHaveLength(2);
+    for (const sys of systems) {
+      expect(sys).toContain(WORK.ideatorMission);
+      expect(sys).not.toContain('multi-agent coding platform');
+      expect(sys).toContain('addressesPatternRefs'); // engine output contract preserved
+    }
+  });
+
+  it('threads framing.criticMission into the critic system prompt', async () => {
+    const { deps } = build({ scoutConfig: resolveScoutConfig({ framing: WORK }) });
+    const { systems, llmCall } = capturingSystems();
+    const i: Idea = { id: 'i1', lens: 'first-principles', title: 'x', body: 'y', mechanism: 'z', addressesPatternRefs: [] };
+    await deps.critique([i], { llmCall, corpus: [] });
+    expect(systems).toHaveLength(1);
+    expect(systems[0]).toContain(WORK.criticMission);
+    expect(systems[0]).not.toContain('multi-agent coding platform');
+    expect(systems[0]).toContain('FEASIBILITY critic'); // engine mechanism preserved
+  });
+
+  it('default config (no framing override) keeps the coding-platform framing', async () => {
+    const { deps } = build(HERMETIC); // no scoutConfig ⇒ DEFAULT_SCOUT_CONFIG
+    const { systems, llmCall } = capturingSystems();
+    await deps.ideate(DIGEST, { llmCall, maxIdeators: 1 });
+    expect(systems[0]).toContain('multi-agent coding platform');
   });
 });
 

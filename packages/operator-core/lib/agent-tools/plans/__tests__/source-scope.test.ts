@@ -23,6 +23,7 @@ import {
   resolvePlanScope,
   fill_workspace_id_from_projects,
   type ProjectsWorkspaceLookup,
+  type RegistryWorkspaceResolver,
 } from '../source';
 import { PAPERCUP_HARNESS_SLUG } from '../../../harness/register-papercup';
 import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
@@ -38,6 +39,21 @@ function lookupReturning(...workspaceIds: string[]): {
     return workspaceIds;
   };
   return { lookup, calls };
+}
+
+/** A registry-fallback seam returning a fixed result + recording the slug it saw.
+ *  Stands in for resolveWorkspaceForHarnessSlug so the projects-miss → registry
+ *  fallback branch is exercised with no PG. */
+function registryReturning(workspaceId: string | null): {
+  registryFallback: RegistryWorkspaceResolver;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const registryFallback: RegistryWorkspaceResolver = async (slug) => {
+    calls.push(slug);
+    return workspaceId;
+  };
+  return { registryFallback, calls };
 }
 
 describe('resolvePlanScope — papercup-primary short-circuit (WI-148 part-B)', () => {
@@ -91,11 +107,12 @@ describe('resolvePlanScope — concrete slug, workspace from the projects table'
 });
 
 describe('resolvePlanScope — fail-loud (NO silent default)', () => {
-  it('an unregistered slug (0 matches) THROWS — never silently defaults', async () => {
-    const { lookup } = lookupReturning(); // no matches
-    await expect(resolvePlanScope({ harnessSlug: 'zzz-never-registered', lookup })).rejects.toThrow(
-      /not registered in harness_shared\.projects/,
-    );
+  it('an unregistered slug (0 projects + 0 registry) THROWS — never silently defaults', async () => {
+    const { lookup } = lookupReturning(); // no projects matches
+    const { registryFallback } = registryReturning(null); // not in the registry either
+    await expect(
+      resolvePlanScope({ harnessSlug: 'zzz-never-registered', lookup, registryFallback }),
+    ).rejects.toThrow(/not registered in the harness registry/);
   });
 
   it('a same-name collision across workspaces (2+ matches) THROWS', async () => {
@@ -103,6 +120,29 @@ describe('resolvePlanScope — fail-loud (NO silent default)', () => {
     await expect(resolvePlanScope({ harnessSlug: 'dupe', lookup })).rejects.toThrow(
       /resolves to 2 workspaces/,
     );
+  });
+});
+
+describe('resolvePlanScope — registry fallback (projects miss → authoritative harness_registry)', () => {
+  it('0 projects matches → resolves via the registry fallback (the hive/generic case)', async () => {
+    const { lookup, calls } = lookupReturning(); // projects projection has no row
+    const { registryFallback, calls: regCalls } = registryReturning('hive-workspace');
+    const r = await resolvePlanScope({
+      harnessSlug: 'offsite-planner-demo',
+      lookup,
+      registryFallback,
+    });
+    expect(r).toEqual({ workspaceId: 'hive-workspace', harnessSlug: 'offsite-planner-demo' });
+    expect(calls).toEqual(['offsite-planner-demo']); // projects consulted first
+    expect(regCalls).toEqual(['offsite-planner-demo']); // then the registry fallback
+  });
+
+  it('a projects hit short-circuits — the registry fallback is NOT consulted', async () => {
+    const { lookup } = lookupReturning('ws-from-projects');
+    const { registryFallback, calls: regCalls } = registryReturning('should-not-be-used');
+    const r = await resolvePlanScope({ harnessSlug: 'dept-project', lookup, registryFallback });
+    expect(r).toEqual({ workspaceId: 'ws-from-projects', harnessSlug: 'dept-project' });
+    expect(regCalls).toEqual([]); // projects resolved → fallback skipped
   });
 });
 
@@ -129,9 +169,17 @@ describe('fill_workspace_id_from_projects', () => {
     expect(await fill_workspace_id_from_projects('some-harness', { lookup })).toBe('ws-dup');
   });
 
-  it('returns null on 0 matches (caller fails loud)', async () => {
+  it('0 projects matches + registry miss → null (caller fails loud)', async () => {
     const { lookup } = lookupReturning();
-    expect(await fill_workspace_id_from_projects('unknown', { lookup })).toBeNull();
+    const { registryFallback } = registryReturning(null);
+    expect(await fill_workspace_id_from_projects('unknown', { lookup, registryFallback })).toBeNull();
+  });
+
+  it('0 projects matches → falls back to the authoritative registry resolver', async () => {
+    const { lookup } = lookupReturning();
+    const { registryFallback, calls } = registryReturning('hive-ws');
+    expect(await fill_workspace_id_from_projects('hive-x', { lookup, registryFallback })).toBe('hive-ws');
+    expect(calls).toEqual(['hive-x']);
   });
 
   it('THROWS on a same-name collision across distinct workspaces', async () => {

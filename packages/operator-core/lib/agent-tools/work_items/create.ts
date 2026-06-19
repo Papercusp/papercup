@@ -20,6 +20,14 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { createWorkItem, getWorkItem, WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
 import { findMirroredOpenItem } from './mirror-guard';
+import { resolveHiveScope, hiveArg, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
+
+/**
+ * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
+ * must resolve to a hive (auto-resolve-then-require). Issue kinds (bug/change) are
+ * deliberately EXCLUDED — they may stay workspace-global (the issues surface).
+ */
+const HIVE_GATED_KINDS: ReadonlySet<string> = new Set(['feature', 'research-task', 'chunk']);
 
 export default defineTool({
   name: 'work_items:create',
@@ -64,6 +72,7 @@ export default defineTool({
     title: z.string().min(1).max(200),
     summary: z.string().max(8000).optional().describe('body / summary text'),
     harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change'),
+    hive: hiveArg,
     workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). Routes the write to this workspace instead of silently falling back to "default" when the harness→projects lookup misses (EI-728).'),
     severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
     parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
@@ -122,11 +131,33 @@ export default defineTool({
         (typeof args.workspace === 'string' && args.workspace.trim()) ? args.workspace.trim()
           : (ctx.workspaceId && ctx.workspaceId !== '*') ? ctx.workspaceId
             : undefined;
+      // Hive-scope gate (domain-generic-hive-architecture P-022/P-024, D-019/D-020):
+      // a PIPELINE work-item belongs to a hive's fleet queue, so it must resolve to a
+      // hive — auto-resolve-then-require from the explicit `hive` arg, else the item's
+      // harness, else the session's harness. A pipeline kind already carries a harness,
+      // so this essentially always resolves (no new 400 for normally-scoped callers);
+      // only a genuinely hive-less pipeline create (bare operator scope, no harness)
+      // errors. Pin the item's harness to the resolved hive home when none was given (1:1
+      // hive==home harness). Issue kinds (bug/change) are NOT gated — they may stay
+      // workspace-global (D-020).
+      let harnessForItem = args.harness;
+      if (HIVE_GATED_KINDS.has(args.kind)) {
+        const hiveScope = await resolveHiveScope(args.hive, {
+          workspaceId: ctx.workspaceId,
+          harnessSlug: args.harness ?? ctx.harnessSlug,
+        });
+        if (hiveScope.kind === 'none') {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'hive_required', message: HIVE_REQUIRED_DETAIL }) }],
+          };
+        }
+        harnessForItem = args.harness ?? hiveScope.slug;
+      }
       const workItem = await createWorkItem({
         kind: args.kind as WorkItemKind,
         title: args.title,
         summary: args.summary,
-        harness: args.harness,
+        harness: harnessForItem,
         workspaceId,
         severity: args.severity,
         parent: args.parent,

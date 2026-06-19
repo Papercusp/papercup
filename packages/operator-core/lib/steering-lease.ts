@@ -30,13 +30,14 @@
 import type { AuthorityResolution } from './authority/lock-authority';
 import { lockAuthorityForHive } from './authority/lock-authority';
 import { hiveHomeSlugForHarness } from './hive-federation';
+import { evaluateQueenTurnGate } from './shared-hive-loop/queen-guard';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 /** The lease verdict for one steering write. */
 export interface SteeringLeaseVerdict {
   /** True ⇒ commit the steer (we hold the lease, or fail-open). */
   holder: boolean;
-  reason: 'not-in-hive' | 'authority' | 'remote-holder' | 'fail-open';
+  reason: 'not-in-hive' | 'authority' | 'remote-holder' | 'fail-open' | 'queen-home' | 'not-queen-home';
   /** The hive whose authority arbitrated (absent for not-in-hive/fail-open). */
   hiveSlug?: string;
   /** Live Swarms considered by the election (when resolved). */
@@ -51,6 +52,17 @@ export interface SteeringLeaseDeps {
   resolveHive?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
   /** The per-Hive lock authority. Default: lockAuthorityForHive. */
   hiveAuthority?: (hiveSlug: string) => Promise<AuthorityResolution>;
+  /**
+   * P-021: the Hive's recorded queen-home device pubkey (null when unset). Default:
+   * getQueenHomePubkey. When SET it overrides the lock-authority election — the owner
+   * deployed the Queen on a specific Swarm, so THAT Swarm steers (others propose),
+   * regardless of which holds the lowest pubkey. Unset (every Hive today) ⇒ fall
+   * through to the election (unchanged). The queen-guard's evaluateQueenTurnGate
+   * makes the home-vs-self decision.
+   */
+  resolveQueenHome?: (workspaceId: string, hiveSlug: string) => Promise<string | null>;
+  /** This Swarm's device pubkey (null when gh-unauthenticated). Default: resolveUsageActor().devicePubkey. */
+  resolveSelfPubkey?: () => Promise<string | null>;
   /** Proposal sinks (recordSteeringProposal). Defaults: work-item comment + coord escalation. */
   comment?: (input: { featureId: string; harness: string; body: string }) => Promise<void>;
   escalate?: (input: { summary: string; body: string }) => Promise<void>;
@@ -86,9 +98,52 @@ export async function checkSteeringLease(
   const resolveHive = deps.resolveHive ?? testDeps?.resolveHive ?? hiveHomeSlugForHarness;
   const authority =
     deps.hiveAuthority ?? testDeps?.hiveAuthority ?? ((slug: string) => lockAuthorityForHive(slug));
+  const resolveQueenHome =
+    deps.resolveQueenHome ??
+    testDeps?.resolveQueenHome ??
+    (async (ws: string, slug: string) => {
+      const { getQueenHomePubkey } = await import('./hive-settings-store');
+      return getQueenHomePubkey(ws, slug);
+    });
+  const resolveSelfPubkey =
+    deps.resolveSelfPubkey ??
+    testDeps?.resolveSelfPubkey ??
+    (async () => {
+      const { resolveUsageActor } = await import('./harness/usage-actor');
+      return (await resolveUsageActor())?.devicePubkey ?? null;
+    });
   try {
     const hiveSlug = await resolveHive(workspaceId, harnessSlug);
     if (!hiveSlug) return { holder: true, reason: 'not-in-hive' };
+
+    // P-021 (I2 / queen-guard D-008): an EXPLICITLY-RECORDED queen home overrides
+    // the election. The owner deployed the Queen on a chosen Swarm; THAT Swarm
+    // steers (others propose), regardless of incidental pubkey ordering. Only the
+    // home-vs-self comparison decides here — when the home is unset (every Hive
+    // today) the gate fails open and we fall through to the lock-authority election,
+    // so behaviour is unchanged until a home is recorded. A node with no resolvable
+    // self identity ALSO falls through (never strand a lone box on an unset self).
+    const queenHome = await resolveQueenHome(workspaceId, hiveSlug);
+    if (queenHome) {
+      const self = await resolveSelfPubkey();
+      if (self) {
+        const gate = evaluateQueenTurnGate({ selfPubkey: self, queenHomePubkey: queenHome });
+        if (gate.ok && gate.reason === 'home-swarm') {
+          return { holder: true, reason: 'queen-home', hiveSlug };
+        }
+        if (!gate.ok) {
+          return {
+            holder: false,
+            reason: 'not-queen-home',
+            hiveSlug,
+            holderLabel: `${queenHome.slice(0, 12)}… (recorded queen home)`,
+          };
+        }
+        // gate.ok with a non-home reason can't occur for a set home; fall through.
+      }
+      // self unresolved → fall through to the election (fail-open).
+    }
+
     const res = await authority(hiveSlug);
     if (res.isSelf) {
       return { holder: true, reason: 'authority', hiveSlug, liveCount: res.liveCount };

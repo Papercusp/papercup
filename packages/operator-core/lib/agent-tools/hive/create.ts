@@ -60,7 +60,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "The kind:'hive' blueprint to run — default 'hive' (the coding hive); 'generic-hive' for a non-coding hive (judge-accepted, artifacts output, topic affinity). Resolved local→installed→built-in; blueprint:catalog lists the hive blueprints.",
+        "The kind:'hive' blueprint to run — default 'hive' (the coding hive); 'work' for a non-coding hive (judge-accepted, artifacts output, topic affinity). Resolved local→installed→built-in; blueprint:catalog lists the hive blueprints.",
       ),
     learningPack: z
       .string()

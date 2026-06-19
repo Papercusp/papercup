@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Idea, ScoutLlmCall } from './types';
-import { critiqueIdea, critiqueIdeas } from './critics';
+import { buildCriticPrompt, critiqueIdea, critiqueIdeas, DEFAULT_CRITIC_MISSION } from './critics';
 import type { CorpusEntry } from './critique-core';
 
 function idea(over: Partial<Idea> = {}): Idea {
@@ -109,5 +109,24 @@ describe('critiqueIdeas (batch + moonshot cap + no-human-prompt)', () => {
     };
     await critiqueIdeas(ideas, [], { llmCall: llm });
     expect(calls).toBe(2);
+  });
+});
+
+describe('buildCriticPrompt — mission framing (P-010 prompt-overlay seam)', () => {
+  it('defaults to the coding-platform critic mission when none is supplied', () => {
+    const { system } = buildCriticPrompt(idea(), [], {});
+    expect(system.startsWith(DEFAULT_CRITIC_MISSION)).toBe(true);
+    expect(system).toContain('multi-agent coding platform');
+  });
+
+  it('a blueprint mission replaces the default lead, leaving the two-axis mechanism intact', () => {
+    const mission = 'You are TWO critics judging an idea proposed for a WORK hive. Pull against each other:';
+    const { system } = buildCriticPrompt(idea(), [], { mission });
+    expect(system.startsWith(mission)).toBe(true);
+    expect(system).not.toContain('multi-agent coding platform');
+    // the engine MECHANISM (the two critics + the JSON contract) is untouched
+    expect(system).toContain('NOVELTY critic');
+    expect(system).toContain('FEASIBILITY critic');
+    expect(system).toContain('conceptualNovelty');
   });
 });

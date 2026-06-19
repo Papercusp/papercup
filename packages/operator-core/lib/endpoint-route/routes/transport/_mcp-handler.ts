@@ -144,7 +144,7 @@ export interface BuiltSpawnContext {
    * Forwarded to `UnifiedToolContext.profile` for tool-list filtering
    * and call gating in the dispatcher.
    */
-  profile?: 'engineer' | 'power';
+  profile?: 'engineer' | 'power' | 'generic';
 }
 
 /**
@@ -598,7 +598,12 @@ async function buildMcpToolContext(
       isSuperuser: spawn.isSuperuser ?? false,
       isPowerUser: spawn.isPowerUser ?? false,
     }),
-    profile: spawn.profile ?? 'engineer',
+    // Tool-list filtering only distinguishes power-vs-not (slashToolVisibleTo:
+    // `profile === 'power'`), so the GENERIC profile (domain-generic-hive P-025) maps to
+    // engineer-like visibility here — its DISTINCT behavior (no papercup CLAUDE.md splice)
+    // lives in the playbook path (role-launch-spec), not tool gating. Coerce so the
+    // narrow UnifiedToolContext.profile never has to carry 'generic'.
+    profile: spawn.profile === 'generic' ? 'engineer' : (spawn.profile ?? 'engineer'),
     requestedFormat,
     requestedStructured,
     log: (msg) => {
@@ -729,7 +734,10 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const spawnRes = await tryBuildSpawnContext(extra);
   if (spawnRes.kind === 'failed') return { kind: 'failed' };
   const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
-  const profile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
+  const rawProfile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
+  // GENERIC profile (P-025) → engineer-like tool visibility (the manifest filter only gates
+  // power); coerce so the narrow listMcpProjections param need not carry 'generic'.
+  const profile = rawProfile === 'generic' ? 'engineer' : rawProfile;
   const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
   const result = applyToolManifest(listMcpProjections(role, profile), { bypass });
   const allow = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
@@ -921,6 +929,26 @@ const handler = createMcpHandler(
                 text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
               }],
             };
+          }
+          // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
+          // may NOT use the harness:'all'/'*' GLOBAL escape — resolvePlanScope maps it
+          // to PAPERCUSP_WORKSPACE_ID/papercup, a cross-scope read. Reject it; the
+          // session names a concrete harness in scope. (The nicer "re-resolve 'all' to
+          // the active workspace's plans" is F-A1 in workspace-data-isolation-leaks.)
+          if (scopedSuperuserClamp) {
+            const ah =
+              args && typeof args === 'object' && typeof (args as Record<string, unknown>).harness === 'string'
+                ? ((args as Record<string, unknown>).harness as string).trim()
+                : '';
+            if (ah === 'all' || ah === '*') {
+              return {
+                isError: true,
+                content: [{
+                  type: 'text' as const,
+                  text: `harness_forbidden: harness:'${ah}' is the unscoped global escape; this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
+                }],
+              };
+            }
           }
           // Hive tier (P-014a; owner-ratified 2026-06-18 — AUTO-CONFINE on harness).
           // When a scoped-superuser session's concrete harness belongs to a hive,

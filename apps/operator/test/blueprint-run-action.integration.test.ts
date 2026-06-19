@@ -36,7 +36,7 @@ let dbName: string;
 let sql: postgres.Sql;
 
 const WS = 'ws_test';
-const coding = loadBuiltinBlueprint('coding').blueprint;
+const coding = loadBuiltinBlueprint('coding-factory').blueprint;
 const research = (): Blueprint => ({ ...coding, workItem: { kind: 'research-task', idPrefix: 'R' } });
 
 beforeAll(async () => {

@@ -42,7 +42,7 @@ const INPUT = {
   workspaceId: 'ws-1',
   harnessSlug: 'papercup',
   harnessDir: '/proj',
-  hiveBlueprintId: 'hive',
+  hiveBlueprintId: 'coding',
 };
 
 beforeEach(() => {
@@ -90,7 +90,7 @@ describe('resolveHiveLocalBlueprintRoot', () => {
 
     expect(await resolveHiveLocalBlueprintRoot(INPUT)).toBe('/proj/.materialized/papercup-local');
     expect(materializeHiveLocalBlueprint).toHaveBeenCalledWith(
-      { hiveBlueprintId: 'hive', hiveDir: '/proj' },
+      { hiveBlueprintId: 'coding', hiveDir: '/proj' },
       expect.objectContaining({
         readOverrides: expect.any(Function),
         readBuiltinPersona: expect.any(Function),

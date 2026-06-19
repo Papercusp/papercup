@@ -27,6 +27,8 @@ import {
   type CorpusNoveltyOptions,
 } from './critique-core';
 import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
+import { DEFAULT_IDEATOR_MISSION } from './lenses';
+import { DEFAULT_CRITIC_MISSION } from './critics';
 import type { RoutedRail } from './outcome-feedback';
 
 /** The routing knobs a blueprint can tune (router.ts ClassifyOptions + the markers). */
@@ -39,6 +41,22 @@ export interface ScoutRoutingConfig {
    * supplies its own or `[]` (never bump to instance).
    */
   wholeSystemMarkers: readonly string[];
+}
+
+/**
+ * The per-blueprint Scout PROMPT framing (P-010 scout prompt-overlay seam, D-004) —
+ * the "prompt half" of scout customization that rides alongside the structured config
+ * (the P-009 "config half"). These are the DOMAIN framing strings substituted into the
+ * ideator + critic step prompts so a `coding` hive and a `work` hive frame ideation +
+ * critique for their domain. The engine MECHANISM (lens stances, grounding rules,
+ * novelty/feasibility scoring, JSON output contract) stays hardcoded (P-011) — only the
+ * mission framing is overridable.
+ */
+export interface ScoutFramingConfig {
+  /** Ideator mission framing — who the scout is + what it scouts for ({@link DEFAULT_IDEATOR_MISSION}). */
+  ideatorMission: string;
+  /** Critic mission framing — the adversarial-critics intro naming the judged domain ({@link DEFAULT_CRITIC_MISSION}). */
+  criticMission: string;
 }
 
 /**
@@ -58,7 +76,19 @@ export interface ScoutConfig {
   buckets: Required<BucketOptions>;
   /** Routing defaults + the whole-system marker vocabulary. */
   routing: ScoutRoutingConfig;
+  /** Per-step prompt framing (P-010) — the ideator + critic mission strings. */
+  framing: ScoutFramingConfig;
 }
+
+/**
+ * The default per-step framing — byte-identical to the pre-seam prompt strings, built
+ * FROM the prompt builders' exported defaults so it can never drift (asserted in
+ * config.test.ts).
+ */
+export const DEFAULT_SCOUT_FRAMING: ScoutFramingConfig = {
+  ideatorMission: DEFAULT_IDEATOR_MISSION,
+  criticMission: DEFAULT_CRITIC_MISSION,
+};
 
 /**
  * The default tuning — byte-identical to the previous hardcoded constants. Built FROM
@@ -72,6 +102,7 @@ export const DEFAULT_SCOUT_CONFIG: ScoutConfig = {
     defaultRail: DEFAULT_ROUTING_RAIL,
     wholeSystemMarkers: WHOLE_SYSTEM_MARKERS,
   },
+  framing: DEFAULT_SCOUT_FRAMING,
 };
 
 /** A partial override a blueprint supplies — every field optional; missing → default. */
@@ -80,6 +111,7 @@ export interface ScoutConfigOverride {
   novelty?: Partial<CorpusNoveltyOptions>;
   buckets?: Partial<BucketOptions>;
   routing?: Partial<ScoutRoutingConfig>;
+  framing?: Partial<ScoutFramingConfig>;
 }
 
 /** Copy only the DEFINED own keys of `src` onto a shallow clone of `base`. */
@@ -109,7 +141,20 @@ export function resolveScoutConfig(override?: ScoutConfigOverride | null): Scout
     novelty: mergeDefined<Required<CorpusNoveltyOptions>>(DEFAULT_SCOUT_CONFIG.novelty, override.novelty),
     buckets: mergeDefined<Required<BucketOptions>>(DEFAULT_SCOUT_CONFIG.buckets, override.buckets),
     routing: mergeDefined<ScoutRoutingConfig>(DEFAULT_SCOUT_CONFIG.routing, override.routing),
+    // A blank/whitespace mission falls back to the default (never silence the framing,
+    // the prompt analog of the empty-lenses floor above).
+    framing: {
+      ideatorMission:
+        nonBlank(override.framing?.ideatorMission) ?? DEFAULT_SCOUT_CONFIG.framing.ideatorMission,
+      criticMission:
+        nonBlank(override.framing?.criticMission) ?? DEFAULT_SCOUT_CONFIG.framing.criticMission,
+    },
   };
+}
+
+/** A non-blank string, else undefined (so the default mission stands). */
+function nonBlank(s: unknown): string | undefined {
+  return typeof s === 'string' && s.trim().length > 0 ? s : undefined;
 }
 
 const ROUTED_RAILS: readonly RoutedRail[] = ['plan', 'gym', 'improvement', 'instance'];
@@ -167,6 +212,19 @@ export function parseScoutConfigBlock(raw: unknown): ScoutConfigOverride {
     const markers = asStringArray(rt.wholeSystemMarkers);
     if (markers) routing.wholeSystemMarkers = markers.map((m) => m.toLowerCase());
     if (Object.keys(routing).length > 0) out.routing = routing;
+  }
+
+  if (r.framing && typeof r.framing === 'object' && !Array.isArray(r.framing)) {
+    const f = r.framing as Record<string, unknown>;
+    const framing: Partial<ScoutFramingConfig> = {};
+    // Only non-blank strings are kept; a blank/typo'd mission degrades to the default.
+    if (typeof f.ideatorMission === 'string' && f.ideatorMission.trim().length > 0) {
+      framing.ideatorMission = f.ideatorMission;
+    }
+    if (typeof f.criticMission === 'string' && f.criticMission.trim().length > 0) {
+      framing.criticMission = f.criticMission;
+    }
+    if (Object.keys(framing).length > 0) out.framing = framing;
   }
 
   return out;

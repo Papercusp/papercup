@@ -49,11 +49,11 @@ describe('blueprint:catalog — built-in tier', () => {
     const r = await run();
     expect(r.ok).toBe(true);
     const ids = r.blueprints.map((b: Entry) => b.id);
-    for (const id of ['base', 'coding', 'research', 'hive', 'vote', 'scan', 'migration']) {
+    for (const id of ['base', 'coding-factory', 'research', 'coding', 'vote', 'scan', 'migration']) {
       expect(ids).toContain(id);
     }
 
-    const coding = byId(r, 'coding')!;
+    const coding = byId(r, 'coding-factory')!;
     expect(coding.tier).toBe('builtin');
     expect(coding.launchable).toBe(false);
     expect(coding.workItemKind).toBe('feature');
@@ -67,7 +67,8 @@ describe('blueprint:catalog — built-in tier', () => {
     expect(coding.dispatch).toMatchObject({ concurrency: 4, priority: 'plan-order' });
 
     // The Pot itself is discoverable — a one-shot launch blueprint, not a pipeline.
-    const hive = byId(r, 'hive')!;
+    // (The hive blueprint is now id `coding` — renamed from `hive`.)
+    const hive = byId(r, 'coding')!;
     expect(hive.launchable).toBe(true);
     expect(hive.decider).toBe('queen'); // hive decider since P-071 (2026-06-10)
     // A launch/hive blueprint declares NO dispatch policy — the catalog reflects
@@ -132,9 +133,9 @@ describe('blueprint:catalog — installed tier (temp PAPERCUSP_HOME)', () => {
       'spine: { edges: { DONE: { to: done } } }',
       'knobs: { requiresRepo: false }',
     ]);
-    // Shadow the built-in `coding` — the catalog must list the INSTALLED one.
-    await writeInstalled('coding', [
-      'id: coding',
+    // Shadow the built-in `coding-factory` — the catalog must list the INSTALLED one.
+    await writeInstalled('coding-factory', [
+      'id: coding-factory',
       'version: 9.9.9',
       'workItem: { kind: feature }',
       'spine: { edges: { DONE: { to: done } } }',
@@ -146,7 +147,7 @@ describe('blueprint:catalog — installed tier (temp PAPERCUSP_HOME)', () => {
     expect(inst.description).toBe('a Cupboard-installed shape');
     expect(inst.requiresRepo).toBe(false);
 
-    const coding = byId(r, 'coding')!;
+    const coding = byId(r, 'coding-factory')!;
     expect(coding.tier).toBe('installed');
     expect(coding.shadowsBuiltin).toBe(true);
 
@@ -163,7 +164,7 @@ describe('blueprint:catalog — installed tier (temp PAPERCUSP_HOME)', () => {
     const broken = byId(r, 'broken-bp')!;
     expect(broken.error).toBeTruthy();
     expect(broken.abstract).toBeUndefined();
-    expect(byId(r, 'coding')).toBeTruthy();
+    expect(byId(r, 'coding-factory')).toBeTruthy();
   });
 
   it('classifies a partial parent (sections absent) as abstract, not broken', async () => {
@@ -190,9 +191,9 @@ describe('blueprint:catalog — installed tier (temp PAPERCUSP_HOME)', () => {
     expect(orphan.error).toContain('no-such-parent-xyz');
     // Not mistaken for a deliberately-partial (abstract) parent — it is broken.
     expect(orphan.abstract).toBeUndefined();
-    // The rest of the catalog survives — coding (a built-in) is still listed.
-    expect(byId(r, 'coding')).toBeTruthy();
-    expect(byId(r, 'coding')!.error).toBeUndefined();
+    // The rest of the catalog survives — coding-factory (a built-in) is still listed.
+    expect(byId(r, 'coding-factory')).toBeTruthy();
+    expect(byId(r, 'coding-factory')!.error).toBeUndefined();
   });
 
   // ─── G5: catalog.ts reads `args.tier ?? 'all'`, so a raw-handler caller that
@@ -214,6 +215,6 @@ describe('blueprint:catalog — installed tier (temp PAPERCUSP_HOME)', () => {
     expect(tiers.has('installed')).toBe(true);
     expect(tiers.has('builtin')).toBe(true);
     expect(byId(r, 'installed-x')!.tier).toBe('installed');
-    expect(byId(r, 'coding')!.tier).toBe('builtin');
+    expect(byId(r, 'coding-factory')!.tier).toBe('builtin');
   });
 });

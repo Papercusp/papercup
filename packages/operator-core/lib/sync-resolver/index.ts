@@ -1165,13 +1165,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const [{ listFleetAssignments, groupByAgent }, { listAdvSessions }, { classifyAgentPane }] =
-        await Promise.all([
-          import('../fleet/assignments'),
-          import('../adv-sessions'),
-          import('@papercusp/agent-mcp'),
-        ]);
-      const rows = await listFleetAssignments({ harness: harnessSlug });
+      const [
+        { listFleetAssignments, groupByAgent },
+        { listAdvSessions },
+        { classifyAgentPane },
+        { activeWorkspaceId },
+      ] = await Promise.all([
+        import('../fleet/assignments'),
+        import('../adv-sessions'),
+        import('@papercusp/agent-mcp'),
+        import('../workspace-registry'),
+      ]);
+      // Scope to THIS window's workspace (request-scoped ALS, same as the
+      // sibling hiveRoster.byHarness) — without it the harness-slug filter alone
+      // surfaced fleet rows from every workspace, so a window never re-scoped its
+      // Agents panel on a workspace switch. listFleetAssignments admits the
+      // workspace + the '*' global + the plan-store default scope (EI-295), so
+      // no claim rows are dropped.
+      const rows = await listFleetAssignments({
+        harness: harnessSlug,
+        workspaceId: activeWorkspaceId(),
+      });
       const roleByOwner = new Map<string, string | null>();
       try {
         for (const s of await listAdvSessions(200)) {
@@ -2537,6 +2551,40 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           .map((p) => ({ slug: p.slug, remote: p.remote_hive === true }));
       } catch (err) {
         console.warn('[learning.hiveList] registry read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
+  // ── hive.overrides — a hive's per-instance customization (domain-generic-hive-architecture-2026-06-18 P-015) ──
+  //
+  // The settings-resident, FEDERATED per-hive override surface: the PROSE role-prompt
+  // overrides (`promptOverride.<role>` — D-007) AND the STRUCTURED config deltas
+  // (`localBlueprint.<section>`, e.g. a ScoutConfigOverride — D-005). Returned as a flat
+  // row array (the resolver contract): one row per SET override, `kind` distinguishing
+  // prompt vs config, so the /settings/hive-customization editors can reconstruct both
+  // maps. The loopback write routes (hive-prompt-override-set / hive-config-set)
+  // invalidate this by name. Scoped to the hive's HOME slug (the hive_settings scope
+  // column); an unknown/empty hive degrades to [] (never a 500 — the picker shows the
+  // empty state).
+  'hive.overrides': {
+    argsSchema: z.object({ hiveSlug: z.string(), workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { hiveSlug, workspaceId } = args as { hiveSlug: string; workspaceId?: string };
+      try {
+        const [{ activeWorkspaceId }, { listHiveInstancePromptOverrides, listHiveLocalBlueprintConfig }] =
+          await Promise.all([import('../workspace-registry'), import('../hive-settings-store')]);
+        const ws = workspaceId ?? activeWorkspaceId();
+        const [prompts, config] = await Promise.all([
+          listHiveInstancePromptOverrides(ws, hiveSlug),
+          listHiveLocalBlueprintConfig(ws, hiveSlug),
+        ]);
+        const rows: Array<{ kind: 'prompt' | 'config'; name: string; value: unknown }> = [];
+        for (const [role, md] of Object.entries(prompts)) rows.push({ kind: 'prompt', name: role, value: md });
+        for (const [section, val] of Object.entries(config)) rows.push({ kind: 'config', name: section, value: val });
+        return rows;
+      } catch (err) {
+        console.warn('[hive.overrides] read failed:', err instanceof Error ? err.message : err);
         return [];
       }
     },

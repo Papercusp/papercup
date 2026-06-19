@@ -68,7 +68,7 @@ afterAll(async () => {
 });
 
 it('projects + reads back the resolved coding blueprint', async () => {
-  const loaded = loadBuiltinBlueprint('coding');
+  const loaded = loadBuiltinBlueprint('coding-factory');
   const { contentHash } = await projectBlueprintToPg(sql, {
     workspaceId: WS,
     harnessSlug: 'demo',
@@ -80,14 +80,14 @@ it('projects + reads back the resolved coding blueprint', async () => {
 
   const read = await readBlueprintFromPg(sql, WS, 'demo');
   expect(read).not.toBeNull();
-  expect(read!.id).toBe('coding');
+  expect(read!.id).toBe('coding-factory');
   // The round-tripped (jsonb → schema-parse) blueprint equals the loaded one.
   expect(read).toEqual(loaded.blueprint);
   expect(await readBlueprintHashFromPg(sql, WS, 'demo')).toBe(loaded.contentHash);
 });
 
 it('upsert overwrites the same (workspace, harness) row', async () => {
-  const coding = loadBuiltinBlueprint('coding').blueprint;
+  const coding = loadBuiltinBlueprint('coding-factory').blueprint;
   await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: 'up', blueprint: coding });
   // Re-project a mutated version → row is replaced, not duplicated.
   const bumped = { ...coding, version: '9.9.9' };
@@ -99,7 +99,7 @@ it('upsert overwrites the same (workspace, harness) row', async () => {
 });
 
 it('reads are isolated by (workspace, harness)', async () => {
-  const coding = loadBuiltinBlueprint('coding').blueprint;
+  const coding = loadBuiltinBlueprint('coding-factory').blueprint;
   await projectBlueprintToPg(sql, { workspaceId: 'ws_a', harnessSlug: 'shared-slug', blueprint: coding });
   expect(await readBlueprintFromPg(sql, 'ws_b', 'shared-slug')).toBeNull();
   expect(await readBlueprintFromPg(sql, 'ws_a', 'shared-slug')).not.toBeNull();

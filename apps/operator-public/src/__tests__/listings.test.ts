@@ -93,7 +93,7 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     // a HIVE blueprint (a hive template — the Hives tab)
     const hive = await publish(api, env, {
       ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint',
-      listing_ref: 'generic-hive', title: 'Generic Hive', blueprint_kind: 'hive',
+      listing_ref: 'work', title: 'Generic Hive', blueprint_kind: 'hive',
     });
     expect(hive.status).toBe(200);
     expect(await bk(hive)).toBe('hive');

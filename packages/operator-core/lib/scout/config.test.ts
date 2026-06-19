@@ -7,12 +7,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_SCOUT_CONFIG,
+  DEFAULT_SCOUT_FRAMING,
   resolveScoutConfig,
   parseScoutConfigBlock,
 } from './config';
 import { CREATIVE_LENSES } from './types';
 import { DEFAULT_BUCKET_OPTIONS, DEFAULT_CORPUS_NOVELTY_OPTIONS } from './critique-core';
 import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
+import { DEFAULT_IDEATOR_MISSION } from './lenses';
+import { DEFAULT_CRITIC_MISSION } from './critics';
 
 describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', () => {
   it('is built FROM the engine defaults (byte-identical, no copy that can drift)', () => {
@@ -21,6 +24,10 @@ describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', 
     expect(DEFAULT_SCOUT_CONFIG.buckets).toBe(DEFAULT_BUCKET_OPTIONS);
     expect(DEFAULT_SCOUT_CONFIG.routing.defaultRail).toBe(DEFAULT_ROUTING_RAIL);
     expect(DEFAULT_SCOUT_CONFIG.routing.wholeSystemMarkers).toBe(WHOLE_SYSTEM_MARKERS);
+    // P-010 framing: bound to the prompt builders' exported missions (no copy that can drift).
+    expect(DEFAULT_SCOUT_CONFIG.framing).toBe(DEFAULT_SCOUT_FRAMING);
+    expect(DEFAULT_SCOUT_FRAMING.ideatorMission).toBe(DEFAULT_IDEATOR_MISSION);
+    expect(DEFAULT_SCOUT_FRAMING.criticMission).toBe(DEFAULT_CRITIC_MISSION);
   });
 
   it('carries the documented default values', () => {
@@ -121,5 +128,59 @@ describe('parseScoutConfigBlock — defensive', () => {
     expect(cfg.buckets.maxMoonshots).toBe(5);
     expect(cfg.buckets.noveltyFloor).toBe(DEFAULT_BUCKET_OPTIONS.noveltyFloor);
     expect(cfg.lenses).toEqual(CREATIVE_LENSES);
+  });
+});
+
+describe('scout framing (P-010 prompt-overlay seam)', () => {
+  const WORK_FRAMING = {
+    ideatorMission: 'You are a SCOUT for a WORK hive that ships deliverables — leap, do not iterate.',
+    criticMission: 'You are TWO critics judging an idea proposed for a WORK hive. Pull against each other:',
+  };
+
+  it('resolve: a framing override replaces the missions, defaults untouched elsewhere', () => {
+    const cfg = resolveScoutConfig({ framing: WORK_FRAMING });
+    expect(cfg.framing).toEqual(WORK_FRAMING);
+    // the structured config (P-009) is untouched by a framing-only override
+    expect(cfg.lenses).toEqual(CREATIVE_LENSES);
+    expect(cfg.buckets).toEqual(DEFAULT_BUCKET_OPTIONS);
+  });
+
+  it('resolve: a partial framing override keeps the other mission at default', () => {
+    const cfg = resolveScoutConfig({ framing: { ideatorMission: WORK_FRAMING.ideatorMission } });
+    expect(cfg.framing.ideatorMission).toBe(WORK_FRAMING.ideatorMission);
+    expect(cfg.framing.criticMission).toBe(DEFAULT_CRITIC_MISSION);
+  });
+
+  it('resolve: a blank/whitespace mission falls back to the default (never silence the framing)', () => {
+    const cfg = resolveScoutConfig({ framing: { ideatorMission: '   ', criticMission: '' } });
+    expect(cfg.framing.ideatorMission).toBe(DEFAULT_IDEATOR_MISSION);
+    expect(cfg.framing.criticMission).toBe(DEFAULT_CRITIC_MISSION);
+  });
+
+  it('resolve: an empty override keeps the default framing', () => {
+    expect(resolveScoutConfig({}).framing).toEqual(DEFAULT_SCOUT_FRAMING);
+    // the no-arg path short-circuits to the shared default (same reference)
+    expect(resolveScoutConfig().framing).toBe(DEFAULT_SCOUT_FRAMING);
+  });
+
+  it('parse: a valid framing block is parsed', () => {
+    const override = parseScoutConfigBlock({ framing: WORK_FRAMING });
+    expect(override.framing).toEqual(WORK_FRAMING);
+  });
+
+  it('parse: blank / non-string missions are dropped', () => {
+    expect(parseScoutConfigBlock({ framing: { ideatorMission: '  ', criticMission: 42 } }).framing).toBeUndefined();
+    const onlyIdeator = parseScoutConfigBlock({ framing: { ideatorMission: WORK_FRAMING.ideatorMission, criticMission: '' } });
+    expect(onlyIdeator.framing).toEqual({ ideatorMission: WORK_FRAMING.ideatorMission });
+  });
+
+  it('parse: a non-object framing block is ignored', () => {
+    expect(parseScoutConfigBlock({ framing: 'nope' }).framing).toBeUndefined();
+    expect(parseScoutConfigBlock({ framing: ['a'] }).framing).toBeUndefined();
+  });
+
+  it('round-trips parse → resolve to the work framing', () => {
+    const cfg = resolveScoutConfig(parseScoutConfigBlock({ framing: WORK_FRAMING }));
+    expect(cfg.framing).toEqual(WORK_FRAMING);
   });
 });

@@ -70,7 +70,7 @@ describe('requestUrgentHiveWake', () => {
     expect(res).toEqual({ fired: true, coalesced: false });
     expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
     const [bpId, input] = fireLaunchBlueprint.mock.calls[0] as unknown as [string, { installSlug: string; kickoff: string }];
-    expect(bpId).toBe('hive');
+    expect(bpId).toBe('coding');
     expect(input.installSlug).toBe('papercup');
     expect(input.kickoff).toContain('Wake (urgent)');
     expect(input.kickoff).toContain('WI-7');

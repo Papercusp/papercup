@@ -10,13 +10,19 @@ import type { OrgTestDb } from '../test/_org-test-db';
 import { createOrgTestDb } from '../test/_org-test-db';
 import { insertHiveIfAbsent } from './hive-store';
 import {
+  deleteHiveInstancePromptOverride,
+  deleteHiveLocalBlueprintConfig,
   deleteHiveSetting,
   getHiveInstancePromptOverride,
+  getHiveLocalBlueprintConfig,
   getHiveSetting,
   listHiveInstancePromptOverrides,
+  listHiveLocalBlueprintConfig,
   listHiveSettings,
+  localBlueprintConfigKey,
   promptOverrideSettingKey,
   setHiveInstancePromptOverride,
+  setHiveLocalBlueprintConfig,
   setHiveSetting,
 } from './hive-settings-store';
 import { buildHiveSettingsProjection } from './sync/hyperbee/projections/hive-settings';
@@ -76,6 +82,37 @@ describe('hive_settings (real PG, migration 186)', () => {
     // upsert overwrites
     await setHiveInstancePromptOverride('ws', 'myhive', 'bee', 'Updated bee persona.', sql);
     expect(await getHiveInstancePromptOverride('ws', 'myhive', 'bee', sql)).toBe('Updated bee persona.');
+  });
+
+  it('local-blueprint structured config deltas round-trip + list by section (P-015)', async () => {
+    expect(await getHiveLocalBlueprintConfig('ws', 'myhive', 'scout', sql)).toBeNull();
+
+    await setHiveLocalBlueprintConfig('ws', 'myhive', 'scout', { buckets: { maxMoonshots: 2 } }, sql);
+    expect(await getHiveLocalBlueprintConfig('ws', 'myhive', 'scout', sql)).toEqual({ buckets: { maxMoonshots: 2 } });
+
+    // stored under localBlueprint.<section> (federates like any other hive setting)
+    expect((await getHiveSetting('ws', 'myhive', localBlueprintConfigKey('scout'), sql))?.value).toEqual({
+      buckets: { maxMoonshots: 2 },
+    });
+
+    // list filters to the localBlueprint.* prefix only — ignores promptOverride.* + plain settings
+    await setHiveInstancePromptOverride('ws', 'myhive', 'queen', 'persona', sql);
+    await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
+    expect(await listHiveLocalBlueprintConfig('ws', 'myhive', sql)).toEqual({
+      scout: { buckets: { maxMoonshots: 2 } },
+    });
+
+    // upsert overwrites; delete is idempotent
+    await setHiveLocalBlueprintConfig('ws', 'myhive', 'scout', { lenses: ['inversion'] }, sql);
+    expect(await getHiveLocalBlueprintConfig('ws', 'myhive', 'scout', sql)).toEqual({ lenses: ['inversion'] });
+    expect(await deleteHiveLocalBlueprintConfig('ws', 'myhive', 'scout', sql)).toBe(true);
+    expect(await getHiveLocalBlueprintConfig('ws', 'myhive', 'scout', sql)).toBeNull();
+    expect(await deleteHiveLocalBlueprintConfig('ws', 'myhive', 'scout', sql)).toBe(false);
+
+    // deleteHiveInstancePromptOverride round-trips too (symmetric clear path)
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'queen', sql)).toBe('persona');
+    expect(await deleteHiveInstancePromptOverride('ws', 'myhive', 'queen', sql)).toBe(true);
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'queen', sql)).toBeNull();
   });
 
   it('refuses a setting for a non-existent Hive (logical scope, no hard FK)', async () => {

@@ -1,6 +1,6 @@
 /**
  * `overwatch` ChatTarget — in-process behavioral SUT for the **overwatch's
- * blueprint persona** (`libs/papercusp/packages/harness/blueprints/hive/prompts/
+ * blueprint persona** (`libs/papercusp/packages/harness/blueprints/coding/prompts/
  * overwatch.md`, overwatch-role-2026-06-15 B-05 / B-11).
  *
  * The deterministic gates already pin the overwatch's BOUNDARY by construction:
@@ -33,7 +33,7 @@ import { SuTarget } from './su';
 import { buildCatalog, type SuCatalogEntry } from './su-catalog';
 
 const OVERWATCH_PROMPT_REL = join(
-  'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'hive', 'prompts', 'overwatch.md',
+  'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'coding', 'prompts', 'overwatch.md',
 );
 
 function resolveOverwatchPromptPath(): string {
