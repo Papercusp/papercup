@@ -26,15 +26,25 @@ import { listEscalations, resolveEscalationsBatch } from '../agent-tools/coordin
 /** Resolver identity stamped on auto-reconciled escalations (audit trail). */
 export const RECONCILE_OWNER = 'system:attention-reconcile';
 
-/** Default TTL for OPERATIONAL escalations: 3 days. Override via env. */
+/**
+ * Default TTL for OPERATIONAL escalations: 48h. Override via env. Lowered from 3d
+ * (infra-perf-robustness-audit-2026-06-18 D-005): operational escalations are
+ * redundant duplicates of the derived `placements.cursed` health metric (D-003),
+ * so a shorter idle window is safe — and a 3d window let a placement-watchdog burst
+ * pile ~12k stale escalations into the alert tier (drowning ~89 real decisions in
+ * the human attention feed) before they aged out. 48h still leaves ~2 days for any
+ * genuinely-current operational state to surface.
+ */
 export const OPERATIONAL_ESCALATION_TTL_MS = (() => {
   const env = Number(process.env.PAPERCUSP_OPERATIONAL_ESCALATION_TTL_MS);
-  return Number.isFinite(env) && env > 0 ? env : 3 * 24 * 60 * 60 * 1000;
+  return Number.isFinite(env) && env > 0 ? env : 2 * 24 * 60 * 60 * 1000;
 })();
 
-/** Max escalations resolved per sweep tick — drains a large backlog over several
- *  ticks instead of one giant coord-log write burst. */
-export const RECONCILE_BATCH_LIMIT = 500;
+/** Max escalations resolved per sweep tick. Raised 500→2500 (infra audit D-005):
+ *  EI-1490 made a tick batch-resolve from a SINGLE coord-log load (no longer O(n²)),
+ *  so a larger batch is cheap, and it lets the hourly sweep actually drain a large
+ *  backlog (e.g. a watchdog burst) within a few ticks instead of accumulating. */
+export const RECONCILE_BATCH_LIMIT = 2500;
 
 export interface StaleEscalationInput {
   msg_id: string;
