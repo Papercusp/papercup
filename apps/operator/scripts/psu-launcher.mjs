@@ -578,6 +578,38 @@ export function resumeEnvFor(session, { mintSid = () => `su-${randomUUID()}`, fo
 }
 
 /**
+ * Decide how the account is chosen for a RESUME launch. Pure — exported for
+ * tests. The gateway account pin is spawn-env only (never persisted on the
+ * session), so a resume otherwise silently falls back to the default credential
+ * (verified: launchResume never re-folds gatewaySpawnEnv). Option 1 (owner,
+ * 2026-06-19): re-prompt on an interactive resume, neutral default.
+ *   - explicit `--account` → honored in ANY mode (no prompt)
+ *   - interactive (picker)  → prompt (pickAccount; itself a no-op + no prompt
+ *                             when the gateway is off / the pool is empty)
+ *   - --no-picker scripting → none → default credential, byte-identical to the
+ *                             pre-account resume (no surprise prompt in scripts)
+ */
+export function resumeAccountPlan(args) {
+  if (args.account) return { source: 'flag', account: args.account, prompt: false };
+  if (args.picker) return { source: 'prompt', account: null, prompt: true };
+  return { source: 'none', account: null, prompt: false };
+}
+
+/**
+ * The full env for a resume launch — identity + workspace scope (resumeEnvFor),
+ * the brain agent-session marker, and the re-pinned account env. Pure — exported
+ * for tests. With no `accountEnv` it is byte-identical to the pre-account resume
+ * (resumeEnvFor [+ brain marker]); `accountEnv.env` layers the gateway pin on top.
+ */
+export function buildResumeEnv(session, { fork = false, brain = false, accountEnv = null } = {}) {
+  return {
+    ...resumeEnvFor(session, { fork }),
+    ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+    ...(accountEnv?.env ?? {}),
+  };
+}
+
+/**
  * Resolve which fields the flags PRE-SELECT vs which still need an
  * interactive prompt. Pure — exported for tests. Throws on a bad --agent.
  *
@@ -853,6 +885,42 @@ async function pickAccount(workspace) {
   return select({ message: 'Account (inference-gateway pin)', default: null, choices });
 }
 
+/**
+ * Resolve a chosen pool account id → the inference-gateway env patch for a
+ * RESUME, reusing the server's validated resolveAccountPin (GET account-env, no
+ * new session minted). Fail-soft: any error → no env + a human notice, so a
+ * resume never hard-fails on account resolution (mirrors the fresh-launch
+ * fail-soft). Returns `{ env, notice }`.
+ */
+async function resolveResumeAccountEnv(workspace, account) {
+  if (!account) return { env: {}, notice: null };
+  try {
+    const q = new URLSearchParams({ account });
+    if (workspace) q.set('workspace', workspace);
+    const r = await api(`/api/agent-mcp/console/bootstrap-su/account-env?${q.toString()}`);
+    return { env: r?.env ?? {}, notice: r?.notice ?? null };
+  } catch (e) {
+    return { env: {}, notice: `account ${account} not applied (${e?.message ?? e}) — using the default credential.` };
+  }
+}
+
+/**
+ * Pick (interactive) or honor (`--account`) the account for a resume, then
+ * resolve its gateway env. Returns `{ id, env, notice }` — `id` for the fork
+ * path (folded server-side via the bootstrap POST), `env`/`notice` for the
+ * in-place resume path (launchResume). No prompt + no env when the gateway is
+ * off / the pool is empty / scripting (`--no-picker`) — byte-identical to the
+ * pre-account resume.
+ */
+async function chooseResumeAccount(session, args) {
+  const plan = resumeAccountPlan(args);
+  let id = plan.account;
+  if (plan.prompt) id = await pickAccount(session.workspaceId);
+  if (!id) return { id: null, env: {}, notice: null };
+  const resolved = await resolveResumeAccountEnv(session.workspaceId, id);
+  return { id, env: resolved.env, notice: resolved.notice };
+}
+
 /** Sentinel for the "no feature" picker row (optional-feature roles). */
 const NO_FEATURE = '<no-feature>';
 
@@ -1116,7 +1184,7 @@ function fmtAge(iso) {
  *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
-function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [] } = {}) {
+function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null } = {}) {
   // --fork is claude-only — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -1138,14 +1206,11 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
 
   // Identity + workspace scope survive the resume (see resumeEnvFor) — except a
   // FORK, which deliberately takes a fresh coord identity + no adv-row link so it
-  // can run alongside the still-live original it branched from.
-  const env = {
-    ...resumeEnvFor(session, { fork }),
-    // Agent-session marker: the hook-level scheduler guard (bash gate / omp
-    // coord-hook) only fires when this is set — never for the owner's own
-    // sessions (native-scheduler-lockout D-003).
-    ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
-  };
+  // can run alongside the still-live original it branched from. `accountEnv` re-pins
+  // the inference-gateway account (spawn-env only, otherwise lost on resume); the
+  // agent-session marker arms the hook-level scheduler guard (bash gate / omp
+  // coord-hook) for the brain only — never the owner's own sessions (D-003).
+  const env = buildResumeEnv(session, { fork, brain, accountEnv });
   // EI-155: a claude session launched with per-session transcript isolation wrote
   // its transcript under an isolated CLAUDE_CONFIG_DIR (keyed by coord owner id),
   // NOT the shared ~/.claude — point the resume back at it or `claude --resume
@@ -1166,6 +1231,9 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
     env.CODEX_HOME = join(homedir(), '.papercusp', 'su-codex-homes', `session-${session.id}`);
   }
 
+  // Surface whether the account re-pin took effect (or the fail-soft reason it
+  // was skipped) so a resume is never silently unpinned — mirrors launchFreshSu.
+  if (accountEnv?.notice) console.error(`psu: account — ${accountEnv.notice}`);
   console.error(`psu: ${fork ? 'forking' : 'resuming'} ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
   runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
 }
@@ -1178,13 +1246,17 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
  * resolves --resume by CLAUDE_CONFIG_DIR + the encoded cwd it runs in, so the fork
  * MUST run in that same cwd). agent is always claude (the only fork-session backend).
  */
-export function forkBootstrapBody(session) {
+export function forkBootstrapBody(session, account = null) {
   return {
     agent: 'claude',
     workspace: session.workspaceId || null,
     harness_slug: null,
     plan_slug: session.planSlug || null,
     cwd: session.cwd,
+    // A tracked fork mints a fresh session, so the gateway account pin is folded
+    // server-side (resolveAccountPin) into the new launch envelope — the same path
+    // a fresh psu launch takes. Omitted → no `account` key (byte-identical).
+    ...(account ? { account } : {}),
   };
 }
 
@@ -1219,8 +1291,16 @@ export function forkSeedPaths(origConfigDir, forkConfigDir) {
  * forkable tracked claude session, or when bootstrap-su is unreachable/incomplete —
  * so `--fork` never hard-fails on the tracked path.
  */
-async function launchTrackedFork(session, args = {}) {
-  const forkOpts = { fork: true, passthrough: args.passthrough, addDir: args.addDir };
+async function launchTrackedFork(session, args = {}, acct = { id: null, env: {}, notice: null }) {
+  // The account re-pin: a TRACKED fork folds it server-side (forkBootstrapBody →
+  // resolveAccountPin), like a fresh launch; an UNTRACKED fallback re-pins client-
+  // side via accountEnv (it never hits bootstrap-su).
+  const forkOpts = {
+    fork: true,
+    passthrough: args.passthrough,
+    addDir: args.addDir,
+    accountEnv: { env: acct?.env ?? {}, notice: acct?.notice ?? null },
+  };
   const forkable = session.agent === 'claude' && session.sessionId && session.coordOwnerId && session.id != null;
   if (!forkable) {
     // Untracked claude (no adv row) → the plain untracked fork; non-claude →
@@ -1232,7 +1312,7 @@ async function launchTrackedFork(session, args = {}) {
   try {
     res = await api('/api/agent-mcp/console/bootstrap-su', {
       method: 'POST',
-      body: JSON.stringify(forkBootstrapBody(session)),
+      body: JSON.stringify(forkBootstrapBody(session, acct?.id ?? null)),
     });
   } catch (e) {
     console.error(`psu: fork bootstrap failed (${e?.message ?? e}) — falling back to an UNTRACKED fork (resumable only by uuid).`);

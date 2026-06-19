@@ -380,6 +380,50 @@ const optionsGet = defineTool({
   },
 });
 
+/**
+ * GET /api/agent-mcp/console/bootstrap-su/account-env
+ *
+ * psu-account-chooser: resolve the inference-gateway env patch that pins a
+ * RESUME to a chosen pool account — WITHOUT minting a new session row (the
+ * POST does that; resume must not). The account pin is spawn-env only and is
+ * never persisted on the session, so `psu --resume` would otherwise drop it and
+ * fall back to the default credential. The launcher's resume path fetches this,
+ * folds `env` into the resume envelope, and prints `notice`.
+ *
+ *   - ?account=<id>[&workspace=<id>]  → { env, notice } from resolveAccountPin
+ *   - no account                      → { env: {}, notice: null }
+ * `workspace` defaults to the active workspace when omitted. Fail-soft: an
+ * unknown / disallowed / gateway-off account yields an empty `env` + a human
+ * `notice` (never an error), mirroring the fresh-launch POST.
+ */
+const accountEnvGet = defineTool({
+  method: 'GET',
+  path: '/agent-mcp/console/bootstrap-su/account-env',
+  auth: 'public',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    const url = new URL(req.url);
+    const workspace = url.searchParams.get('workspace')?.trim() || activeWorkspaceId();
+    const account = url.searchParams.get('account')?.trim() || null;
+    try {
+      const { env, notice } = await resolveAccountPin(workspace, account);
+      return jsonRes({ status: 'ok', workspace, account: account ?? null, env, notice });
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: e?.message ?? 'account-env resolution failed' }, 400);
+    }
+  },
+});
+
+const optionsForAccountEnv = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/account-env',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/bootstrap-su',
@@ -820,4 +864,4 @@ const optionsForSessionEnded = defineTool({
   },
 });
 
-export default [options, optionsForOptions, post, optionsGet, brainGet, heartbeat, optionsForHeartbeat, sessionEnded, optionsForSessionEnded];
+export default [options, optionsForOptions, post, optionsGet, brainGet, accountEnvGet, optionsForAccountEnv, heartbeat, optionsForHeartbeat, sessionEnded, optionsForSessionEnded];
