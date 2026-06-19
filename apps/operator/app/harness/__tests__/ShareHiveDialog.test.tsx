@@ -127,14 +127,17 @@ describe('ShareHiveForm — prefill + state (P-004)', () => {
 describe('ShareHiveForm — submit (P-004)', () => {
   it('publishes public with the edited title + description and NO inviteSecret', async () => {
     const user = userEvent.setup();
-    const s = seams({ meta: meta({ found: false }) });
+    // Deceptive-publish fix: an announced publish that reached peers reports the
+    // peer count; announced with 0 reachable peers says "registered, not yet
+    // discoverable" instead of claiming a directory publish.
+    const s = seams({ meta: meta({ found: false }), outcome: { ok: true, announced: true, reachablePeers: 3 } });
     render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.clear(screen.getByTestId('share-hive-title'));
     await user.type(screen.getByTestId('share-hive-title'), 'Acme Hive');
     await user.type(screen.getByTestId('share-hive-description'), 'the stack');
     await user.click(screen.getByTestId('share-hive-submit'));
-    await screen.findByText('Published and announced to the directory.');
+    await screen.findByText('Published — announced to 3 connected peers.');
     expect(s.calls).toEqual([
       { hiveId: 'acme', title: 'Acme Hive', description: 'the stack', visibility: 'public' },
     ]);
