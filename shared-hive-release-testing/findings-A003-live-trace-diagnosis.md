@@ -58,6 +58,35 @@ display :180/:182). Add `PAPERCUSP_A003_TRACE=1` for the `[A-003]` lines. ~10min
 matrix. su-9140a will re-witness the instant a (b)/(c) fix lands. The .deb at
 `/tmp/a003-rewitness/Papercusp_integrated.deb` carries the current staging if still present.
 
+## su-9140a fix ATTEMPT (implemented, then REVERTED — unvalidated, possible regression)
+Implemented option (b) in boot.ts + suite-green (1009/1010), git-sync committed it (0d2067204),
+then REVERTED after it could not be validated + a regression concern surfaced. The patch (for
+d2230 to apply + validate properly — you own this lane + the D-006 interaction):
+- **onAnnounce** (`if (!inScope)`): when `hiveHomeProjectionSlug == null && originSlug != null &&
+  originSlug !== slug`, buffer in `pendingPeers` + `return { admit:false, reason:'pending' }`
+  instead of conclusive `out_of_scope`.
+- **retryPendingOnce** (on `decision.admit`): re-run `announceSlugInScope(originSlug, slug,
+  hiveHomeProjectionSlug)`; admit iff in-scope; if out-of-scope && home!=null → conclusive reject;
+  else leave pending.
+- ⚠ **CAVEAT (why I reverted):** the retryPendingOnce change GATES the EXISTING D-006
+  identity-pending admit path behind the slug-filter — a legitimately-pending peer that is
+  out-of-scope-with-home=null would be left un-admitted. Needs careful review (could disrupt
+  other harnesses' federation, incl. the directory). A more surgical fix should gate STRICTLY to
+  the joiner-member-awaiting-rebind case, not all pending peers. Don't apply as-is without validating.
+
+## ⚠ LIVE-WITNESS INFRA FRAGILITY (2026-06-19 PM): B's embedded PG OOM-crashes on the loaded box
+TWO matrix runs (#3, #4) failed at B's join: `hiveId and memberLinks[] required` (EXIT=6) — B's
+discovery returned empty. ROOT CAUSE (corrected — NOT a discovery-code regression): **B's embedded
+Postgres CRASHED.** inst-b.log: `"the database system is shutting down"`, `read ECONNRESET`,
+`ECONNREFUSED 127.0.0.1:<B-pg-port>`. A's announce side was fine (joined all topics). B's PG died →
+B's discovery API couldn't serve → empty → join failed. = a RESOURCE/OOM issue: the embedded PGs are
+configured `shared_buffers≈38GB` each, so two 2-peer pairs (4 PGs) + teardown stragglers starve the
+box (it sat at memfree 3–20G under fleet load). NOT my A-003 fix (fired 0×), NOT a code blocker.
+IMPLICATION: live witnessing (A-003, the re-key cut-off, any 2-peer join) is FRAGILE on a loaded box —
+needs maximal free memory (one pair at a time, all stray pairs killed) OR smaller test-PG shared_buffers.
+NOT a release blocker; an infra/test-harness constraint. The A-003 fix below remains unvalidated only
+because the box couldn't sustain the witness, not because of any code fault.
+
 ## Why this is the whole release gate
 A-003 is the one live-red federation blocker. Everything downstream is staged (re-key built
 + 32 teeth-tests, held on A-003 green; owner-enforcement EN-2 built; PR-system/dogfood planned).

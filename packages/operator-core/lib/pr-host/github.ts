@@ -200,6 +200,32 @@ export class GitHubPrHost implements PrHost {
     }
   }
 
+  async getRepoFile(args: {
+    remote: string;
+    path: string;
+    ref?: string;
+  }): Promise<PrHostResult<string>> {
+    const parsed = parseRemote(args.remote);
+    if (!parsed) {
+      return err({ kind: 'validation', message: `Cannot parse remote: ${args.remote}` });
+    }
+    try {
+      // `mediaType.format: 'raw'` returns the file body as a string. Octokit
+      // types `data` as the content object, so cast — at runtime it is the
+      // raw text. A directory path 404s/errors → mapped like any miss.
+      const res = await this.oc.repos.getContent({
+        owner: parsed.owner,
+        repo: parsed.repo,
+        path: args.path,
+        ref: args.ref,
+        mediaType: { format: 'raw' },
+      });
+      return ok(res.data as unknown as string);
+    } catch (e) {
+      return mapOctokitError(e);
+    }
+  }
+
   async postReview(args: PostReviewArgs): Promise<PrHostResult<void>> {
     const parsed = parseRemote(args.ref.remote);
     if (!parsed) {

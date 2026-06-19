@@ -62,9 +62,9 @@ internally. Standing it up is a runtime action, not a code gap.
    it drives `tryAutoApprove`+`tryAutoMerge` — gated on checks-green + trusted author + **not revoked**.
 4. **Merge to canonical.** Owner Approves in the PRs tab → `reviewPr` (`approve_and_merge`) →
    `tryAutoMerge` (checks-green gate) → `stampCompletionRefOnMerge` + `markFeaturePrState('merged')`.
-5. **Assert the round-trip.** `verifyDogfoodRoundTrip({ workspaceId, harnessSlug:'papercusp-platform',
-   prUrl, readReviewReport: defaultReadReviewReport })` → expect `ok:true` (pass
-   `defaultReadReviewReport` from `dogfood-roundtrip.ts` to un-gate the optional `reviewed` leg).
+5. **Assert the round-trip.** `platform:dogfood_verify { prUrl }` (defaults harness to
+   `papercusp-platform`, wires PR-2's report reader) → expect `ok:true`. (Equivalent to calling
+   `verifyDogfoodRoundTrip({...prUrl, readReviewReport: defaultReadReviewReport})` directly.)
 6. **Tidy.** `platform:fork_gc { reason:"…" }` (dry-run report) → `{ confirm:true }` to collect any
    abandoned forks.
 

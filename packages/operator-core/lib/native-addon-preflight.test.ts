@@ -14,6 +14,7 @@ import {
   discoverAddonPackages,
   formatReport,
   shouldSkipAddon,
+  runBootAddonPreflight,
 } from './native-addon-preflight';
 
 const esmError = (): never => {
@@ -112,6 +113,53 @@ describe('checkNativeAddons gate', () => {
     });
     expect(r.results.filter((x) => x.name === 'better-sqlite3')).toHaveLength(1);
     expect(r.results[0].required).toBe(true);
+  });
+});
+
+describe('runBootAddonPreflight (A2 boot self-check)', () => {
+  const okRequire = () => ({});
+  const failRequire = (s: string) => {
+    if (s === 'better-sqlite3') throw new Error('Module did not self-register');
+    return {};
+  };
+
+  it('is silent + does not exit when the required addon loads', () => {
+    const logs: string[] = [];
+    const exits: number[] = [];
+    const r = runBootAddonPreflight({
+      requireFn: okRequire,
+      log: (m) => logs.push(m),
+      exit: (c) => exits.push(c),
+      env: {} as NodeJS.ProcessEnv,
+    });
+    expect(r.ok).toBe(true);
+    expect(logs).toEqual([]);
+    expect(exits).toEqual([]);
+  });
+
+  it('logs LOUDLY but does NOT exit on failure when the fatal flag is off', () => {
+    const logs: string[] = [];
+    const exits: number[] = [];
+    const r = runBootAddonPreflight({
+      requireFn: failRequire,
+      log: (m) => logs.push(m),
+      exit: (c) => exits.push(c),
+      env: {} as NodeJS.ProcessEnv,
+    });
+    expect(r.ok).toBe(false);
+    expect(logs.join('\n')).toMatch(/BOOT self-check FAILED/);
+    expect(exits).toEqual([]); // safe by default — no crashloop
+  });
+
+  it('exits non-zero on failure ONLY when PAPERCUSP_ADDON_PREFLIGHT_FATAL=1', () => {
+    const exits: number[] = [];
+    runBootAddonPreflight({
+      requireFn: failRequire,
+      log: () => {},
+      exit: (c) => exits.push(c),
+      env: { PAPERCUSP_ADDON_PREFLIGHT_FATAL: '1' } as unknown as NodeJS.ProcessEnv,
+    });
+    expect(exits).toEqual([1]);
   });
 });
 

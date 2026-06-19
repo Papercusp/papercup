@@ -4,6 +4,7 @@ import {
   reviewPr,
   runAgentReview,
   buildReviewPrompt,
+  loadRepoConventions,
   type LlmRunner,
   type LlmRunResult,
 } from './agent-reviewer';
@@ -67,6 +68,17 @@ function makeHost(diff: string | { err: true }): PrHost {
     merge: vi.fn(),
     listOpenPrs: vi.fn(),
   };
+}
+
+/** A host whose getRepoFile resolves only the paths present in `files`. */
+function makeHostWithFiles(files: Record<string, string>): PrHost {
+  const host = makeHost(CLEAN_DIFF);
+  host.getRepoFile = vi.fn(async ({ path }: { path: string }): Promise<PrHostResult<string>> =>
+    path in files
+      ? { ok: true, data: files[path]! }
+      : { ok: false, error: { kind: 'not_found', message: '404' } },
+  );
+  return host;
 }
 
 function llmReturning(json: object | string): LlmRunner {
@@ -184,6 +196,38 @@ describe('buildReviewPrompt', () => {
   });
 });
 
+describe('loadRepoConventions', () => {
+  it('returns the highest-priority present candidate', async () => {
+    const host = makeHostWithFiles({
+      'AGENTS.md': 'agents conventions',
+      'CLAUDE.md': 'claude conventions',
+    });
+    const conv = await loadRepoConventions({ host, remote: 'github.com/o/r' });
+    expect(conv).toBe('agents conventions'); // AGENTS.md outranks CLAUDE.md
+  });
+  it('prefers CONTRIBUTING.md over AGENTS.md', async () => {
+    const host = makeHostWithFiles({
+      'CONTRIBUTING.md': 'contrib',
+      'AGENTS.md': 'agents',
+    });
+    expect(await loadRepoConventions({ host, remote: 'github.com/o/r' })).toBe('contrib');
+  });
+  it('returns null when no candidate exists', async () => {
+    const host = makeHostWithFiles({ 'README.md': 'x' });
+    expect(await loadRepoConventions({ host, remote: 'github.com/o/r' })).toBeNull();
+  });
+  it('returns null when the host cannot fetch files', async () => {
+    const host = makeHost(CLEAN_DIFF); // no getRepoFile
+    expect(await loadRepoConventions({ host, remote: 'github.com/o/r' })).toBeNull();
+  });
+  it('truncates an oversized conventions doc', async () => {
+    const host = makeHostWithFiles({ 'CONTRIBUTING.md': 'x'.repeat(50) });
+    const conv = await loadRepoConventions({ host, remote: 'github.com/o/r', maxChars: 10 });
+    expect(conv).toMatch(/conventions truncated/);
+    expect(conv!.length).toBeLessThan(50);
+  });
+});
+
 describe('runAgentReview', () => {
   function deps() {
     return {
@@ -192,6 +236,7 @@ describe('runAgentReview', () => {
         title: 'Add fn',
         summary: 's',
       })),
+      loadConventions: vi.fn<typeof loadRepoConventions>(async () => null),
       store: vi.fn<typeof storeReviewReport>(async () => undefined),
       audit: vi.fn<typeof writeAgentReviewAudit>(async () => undefined),
     };

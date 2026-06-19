@@ -146,6 +146,52 @@ export const REVIEWER_SYSTEM_PROMPT = [
   '}',
 ].join('\n');
 
+/** Conventions docs the reviewer looks for, in priority order. The first
+ *  one present in the base repo is loaded as the "repo conventions" the
+ *  brief calls for. */
+export const CONVENTIONS_CANDIDATES = [
+  'CONTRIBUTING.md',
+  '.github/CONTRIBUTING.md',
+  'AGENTS.md',
+  'CLAUDE.md',
+  'docs/CONVENTIONS.md',
+] as const;
+
+/** Cap on conventions text fed to the model. */
+export const DEFAULT_MAX_CONVENTIONS_CHARS = 8_000;
+
+/**
+ * Best-effort load of the base repo's conventions doc via the host's
+ * (optional) getRepoFile. Tries each candidate path in order, returns the
+ * first non-empty one (bounded), or null when the host can't fetch files /
+ * none exist. Never throws — conventions are advisory context.
+ */
+export async function loadRepoConventions(opts: {
+  host: PrHost;
+  remote: string;
+  ref?: string;
+  candidates?: readonly string[];
+  maxChars?: number;
+}): Promise<string | null> {
+  if (typeof opts.host.getRepoFile !== 'function') return null;
+  const candidates = opts.candidates ?? CONVENTIONS_CANDIDATES;
+  const max = opts.maxChars ?? DEFAULT_MAX_CONVENTIONS_CHARS;
+  for (const path of candidates) {
+    let r;
+    try {
+      r = await opts.host.getRepoFile({ remote: opts.remote, path, ref: opts.ref });
+    } catch {
+      continue; // best-effort: a throw on one candidate must not abort the rest
+    }
+    if (r.ok && typeof r.data === 'string' && r.data.trim()) {
+      const text = r.data.trim();
+      return text.length > max ? text.slice(0, max) + '\n…[conventions truncated]…' : text;
+    }
+    // not_found / other miss → try the next candidate.
+  }
+  return null;
+}
+
 /** Render the WI/feature context block for the prompt. */
 function renderFeatureContext(fc: FeatureContext | null | undefined): string {
   if (!fc) {
@@ -315,6 +361,7 @@ export async function reviewPr(args: ReviewPrArgs): Promise<ReviewPrResult> {
 
 export interface RunAgentReviewDeps {
   loadFeatureContext?: typeof loadFeatureContextForPr;
+  loadConventions?: typeof loadRepoConventions;
   store?: typeof storeReviewReport;
   audit?: typeof writeAgentReviewAudit;
 }
@@ -351,8 +398,26 @@ export interface RunAgentReviewResult {
 export async function runAgentReview(args: RunAgentReviewArgs): Promise<RunAgentReviewResult> {
   const deps = args.deps ?? {};
   const loadFeatureContext = deps.loadFeatureContext ?? loadFeatureContextForPr;
+  const loadConventions = deps.loadConventions ?? loadRepoConventions;
   const store = deps.store ?? storeReviewReport;
   const audit = deps.audit ?? writeAgentReviewAudit;
+
+  // 0. Repo conventions (the brief's third reviewer input). When the caller
+  //    didn't supply them, best-effort load from the base repo. A provided
+  //    value (even '') is respected as an explicit override.
+  let conventions = args.conventions;
+  if (conventions === undefined) {
+    try {
+      conventions =
+        (await loadConventions({
+          host: args.host,
+          remote: args.pr.ref.remote,
+          ref: args.pr.base_ref,
+        })) ?? undefined;
+    } catch {
+      conventions = undefined;
+    }
+  }
 
   // 1. WI context (skip the lookup if the caller pre-resolved it).
   let featureContext = args.featureContext ?? null;
@@ -375,7 +440,7 @@ export async function runAgentReview(args: RunAgentReviewArgs): Promise<RunAgent
     host: args.host,
     pr: args.pr,
     featureContext,
-    conventions: args.conventions,
+    conventions,
     diff: args.diff,
     model: args.model,
     runLlm: args.runLlm,

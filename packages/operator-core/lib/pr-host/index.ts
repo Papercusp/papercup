@@ -23,6 +23,7 @@ export type {
   PostReviewArgs,
   MergePrArgs,
   ListOpenPrsArgs,
+  GetRepoFileArgs,
   PrHost,
 } from './types';
 
@@ -83,7 +84,10 @@ export {
   REVIEW_MODEL,
   DEFAULT_MAX_DIFF_CHARS,
   REVIEWER_SYSTEM_PROMPT,
+  CONVENTIONS_CANDIDATES,
+  DEFAULT_MAX_CONVENTIONS_CHARS,
   defaultLlmRunner,
+  loadRepoConventions,
   buildReviewPrompt,
   reviewPr,
   runAgentReview,

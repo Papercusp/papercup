@@ -214,6 +214,17 @@ export interface MergePrArgs {
 }
 
 /**
+ * Arguments for `PrHost.getRepoFile` (PR-2 conventions loading).
+ */
+export interface GetRepoFileArgs {
+  remote: string;
+  /** Repo-root-relative path, e.g. `CONTRIBUTING.md` or `.github/CONTRIBUTING.md`. */
+  path: string;
+  /** Ref to read at (branch / tag / sha). Default: host default branch. */
+  ref?: string;
+}
+
+/**
  * Arguments for `PrHost.listOpenPrs` per v5 §8.4 bulk poll.
  */
 export interface ListOpenPrsArgs {
@@ -246,6 +257,15 @@ export interface PrHost {
    * call-sites that need a bound truncate the returned text.
    */
   getPrDiff(ref: PrRef): Promise<PrHostResult<string>>;
+  /**
+   * Fetch a single file's text from the repo at an optional ref (default:
+   * the host's default branch). Returns a `not_found` error when the path
+   * doesn't exist. OPTIONAL on the interface: the agent-reviewer (PR-2)
+   * uses it to load repo conventions (CONTRIBUTING / AGENTS / CLAUDE) when
+   * present; a host impl without it simply reviews without that context.
+   * Kept optional so existing PrHost fakes don't have to implement it.
+   */
+  getRepoFile?(args: GetRepoFileArgs): Promise<PrHostResult<string>>;
   postReview(args: PostReviewArgs): Promise<PrHostResult<void>>;
   merge(args: MergePrArgs): Promise<PrHostResult<{ merge_commit_sha: string }>>;
   listOpenPrs(args: ListOpenPrsArgs): Promise<PrHostResult<Pr[]>>;

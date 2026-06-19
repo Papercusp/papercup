@@ -23,6 +23,7 @@
 
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 
 /**
  * Native addons whose load failure must FAIL a promotion. `better-sqlite3` is
@@ -170,6 +171,40 @@ export function checkNativeAddons(opts: {
 
   const ok = results.filter((r) => r.required).every((r) => r.ok === true);
   return { node: process.versions.node, abi: process.versions.modules, results, ok };
+}
+
+/**
+ * A2 (infra-fail-fast-build-integrity-2026-06-19) — BOOT self-check.
+ *
+ * Runs IN the live process at boot (vs A1's deploy gate). Test-loads the
+ * required native addons under the runtime Node and, on failure, LOGS LOUDLY so
+ * a broken addon (the 2026-06-19 outage: better-sqlite3 ABI mismatch → mem0 load
+ * fail → silent hang) becomes a visible boot error instead of an invisible hang.
+ *
+ * SAFE BY DEFAULT: it does NOT exit. The brief's fail-fast (`Restart=always`
+ * surfacing a crashloop) is opt-in via PAPERCUSP_ADDON_PREFLIGHT_FATAL=1 —
+ * flag-gated off until validated so it can never crashloop a healthy host (e.g.
+ * one that deliberately runs without a memory backend). Always returns the
+ * report; never throws.
+ */
+export function runBootAddonPreflight(opts?: {
+  requireFn?: (s: string) => unknown;
+  log?: (msg: string) => void;
+  exit?: (code: number) => void;
+  env?: NodeJS.ProcessEnv;
+}): PreflightReport {
+  const env = opts?.env ?? process.env;
+  const log = opts?.log ?? ((m) => console.warn(m));
+  const requireFn = opts?.requireFn ?? createRequire(import.meta.url);
+  const report = checkNativeAddons({ requireFn, required: requiredAddonsFromEnv(env), advisory: [] });
+  if (!report.ok) {
+    log(`[addon-preflight] BOOT self-check FAILED — a required native addon will not load under this Node (the 2026-06-19 outage class):\n${formatReport(report)}`);
+    if (env.PAPERCUSP_ADDON_PREFLIGHT_FATAL === '1') {
+      log('[addon-preflight] PAPERCUSP_ADDON_PREFLIGHT_FATAL=1 — exiting non-zero so Restart=always surfaces a visible crashloop instead of a silent hang.');
+      (opts?.exit ?? ((c) => process.exit(c)))(1);
+    }
+  }
+  return report;
 }
 
 /** Human-readable report for the deploy log. */

@@ -281,3 +281,23 @@ expose a `replay()` the receive side calls on home-resolve — but (A) is cleane
 (Coordination note: this is recorded here because the papercusp-su coord MCP was
 down at root-cause time — `coord_send`/`coord_inbox` unavailable. Re-send to
 d2230/9140a via coord when it recovers.)
+
+### Update — d2230's receive-side fix LANDED; A-003 live re-witness now blocked on JOIN-API drift (not on the fix)
+
+- **d2230's fix is committed** (`boot.ts`): exactly option (B) from above — when the
+  slug scope is unresolved at admit time (`hiveHomeProjectionSlug == null`) and the
+  frame is another harness's log, BUFFER it in `pendingPeers` (`reason: 'pending'`,
+  event `announce_pending` / `scope_unresolved`) instead of a conclusive reject;
+  the retry tick re-checks `announceSlugInScope` against the now-resolved home and
+  admits iff in-scope (else conclusive once home resolves). Reviewed — sound, and
+  **my (a′) stays fully compatible (no change on my side).**
+- **The live re-witness can't validate it yet**: on a fresh `.deb` from current
+  staging, `two-instance-content-matrix-smoke.sh` aborts at the B-join step —
+  `✗ B join failed: {"error":"hiveId and memberLinks[] required","code":"invalid_args"}`.
+  The `/api/discovery/join-hive` API signature evolved (now requires `hiveId` +
+  `memberLinks[]` — likely the C-001/Move-2 epoch-key membership work) but the smoke
+  harness still calls the old signature. So A-003 live verification is gated on
+  updating the smoke's join call — a HARNESS/API-drift issue, NOT the (a′) announce
+  side or d2230's admit fix (both committed + compatible; (a′) already proven by the
+  unit test + the earlier `[A-003]` trace where B received A's hive-home frame on a
+  working join). d2230 owns the smoke-join update (`/tmp/a003-wait.sh`).
