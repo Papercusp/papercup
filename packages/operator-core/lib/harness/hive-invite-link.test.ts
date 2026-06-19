@@ -52,10 +52,20 @@ describe('formatHiveInviteLink ↔ parseHiveInviteLink round-trip', () => {
     expect(parsed?.title).toBe('x'.repeat(HIVE_INVITE_TITLE_MAX));
   });
 
-  it('preserves the secret verbatim (case + length variants within 16–128 hex)', () => {
-    for (const s of ['DEADBEEFDEADBEEF', 'a'.repeat(128), 'AbCd1234EfAb5678']) {
+  it('preserves the secret verbatim (case + length variants within 32–128 hex)', () => {
+    // 32-hex (128-bit) floor cases + the 128-hex ceiling; mixed case preserved.
+    for (const s of ['DEADBEEFDEADBEEFDEADBEEFDEADBEEF', 'a'.repeat(128), 'AbCd1234EfAb5678AbCd1234EfAb5678']) {
       expect(parseHiveInviteLink(formatHiveInviteLink({ secret: s }))).toEqual({ secret: s });
     }
+  });
+
+  // WAVE-4 X-1 (invite-secret strength): the accept-floor is 32 hex (128 bits),
+  // raised from 16 (64 bits) to match the 256-bit minting. Defense-in-depth.
+  it('X-1: accepts exactly 32 hex (128-bit floor) but REJECTS 31 hex and the old 16-hex floor', () => {
+    expect(parseHiveInviteLink(formatHiveInviteLink({ secret: 'a'.repeat(32) }))).not.toBeNull(); // 128-bit ok
+    expect(parseHiveInviteLink(`papercusp://hive?secret=${'a'.repeat(31)}`)).toBeNull(); // one under the floor
+    expect(parseHiveInviteLink(`papercusp://hive?secret=${'deadbeef'.repeat(2)}`)).toBeNull(); // 16 hex (old floor) now rejected
+    expect(parseHiveInviteLink(formatHiveInviteLink({ secret: 'a'.repeat(64) }))).not.toBeNull(); // the real 256-bit minted length
   });
 });
 
@@ -71,7 +81,7 @@ describe('parseHiveInviteLink — malformed matrix (null, never throw)', () => {
     ['wrong host (hives)', `papercusp://hives?secret=${SECRET}`],
     ['missing secret', `papercusp://hive?pubkey=${encodeURIComponent(PUBKEY)}`],
     ['empty secret', 'papercusp://hive?secret='],
-    ['secret too short (<16)', 'papercusp://hive?secret=abcdef0123'],
+    ['secret too short (<32)', 'papercusp://hive?secret=abcdef0123'],
     ['secret too long (>128)', `papercusp://hive?secret=${'a'.repeat(129)}`],
     ['secret not hex', `papercusp://hive?secret=${'g'.repeat(32)}`],
     ['extra param', `${valid}&evil=1`],

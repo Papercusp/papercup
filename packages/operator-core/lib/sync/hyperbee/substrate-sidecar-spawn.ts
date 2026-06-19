@@ -8,6 +8,14 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// EI-1612 (infra round-3/4): this package is ESM (type:module), where `__dirname`
+// is undefined. The previous `path.join(__dirname, …)` threw "__dirname is not
+// defined", so the sidecar spawn failed and the substrate fell back to IN-PROCESS
+// — running hyperbee on the host's main event loop (the EI-79 saturation class
+// that starves routinesTick / git-sync on the bg-host). Derive it from import.meta.
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 let sidecarProcess: ChildProcess | null = null;
 let sidecarReady = false;
@@ -28,7 +36,7 @@ export async function spawnSubstrateSidecar(socketPath?: string): Promise<void> 
   }
 
   const sidecarScript = path.join(
-    __dirname,
+    moduleDir,
     '../../../../apps/operator/bin/substrate-sidecar.ts',
   );
 

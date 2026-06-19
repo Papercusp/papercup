@@ -25,6 +25,9 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
+import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
+import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
+import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 import {
   startCluster,
@@ -191,6 +194,23 @@ function startRequestServers(): void {
       },
     });
   }
+
+  // infra-self-healing-supervision-2026-06-19 (R4-2/R4-3/R4-4/R4-8): request-path
+  // supervision. These run on a REQUEST worker — independent of the background DBOS
+  // primary they watch — so they keep working when that primary freezes (the exact
+  // failure that blinds the in-engine watchdog, 2026-06-19). All read-only + debounced
+  // + env-killable; every failure degrades silently (best-effort, never crashes serving).
+  //  • infra-liveness alarm (R4-3/R4-8): escalates to the owner when the routine engine
+  //    or Queen goes dark, accounts are starved, or any health panel is critical — incl.
+  //    a STALE health snapshot, which itself is the "bg tick frozen" signal.
+  //  • single-primary guard (R4-2): escalates on != 1 live background primary (the silent
+  //    0-primary routine death AND the >1 split-brain / appVersion-war catastrophe).
+  //  • lag self-restart (R4-4 / EI-1598): recycles THIS worker when its loop stays
+  //    critical for a sustained window — DEFAULT-OFF, arm with PAPERCUSP_LAG_SELF_RESTART=1
+  //    once validated under load (the other reusePort workers serve through the recycle).
+  startInfraLivenessAlarm();
+  startSinglePrimaryGuard();
+  startLagSelfRestart();
 }
 
 // P3-2 (operator-scalability-event-loop-2026-06-16): optional node:cluster. DEFAULT

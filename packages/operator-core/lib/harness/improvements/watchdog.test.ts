@@ -613,9 +613,9 @@ describe('service-down freshness gate (watchdog-robustness P-004)', () => {
     expect(isServiceHealthStale(now, now, maxStale)).toBe(false);
   });
 
-  it('a FRESH snapshot yields the down signals as before', () => {
+  it('a FRESH snapshot yields the down signals as before', async () => {
     const now = 1_000_000;
-    const res = serviceDownCollectorResult({
+    const res = await serviceDownCollectorResult({
       results: [probe({ name: 'vite', up: false, status: null })],
       at: now - 10_000,
       now,
@@ -625,23 +625,102 @@ describe('service-down freshness gate (watchdog-robustness P-004)', () => {
     expect(res.note).toBeUndefined();
   });
 
-  it('a STALE snapshot yields NO signals + a stale-service-health note', () => {
+  // R4-7: with inline-probe DISABLED, the stale path keeps the legacy skip.
+  it('a STALE snapshot (inline-probe off) yields NO signals + a stale-service-health skip note', async () => {
     const now = 1_000_000;
-    const res = serviceDownCollectorResult({
+    const res = await serviceDownCollectorResult({
       results: [probe({ name: 'vite', up: false, status: null })],
       at: now - 200_000, // older than the 120s window
       now,
       maxStaleMs: 120_000,
+      inlineProbe: false,
     });
     expect(res.signals).toEqual([]);
     expect(res.note).toMatch(/stale-service-health/);
+    expect(res.note).toMatch(/skipping service-down/);
     expect(res.note).toMatch(/200s old/);
   });
 
-  it('a NEVER-populated snapshot (at=null) skips with a "never populated" note', () => {
-    const res = serviceDownCollectorResult({ results: [], at: null, now: 1_000_000, maxStaleMs: 120_000 });
+  it('a NEVER-populated snapshot (at=null, inline-probe off) skips with a "never populated" note', async () => {
+    const res = await serviceDownCollectorResult({
+      results: [], at: null, now: 1_000_000, maxStaleMs: 120_000, inlineProbe: false,
+    });
     expect(res.signals).toEqual([]);
     expect(res.note).toMatch(/never populated/);
+  });
+
+  // R4-7: with inline-probe ENABLED (default), a stale snapshot runs a FRESH probe
+  // instead of going blind — a real DOWN is still caught when the writer stalled.
+  it('a STALE snapshot (inline-probe on) runs a fresh inline probe + emits its DOWN signals', async () => {
+    const now = 1_000_000;
+    let probed = false;
+    const res = await serviceDownCollectorResult({
+      // The cached `results` are intentionally all-UP — they must be IGNORED on
+      // the stale path; the fresh probe (vite DOWN) is what should drive signals.
+      results: [probe({ name: 'vite', up: true })],
+      at: now - 200_000,
+      now,
+      maxStaleMs: 120_000,
+      inlineProbe: true,
+      probe: async () => {
+        probed = true;
+        return [probe({ name: 'operator' }), probe({ name: 'vite', up: false, status: null })];
+      },
+    });
+    expect(probed).toBe(true);
+    expect(res.signals.map((s) => s.key)).toEqual(['vite']);
+    expect(res.signals[0].severity).toBe('major');
+    expect(res.note).toMatch(/fresh inline probe/);
+  });
+
+  it('a STALE snapshot (inline-probe on) with all-up fresh probe emits NO signals (no phantom down)', async () => {
+    const now = 1_000_000;
+    const res = await serviceDownCollectorResult({
+      at: now - 200_000,
+      now,
+      maxStaleMs: 120_000,
+      inlineProbe: true,
+      probe: async () => [probe({ name: 'operator' }), probe({ name: 'vite' })],
+    });
+    expect(res.signals).toEqual([]);
+    expect(res.note).toMatch(/fresh inline probe/);
+  });
+
+  // R4-7: if the inline probe itself throws, never go blind — emit a single
+  // DEGRADED/unknown signal so a stale-and-unprobeable monitor is visible.
+  it('a STALE snapshot (inline-probe on) whose probe THROWS emits a degraded monitor signal', async () => {
+    const now = 1_000_000;
+    const res = await serviceDownCollectorResult({
+      at: now - 200_000,
+      now,
+      maxStaleMs: 120_000,
+      inlineProbe: true,
+      probe: async () => { throw new Error('probe blew up'); },
+    });
+    expect(res.signals).toHaveLength(1);
+    expect(res.signals[0].source).toBe('service-down');
+    expect(res.signals[0].key).toBe('service-health-monitor');
+    expect(res.signals[0].title).toMatch(/degraded/i);
+    expect(res.signals[0].body).toMatch(/probe blew up/);
+    expect(res.signals[0].findingClass).toBe('service-down:monitor-degraded');
+    expect(res.note).toMatch(/inline probe failed/);
+  });
+
+  // The blind-spot regression guard: a stale snapshot must NEVER produce both
+  // zero signals AND no note (the old silent-skip-under-load failure mode).
+  it('a STALE snapshot is never fully blind (signals OR a note, both inline modes)', async () => {
+    const now = 1_000_000;
+    const stale = { at: now - 200_000, now, maxStaleMs: 120_000 } as const;
+    const off = await serviceDownCollectorResult({ ...stale, inlineProbe: false, results: [] });
+    const onDown = await serviceDownCollectorResult({
+      ...stale, inlineProbe: true, probe: async () => [probe({ name: 'vite', up: false })],
+    });
+    const onThrow = await serviceDownCollectorResult({
+      ...stale, inlineProbe: true, probe: async () => { throw new Error('x'); },
+    });
+    for (const r of [off, onDown, onThrow]) {
+      expect(r.signals.length > 0 || (r.note != null && r.note.length > 0)).toBe(true);
+    }
   });
 
   it('default window is 2× the 60s probe interval', () => {

@@ -10,7 +10,7 @@
  *
  * G-002 honest-join (shared-hive-release-testing brief L): joining the topic is
  * NOT the same as the hive existing on it. A withdrawn / wrong / offline-owner
- * invite parses identically to a good one (SECRET_RE accepts any 16–128 hex) and
+ * invite parses identically to a good one (SECRET_RE accepts any 32–128 hex) and
  * the bare subscribe always "succeeds" — so the route used to return
  * `{ ok:true, joined:true }` for a join that NEVER materializes (the deceptive
  * "✓ accepted … appears shortly" no-op). Now we BOUNDED-WAIT for the invite hive

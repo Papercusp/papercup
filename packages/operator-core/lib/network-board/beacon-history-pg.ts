@@ -53,15 +53,20 @@ export async function captureBeaconSnapshot(
   beacon: HiveStatusBeacon,
   sql?: Sql,
 ): Promise<void> {
-  // The beacon param goes through as the OBJECT — postgres.js serializes it to
-  // JSON once. A pre-stringified value double-encodes (driver stringifies the
-  // string again → a jsonb STRING, not an object — the known lanes-jsonb bug
-  // class); the integration test pins jsonb_typeof = 'object'.
-  await pg(sql).unsafe(
-    `INSERT INTO harness_shared.cross_hive_beacon_history (hive_id, hive_pubkey, beacon)
-     VALUES ($1, $2, $3::jsonb)`,
-    [hiveId, hivePubkey ?? null, beacon as never],
-  );
+  // WAVE-5 AF (beacon-capture bug, found live by dc9db: `[hive-directory] beacon
+  // capture failed … The "string" argument must be of type string. Received an
+  // instance of Object`). The old form bound the raw beacon OBJECT — which THROWS
+  // under the live `getOrgPg` postgres-js client (and `sql.json(obj)` throws the SAME
+  // way; the testcontainer client behaves OPPOSITELY, so integration tests can't catch
+  // it — see agent-insights/postgres-js-jsonb-binding). The canonical fix that stores a
+  // real jsonb OBJECT under BOTH clients is `${JSON.stringify(v)}::text::jsonb`: the
+  // explicit `::text` binds it as a plain text param, parsed ONCE server-side
+  // (text→jsonb), so it neither throws (live) nor double-encodes (testcontainer).
+  const sqlc = pg(sql);
+  await sqlc`
+    INSERT INTO harness_shared.cross_hive_beacon_history (hive_id, hive_pubkey, beacon)
+    VALUES (${hiveId}, ${hivePubkey ?? null}, ${JSON.stringify(beacon)}::text::jsonb)
+  `;
   void import('../sync-sse')
     .then((m) => {
       void m.notifySyncInvalidate('network.hive.beacons').catch(() => {});

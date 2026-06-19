@@ -197,12 +197,41 @@ capture/drain code, so zero collision with d2230's in-flight A-003 work):
   The C-001 cut-off is proven at the serving level against ed300's REAL crypto: wrong-epoch
   key, tampered op-identity, and tampered epoch all **fail-closed** on decrypt.
 
+## Epoch model — ✅ LANDED (K, P1 / plan P-003)
+`packages/operator-core/lib/sync/hyperbee/hive-epoch-state.ts` — the current epoch as a
+federated `hive_settings` row (`setting_key='epoch'`, JSON int), via the existing
+`hive-settings-store` (so it rides the hive-home→joiner path + the capture trigger, no
+new table/migration): `getHiveEpoch` (baseline 0 + coercion of legacy/malformed values),
+`setHiveEpoch` (validated), `advanceHiveEpoch` (monotonic bump — the P2 boundary-trigger
+seam). Pure state, no key material. Tests `hive-epoch-state.test.ts` **8/8,
+teeth-verified** (neuter the `+1` advance → the monotonic tests flip RED).
+
+## Boundary core — ✅ LANDED (K, P2 core / plan P-004 core)
+`packages/operator-core/lib/sync/hyperbee/hive-epoch-boundary.ts` —
+`advanceEpochAndWrap(crypto, ctx, remainingMemberPubkeys[])`: the pure composition that
+turns a boundary into a read cut-off — advance the epoch (P1) → mint the new epoch key
+(ed300 `deriveEpochKey`) → wrap it to each REMAINING member (ed300 `wrapKeyToMember`,
+deduped). Returns `{newEpoch, wrapped[]}` for the wiring to persist into `hive_epoch_keys`
+(P-005) + federate. The removed member is simply absent from `remainingMemberPubkeys` →
+gets no wrapped row → cut off. Tests `hive-epoch-boundary.test.ts` **3/3, teeth-verified**
+(derive the key for the wrong epoch → the e2e cut-off flips RED). **Proven END-TO-END
+with ed300's REAL crypto** (P1+P2+P4 composed): a remaining member unwraps the new key +
+`decryptOpPayload`s post-boundary content; a removed member cannot unwrap → cut off. This
+is the C-001 read-cut mechanic, demonstrated at the unit/integration level — what the
+LIVE witness (P-008) will prove on the real binary once the federation seam lands.
+
 ## Status
-- ✅ Interface signed off; ✅ crypto foundation (P-001) LANDED; ✅ serving glue (deriveOpId
-  + AAD wrappers + flag-gate) LANDED + teeth-verified.
-- REMAINING for K, all BLOCKED on **P-002 (A-003 send-side / Move-1 inc-2)** — the single
-  critical blocker (46b7a best-leveraged there per ed300): P1 (epoch in `hive_settings`),
-  P3 (`hive_epoch_keys` distribution table + the EpochKeyProvider impl), and the op-path
-  wiring (encrypt-on-write / decrypt-on-read into the projection path — coordinate with
-  d2230's federation seam). Then P5/P8: the flipped `revoked-swarm` test + the LIVE
-  cut-off witness (the release gate). Crypto + serving are both ahead of the dependency.
+- ✅ crypto foundation (P-001); ✅ serving glue (deriveOpId + AAD wrappers + flag-gate, 7/7);
+  ✅ epoch model (P-003, 8/8); ✅ boundary CORE (P-004 core, 3/3, e2e cut-off proven) —
+  all LANDED + teeth-verified (22 tests), built AHEAD of the dependency. The re-key
+  mechanic works; what remains is FEDERATION wiring + the live proof.
+- A-003 send-side = **approach (a′)** — REASSIGNED 2026-06-19: **46b7a now OWNS + drives**
+  the bounded announce-channel extension (dc9db went idle); d2230 staged to re-apply the
+  hive-home re-key + re-witness the instant it lands. THE single gate. OWNED + in progress,
+  NOT yet landed.
+- REMAINING for K, BLOCKED on **P-002 (a′)** — all FEDERATION-wiring (coordinate the
+  capture path with 46b7a's seam + d2230's re-key): P-004 wiring (call `advanceEpochAndWrap`
+  from `revokeHiveContributor`/`setHiveListing` + persist+emit the wrapped rows), P-005
+  `hive_epoch_keys` table + projection capture + migration + the `EpochKeyProvider` impl
+  (member re-unwrap-from-blob), and the op-path encrypt/decrypt wiring into the projection.
+  Then P-007/P-008: the flipped `revoked-swarm` test + the LIVE cut-off witness (release gate).

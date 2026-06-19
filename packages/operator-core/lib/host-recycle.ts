@@ -24,6 +24,12 @@ export interface GracefulRecycleOpts {
   server: RecycleServerLike;
   /** Hard-exit backstop if the drain or the substrate teardown hangs. Default 8000. */
   hardExitMs?: number;
+  /**
+   * Exit code on recycle. NON-ZERO (default 75 = EX_TEMPFAIL) so the host restarts
+   * under `Restart=on-failure` as well as `Restart=always` (EI-1613, R4-1). The
+   * SIGTERM/deploy drain path is separate and still exits 0 (an intentional stop).
+   */
+  recycleExitCode?: number;
   /** Test seam — defaults to `process.exit`. */
   exit?: (code: number) => void;
   /** Test seam — defaults to `closeAllBootedHarnesses`. */
@@ -32,10 +38,13 @@ export interface GracefulRecycleOpts {
 
 /**
  * Stop accepting new connections, drain in-flight HTTP, tear down the P2P
- * substrate, then exit 0. Never throws; never exits more than once.
+ * substrate, then exit with `recycleExitCode` (NON-ZERO, default 75) so systemd
+ * restarts the host under `Restart=on-failure` as well as `Restart=always`
+ * (EI-1613, R4-1). Never throws; never exits more than once.
  */
 export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const hardExitMs = opts.hardExitMs ?? 8000;
+  const recycleExitCode = opts.recycleExitCode ?? 75;
   const exit = opts.exit ?? ((code: number) => process.exit(code));
   const closeSubstrate = opts.closeSubstrate ?? closeAllBootedHarnesses;
 
@@ -46,7 +55,7 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
     exit(code);
   };
 
-  const hardExit = setTimeout(() => exitOnce(0), hardExitMs);
+  const hardExit = setTimeout(() => exitOnce(recycleExitCode), hardExitMs);
   (hardExit as { unref?: () => void }).unref?.();
 
   // Substrate teardown starts immediately, concurrent with the HTTP drain.
@@ -63,13 +72,13 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
       opts.server.close(() => {
         void substrateDown.then(() => {
           clearTimeout(hardExit);
-          exitOnce(0);
+          exitOnce(recycleExitCode);
         });
       });
     }
     // No close fn → nothing drains HTTP; the hard-exit backstop fires after
     // the substrate teardown window.
   } catch {
-    void substrateDown.then(() => exitOnce(0));
+    void substrateDown.then(() => exitOnce(recycleExitCode));
   }
 }

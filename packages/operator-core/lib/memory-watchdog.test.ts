@@ -71,4 +71,26 @@ describe('startMemoryWatchdog', () => {
     expect(onTrip).not.toHaveBeenCalled();
     h.stop();
   });
+
+  it('the DEFAULT recycle exits NON-ZERO (75) so systemd restarts under Restart=on-failure too (EI-1613, R4-1)', () => {
+    withRss(4000);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    // no onTrip injected → exercise the default recycle path
+    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, log: vi.fn() });
+    vi.advanceTimersByTime(1000); // trips → schedules the 250ms flush-then-exit
+    vi.advanceTimersByTime(250); // fire the flush delay → process.exit(recycleExitCode)
+    expect(exitSpy).toHaveBeenCalledWith(75);
+    expect(exitSpy).not.toHaveBeenCalledWith(0);
+    h.stop();
+  });
+
+  it('honors an explicit recycleExitCode in the default recycle', () => {
+    withRss(4000);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, recycleExitCode: 42, log: vi.fn() });
+    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(250);
+    expect(exitSpy).toHaveBeenCalledWith(42);
+    h.stop();
+  });
 });

@@ -1,40 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import {
-  ANNOUNCE_PROTOCOL,
-  createAnnounceChannel,
-  openAnnounceChannel,
-} from './swarm';
+import { ANNOUNCE_PROTOCOL, openAnnounceChannel } from './swarm';
 import type { SignedAnnounce } from './announce';
 
 /**
- * A-002 regression demonstrator — a 2nd hive on one instance must NOT stall the
- * 1st hive's federation.
+ * Announce-channel multi-harness demonstrator — covers BOTH:
  *
- * The defect: swarm.ts opened ONE announce channel per muxer, keyed by the
- * protocol ALONE. With two local hives sharing the singleton swarm's muxer, the
- * 2nd hive's `createChannel({protocol})` collided on that protocol-only key and
- * returned `null` (protomux `unique` semantics) → its signed-announce exchange
- * was silently dropped → that hive's log was never admitted → ZERO apply, both
- * directions, while `peer_connected` + topic-equal still looked healthy. The
- * lazy-accept opts WeakMap was likewise keyed by muxer alone, so the 2nd hive
- * also OVERWROTE the 1st hive's announce opts (last-writer-wins).
+ * A-002 (different-topic hives on one instance): two HIVES sharing one muxer
+ * must each get their own announce channel (discriminated by topic id), else the
+ * 2nd hive's createChannel collides (→ null) and it never federates. Fixed by
+ * keying the channel id + per-topic state by the 32-byte topic.
  *
- * The fix discriminates the announce channel PER HIVE by its 32-byte topic id:
- * `createChannel`/`pair` are keyed by `(protocol, id)`, so distinct topics get
- * distinct channels + distinct lazy-accept notifiers on one muxer, and the
- * per-hive opts no longer collide.
+ * A-003 (a′) (same-topic multi-harness): an instance may run MORE THAN ONE local
+ * harness on the SAME hive topic (a hive's MEMBER harness + its HIVE-HOME harness,
+ * so hive_members/hive_settings federate). They share ONE (protocol, topic)
+ * channel, but it must carry EVERY local log's announce — pre-(a′) the 2nd
+ * harness's createChannel collided on the same topic id (→ null) so its log was
+ * never announced → the joiner never admitted it → hive_members/settings stalled.
+ * Fixed by accumulating all local harnesses' announces per topic and flushing
+ * each over the one channel.
  *
- * These tests use a FAITHFUL fake of protomux's (protocol, id)-keyed channel
- * uniqueness — mirroring protomux/index.js `toKey(protocol, id)` +
- * `createChannel({unique})`: a duplicate `(protocol, id)` returns null, distinct
- * ids open distinct channels. `open()` fires `onopen` synchronously (models a
- * paired remote) so `ourAnnounce` is sent. TEETH: reverting the per-hive `id`
- * in swarm.ts (back to the protocol-only key) flips both tests RED — verified.
+ * Faithful fake of protomux's (protocol, id)-keyed channel uniqueness (mirrors
+ * protomux/index.js `toKey` + `createChannel({unique})`): a duplicate
+ * (protocol, id) returns null; distinct ids open distinct channels. `open()`
+ * fires `onopen` synchronously (models a paired remote). `Protomux.from(socket)`
+ * returns the fake when pinned at `socket.userData` (isProtomux).
+ *
+ * TEETH: reverting the per-hive `id` flips the A-002 cases RED; reverting the
+ * multi-log accumulation (1 announce per topic) flips the (a′) case RED — both
+ * verified by neuter→run→restore.
  */
 
-// Minimal valid-SHAPE SignedAnnounce. swarm.ts does NOT verify the frame
-// (verification happens later in onAnnounce → read-admission); it only routes
-// it. `log_core_key` is the per-hive discriminator we assert on.
 function announce(logCoreKey: string): SignedAnnounce {
   return {
     device_pubkey: 'AAAA',
@@ -58,11 +53,6 @@ interface FakeChannel {
   open(): void;
 }
 
-/**
- * Faithful-enough fake of a protomux muxer — only the `(protocol, id)`-keyed
- * `createChannel` / `pair` surface swarm.ts touches. `isProtomux` makes
- * `Protomux.from(socket)` return it when pinned at `socket.userData`.
- */
 function makeFakeMux() {
   const toKey = (protocol: string, id?: Buffer | null): string =>
     protocol + '##' + (id ? Buffer.from(id).toString('hex') : '');
@@ -88,7 +78,7 @@ function makeFakeMux() {
         },
         open() {
           ch.opened = true;
-          ch.onopen?.(); // models a paired remote → fires ourAnnounce send
+          ch.onopen?.();
         },
       };
       channels.set(key, ch);
@@ -100,7 +90,6 @@ function makeFakeMux() {
     ): void {
       pairs.set(toKey(opts.protocol, opts.id ?? null), notify);
     },
-    // — test introspection —
     _sent: sent,
     _channels: channels,
     _pairs: pairs,
@@ -109,42 +98,28 @@ function makeFakeMux() {
   return mux;
 }
 
-type FakeMux = ReturnType<typeof makeFakeMux>;
-const asMux = (m: FakeMux) =>
-  m as unknown as Parameters<typeof createAnnounceChannel>[0];
+describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-per-topic', () => {
+  const t1 = Buffer.alloc(32, 1);
+  const t2 = Buffer.alloc(32, 2);
 
-describe('A-002 — multi-hive announce-channel discrimination', () => {
-  const t1 = Buffer.alloc(32, 1); // hive-1 topic
-  const t2 = Buffer.alloc(32, 2); // hive-2 topic
-
-  it('two hives on one muxer EACH open their announce channel + send their own announce', () => {
+  it('A-002: two hives (different topics) on one muxer EACH open their channel + send their own announce', () => {
     const mux = makeFakeMux();
-    createAnnounceChannel(asMux(mux), t1, { ourAnnounce: announce('hive1') });
-    createAnnounceChannel(asMux(mux), t2, { ourAnnounce: announce('hive2') });
+    const socket = { userData: mux };
+    openAnnounceChannel(socket, t1, { ourAnnounce: announce('hive1') });
+    openAnnounceChannel(socket, t2, { ourAnnounce: announce('hive2') });
 
     const sentKeys = mux._sent.map((s) => s.value.log_core_key);
-    // Pre-fix: hive2's createChannel collided on the protocol-only key, returned
-    // null, and its announce was never sent → ['hive1'] only (RED here).
+    // Pre-A-002: hive2's createChannel collided on the protocol-only key → null →
+    // hive2's announce never sent → ['hive1'] only.
     expect(sentKeys).toContain('hive1');
     expect(sentKeys).toContain('hive2');
-    // Distinct channels — one per hive topic.
-    expect(mux._channels.size).toBe(2);
+    expect(mux._channels.size).toBe(2); // one channel per topic
     expect(mux._channels.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
     expect(mux._channels.has(mux._key(ANNOUNCE_PROTOCOL, t2))).toBe(true);
   });
 
-  it('the SAME hive twice on one muxer is still de-duped (one channel, one announce)', () => {
+  it('A-002: inbound announces route to the OWNING hive (no opts overwrite)', () => {
     const mux = makeFakeMux();
-    createAnnounceChannel(asMux(mux), t1, { ourAnnounce: announce('hive1') });
-    createAnnounceChannel(asMux(mux), t1, { ourAnnounce: announce('hive1') });
-    // Same (protocol, id) → the 2nd is the intended no-op duplicate.
-    expect(mux._channels.size).toBe(1);
-    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['hive1']);
-  });
-
-  it('inbound announces route to the OWNING hive (no opts overwrite) via openAnnounceChannel', () => {
-    const mux = makeFakeMux();
-    // One shared socket whose userData is our fake mux (Protomux.from returns it).
     const socket = { userData: mux };
     const h1: string[] = [];
     const h2: string[] = [];
@@ -163,8 +138,6 @@ describe('A-002 — multi-hive announce-channel discrimination', () => {
 
     const ch1 = mux._channels.get(mux._key(ANNOUNCE_PROTOCOL, t1));
     const ch2 = mux._channels.get(mux._key(ANNOUNCE_PROTOCOL, t2));
-    // Pre-fix: ch2 is undefined (collided → null) AND ch1's onmessage routed to
-    // hive2's onAnnounce (last-writer-wins opts overwrite) → cross-wired/dropped.
     expect(ch1).toBeDefined();
     expect(ch2).toBeDefined();
 
@@ -173,9 +146,46 @@ describe('A-002 — multi-hive announce-channel discrimination', () => {
 
     expect(h1).toEqual(['inbound-for-hive1']);
     expect(h2).toEqual(['inbound-for-hive2']);
-
-    // Each hive registered its OWN id-keyed lazy-accept pair-notifier.
     expect(mux._pairs.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
     expect(mux._pairs.has(mux._key(ANNOUNCE_PROTOCOL, t2))).toBe(true);
+  });
+
+  it('the SAME harness re-registered on one topic is de-duped (one channel, one announce)', () => {
+    const mux = makeFakeMux();
+    const socket = { userData: mux };
+    openAnnounceChannel(socket, t1, { ourAnnounce: announce('hive1') });
+    openAnnounceChannel(socket, t1, { ourAnnounce: announce('hive1') });
+    expect(mux._channels.size).toBe(1);
+    // sentKeys dedups by log_core_key → exactly one send.
+    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['hive1']);
+  });
+
+  it('A-003 (a′): TWO harnesses on the SAME topic both get announced on ONE channel', () => {
+    const mux = makeFakeMux();
+    const socket = { userData: mux };
+    const memberInbound: string[] = [];
+    // harness 1 — the MEMBER: announces its log + admits inbound.
+    openAnnounceChannel(socket, t1, {
+      ourAnnounce: announce('member-log'),
+      onAnnounce: (f) => {
+        memberInbound.push(f.log_core_key);
+      },
+    });
+    // harness 2 — the HIVE-HOME, on the SAME topic: send-only (no onAnnounce).
+    openAnnounceChannel(socket, t1, { ourAnnounce: announce('home-log') });
+
+    const sentKeys = mux._sent.map((s) => s.value.log_core_key);
+    // Pre-(a′): home-log's createChannel collided (same topic id → null) so the
+    // hive-home log was NEVER announced → ['member-log'] only. With (a′): both.
+    expect(sentKeys).toContain('member-log');
+    expect(sentKeys).toContain('home-log');
+    // ONE channel carries BOTH logs' announces (same (protocol, topic)).
+    expect(mux._channels.size).toBe(1);
+
+    // An inbound announce is delivered to the member (the admitting harness); the
+    // send-only hive-home registered no onAnnounce so it never mis-admits.
+    const ch = mux._channels.get(mux._key(ANNOUNCE_PROTOCOL, t1));
+    ch?.onmessage?.(announce('remote-member'));
+    expect(memberInbound).toEqual(['remote-member']);
   });
 });

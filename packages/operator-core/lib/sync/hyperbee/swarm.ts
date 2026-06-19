@@ -115,36 +115,53 @@ export type AnnounceChannelOpts = {
 };
 
 /**
- * Per-muxer → per-hive announce-channel state (A-002 fix).
+ * Per-topic announce-channel state on one muxer — keyed by `muxer × topicHex`.
  *
- * A shared-swarm muxer serves MANY hives over one socket. The announce channel
- * MUST be discriminated per hive — protomux keys `createChannel`/`pair` by
- * `(protocol, id)`, so we use the hive's 32-byte topic as the channel `id`
- * (both peers derive the SAME per-hive topic, so they agree on it). Keying this
- * state by `muxer × topicHex` (not `muxer` alone) is the heart of the A-002 fix:
- * previously a 2nd hive on the muxer (a) OVERWROTE the 1st hive's opts in the
- * lazy-accept notifier (last-writer-wins WeakMap) and (b) collided on the
- * protocol-only channel key so its `createChannel` returned null → its
- * admission exchange was silently dropped → that hive never federated, BOTH
- * directions, while `peer_connected` + topic-equal still looked healthy.
+ * A shared-swarm muxer serves MANY topics over one socket. The announce channel
+ * is discriminated per topic — protomux keys `createChannel`/`pair` by
+ * `(protocol, id)`, so we use the 32-byte topic as the channel `id` (both peers
+ * derive the SAME per-hive topic, so they agree on it). Keying this state by
+ * `muxer × topicHex` (not `muxer` alone) is the A-002 fix: previously a 2nd hive
+ * on the muxer overwrote the 1st's opts + collided on the protocol-only channel
+ * key (createChannel → null) → its admission exchange was silently dropped.
  *
- * `paired` records whether THIS hive's lazy-accept pair-notifier is already
- * registered on the muxer (once per muxer × hive). `opts` is refreshed on a
- * reconnect so the notifier re-creates the channel with the current announce.
+ * A-003 (a′) generalizes this from ONE log per topic to MANY: an instance may
+ * run more than one local harness on the SAME hive topic (e.g. a hive's MEMBER
+ * harness + its HIVE-HOME harness, so hive_members/hive_settings federate). They
+ * share one announce channel (one (protocol, topic) channel per muxer), but the
+ * channel now carries EVERY local log's announce on that topic — `entries` maps
+ * each local harness (keyed by its own `log_core_key`) to its opts. On open (and
+ * on a late-joining harness) we flush every not-yet-sent `ourAnnounce`; an
+ * inbound announce is delivered to EVERY registered `onAnnounce` on the topic.
+ *
+ * CALLER CONTRACT: register `onAnnounce` only for harnesses that should ADMIT
+ * inbound logs on this topic (the member). A send-only harness (the hive-home,
+ * which only needs its own log announced so members admit it) passes
+ * `ourAnnounce` WITHOUT `onAnnounce`, so it is never delivered a remote announce
+ * to mis-admit. `paired` is the once-per-(muxer,topic) lazy-accept notifier;
+ * `sentKeys` dedups sends by log_core_key (idempotent across re-pair/reconnect).
  */
-const announceHiveStateByMuxer = new WeakMap<
-  object,
-  Map<string, { opts: AnnounceChannelOpts; paired: boolean }>
->();
+type TopicAnnounceState = {
+  /** Local harnesses on this topic, keyed by their own log_core_key (dedup). */
+  entries: Map<string, AnnounceChannelOpts>;
+  /** Lazy-accept pair-notifier registered for this (muxer, topic). */
+  paired: boolean;
+  /** The live channel's message sink, set once the channel is created. */
+  message: { send(value: SignedAnnounce): void } | null;
+  /** Whether the channel's `onopen` has fired (safe to send late announces). */
+  opened: boolean;
+  /** log_core_keys already sent on the wire — guards double-send. */
+  sentKeys: Set<string>;
+};
 
-/** Get-or-create the per-hive announce-state map for a muxer. */
-function announceHiveStateFor(
-  mux: object,
-): Map<string, { opts: AnnounceChannelOpts; paired: boolean }> {
-  let m = announceHiveStateByMuxer.get(mux);
+const announceTopicStateByMuxer = new WeakMap<object, Map<string, TopicAnnounceState>>();
+
+/** Get-or-create the per-topic announce-state map for a muxer. */
+function announceTopicStatesFor(mux: object): Map<string, TopicAnnounceState> {
+  let m = announceTopicStateByMuxer.get(mux);
   if (!m) {
     m = new Map();
-    announceHiveStateByMuxer.set(mux, m);
+    announceTopicStateByMuxer.set(mux, m);
   }
   return m;
 }
@@ -152,51 +169,64 @@ function announceHiveStateFor(
 /** Create + open the announce channel on a muxer (returns silently when the
  *  channel already exists on it). Split from openAnnounceChannel so the
  *  protomux pair-notifier can re-create the channel synchronously. */
-export function createAnnounceChannel(
-  mux: ReturnType<typeof Protomux.from>,
-  channelId: Buffer,
-  opts: AnnounceChannelOpts,
-): void {
-  // Send OUR announce from the channel's `onopen` — Protomux invokes onopen
-  // only once the channel is fully paired (the remote opened the matching
-  // protocol). Sending synchronously after `open()` can DROP the first
-  // announce on a fresh connection (the peer's channel isn't open yet), and
-  // announces aren't re-sent → the peer would never be admitted. Sending on
-  // onopen guarantees delivery. Guard `sent` so a duplicate onopen (or a
-  // re-pair) can't double-send.
-  let message: { send(value: SignedAnnounce): void } | null = null;
-  let sent = false;
-  const sendOurAnnounce = (): void => {
-    if (sent || !opts.ourAnnounce || !message) return;
-    sent = true;
+/** Flush every not-yet-sent local `ourAnnounce` on a topic over its live
+ *  channel. Idempotent via `state.sentKeys` — a duplicate onopen, a re-pair, or
+ *  a late-joining harness can call this without double-sending. */
+function flushTopicAnnounces(state: TopicAnnounceState): void {
+  if (!state.message) return;
+  for (const entry of state.entries.values()) {
+    const ann = entry.ourAnnounce;
+    if (!ann || state.sentKeys.has(ann.log_core_key)) continue;
+    state.sentKeys.add(ann.log_core_key);
     try {
-      message.send(opts.ourAnnounce);
+      state.message.send(ann);
     } catch {
       // best-effort — replication still proceeds
     }
-  };
+  }
+}
+
+/** Create + open the single announce channel for a topic on a muxer (one
+ *  `(protocol, topic)` channel), then drive it from the per-topic `state`:
+ *  every local log's announce is sent on `onopen` (Protomux fires it only once
+ *  the channel is fully PAIRED — sending before that drops the frame, and
+ *  announces aren't re-sent), and each inbound announce is delivered to every
+ *  registered `onAnnounce`. Returns silently when the channel already exists on
+ *  the muxer (the lazy-accept re-create / a 2nd harness on the same topic). */
+function createAnnounceChannel(
+  mux: ReturnType<typeof Protomux.from>,
+  channelId: Buffer,
+  state: TopicAnnounceState,
+): void {
   const channel = mux.createChannel({
     protocol: ANNOUNCE_PROTOCOL,
-    // Discriminate the announce channel PER HIVE by its topic (A-002). Without
-    // an id, a 2nd hive on the same muxer collides on the protocol-only key and
-    // createChannel returns null — silently dropping its admission exchange so
-    // that hive never federates (both directions).
+    // Discriminate the announce channel PER TOPIC by the hive topic (A-002).
+    // Without an id, a 2nd hive on the same muxer collides on the protocol-only
+    // key and createChannel returns null — dropping its admission exchange.
     id: channelId,
-    onopen: sendOurAnnounce,
+    onopen: () => {
+      state.opened = true;
+      flushTopicAnnounces(state); // send ALL local logs' announces on this topic
+    },
   });
-  if (!channel) return; // already open on this muxer for this hive — nothing to do
-  message = channel.addMessage<SignedAnnounce>({
+  if (!channel) return; // already open on this muxer for this topic — nothing to do
+  const message = channel.addMessage<SignedAnnounce>({
     encoding: c.json,
     onmessage: (frame: SignedAnnounce) => {
-      if (!opts.onAnnounce) return;
-      try {
-        // onAnnounce may be async; never let a rejection crash the muxer.
-        void Promise.resolve(opts.onAnnounce(frame)).catch(() => {});
-      } catch {
-        // synchronous throw — swallow
+      // A-003 (a′): deliver an inbound announce to EVERY local harness that
+      // admits on this topic (send-only harnesses register no onAnnounce).
+      for (const entry of state.entries.values()) {
+        if (!entry.onAnnounce) continue;
+        try {
+          // onAnnounce may be async; never let a rejection crash the muxer.
+          void Promise.resolve(entry.onAnnounce(frame)).catch(() => {});
+        } catch {
+          // synchronous throw — swallow
+        }
       }
     },
   });
+  state.message = message;
   channel.open();
 }
 
@@ -218,17 +248,23 @@ export function openAnnounceChannel(
     const mux = Protomux.from(socket);
     const s = socket as { userData?: unknown };
     if (!s.userData) s.userData = mux;
-    // Discriminate per hive by its topic id (A-002): keep each hive's opts +
-    // pair-notifier under its own topicHex so a 2nd hive on this muxer neither
-    // overwrites the 1st's opts nor collides on the announce channel.
+    // Per-topic state, keyed by topicHex (A-002). A-003 (a′): MULTIPLE local
+    // harnesses can share one topic — accumulate each (keyed by its own log
+    // core) so the single topic channel carries every local log's announce.
     const topicHex = topic.toString('hex');
-    const hiveStates = announceHiveStateFor(mux);
-    const existing = hiveStates.get(topicHex);
-    const st = existing ?? { opts, paired: false };
-    if (existing) existing.opts = opts; // refresh on reconnect for this hive
-    else hiveStates.set(topicHex, st);
-    // LAZY-ACCEPT pair-notifier, ONCE per (muxer, hive-topic). Registered with
-    // id = topic so protomux dispatches a remote announce-open for THIS hive to
+    const states = announceTopicStatesFor(mux);
+    let state = states.get(topicHex);
+    if (!state) {
+      state = { entries: new Map(), paired: false, message: null, opened: false, sentKeys: new Set() };
+      states.set(topicHex, state);
+    }
+    // Register/refresh THIS harness's entry, keyed by its own log_core_key so a
+    // reconnect/replay on the same muxer de-dups rather than double-registering.
+    // (A send-only harness with no ourAnnounce falls back to a positional key.)
+    const entryKey = opts.ourAnnounce?.log_core_key ?? `__reader-${state.entries.size}`;
+    state.entries.set(entryKey, opts);
+    // LAZY-ACCEPT pair-notifier, ONCE per (muxer, topic). Registered with
+    // id = topic so protomux dispatches a remote announce-open for THIS topic to
     // THIS notifier (_requestSession keys _notify by toKey(protocol, id), with a
     // null-id fallback). On a SHARED swarm the two ends attach to an existing
     // socket at different times (the socket may predate both, opened by the
@@ -238,14 +274,14 @@ export function openAnnounceChannel(
     // pair. The notifier accepts a pending open by creating our channel
     // SYNCHRONOUSLY (the directory-gossip late-join lesson — see
     // directory-swarm.ts).
-    if (!st.paired) {
-      st.paired = true;
+    if (!state.paired) {
+      state.paired = true;
       try {
         mux.pair({ protocol: ANNOUNCE_PROTOCOL, id: topic }, () => {
-          const cur = hiveStates.get(topicHex);
+          const cur = states.get(topicHex);
           if (cur) {
             try {
-              createAnnounceChannel(mux, topic, cur.opts);
+              createAnnounceChannel(mux, topic, cur);
             } catch {
               // best-effort — a failed lazy accept degrades to the old reject
             }
@@ -255,7 +291,13 @@ export function openAnnounceChannel(
         // pair() unsupported on this muxer build — connect-time channels still pair
       }
     }
-    createAnnounceChannel(mux, topic, opts);
+    // Create the topic channel once (the FIRST harness); a later harness's
+    // createChannel returns null (channel exists) — its entry is already in
+    // `state`, so it rides the same channel. If the channel has already opened,
+    // flush this late-joining harness's announce now (the onopen flush already
+    // fired and won't re-run for it).
+    createAnnounceChannel(mux, topic, state);
+    if (state.opened) flushTopicAnnounces(state);
   } catch {
     // Announce channel is best-effort; replication still proceeds.
   }

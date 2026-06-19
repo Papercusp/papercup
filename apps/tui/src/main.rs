@@ -2544,12 +2544,22 @@ async fn wake_board_act(
     }
 }
 
-/// EI-312: the wake-pane's refresh loop — re-snapshot the board every ~3s.
+/// EI-312: the wake-pane's refresh loop — re-snapshot the board every ~10s.
 /// Justified poll (matches the dock's roster cadence): the queue mutates from
 /// many writers (stagePendingWake on any wake) and the pane is the only
 /// consumer; a push rail for pending_wakes isn't built yet.
+///
+/// Cadence bumped 3s→10s (round-4 infra P-003, su-7b402): this always-on loop
+/// runs 1×`coord:wake-queue` + 1×`coord:wake-mode` per tick — the fleet's #1+#2
+/// tool-call volume (~30k each per 6h across the pui instances), a major demand
+/// driver of the :3070 request-worker event-loop saturation. The board is a
+/// human review surface for paused (manual-mode) agents, so 10s freshness is
+/// ample; user actions already refetch immediately (the keymap's
+/// `fetch_wake_board` on r/e/s/R/S). The real fix is an SSE push rail for
+/// pending_wakes (tracked in round-4 P-003); this is the cheap, reversible
+/// first step.
 async fn wake_board_loop(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
-    let mut ticker = tokio::time::interval(Duration::from_millis(3000));
+    let mut ticker = tokio::time::interval(Duration::from_millis(10_000));
     loop {
         ticker.tick().await;
         if tx.is_closed() {

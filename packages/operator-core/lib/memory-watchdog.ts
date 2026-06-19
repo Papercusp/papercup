@@ -35,11 +35,18 @@ export interface MemoryWatchdogOpts {
   /** Structured log sink. Default console.warn. */
   log?: (line: string, detail: Record<string, number>) => void;
   /**
+   * Exit code the default recycle uses. NON-ZERO (default 75 = EX_TEMPFAIL) so a
+   * recycle restarts under BOTH `Restart=always` AND `Restart=on-failure` — a unit
+   * that ships `on-failure` (as the bg-host did) must still self-restart, else the
+   * recycle exits 0 and the host stays dead (EI-1613, R4-1). Override in tests.
+   */
+  recycleExitCode?: number;
+  /**
    * What to do when the high-water mark trips. Default: log loudly then
-   * `process.exit(0)` after a short flush delay (systemd Restart=always
-   * recycles). A real host should inject `gracefulHostRecycle` (host-recycle.ts)
-   * so in-flight HTTP drains AND the P2P substrate handles close before exit
-   * (audit P-002, EI-127) — hono-host.ts does.
+   * `process.exit(recycleExitCode)` after a short flush delay (systemd restarts).
+   * A real host should inject `gracefulHostRecycle` (host-recycle.ts) so in-flight
+   * HTTP drains AND the P2P substrate handles close before exit (audit P-002,
+   * EI-127) — hono-host.ts does.
    */
   onTrip?: (detail: { rssMb: number; rssLimitMb: number }) => void;
 }
@@ -68,16 +75,19 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
       console.warn(line, detail);
     });
 
+  const recycleExitCode = opts.recycleExitCode ?? 75;
   const onTrip =
     opts.onTrip ??
     ((detail) => {
       log('[memory-watchdog] RSS high-water mark tripped — recycling host (systemd will restart)', {
         rssMb: detail.rssMb,
         rssLimitMb: detail.rssLimitMb,
+        recycleExitCode,
       });
-      // Let the log line flush, then exit cleanly. Restart=always brings up a
-      // fresh low-RSS process in RestartSec (~5 s).
-      setTimeout(() => process.exit(0), 250).unref?.();
+      // Let the log line flush, then exit NON-ZERO so systemd restarts under
+      // Restart=on-failure as well as Restart=always (EI-1613, R4-1) — RestartSec
+      // (~5 s) brings up a fresh low-RSS process.
+      setTimeout(() => process.exit(recycleExitCode), 250).unref?.();
     });
 
   let overCount = 0;

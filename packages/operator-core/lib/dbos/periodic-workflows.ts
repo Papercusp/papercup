@@ -32,6 +32,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
+import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { isLoopSaturated } from '../event-loop-lag-monitor';
 import { getResourceProfile } from '../resource-profile';
@@ -195,6 +196,28 @@ const outboxBackstopGcWorkflow = DBOS.registerWorkflow(outboxBackstopGcTick, {
   name: 'outboxBackstopGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
+
+// Daily 04:30 (after coordNotifyGc 04:00, off the stampede): prune old TERMINAL
+// dbos.workflow_status + operation_outputs rows (R4-5 / EI-1607 defense-in-depth) —
+// 325k+ workflow rows accrue with no DBOS-native retention, bloating the system DB +
+// the scheduler/recovery scans that walk it. NO-OP unless PAPERCUSP_DBOS_WORKFLOW_GC=1
+// (a DELETE on DBOS's own system tables is arm-deliberately); only terminal statuses,
+// batched, NEVER in-flight (PENDING/ENQUEUED) rows. Heavy DELETE → shed under loop pressure.
+async function dbosWorkflowGcTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('dbos-workflow-gc')) return;
+    const r = await runDbosWorkflowGcOnce();
+    if (!r.skipped && (r.deletedWorkflows > 0 || r.deletedOutputs > 0)) {
+      console.log(
+        `[dbos-workflow-gc] pruned ${r.deletedWorkflows} terminal workflow(s) + ${r.deletedOutputs} operation_output(s) (${r.batches} batch(es), cutoff ${r.cutoffMs})`,
+      );
+    }
+  }, { name: 'dbos-workflow-gc' });
+}
+const dbosWorkflowGcWorkflow = DBOS.registerWorkflow(dbosWorkflowGcTick, {
+  name: 'dbosWorkflowGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(dbosWorkflowGcWorkflow, { name: 'dbosWorkflowGc', crontab: '0 30 4 * * *' });
 
 // Hourly (:20, off the :00 stampede): reconcile the attention queue — auto-resolve
 // stale OPERATIONAL escalations (placement-watchdog cursed placements / aging

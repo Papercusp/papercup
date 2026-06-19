@@ -64,6 +64,26 @@ Legend: 🟢 landed/green · 🔧 in progress · 🟡 caveat · 🔴 blocked
 ## Monitor log
 - 12:05 — board created. All 7 lanes owned + active. Backbone + live core re-green.
   Live-N scale note delivered. Awaiting lane landings.
+- 16:01 — **A-003 (a′) REASSIGNED to J (46b7a).** dc9db had been idle ~90min (went idle BEFORE
+  the 15:12 (a′) assignment — never picked it up; intent stuck on A-002), so the critical-path
+  blocker had NO driver. Reassigned to J (free, offered, best-leveraged — built D-001's
+  capture→drain→merge→PG-HLC + knows swarm). The change: extend the per-hive announce channel
+  (swarm.ts ~:187, `createChannel` returns null on the 2nd same-topic harness) to carry MULTIPLE
+  log announces per topic → the owner's hive-home log federates alongside the member's. d2230
+  STAGED to re-apply the hive-home re-key (~2min diff) + re-witness via /tmp/a003-trace.sh the
+  instant J lands it; K then wires P3 epoch-key distribution. Woke all 4. **Operator recovered
+  (200); integrated staging GREEN (backbone 935/0); re-key cut-off verified 19/19.** The release
+  path is now: J (a′) → d2230 re-key → I re-witness → K P3 → re-key witness → AE capstone.
+- 15:12 — **A-003 send-side APPROACH DECIDED (lead): (a′)** — dc9db's bounded announce-channel
+  extension (carry the hive-home log's announce alongside the member's on the shared muxer/topic).
+  Both (b) variants are DEAD (d2230 proved: member-drain re-scope regresses after restart;
+  capture-side SQL can't resolve "a member"). (a′) needs ZERO capture/drain change, federates the
+  hive-home as-is, d2230's receive-side rebind applies it end-to-end, AND it's the clean "hive is
+  the federation unit" model the re-key needs. OWNERS: dc9db (announce extension) + d2230 (re-apply
+  hive-home re-key + re-witness) + J co-build (HLC context). **This is THE blocker (P-002) for the
+  whole re-key.** RE-KEY PROGRESS: P1 crypto (ed300, 12 teeth-verified) + P4 serving (K, 7/7 incl.
+  cut-off) LANDED; P3 epoch-key distribution gated on (a′). OPS: routine engine re-freezing
+  (routinesTick starved) — 67d39 implementing infra-self-healing; work committed (uncommitted=0), kopia-safe.
 - 14:13 — **A-003 FINALIZED (this pass): RED, two-sided, send-side dominant.** d2230's receive-side
   rebind fix is CORRECT + teeth-verified + fires live → STAYS in tree (required component). Dominant
   blocker = SEND-side: hive-home harnesses (kind:'hive') don't federate their own content on the owner

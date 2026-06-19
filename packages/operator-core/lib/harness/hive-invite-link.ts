@@ -9,9 +9,10 @@
  *   - Protocol must be `papercusp:`; host must be `hive`.
  *   - Param allowlist: `pubkey`, `secret`, `title`. Extra params rejected;
  *     duplicated params rejected.
- *   - `secret`: REQUIRED — the invite-topic secret, 16–128 hex chars
- *     (case-insensitive; preserved verbatim — the invite topic is derived
- *     from the exact string the owner minted).
+ *   - `secret`: REQUIRED — the invite-topic secret, 32–128 hex chars
+ *     (= 128–512 bits; case-insensitive; preserved verbatim — the invite topic
+ *     is derived from the exact string the owner minted; real links are the
+ *     256-bit/64-hex minted secret).
  *   - `pubkey`: OPTIONAL — the hive's Ed25519 identity pubkey, canonical
  *     padded standard base64 decoding to exactly 32 bytes.
  *   - `title`: OPTIONAL — human label, 1–200 chars.
@@ -22,7 +23,7 @@
 
 /** Parsed representation of a `papercusp://hive?...` invite link. */
 export interface HiveInviteLink {
-  /** The invite-topic secret, verbatim as shared (16–128 hex chars). */
+  /** The invite-topic secret, verbatim as shared (32–128 hex chars = 128–512 bits). */
   secret: string;
   /** The hive's Ed25519 identity pubkey (canonical base64, 32 bytes), when shared. */
   pubkeyBase64?: string;
@@ -35,8 +36,19 @@ export const HIVE_INVITE_LINK_PREFIX = 'papercusp://hive';
 /** Exact set of accepted query-param keys. Any extra key → null. */
 const ALLOWED_PARAMS = ['pubkey', 'secret', 'title'] as const;
 
-/** The invite secret: 16–128 hex chars, either case. */
-const SECRET_RE = /^[0-9a-f]{16,128}$/i;
+/**
+ * The invite secret: 32–128 hex chars, either case (= 128–512 bits).
+ *
+ * WAVE-4 X-1 (adversarial security / invite-secret strength): secrets are MINTED
+ * as `randomBytes(32).toString('hex')` = 256-bit CSPRNG (hive-publish-from-repo.ts),
+ * so every real link is 64 hex. The accept-floor was 16 hex (64 bits) — below the
+ * minting; raised to 32 hex (128 bits) as defense-in-depth so a hand-crafted
+ * weak-entropy link is rejected (the accept-floor now matches a strong minimum).
+ * Not an exploitable fix — the topic is `sha256(prefix+secret)` with no offline
+ * guess-oracle, so even 64 bits resisted online brute-force; this just aligns the
+ * floor with the mint strength. See findings-X.md.
+ */
+const SECRET_RE = /^[0-9a-f]{32,128}$/i;
 
 /**
  * Canonical padded standard base64 for exactly 32 bytes: 43 payload chars +

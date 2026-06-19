@@ -30,7 +30,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../service-health';
+import { lastServiceHealth, lastServiceHealthAt, probeAll, type ProbeResult } from '../../service-health';
 import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
 import { checkMigrationDrift } from '../../migration-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
@@ -838,29 +838,89 @@ export function isServiceHealthStale(at: number | null, now: number, maxStaleMs:
 }
 
 /**
- * The default `service-down` collector with the P-004 freshness gate: emit
- * service-down signals only when the service-health snapshot is FRESH; on a stale
- * (or never-populated) snapshot, emit nothing and carry a `stale-service-health`
- * note so the skip is visible in the tick record rather than silently dropping
- * real downs or filing phantom ones.
+ * Inline-probe-on-stale toggle (infra-self-healing R4-7). DEFAULT ON: when the
+ * snapshot is stale the collector probes the endpoints FRESH inline rather than
+ * skipping — so a real DOWN is still caught exactly when the periodic probe
+ * workflow has stalled under load (the moment service-down matters most). The
+ * inline probe is bounded by `probeAll`'s 3s-per-endpoint timeout. Set
+ * `PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE=0` to fall back to the prior
+ * skip-with-note behavior if the inline probe ever proves costly.
  */
-export function serviceDownCollectorResult(opts: {
+export function inlineProbeOnStaleEnabled(): boolean {
+  return process.env.PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE !== '0';
+}
+
+/**
+ * The default `service-down` collector with the P-004 freshness gate. On a
+ * FRESH snapshot it maps the cached probe results to signals as before. On a
+ * STALE (or never-populated) snapshot the collector NO LONGER goes blind:
+ *
+ *  - inline-probe ON (default): run a fresh, bounded `probeAll()` inline and
+ *    emit signals off THAT (infra-self-healing R4-7) — the periodic writer may
+ *    be stalled, but a real DOWN is still caught. Carries a `stale-service-health
+ *    (fresh inline probe)` note so the tick record shows the fallback fired. If
+ *    the inline probe itself throws, emit a single DEGRADED/unknown signal so the
+ *    collector never produces both zero signals AND no note.
+ *  - inline-probe OFF: the prior P-004 behavior — emit nothing, carry a
+ *    `stale-service-health` skip note.
+ *
+ * Async because the stale path may do I/O (the inline probe).
+ */
+export async function serviceDownCollectorResult(opts: {
   results?: ProbeResult[];
   at?: number | null;
   now?: number;
   maxStaleMs?: number;
-} = {}): CollectorResult {
+  /** Inject the fresh-probe (tests); defaults to the real bounded `probeAll`. */
+  probe?: () => Promise<ProbeResult[]>;
+  /** Override the inline-probe toggle (tests); defaults to the env-gated flag. */
+  inlineProbe?: boolean;
+} = {}): Promise<CollectorResult> {
   const at = opts.at ?? lastServiceHealthAt();
   const now = opts.now ?? Date.now();
   const maxStaleMs = opts.maxStaleMs ?? DEFAULT_SERVICE_HEALTH_MAX_STALE_MS;
   if (isServiceHealthStale(at, now, maxStaleMs)) {
     const ageMs = at == null ? null : now - at;
-    return {
-      signals: [],
-      note:
-        `stale-service-health: snapshot ${ageMs == null ? 'never populated' : `is ${Math.round(ageMs / 1000)}s old`} ` +
-        `(> ${Math.round(maxStaleMs / 1000)}s) — skipping service-down collection (the probe workflow may have stopped)`,
-    };
+    const ageDesc = ageMs == null ? 'never populated' : `is ${Math.round(ageMs / 1000)}s old`;
+    const inline = opts.inlineProbe ?? inlineProbeOnStaleEnabled();
+    if (!inline) {
+      // Legacy fallback (PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE=0): skip.
+      return {
+        signals: [],
+        note:
+          `stale-service-health: snapshot ${ageDesc} ` +
+          `(> ${Math.round(maxStaleMs / 1000)}s) — skipping service-down collection (the probe workflow may have stopped)`,
+      };
+    }
+    // Inline fresh probe — the periodic writer stalled, so probe NOW (bounded).
+    try {
+      const probe = opts.probe ?? (() => probeAll());
+      const fresh = await probe();
+      return {
+        signals: collectServiceDownSignals(fresh),
+        note:
+          `stale-service-health: snapshot ${ageDesc} ` +
+          `(> ${Math.round(maxStaleMs / 1000)}s) — ran a fresh inline probe (the periodic probe workflow may have stalled)`,
+      };
+    } catch (e) {
+      // The inline probe itself failed: don't go blind — surface a single
+      // DEGRADED/unknown signal so a stale-and-unprobeable monitor is visible.
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        signals: [{
+          source: 'service-down' as const,
+          key: 'service-health-monitor',
+          title: 'Service-health monitor is degraded',
+          body:
+            `Watchdog signal (service-down): the service-health snapshot ${ageDesc} ` +
+            `(> ${Math.round(maxStaleMs / 1000)}s) AND the fresh inline probe failed (${msg}) — ` +
+            `service-down detection is degraded; the periodic probe workflow may have stalled.`,
+          severity: 'major' as const,
+          findingClass: 'service-down:monitor-degraded',
+        }],
+        note: `stale-service-health: snapshot ${ageDesc} — inline probe failed (${msg})`,
+      };
+    }
   }
   return { signals: collectServiceDownSignals(opts.results ?? lastServiceHealth()) };
 }
@@ -1417,7 +1477,7 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     },
     {
       name: 'papercusp-service-down',
-      collect: () => Promise.resolve(serviceDownCollectorResult({ maxStaleMs: opts.serviceHealthMaxStaleMs })),
+      collect: () => serviceDownCollectorResult({ maxStaleMs: opts.serviceHealthMaxStaleMs }),
     },
     // P-010 blind-source collectors (each conservative + behind the P-009 per-source budget).
     { name: 'papercusp-migration-drift', collect: () => collectMigrationDriftSignals() },

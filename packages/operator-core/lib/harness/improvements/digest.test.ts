@@ -70,6 +70,35 @@ describe('findLikelyDuplicates', () => {
       findLikelyDuplicates([cand({ id: '1', title: 'alpha beta gamma' }), cand({ id: '2', title: 'delta epsilon zeta' })]),
     ).toEqual([]);
   });
+  it('clusters exact + near-dup correctly across a larger batch (round-4 P-001 precompute path)', () => {
+    const cands = [
+      cand({ id: 'exactA', title: '[bug] presence list overflows token limit' }),
+      cand({ id: 'exactB', title: 'token limit overflows presence list' }), // exact-signature of exactA
+      cand({ id: 'nearA', title: 'migration number allocator collision race two agents' }),
+      cand({ id: 'nearB', title: 'migration number allocator collision race agents' }), // near-dup of nearA (Jaccard ≥ 0.8)
+      ...Array.from({ length: 60 }, (_, i) => cand({ id: `f${i}`, title: `uniquetopic${i}` })),
+    ];
+    const clusters = findLikelyDuplicates(cands);
+    const member = (id: string) => clusters.find((c) => c.ids.includes(id))?.ids.slice().sort();
+    expect(member('exactA')).toEqual(['exactA', 'exactB']);
+    expect(member('nearA')).toEqual(['nearA', 'nearB']);
+    expect(clusters.flatMap((c) => c.ids)).not.toContain('f0'); // distinct filler never clusters
+  });
+  it('skips the O(n²) near-dup pass above NEAR_DUP_MAX_CANDIDATES but keeps exact-signature clusters (round-4 P-001 bound)', () => {
+    const filler = Array.from({ length: 4100 }, (_, i) => cand({ id: `g${i}`, title: `capfiller${i}` }));
+    const clusters = findLikelyDuplicates([
+      cand({ id: 'exact1', title: 'token limit overflows presence list' }),
+      cand({ id: 'exact2', title: '[bug] presence list overflows token limit' }), // exact-signature match
+      cand({ id: 'near1', title: 'migration number allocator collision race two agents' }),
+      cand({ id: 'near2', title: 'migration number allocator collision race agents' }), // near-dup, NOT exact-signature
+      ...filler,
+    ]);
+    const flat = clusters.flatMap((c) => c.ids);
+    expect(flat).toContain('exact1'); // exact-signature pass still runs above the cap
+    expect(flat).toContain('exact2');
+    expect(flat).not.toContain('near1'); // near-dup pass skipped above the cap (best-effort, D-001)
+    expect(flat).not.toContain('near2');
+  });
 });
 
 describe('buildDigest', () => {

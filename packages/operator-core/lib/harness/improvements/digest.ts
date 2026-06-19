@@ -183,13 +183,23 @@ export function titleSimilarity(a: string, b: string): number {
 
 const NEAR_DUP_JACCARD = 0.8;
 
+/** Above this candidate count the O(n²) near-dup pass is skipped (exact-signature
+ *  clusters are still returned). Dedup is best-effort surfacing, NOT a gate
+ *  (D-001), so degrading to exact-signature-only on a pathological backlog is safe
+ *  — and it keeps findLikelyDuplicates off the operator event loop's critical path
+ *  (round-4 P-001: the near-dup pass recomputed tokenSet() ~n²/2 times → a
+ *  regex+sort+alloc storm + GC churn that saturated the loop at a 775+ backlog). */
+const NEAR_DUP_MAX_CANDIDATES = 4000;
+
 /** Cluster candidates that are likely duplicates (exact normalized-signature OR
  *  token-overlap ≥ NEAR_DUP_JACCARD). Best-effort surfacing for a cheap merge. */
 export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupCluster[] {
-  // 1. exact signature groups
+  // 1. exact signature groups — compute each signature ONCE (reused in step 2).
   const bySig = new Map<string, string[]>();
+  const sigById = new Map<string, string>();
   for (const c of candidates) {
     const sig = dedupSignature(c.title);
+    sigById.set(c.id, sig);
     if (!sig) continue;
     const arr = bySig.get(sig) ?? [];
     arr.push(c.id);
@@ -203,23 +213,32 @@ export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupClu
       ids.forEach((id) => claimed.add(id));
     }
   }
-  // 2. near-dup pass (token overlap) over the not-yet-claimed
+  // 2. near-dup pass (token overlap) over the not-yet-claimed.
   const remaining = candidates.filter((c) => !claimed.has(c.id));
+  // Bound: above NEAR_DUP_MAX_CANDIDATES skip the O(n²) pass (best-effort, D-001)
+  // so a pathological backlog can't peg the event loop.
+  if (remaining.length > NEAR_DUP_MAX_CANDIDATES) return clusters;
+  // Precompute each token set ONCE. The previous implementation recomputed
+  // tokenSet() (regex strip + lowercase + split + sort + Set alloc) inside the
+  // inner loop — ~n²/2 heavy calls — which dominated the operator-loop CPU + GC at
+  // a 775+ backlog (round-4 P-001, cpuprofile-attributed). The inner loop is now a
+  // cheap set intersection over the prebuilt sets; results are unchanged.
+  const tokenSets = remaining.map((c) => tokenSet(c.title));
   for (let i = 0; i < remaining.length; i++) {
     if (claimed.has(remaining[i].id)) continue;
-    const a = tokenSet(remaining[i].title);
+    const a = tokenSets[i];
     if (a.size === 0) continue;
     const group = [remaining[i].id];
     for (let j = i + 1; j < remaining.length; j++) {
       if (claimed.has(remaining[j].id)) continue;
-      if (jaccard(a, tokenSet(remaining[j].title)) >= NEAR_DUP_JACCARD) {
+      if (jaccard(a, tokenSets[j]) >= NEAR_DUP_JACCARD) {
         group.push(remaining[j].id);
         claimed.add(remaining[j].id);
       }
     }
     if (group.length > 1) {
       claimed.add(remaining[i].id);
-      clusters.push({ signature: dedupSignature(remaining[i].title), ids: group });
+      clusters.push({ signature: sigById.get(remaining[i].id) ?? dedupSignature(remaining[i].title), ids: group });
     }
   }
   return clusters;

@@ -1,9 +1,10 @@
 # Findings S — Substrate durability & crash/restart recovery
 
 **Lane:** Brief S (Wave 3, S0/S1). **Author:** su-c318e. **Date:** 2026-06-19.
-**Status:** 🟡 IN PROGRESS — lane claimed, scope + first-test design locked (below);
-deterministic integration tests landing next. (Continuation of my Brief N work —
-recovery is the crash flip-side of N-peer backfill/cursor-refold.)
+**Status:** 🟡 IN PROGRESS — **#1 + #4 LANDED GREEN** (teeth-verified,
+`crash-recovery-drain.integration.test.ts`); #5/#6 + the live legs (#2/#3)
+remaining. (Continuation of my Brief N work — recovery is the crash flip-side of
+N-peer backfill/cursor-refold.)
 **Method:** deterministic integration (`*.integration.test.ts`, real testcontainer
 PG + the REAL mig-102 capture trigger + `substrate_outbox` + `drainOutboxOnce` +
 real corestore persistence across a close→reopen "restart") for the drain/recovery
@@ -37,14 +38,47 @@ idempotent LWW dedup. Neither half (resume-no-loss, re-append-deduped) is tested
 
 | # | Scenario | Layer | Status |
 |---|----------|-------|--------|
-| 1 | **Instance crash mid-drain → restart → outbox resumes, no loss/dup** | deterministic integration (single-peer: real outbox+capture+drain) | NEXT — design locked below |
-| 4 | **Torn write / at-least-once re-append → idempotent dedup** | deterministic integration | design locked below |
-| 5 | **Long-downtime backfill catch-up across a RESTART** (A down long while B writes → A reboots → fresh cursor re-folds B's grown log, full gap backfilled) | integration (2-peer or own-log-grow + reboot) | planned |
+| 1 | **Instance crash mid-drain → restart → outbox resumes, no loss/dup** | deterministic integration (single-peer: real outbox+capture+drain) | 🟢 GREEN — `crash-recovery-drain.integration.test.ts` |
+| 4 | **Torn write / at-least-once re-append → idempotent dedup** | deterministic integration | 🟢 GREEN — same file |
+| 5 | **Long-downtime backfill catch-up** (a large accumulated outbox drains FULLY across multi-pass drain on restart) | deterministic integration | 🟢 GREEN — `crash-recovery-drain.integration.test.ts` |
 | 6 | **HLC monotonicity across restart** (mig-314 `hlc_clock` survives a reboot → no clock regression → no D-001-class divergence post-restart) | integration (real PG hlc_clock) | planned |
 | 2 | **Embedded-PG crash → WAL recovery + substrate re-attach** | LIVE (display :195+) | live, later |
 | 3 | **Real box/instance restart mid-federation → re-boot + re-join topic + re-drain + converge** (the session's actual failure — make it a test; post-A-003 the hive-home harness must also re-boot onto the topic) | LIVE (display :195+) | live, later |
 
-## First-test design (locked) — #1 crash mid-drain
+## Results so far — #1 + #4 (GREEN, teeth-verified)
+
+`packages/operator-core/lib/sync/hyperbee/__tests__/crash-recovery-drain.integration.test.ts`
+(real testcontainer PG + the REAL mig-102 capture trigger + `substrate_outbox` +
+`drainOutboxOnce` + the REAL features projection on the joiner side). The only
+injected fault is the crash (a Proxy making `handle.append` throw after K rows).
+
+- **#1 crash mid-drain → resume.** Seed N=8 features → 8 undrained outbox rows.
+  Crash after K=3 appended (the 4th `append` throws) → asserted mid-state: exactly
+  3 `drained_at` set, 5 undrained, own log length 3. Restart (clean `drainOutboxOnce`)
+  → drains the remaining 5; ALL 8 `drained_at` set, own log holds exactly 8 ops
+  (each feature_id once — no duplicate append since the throw preceded the partial
+  append), and the joiner's REAL projection materializes all 8 features
+  origin='remote'. **No loss, no dup, outbox resumes.** Teeth: neuter the restart
+  drain → `expected +0 to be 5` RED.
+- **#4 torn write (append OK, `drained_at` lost).** After a clean drain, re-arm two
+  already-drained rows (`drained_at = NULL`) = "appended but the mark was lost to
+  the crash". The re-drain re-appends them → the log carries DUPLICATE ops (N+2),
+  exactly the at-least-once cost `outbox-drain.ts` documents — and the joiner's
+  projection dedups to exactly one row per feature_id (PK + `fed_ts`/HLC guard).
+  Teeth: neuter the re-arm → `re-append … expected +0 to be 2` RED.
+- **#5 long-downtime large-backlog backfill.** A long downtime accumulates M=250
+  undrained outbox rows (> `DEFAULT_DRAIN_BATCH`=200). On restart the drain catches
+  the WHOLE backlog across multiple bounded passes (batch=50 → ≥5 passes, the
+  deferral path), all 250 `drained_at` set, own log holds exactly 250 ops (no dup),
+  and the joiner materializes the full gap — not a truncated head. Teeth: cap the
+  drain at one pass → `expected 1 to be ≥ 5` RED.
+
+## Status: 3 of 6 scenarios GREEN. Remaining: **#6** (HLC monotonicity across
+restart — needs the mig-314 `hlc_clock`/`hlc_now`/`hlc_recv` schema; deterministic
+integration, next) + the **live legs #2/#3** (embedded-PG WAL crash, real box/
+instance restart — need the live harness on display :195+, coordinate via coord:*).
+
+## First-test design (implemented above) — #1 crash mid-drain
 
 Single-peer, no swarm/testnet needed (drain resume is an outbox→own-log property):
 1. `setupPeerSchema(pgA)` — real mig-102 capture trigger + `substrate_outbox` +

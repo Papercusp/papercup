@@ -33,7 +33,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolvePhasedProject, safeRead } from '../../../harness-core';
-import { type ProjectEntry } from '../../../harness-registry';
+import { type ProjectEntry, loadHarnessRegistry, resolveHarnessContentPath } from '../../../harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '../../../harness-phases';
 import { expandGlobs } from '../../../testing-domain-glob';
 import { harnessTestingRegistry, HARNESS_TESTING_TIER_LABELS, ACCEPTANCE_DOMAIN_ID } from '../../../harness-testing-registry';
@@ -103,7 +103,12 @@ async function resolveCtx(
   const phase = phasePhaseLabel(phaseParam ?? undefined);
   const project = await resolvePhasedProject(slug, phase);
   if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-  return { project, phase, root: phasePath(project, phase) };
+  // git-sync-any-hive: a repo-less kind:'hive' harness resolves its MEMBER repo's
+  // worktree for repo-backed reads (its own `path` is the hive state dir, not a
+  // code checkout). Falls back to phasePath for a normal repo harness.
+  const contentBase = resolveHarnessContentPath(await loadHarnessRegistry(), slug);
+  const root = contentBase && contentBase !== project.path ? contentBase : phasePath(project, phase);
+  return { project, phase, root };
 }
 
 const domainDetail = defineTool({
