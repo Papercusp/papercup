@@ -30,6 +30,7 @@ import { startDesktopVoiceWs } from '@papercusp/operator-core/lib/voice-node/des
 import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/device-push-credentials';
 import { registerHostPlatform } from '@papercusp/host-platform';
 import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
+import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -39,6 +40,20 @@ export function runBootstrap(): void {
   const g = globalThis as GuardedGlobal;
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
+
+  // [A2 infra-fail-fast-build-integrity-2026-06-19] Boot native-addon self-check.
+  // Test-loads the required native addons (better-sqlite3 / mem0's store) under
+  // the runtime Node and logs LOUDLY if one won't load — turning the 2026-06-19
+  // outage (ABI-mismatched addon → mem0 load fail → every memory handler hangs
+  // behind a green health check) into a visible boot error. SAFE by default: it
+  // never exits unless PAPERCUSP_ADDON_PREFLIGHT_FATAL=1 (flag-gated until
+  // validated, so it can't crashloop a healthy / memory-disabled host).
+  // try/catch so the check itself can never wedge boot.
+  try {
+    runBootAddonPreflight();
+  } catch (e) {
+    console.warn('[addon-preflight] boot self-check errored (non-fatal):', (e as Error)?.message ?? e);
+  }
 
   // [power] P5-3 of operator-scalability-event-loop-2026-06-16 — detect the power
   // source ONCE and fold onBattery into the resource profile BEFORE the background
