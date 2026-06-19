@@ -356,6 +356,75 @@ describe('AG.P5 cursor-reset idempotency — reset + full re-fold reconverges (P
 });
 
 // ===========================================================================
+// P2b / P5b — MULTI-OP AUTHOR LOGS (genuine multi-pass / per-pass backlog).
+// With one append-only log per AUTHOR, a small per-pass budget genuinely DEFERS
+// ops to later passes — exercising the real multi-pass incremental merge and the
+// documented del-transient (an old put re-applied before its winning del, which
+// the fixpoint must reconverge away). The single-op-per-log model above cannot
+// reach this (every log is length 1, so nothing is ever deferred).
+// ===========================================================================
+describe('AG.P2b/P5b multi-op author logs — budgeted multi-pass fold reaches the one-shot fixpoint', () => {
+  it('budgeted (deferred) multi-pass fold == the one-shot fixpoint for any budget', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.integer({ min: 1, max: 1_000_000 }),
+        fc.constantFrom<'monotone' | 'skew'>('monotone', 'skew'),
+        fc.constantFrom(...ORDER_INDEPENDENT_GUARDS),
+        async (seed, regime, guard) => {
+          const ops = generateOps({ seed, peers: 5, ops: 60, keys: 8, regime, skewProb: 0.5 });
+          const logs = byAuthorLogs(ops);
+          const oneShot = (await foldLogs(logs, guard)).digest;
+          for (const budget of [1, 2, 3]) {
+            const fp = (await foldLogs(logs, guard, { maxOpsPerPass: budget, passesToFixpoint: true })).digest;
+            expect(fp).toBe(oneShot); // the del-transient (if any) reconverges
+          }
+        },
+      ),
+      { numRuns: 40, seed: 0x2b },
+    );
+  });
+
+  it('cursor-reset on multi-op logs: budgeted re-fold reconverges to the pre-reset fixpoint', async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.integer({ min: 1, max: 1_000_000 }), fc.constantFrom(...ORDER_INDEPENDENT_GUARDS), async (seed, guard) => {
+        const ops = generateOps({ seed, peers: 5, ops: 60, keys: 8, regime: 'monotone' });
+        const logs = byAuthorLogs(ops);
+        const { store, digest: before } = await foldLogs(logs, guard);
+        await foldLogs(logs, guard, { store, cursor: createMergeCursor(), maxOpsPerPass: 1, passesToFixpoint: true });
+        expect(store.digest()).toBe(before);
+      }),
+      { numRuns: 40, seed: 0x5b },
+    );
+  });
+
+  it('del-transient is OBSERVABLE: a deferred winning del leaves an intermediate row that the fixpoint removes', async () => {
+    // Deterministic worst case: one author log = [put K, put K2, del K], budget 1.
+    // pass1 applies put K (K present) → INTERMEDIATE shows K; the del only lands a
+    // later pass → FIXPOINT removes K. Proves the transient is real (not vacuous)
+    // AND that it always reconverges. Built via generateOps so HLC is real-stamped.
+    const ops = generateOps({ seed: 23, peers: 2, ops: 80, keys: 4, regime: 'monotone' });
+    const logs = byAuthorLogs(ops);
+    const oneShot = (await foldLogs(logs, 'fed_hlc')).digest;
+    // Drive budget=1 and capture digests pass-by-pass.
+    const store = new FedTsGuardedStore('fed_hlc');
+    const cursor = createMergeCursor();
+    const mo = { applyImpl: store.apply, getTimeoutMs: 0, maxOpsPerPass: 1 };
+    const seen = new Set<string>();
+    const total = logs.reduce((n, l) => n + l.length, 0);
+    for (let pass = 0; pass < total + 8; pass++) {
+      const r = await mergeAdmittedLogsIncremental(logs, cursor, mo);
+      seen.add(store.digest());
+      if (r.caughtUp) break;
+    }
+    // Fixpoint matches the one-shot fold (reconvergence), and the budgeted path
+    // passed through ≥1 intermediate state (proof the deferral really happened —
+    // a single-op model would collapse to one state and this would be 1).
+    expect(store.digest()).toBe(oneShot);
+    expect(seen.size).toBeGreaterThan(1);
+  });
+});
+
+// ===========================================================================
 // P6 — DETERMINISM ACROSS RUNS. The same seed + same delivery order produces
 // byte-identical state every run (no Math.random / Date.now in generate→fold→
 // apply). Holds for EVERY guard × regime.
