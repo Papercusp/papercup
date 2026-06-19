@@ -48,6 +48,7 @@ import type {
   OverwatchPanelHealth,
 } from './types';
 import { PANEL_LABELS } from './types';
+import { isOperationalEscalation } from '../attention/adapters';
 import {
   queenStatus,
   beesStatus,
@@ -72,6 +73,57 @@ const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
 const DEAD_ROUTINE_OVERDUE_MS = 10 * 60_000;
 const PLAN_STALE_MS = 24 * 60 * 60_000;
 const ESCALATION_AGING_MS = 6 * 60 * 60_000;
+
+/** Minimal open-escalation shape this panel needs (a superset of EscalationRecord). */
+export interface EscalationAgingInput {
+  from?: string | null;
+  options?: readonly unknown[];
+  severity: string;
+  ts: string;
+}
+
+/**
+ * PURE: the human-attention escalations health from the OPEN set.
+ *
+ * EI-1490: OPERATIONAL escalations (system sender, no options — placement-watchdog
+ * cursed-placement / aging sweeps) are auto-GC'd duplicates of the derived
+ * `placements.cursed` health metric, NOT human decisions. They flooded the open
+ * lane (~13k live), so the old "count every open escalation older than the
+ * threshold" reported an impossible "13,246 escalations aging past the attention
+ * threshold" — perma-warning this panel and churning overwatch's Queen nudge
+ * (escalation-aging) every cycle. This panel measures HUMAN-attention escalations,
+ * so the operational flood is excluded from EVERY count here, exactly as the
+ * attention reader demotes operational escalations out of "waiting on you"
+ * (queue-pending-accuracy D-005, shared classifier `isOperationalEscalation`).
+ */
+export function computeEscalationsHealth(
+  open: readonly EscalationAgingInput[],
+  now: number,
+  agingMs: number = ESCALATION_AGING_MS,
+): EscalationsHealth {
+  const bySeverity: Record<string, number> = {};
+  let oldest: number | null = null;
+  let aging = 0;
+  let humanOpen = 0;
+  for (const e of open) {
+    // Skip the operational flood — it is surfaced by the placements.cursed metric
+    // and auto-reconciled, never a human decision aging in the attention queue.
+    if (isOperationalEscalation(e.from, (e.options?.length ?? 0) > 0)) continue;
+    humanOpen += 1;
+    bySeverity[e.severity] = (bySeverity[e.severity] ?? 0) + 1;
+    const t = new Date(e.ts).getTime();
+    if (Number.isFinite(t)) {
+      if (oldest === null || t < oldest) oldest = t;
+      if (now - t > agingMs) aging += 1;
+    }
+  }
+  return {
+    open: humanOpen,
+    oldestAgeMs: oldest === null ? null : now - oldest,
+    bySeverity,
+    aging,
+  };
+}
 const GATEWAY_DEFAULT_PORT = 8788;
 
 function gatewayPort(): number {
@@ -512,29 +564,23 @@ async function collectEscalations(ctx: HealthCtx): Promise<HealthPanel<Escalatio
   return panelSafe<EscalationsHealth>('escalations', async () => {
     const { listEscalations } = await import('../agent-tools/coordination/escalations');
     const open = await listEscalations({ status: 'open' });
-    const bySeverity: Record<string, number> = {};
-    let oldest: number | null = null, aging = 0;
-    for (const e of open) {
-      bySeverity[e.severity] = (bySeverity[e.severity] ?? 0) + 1;
-      const t = new Date(e.ts).getTime();
-      if (Number.isFinite(t)) {
-        if (oldest === null || t < oldest) oldest = t;
-        if (ctx.now - t > ESCALATION_AGING_MS) aging++;
-      }
-    }
-    const data: EscalationsHealth = {
-      open: open.length, oldestAgeMs: oldest === null ? null : ctx.now - oldest, bySeverity, aging,
-    };
+    // EI-1490: human-attention escalations only — the operational flood
+    // (placement-watchdog cursed placements / aging sweeps) is excluded so the
+    // panel/`aging` count reflects real open decisions, not the ~13k auto-GC'd
+    // duplicates of the placements.cursed metric.
+    const data = computeEscalationsHealth(open, ctx.now);
+    const { open: openCount, oldestAgeMs, bySeverity, aging } = data;
+    const oldest = oldestAgeMs === null ? null : ctx.now - oldestAgeMs;
     const status = escalationsStatus(data);
     return {
       status,
-      summary: open.length === 0
+      summary: openCount === 0
         ? 'no open escalations'
-        : `${open.length} open${aging > 0 ? `, ${aging} aging` : ''}, oldest ${agoMin(oldest, ctx.now)}`,
+        : `${openCount} open${aging > 0 ? `, ${aging} aging` : ''}, oldest ${agoMin(oldest, ctx.now)}`,
       data,
       link: { label: 'Needs you', href: '/adv?tab=plans' },
       metrics: [
-        m('open', open.length, open.length > 0 ? 'warn' : undefined),
+        m('open', openCount, openCount > 0 ? 'warn' : undefined),
         m('blockers', bySeverity.blocker ?? 0, (bySeverity.blocker ?? 0) > 0 ? 'warn' : undefined),
         m('aging', aging, aging > 0 ? 'warn' : undefined),
         m('oldest', agoMin(oldest, ctx.now)),
