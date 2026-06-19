@@ -609,6 +609,28 @@ export function buildResumeEnv(session, { fork = false, brain = false, accountEn
   };
 }
 
+/** The per-account routing header the inference gateway reads + the claude CLI forwards (via
+ *  ANTHROPIC_CUSTOM_HEADERS). MUST equal the server's `ACCOUNT_HEADER` (gateway.ts) — pinned in
+ *  lockstep by a test. Duplicated here (not imported) so the standalone launcher stays dependency-light. */
+export const GATEWAY_ACCOUNT_HEADER = 'x-papercusp-account';
+
+/**
+ * The inference-gateway pin env for an account, built CLIENT-SIDE. Pure — exported for tests. Mirrors
+ * the server's gatewaySpawnEnv + resolveAccountPin exactly: point the agent at the localhost gateway
+ * (which injects the account's OAuth) + carry the per-account routing header the claude CLI forwards.
+ * The fresh-launch path gets this folded by the bootstrap-su POST; the RESUME path (no POST) builds it
+ * here so it never depends on a server endpoint that may not be deployed where the launcher points.
+ */
+export function gatewayPinEnv(account) {
+  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  const port = Number.isFinite(p) && p > 0 ? p : 8788;
+  return {
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_CUSTOM_HEADERS: `${GATEWAY_ACCOUNT_HEADER}: ${account}`,
+    PAPERCUSP_ACCOUNT_ID: account,
+  };
+}
+
 /**
  * Resolve which fields the flags PRE-SELECT vs which still need an
  * interactive prompt. Pure — exported for tests. Throws on a bad --agent.
@@ -861,14 +883,21 @@ async function pickPlan(workspace, harness) {
  * FIRST so hitting enter keeps today's behavior; accounts blocked by the active
  * session-override are shown disabled (the server would reject them anyway).
  */
-async function pickAccount(workspace) {
-  let accounts;
+/** The account-pin choices the gateway offers for a workspace (gatewayOn + pool + session-override).
+ *  Live `/options` endpoint — deployed everywhere, unlike a bespoke pin endpoint (deploy-skew safe).
+ *  null on any error (fail-soft → no pin). */
+async function fetchAccountChoices(workspace) {
   try {
     const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
-    accounts = (await api(`/api/agent-mcp/console/bootstrap-su/options${q}`)).accounts;
+    return (await api(`/api/agent-mcp/console/bootstrap-su/options${q}`)).accounts ?? null;
   } catch {
     return null;
   }
+}
+
+/** Render the account picker from already-fetched choices. Returns the chosen id, or null for
+ *  "default credential — no pin" / an empty pool (gateway off). */
+async function promptAccount(accounts) {
   const pool = Array.isArray(accounts?.pool) ? accounts.pool : [];
   if (pool.length === 0) return null; // gateway off / no pool → hidden, byte-identical
   const exclude = new Set(accounts.excludeAccounts ?? []);
@@ -885,40 +914,51 @@ async function pickAccount(workspace) {
   return select({ message: 'Account (inference-gateway pin)', default: null, choices });
 }
 
-/**
- * Resolve a chosen pool account id → the inference-gateway env patch for a
- * RESUME, reusing the server's validated resolveAccountPin (GET account-env, no
- * new session minted). Fail-soft: any error → no env + a human notice, so a
- * resume never hard-fails on account resolution (mirrors the fresh-launch
- * fail-soft). Returns `{ env, notice }`.
- */
-async function resolveResumeAccountEnv(workspace, account) {
-  if (!account) return { env: {}, notice: null };
-  try {
-    const q = new URLSearchParams({ account });
-    if (workspace) q.set('workspace', workspace);
-    const r = await api(`/api/agent-mcp/console/bootstrap-su/account-env?${q.toString()}`);
-    return { env: r?.env ?? {}, notice: r?.notice ?? null };
-  } catch (e) {
-    return { env: {}, notice: `account ${account} not applied (${e?.message ?? e}) — using the default credential.` };
-  }
+async function pickAccount(workspace) {
+  const accounts = await fetchAccountChoices(workspace);
+  return accounts ? promptAccount(accounts) : null;
+}
+
+/** True if `id` is a pinnable account given the gateway choices (pool membership + session-override
+ *  allow/exclude). Pure — mirrors the server's resolveAccountPin gating. Exported for tests. */
+export function accountPinnable(accounts, id) {
+  if (!id || !accounts?.gatewayOn) return false;
+  const pool = Array.isArray(accounts.pool) ? accounts.pool : [];
+  if (!pool.includes(id)) return false;
+  const exclude = accounts.excludeAccounts ?? [];
+  const forced = accounts.forcedAccounts ?? [];
+  if (exclude.includes(id)) return false;
+  if (forced.length > 0 && !forced.includes(id)) return false;
+  return true;
 }
 
 /**
- * Pick (interactive) or honor (`--account`) the account for a resume, then
- * resolve its gateway env. Returns `{ id, env, notice }` — `id` for the fork
- * path (folded server-side via the bootstrap POST), `env`/`notice` for the
- * in-place resume path (launchResume). No prompt + no env when the gateway is
- * off / the pool is empty / scripting (`--no-picker`) — byte-identical to the
- * pre-account resume.
+ * Choose (prompt) / honor (`--account`) the account for a RESUME, then build the inference-gateway
+ * pin env CLIENT-SIDE (gatewayPinEnv) — the resume mints no session, so it can't ride the
+ * bootstrap-su POST that folds the pin for a fresh launch, and the launcher must not depend on a
+ * server endpoint that may not be deployed where it points (the 404 deploy-skew bug). Gating reuses
+ * the live `/options` choices. Returns `{ id, env, notice }`: `id` for the FORK path (folded
+ * server-side via the bootstrap POST), `env`/`notice` for the in-place resume (launchResume).
+ * No prompt + no env when the gateway is off / pool empty / scripting (`--no-picker`).
  */
 async function chooseResumeAccount(session, args) {
   const plan = resumeAccountPlan(args);
-  let id = plan.account;
-  if (plan.prompt) id = await pickAccount(session.workspaceId);
-  if (!id) return { id: null, env: {}, notice: null };
-  const resolved = await resolveResumeAccountEnv(session.workspaceId, id);
-  return { id, env: resolved.env, notice: resolved.notice };
+  if (plan.source === 'none') return { id: null, env: {}, notice: null }; // --no-picker + no --account
+  const accounts = await fetchAccountChoices(session.workspaceId);
+  if (!accounts?.gatewayOn || !(Array.isArray(accounts.pool) && accounts.pool.length)) {
+    // Pinning is a no-op (gateway off / empty pool) → default-credential resume, byte-identical.
+    return {
+      id: null,
+      env: {},
+      notice: plan.account ? `--account ${plan.account} ignored: inference gateway off / no pool — using the default credential.` : null,
+    };
+  }
+  const id = plan.prompt ? await promptAccount(accounts) : plan.account;
+  if (!id) return { id: null, env: {}, notice: null }; // chose "default credential"
+  if (!accountPinnable(accounts, id)) {
+    return { id: null, env: {}, notice: `--account ${id} ignored: not an allowed pool account — using the default credential.` };
+  }
+  return { id, env: gatewayPinEnv(id), notice: `pinned to account ${id} (routed through the inference gateway).` };
 }
 
 /** Sentinel for the "no feature" picker row (optional-feature roles). */
