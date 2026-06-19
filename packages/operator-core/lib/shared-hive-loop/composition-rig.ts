@@ -219,6 +219,11 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       assignee_rank       INT,
       rank_writer         TEXT,
       rank_updated_at     TIMESTAMPTZ,
+      -- migration 307 (work-queue-stuck-item-recovery D-007): the durable
+      -- stale-reclaim requeue counter setWorkItemState resets on a terminal
+      -- transition. Without it the real setWorkItemState UPDATE errors with a
+      -- missing-column (requeue_count) failure.
+      requeue_count       INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (harness_slug, feature_id)
     );
     -- G2 trust leg (P-010): the claim/place paths' autoPickableWhereSql(sql, ws)

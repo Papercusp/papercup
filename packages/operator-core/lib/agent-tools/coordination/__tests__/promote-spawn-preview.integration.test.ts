@@ -22,6 +22,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import promoteTool from '../tools/promote';
 import { childSeedSlug } from '../spawn-child';
+// plans:promote resolves a papercup-harness plan at the papercup-primary workspace
+// (PAPERCUSP_WORKSPACE_ID, flipped from 'default' on 2026-06-16 — WI-148 part-B /
+// migration 295). Seed + verify there, not the fixture's generic 'default', or the
+// tool's readPlanBySlug looks in the wrong workspace → plan_not_found.
+import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
 import {
   setupPlanPgFixture,
   seedPlan,
@@ -139,8 +144,8 @@ async function runPromote(args: Record<string, unknown>): Promise<{ data: any; i
 beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
-  await seedPlan(admin, fx.workspaceId, PARENT_HARNESS, MIXED_SLUG, mixedPlan());
-  await seedPlan(admin, fx.workspaceId, PARENT_HARNESS, PURE_SLUG, pureSpawnPlan());
+  await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, MIXED_SLUG, mixedPlan());
+  await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, PURE_SLUG, pureSpawnPlan());
 }, 120_000);
 
 afterAll(async () => {
@@ -210,7 +215,7 @@ describe('plans:promote spawn_child preview (apply:false)', () => {
     // The parent plan row is byte-identical: version + content untouched.
     const parent = await admin<{ version: number; content: string }[]>`
       SELECT version::int AS version, content FROM harness_shared.harness_plans
-       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${PARENT_HARNESS}
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS}
          AND plan_slug = ${MIXED_SLUG}
     `;
     expect(parent[0].version).toBe(1);

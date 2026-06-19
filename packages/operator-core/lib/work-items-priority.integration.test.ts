@@ -108,6 +108,12 @@ describe('P-011 single-steerer lease gates the priority write (D-004)', () => {
     const escalations: { summary: string }[] = [];
     (await lease()).__setSteeringLeaseTestDeps({
       resolveHive: async () => 'the-hive',
+      // P-021 queen-home gate (steering-lease.ts): its default resolveQueenHome does a
+      // PG read (hive-settings-store) the throwaway DB lacks → it would throw → the
+      // lease fails OPEN (holder:true) and the non-holder steer wrongly commits. Inject
+      // the common production case: no recorded queen home → fall through to the
+      // authority election (the injected hiveAuthority below decides the holder).
+      resolveQueenHome: async () => null,
       hiveAuthority: async () => ({
         isSelf: false,
         liveCount: 2,

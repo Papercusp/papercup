@@ -25,7 +25,7 @@
  * is released (and TTL covers a crashed run).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { homedir } from 'node:os';
@@ -62,6 +62,35 @@ const RUN_ID = `${process.pid}-${Date.now()}`;
 const OWNER_A = `e2e-hooklive-A-${RUN_ID}`;
 const OWNER_B = `e2e-hooklive-B-${RUN_ID}`;
 const REL_PATH = `e2e-hook-live/${RUN_ID}/contested.ts`;
+
+// Both peers must resolve to the SAME workspace so they contend on one lock key.
+const E2E_WS = 'papercusp-workspace';
+
+// The scoped-superuser-workspace-clamp (2026-06-18, FLAGS.SCOPED_SUPERUSER_CLAMP,
+// default-on) rejects a `?superuser=1&client=<owner>` whose workspace can't resolve.
+// In production the owner is a real adv_session row; here the e2e owners are throwaway,
+// so register them — exactly as a live agent is registered — and BOTH the test's MCP
+// calls and the spawned hook scripts (same ?client= path) resolve their workspace.
+// execFileSync (arg array, no shell): the SQL is one argument, so no interpolation
+// reaches a shell. Values here are internal constants anyway (owner = e2e-…-<pid>-<ts>).
+function psql(sql: string): void {
+  execFileSync(
+    'psql',
+    ['-h', 'localhost', '-U', 'harness_admin', '-d', 'papercusp', '-tAc', sql],
+    { env: { ...process.env, PGPASSWORD: 'harness_admin_pwd' }, stdio: 'ignore' },
+  );
+}
+function registerSession(owner: string): void {
+  psql(
+    `INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id) ` +
+      `VALUES ('${E2E_WS}', 'console', '${owner}')`,
+  );
+}
+function unregisterSessions(): void {
+  try {
+    psql(`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id IN ('${OWNER_A}','${OWNER_B}')`);
+  } catch { /* best-effort cleanup */ }
+}
 
 /** Call a tool over the real HTTP MCP transport as `client`. */
 async function callTool(client: string, tool: string, args: unknown): Promise<Record<string, unknown>> {
@@ -148,6 +177,14 @@ beforeAll(() => {
     PAPERCUSP_WORKSPACE_ROOT: ws,
     PAPERCUSP_SID: OWNER_B,
   };
+
+  // Register both e2e owners so the scoped-superuser clamp resolves their workspace
+  // (workspaceForCoordOwner reads adv_sessions) for BOTH the test's MCP calls and the
+  // spawned hooks — without this they're rejected as scoped_superuser_workspace_unresolved.
+  if (reachable) {
+    registerSession(OWNER_A);
+    registerSession(OWNER_B);
+  }
 });
 
 afterAll(async () => {
@@ -160,6 +197,7 @@ afterAll(async () => {
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(cache, { recursive: true, force: true });
   fs.rmSync(ws, { recursive: true, force: true });
+  if (reachable) unregisterSessions();
 });
 
 describeLive('lock-hook live rung (coord-e2e P-008)', () => {

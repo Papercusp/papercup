@@ -39,6 +39,24 @@ import { evaluateCapabilityEnvelope } from './capability-envelope/policy';
 import { recordDecisionLedger } from './decision-ledger/emit';
 
 /**
+ * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
+ * cannot represent a NUL byte (U+0000) and rejects the `::jsonb` cast with
+ * `unsupported Unicode escape sequence`. Tool args/metadata occasionally carry NUL
+ * bytes (binary-ish payloads, truncated file reads, terminal output), which made
+ * the whole `tool_invocations` row throw — silently dropping that tool call's
+ * telemetry (the catch in `recordInvocationImpl` swallows it). Strip every NUL
+ * from each string VALUE during serialization via a replacer (non-NUL content is
+ * left untouched).
+ */
+export function jsonbSafeStringify(value: unknown): string {
+  // Referenced via fromCharCode so a raw NUL byte never appears in this source.
+  const NUL = String.fromCharCode(0);
+  return JSON.stringify(value, (_key, val) =>
+    typeof val === 'string' && val.includes(NUL) ? val.split(NUL).join('') : val,
+  );
+}
+
+/**
  * The event-reaction system installs its `postInvoke` handler here at startup
  * (`lib/events` calls `setReactionPostInvoke`). Kept as a setter indirection —
  * not a direct import of the engine — so projected-tool-deps (loaded very early
@@ -159,7 +177,7 @@ async function recordInvocationImpl(input: {
           (() => {
             if (input.args === undefined || input.args === null) return null;
             try {
-              const s = JSON.stringify(input.args);
+              const s = jsonbSafeStringify(input.args);
               if (s.length > 32768) {
                 return JSON.stringify({ _truncated: true, _size: s.length });
               }
@@ -179,7 +197,7 @@ async function recordInvocationImpl(input: {
           (() => {
             const reaction = input.ctx.reactionCause;
             const meta = reaction ? { ...(input.metadataJson ?? {}), reaction } : input.metadataJson;
-            return meta ? JSON.stringify(meta) : null;
+            return meta ? jsonbSafeStringify(meta) : null;
           })(),
           p?.kind ?? null,
           p?.authMethod ?? null,

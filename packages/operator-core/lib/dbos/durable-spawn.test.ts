@@ -185,3 +185,47 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(h.loopbackFetch).toHaveBeenCalledTimes(1); // fired anyway
   });
 });
+
+// A deleted harness 404s its /invoke route forever. The fire used to treat any
+// non-2xx as transient → 3 step-retries AND a workflow ERROR that DBOS recovery
+// re-ran (maxRecoveryAttempts), amplifying one dead-harness spawn into perpetual
+// `→ HTTP 404` log spam on green. A 404/410 (target gone) is now terminal-but-
+// not-thrown: the step succeeds (no retry, no recovery) and the workflow ends.
+describe('durableSpawnFireImpl — permanent (target-gone) vs transient fire failure', () => {
+  const IMPL = {
+    url: 'http://x/api/harness/deleted-harness/invoke?role=queen',
+    body: { kickoff: 'go' },
+    idempotencyKey: 'q1',
+    label: 'deleted-harness/queen',
+  };
+
+  it.each([404, 410])(
+    'a %i (spawn target gone) does NOT throw — so DBOS recovery is not triggered — and warns once',
+    async (status) => {
+      h.loopbackFetch.mockResolvedValue({ ok: false, status });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await expect(durableSpawnFireImpl(IMPL)).resolves.toBeUndefined();
+      expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`HTTP ${status} (permanent`));
+    },
+  );
+
+  it('a permanent failure marks the fleet:tree row `failed` (not `done`) without throwing', async () => {
+    h.loopbackFetch.mockResolvedValue({ ok: false, status: 404 });
+    await expect(
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+    ).resolves.toBeUndefined();
+    expect(h.finishSpawn).toHaveBeenCalledTimes(1);
+    const fin = h.finishSpawn.mock.calls[0][1] as { status: string; errorMessage: string };
+    expect(fin.status).toBe('failed');
+    expect(String(fin.errorMessage)).toContain('permanent');
+  });
+
+  it.each([500, 502, 503, 429])(
+    'a transient %i still THROWS (→ step-retry + DBOS recovery), unchanged',
+    async (status) => {
+      h.loopbackFetch.mockResolvedValue({ ok: false, status });
+      await expect(durableSpawnFireImpl(IMPL)).rejects.toThrow(new RegExp(`HTTP ${status}`));
+    },
+  );
+});

@@ -103,16 +103,25 @@ function serializeStoredMcpResult(result: StoredMcpResult): string {
       if (item && typeof item === 'object') {
         const typed = item as Record<string, unknown>;
         if (typed.type === 'text' && typeof typed.text === 'string') {
-          contentParts.push(`{"type":"text","text":${typed.text}}`);
+          // JSON.stringify the text so a plain string is correctly quoted/escaped
+          // (a bare `${typed.text}` produces invalid JSON for a non-JSON string, and
+          // silently retypes a JSON-string value to an object — breaking replay
+          // round-trip). Stringifying a single string is the cheap leg; the P1-4 win
+          // is avoiding JSON.stringify on the WHOLE result/large content arrays.
+          contentParts.push(`{"type":"text","text":${JSON.stringify(typed.text)}}`);
         } else {
           contentParts.push(JSON.stringify(item));
         }
       }
     }
   }
-  let json = `{"content":[${contentParts.join(',')}]}`;
+  // Build the body WITHOUT the closing brace, append isError/_meta, THEN close —
+  // appending after a closed `{...}` produced `{...},"_meta":…` (trailing content
+  // past the root object → "invalid input syntax for type json" on ::jsonb).
+  let json = `{"content":[${contentParts.join(',')}]`;
   if (result.isError) json += ',"isError":true';
   if (result._meta) json += `,"_meta":${JSON.stringify(result._meta)}`;
+  json += '}';
   return json;
 }
 

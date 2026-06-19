@@ -40,6 +40,16 @@ import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
 
+/**
+ * HTTP statuses where the spawn TARGET IS PERMANENTLY GONE — the harness was
+ * deleted, so its `/invoke` route will 404 (or 410) forever. The fire step does
+ * NOT retry or DBOS-recover these: retrying a deleted-harness spawn can never
+ * succeed and only amplifies one dead spawn into perpetual `→ HTTP 404` log spam
+ * (observed on green for deleted harnesses like offsite-planner-demo). Every
+ * other non-2xx (5xx, 429, network) stays transient → step-retry + recovery.
+ */
+const PERMANENT_SPAWN_STATUSES = new Set([404, 410]);
+
 export interface DurableSpawnFireInput {
   /** The `/invoke?role=<role>` URL to POST. */
   url: string;
@@ -108,24 +118,41 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   }
 
   let fireError: unknown = null;
+  // The fire step returns a discriminated result (memoized by DBOS, so it
+  // survives a recovery replay) instead of leaking via closure side-effects.
+  let fireResult: { ok: true } | { ok: false; permanentStatus: number } | null = null;
   try {
-    await DBOS.runStep(
+    fireResult = await DBOS.runStep(
       async () => {
         const r = await loopbackFetch(input.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(input.body),
         });
-        // A non-2xx is a transient fire failure → throw so the step retries (and a
-        // host crash mid-run is resumed by DBOS recovery, re-firing once).
-        if (!r.ok) {
-          throw new Error(`durable-spawn fire ${input.label ?? ''} → HTTP ${r.status}`);
+        if (r.ok) return { ok: true } as const;
+        // Permanent (target-gone) failure: the harness was deleted, so retrying
+        // (3×) + DBOS recovery (5×) can never succeed and just spams the log.
+        // Return — the step SUCCEEDS, so neither retries nor recovery fire and the
+        // workflow ends. Transient non-2xx (5xx, 429, network) throws → retry.
+        if (PERMANENT_SPAWN_STATUSES.has(r.status)) {
+          return { ok: false, permanentStatus: r.status } as const;
         }
+        throw new Error(`durable-spawn fire ${input.label ?? ''} → HTTP ${r.status}`);
       },
       { name: 'durable-spawn-fire', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 10, backoffRate: 2 },
     );
   } catch (e) {
     fireError = e;
+  }
+  // A permanent failure is terminal but deliberately NOT thrown — throwing would
+  // end the workflow ERROR and trigger DBOS recovery. Surface it once and let the
+  // fleet:tree row close `failed` below.
+  const permanentMsg =
+    fireResult && !fireResult.ok
+      ? `durable-spawn fire ${input.label ?? ''} → HTTP ${fireResult.permanentStatus} (permanent — spawn target gone; not retried)`
+      : null;
+  if (permanentMsg) {
+    console.warn(`[durable-spawn] ${permanentMsg}`);
   }
 
   // Close the fleet:tree row — `done` when the fire landed, `failed` (with the
@@ -140,8 +167,12 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           await finishSpawn(getOrgPg().sql, {
             spawnId,
             workspaceId: rec.workspaceId,
-            status: fireError ? 'failed' : 'done',
-            errorMessage: fireError ? (fireError instanceof Error ? fireError.message : String(fireError)) : null,
+            status: fireError || permanentMsg ? 'failed' : 'done',
+            errorMessage: fireError
+              ? fireError instanceof Error
+                ? fireError.message
+                : String(fireError)
+              : permanentMsg,
           });
         } catch (e) {
           console.warn(

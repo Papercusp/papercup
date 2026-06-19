@@ -36,7 +36,7 @@ vi.mock('./decision-ledger/emit', async (importOriginal) => ({
   recordDecisionLedger: vi.fn(),
 }));
 
-import { PROJECTED_DEPS, setReactionPostInvoke } from './projected-tool-deps';
+import { PROJECTED_DEPS, setReactionPostInvoke, jsonbSafeStringify } from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
 import { getOverride } from '@papercusp/testing-shell/llm';
 import { recordDecisionLedger } from './decision-ledger/emit';
@@ -185,5 +185,40 @@ describe('PROJECTED_DEPS.overrideTool — llm-testing dispatch-override wiring (
 describe('PROJECTED_DEPS.defaultDeny — fail-closed floor for ungated tools (gap #7)', () => {
   it('is plumbed ON (a future/third-party tool with no declared gate gets a loud ungated 403)', () => {
     expect(PROJECTED_DEPS.defaultDeny).toBe(true);
+  });
+});
+
+// recordInvocation writes args_json/metadata_json via `JSON.stringify(...)::jsonb`.
+// Postgres jsonb rejects the U+0000 escape ("unsupported Unicode escape
+// sequence"), so a tool call whose args carried a NUL byte (binary-ish payloads,
+// truncated reads, terminal output) threw and the WHOLE invocation row was
+// dropped (the catch swallows it -> telemetry silently lost). jsonbSafeStringify
+// strips NUL from string values so the cast succeeds.
+describe('jsonbSafeStringify -- NUL-byte sanitization for ::jsonb', () => {
+  const NUL = String.fromCharCode(0);
+  const NUL_ESCAPE = '\\u0000'; // the 6-char escape JSON.stringify emits for a real NUL
+
+  it('strips NUL from string values so the output has no u0000 escape (jsonb-castable)', () => {
+    const out = jsonbSafeStringify({ a: 'x' + NUL + 'y', b: ['p' + NUL, 'q'], n: 1 });
+    expect(out.includes(NUL_ESCAPE)).toBe(false);
+    expect(out.includes(NUL)).toBe(false);
+    expect(JSON.parse(out)).toEqual({ a: 'xy', b: ['p', 'q'], n: 1 });
+  });
+
+  it('handles a top-level NUL-bearing string and deep nesting', () => {
+    expect(jsonbSafeStringify(NUL + 'lead')).toBe('"lead"');
+    const out = jsonbSafeStringify({ deep: { arr: [{ s: 'a' + NUL + 'b' }] } });
+    expect(out.includes(NUL_ESCAPE)).toBe(false);
+    expect(JSON.parse(out)).toEqual({ deep: { arr: [{ s: 'ab' }] } });
+  });
+
+  it('leaves a LITERAL backslash-u-0000 text intact (not an actual NUL byte)', () => {
+    const literal = '\\u0000'; // six real chars: backslash u 0 0 0 0 -- valid in jsonb
+    expect(JSON.parse(jsonbSafeStringify({ a: literal }))).toEqual({ a: literal });
+  });
+
+  it('is identical to JSON.stringify when there is no NUL (no behavior change otherwise)', () => {
+    const v = { a: 1, b: 'hello', c: [true, null, { d: 'x' }] };
+    expect(jsonbSafeStringify(v)).toBe(JSON.stringify(v));
   });
 });

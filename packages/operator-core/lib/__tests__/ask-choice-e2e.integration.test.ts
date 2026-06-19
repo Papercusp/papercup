@@ -43,8 +43,13 @@ async function jsonPOST(path: string, body: unknown) {
   return { status: r.status, text, json };
 }
 
+// `all_workspaces=1`: opt into unscoped god-mode. The scoped-superuser-workspace-clamp
+// (2026-06-18, FLAGS.SCOPED_SUPERUSER_CLAMP, default-on) rejects a bare `?superuser=1`
+// whose workspace doesn't resolve with `scoped_superuser_workspace_unresolved`; this
+// e2e drives the tool unscoped (its convId came from the unscoped probe), so it opts in
+// explicitly — exactly the deliberate-cross-workspace-admin path the clamp documents.
 async function callMcpTool(name: string, args: unknown) {
-  const r = await fetch(`${baseUrl}/api/mcp?superuser=1`, {
+  const r = await fetch(`${baseUrl}/api/mcp?superuser=1&all_workspaces=1`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${TOKEN}` },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
@@ -93,7 +98,7 @@ describe('chat:ask_choice card e2e', () => {
     let status = 0;
     let bodyAborted = false;
     try {
-      const res = await fetch(`${baseUrl}/api/mcp?superuser=1`, {
+      const res = await fetch(`${baseUrl}/api/mcp?superuser=1&all_workspaces=1`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

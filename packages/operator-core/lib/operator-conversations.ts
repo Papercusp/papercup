@@ -211,40 +211,41 @@ export async function appendTurn(input: {
    */
   report?: ParsedReport | null;
 }): Promise<TurnRow> {
-  const { db } = getOrgPg();
+  const { sql: rawSql } = getOrgPg();
 
-  // Compute next seq. We collide-tolerate via the UNIQUE (conv,seq) constraint
-  // and a single retry — concurrent inserters in the same conversation are
-  // rare (one user, two transports max), so this is cheap.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const next = await db
-      .select({ s: dsql<number>`COALESCE(MAX(${ot.seq}), -1) + 1` })
-      .from(ot)
-      .where(eq(ot.conversationId, input.conversationId));
-    const seq = Number(next[0].s);
+  // Drizzle has a known jsonb auto-conversion bug (commit 98cfffb7 — three
+  // ui:* routes reverted from drizzle to raw sql for the same reason). The
+  // established workaround is to write jsonb via raw `${JSON.stringify(x)}::jsonb`
+  // instead of letting drizzle's encoder touch the value. Pre-stringify once.
+  const toolsJson =
+    input.tools && input.tools.length > 0 ? JSON.stringify(input.tools) : null;
+  const reportJson = input.report ? JSON.stringify(input.report) : null;
+
+  // Compute the next seq ATOMICALLY inside the INSERT (the COALESCE(MAX)+1
+  // subquery) so there is no read-then-write gap, and collide-tolerate via the
+  // UNIQUE (conversation_id, seq) constraint with a bounded, jittered retry.
+  // The original read MAX(seq) in a SEPARATE SELECT and retried only 3× on the
+  // assumption that concurrent inserters were rare ("one user, two transports
+  // max"). That assumption no longer holds: server-side writers (the curation
+  // tick, the urgent-wake runner, and the live transport) contend on a single
+  // conversation, and the 3 retries were being exhausted in the wild
+  // (`appendTurn: failed after 3 retries`, hundreds of occurrences — curation
+  // turns silently dropped). Folding the seq into the INSERT closes the gap, and
+  // the extra jittered attempts absorb realistic server-side contention.
+  for (let attempt = 0; attempt < 10; attempt++) {
     try {
-      // Drizzle has a known jsonb auto-conversion bug
-      // (commit 98cfffb7 — three ui:* routes reverted from drizzle to
-      // raw sql for the same reason). The established workaround is
-      // to write jsonb via raw `${JSON.stringify(x)}::jsonb` instead
-      // of letting drizzle's encoder touch the value. Pre-stringify
-      // here and pass as the raw cast for the tools column only.
-      const toolsJson = input.tools && input.tools.length > 0
-        ? JSON.stringify(input.tools)
-        : null;
-      // Same drizzle-jsonb workaround as `tools`: pre-stringify + ::jsonb.
-      const reportJson = input.report ? JSON.stringify(input.report) : null;
-      const { sql: rawSql } = getOrgPg();
       const inserted = (await rawSql.unsafe(
         `INSERT INTO harness_shared.operator_turns
            (conversation_id, seq, role, text, source, el_conv_id,
             audio_url, created_at, tools, report)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
+         SELECT $1,
+                COALESCE((SELECT MAX(seq) FROM harness_shared.operator_turns
+                           WHERE conversation_id = $1), -1) + 1,
+                $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb
          RETURNING id, conversation_id, seq, role, text, source,
                    el_conv_id, audio_url, created_at, tools, report`,
         [
           input.conversationId,
-          seq,
           input.role,
           input.text,
           input.source ?? 'text_typed',
@@ -259,10 +260,12 @@ export async function appendTurn(input: {
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code !== '23505') throw err; // not a unique violation
-      // someone else took our seq — retry
+      // Someone else took our seq — back off briefly (jitter breaks lockstep)
+      // and retry; the next attempt re-reads the now-higher committed MAX.
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.floor(Math.random() * 25)));
     }
   }
-  throw new Error('appendTurn: failed after 3 retries');
+  throw new Error('appendTurn: failed after 10 retries');
 }
 
 // ---------------------------------------------------------------------------

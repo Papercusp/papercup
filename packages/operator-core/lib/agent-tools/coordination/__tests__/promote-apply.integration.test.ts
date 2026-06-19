@@ -39,6 +39,11 @@ import {
   seedPlan,
   type PlanPgFixture,
 } from '../../plans/__tests__/_pg-tool-fixture';
+// plans:promote resolves a papercup-harness plan at the papercup-primary workspace
+// (PAPERCUSP_WORKSPACE_ID, flipped from 'default' on 2026-06-16 — WI-148 part-B /
+// migration 295). Seed + verify there, not the fixture's generic 'default', or the
+// tool's readPlanBySlug looks in the wrong workspace → plan_not_found.
+import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
 
 const PARENT_HARNESS = 'papercup';
 const RUN = Math.random().toString(36).slice(2, 8);
@@ -131,7 +136,7 @@ async function runPromote(args: Record<string, unknown>): Promise<{ data: any; i
 beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
-  await seedPlan(admin, fx.workspaceId, PARENT_HARNESS, SLUG, planContent());
+  await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, SLUG, planContent());
 
   // In-test stand-in for the /features/import route: capture the payload promote
   // POSTs and return deterministic allocated ids. The real mint + coord_links
@@ -238,7 +243,7 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
 
     const [row] = await admin<{ content: string }[]>`
       SELECT content FROM harness_shared.harness_plans
-       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}
     `;
     const body = row.content;
     // Items flipped to done.

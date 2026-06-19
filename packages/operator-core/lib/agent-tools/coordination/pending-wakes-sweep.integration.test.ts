@@ -16,6 +16,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { sweepDeadOwnerPendingWakes, listAllPendingWakes } from './pending-wakes';
+// listAllPendingWakes (the readback for remainingOwners) filters
+// `WHERE workspace_id = activeWorkspaceId()` (F-C3 workspace-data-isolation). The seed
+// and the readback MUST agree on the workspace — but activeWorkspaceId() reads the
+// process-global reg.current, which a CONCURRENT test file (same vitest worker) can
+// mutate between our seed and our readback, making the read return [] even though the
+// row survived the sweep (a cross-file contamination flake, the EI-1534 "strand"
+// class). Pin BOTH legs to a fixed TEST_WS through the request-ALS scope
+// (runWithWorkspace → activeWorkspaceId() honors the ALS FIRST), so the test is immune
+// to cross-file reg.current drift. The sweep DELETE itself is workspace-agnostic.
+import { runWithWorkspace } from '../../workspace-als';
+
+/** A fixed workspace both the seed and the (workspace-filtered) readback pin to. */
+const TEST_WS = 'pending-wakes-sweep-ws';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
@@ -24,7 +37,7 @@ let admin: postgres.Sql;
 async function seedWake(ownerId: string, ageMin: number, source = 'system:wake-brain'): Promise<void> {
   await admin`
     INSERT INTO harness_shared.pending_wakes (owner_id, summary, source, workspace_id, created_at, last_seen_at)
-    VALUES (${ownerId}, ${`wake for ${ownerId}`}, ${source}, 'default',
+    VALUES (${ownerId}, ${`wake for ${ownerId}`}, ${source}, ${TEST_WS},
             now() - ${`${ageMin} minutes`}::interval, now() - ${`${ageMin} minutes`}::interval)`;
 }
 
@@ -36,7 +49,10 @@ async function seedPresence(ownerId: string, heartbeatAgeMin: number): Promise<v
 }
 
 async function remainingOwners(): Promise<string[]> {
-  return (await listAllPendingWakes()).map((w) => w.ownerId).sort();
+  // Pin the readback's activeWorkspaceId() to TEST_WS so it can't drift off the
+  // seeded workspace if a concurrent file mutated reg.current mid-test.
+  const wakes = await runWithWorkspace(TEST_WS, () => listAllPendingWakes());
+  return wakes.map((w) => w.ownerId).sort();
 }
 
 beforeAll(async () => {

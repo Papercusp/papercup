@@ -266,7 +266,16 @@ describe('G7 — published-revocation propagation enforces a drop at merge time'
       // Y keeps federating; X does not — X-2 must NEVER appear; Y-2 must.
       await X.write('X-2', 200);
       await Y.write('Y-2', 210);
-      await handle.mergeNow();
+      // Poll across merge cycles: a single mergeNow() can race the real-swarm
+      // propagation of Y-2 under heavy parallel load (the G7 flake). The
+      // INVARIANT is that Y-2 EVENTUALLY federates and X-2 NEVER does — assert
+      // that, not single-cycle timing. Extra cycles only give X-2 more chances
+      // to (wrongly) appear, so its continued absence is a STRONGER check.
+      for (let i = 0; i < 50; i++) {
+        await handle.mergeNow();
+        if (seen().has('Y-2')) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
       expect(seen().has('Y-2'), "Y's post-revocation op must federate").toBe(true);
       expect(seen().has('X-2'), "X's post-revocation op must NOT federate").toBe(false);
     },

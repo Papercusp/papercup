@@ -80,3 +80,39 @@ describe('P-007 — single-harness sub-share preserved under Hive membership', (
     expect(mockCfg).not.toHaveBeenCalled();
   });
 });
+
+describe('the join-vs-owner topic-split fix — a joiner honors its link topic', () => {
+  // The OWNER federates on `hive:<pubkey>`; the member link the joiner persisted
+  // into its shared.json carries THAT 32-byte topic (64 hex) but NOT the pubkey.
+  // The joiner cannot reconstruct a `hive:` binding (no pubkey), and `resolveHive-
+  // SwarmBinding` returns null for it (it isn't an owned/published Hive home), so
+  // it lands in branch (2). It MUST honor the stored topic verbatim — else re-
+  // deriving `gh:<repo_id>` puts it on a DIFFERENT swarm topic than the owner and
+  // no incremental write ever crosses (the initial join-handshake merge lands, then
+  // sync silently dies). This pins the caller-level half of the fix; the topic
+  // binding's verbatim derivation is pinned in derive-swarm-topic.test.ts.
+  const LINK_TOPIC = 'a3f1'.repeat(16); // a valid 64-hex topic (the owner's Hive topic)
+
+  it('a joiner whose shared.json carries the Hive topic federates on THAT topic, not gh:<repo_id>', async () => {
+    mockHive.mockResolvedValue(null); // not recognized as an owned/published Hive home
+    mockPaths.mockResolvedValue({ projectDir: '/real/project/dir' } as never);
+    // The member link persisted BOTH the topic and the repo id into shared.json.
+    mockCfg.mockReturnValue({ topic: LINK_TOPIC, github_repository_id: 42 } as never);
+
+    const got = await defaultResolveSwarmBinding('ws', 'joined-hive-harness');
+
+    expect(got).toEqual({ kind: 'topic', topic_hex: LINK_TOPIC });
+    // The bug this guards: WITHOUT the fix it would split onto the gh-repo topic.
+    expect(got).not.toEqual({ kind: 'gh', github_repository_id: 42 });
+  });
+
+  it('a malformed (non-64-hex) topic falls through to the gh binding — never strands the joiner', async () => {
+    mockHive.mockResolvedValue(null);
+    mockPaths.mockResolvedValue({ projectDir: '/real/project/dir' } as never);
+    mockCfg.mockReturnValue({ topic: 'not-a-valid-topic', github_repository_id: 42 } as never);
+
+    const got = await defaultResolveSwarmBinding('ws', 'joined-hive-harness');
+
+    expect(got).toEqual({ kind: 'gh', github_repository_id: 42 });
+  });
+});

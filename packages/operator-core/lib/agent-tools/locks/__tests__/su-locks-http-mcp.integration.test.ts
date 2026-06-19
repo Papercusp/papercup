@@ -36,9 +36,15 @@ const BASE = OP_PORT
 let TOKEN = '';
 let reachable = false;
 
+// `all_workspaces=1`: the scoped-superuser-workspace-clamp (2026-06-18,
+// FLAGS.SCOPED_SUPERUSER_CLAMP, default-on) rejects a bare `?superuser=1` whose
+// workspace can't be resolved (the `client=<agent>` here is a throwaway e2e owner with
+// no registered workspace) — `scoped_superuser_workspace_unresolved`, surfacing as
+// "acquire returns undefined". This e2e drives the lock surface unscoped (its prior,
+// pre-clamp contract), so it opts into unscoped god-mode explicitly.
 try {
   TOKEN = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
-  const probe = await fetch(`${BASE}/api/mcp?superuser=1`, {
+  const probe = await fetch(`${BASE}/api/mcp?superuser=1&all_workspaces=1`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${TOKEN}`,
@@ -82,7 +88,7 @@ async function callTool(
   };
   if (mcpSessionId) headers['Mcp-Session-Id'] = mcpSessionId;
 
-  const res = await fetch(`${BASE}/api/mcp?superuser=1&client=${encodeURIComponent(agent)}`, {
+  const res = await fetch(`${BASE}/api/mcp?superuser=1&all_workspaces=1&client=${encodeURIComponent(agent)}`, {
     method: 'POST',
     headers,
     body,
@@ -381,7 +387,7 @@ describe('§11 zod input validation', () => {
 
   /** Call and return the full SSE body (before inner-JSON parse). */
   async function rawCall(tool: string, args: unknown): Promise<string> {
-    const res = await fetch(`${BASE}/api/mcp?superuser=1&client=${encodeURIComponent(A)}`, {
+    const res = await fetch(`${BASE}/api/mcp?superuser=1&all_workspaces=1&client=${encodeURIComponent(A)}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${TOKEN}`,
@@ -399,11 +405,16 @@ describe('§11 zod input validation', () => {
     expect(body).toMatch(/invalid_args|Too small/i);
   }, 15_000);
 
-  itLive('rejects wait.max_sec > 300', async () => {
+  itLive('CLAMPS wait.max_sec > 300 instead of rejecting (free path still acquires)', async () => {
+    // MAX_WAIT_SEC clamp (acquire.ts): a value above the 300s cap is CLAMPED, NOT
+    // rejected — the turn can't block past the tool's own timeout anyway, so the
+    // schema accepts any nonnegative int and the handler clamps. A free path therefore
+    // acquires cleanly rather than erroring with invalid_args/too_big.
     const body = await rawCall('locks:acquire', {
       paths: [uniquePath('s11/cap.ts')], intent: 'x', wait: { max_sec: 9999 },
     });
-    expect(body).toMatch(/invalid_args|too_big|Too big|less than/i);
+    expect(body).not.toMatch(/invalid_args|too_big|Too big/i);
+    expect(body).toMatch(/lock_id|"ok":true/i);
   }, 15_000);
 });
 

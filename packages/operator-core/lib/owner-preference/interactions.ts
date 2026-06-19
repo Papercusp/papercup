@@ -82,12 +82,22 @@ export async function recordQueueExposure(
   if (visibleIds.length === 0) return false;
   try {
     const { sql } = getOrgPg();
-    const last = await sql<{ ts: Date }[]>`
+    // `ts` is a timestamptz; the org PG driver returns it as a STRING on this
+    // path (not a Date), so calling `.getTime()` directly throws
+    // "ts.getTime is not a function" — the error was swallowed below, silently
+    // dropping every queue-exposure denominator. Coerce defensively (handles
+    // both Date and string, NaN-safe: an unparseable value falls through to
+    // recording, the safe default). Matches the dateMs convention elsewhere.
+    const last = await sql<{ ts: string | Date }[]>`
       SELECT ts FROM harness_shared.owner_interactions
        WHERE kind = 'queue-view'
        ORDER BY ts DESC
        LIMIT 1`;
-    if (last[0] && Date.now() - last[0].ts.getTime() < QUEUE_VIEW_THROTTLE_MS) return false;
+    if (last[0]) {
+      const lastMs =
+        last[0].ts instanceof Date ? last[0].ts.getTime() : Date.parse(String(last[0].ts));
+      if (Date.now() - lastMs < QUEUE_VIEW_THROTTLE_MS) return false;
+    }
     const ids = visibleIds.slice(0, QUEUE_VIEW_MAX_IDS);
     return await recordOwnerInteraction({
       kind: 'queue-view',
