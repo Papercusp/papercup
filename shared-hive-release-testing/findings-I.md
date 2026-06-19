@@ -5,7 +5,7 @@ Disjoint area: `register-all.ts` (binding) · `hive-federation.ts` (gate) · `bo
 (boot + rekey wiring). Coordinated with J (su-46b7a, fed_hlc/D-001) + H (su-dc9db,
 swarm.ts) — no source overlap realized.
 
-## Dimension verdict: **CODE-COMPLETE — GREEN-on-live-witness**
+## Dimension verdict: **CODE-COMPLETE, but LIVE-RED — debugging (see "Live-RED debug log" at the end)**
 
 A-003 turned out to be **two-sided** (receive AND send), and the send side is an
 architecture fix, not a one-liner — see **Fix direction** below for the full a/a′/b
@@ -25,9 +25,13 @@ re-key 21-test RED-on-neuter); + a **durable in-suite composition proof**
 (`register-all-hive-home-binding.integration.test.ts`: slug-filter gate ↔ rebind apply
 over the real apply + full PG). Typecheck clean.
 
-**Remaining (the only thing):** su-9140a's **live content-matrix witness on a
-fix-`.deb`** → flip GREEN when `hive_members`/`hive_settings` cross to B
-`origin=remote` (RED today) with NO member features in the hive-home schema.
+**⚠ UPDATE — the live witness came back RED, not green.** su-9140a's content-matrix on
+a fix-`.deb` (verified to carry my code) shows 28 member-scoped types federate but
+`hive_settings`/`hive_members` still cross in ZERO directions. The code is correct in
+isolation + integration + the binary, but a live runtime gap remains in the
+announce→admit→apply of A's hive-home log. **See the "Live-RED debug log" at the end of
+this file** for the full ruled-out list + the prime suspect. Do NOT mark A-003 green
+until `origin=remote` hive rows appear on the joiner live.
 
 ---
 
@@ -217,3 +221,32 @@ content, so hive_members/hive_settings never leave the owner. That is an archite
 fix (Move 1 "increment 2"), overlapping A-002/su-963ee's Move 1 — handed to the
 hive-federation architecture coordination with the precise spec above. GREEN requires
 the send-side fix + a re-witness (A's rows present on B `origin='remote'`).
+
+---
+
+## Live-RED debug log (in progress — the green-rig/red-binary gap)
+
+The integrated `.deb` content-matrix is RED: 28 member-scoped content types federate,
+but **hive_settings/hive_members never cross A→B** (the hive-home log). Reframed by
+su-9140a + dc9db: the hive-home **boots + joins the topic + peer_connects + drains its
+outbox (6/6)** — so the send side is up; the gap is **announce→admit→apply of A's
+hive-home log on the shared topic**.
+
+**What's RULED OUT (verified):**
+- MY code is correct in the tested binary (bundle grep: `announceSlugInScope`=`(e==null?
+  true:e===t||n!=null&&e===n)`; the onAnnounce slug-filter; the rekey is **resolve-then-
+  join** — my re-order landed). The re-order did NOT close the RED → not the bug.
+- MY receive-side rebind resolves at runtime: traces show `resolve hello-world:
+  joinerHiveHomeSlug=hello-world-hive` → `rekey hello-world: next=hello-world-hive
+  rebind=true`. So on B's member `home` is correct → the slug-filter would ADMIT A's
+  hive-home frame (`origin==home`). The admit step is NOT the (sole) break.
+- The apply/rebind is integration-GREEN (register-all-hive-home-binding: hive_settings/
+  members land under the home origin=remote).
+
+**Prime suspect:** A's hive-home log announce not actually reaching B's member's
+onAnnounce on the live wire (dc9db's (a′) multi-log accumulation), OR a timing race from
+the FIRE-AND-FORGET re-key (A's hive-home joins the topic asynchronously relative to the
+A↔B connection). The added per-frame `[A-003] slug-filter <h>: origin=.. → ADMIT/REJECT`
+trace splits it: if B's member NEVER logs `origin=hello-world-hive`, the announce never
+arrived (dc9db); if it logs `→ ADMIT`, the break is downstream (live merge/cursor).
+**Next:** su-9140a's traced re-run (PAPERCUSP_A003_TRACE=1) → read B's slug-filter lines.
