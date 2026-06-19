@@ -58,6 +58,20 @@ export interface AnnounceBody {
   attestation_gist_id: string;
   /** 64-hex Hypercore key of the peer's writable log. */
   log_core_key: string;
+  /** A-003 (a′): the ORIGIN harness slug this log belongs to. An instance may
+   *  run several local harnesses on ONE hive topic (a hive's member harness +
+   *  its hive-home harness, so hive_members/hive_settings federate), all sharing
+   *  one announce channel that carries every local log's announce. Because
+   *  read-admission is IDENTITY-only and every harness registers all
+   *  projections, an inbound announce broadcast to all on-topic handlers would
+   *  let one harness admit + apply another harness's log (cross-merge
+   *  pollution). The receive-side filter (boot.ts onAnnounce) admits a frame iff
+   *  `harness_slug === own slug` OR `=== joinerHiveHomeSlug(self)` — so it must
+   *  ride the SIGNED frame (cannot be spoofed to mis-route a log). OPTIONAL +
+   *  backward-compatible: absent → omitted from the signing bytes (identical to
+   *  a pre-(a′) frame), and the receive filter treats absent as the legacy
+   *  single-harness path. */
+  harness_slug?: string;
   /** Epoch-ms timestamp at announce-build time. Covered by sig; used for
    *  freshness check in verifyAnnounce (D-007 replay hardening). */
   ts: number;
@@ -77,8 +91,10 @@ const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 /**
  * Canonical signing bytes for an announce: field-ordered JSON of the body
  * EXCLUDING `sig`. All values are primitives so this equals JCS for the schema.
- * Field order: device_pubkey, github_user_id, github_login, log_core_key, ts[, nonce].
- * nonce is only included in the canonical bytes when present (defined + string).
+ * Field order: device_pubkey, github_user_id, github_login, attestation_gist_id,
+ * log_core_key, ts[, harness_slug][, nonce]. The trailing optionals (harness_slug,
+ * nonce) are included only when present (defined + string), so an absent optional
+ * yields byte-identical bytes to a frame that never had it.
  */
 export function announceSigningBytes(body: AnnounceBody): Buffer {
   // Build ordered object — nonce only when present (undefined → omit key).
@@ -90,6 +106,13 @@ export function announceSigningBytes(body: AnnounceBody): Buffer {
     log_core_key: body.log_core_key,
     ts: body.ts,
   };
+  // A-003 (a′): the origin harness slug, when present, is signed-over so it
+  // cannot be spoofed to mis-route a log on the receive-side admission filter.
+  // Conditional (like nonce) → absent yields byte-identical canonical bytes to a
+  // pre-(a′) frame, so existing signatures verify unchanged (backward compat).
+  if (typeof body.harness_slug === 'string') {
+    ordered.harness_slug = body.harness_slug;
+  }
   if (typeof body.nonce === 'string') {
     ordered.nonce = body.nonce;
   }

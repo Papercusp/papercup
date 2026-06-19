@@ -36,8 +36,11 @@ export async function spawnSubstrateSidecar(socketPath?: string): Promise<void> 
   }
 
   const sidecarScript = path.join(
+    // 5 levels up from packages/operator-core/lib/sync/hyperbee/ → repo root,
+    // then apps/operator/bin/. (Was 4 — a latent path bug masked by the __dirname
+    // crash; with the EI-1612 __dirname fix it surfaced as packages/apps/… ENOENT.)
     moduleDir,
-    '../../../../apps/operator/bin/substrate-sidecar.ts',
+    '../../../../../apps/operator/bin/substrate-sidecar.ts',
   );
 
   // Ensure socket directory exists

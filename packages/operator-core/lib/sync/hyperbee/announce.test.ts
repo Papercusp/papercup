@@ -122,6 +122,40 @@ describe('announce', () => {
     expect(verifyAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(false);
   });
 
+  it('A-003 (a′): a present harness_slug round-trips + is covered by the signing bytes', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body: AnnounceBody = {
+      ...makeBody(rawPubkeyBase64(publicKey)),
+      harness_slug: 'hello-world-hive',
+    };
+    const frame = await buildTestAnnounce(body, privateKey);
+    expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(true);
+    // the slug IS in the signing bytes → it cannot be spoofed in transit.
+    expect(announceSigningBytes(frame).toString('utf8')).toContain(
+      '"harness_slug":"hello-world-hive"',
+    );
+  });
+
+  it('A-003 (a′): tampering harness_slug breaks verification (it is signed)', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body: AnnounceBody = {
+      ...makeBody(rawPubkeyBase64(publicKey)),
+      harness_slug: 'member-slug',
+    };
+    const frame = await buildTestAnnounce(body, privateKey);
+    // Re-routing a log to another harness by swapping the slug must fail the sig.
+    const tampered: SignedAnnounce = { ...frame, harness_slug: 'hive-home-slug' };
+    expect(verifyAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+
+  it('A-003 (a′) backward-compat: an absent harness_slug yields byte-identical signing bytes', async () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey)); // no harness_slug
+    const withUndefined: AnnounceBody = { ...body, harness_slug: undefined };
+    expect(announceSigningBytes(withUndefined).equals(announceSigningBytes(body))).toBe(true);
+    expect(announceSigningBytes(body).toString('utf8')).not.toContain('harness_slug');
+  });
+
   it('rejects a sig that does not match the body (different key)', async () => {
     const a = generateKeyPairSync('ed25519');
     const b = generateKeyPairSync('ed25519');
