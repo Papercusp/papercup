@@ -219,6 +219,18 @@ export interface BootHarnessOpts {
    */
   pendingRetryMs?: number;
   /**
+   * Test seam (A-003) — override how the joiner's hive-home projection slug is
+   * resolved. Production leaves this undefined and `resolveHiveHomeProjectionSlug`
+   * imports the real `joinerHiveHomeSlug` (reads the remote_hive registry). Tests
+   * inject a resolver (e.g. one that returns `null` at boot then the hive-home slug
+   * on the `rekey` call) to exercise the buffer→replay-on-rebind path WITHOUT the
+   * registry or a live swarm. Called only when `swarmBinding.kind === 'hive'`.
+   */
+  joinerHiveHomeSlugOverride?: (
+    workspaceId: string,
+    harnessSlug: string,
+  ) => Promise<string | null | undefined>;
+  /**
    * Test seam — override the projection apply sink. Production leaves this
    * undefined and the per-harness scoped apply (`buildHarnessProjectionApply`,
    * which routes ops to THIS harness's own projection set) is used. Tests
@@ -520,8 +532,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   ): Promise<string | undefined> => {
     if (binding?.kind !== 'hive') return undefined;
     try {
-      const { joinerHiveHomeSlug } = await import('../../hive-federation');
-      const resolved = (await joinerHiveHomeSlug(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+      // A-003 test seam: a test may inject `joinerHiveHomeSlugOverride` to control
+      // home resolution (null at boot, then the hive-home slug on rekey) without the
+      // registry. Production leaves it undefined → the real registry-backed resolver.
+      let resolved: string | undefined;
+      if (opts.joinerHiveHomeSlugOverride) {
+        resolved = (await opts.joinerHiveHomeSlugOverride(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+      } else {
+        const { joinerHiveHomeSlug } = await import('../../hive-federation');
+        resolved = (await joinerHiveHomeSlug(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+      }
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
         // eslint-disable-next-line no-console
         console.error(`[A-003] resolve ${opts.harnessSlug}: joinerHiveHomeSlug=${resolved ?? '<null>'}`);
@@ -1650,6 +1670,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         console.error(`[A-003] rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`);
       }
       await joinForBinding(binding);
+      // A-003 fix (c) — replay-on-rebind. The rekey is the exact moment
+      // `hiveHomeProjectionSlug` becomes known (a first join re-keys the member onto
+      // the Hive topic only AFTER join-hive stamps hive_slug + the remote_hive home).
+      // The owner's hive-home log announce that raced in during the `home=<none>`
+      // boot window was BUFFERED (not rejected) by onAnnounce as `scope_unresolved`.
+      // Re-drive the pending set NOW, against the freshly-resolved home, so that
+      // hive-home log is admitted at the rebind instant — rather than waiting up to
+      // `pendingRetryMs` (5s) for the periodic tick. That timer latency was the
+      // residual live-RED window: the content-matrix / from-repo witness samples
+      // hive_settings/hive_members within seconds of join, before the tick admits the
+      // log. Idempotent + re-entrancy-safe (retryPendingOnce no-ops on an empty set;
+      // mergeNow serializes internally), so racing the periodic tick is harmless.
+      await retryPendingOnce();
     },
     registerCloseHook(hook: () => void | Promise<void>): () => void {
       closeHooks.add(hook);
