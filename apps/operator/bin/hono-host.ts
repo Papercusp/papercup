@@ -14,7 +14,8 @@
  * Final home (Phase H): moves to `apps/operator-vite/server/` once `_hono/`
  * relocates there. See operator-vite-migration-2026-05-20.md (Phase C/H).
  */
-import { serve } from '@hono/node-server';
+import cluster from 'node:cluster';
+import { serve, createAdaptorServer } from '@hono/node-server';
 import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
@@ -113,8 +114,8 @@ function startRequestServers(): void {
     })
     .catch(() => startLoopPressureGovernor());
 
-  const server = serve({ fetch: handler, port, hostname }, (info) => {
-    console.log(`[hono-host] listening on http://${hostname}:${info.port} (pid=${process.pid})`);
+  const onListening = (boundPort: number): void => {
+    console.log(`[hono-host] listening on http://${hostname}:${boundPort} (pid=${process.pid})`);
 
     // Guardrail: a stray PAPERCUSP_WORKSPACE_ID pin silently rebinds every
     // non-request path on this multi-workspace host. Warn loudly at boot — a bare
@@ -122,7 +123,26 @@ function startRequestServers(): void {
     // (Logic + rationale in lib/workspace-pin-guard.ts, unit-tested.)
     const pinWarning = workspacePinWarning();
     if (pinWarning) console.warn(pinWarning);
-  });
+  };
+
+  // P3-2 cluster-worker listen (INCIDENT 2026-06-18 fix): a cluster WORKER must bind
+  // its OWN SO_REUSEPORT socket so the KERNEL load-balances accepts directly across
+  // workers — INDEPENDENT of the primary. node:cluster's DEFAULT scheme round-robins
+  // every accept THROUGH the primary, but the primary runs the heavy background
+  // machinery (substrate/DBOS/git-sync) and can't service the accept-distribution IPC
+  // when its loop is busy → workers never bind (the observed 0-listeners / ~150s hang).
+  // `@hono/node-server` serve() can't forward `reusePort` (it calls listen(port,host,cb)),
+  // so we build the server via createAdaptorServer and listen() ourselves with reusePort.
+  // SINGLE-PROCESS / primary path is unchanged: the original serve() call, byte-identical.
+  let server: ReturnType<typeof serve>;
+  if (cluster.isWorker) {
+    server = createAdaptorServer({ fetch: handler });
+    (server as import('node:http').Server).listen({ port, host: hostname, reusePort: true }, () =>
+      onListening(port),
+    );
+  } else {
+    server = serve({ fetch: handler, port, hostname }, (info) => onListening(info.port));
+  }
 
   // PTY WebSocket data plane (opt-in via PAPERCUSP_PTY_WS_PORT — bin/dev sets
   // 3056). The HTTP control plane (/pty/spawn|input|resize|kill) lives in this
