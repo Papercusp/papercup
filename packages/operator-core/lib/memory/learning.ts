@@ -29,8 +29,7 @@ export async function buildLearningInstructions(): Promise<string | null> {
     const { pgClientFields } = await import('./mem0-connection');
     const fields = await pgClientFields();
     if (!fields) return null;
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
+    const { Client } = await import('pg');
     const c = new Client(fields);
     await c.connect();
     try {

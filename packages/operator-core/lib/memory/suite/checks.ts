@@ -163,8 +163,7 @@ async function checkPgvectorExtension(): Promise<CheckResult> {
   const fields = await pgFieldsFor();
   if (!fields) return fail('pgvector extension installed in embedded PG.', 'Could not resolve PG connection fields.');
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
+    const { Client } = await import('pg');
     const c = new Client({ host: fields.host, port: fields.port, user: fields.user, password: fields.password, database: fields.dbname });
     await c.connect();
     try {
