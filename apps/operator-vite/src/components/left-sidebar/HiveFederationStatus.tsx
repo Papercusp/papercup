@@ -28,9 +28,26 @@ export interface FedHive {
   memberCount: number;
   reachablePeers: number;
 }
+/** Install-wide drain (SYNC) health — EI-1618/EI-1599. Optional so an older route
+ *  response (or a test fixture) without it still renders. */
+export interface FedDrain {
+  /** Booted harnesses whose outbox has rows captured-but-not-federating past the stall lag. */
+  stalledHarnesses: number;
+  /** Largest undrained row count across the stalled harnesses. */
+  worstUndrainedCount: number;
+  /** Oldest undrained age (ms) across the stalled harnesses; null when none stalled. */
+  worstOldestUndrainedAgeMs: number | null;
+}
 export interface FedStatus {
   ok: boolean;
-  substrate: { active: boolean; bootedHarnesses: number; healthy: number; booting: number; degraded: number };
+  substrate: {
+    active: boolean;
+    bootedHarnesses: number;
+    healthy: number;
+    booting: number;
+    degraded: number;
+    drain?: FedDrain;
+  };
   hives: FedHive[];
 }
 
@@ -43,6 +60,22 @@ export function reachLabel(h: Pick<FedHive, 'visibility' | 'reachablePeers'>): s
   // Announced (public/invite) but nobody on the topic — the honest stranded state
   // (mirrors ShareHiveForm's 0-peer copy). NEVER "synced" / "0 peers connected".
   return 'no peers connected yet — broadcasting into the void';
+}
+
+/**
+ * Honest install-wide SYNC line (EI-1618/EI-1599). Returns null when nothing is
+ * stalled — silence is the honest healthy state, NOT a false "all synced" claim —
+ * or the stall copy when ≥1 booted harness has content captured-but-not-federating
+ * (the EI-681 silent-stall). NEVER says "synced" / "in sync"; it only ever reports
+ * a stall, because the shared swarm has no clean per-peer count to back a positive
+ * sync claim (see findings-M / the route honesty contract).
+ */
+export function drainLabel(d: FedStatus['substrate']['drain']): string | null {
+  if (!d || d.stalledHarnesses <= 0) return null;
+  const ageS = d.worstOldestUndrainedAgeMs != null ? Math.round(d.worstOldestUndrainedAgeMs / 1000) : 0;
+  const h = `${d.stalledHarnesses} harness${d.stalledHarnesses === 1 ? '' : 'es'}`;
+  const c = `${d.worstUndrainedCount} change${d.worstUndrainedCount === 1 ? '' : 's'}`;
+  return `⚠ not syncing — ${h} with content captured but not federating (${c} undrained, oldest ${ageS}s)`;
 }
 
 /** Install substrate one-liner — honest install-wide boot health, not a sync claim. */
@@ -103,6 +136,25 @@ export default function HiveFederationStatus() {
             </div>
           </div>
 
+          {/* SYNC-health line (EI-1618/EI-1599) — rendered ONLY when a harness's
+              outbox is stalled (content captured but not federating). Silence = the
+              honest healthy state; this never claims a positive "synced". */}
+          {(() => {
+            const drainMsg = drainLabel(data.substrate.drain);
+            return drainMsg ? (
+              <div
+                className="pclsb-row"
+                data-testid="fed-drain"
+                title="A local change was captured but its outbox has not drained to the federation log — content is NOT reaching peers yet (EI-681 class stall)."
+              >
+                <span className="pclsb-dot is-down" aria-hidden="true" />
+                <div className="pclsb-row__main">
+                  <div className="pclsb-row__sub">{drainMsg}</div>
+                </div>
+              </div>
+            ) : null;
+          })()}
+
           {data.hives.length === 0 ? (
             <div className="pclsb-panel__empty" data-testid="fed-no-hives">
               No hives published from this install yet. Publish a hive and its live peer
@@ -131,9 +183,10 @@ export default function HiveFederationStatus() {
             })
           )}
 
-          {/* Honest scope note — reach is discovery, not content-sync. */}
+          {/* Honest scope note — reach is discovery; sync-health is install-wide. */}
           <div className="pclsb-panel__empty" style={{ fontSize: 11, opacity: 0.7 }} data-testid="fed-scope-note">
-            Reach = peers who can discover this hive on its announce topic. Per-hive
+            Reach = peers who can discover this hive on its announce topic. Sync-health
+            is install-wide (is local content draining to the federation log); per-hive
             content-sync peer counts are not yet surfaced.
           </div>
         </>
