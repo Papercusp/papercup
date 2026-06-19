@@ -156,6 +156,22 @@ n/a not applicable to that mechanism.
 | feature_claims / plan_item_claims | append-only + authority | ✅ exactly-once | ✅ (no HLC, unaffected) | ✅ | ✅ | ✅ |
 | work-item leases (authority) | authority-serialized | ✅ exactly-once | ✅ (no HLC, unaffected) | ✅ fail-open reconcile | ✅ re-election | ✅ steal + late-write superseded |
 
+### Projection guard audit (real code — all 19 projection files)
+
+Verified directly (not assumed from the fuzz harness's uniform model): every
+mutable projection carries the **identical** put guard (`WHERE … EXCLUDED.fed_ts
+>= stored.fed_ts`) + del ts-guard — `harness-features`, `harness-plans`,
+`engineer-issues`, `issues`, `plan-item-assignments`, `coord-message`,
+`coord-thread(-post)`, `coord-conversation`, `presence`, `hive-members`,
+`hive-settings`, `contributors`, `feature-queue`, `feature-working-set`. So
+D-001 is **universal across every mutable LWW table by construction**, not a
+per-table accident. The non-LWW families are correctly different:
+`feature-claims` + `usage` are **append-only** (`ON CONFLICT DO NOTHING`, del =
+no-op) → no LWW, no guard, unaffected by D-001; `harness-plan-parts` recomposes
+`harness_plans.content` from the LWW-merged parts and (correctly) has no own
+guard — but **inherits D-001 at the part granularity** (flag-gated, DARK by
+default). `register-all` is the builder, not a writer.
+
 The LWW rows share ONE comparator pair (HLC in the fold, `fed_ts` in the guard),
 so D-001 is **universal across every LWW content type** — not feature-specific.
 The claim/authority rows use a DIFFERENT mechanism (append-only `ON CONFLICT DO

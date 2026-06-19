@@ -602,9 +602,10 @@ function HiveInviteForm({
   if (joined) {
     return (
       <div>
-        <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>✓ Invite accepted</h2>
+        <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>✓ Subscribed to this invite</h2>
         <p data-testid="hive-invite-joined" style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
-          Joined the invite directory — the {hiveLower} will appear in the {hiveLabel}s panel shortly.
+          The {hiveLower} appears in the {hiveLabel}s panel once its owner&rsquo;s machine announces it on this
+          invite — it won&rsquo;t appear if the invite was withdrawn or the link is wrong.
         </p>
         <div style={{ textAlign: 'right' }}>
           <button

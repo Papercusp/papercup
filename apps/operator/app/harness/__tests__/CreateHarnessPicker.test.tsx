@@ -529,9 +529,14 @@ describe('P-006 — Hive invite card', () => {
     await user.click(screen.getByRole('button', { name: 'Join' }));
 
     await waitFor(() => screen.getByTestId('hive-invite-joined'));
-    expect(screen.getByTestId('hive-invite-joined').textContent).toContain(
-      'Joined the invite directory — the hive will appear in the Hives panel shortly.',
-    );
+    // G-002 honesty (Brief G): join-invite only SUBSCRIBES to the invite topic — it
+    // cannot confirm the hive exists/announces (a withdrawn/wrong-but-well-formed
+    // secret subscribes just the same). The copy must NOT unconditionally promise
+    // the hive "will appear shortly"; it states the conditional + the dead-link case.
+    const joinedText = screen.getByTestId('hive-invite-joined').textContent ?? '';
+    expect(joinedText).toContain('appears in the Hives panel once its owner');
+    expect(joinedText).toContain('appear if the invite was withdrawn or the link is wrong');
+    expect(joinedText).not.toContain('shortly');
     const call = mockFetch.mock.calls.find((c) => String(c[0]).includes('/api/discovery/join-invite'));
     expect(JSON.parse((call?.[1] as RequestInit).body as string)).toEqual({ link: INVITE_LINK });
 

@@ -57,6 +57,7 @@ import type { OpEnvelope } from '../op-envelope-types';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
 import { _resetBootHistoryForTests } from '../boot-history';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
+import type { SwarmBinding } from '../derive-swarm-topic';
 
 // ── Shared identity / swarm constants. Same binding on both peers → same topic. ──
 const WORKSPACE_ID = 'ws-fed-threat-model';
@@ -193,6 +194,9 @@ async function bootCapturePeer(opts: {
   identity: ReturnType<typeof makeIdentityOverride>;
   verify: (userId: number) => 'verified' | 'pending' | 'fail';
   loadRevoked?: () => Promise<Set<string>>;
+  /** Override the swarm binding (→ topic). Defaults to BINDING (a shared local
+   *  topic). Pass a `hive:`/`gh:` binding to test topic divergence (threat #1). */
+  binding?: SwarmBinding;
 }): Promise<CaptureBootResult> {
   const apply = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
   const root = makeWorkspaceRoot(opts.rootPrefix);
@@ -200,7 +204,7 @@ async function bootCapturePeer(opts: {
     workspaceRoot: root,
     workspaceId: WORKSPACE_ID,
     harnessSlug: HARNESS_SLUG,
-    swarmBinding: BINDING,
+    swarmBinding: opts.binding ?? BINDING,
     swarmOverride: makeSwarm(opts.testnetBootstrap),
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
     applyOverride: apply,
@@ -397,6 +401,99 @@ describe('C-001 — revocation is write-plane only: a revoked member keeps readi
         afterRemoval,
         'C-001: a revoked member STILL reads the owner’s new content — revocation does not cut off reading',
       ).toBeTruthy();
+    },
+    60_000,
+  );
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// #1 — Topic secrecy end-to-end: a never-member who GUESSES the gh:<repo_id>
+//      topic reads NOTHING from a private hive (which federates on hive:<pubkey>).
+// ════════════════════════════════════════════════════════════════════════════
+describe('threat #1 — a never-member on a guessed gh: topic reads nothing from a private hive', () => {
+  it(
+    "a never-member booting on gh:<repo_id> never connects to a private hive on hive:<pubkey>, while a legit member on the hive topic reads it",
+    async () => {
+      const testnet = await makeTestnet();
+
+      // A private hive federates on hive:<pubkey>. The pubkey lives only in the
+      // member/invite link, NEVER on the public directory. The attacker knows the
+      // GitHub repo id (public) and GUESSES gh:<repo_id> — a DIFFERENT topic.
+      const HIVE_PUBKEY = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
+      const hiveBinding: SwarmBinding = { kind: 'hive', hive_pubkey: HIVE_PUBKEY };
+      const guessedBinding: SwarmBinding = { kind: 'gh', github_repository_id: 778899 };
+
+      const idOwner = makeIdentityOverride('owner', 42, 'kc-owner');
+      const idMember = makeIdentityOverride('member', 7, 'kc-member');
+      const idGuesser = makeIdentityOverride('guesser', 66, 'kc-guesser');
+
+      // Owner + member are on the HIVE topic and admit each other.
+      const owner = await bootCapturePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'tm1-owner-',
+        identity: idOwner,
+        binding: hiveBinding,
+        verify: (uid) => (uid === idMember.userId ? 'verified' : 'fail'),
+      });
+      const member = await bootCapturePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'tm1-member-',
+        identity: idMember,
+        binding: hiveBinding,
+        verify: (uid) => (uid === idOwner.userId ? 'verified' : 'fail'),
+      });
+      // The guesser is on the WRONG (gh-derived) topic — and would admit ANYONE,
+      // so the ONLY thing keeping the hive content from it is the topic divergence.
+      const guesser = await bootCapturePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'tm1-guesser-',
+        identity: idGuesser,
+        binding: guessedBinding,
+        verify: () => 'verified',
+      });
+
+      // Sanity: the guessed gh: topic genuinely differs from the hive topic
+      // (if it didn't, the whole secrecy property would be moot).
+      expect(owner.handle.swarm!.topicHex).toBe(member.handle.swarm!.topicHex);
+      expect(guesser.handle.swarm!.topicHex).not.toBe(owner.handle.swarm!.topicHex);
+
+      await owner.handle.append({
+        type: 'put',
+        table: FEATURE_TAG,
+        hbKey: 'F-private',
+        value: featureValue('F-private', 'private hive content'),
+        ts: 7000,
+        schema_version: 1,
+        writerPubkey: idOwner.devicePubkey,
+      });
+
+      // Control + teeth: the legit member on the hive topic DOES read it (proves
+      // the content is live + reachable on the correct topic).
+      const memberRead = await pollUntil(
+        async () => {
+          await member.handle.mergeNow();
+          return member.apply.mock.calls.find((c) => c[0].hbKey === 'F-private')?.[0];
+        },
+        { timeoutMs: 25_000, intervalMs: 250 },
+      );
+      expect(memberRead, 'a legit member on the hive topic should read the content').toBeTruthy();
+
+      // Give the guesser every chance to (wrongly) receive it.
+      for (let i = 0; i < 8; i++) {
+        await guesser.handle.mergeNow();
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      // THE PRIVACY ASSERTION: the topic-guesser never connected to the hive topic,
+      // so it received NOTHING — and admitted no remote log (only its own).
+      expect(
+        guesser.apply.mock.calls.find((c) => c[0].hbKey === 'F-private'),
+        "a never-member guessing gh:<repo_id> read the private hive's content — topic secrecy broken",
+      ).toBeUndefined();
+      expect(
+        guesser.handle.admitted.size,
+        'the guesser must have admitted ONLY its own log (it never reached the hive topic)',
+      ).toBe(1);
     },
     60_000,
   );

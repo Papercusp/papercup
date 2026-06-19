@@ -4,11 +4,11 @@
  *
  * Browses the hives this peer has discovered on the well-known directory topic
  * (GET /api/discovery/hives — the HTTP projection of the directory service) and
- * offers a Join CTA per hive. Joining runs the EXISTING join-shared-harness
- * flow (POST /api/harness/join-link) once per member link — so a one-click join
- * needs the hive to carry full member links; a topic-only hive lists fine but
- * its Join is disabled with a "link required" hint (D-002: the directory is
- * discovery; joining still runs the full admission flow).
+ * offers a Join CTA per hive. Joining runs the composed hive-join flow
+ * (POST /api/discovery/join-hive — every member link in one call) — so a
+ * one-click join needs the hive to carry full member links; a topic-only hive
+ * lists fine but its Join is disabled with a "link required" hint (D-002: the
+ * directory is discovery; joining still runs the full admission flow).
  *
  * Data-fetch via useEffect + fetch (the loopback /api): the directory is not a
  * sync entity. loading/error/joining are lifecycle state (useState per the nuqs
@@ -48,6 +48,15 @@ const card: React.CSSProperties = {
   margin: '8px 12px',
   fontFamily: 'system-ui, sans-serif',
 };
+const headerRow: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  padding: '8px 12px 0',
+};
+
+/** G-003: re-fetch the live directory on this cadence so withdrawn hives drop
+ *  out and new announces show up without a panel remount. */
+const DIRECTORY_REFRESH_MS = 30_000;
 
 export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
   const [rows, setRows] = useState<HiveRow[] | null>(null);
@@ -70,6 +79,12 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
 
   useEffect(() => {
     void load();
+    // G-003 (Brief G): the directory is a LIVE P2P set — a withdrawn/stale hive
+    // must disappear and a newly-announced one appear WITHOUT remounting the
+    // panel. A single mount-time fetch froze a point-in-time snapshot. Poll to
+    // converge automatically; the Refresh button forces it on demand.
+    const id = setInterval(() => void load(), DIRECTORY_REFRESH_MS);
+    return () => clearInterval(id);
   }, [load]);
 
   const join = useCallback(async (hive: HiveRow) => {
@@ -106,17 +121,37 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
   }, []);
 
   if (rows === null) return <div style={mute}>Loading the hive directory…</div>;
-  if (error && rows.length === 0) return <div style={mute}>Directory unavailable: {error}</div>;
+
+  const refreshBtn = (
+    <div style={headerRow}>
+      <button type="button" data-testid="hive-directory-refresh" onClick={() => void load()} title="Re-fetch the discovered hives now">
+        Refresh
+      </button>
+    </div>
+  );
+
+  if (error && rows.length === 0) {
+    return (
+      <div style={fill} data-testid="hive-directory">
+        {refreshBtn}
+        <div style={mute}>Directory unavailable: {error}</div>
+      </div>
+    );
+  }
   if (rows.length === 0) {
     return (
-      <div style={mute}>
-        No hives discovered yet. When a peer announces a public hive on the directory topic, it appears here.
+      <div style={fill} data-testid="hive-directory">
+        {refreshBtn}
+        <div style={mute}>
+          No hives discovered yet. When a peer announces a public hive on the directory topic, it appears here.
+        </div>
       </div>
     );
   }
 
   return (
     <div style={fill} data-testid="hive-directory">
+      {refreshBtn}
       {rows.map((h) => {
         const joinable = h.memberLinks.length > 0;
         return (

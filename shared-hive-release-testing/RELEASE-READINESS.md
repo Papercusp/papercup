@@ -72,7 +72,39 @@ What remains is **not more testing**; it's a small set of human/engineer actions
   `CARGO_TARGET_DIR`, or stop the contending shells first.
 - **Status:** effectively resolved; verification blocked by infra, not by code.
 
-### 4. G-001 — `reachablePeers` is topic-blind (S2, → S1) — small fix
+### 4. A-002 / A-003 — live-E2E federation bugs (S1, NEW — found on the real `.deb`)
+The live multi-instance pass (Lane A, on the rebuilt `.deb`) surfaced two real bugs
+the automated suite missed because they only manifest on the live multi-hive/joiner
+path:
+- **A-002 (S1):** an instance hosting **2 hives stalls federation entirely** (both
+  directions). Multi-hive-per-instance is broken.
+- **A-003 (S1):** `hive_members` + `hive_settings` **do NOT federate to a joiner**.
+  REAL (member-list + settings don't reach joiners). **But the "compounds
+  revocation" framing is CORRECTED (lead/Brief C):** the revocation blocklist lives
+  in **`contributors.revoked_pubkeys`** (`load-revoked-pubkeys.ts:33`), NOT
+  `hive_members` — and `contributors` federates via a *different* (log-first) path.
+  The A-003 CDC gap is **specific to hive_members/hive_settings** (every other CDC
+  table — features, plans, … — federates fine), so it is NOT a general "owner logs
+  don't reach joiners" failure and does NOT, by itself, break revocation propagation.
+- **Revocation-propagation gate — A-003 DOES compound revocation (lead/Brief C,
+  CORRECTED).** I initially mis-scoped this to `contributors` only; there are TWO
+  revocation seams and the boot admission union reads BOTH (`boot.ts:573`
+  `loadRevokedPubkeys`←`contributors`, `boot.ts:586` `loadRevokedHivePubkeys`←
+  `hive_members`). **The revoke-MEMBER action writes to `hive_members.revoked_pubkeys`**
+  (`hive-revoke-contributor.ts:8`, single-writer). Since A-003 shows `hive_members`
+  does NOT federate to a joiner, **a hive-member revocation never reaches the
+  joiner's admission union → the joiner keeps admitting the revoked member's writes.**
+  Combined with C-001 (revoked member keeps READING), revocation is broken on BOTH
+  planes for joiners: the revoked member keeps reading AND new peers never learn
+  they're revoked. **This elevates the revocation story toward S0** for a public
+  release. (Lane A flagged it as "MULTI-SWARM ONLY by design" — but the design then
+  cannot deliver member revocation to joined peers, which is the product question.)
+  Fix: federate `hive_members` (the admission/revocation record) to joiners, OR
+  route member revocations through the log-first `contributors` seam that does.
+- Net: **8/11 content types federate** live; single-hive create→publish→join→
+  federate is GREEN. Multi-hive (A-002) + member/settings (A-003) are the live S1s.
+
+### 5. G-001 — `reachablePeers` is topic-blind (S2, → S1) — small fix
 - **What:** publish over-reports reach (counts peers on any topic, not the hive's)
   — a regression of the "deceptive-publish" honesty class.
 - **Needs:** a small lane-G code fix. Not a release-stopper on its own.

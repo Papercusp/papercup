@@ -2,13 +2,16 @@
 
 Owner: su-d7af0 (Claude). Lane: desktop user-facing shared-hive flows, "the UI never lies".
 
-**Method note:** the LIVE Tauri pass is currently **blocked by Lane A's A-001 (S0):
-the shipped `.deb` does not boot (luxon `createRequire` not bundled)**, and Lane A is
-handing its one live window to Brief E, not G. So these findings are from an
-**adversarial code-audit + deterministic component/unit tests** of the exact surfaces
-the desktop renders, cross-checked against the backend ground truth (the same way Lane
-C found C-001). Live desktop re-verification is deferred to when A-001 is fixed and a
-live window frees (tracked as the open item below).
+**Method note:** these findings are from an **adversarial code-audit + deterministic
+component/unit tests** of the exact surfaces the desktop renders, cross-checked against
+backend ground truth (the way Lane C found C-001). **A live Tauri pass has not yet been
+run for lane G.** Originally it was blocked by Lane A's A-001 (S0: the `.deb` didn't
+boot); **A-001 is now FIXED + a bootable `.deb` is verified (per RELEASE-READINESS.md),
+and Lane A handed its live pair to Brief E and released the `shared-hive-live-instances`
+lock.** A live G pass therefore remains open and is now *possible*, but: (a) the live
+pair is currently driven by Brief E, and (b) a desktop GUI pass must run on a **sandbox
+Xvfb display, NOT host `:0`** (the active fleet-halt: the owner is watching `:0`). So the
+live G pass is queued behind E + the halt, not behind a boot bug.
 
 ---
 
@@ -100,7 +103,7 @@ that computes the number is never asserted against the announce topic.
 
 ---
 
-## G-002 — Invite-link join: "✓ accepted … appears shortly" is UNCONDITIONAL (S2 honesty; Brief-G "join-no-op" class)
+## G-002 — Invite-link join: "✓ accepted … appears shortly" is UNCONDITIONAL (S2 honesty; Brief-G "join-no-op" class) — ✅ COPY FIX LANDED
 
 **Severity:** S2 by rubric. **Brief G elevates join-no-ops to S1** — a well-formed but
 dead invite is indistinguishable from a good one and is shown as success.
@@ -126,19 +129,23 @@ success and gets a silent no-op.
 (`WorkbenchHiveDirectoryPanel.tsx:99`) reports the real **`N/M member(s)`** outcome. The
 invite-link join just doesn't apply it.
 
-**Fix (low-risk copy + ideal confirmation):**
-- Minimum: honest copy — "Subscribed. The hive appears here once its owner's machine
-  announces it; it won't appear if the invite was withdrawn or the link is wrong."
-- Better: a bounded wait — after `joinInviteTopic`, poll the directory for an announce
-  on the derived topic for a few seconds and return `found:true|false`, so the UI can
-  say "Found 'X' — joining…" vs "Subscribed, but no hive is announcing on this invite
-  yet."
-- `CreateHarnessPicker.tsx` is in my lane (no other lane on it) — copy fix is safe to
-  land; filed for owner sign-off on the wording + whether the bounded-wait is in scope.
+**Fix — DONE (copy) + recommended (confirmation):**
+- ✅ **LANDED (low-risk, in-lane):** honest copy in `CreateHarnessPicker.tsx:605-608` —
+  heading "✓ Subscribed to this invite"; body "The {hive} appears in the {hives} panel
+  once its owner's machine announces it on this invite — it won't appear if the invite
+  was withdrawn or the link is wrong." Replaces the unconditional "✓ Invite accepted …
+  will appear shortly". The existing success test
+  (`CreateHarnessPicker.test.tsx:514`) updated to assert the honest copy + `not("shortly")`
+  — **teeth-verified** (reverting to the old copy → RED).
+- **Still recommended (product decision, NOT landed):** a bounded wait — after
+  `joinInviteTopic`, poll the directory for an announce on the derived topic for a few
+  seconds and return `found:true|false`, so the UI can say "Found 'X' — joining…" vs
+  "Subscribed, but no hive is announcing on this invite yet." This is the real cure for
+  the silent-no-op; the copy fix above makes today's behavior honest in the meantime.
 
 ---
 
-## G-003 — Discover panel never refreshes: withdrawn hives linger, new hives don't appear (S2 honesty)
+## G-003 — Discover panel never refreshes: withdrawn hives linger, new hives don't appear (S2 honesty) — ✅ FIXED
 
 **Severity:** S2 (stale UI). Brief scenario 3: "stale/withdrawn hives disappear" — they
 only disappear on **remount**, not live.
@@ -188,9 +195,9 @@ state the desktop does not yet surface live federation status.
   `m.hasState` (members with **local** state), not peer/online liveness. "liveness"
   reads as "online/connected"; a member can be "set up" locally while its peer is
   stranded. Reword to "members initialized" / "set up locally".
-- `WorkbenchHiveDirectoryPanel.tsx:7-8` header comment says join runs
+- ✅ **FIXED:** `WorkbenchHiveDirectoryPanel.tsx:7-8` header comment said join runs
   `POST /api/harness/join-link`; the code actually calls `POST /api/discovery/join-hive`
-  (`:83`). Doc drift, not user-facing.
+  (`:83`). Corrected the comment (doc drift, not user-facing).
 
 ---
 
@@ -244,13 +251,13 @@ state the desktop does not yet surface live federation status.
    2 — i.e. the infra is per-topic-capable and the no-arg sum is the overstatement. No
    new test needed at that layer.
 
-4. **Join-form honesty — already covered (no gap):**
-   `apps/operator/app/harness/__tests__/CreateHarnessPicker.test.tsx:548-578` already
-   tests malformed→inline-error-no-POST, 503→gh-auth copy, and the success copy. The
-   G-002 gap is NOT a missing component test — the component faithfully renders what the
-   route returns; the gap is that `join-invite` returns `{ok:true}` for ANY well-formed
-   secret (no announce confirmation). A route-level confirmation test belongs with the
-   G-002 fix (a product decision on bounded-wait + copy), filed to the owner.
+4. **`CreateHarnessPicker.test.tsx` (Vitest component) — UPDATED, GREEN, TEETH-VERIFIED.**
+   The existing join-form tests already cover malformed→inline-error-no-POST, 503→gh-auth
+   copy, and the success path. The success test (`:514`) is updated to assert the **G-002
+   honest copy** ("appears … once its owner announces it … won't appear if withdrawn or
+   wrong") and `not("shortly")`. **Teeth:** reverting `CreateHarnessPicker.tsx` to the old
+   "will appear shortly" copy → RED → restored → GREEN (33/33). The deeper route-level
+   confirmation test belongs with the bounded-wait fix (still a product decision).
 
 5. **Playwright e2e — DEFERRED (with reason):** a full e2e of these federated flows needs
    the live app, which **does not boot** right now (Lane A's A-001, S0). The honesty
@@ -278,9 +285,15 @@ cannot detect a 0-peer publish or a dead join. All four are fixable with small,
 low-risk, in-lane changes (count-by-topic, honest copy + bounded confirm, a refresh
 poll), or — at minimum — release notes that state the limitations.
 
-**To reach GREEN:** (1) land the G-001 count-by-topic fix (coordinate with Lane E on
-`hive-directory*.ts`); (2) honest invite-join copy/confirmation (G-002); (3) a discover
-refresh (G-003); (4) a minimal live status surface or documented limitation (G-004); and
-(5) **live desktop re-verification once Lane A's A-001 (S0 boot bug) is fixed** — the
-`.deb` does not currently boot, so none of this has been confirmed in the actual running
-desktop yet.
+**Landed this lane (low-risk, in-lane, GUI-free):** ✅ G-002 honest invite-join copy
+(+ teeth-verified test); ✅ G-005 doc-comment fix; + 3 teeth-verified/tripwire honesty
+tests (ShareHiveDialog ×2, hive-publish ×1).
+
+**To reach GREEN, remaining:** (1) land the **G-001** count-by-topic fix — **coordinate
+with Lane E** (`hive-directory*.ts` is their lane; filed, not landed unilaterally per the
+brief's coordination rule); (2) optional G-002 bounded-confirmation (product decision);
+(3) **G-003** discover refresh (operator-vite, in-lane — small poll); (4) **G-004** a
+minimal live federation-status surface or a documented limitation; (5) **the live
+desktop pass** — now unblocked (A-001 fixed, bootable `.deb` verified), but queued behind
+Brief E's live pair + run on a **sandbox Xvfb, not `:0`** (fleet-halt). None of the above
+has been confirmed in the running desktop yet.

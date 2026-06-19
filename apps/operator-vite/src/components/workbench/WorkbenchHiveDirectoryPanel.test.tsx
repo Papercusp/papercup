@@ -64,6 +64,29 @@ describe('WorkbenchHiveDirectoryPanel (P-007)', () => {
     expect(screen.getByText('link required')).toBeTruthy();
   });
 
+  it('G-003: Refresh re-fetches the live directory — a withdrawn hive disappears (no remount)', async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.startsWith('/api/discovery/hives')) {
+        call += 1;
+        // First load shows the hive; after the owner withdraws it, the next
+        // fetch returns it gone — the panel must converge (brief scenario 3:
+        // "stale/withdrawn hives disappear"), not freeze the mount-time snapshot.
+        const rows = call === 1
+          ? [{ hiveId: 'gone', title: 'Soon Gone', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 }]
+          : [];
+        return { ok: true, json: async () => ({ count: rows.length, rows }) } as Response;
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<WorkbenchHiveDirectoryPanel />);
+    expect(await screen.findByText('Soon Gone')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('hive-directory-refresh'));
+    await waitFor(() => expect(screen.queryByText('Soon Gone')).toBeNull());
+    expect(screen.getByText(/No hives discovered yet/)).toBeTruthy();
+  });
+
   it('Join makes ONE composed POST to /api/discovery/join-hive carrying every member link (D-007)', async () => {
     const fetchMock = mockFetch([
       { hiveId: 'joinable', title: 'Joinable', description: '', owner: 'cat', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: ['papercusp://harness?topic=a', 'papercusp://harness?topic=b'], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
