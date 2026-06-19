@@ -12,8 +12,15 @@
  *  1. NO ZOMBIE FEDERATION — B's post-revocation writes (its zombie pipeline
  *     completing the item) NEVER reach A's PG; the views diverge BY DESIGN
  *     (B's sovereignty over its own DB is not A's problem).
- *  2. ASYMMETRY — revocation is one-sided: A's writes still reach B (B never
- *     revoked A).
+ *  2. ASYMMETRY → RE-KEY READ-CUTOFF (P-007, shared-hive-rekey-2026-06-19):
+ *     PRE-re-key, revocation is one-sided — A's writes still reach B (B never
+ *     revoked A). UNDER the re-key (C-001 read-plane revocation), member-remove
+ *     advances the hive epoch and A's post-boundary content is encrypted to the
+ *     REMAINING members only, so the revoked peer can no longer READ it. Step 2
+ *     below is flag-gated on `papercusp-hive-rekey` (dark default → asserts the
+ *     current behavior, suite stays green); the read-cutoff branch is the
+ *     integration witness that activates once the op-path wiring + the flag land
+ *     (su-ee7e9's P-004 boundary/op-path + P-008 live cut-off witness).
  *  3. AUTHORITY MEMBERSHIP ENFORCEMENT (EI-284 — was the probed gap, now
  *     fixed): the claim-op layer gates acquire/heartbeat on the CALLER's hive
  *     standing (`registerWorkItemClaimAuthorityOps` isCallerRevoked seam; the
@@ -32,6 +39,8 @@ import { bootCompositionRig, type CompositionRig } from './composition-rig';
 import { sweepOrphanedTakenBy } from './fleet-monitors';
 import { adoptCompletion, type CompletionRecord } from './lease-steal-semantics';
 import type { WorkItemClaim } from '../work-item-claims';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 
 vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -93,15 +102,32 @@ describe('P-011 — revoked-swarm-mid-run (hermetic rung)', () => {
       expect(bView.get('F-601')).toBe('passed'); // B's own DB — its sovereignty
       expect(aView.get('F-601'), "the revoked swarm's completion must NOT reach the Hive").not.toBe('passed');
 
-      // ── 2. Asymmetry: A's work still reaches B (B never revoked A). ──
+      // ── 2. RE-KEY INVERSION (P-007, shared-hive-rekey-2026-06-19): pre-re-key this
+      //    asymmetry holds — A's work still reaches B (B never revoked A). UNDER the
+      //    re-key, member-remove cuts B's READ access: A's post-boundary content is
+      //    encrypted to the remaining members only, so the revoked peer reads ciphertext
+      //    it cannot decrypt. Flag-gated (dark default → green today); the read-cutoff
+      //    branch is the integration witness that activates with the op-path wiring + the
+      //    flag flip (su-ee7e9's P-004 op-path + P-008 live witness). ──
+      const rekeyOn = await getFlag(FLAGS.HIVE_REKEY, 'system').catch(() => false);
       const cA = await rig.claimNext(a);
       expect(cA).toMatchObject({ item: { id: 'F-602' }, leased: true, via: 'local-authority' });
       await rig.runFakePipeline(a, 'F-602');
       expect((await rig.converge()).fixedPoint).toBe(true);
-      expect(
-        new Map((await rig.readBacklog(b)).map((r) => [r.feature_id, r.status])).get('F-602'),
-        "the revoking side's writes still federate to the revoked peer",
-      ).toBe('passed');
+      const bF602 = new Map((await rig.readBacklog(b)).map((r) => [r.feature_id, r.status])).get(
+        'F-602',
+      );
+      if (rekeyOn) {
+        expect(
+          bF602,
+          "RE-KEY read-cutoff: the revoked peer cannot read A's post-boundary content (encrypted to remaining members only)",
+        ).not.toBe('passed');
+      } else {
+        expect(
+          bF602,
+          "today (no re-key): the revoking side's writes still federate to the revoked peer",
+        ).toBe('passed');
+      }
 
       // ── 3. Authority MEMBERSHIP ENFORCEMENT (EI-284, flipped from the filed
       //    gap): the revoked swarm's lease RPC is REFUSED on caller standing —

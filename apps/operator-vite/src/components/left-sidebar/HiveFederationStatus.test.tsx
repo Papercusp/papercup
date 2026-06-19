@@ -65,6 +65,27 @@ describe('substrateLabel (install-wide, not a sync claim)', () => {
   });
 });
 
+describe('drainLabel (install-wide SYNC honesty — EI-1618/EI-1599)', () => {
+  it('returns null when nothing is stalled (silence, NOT a false "all synced" claim)', () => {
+    expect(drainLabel(undefined)).toBeNull();
+    expect(drainLabel({ stalledHarnesses: 0, worstUndrainedCount: 0, worstOldestUndrainedAgeMs: null })).toBeNull();
+  });
+  it('reports a stall honestly — captured-but-not-federating, never "synced"', () => {
+    const label = drainLabel({ stalledHarnesses: 2, worstUndrainedCount: 12, worstOldestUndrainedAgeMs: 600_000 });
+    expect(label).toContain('not syncing');
+    expect(label).toContain('2 harnesses');
+    expect(label).toContain('12 changes');
+    expect(label).toContain('600s');
+    expect(label).toMatch(/captured but not federating/);
+    expect(label).not.toMatch(/synced|in sync/i);
+  });
+  it('singularises one harness / one change', () => {
+    expect(drainLabel({ stalledHarnesses: 1, worstUndrainedCount: 1, worstOldestUndrainedAgeMs: 65_000 })).toBe(
+      '⚠ not syncing — 1 harness with content captured but not federating (1 change undrained, oldest 65s)',
+    );
+  });
+});
+
 describe('<HiveFederationStatus>', () => {
   it('renders an announced hive\'s reach + the install substrate line', async () => {
     mockFetch(status({ hives: [{ hiveId: 'h1', title: 'My Hive', visibility: 'public', memberCount: 1, reachablePeers: 4 }] }));
@@ -97,6 +118,45 @@ describe('<HiveFederationStatus>', () => {
     const sub = await screen.findByTestId('fed-substrate');
     expect(sub.textContent).toContain('⚠ 1 degraded');
     expect(sub.querySelector('.pclsb-dot.is-down')).toBeTruthy();
+  });
+
+  it('renders the SYNC-stall row when a harness outbox is stalled (down dot, never "synced")', async () => {
+    mockFetch(
+      status({
+        substrate: {
+          active: true,
+          bootedHarnesses: 2,
+          healthy: 1,
+          booting: 0,
+          degraded: 1,
+          drain: { stalledHarnesses: 1, worstUndrainedCount: 5, worstOldestUndrainedAgeMs: 300_000 },
+        },
+      }),
+    );
+    render(<HiveFederationStatus />);
+    const drain = await screen.findByTestId('fed-drain');
+    expect(drain.textContent).toContain('not syncing');
+    expect(drain.textContent).toContain('5 changes');
+    expect(drain.textContent).not.toMatch(/synced/i);
+    expect(drain.querySelector('.pclsb-dot.is-down')).toBeTruthy();
+  });
+
+  it('renders NO sync-stall row when nothing is stalled (silence = healthy, no false claim)', async () => {
+    mockFetch(
+      status({
+        substrate: {
+          active: true,
+          bootedHarnesses: 2,
+          healthy: 2,
+          booting: 0,
+          degraded: 0,
+          drain: { stalledHarnesses: 0, worstUndrainedCount: 0, worstOldestUndrainedAgeMs: null },
+        },
+      }),
+    );
+    render(<HiveFederationStatus />);
+    await screen.findByTestId('fed-substrate');
+    expect(screen.queryByTestId('fed-drain')).toBeNull();
   });
 
   it('honest empty state when no hives are published', async () => {

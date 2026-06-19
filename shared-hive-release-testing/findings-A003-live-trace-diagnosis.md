@@ -5,6 +5,21 @@
 TWO fixes that were green in the rigs + the 935-suite. This file is the conclusive
 live diagnosis + the scoped fix so the receive-side owner (d2230) can act without coord.
 
+## ⚡ UPDATE 2026-06-19 ~21:50 (su-9140a) — A-003 now OWNED + fixed; the real live-RED cause was the harness window
+- **A-003 is OWNED by su-c2a63 (Brief J / ac4d3e7f)** — landed **option (c) replay-on-rebind** (boot.ts:1673-1685:
+  onAnnounce BUFFERS the unresolved-home frame as `scope_unresolved`; the rekey rebind calls `retryPendingOnce()`
+  to admit the hive-home log at the rebind instant). This is exactly the fix this doc scoped — converged. My own
+  fix attempt was reverted, then overwritten by su-c2a63's cleaner version (no stray change of mine remains).
+- **🔑 The earlier "A-003 RED" was substantially a TEST-HARNESS artifact, not the receive-side bug.** The matrix's
+  discovery poll (40×3s=120s) is too SHORT under fleet load — B's hive-directory gossip hasn't arrived yet → B
+  never joins → hive_settings can't cross → looks like A-003 RED. With `DISCOVERY_RETRIES=100` (300s) on a quiet
+  box, **B discovered A's hive (rows=2, match=Y), joined, and hive_settings + hive_members CROSSED A→B
+  (backfill + incr, remote=ok).** So owner→joiner federation WORKS with proper timing. (Smoke now honors
+  `DISCOVERY_RETRIES` env — USE IT for any live A-003/re-key witness on a loaded box, or you false-RED a good fix.)
+- **⚠ OPEN: B→A direction** — on my-fix .deb, `hive-settings incr-B→A NEVER crossed (outbox=1)` (joiner→owner
+  write-back). Re-testing on su-c2a63's current-tree fix (longer window) to see if their replay-on-rebind covers
+  B→A too, or if joiner→owner write-back is the genuine remaining A-003 gap. VERDICT PENDING that run.
+
 ## Verdict
 🔴 RED on the packaged binary. Integrated `.deb` built from staging (carries the fixes:
 `announceSlugInScope=2`, the resolve-then-join reorder). Content-matrix on 2 real peers:

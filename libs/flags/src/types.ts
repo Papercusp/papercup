@@ -763,6 +763,14 @@ export const FLAGS = {
   // improvement items autonomously is unsafe until the owner reviews; OFF = today's
   // behavior (escalate-only, never auto-resolve), byte-identical. KNOWN_DARK_FLAGS.
   WATCHDOG_AUTO_CLOSE: "papercusp-watchdog-auto-close",
+  // shared-hive-rekey-2026-06-19 (C-001 read-plane revocation, S0-for-release): the
+  // master gate for the hive epoch RE-KEY — content encrypted under a per-epoch group
+  // key so a removed/excluded peer cannot READ post-boundary content. The K-half
+  // modules (hive-epoch-* / resolveHiveEpochCrypto) + the boundary + op-path wiring all
+  // resolve behind it. DEFAULT OFF (dark): OFF ⇒ the notImplemented crypto stub, no
+  // encryption, byte-identical to today. KNOWN_DARK_FLAGS. Owner flips ON only after the
+  // live cut-off witness (P-008) passes on the real binary.
+  HIVE_REKEY: "papercusp-hive-rekey",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1180,6 +1188,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // is incomplete (M2 unbuilt) + infra-heavy (Docker/GB image pulls); ships dark
   // until the P-009 pilot proves it. Owner flips ON after — pending flip surfaced.
   [FLAGS.EXTERNAL_BENCH]: false,
+  // DEFAULT OFF (dark) — shared-hive-rekey-2026-06-19: the hive epoch re-key master gate.
+  // OFF ⇒ resolveHiveEpochCrypto returns the notImplemented stub (no content encryption),
+  // behavior-identical to today. Owner flips ON only after the P-008 live cut-off witness.
+  // KNOWN_DARK_FLAGS.
+  [FLAGS.HIVE_REKEY]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

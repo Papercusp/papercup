@@ -46,6 +46,7 @@
 
 import { z } from 'zod';
 import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 // ─── Registry types ─────────────────────────────────────────────────
 
@@ -1593,7 +1594,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return [r];
       const a = (args ?? {}) as Record<string, unknown>;
       const harnessSlug =
-        typeof a.harness === 'string' && a.harness && a.harness !== 'all' ? a.harness : 'papercup';
+        typeof a.harness === 'string' && a.harness && a.harness !== 'all' ? a.harness : operatorHomeHarnessSlug();
       const { enrichPlanDetail } = await import('./plan-attribution');
       return [await enrichPlanDetail(r, { harnessSlug })];
     },

@@ -23,6 +23,7 @@ import { lockCoordinationDomain } from '@papercusp/operator-core/lib/agent-tools
 import { sendMessage } from '@papercusp/operator-core/lib/agent-tools/coordination/messages';
 import type { AgentIdentity } from '@papercusp/operator-core/lib/agent-tools/coordination/identity';
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
+import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 // Side-effect: wires the operator host binding (getSql / workspacesRoot /
 // admin-URL) into @papercusp/backup. The standalone deploy doesn't go through
 // the operator boot path that normally triggers this, so without it the
@@ -238,7 +239,7 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       );
       await appendPipelineEvent({
         workspaceId: safeWorkspaceId() ?? '*',
-        installSlug: process.env.RELEASE_ROUTINE_SLUG ?? 'papercup',
+        installSlug: process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug(),
         kind: 'deploy',
         status: ev.status,
         detail: ev.detail,

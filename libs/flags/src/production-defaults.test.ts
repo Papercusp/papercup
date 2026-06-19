@@ -43,6 +43,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // OFF = escalate-only (today's behavior, byte-identical) — auto-closing real improvement
   // items autonomously is unsafe until the owner reviews the guards. Safe to ship dark.
   FLAGS.WATCHDOG_AUTO_CLOSE,
+  // shared-hive-rekey-2026-06-19 (C-001 read-plane revocation, S0-for-release): the hive
+  // epoch RE-KEY master gate. DARK because the boundary + op-path wiring is incomplete — the
+  // K-half crypto/serving/epoch/boundary/producer modules are landed + teeth-verified, but
+  // advanceEpochAndWrap + encrypt-on-write + decrypt-on-read are not yet in the live op path.
+  // OFF ⇒ resolveHiveEpochCrypto returns the notImplemented stub (no content encryption),
+  // byte-identical to today. Owner flips ON only after the P-008 live cut-off witness passes.
+  FLAGS.HIVE_REKEY,
   // inbox-cards-unification Phase D (P-031): durable-escalation mirror of
   // chat decision cards is still building; the live ctx.askUser path is
   // unchanged with this off.

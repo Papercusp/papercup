@@ -23,8 +23,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
+import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 
-const SLUG = process.env.RELEASE_ROUTINE_SLUG ?? 'papercup';
+const SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const ROUTINES = [
   // Hourly at :15 — offset from git-sync's every-10-min ticks.
   { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: '0 15 * * * *', activeDefault: true },

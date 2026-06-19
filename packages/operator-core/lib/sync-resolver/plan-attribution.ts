@@ -122,7 +122,7 @@ export async function enrichPlanListRows(
   const inputs: PlanAuthorInput[] = [];
   for (const r of list) {
     if (typeof r.owner === 'string' && r.owner.trim()) inputs.push({ kind: 'email', value: r.owner.trim() });
-    const harness = typeof r.harness === 'string' ? r.harness : 'papercup';
+    const harness = typeof r.harness === 'string' ? r.harness : operatorHomeHarnessSlug();
     const slug = typeof r.slug === 'string' ? r.slug : '';
     const le = latest.get(`${harness}:${slug}`);
     if (le) inputs.push({ kind: 'authorId', value: le.authorId, authorKind: le.authorKind });
@@ -130,7 +130,7 @@ export async function enrichPlanListRows(
   const resolved = await resolvePlanAuthorIdentities(workspaceId, inputs, { sql });
 
   return list.map((r) => {
-    const harness = typeof r.harness === 'string' ? r.harness : 'papercup';
+    const harness = typeof r.harness === 'string' ? r.harness : operatorHomeHarnessSlug();
     const slug = typeof r.slug === 'string' ? r.slug : '';
     const ownerIdentity =
       typeof r.owner === 'string' && r.owner.trim()

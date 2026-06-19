@@ -24,6 +24,7 @@
  */
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 import { releaseConfig, type ReleaseConfig } from './release-config';
 import {
   gatherPlan as realGatherPlan,
@@ -172,7 +173,7 @@ async function recordRefusedDeploy(targetSha: string): Promise<void> {
   }
   await appendPipelineEvent({
     workspaceId,
-    installSlug: process.env.RELEASE_ROUTINE_SLUG ?? 'papercup',
+    installSlug: process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug(),
     kind: 'deploy',
     status: 'refused',
     detail: { targetSha: targetSha.slice(0, 12), reason: 'not-green and not --force' },

@@ -19,7 +19,12 @@ const M = vi.hoisted(() => ({
 }));
 const { listOwnedHiveMeta, getInProcessSubstrateStatus, ensureHiveDirectoryWired } = M;
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: M.getOrgPg }));
+// Partial mock — keep every real export (other transitive imports use `generated`
+// etc.), override only getOrgPg with our fake sql.unsafe.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: M.getOrgPg };
+});
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../hive-directory-meta', () => ({ listOwnedHiveMeta: M.listOwnedHiveMeta }));
 vi.mock('../../../sync/hyperbee/in-process-status', () => ({
