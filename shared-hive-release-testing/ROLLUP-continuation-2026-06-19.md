@@ -64,6 +64,20 @@ Legend: 🟢 landed/green · 🔧 in progress · 🟡 caveat · 🔴 blocked
 ## Monitor log
 - 12:05 — board created. All 7 lanes owned + active. Backbone + live core re-green.
   Live-N scale note delivered. Awaiting lane landings.
+- 20:20 — **🔧 su-9140a IMPLEMENTED the A-003 fix (effort was idle/unowned + coord down) — validating.**
+  With zero operator-core churn for ~45min (no owner on A-003) + coord down (couldn't hand back to d2230) +
+  the exact diagnosis in hand, stepped in. Root cause (from the live trace): boot.ts onAnnounce marks the
+  slug-filter out-of-scope reject as "conclusive, never retried" — so when a joiner's hive-home rebind is
+  still UNRESOLVED (home=<none>) and the owner's hive-home log announce races in, it's permanently dropped
+  (announces aren't re-delivered). FIX (minimal, reuses existing machinery, NO change to rebind timing or the
+  admission security boundary): (1) onAnnounce — when home=<none> + origin is another harness's slug, BUFFER
+  in the existing pendingPeers retry set (30min grace / 5s cadence) instead of conclusive-reject; (2)
+  retryPendingOnce — RE-CHECK the slug scope against the now-resolved hiveHomeProjectionSlug (updated by the
+  rekey rebind), admit iff in-scope, stay pending while unresolved, conclusive-reject only once home resolves
+  + still foreign. VALIDATION: boot.ts type-clean; **full hyperbee suite 1009/1010 GREEN, zero regressions**
+  (revocation, scope-isolation, two-peer federation all pass). LIVE WITNESS #3 running (b8zz0390x, :184,
+  PAPERCUSP_A003_TRACE=1) = the definitive green-rig/red-binary test. A-003 stays RED until hive_settings
+  crosses on the BINARY — not calling it green on the suite alone. Will hand d2230 the diff when coord returns.
 - 19:25 — **Lane verdicts in (briefs I authored, fleet-executed) + A-003 fix STALLED + coord disruption.**
   NEW lane results (all teeth-verified): **AI** (ownership claim) 🟡 — security root SOUND (the 3 claim-reject
   tests go RED when neutered; admin-only supersede proven), **no S0**, 2 S1 honesty/lifecycle gaps + 1 S2 race.

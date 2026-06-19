@@ -168,6 +168,35 @@ async function defaultReadFeaturePrRow(opts: {
   }
 }
 
+/**
+ * Opt-in reader for the `reviewed` leg, wired to PR-2's report store. Pass it as
+ * `readReviewReport` in the live dogfood to un-gate the agent-review leg (the
+ * witness leaves the leg `gated` when no reader is supplied — it stays decoupled
+ * from PR-2 by default). Parses the PR number from the URL → readLatestReviewReport.
+ */
+export async function defaultReadReviewReport(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  prUrl: string;
+  sql?: Sql;
+}): Promise<ReviewReportView | null> {
+  try {
+    const m = /\/pull\/(\d+)/.exec(opts.prUrl);
+    const prNumber = m ? Number(m[1]) : NaN;
+    if (!Number.isFinite(prNumber)) return null;
+    const { readLatestReviewReport } = await import('./pr-review-report-store');
+    const r = await readLatestReviewReport({
+      harnessSlug: opts.harnessSlug,
+      prNumber,
+      workspaceId: opts.workspaceId,
+      ...(opts.sql ? { sql: opts.sql } : {}),
+    });
+    return r ? { recommendation: r.recommendation } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function defaultReadFeatureStatus(opts: {
   harnessSlug: string;
   featureId: string;

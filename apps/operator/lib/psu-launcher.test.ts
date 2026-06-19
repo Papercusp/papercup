@@ -11,6 +11,9 @@ import {
   resumeEnvFor,
   resumeAccountPlan,
   buildResumeEnv,
+  gatewayPinEnv,
+  accountPinnable,
+  GATEWAY_ACCOUNT_HEADER,
   addDirArgs,
   forkBootstrapBody,
   forkSeedPaths,
@@ -30,6 +33,7 @@ import {
   fetchWithResilience,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
+import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
 
 describe('psu-launcher arg parsing', () => {
   it('defaults to the interactive picker', () => {
@@ -364,6 +368,31 @@ describe('psu-launcher arg parsing', () => {
     const env = buildResumeEnv(session, { brain: true, accountEnv: { env: { PAPERCUSP_ACCOUNT_ID: 'avi' }, notice: null } });
     expect(env.PAPERCUSP_AGENT_SESSION).toBe('1');
     expect(env.PAPERCUSP_ACCOUNT_ID).toBe('avi');
+  });
+
+  it('GATEWAY_ACCOUNT_HEADER stays in LOCKSTEP with the server ACCOUNT_HEADER (gateway.ts)', () => {
+    // The launcher builds the pin env client-side; the header it sets MUST match the one the gateway
+    // routes on, or the pin silently no-ops (the 2026-06-19 "routes to the default account" bug).
+    expect(GATEWAY_ACCOUNT_HEADER).toBe(ACCOUNT_HEADER);
+  });
+
+  it('gatewayPinEnv: mirrors the server gatewaySpawnEnv (base URL + account header + id)', () => {
+    const env = gatewayPinEnv('aviynw');
+    expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw`);
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw');
+  });
+
+  it('accountPinnable: gates on gatewayOn + pool membership + session-override (mirrors resolveAccountPin)', () => {
+    const base = { gatewayOn: true, pool: ['aviynw', 'aviynw2'], excludeAccounts: [], forcedAccounts: [] };
+    expect(accountPinnable(base, 'aviynw')).toBe(true);
+    expect(accountPinnable({ ...base, gatewayOn: false }, 'aviynw')).toBe(false); // gateway off → no pin
+    expect(accountPinnable(base, 'not-in-pool')).toBe(false);
+    expect(accountPinnable({ ...base, excludeAccounts: ['aviynw'] }, 'aviynw')).toBe(false);
+    expect(accountPinnable({ ...base, forcedAccounts: ['aviynw2'] }, 'aviynw')).toBe(false); // outside allow-list
+    expect(accountPinnable({ ...base, forcedAccounts: ['aviynw'] }, 'aviynw')).toBe(true);
+    expect(accountPinnable(base, null)).toBe(false);
+    expect(accountPinnable(null, 'aviynw')).toBe(false);
   });
 
   it('planValue maps the NO_PLAN sentinel + empties to null', () => {

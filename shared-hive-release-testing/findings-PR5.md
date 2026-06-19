@@ -3,14 +3,27 @@
 **Owner:** pr5-impl (this lane). **Plan:** `PLAN-pr-system-completion-dogfood.md` (Phase PR-5).
 **Last updated:** 2026-06-19. **coord MCP:** down — status here + on-disk artifacts is the channel.
 
-## Status: 🟢 PR-5's OWN deliverables BUILT + teeth-verified · 🟡 live round-trip GATED on PR-1
+## Status: 🟢 PR-5 BUILT + teeth-verified · 🟢 inbound spine (PR-1..4) LANDED · 🟡 live run needs a running operator
 
-PR-5 is the FINAL phase and its **live** witness depends on the inbound side (PR-1..4). Those are
-being built by the fleet IN THIS TREE concurrently (untracked: `feature-pr-producer.ts`,
-`agent-reviewer.ts`, `pr-review-report-store.ts`, `agent-trailer.ts`, `operator-rate-key.ts`).
-**PR-1 (`pr-host/poll-daemon.ts`) is still ABSENT** — so the autonomous notice→review→merge spine
-isn't wired, and the live loop cannot round-trip end-to-end yet. Everything PR-5 owns that does NOT
-depend on PR-1..4 is built, typechecked, and teeth-green now.
+PR-5 is the FINAL phase; its live witness depended on the inbound side (PR-1..4). As of 2026-06-19
+the fleet landed all of it IN THIS TREE: **PR-1** `pr-host/poll-daemon.ts` + `pr-poll-routine.ts`
+(the autonomous notice→review→merge spine — `registerSystemAction('pr-poll')`, last-seen guard,
+backoff, `decideAutoReview`→`tryAutoApprove`/`tryAutoMerge`, reviewer trigger, report veto);
+**PR-2** `agent-reviewer.ts` + `pr-review-report-store.ts`; **PR-4** `feature-pr-producer.ts` +
+`agent-trailer.ts` + `operator-rate-key.ts`. So the loop can now round-trip autonomously. The only
+thing left for the LIVE witness is running it on an operator install with `gh` auth (runbook below) —
+that's the monitor/owner's environment, not a code gap.
+
+**108 tests green** across the PR-system: `npx vitest run lib/pr-host/{contribution-admission,
+dogfood-roundtrip,auto-approve,auto-merge,poll-daemon,pr-poll-routine}.test.ts
+lib/harness/fork-gc.test.ts lib/agent-tools/platform/fork_gc.test.ts`.
+
+### S0 gap I FOUND + CLOSED in PR-1 (cross-lane integration)
+PR-1's `pollHarnessPrs` built `approveCtx`/`mergeCtx` WITHOUT `authorRevoked` — so the **autonomous**
+path bypassed the revocation gate (only the manual `reviewPr` route was protected). A revoked
+contributor's trusted+green PR would have auto-merged. Closed it: added an `isAuthorRevoked` seam
+(default `isPrAuthorRevoked`) + a per-PR refusal in the loop (`counts.revoked`, ahead of trust/checks/
+report) + 3 teeth tests. Revocation now has teeth on BOTH paths — the S0 invariant holds end-to-end.
 
 ## What landed this lane (62 teeth tests green)
 
@@ -42,23 +55,27 @@ internally. Standing it up is a runtime action, not a code gap.
 2. **Contribute AS A MEMBER (no canonical write).** A Bee makes a real change in the self-hive member
    clone, then `platform:contribute { kind:'pr', confirm:true, reason:"…" }` → commits to the
    operator's FORK + opens a fork→canonical PR. (Outbound leg — BUILT.)
-3. **Daemon notices → reviews → owner-mode.**  ⟵ **GATED on PR-1** (`poll-daemon.ts` absent). Once
-   PR-1 lands: the daemon upserts `harness_feature_prs` (PR-4), triggers PR-2's agent-review, and in
-   `manual` mode surfaces the report in the PRs tab (PR-3) for the owner to Approve.
+3. **Daemon notices → reviews → owner-mode.** PR-1's `system:pr-poll` routine (per harness with
+   `pr_reviewer_role_enabled`) notices the PR, upserts `harness_feature_prs` (PR-4), refreshes the
+   check cache, triggers PR-2's agent-review (report stored), and evaluates `decideAutoReview`. In
+   `manual` mode it surfaces the report in the PRs tab (PR-3) for the owner to Approve; in `auto` mode
+   it drives `tryAutoApprove`+`tryAutoMerge` — gated on checks-green + trusted author + **not revoked**.
 4. **Merge to canonical.** Owner Approves in the PRs tab → `reviewPr` (`approve_and_merge`) →
    `tryAutoMerge` (checks-green gate) → `stampCompletionRefOnMerge` + `markFeaturePrState('merged')`.
 5. **Assert the round-trip.** `verifyDogfoodRoundTrip({ workspaceId, harnessSlug:'papercusp-platform',
-   prUrl })` → expect `ok:true` (wire PR-2's report reader for the optional `reviewed` leg).
+   prUrl, readReviewReport: defaultReadReviewReport })` → expect `ok:true` (pass
+   `defaultReadReviewReport` from `dogfood-roundtrip.ts` to un-gate the optional `reviewed` leg).
 6. **Tidy.** `platform:fork_gc { reason:"…" }` (dry-run report) → `{ confirm:true }` to collect any
    abandoned forks.
 
 ## Asks for the fleet / monitor
-- **PR-1 is the critical-path blocker for PR-5's live witness.** Whoever owns PR-1: the decision
-  functions it drives (`tryAutoApprove`/`tryAutoMerge`) now take an `authorRevoked` boolean — the
-  daemon should resolve it via `isPrAuthorRevoked(...)` and pass it in, so the autonomous path honors
-  revocation too (the manual path already does).
-- **PR-2 report reader:** expose a `(workspaceId, harnessSlug, prUrl) → {recommendation}` reader from
-  `pr-review-report-store.ts`; the round-trip witness will wire it as `readReviewReport` to un-gate the
-  `reviewed` leg.
-- Shared-file edits coexist cleanly: my `prs.ts` revocation gate sits between PR-4's reviewer-identity
-  resolution and its `markFeaturePrState` merge stamp.
+- **Run the LIVE witness.** Everything is code-complete + teeth-green; the remaining step is running
+  the runbook on an operator install with `gh` auth (the monitor's .deb/Xvfb environment). Drive
+  steps 1–6 and assert `verifyDogfoodRoundTrip(...).ok === true` for the contributed PR.
+- **PR-1 owner — heads up:** I added an `isAuthorRevoked` seam to `pollHarnessPrs` + a per-PR
+  revocation refusal (the autonomous path was missing it; the manual `reviewPr` path already had it).
+  Coexists with your last-seen/backoff/decide flow; 3 new teeth tests in `poll-daemon.test.ts` and a
+  `revoked: number[]` field on `PollOutcome`. Please keep the gate when iterating.
+- **Already wired:** PR-2's `readLatestReviewReport` → `defaultReadReviewReport` (the witness's
+  optional `reviewed` leg). PR-4's producer + my `prs.ts` revocation gate coexist (the gate sits
+  between PR-4's reviewer-identity resolution and its `markFeaturePrState` merge stamp).

@@ -150,6 +150,7 @@ function baseDeps(host: PrHost, store: PollStore, over: Partial<PollDaemonDeps> 
     resolveViewer: async () => VIEWER,
     triggerReviewer: vi.fn(async () => {}),
     readReport: async () => null,
+    isAuthorRevoked: async () => false, // PR-5: not revoked by default; revocation tests override.
     now: () => 1_700_000_500_000,
     random: () => 0.5,
     ...over,
@@ -259,6 +260,45 @@ describe('pollHarnessPrs — S0 safety gates', () => {
     const out = await pollHarnessPrs(ARGS, baseDeps(host, store));
     expect(out.merged).toEqual([]);
     expect(merge).not.toHaveBeenCalled();
+  });
+});
+
+describe('pollHarnessPrs — PR-5 contributor revocation (S0)', () => {
+  it('TEETH: a REVOKED author is refused the auto-flow — never approves/merges, even trusted + green', async () => {
+    const { host, postReview, merge } = makeHost();
+    const { store } = makeStore(); // trusted author, auto on
+    const out = await pollHarnessPrs(
+      ARGS,
+      baseDeps(host, store, { isAuthorRevoked: async () => true }),
+    );
+    expect(out.revoked).toEqual([42]);
+    expect(out.approved).toEqual([]);
+    expect(out.merged).toEqual([]);
+    expect(postReview).not.toHaveBeenCalled();
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it('revocation overrides a green PR-2 approve report (revocation is the strongest deny)', async () => {
+    const { host, merge } = makeHost();
+    const { store } = makeStore();
+    const out = await pollHarnessPrs(
+      ARGS,
+      baseDeps(host, store, {
+        isAuthorRevoked: async () => true,
+        readReport: async () => ({ recommendation: 'approve' }),
+      }),
+    );
+    expect(out.revoked).toEqual([42]);
+    expect(out.merged).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it('a non-revoked author proceeds normally (the gate is off by default)', async () => {
+    const { host, merge } = makeHost();
+    const { store } = makeStore();
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { isAuthorRevoked: async () => false }));
+    expect(out.revoked).toEqual([]);
+    expect(out.merged).toEqual([42]);
   });
 });
 
