@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
+import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { isEphemeralBenchmarkHarnessSlug } from '../../harness/improvements/watchdog';

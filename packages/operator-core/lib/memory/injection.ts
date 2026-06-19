@@ -26,6 +26,13 @@ import { getMemoryBackend, type MemoryEntry } from './backend';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
 import { memoryTierOf } from './two-tier';
+import {
+  MEMORY_INJECT_TIMEOUT_MS,
+  MemoryTimeoutError,
+  isMemoryDegraded,
+  noteMemoryFailure,
+  withMemoryTimeout,
+} from './op-deadline';
 
 // P-016: Mirrors EPHEMERAL_BENCHMARK_SLUG_RE in harness/improvements/watchdog.ts.
 // Inlined here to avoid pulling that module's heavy @papercusp/db-org transitive
@@ -42,35 +49,14 @@ const EPHEMERAL_SLUG_RE =
  * where operator-converse emitted only SSE heartbeats and never
  * produced a turn.
  *
- * Every store call here is bounded by MEMORY_OP_TIMEOUT_MS. The first
- * timeout drops the whole process into a degraded mode so later turns
- * skip the store instantly instead of paying the timeout on every turn.
- * The flag resets on restart; the backend's own caching/poison-cache
- * handles client-level recovery.
+ * Every store call here is bounded by MEMORY_INJECT_TIMEOUT_MS. The first
+ * timeout drops the whole process into a degraded mode so later turns skip
+ * the store instantly instead of paying the timeout on every turn. The
+ * deadline/latch primitive is shared with the explicit memory tools
+ * (./op-deadline, B1) so a hang on EITHER path quiets this hot per-turn path;
+ * the latch resets on restart and the backend's poison-cache handles
+ * client-level recovery.
  */
-const MEMORY_OP_TIMEOUT_MS = 5_000;
-let memoryDegraded = false;
-
-class MemoryTimeoutError extends Error {}
-
-function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new MemoryTimeoutError(`memory ${label} exceeded ${MEMORY_OP_TIMEOUT_MS}ms`));
-    }, MEMORY_OP_TIMEOUT_MS);
-    p.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
-
-function noteMemoryFailure(err: unknown): void {
-  if (err instanceof MemoryTimeoutError) {
-    memoryDegraded = true;
-    console.warn(`[memory-injection] ${err.message} — mem0 disabled for this process`);
-  }
-}
 
 export interface MemoryInjectionInput {
   /**
@@ -182,11 +168,11 @@ export async function buildMemoryContextBlock(
   input: MemoryInjectionInput,
 ): Promise<string | null> {
   if (!input.queryContext.trim()) return null;
-  if (memoryDegraded) return null;
+  if (isMemoryDegraded()) return null;
 
   const backend = getMemoryBackend();
   try {
-    const avail = await withTimeout(backend.available(), 'available()');
+    const avail = await withMemoryTimeout(backend.available(), 'available()', MEMORY_INJECT_TIMEOUT_MS);
     if (!avail.ok) return null;
   } catch (err) {
     noteMemoryFailure(err);
@@ -215,9 +201,10 @@ export async function buildMemoryContextBlock(
     hiveSlugs = input.hiveSlugs.filter((s) => typeof s === 'string' && s.length > 0);
   } else if (harnessSlugs.length > 0) {
     try {
-      hiveSlugs = await withTimeout(
+      hiveSlugs = await withMemoryTimeout(
         resolveHiveSlugsForHarnesses(input.workspaceId, harnessSlugs),
         'hive-resolve',
+        MEMORY_INJECT_TIMEOUT_MS,
       );
     } catch (err) {
       noteMemoryFailure(err);
@@ -258,9 +245,10 @@ export async function buildMemoryContextBlock(
         })
       : Promise.resolve([]);
 
-    const [userEntries, harnessEntries, hiveEntries] = await withTimeout(
+    const [userEntries, harnessEntries, hiveEntries] = await withMemoryTimeout(
       Promise.all([userPull, harnessPull, hivePull]),
       'search',
+      MEMORY_INJECT_TIMEOUT_MS,
     );
     userResults = userEntries;
     harnessHits = harnessEntries.map((hit) => ({

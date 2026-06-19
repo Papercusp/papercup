@@ -154,8 +154,16 @@ function lastDeployMtime(releaseRoot: string): number | null {
  * Compute the current release-gate snapshot. Pure read — shells `git` against the
  * integration + release checkouts; mutates nothing. Resolves a partial snapshot
  * with `errors[]` populated rather than throwing, so the panel always renders.
+ *
+ * NOT exported — every caller goes through the cached `devDeployState()` wrapper
+ * below. One call here fans out ~10 `git` subprocess fork/execs (3×commitRef ×
+ * {rev-parse, show ×2} + 3×aheadCount), which cpuprofile attribution
+ * (infra-perf-reliability-audit-round4 P-015) pinned as the single largest
+ * application-attributable cost on the :3070 request-worker event loop (~26% of
+ * real on-CPU work), amplified by the poll storm hitting system-health +
+ * sync-resolver `dev.deployState`. The cache collapses that fan-out.
  */
-export async function devDeployState(): Promise<DevDeployState> {
+async function computeDevDeployState(): Promise<DevDeployState> {
   const cfg = resolveConfig();
   const errors: string[] = [];
 
@@ -189,4 +197,64 @@ export async function devDeployState(): Promise<DevDeployState> {
     readyAtMainHead: readyBehindMain == null ? null : readyBehindMain === 0,
     errors,
   };
+}
+
+// ─── Short-TTL single-flight cache ────────────────────────────────────────────
+// The release-gate snapshot is a display read whose underlying git refs only move
+// on a commit / deploy (seconds-to-minutes granularity), yet `devDeployState()`
+// is called from poll-storm-amplified hot paths — system-health/compute,
+// sync-resolver `dev.deployState`, and the pipeline-stats/position tools — each
+// firing ~10 `git` fork/execs on the request-worker event loop with no reuse.
+// Under the ~70-agent reconnect/poll storm that pegged a single core, this was
+// the #1 application-attributable on-loop cost (P-015 cpuprofile attribution).
+//
+// The cache does two things: (1) memoises the resolved snapshot for a short TTL
+// so rapid repeat reads skip git entirely, and (2) shares the in-flight promise
+// (single-flight) so a BURST of concurrent callers collapses to ONE git fan-out
+// instead of N. TTL is read per-call so it's runtime-tunable and test-overridable
+// (set PAPERCUSP_DEPLOY_STATE_TTL_MS=0 to disable, e.g. when a test mutates refs
+// then re-reads). Default 3s: well under the deploy cadence, so the Deploy panel
+// stays effectively live while the storm is de-amplified.
+
+interface DeployStateCacheEntry {
+  at: number;
+  value: Promise<DevDeployState>;
+}
+let deployStateCache: DeployStateCacheEntry | null = null;
+
+function deployStateTtlMs(): number {
+  const raw = process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS;
+  if (raw == null || raw === '') return 3000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 3000;
+}
+
+/**
+ * Cached, single-flight release-gate snapshot. Identical signature + return
+ * contract to the underlying compute (READ-ONLY; resolves a partial snapshot with
+ * `errors[]` rather than throwing). Concurrent + rapid callers within the TTL
+ * window share one `git` fan-out; see the cache note above.
+ */
+export async function devDeployState(): Promise<DevDeployState> {
+  const ttl = deployStateTtlMs();
+  const now = Date.now();
+  if (ttl > 0 && deployStateCache && now - deployStateCache.at < ttl) {
+    return deployStateCache.value;
+  }
+  const value = computeDevDeployState();
+  if (ttl > 0) {
+    const entry: DeployStateCacheEntry = { at: now, value };
+    deployStateCache = entry;
+    // computeDevDeployState resolves-with-errors rather than throwing, but if it
+    // ever rejects, drop the entry so the next call retries instead of caching it.
+    value.catch(() => {
+      if (deployStateCache === entry) deployStateCache = null;
+    });
+  }
+  return value;
+}
+
+/** Clear the snapshot cache — for tests that mutate refs/env then re-read. */
+export function resetDevDeployStateCache(): void {
+  deployStateCache = null;
 }

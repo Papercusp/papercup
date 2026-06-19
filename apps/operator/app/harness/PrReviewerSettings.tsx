@@ -89,6 +89,10 @@ export function auditActionLabel(action: string): string {
       return 'Approved';
     case 'manual_merge':
       return 'Merged';
+    case 'agent_review':
+      return 'Agent reviewed';
+    case 'agent_review_error':
+      return 'Agent review failed';
     case 'skipped_untrusted':
       return 'Skipped (untrusted author)';
     case 'skipped_checks_failing':
@@ -105,7 +109,8 @@ export function auditActionTone(action: string): 'ok' | 'warn' | 'bad' | 'muted'
   if (action === 'auto_approve' || action === 'auto_merge' || action === 'manual_approve' || action === 'manual_merge') {
     return 'ok';
   }
-  if (action === 'error') return 'bad';
+  if (action === 'error' || action === 'agent_review_error') return 'bad';
+  if (action === 'agent_review') return 'ok';
   if (action.startsWith('skipped')) return 'muted';
   return 'warn';
 }

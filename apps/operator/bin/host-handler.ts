@@ -37,6 +37,7 @@ import {
   faultInjectionControl,
   faultInjectionMiddleware,
 } from './host-fault-injection';
+import { backpressureMiddleware } from './host-backpressure';
 
 const host = new Hono();
 
@@ -48,6 +49,14 @@ host.use('*', compress());
 // 2. Broad `/api/*` CORS (proxy.ts port). Handles OPTIONS preflight and
 //    decorates downstream responses with the standard headers.
 host.use('/api/*', apiCors);
+
+// 2.25. Inbound-HTTP backpressure / load-shedding (P-018). Inert unless
+//        PAPERCUSP_HTTP_BACKPRESSURE=1; even then it sheds ONLY caller-marked
+//        deferrable requests (x-papercusp-deferrable header / configured path)
+//        under CRITICAL event-loop pressure — never interactive or health
+//        traffic. Runs early (after CORS preflight) so a shed costs no handler
+//        dispatch. Reuses the existing loop-lag signal.
+host.use('/api/*', backpressureMiddleware);
 
 // 2.5. Fault injection (EI-297) — test-only, inert unless the host started
 //      with PAPERCUSP_FAULT_INJECTION=1. Sits in front of every API path

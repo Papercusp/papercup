@@ -16,10 +16,14 @@
  *     has `slug` + PR number. Resolution order: (1) the caller-supplied
  *     `feature_id` (a feature-context review knows it); (2) fallback lookup in
  *     `harness_feature_prs` by `pr_url`. NOTE: `harness_feature_prs` is a PG-local
- *     table (sync:'none') with NO current producer — the GitHub poll daemon was
- *     never built and the Hyperbee `prs` projection was retired as never-firing
- *     (EI-479) — so this fallback is empty today. Populating it at PR-open / poll
- *     time (GitHub-derived, per-machine) is the remaining step to make it fire.
+ *     table (sync:'none'). It had NO producer for a long time — the GitHub poll
+ *     daemon was vaporware (marked shipped, never built) and the Hyperbee `prs`
+ *     projection was retired as never-firing (EI-479). The poll daemon is now real
+ *     (`pr-host/poll-daemon.ts`, PR-1 of pr-system-completion-dogfood-2026-06-19):
+ *     it best-effort upserts this row (resolving feature_id via `completion_ref`)
+ *     so the fallback fires for polled PRs that map to a tracked WI. PR-4 owns the
+ *     full WI→PR→state producer (at-open + inbound-PR rows); until it lands, an
+ *     inbound PR with no completion_ref link still has no row here.
  *
  *   - `stampCompletionRefOnMerge` — the write. `status='shipped'` + a fresh
  *     `updated_ts` are REQUIRED: the verifier's select only picks up

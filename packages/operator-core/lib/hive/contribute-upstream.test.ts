@@ -211,6 +211,38 @@ describe('contributeUpstream — kind:pr (the fork→canonical PR path) (P-072)'
     );
     expect(res).toMatchObject({ ok: false, kind: 'pr', error: 'fork_pr_failed', message: 'push rejected' });
   });
+
+  it('PR-4: tracks the WI→PR row (member harness + featureBranch) when the PR is SENT', async () => {
+    const rows: unknown[] = [];
+    const res = await contributeUpstream(
+      prDeps({ confirm: true, recordFeaturePr: async (r) => { rows.push(r); } }),
+    );
+    expect(res).toMatchObject({ ok: true, kind: 'pr', sent: true });
+    expect(rows).toEqual([
+      {
+        workspaceId: 'w',
+        harnessSlug: 'papercusp-platform',
+        featureId: 'platform/fix-1',
+        prUrl: 'https://github.com/Papercusp/papercup/pull/42',
+      },
+    ]);
+  });
+
+  it('PR-4: does NOT track a row when the PR stays PREPARED (nothing opened)', async () => {
+    const rows: unknown[] = [];
+    await contributeUpstream(prDeps({ recordFeaturePr: async (r) => { rows.push(r); } }));
+    expect(rows).toEqual([]);
+  });
+
+  it('PR-4: a producer write failure does NOT fail the SENT contribution', async () => {
+    const res = await contributeUpstream(
+      prDeps({
+        confirm: true,
+        recordFeaturePr: async () => { throw new Error('pg down'); },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, kind: 'pr', sent: true });
+  });
 });
 
 describe('contributeUpstream — self-hive resolution', () => {

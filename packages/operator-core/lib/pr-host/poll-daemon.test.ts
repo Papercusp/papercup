@@ -19,11 +19,13 @@ import {
   pollHarnessPrs,
   backoffMsFor,
   parsePollMeta,
+  handlePrPoll,
   type PollStore,
   type PollDaemonDeps,
   type ReviewerSettingsRow,
   type PollChecks,
 } from './poll-daemon';
+import { getSystemAction } from '../harness/routines/system-actions';
 import { DEFAULT_RETRY_POLICY } from './retry-policy-types';
 import type { Pr, PrHost, PrHostResult, PrChecksState } from './types';
 import { ok, err } from './types';
@@ -452,6 +454,14 @@ describe('backoffMsFor', () => {
     expect(backoffMsFor({ kind: 'alert_user', reason: 'oauth_refresh_failed_user_action_needed' })).toBe(
       DEFAULT_RETRY_POLICY.max_backoff_ms,
     );
+  });
+});
+
+describe('system-action registration', () => {
+  it('importing the module registers the `pr-poll` handler with the routines engine', () => {
+    // The bottom-of-module `registerSystemAction('pr-poll', handlePrPoll)` is what
+    // lets the engine dispatch a `system:pr-poll` routine inline (the git-sync seam).
+    expect(getSystemAction('pr-poll')).toBe(handlePrPoll);
   });
 });
 

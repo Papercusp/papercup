@@ -41,7 +41,10 @@ import {
   recommendationLabel,
   recommendationTone,
 } from '@papercusp/operator-core/lib/pr-host/pr-row-data';
-import type { PrReviewRecommendation } from '@papercusp/operator-core/lib/pr-host/pr-review-report-types';
+import type {
+  PrReviewRecommendation,
+  PrReviewChecksObserved,
+} from '@papercusp/operator-core/lib/pr-host/pr-review-report-types';
 export type { PrRowData };
 
 interface Props {
@@ -183,12 +186,14 @@ function Fact({ label, danger }: { label: string; danger?: boolean }) {
 }
 
 function ReportPanel({ report }: { report: NonNullable<PrRowData['report']> }) {
-  const co = report.checksObserved as Record<string, unknown> | undefined;
-  const checksState = typeof co?.checks_state === 'string' ? co.checks_state : undefined;
-  const testsTouched = typeof co?.tests_touched === 'boolean' ? co.tests_touched : undefined;
-  const secretSuspected = co?.secret_suspected === true;
-  const filesChanged = typeof co?.files_changed === 'number' ? co.files_changed : undefined;
-  const diffEmpty = co?.diff_empty === true;
+  // checksObserved is the deterministic facts shape (PR-2). Read defensively —
+  // a legacy/garbled row may be missing fields the type promises.
+  const co = (report.checksObserved ?? {}) as Partial<PrReviewChecksObserved>;
+  const checksState = typeof co.checks_state === 'string' ? co.checks_state : undefined;
+  const testsTouched = typeof co.tests_touched === 'boolean' ? co.tests_touched : undefined;
+  const secretSuspected = co.secret_suspected === true;
+  const filesChanged = typeof co.files_changed === 'number' ? co.files_changed : undefined;
+  const diffEmpty = co.diff_empty === true;
 
   return (
     <div

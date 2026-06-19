@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { devDeployState } from './dev-deploy-state';
+import { devDeployState, resetDevDeployStateCache } from './dev-deploy-state';
 
 function git(repo: string, args: string[]): string {
   return execFileSync('git', ['-C', repo, ...args], {
@@ -72,6 +72,7 @@ beforeAll(() => {
     'PAPERCUSP_RELEASE_ROOT',
     'PAPERCUSP_RELEASE_REF',
     'PAPERCUSP_INTEGRATION_BRANCH',
+    'PAPERCUSP_DEPLOY_STATE_TTL_MS',
   ]) {
     savedEnv[k] = process.env[k];
   }
@@ -79,6 +80,13 @@ beforeAll(() => {
   process.env.PAPERCUSP_RELEASE_ROOT = release;
   process.env.PAPERCUSP_RELEASE_REF = 'ready';
   process.env.PAPERCUSP_INTEGRATION_BRANCH = 'main';
+  // These tests mutate refs/env then re-read, so disable the snapshot cache;
+  // the caching behaviour itself is covered by its own describe block below.
+  process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS = '0';
+});
+
+afterEach(() => {
+  resetDevDeployStateCache();
 });
 
 afterAll(() => {
@@ -142,5 +150,44 @@ describe('devDeployState', () => {
     } finally {
       process.env.PAPERCUSP_RELEASE_REF = prev;
     }
+  });
+});
+
+describe('devDeployState caching (P-015 — collapse the git fan-out under the poll storm)', () => {
+  afterEach(() => {
+    process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS = '0';
+    resetDevDeployStateCache();
+  });
+
+  it('single-flights a concurrent burst into one shared snapshot', async () => {
+    process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS = '5000';
+    resetDevDeployStateCache();
+    const [a, b, c] = await Promise.all([devDeployState(), devDeployState(), devDeployState()]);
+    // Same in-flight promise → identical object: only ONE git fan-out ran.
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(a.mainHead?.sha).toBe(shaC);
+  });
+
+  it('serves repeat reads from cache within the TTL, then recomputes after reset', async () => {
+    process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS = '5000';
+    resetDevDeployStateCache();
+    const first = await devDeployState();
+    const cached = await devDeployState();
+    expect(cached).toBe(first); // within TTL → cache hit, no recompute
+
+    resetDevDeployStateCache();
+    const fresh = await devDeployState();
+    expect(fresh).not.toBe(first); // new compute → new object
+    expect(fresh.mainHead?.sha).toBe(first.mainHead?.sha); // same underlying data
+  });
+
+  it('TTL=0 disables the cache (every call recomputes)', async () => {
+    process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS = '0';
+    resetDevDeployStateCache();
+    const a = await devDeployState();
+    const b = await devDeployState();
+    expect(a).not.toBe(b);
+    expect(a.deployed?.sha).toBe(b.deployed?.sha);
   });
 });
