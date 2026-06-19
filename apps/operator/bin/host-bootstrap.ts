@@ -612,4 +612,25 @@ export function runBootstrap(): void {
       }
     })();
   }
+
+  // EI-1622: lightweight in-process periodic checks — systemHealth,
+  // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
+  // spawnReclaimSweep, staleClaimSweep, learningInfraHealth, steeringChurnSweep.
+  // These ephemeral, idempotent probes were durable DBOS scheduled workflows that
+  // each persisted a dbos.workflow_status row every 30–60s (~200k/day) → executor
+  // starvation → routinesTick stall → Queen freeze. As plain unref'd intervals they
+  // write ZERO workflow_status rows (the source fix). Gated on backgroundWorkers (like
+  // the sentinel above) so a naive interval never runs N× across :3070 cluster request
+  // workers (DBOS dedup'd by workflow-id, in-process does not); skipped on a utility
+  // host (gym-operator) just as the former dbosPeriodicTimersActive did.
+  if (backgroundWorkers && !utilityHost) {
+    void (async () => {
+      try {
+        const { armInProcessPeriodicChecks } = await import('@papercusp/operator-core/lib/dbos/in-process-periodic');
+        armInProcessPeriodicChecks();
+      } catch (err) {
+        console.warn('[in-process-periodic] arm failed (non-fatal):', err instanceof Error ? err.message : err);
+      }
+    })();
+  }
 }

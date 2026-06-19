@@ -35,7 +35,7 @@ import { and, eq } from 'drizzle-orm';
 
 const hl = generated.harnessLanesInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
-import { dbosTimersActive } from './dbos/dbos-flags';
+import { backgroundWorkersEnabled } from './background-workers';
 const SWEEP_INTERVAL_MS = 30_000;
 // Lane rows are PID-tagged by run.sh's pg_write_lane. As long as the PID is
 // alive, the lane is legitimately running — agent invocations can take an
@@ -183,10 +183,15 @@ async function tick(): Promise<void> {
 export function ensureHarnessStatusSweep(): SweepState {
   if (_g.__harnessStatusSweep) return _g.__harnessStatusSweep;
 
-  // DBOS owns this sweep as a scheduled workflow (consolidation P-001); the
-  // legacy in-process timer stands down on the SAME predicate as the
-  // periodic-workflows registration, so exactly one of {DBOS, legacy} fires.
-  if (dbosTimersActive()) {
+  // EI-1622: the in-process-periodic scheduler (dbos/in-process-periodic.ts, armed
+  // from host-bootstrap under `backgroundWorkers`) now owns this sweep wherever
+  // background workers run. This legacy in-process timer stands down on the SAME
+  // predicate so exactly one fires — and it now uses backgroundWorkersEnabled()
+  // (NOT dbosTimersActive): the new scheduler runs independent of DBOS, so the
+  // desktop app (backgroundWorkers ON, DBOS OFF) must NOT also run this legacy
+  // timer. The legacy path is left as the fallback for hosts where the new
+  // scheduler does NOT run (e.g. the :3170 request-only operator).
+  if (backgroundWorkersEnabled()) {
     _g.__harnessStatusSweep = {
       timer: undefined as unknown as ReturnType<typeof setInterval>,
       stopped: true,
