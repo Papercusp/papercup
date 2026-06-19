@@ -95,6 +95,19 @@ mechanisms working together, never a single server check:
   this is the default, so existing hives are unaffected. An *unclaimed* hive
   cannot author an enforceable policy at all (authority is gated on
   `claim_status='claimed'`).
+- **Rate limits are enforced over op TIME, so a client forging op timestamps can
+  pace under the per-window cap.** EN-2's per-member limiter counts an author's ops
+  in deterministic tumbling windows keyed on each op's own write-time — and that is
+  exactly what makes the drop decision CONVERGE identically across honest peers
+  (each reads a member's single log in the same order). A normal flood (a client
+  stamps truthful, clustered timestamps) is fully caught; a client RECOMPILED to
+  spread forged timestamps across windows can stay under the per-window cap. This is
+  an inherent limit of any *convergent* (op-time) limiter — perfect convergence AND
+  perfect evasion-resistance from self-declared timestamps is impossible without a
+  trusted external clock. Memory stays bounded regardless (a flood cannot OOM an
+  honest peer; only `cap` ops/window are retained). A non-convergent
+  receiver-wall-clock burst guard is the documented fast-follow. See
+  `findings-EN-2.md`.
 
 ## Why
 

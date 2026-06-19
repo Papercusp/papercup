@@ -42,9 +42,12 @@
 
 /**
  * The membership/moderation subset of EN-1's `HivePolicy` that the admission gate
- * reads. Structurally compatible with `HivePolicy` (hive-policy-store.ts) — we
- * depend on the SHAPE, not the import, so this builds ahead of EN-1 and survives
- * forward-compatible schema growth (`[k: string]: unknown`).
+ * reads. A read-LENS structural SUPERTYPE of `HivePolicy` (hive-policy-schema.ts):
+ * EN-1's full typed policy is assignable to this, so callers pass `getHivePolicy().policy`
+ * directly, and the unit tests construct lite literals. Deliberately NO index signature
+ * (an index sig would make a typed `HivePolicy` value un-assignable here) — this view
+ * only reads the named fields below; unknown forward-compat keys on the real policy are
+ * preserved by EN-1's signing/round-trip, they just aren't read here.
  */
 export interface MembershipPolicyView {
   /** Admission mode. Absent ⇒ `open` (today's behavior). Unknown value ⇒ fail-safe
@@ -57,9 +60,7 @@ export interface MembershipPolicyView {
     /** Stable numeric GitHub user ids (as strings) the owner banned — denied re-join
      *  in every mode. */
     bannedGithubIds?: string[];
-    [k: string]: unknown;
   };
-  [k: string]: unknown;
 }
 
 /** The prospective joiner's GitHub identity (resolved before admission). */
