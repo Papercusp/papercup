@@ -43,6 +43,8 @@ import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
 import { buildHivePolicyProjection } from './hive-policy';
+import { buildHiveReportsProjection } from './hive-reports';
+import { buildHivePendingJoinsProjection } from './hive-pending-joins';
 import { buildHiveMembersProjection } from './hive-members';
 import { buildEngineerIssuesProjection } from './engineer-issues';
 import { buildHarnessPlanPartsProjection } from './harness-plan-parts';
@@ -123,6 +125,11 @@ export const REGISTERED_PROJECTION_TAGS = [
   // record federates as Hive state, scoped to the Hive home (like hive_settings). The
   // projection verifies the owner signature before applying.
   'hive-policy',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-3): the member→owner moderation report
+  // queue (P-MOD) + the approval-mode pending-join queue (P-MEMBER) federate as Hive
+  // state, scoped to the Hive home (like hive_settings/hive_policy).
+  'hive-reports',
+  'hive-pending-joins',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
   // (hive_members) federates across the Hive's Swarms so a revocation propagates.
   'hive-members',
@@ -175,6 +182,11 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // EN-1: hive_policy is hive-home-grained too (the owner-signed policy demuxes on
     // the Hive home) — scope it to `hiveScoped` so a joiner receives + verifies it.
     buildHivePolicyProjection(hiveScoped),
+    // EN-3: hive_reports (member→owner moderation queue) + hive_pending_joins (approval-mode
+    // admission queue) are hive-home-grained too — scope to `hiveScoped` so the bidirectional
+    // request↔decision federation lands on both the owner's home and a joiner's member harness.
+    buildHiveReportsProjection(hiveScoped),
+    buildHivePendingJoinsProjection(hiveScoped),
     buildEngineerIssuesProjection(opts),
     // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
     // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation

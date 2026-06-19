@@ -197,6 +197,19 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp; the federated content is policy_json + signature',
     updated_at: 'machine-local row timestamp; the federated content is policy_json + signature',
   },
+  hive_reports: {
+    // EN-3 / P-MOD: the federated subset is report_id + reporter identity + target + status
+    // (all carried by toHiveReportValue). Only the timestamps are machine-local.
+    created_at: 'machine-local row timestamp; the federated content is the report fields + status',
+    updated_at: 'machine-local row timestamp; the federated content is the report fields + status',
+  },
+  hive_pending_joins: {
+    // EN-3 / P-MEMBER: the federated subset is the joiner identity + devices + the decision
+    // (status/decided_*) — all carried by toHivePendingJoinValue. pending_join_fed_key is a
+    // GENERATED column (auto-detected); only the timestamps are machine-local.
+    created_at: 'machine-local row timestamp; the federated content is the joiner fields + decision',
+    updated_at: 'machine-local row timestamp; the federated content is the joiner fields + decision',
+  },
   hive_members: {
     display_name: 'GitHub-derived cosmetic, re-resolved per machine',
     avatar_url: 'GitHub-derived cosmetic, re-resolved per machine',
@@ -266,11 +279,11 @@ afterAll(async () => {
 });
 
 describe('federated CDC tables — every column federates or is documented-local (column-drift guard)', () => {
-  it('sanity: the CDC-captured set is the 14 known federated tables', () => {
+  it('sanity: the CDC-captured set is the 16 known federated tables', () => {
     // A new CDC table without a case here means a new federated table shipped —
     // the per-table loop below will still cover it (it iterates CDC_CAPTURED_TABLES).
-    // 14 = the 13 prior + hive_policy (EN-1 owner-signed policy record).
-    expect(CDC_CAPTURED_TABLES.length).toBe(14);
+    // 16 = the 14 prior + hive_reports + hive_pending_joins (EN-3 moderation/membership).
+    expect(CDC_CAPTURED_TABLES.length).toBe(16);
   });
 
   for (const table of CDC_CAPTURED_TABLES) {

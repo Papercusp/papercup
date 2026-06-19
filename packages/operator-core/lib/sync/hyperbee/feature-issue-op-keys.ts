@@ -421,6 +421,47 @@ function toHivePolicyValue(row: Record<string, unknown>): HivePolicyRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `ReportWireRow` the hive-reports projection INSERT
+ *  consumes (EN-3 / P-MOD). The federated subset of harness_shared.hive_reports —
+ *  harness_slug = the Hive home (demux), report_id = the peer-log key, the reporter
+ *  identity + target + status. created_at/updated_at are machine-local (not federated). */
+function toHiveReportValue(row: Record<string, unknown>): ReportWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    report_id: String(row.report_id ?? ''),
+    reporter_github_user_id: numOrZero(row.reporter_github_user_id),
+    reporter_github_username: strOrNull(row.reporter_github_username),
+    target_kind: String(row.target_kind ?? ''),
+    target_ref: String(row.target_ref ?? ''),
+    report_reason: strOrNull(row.report_reason),
+    status: String(row.status ?? ''),
+  };
+}
+
+/** Map an outbox `row` jsonb to the `PendingJoinWireRow` the hive-pending-joins projection
+ *  INSERT consumes (EN-3 / P-MEMBER). The federated subset of harness_shared.hive_pending_joins
+ *  — harness_slug = the Hive home (demux), github_user_id = the peer-log key, the joiner's
+ *  identity + devices + the decision (status/decided_*). device_attestations stays a jsonb
+ *  array; requested_at/decided_at are bigint epoch-ms (federated, the request/decision order).
+ *  created_at/updated_at are machine-local (not federated). */
+function toHivePendingJoinValue(row: Record<string, unknown>): PendingJoinWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    github_user_id: numOrZero(row.github_user_id),
+    github_username: String(row.github_username ?? ''),
+    display_name: strOrNull(row.display_name),
+    avatar_url: strOrNull(row.avatar_url),
+    device_attestations: Array.isArray(row.device_attestations)
+      ? (row.device_attestations as PendingJoinWireRow['device_attestations'])
+      : [],
+    status: String(row.status ?? ''),
+    reason: strOrNull(row.reason),
+    requested_at: numOrZero(row.requested_at),
+    decided_at: numOrNull(row.decided_at),
+    decided_by_github_user_id: numOrNull(row.decided_by_github_user_id),
+  };
+}
+
 /** Map an outbox `row` jsonb to the `HiveMemberRow` the hive-members projection
  *  INSERT consumes — the federated subset of harness_shared.hive_members. The Hive
  *  scope key (`hive_home_slug`) is the projection demux; device_attestations stays a
@@ -579,6 +620,12 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'hive_policy':
       value = toHivePolicyValue(row);
+      break;
+    case 'hive_reports':
+      value = toHiveReportValue(row);
+      break;
+    case 'hive_pending_joins':
+      value = toHivePendingJoinValue(row);
       break;
     case 'hive_members':
       value = toHiveMemberValue(row);
