@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
+import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -58,15 +59,36 @@ export default defineTool({
     }
 
     const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
-      };
+    // B1: bound the probe so a wedged store yields memory_timeout, not a hang.
+    try {
+      const avail = await withMemoryToolTimeout(backend.available(), 'memory:update available');
+      if (!avail.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
+        };
+      }
+    } catch (err) {
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout' }) }],
+        };
+      }
+      throw err;
     }
     try {
-      await backend.update(validation.data.id, { text: validation.data.content });
+      await withMemoryToolTimeout(
+        backend.update(validation.data.id, { text: validation.data.content }),
+        'memory:update update',
+      );
     } catch (err) {
+      // B1: a wedged store yields memory_timeout, not a hang. Mapped before the
+      // not-found/message handling below so a timeout never masquerades as a
+      // backend-message error.
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout' }) }],
+        };
+      }
       // A well-formed id that names no existing memory is a clean negative
       // result, not a tool failure — the mem0 backend THROWS ("Memory with
       // ID … not found") for not-found, which escaped as a handler_error and

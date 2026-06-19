@@ -192,6 +192,10 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
                 <label style={{ fontSize: 12 }}>rows/hr <input style={NUM_INPUT} value={rowsPerHour} onChange={(e) => setRowsPerHour(e.target.value)} inputMode="numeric" /></label>
                 <label style={{ fontSize: 12 }}>PRs/day <input style={NUM_INPUT} value={prsPerDay} onChange={(e) => setPrsPerDay(e.target.value)} inputMode="numeric" /></label>
               </div>
+              <p style={{ fontSize: 11, color: 'var(--fg-mute)', margin: '0 0 12px', marginLeft: 150 }}>
+                ops/min &amp; rows/hr are enforced at substrate write-admission (EN-2). PRs/day is a
+                fork→PR boundary rule (EN-4 P-CONTRIB) — stored + signed now, not yet substrate-enforced.
+              </p>
               <div style={{ ...ROW, alignItems: 'flex-start' }}>
                 <span style={LABEL}>Allowlist (logins)</span>
                 <textarea style={TEXTAREA} value={allowlist} onChange={(e) => setAllowlist(e.target.value)} placeholder="one github login per line (used when membership=allowlist)" />

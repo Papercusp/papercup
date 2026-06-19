@@ -102,6 +102,11 @@ export function withMemoryToolTimeout<T>(p: Promise<T>, label: string): Promise<
 export function noteMemoryFailure(err: unknown): void {
   if (err instanceof MemoryTimeoutError) {
     memoryDegraded = true;
-    console.warn(`[memory] ${err.message} — auto-inject disabled for this process (degraded)`);
+    // NODE_ENV guard mirrors injection.ts — the latch still flips; only the log
+    // line is suppressed under vitest (the repo's fail-on-console treats any
+    // console.warn as a test failure).
+    if (process.env.NODE_ENV !== 'test') {
+      console.warn(`[memory] ${err.message} — auto-inject disabled for this process (degraded)`);
+    }
   }
 }

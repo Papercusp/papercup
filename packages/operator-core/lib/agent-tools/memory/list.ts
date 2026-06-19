@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
+import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { getSessionUserOrDefault } from '../../auth';
 import { toWireRow } from './search';
 
@@ -56,26 +57,41 @@ export default defineTool({
   async handler(args) {
     const user = await getSessionUserOrDefault();
     const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) {
+
+    // B1: bound both backend calls with a deadline so a wedged store returns a
+    // degraded `memory_timeout` envelope instead of hanging the handler forever.
+    try {
+      const avail = await withMemoryToolTimeout(backend.available(), 'memory:list available');
+      if (!avail.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, results: [] }) }],
+        };
+      }
+
+      // User pool + (when requested) one harness pool + one hive pool. Kind
+      // filtering and the per-pool fan-out are the backend's concern.
+      const entries = await withMemoryToolTimeout(
+        backend.list({
+          scope: [
+            user.id,
+            ...(args.harness_slug ? [`harness:${args.harness_slug}`] : []),
+            ...(args.hive_slug ? [`hive:${args.hive_slug}`] : []),
+          ],
+          kind: args.kind,
+        }),
+        'memory:list list',
+      );
+
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, results: [] }) }],
+        content: [{ type: 'text', text: JSON.stringify({ ok: true, results: entries.map(toWireRow) }) }],
       };
+    } catch (err) {
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout', results: [] }) }],
+        };
+      }
+      throw err;
     }
-
-    // User pool + (when requested) one harness pool + one hive pool. Kind
-    // filtering and the per-pool fan-out are the backend's concern.
-    const entries = await backend.list({
-      scope: [
-        user.id,
-        ...(args.harness_slug ? [`harness:${args.harness_slug}`] : []),
-        ...(args.hive_slug ? [`hive:${args.hive_slug}`] : []),
-      ],
-      kind: args.kind,
-    });
-
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, results: entries.map(toWireRow) }) }],
-    };
   },
 });

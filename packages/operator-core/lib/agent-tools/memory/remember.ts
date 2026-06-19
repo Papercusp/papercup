@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
+import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
@@ -99,11 +100,23 @@ export default defineTool({
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
     const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
-      };
+    // B1: bound the connectivity probe — `available()` itself hangs when the
+    // store is wedged (the 2026-06-19 outage), so a deadline here is the
+    // difference between a fast `memory_timeout` and an infinite hang.
+    try {
+      const avail = await withMemoryToolTimeout(backend.available(), 'memory:remember available');
+      if (!avail.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
+        };
+      }
+    } catch (err) {
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout' }) }],
+        };
+      }
+      throw err;
     }
     if (args.harness_slug && args.hive_slug) {
       return {
@@ -158,10 +171,16 @@ export default defineTool({
     // as injection.ts (failures degrade silently).
     if (dedupEnabled() && !args.force) {
       try {
-        const neighbors = await backend.search(args.content, {
-          scope: scopeKey,
-          limit: DEDUP_TOP_K,
-        });
+        // B1: bounded — a dedup-search hang must not block the write. On
+        // timeout this throws into the surrounding catch, which proceeds with
+        // the write (degraded dedup), exactly as a search error already does.
+        const neighbors = await withMemoryToolTimeout(
+          backend.search(args.content, {
+            scope: scopeKey,
+            limit: DEDUP_TOP_K,
+          }),
+          'memory:remember dedup-search',
+        );
         const top = neighbors[0];
         const topScore = typeof top?.score === 'number' ? top.score : null;
         if (top && topScore !== null && topScore >= dedupThreshold()) {
@@ -231,7 +250,9 @@ export default defineTool({
     // attempt it.
     let ids: string[];
     try {
-      ({ ids } = await backend.remember(args.content, {
+      // B1: bounded so a wedged embedder/store returns `memory_timeout` instead
+      // of riding the ~55–60s transport cap out to an apparent infinite hang.
+      ({ ids } = await withMemoryToolTimeout(backend.remember(args.content, {
         scope: scopeKey,
         kind: args.kind,
         metadata,
@@ -247,8 +268,13 @@ export default defineTool({
         // conversation-extraction path (backend.rememberConversation) keeps the
         // LLM extraction, where pulling facts out of a chat window earns it.
         verbatim: true,
-      }));
+      }), 'memory:remember remember'));
     } catch (err) {
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout' }) }],
+        };
+      }
       if (err instanceof MemoryUnavailableError) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: err.reason }) }],

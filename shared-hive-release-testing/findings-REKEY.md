@@ -263,6 +263,7 @@ shipped provider; the `onEpochKeyApplied(hiveId,epoch)` drain callback my projec
   from `revokeHiveContributor` + `setHiveListing` (private branch); (3) the op-path: J wires the
   envelope `epoch?` field + calls my `encryptForCurrentEpoch` on capture + `decryptOpPayload`+the
   provider on apply. Then P-007/P-008: the flipped `revoked-swarm` test + the LIVE cut-off witness
-  (release gate). **Every BUILDING BLOCK now exists + is teeth-verified** (crypto, epoch model,
+  (release gate) — acceptance battery authored in `findings-V-rekey-adversarial-gate.md`
+  (Tier 0 ✅ done; Tiers 1–4 gated on the wiring). **Every BUILDING BLOCK now exists + is teeth-verified** (crypto, epoch model,
   boundary core, producer, consumer-provider, projection, store, J's pending-buffer); what's left
   is connecting them into the live op path + the on-binary proof.

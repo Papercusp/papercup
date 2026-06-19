@@ -243,3 +243,41 @@ Tests (teeth-verified): `announce-channel-multihive.test.ts` adds the same-topic
 A-002 cases stay green); `announce.test.ts` adds harness_slug round-trip + signed
 + tamper-breaks-verify + absent-backward-compat. A-002 integration + real-protomux
 two-peer/bidi/chaos + full hyperbee suite: no regression.
+
+## 10. Live A-003 re-witness root-cause (2026-06-19) — the (a′) announce side is PROVEN; the remaining bug is RECEIVE-SIDE admit-ordering (d2230's lane)
+
+The live re-witness (`:180` pair, `/tmp/a003-rewitness/matrix`) stayed RED on
+hive_settings/hive_members. Root-caused on A's PG (23515) + the `[A-003]` trace —
+the diagnosis had been pointed at the wrong layer:
+
+- **NOT the drain.** hive_settings is DRAINED in `substrate_outbox`
+  (hello-world-hive: 6 rows, undrained=0). The hive-home harness BOOTS + JOINS the
+  topic + `peer_connected` (inst-a.log: `joined topic 2b0d697f… harness=hello-world-hive`).
+  `cross_hive_outbox` is empty + is the cross-hive *ask* transport (from/to_hive_pubkey,
+  sig) — a red herring, not the hive_settings path.
+- **NOT the announce / (a′).** The `[A-003]` trace shows **B RECEIVES A's
+  hive-home frame** (`origin=hello-world-hive` arrives) — so the (a′) multi-log
+  flush + the `harness_slug` field work end-to-end on the live wire.
+- **IT'S THE ADMIT.** B's slug-filter REJECTS the frame because
+  `home=<none>` at admit time, and the home resolve (`joinerHiveHomeSlug=hello-world-hive`)
+  runs AFTER the reject. d2230's resolve-then-join reorder did not take.
+
+**Key fact from the announce layer (why the reorder can't win the race):** an
+announce is sent EXACTLY ONCE, on the protomux channel's `onopen` (pairing) —
+there is NO periodic refresh and NO re-send (`createAnnounceChannel`/
+`flushTopicAnnounces`, `swarm.ts`). A frame rejected at admit time is GONE. The
+frame can arrive any time after the channel pairs, racing B's home resolution, so
+ordering boot to "resolve before the frame arrives" is fragile.
+
+**Robust fix (receive-side, d2230's lane):** (A) BEST — persist
+`joinerHiveHomeSlug` at hive-JOIN time (B knows the home slug when it joins) so
+`onAnnounce` reads it synchronously, no race; or (B) BUFFER the rejected frame by
+`log_core_key` and re-run admission when home resolves (admit-then-defer also
+works). If centralized re-delivery is preferred, the announce lane (dc9db) can
+buffer the last announce per `(topic, log_core_key)` in `TopicAnnounceState` +
+expose a `replay()` the receive side calls on home-resolve — but (A) is cleanest
+(no cross-layer coupling). The (a′)/announce side needs no further change.
+
+(Coordination note: this is recorded here because the papercusp-su coord MCP was
+down at root-cause time — `coord_send`/`coord_inbox` unavailable. Re-send to
+d2230/9140a via coord when it recovers.)

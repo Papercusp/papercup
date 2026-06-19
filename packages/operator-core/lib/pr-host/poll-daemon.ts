@@ -146,6 +146,17 @@ export interface PollDaemonDeps {
     workspaceId: string;
     prNumber: number;
   }) => Promise<{ recommendation: 'approve' | 'request_changes' | 'reject' } | null>;
+  /**
+   * PR-5 (contribution-admission): is the PR author a REVOKED contributor on this
+   * harness's hive? The autonomous auto-flow MUST honor revocation just like the
+   * manual reviewPr route does — a revoked contributor's PR is never auto-approved
+   * /merged. Default: isPrAuthorRevoked (resolves harness→hive→revoked-set).
+   */
+  isAuthorRevoked?: (args: {
+    workspaceId: string;
+    harnessSlug: string;
+    githubUserId: number;
+  }) => Promise<boolean>;
   now?: () => number;
   random?: () => number;
 }
@@ -173,6 +184,8 @@ export interface PollOutcome {
   merged: number[];
   triggered: number[];
   vetoed: number[];
+  /** PR-5: PRs whose author is a revoked contributor — refused the auto-flow. */
+  revoked: number[];
   error?: { kind: string; message: string };
   /** Backoff applied to next_fire_at (ms from now) when status==='error'. */
   backoffMs?: number;
@@ -189,6 +202,11 @@ interface ResolvedDeps {
     workspaceId: string;
     prNumber: number;
   }) => Promise<{ recommendation: 'approve' | 'request_changes' | 'reject' } | null>;
+  isAuthorRevoked: (args: {
+    workspaceId: string;
+    harnessSlug: string;
+    githubUserId: number;
+  }) => Promise<boolean>;
   now: () => number;
   random: () => number;
 }
@@ -201,18 +219,20 @@ function resolveDeps(deps: PollDaemonDeps): ResolvedDeps {
     resolveViewer: deps.resolveViewer ?? defaultResolveViewer,
     triggerReviewer: deps.triggerReviewer ?? defaultTriggerReviewer,
     readReport: deps.readReport ?? defaultReadReport,
+    isAuthorRevoked: deps.isAuthorRevoked ?? defaultIsAuthorRevoked,
     now: deps.now ?? Date.now,
     random: deps.random ?? Math.random,
   };
 }
 
-const EMPTY_COUNTS = (): Pick<PollOutcome, 'prsSeen' | 'prsProcessed' | 'approved' | 'merged' | 'triggered' | 'vetoed'> => ({
+const EMPTY_COUNTS = (): Pick<PollOutcome, 'prsSeen' | 'prsProcessed' | 'approved' | 'merged' | 'triggered' | 'vetoed' | 'revoked'> => ({
   prsSeen: 0,
   prsProcessed: 0,
   approved: [],
   merged: [],
   triggered: [],
   vetoed: [],
+  revoked: [],
 });
 
 // ── The testable core ─────────────────────────────────────────────────────────
@@ -314,6 +334,20 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
     // (d) auto-flow gate.
     const decision = decideAutoReview(enriched, autoSettings);
     if (decision.kind === 'skip') continue;
+
+    // PR-5 contribution-admission: a REVOKED contributor's PR never enters the auto
+    // path — the strongest deny, ahead of trust/checks (the manual reviewPr route
+    // enforces the same; this closes the autonomous-path hole where the daemon would
+    // otherwise auto-approve+merge a revoked author's PR). The S0 invariant.
+    const authorRevoked = await d.isAuthorRevoked({
+      workspaceId,
+      harnessSlug: installSlug,
+      githubUserId: enriched.author.github_user_id,
+    });
+    if (authorRevoked) {
+      counts.revoked.push(enriched.ref.number);
+      continue;
+    }
 
     // PR-2 report veto (when present): a request_changes/reject blocks the auto path
     // even for a trusted author with green checks. Absent report ⇒ no veto.
@@ -627,6 +661,22 @@ async function defaultReadReport(args: {
     return r ? { recommendation: r.recommendation } : null;
   } catch {
     return null; // PR-2's pr_review_reports table absent / no report yet ⇒ no veto.
+  }
+}
+
+/** Resolve the PR author's contributor-revocation status (PR-5). Fail-safe: false
+ *  on any error — a revocation-read blip must not block the auto-flow; the trust
+ *  gate still protects (an untrusted author never reaches the merge). */
+async function defaultIsAuthorRevoked(args: {
+  workspaceId: string;
+  harnessSlug: string;
+  githubUserId: number;
+}): Promise<boolean> {
+  try {
+    const { isPrAuthorRevoked } = await import('./contribution-admission');
+    return await isPrAuthorRevoked(args);
+  } catch {
+    return false;
   }
 }
 

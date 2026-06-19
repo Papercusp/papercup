@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
+import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 
 export default defineTool({
   name: 'memory:forget',
@@ -40,13 +41,24 @@ export default defineTool({
   }),
   async handler(args) {
     const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
-      };
+    // B1: bound both backend calls so a wedged store yields memory_timeout
+    // instead of hanging the handler forever (the 2026-06-19 outage class).
+    try {
+      const avail = await withMemoryToolTimeout(backend.available(), 'memory:forget available');
+      if (!avail.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
+        };
+      }
+      await withMemoryToolTimeout(backend.forget(args.id), 'memory:forget forget');
+    } catch (err) {
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout' }) }],
+        };
+      }
+      throw err;
     }
-    await backend.forget(args.id);
     // Learning signal (learning-system-audit P-050): an agent-driven forget is
     // the contradiction/staleness signal the extraction-adaptation loop reads
     // (memory_feedback → rebuildCustomInstructions). Fire-and-forget.

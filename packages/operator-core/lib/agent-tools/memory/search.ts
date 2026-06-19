@@ -81,44 +81,60 @@ export default defineTool({
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
     const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, results: [] }) }],
-      };
-    }
     const limit = args.limit ?? 8;
 
-    let harnessSlugs: string[];
-    if (args.harness_slug) {
-      harnessSlugs = [args.harness_slug];
-    } else {
-      try {
-        // The principal carries the resolved workspace (incl. a per-call
-        // `workspace` pin from an unscoped SU session); the old
-        // `ctx.workspaceId` read was never populated on principal-gated
-        // handlers, so the fan-out silently degraded to user-pool-only (P-004).
-        const reg = await loadHarnessRegistry(ctx.principal?.workspaceId ?? '');
-        // P-016: exclude ephemeral/benchmark harness scopes from unscoped
-        // production recall so benchmark memories don't pollute results.
-        // Explicit harness_slug (above) bypasses this filter intentionally.
-        harnessSlugs = reg.projects
-          .map((p) => p.slug)
-          .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
-      } catch {
-        harnessSlugs = [];
+    // B1 (infra-fail-fast-build-integrity-2026-06-19): bound EVERY backend call
+    // with a deadline. `available()` itself can hang when the store is wedged
+    // (the 2026-06-19 outage), so it is inside the guarded region too. A timeout
+    // returns the same `{ ok:false, reason, results:[] }` envelope as a clean
+    // "store down" probe — but with `memory_timeout` — instead of an infinite hang.
+    let hits: MemoryEntry[];
+    try {
+      const avail = await withMemoryToolTimeout(backend.available(), 'memory:search available');
+      if (!avail.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, results: [] }) }],
+        };
       }
-    }
 
-    // Scope: user-pool + harness-pool(s) normally. With harnessOnly (+ a harness_slug), scope to ONLY the
-    // harness pool — drop the user pool — so an ISOLATED per-run pool (a benchmark capability-injection arm)
-    // recalls just its own facts, not the user's personal memories (which would be noise / confound the
-    // measurement). harnessOnly without harness_slug is meaningless (no pool to isolate to) → ignored.
-    const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
-    const scope = args.harnessOnly && args.harness_slug ? harnessScopes : [user.id, ...harnessScopes];
-    // The backend fans out per scope (limit applies per pool), merges,
-    // de-dupes by id and sorts by score; we apply the global cap here.
-    let hits = await backend.search(args.query, { scope, limit });
+      let harnessSlugs: string[];
+      if (args.harness_slug) {
+        harnessSlugs = [args.harness_slug];
+      } else {
+        try {
+          // The principal carries the resolved workspace (incl. a per-call
+          // `workspace` pin from an unscoped SU session); the old
+          // `ctx.workspaceId` read was never populated on principal-gated
+          // handlers, so the fan-out silently degraded to user-pool-only (P-004).
+          const reg = await loadHarnessRegistry(ctx.principal?.workspaceId ?? '');
+          // P-016: exclude ephemeral/benchmark harness scopes from unscoped
+          // production recall so benchmark memories don't pollute results.
+          // Explicit harness_slug (above) bypasses this filter intentionally.
+          harnessSlugs = reg.projects
+            .map((p) => p.slug)
+            .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
+        } catch {
+          harnessSlugs = [];
+        }
+      }
+
+      // Scope: user-pool + harness-pool(s) normally. With harnessOnly (+ a harness_slug), scope to ONLY the
+      // harness pool — drop the user pool — so an ISOLATED per-run pool (a benchmark capability-injection arm)
+      // recalls just its own facts, not the user's personal memories (which would be noise / confound the
+      // measurement). harnessOnly without harness_slug is meaningless (no pool to isolate to) → ignored.
+      const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
+      const scope = args.harnessOnly && args.harness_slug ? harnessScopes : [user.id, ...harnessScopes];
+      // The backend fans out per scope (limit applies per pool), merges,
+      // de-dupes by id and sorts by score; we apply the global cap here.
+      hits = await withMemoryToolTimeout(backend.search(args.query, { scope, limit }), 'memory:search search');
+    } catch (err) {
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout', results: [] }) }],
+        };
+      }
+      throw err;
+    }
 
     // memory_feedback consumer (EI-366 / consume-edges P-031): drop hits the
     // user deleted (tombstones — the lexical projection has no per-delete
