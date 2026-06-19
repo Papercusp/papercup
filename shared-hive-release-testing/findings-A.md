@@ -148,9 +148,19 @@ download-event repro deferred past the active fleet-halt — recorded on EI-1590
   shared muxer is the most likely surface that disrupts the 1st hive's replication
   channel (symptom fits: owner drains to its log + `peer_connected`, but the log core
   stops replicating to the peer → peer applies nothing).
-- NEXT to pin: on the peer, check the owner's hive1 log core `contiguousLength` +
-  `download`/`upload` events after hive2 boots (per the EI-681 lesson). High-value
-  before release — a real deployment routinely hosts multiple hives.
+**LIVE REFINEMENT (halt-safe curl+psql repro — overturns the steady-state-muxer guess):**
+Adding a 2nd hive to an ALREADY-established, federating pair does NOT stall it
+(baseline A→B 4s; created a 2nd hive on A; a subsequent hello-world write still
+crossed in 6s). So the trigger is **timing relative to the join, not steady-state
+2-hive presence**: the stall occurs only when the owner **already hosts the 2nd hive
+at the moment the peer JOINS** the 1st hive (v2: create hive1+hive2 → B joins → stall;
+live: create hive1 → B joins → create hive2 → works). The bug is therefore in the
+**join-time federation setup with 2+ hives on the owner** (admission / which-log-core-
+to-serve resolution on the joining side), NOT a steady-state replication-channel
+teardown. Remaining to fully close: a fresh-pair before-join confirmation (A creates
+2 hives → B joins → expect stall) — needs a GUI launch, deferred past the fleet-halt.
+Recorded on EI-1590. High-value before release — a real deployment routinely hosts
+multiple hives, and joiners arrive against owners that already do.
 
 ---
 
