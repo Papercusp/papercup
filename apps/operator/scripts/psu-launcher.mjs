@@ -1344,6 +1344,8 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     `psu: forking claude ${session.sessionId} → tracked session #${res.sessionId ?? '?'} (${forkId}) in ${session.cwd}  (${bin} ${forkArgs.join(' ')})`,
   );
   console.error('psu: the fork is a NEW tracked session — it appears in `psu --resume`; the original is untouched.');
+  // Surface the account pin outcome the POST resolved (fold or fail-soft reason).
+  if (res.accountNotice) console.error(`psu: account — ${res.accountNotice}`);
   // Run in the ORIGINAL's cwd (the seeded transcript is keyed by it); the fresh
   // bootstrap envelope (config dir / coord id / MCP) makes it a proper SU session.
   runWrapper({ wrapperBin: bin, args: forkArgs, cwd: session.cwd, envelopeEnv: { ...res.envelopeEnv } });
@@ -1407,8 +1409,11 @@ async function resumeFlow(args = {}) {
         );
         process.exit(1);
       }
-      if (args.fork) { await launchTrackedFork(tracked, args); return; }
-      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir });
+      // Re-pin the gateway account (prompt when interactive / honor --account) —
+      // the pin is spawn-env only, so a resume otherwise drops it (option 1).
+      const acct = await chooseResumeAccount(tracked, args);
+      if (args.fork) { await launchTrackedFork(tracked, args, acct); return; }
+      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: { env: acct.env, notice: acct.notice } });
       return;
     }
 
@@ -1429,7 +1434,9 @@ async function resumeFlow(args = {}) {
     await confirmUntrackedResume(untracked, args);
     // An untracked session has no adv row to seed a tracked fork from — fork it in
     // place (claude mints a random id; resumable only by uuid). launchResume handles it.
-    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir });
+    // Account re-pin applies here too (a raw resume can be routed through the gateway).
+    const acct = await chooseResumeAccount(untracked, args);
+    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: { env: acct.env, notice: acct.notice } });
     return;
   }
 
@@ -1459,8 +1466,11 @@ async function resumeFlow(args = {}) {
     message: 'Resume which session?',
     source: async (term) => filterRows(rows, term),
   });
-  if (args.fork) { await launchTrackedFork(picked, args); return; }
-  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir });
+  // Re-pin the gateway account (prompt when interactive / honor --account) before
+  // resuming — the pin is spawn-env only, otherwise lost on resume (option 1).
+  const acct = await chooseResumeAccount(picked, args);
+  if (args.fork) { await launchTrackedFork(picked, args, acct); return; }
+  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: { env: acct.env, notice: acct.notice } });
 }
 
 // `psu --brain` (native-terminal-desktop D-013): the desktop chat dock's
