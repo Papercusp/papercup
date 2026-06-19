@@ -25,10 +25,25 @@ export interface AutoApproveContext {
   reviewerRoleEnabled: boolean;
   /** auto_review setting for this harness. */
   autoReview: boolean;
+  /**
+   * PR-5 (contribution-admission): the PR author is a REVOKED Hive contributor —
+   * the owner added all their device pubkeys to the Hive's revoked set
+   * (isHiveContributorRevoked). When true the approve is refused BEFORE the
+   * trust/checks gates: revocation is the strongest deny, and it must hold even
+   * for an author who is otherwise in the trust list. The live chokepoint
+   * resolves this and passes it in (default false ⇒ today's behavior).
+   */
+  authorRevoked?: boolean;
 }
 
 export interface AutoApproveResult {
-  action: 'approved' | 'skipped_already_approved' | 'skipped_untrusted' | 'skipped_disabled' | 'error';
+  action:
+    | 'approved'
+    | 'skipped_already_approved'
+    | 'skipped_untrusted'
+    | 'skipped_revoked'
+    | 'skipped_disabled'
+    | 'error';
   prNumber: number;
   detail?: string;
 }
@@ -52,6 +67,13 @@ export async function tryAutoApprove(
   // P-044a gate checks.
   if (!ctx.reviewerRoleEnabled || !ctx.autoReview) {
     return { action: 'skipped_disabled', prNumber };
+  }
+  // PR-5 contribution-admission: a REVOKED contributor is refused first — the
+  // strongest deny, ahead of (and overriding) the trust gate. Audited so the
+  // refusal is visible, never silent.
+  if (ctx.authorRevoked) {
+    await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'skipped_revoked', 'author is a revoked contributor');
+    return { action: 'skipped_revoked', prNumber };
   }
   if (!ctx.trustedAuthorIds.has(authorId)) {
     await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'skipped_untrusted', null);

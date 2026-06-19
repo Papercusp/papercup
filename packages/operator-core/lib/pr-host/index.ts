@@ -42,3 +42,62 @@ export {
 } from './types';
 
 export { GitHubPrHost, createGitHubPrHost } from './github';
+
+// PR-2 — agent-reviewer + structured review report.
+export type {
+  PrReviewRecommendation,
+  PrReviewChecksObserved,
+  PrReviewReport,
+  RawLlmReview,
+  ReviewSignals,
+  StoredPrReviewReport,
+} from './pr-review-report-types';
+export {
+  PR_REVIEW_RECOMMENDATIONS,
+  SECRET_PATTERNS,
+  GUARD_RISK,
+  scanDiffForSecrets,
+  diffChangedPaths,
+  diffTouchesTests,
+  isDiffEmpty,
+  computeReviewSignals,
+  applySafetyGuard,
+  assembleReport,
+  extractJsonObject,
+  parseRawLlmReview,
+  reportGatesAutoApprove,
+  isStoredPrReviewReport,
+} from './pr-review-report-types';
+
+export type {
+  LlmRunner,
+  LlmRunResult,
+  ReviewPrArgs,
+  ReviewPrResult,
+  ReviewProvenance,
+  RunAgentReviewArgs,
+  RunAgentReviewResult,
+  RunAgentReviewDeps,
+} from './agent-reviewer';
+export {
+  REVIEW_MODEL,
+  DEFAULT_MAX_DIFF_CHARS,
+  REVIEWER_SYSTEM_PROMPT,
+  defaultLlmRunner,
+  buildReviewPrompt,
+  reviewPr,
+  runAgentReview,
+} from './agent-reviewer';
+
+export type {
+  FeatureContext,
+  StoreReviewReportArgs,
+  WriteAgentReviewAuditArgs,
+  AgentReviewAuditAction,
+} from './pr-review-report-store';
+export {
+  storeReviewReport,
+  readLatestReviewReport,
+  loadFeatureContextForPr,
+  writeAgentReviewAudit,
+} from './pr-review-report-store';

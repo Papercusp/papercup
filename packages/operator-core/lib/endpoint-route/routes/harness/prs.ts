@@ -26,6 +26,8 @@ import {
   resolveMergedPrFeatureId,
   stampCompletionRefOnMerge,
 } from '../../../harness/completion-ref-writer';
+import { markFeaturePrState } from '../../../harness/feature-pr-producer';
+import { resolveLocalGithubIdentity } from '../../../identity/resolve-local-github-identity';
 
 const execFileP = promisify(execFile);
 
@@ -54,8 +56,10 @@ import {
   type AutoApproveContext,
 } from '../../../pr-host/auto-approve';
 import { tryAutoMerge, type AutoMergeContext } from '../../../pr-host/auto-merge';
+import { isPrAuthorRevoked } from '../../../pr-host/contribution-admission';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { getOrgPg } from '@papercusp/db-org';
-import type { PrRowData } from '../../../pr-host/pr-row-data';
+import type { PrRowData, PrRowReport } from '../../../pr-host/pr-row-data';
 
 /** Flat runtime shape that github.ts actually returns (predates types.ts restructure). */
 interface FlatPr {
@@ -134,22 +138,143 @@ export async function listHarnessPrs(
     // Cache miss is fine — UI renders without check detail.
   }
 
-  const prs: PrRowData[] = (result.data as unknown as FlatPr[]).map((pr) => ({
-    remote: pr.remote,
-    number: pr.number,
-    title: pr.title,
-    author_login: pr.author_login,
-    author_github_id: pr.author_github_id,
-    html_url: pr.html_url,
-    state: pr.state as PrRowData['state'],
-    review_decision: pr.review_decision as PrRowData['review_decision'],
-    check_conclusion: checkCache.get(pr.head_sha) ?? pr.check_conclusion,
-    // trusted + reviewerRoleEnabled are resolved client-side in PrsTab.
-    trusted: false,
-    reviewerRoleEnabled: false,
-  }));
+  const headShaByNumber = new Map<number, string>();
+  const prs: PrRowData[] = (result.data as unknown as FlatPr[]).map((pr) => {
+    headShaByNumber.set(pr.number, pr.head_sha);
+    return {
+      remote: pr.remote,
+      number: pr.number,
+      title: pr.title,
+      author_login: pr.author_login,
+      author_github_id: pr.author_github_id,
+      html_url: pr.html_url,
+      state: pr.state as PrRowData['state'],
+      review_decision: pr.review_decision as PrRowData['review_decision'],
+      check_conclusion: checkCache.get(pr.head_sha) ?? pr.check_conclusion,
+      // trusted + reviewerRoleEnabled are resolved client-side in PrsTab.
+      trusted: false,
+      reviewerRoleEnabled: false,
+    };
+  });
+
+  // PR-3: attach the agent review report (PR-2) + the linked WI (PR-4) so the
+  // report GUI renders on this surface. Best-effort — missing tables (PR-2/PR-4
+  // not yet migrated) degrade to no report / no WI, never an error.
+  await attachReportsAndWi(slug, prs, headShaByNumber);
 
   return { ok: true, prs };
+}
+
+// ─── PR-3: report + WI enrichment (best-effort) ───────────────────
+
+interface ReportDbRow {
+  pr_number: number | string;
+  head_sha: string;
+  feature_id: string | null;
+  recommendation: string;
+  summary: string;
+  rationale: string;
+  risks: unknown;
+  checks_observed: unknown;
+  model: string | null;
+  reviewed_at: string | Date;
+}
+
+/** jsonb arrives parsed from postgres.js; tolerate a TEXT fallback. */
+function asStringArray(v: unknown): string[] {
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string');
+  if (typeof v === 'string') {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? p.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function asChecksObserved(v: unknown): PrRowReport['checksObserved'] {
+  let obj: unknown = v;
+  if (typeof v === 'string') {
+    try {
+      obj = JSON.parse(v);
+    } catch {
+      obj = {};
+    }
+  }
+  if (obj === null || typeof obj !== 'object') obj = {};
+  return obj as PrRowReport['checksObserved'];
+}
+
+/**
+ * Attach the latest agent report + the linked WI to each row, in place.
+ * Scoped by harness_slug only (mirrors PR-2's `readLatestReviewReport` /
+ * `loadFeatureContextForPr` read path). Two queries total; each wrapped so
+ * a missing table is a no-op (the producer/migration may not have landed).
+ */
+export async function attachReportsAndWi(
+  slug: string,
+  prs: PrRowData[],
+  headShaByNumber: Map<number, string>,
+): Promise<void> {
+  if (prs.length === 0) return;
+
+  // Latest report per PR number.
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql.unsafe<ReportDbRow[]>(
+      `SELECT DISTINCT ON (pr_number)
+              pr_number, head_sha, feature_id, recommendation, summary, rationale,
+              risks, checks_observed, model, reviewed_at
+         FROM harness_shared.pr_review_reports
+        WHERE harness_slug = $1
+        ORDER BY pr_number, reviewed_at DESC`,
+      [slug],
+    );
+    const byNumber = new Map<number, ReportDbRow>();
+    for (const r of rows) byNumber.set(Number(r.pr_number), r);
+    for (const pr of prs) {
+      const r = byNumber.get(pr.number);
+      if (!r) continue;
+      const currentHead = headShaByNumber.get(pr.number) ?? '';
+      pr.report = {
+        recommendation: r.recommendation as PrRowReport['recommendation'],
+        summary: r.summary,
+        rationale: r.rationale,
+        risks: asStringArray(r.risks),
+        checksObserved: asChecksObserved(r.checks_observed),
+        headSha: r.head_sha,
+        stale: !!r.head_sha && !!currentHead && r.head_sha !== currentHead,
+        model: r.model ?? '',
+        reviewedAt:
+          r.reviewed_at instanceof Date ? r.reviewed_at.toISOString() : String(r.reviewed_at),
+      };
+      if (r.feature_id) pr.featureId = r.feature_id;
+    }
+  } catch {
+    // pr_review_reports table absent (PR-2 not migrated) → no reports.
+  }
+
+  // WI link from the PR-4 producer, independent of whether a report exists.
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql.unsafe<{ pr_url: string; feature_id: string }[]>(
+      `SELECT pr_url, feature_id
+         FROM harness_shared.harness_feature_prs
+        WHERE harness_slug = $1`,
+      [slug],
+    );
+    const byUrl = new Map<string, string>();
+    for (const r of rows) if (r.pr_url && r.feature_id) byUrl.set(r.pr_url, r.feature_id);
+    for (const pr of prs) {
+      if (pr.featureId) continue;
+      const fid = byUrl.get(pr.html_url);
+      if (fid) pr.featureId = fid;
+    }
+  } catch {
+    // harness_feature_prs read failed → no WI links.
+  }
 }
 
 /** Per-member fan-out concurrency for the hive-scoped listing (P-005). */
@@ -313,10 +438,40 @@ const reviewPr = defineTool({
     }
     const pr = prResult.data;
 
-    const reviewerGithubId = body.reviewer_github_id ?? 0;
-    const reviewerLogin = body.reviewer_login ?? 'papercusp';
+    // PR-4 (c): attribute the review to the HUMAN operator (the gh user), not a
+    // placeholder id, so every auto_review_audit row names a real, accountable
+    // human (the same identity the producer records as PR author + the EN-2 P-RATE
+    // bucket). The caller may still override via the body (e.g. a multi-user hive).
+    let reviewerGithubId = body.reviewer_github_id ?? 0;
+    let reviewerLogin = body.reviewer_login ?? 'papercusp';
+    if (body.reviewer_github_id === undefined) {
+      const operator = await resolveLocalGithubIdentity();
+      if (operator.kind === 'ok') {
+        reviewerGithubId = operator.githubUserId;
+        reviewerLogin = operator.githubLogin;
+      }
+    }
 
     const flatPr = pr as unknown as FlatPr;
+
+    // PR-5 contribution-admission: even a MANUAL approve/merge must not admit a
+    // REVOKED contributor's code. A manual action bypasses the trust gate, so
+    // revocation is the only thing standing between a revoked contributor and
+    // canonical — refuse explicitly (don't silently no-op into {ok:true}).
+    const authorRevoked = await isPrAuthorRevoked({
+      workspaceId: activeWorkspaceId(),
+      harnessSlug: slug,
+      githubUserId: flatPr.author_github_id,
+    });
+    if (authorRevoked) {
+      return Response.json(
+        {
+          error: `PR #${prNumber} author @${flatPr.author_login} is a revoked contributor on this hive — contribution admission denied.`,
+          revoked: true,
+        },
+        { status: 403 },
+      );
+    }
 
     const approveCtx: AutoApproveContext = {
       harnessSlug: slug,
@@ -325,6 +480,7 @@ const reviewPr = defineTool({
       trustedAuthorIds: new Set([flatPr.author_github_id]), // manual action bypasses trust gate
       reviewerRoleEnabled: true,
       autoReview: true,
+      authorRevoked,
     };
 
     const approveResult = await tryAutoApprove(host, pr, approveCtx);
@@ -343,6 +499,7 @@ const reviewPr = defineTool({
         reviewerLogin,
         autoMerge: true,
         mergeMethod: 'squash',
+        authorRevoked,
       };
       const mergeResult = await tryAutoMerge(host, prForMerge, mergeCtx);
       if (mergeResult.action === 'error') {
@@ -369,6 +526,13 @@ const reviewPr = defineTool({
             mergeCommitSha: mergeResult.mergeCommitSha,
             prUrl: flatPr.html_url,
             prNumber,
+          });
+          // PR-4 (b): advance the WI→PR row to 'merged' so WI→PR→merged is
+          // queryable for the report GUI (and so a re-poll doesn't see it as open).
+          await markFeaturePrState({
+            harnessSlug: slug,
+            prUrl: flatPr.html_url,
+            prState: 'merged',
           });
         } catch {
           // best-effort; the merge already succeeded.

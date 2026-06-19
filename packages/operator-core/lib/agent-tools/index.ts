@@ -105,6 +105,8 @@ import './hive/create_from_repo';
 import './platform/enable';
 // per-hive-learning-loops-2026-06-14 P-072 — send a local improvement UPSTREAM (fork-PR + Comb learning-pack):
 import './platform/contribute';
+// pr-system-completion-dogfood PR-5 (D-3) — GC abandoned contribution forks (KEEP-on-merge + stale-fork sweep):
+import './platform/fork_gc';
 import './hive/dissolve';
 // shared-hive-hardening-2026-06-13 P-012 — a joiner cleanly LEAVES a shared hive:
 import './hive/leave';

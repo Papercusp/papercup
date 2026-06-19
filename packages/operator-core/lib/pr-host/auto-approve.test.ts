@@ -86,6 +86,19 @@ describe('tryAutoApprove P-044', () => {
     expect(result.action).toBe('error');
     if (result.action === 'error') expect(result.detail).toContain('Cannot approve');
   });
+
+  it('PR-5 TEETH: a revoked author is refused even though TRUSTED (revocation overrides trust)', async () => {
+    const host = makeHost();
+    // author 999 is in the trust list AND not yet approved ⇒ would normally approve.
+    const result = await tryAutoApprove(host, makePr(), { ...baseCtx, authorRevoked: true });
+    expect(result.action).toBe('skipped_revoked');
+    expect(vi.mocked(host.postReview)).not.toHaveBeenCalled();
+  });
+
+  it('PR-5: authorRevoked=false is byte-identical to today (still approves)', async () => {
+    const result = await tryAutoApprove(makeHost(), makePr(), { ...baseCtx, authorRevoked: false });
+    expect(result.action).toBe('approved');
+  });
 });
 
 describe('formatAutoApproveToast P-044d', () => {

@@ -28,6 +28,7 @@
 
 import type { OpenForkPrOpts, OpenForkPrResult } from './open-fork-pr';
 import { checkContribPolicy, type ContribDecision, type ContribPolicy } from './contrib-policy';
+import { appendAgentTrailer } from './agent-trailer';
 
 export type RepoPermission = 'admin' | 'maintain' | 'write' | 'read' | 'none';
 
@@ -46,6 +47,14 @@ export interface FeaturePassedRepoContext {
   token: string;
   upstreamOwner: string;
   upstreamRepo: string;
+  /**
+   * PR-4 (c): numeric GitHub id of the HUMAN operator the local `gh` token
+   * resolves to — recorded as the PR's author on `harness_feature_prs` so the
+   * WI→PR row is attributable to a real human (not a generic host token), and so
+   * the EN-2 P-RATE limiter buckets per-operator. Optional: when the identity
+   * can't be resolved the producer records NULL (still tracks the PR).
+   */
+  authorGithubUserId?: number | null;
 }
 
 export interface FeaturePassedDeps {
@@ -77,6 +86,19 @@ export interface FeaturePassedDeps {
     baseBranch: string;
     featureBranch: string;
   }) => Promise<string[]>;
+  /**
+   * PR-4 (b): the WI↔PR producer. Called after a PR opens to UPSERT the
+   * `harness_feature_prs` row (WI → pr_url → state='open' → author). Optional +
+   * BEST-EFFORT: a write failure NEVER flips a successful open to `opened:false`
+   * (the PR already exists). Absent ⇒ no row written (the pre-PR-4 behavior).
+   */
+  recordFeaturePrOpened?: (row: {
+    workspaceId?: string;
+    harnessSlug: string;
+    featureId: string;
+    prUrl: string;
+    authorGithubUserId?: number | null;
+  }) => Promise<void>;
   log?: (msg: string) => void;
 }
 
@@ -170,12 +192,35 @@ export async function handleFeaturePassed(
       featureBranch,
       localRepoPath: ctx.repoPath,
       title: `${input.featureId}`,
-      body: `Automated PR for ${input.featureId} (Papercusp fork-mode code→PR).`,
+      // PR-4 (c): the fork→PR-on-feature-pass path is always Bee-driven (the
+      // pipeline shipped the feature), so mark the body agent-authored — the
+      // account stays the human operator; only the agency is marked.
+      body: appendAgentTrailer(`Automated PR for ${input.featureId} (Papercusp fork-mode code→PR).`),
       token: ctx.token,
     });
 
     if (res.ok) {
       deps.log?.(`[fork-pr] ${input.featureId} → ${res.prUrl}`);
+      // PR-4 (b): track the WI→PR link the moment the PR opens, attributed to the
+      // HUMAN operator. Best-effort — the PR already exists, so a producer failure
+      // must NOT flip this to opened:false.
+      if (deps.recordFeaturePrOpened) {
+        try {
+          await deps.recordFeaturePrOpened({
+            workspaceId: input.workspaceId,
+            harnessSlug: input.harnessSlug,
+            featureId: input.featureId,
+            prUrl: res.prUrl,
+            authorGithubUserId: ctx.authorGithubUserId ?? null,
+          });
+        } catch (e) {
+          deps.log?.(
+            `[fork-pr] ${input.featureId} PR opened but harness_feature_prs write failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        }
+      }
       return {
         opened: true,
         prUrl: res.prUrl,

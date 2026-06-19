@@ -43,6 +43,11 @@ import {
   type PrReviewerSettingsPatch,
 } from '../../../pr-host/pr-reviewer-settings-types';
 import { PR_MERGE_METHODS, type PrMergeMethod } from '../../../pr-host/types';
+import {
+  resolveClaimStatus,
+  type ClaimStatusRow,
+} from '../../../harness/claim-status-resolver';
+import type { BindingClaimStatus } from '../../../harness/binding-types';
 
 // ─── Wire shapes ──────────────────────────────────────────────────
 
@@ -80,6 +85,20 @@ export interface PrReviewerSettingsResponse {
   viewer: { github_user_id: number; github_login: string } | null;
   /** Whether this viewer may write (true iff a viewer id resolved). */
   editable: boolean;
+  /**
+   * PR-3 §3: is the viewer the CLAIMED OWNER of this harness (the
+   * authority that may flip per-hive auto-mode)? Drives the GUI's owner
+   * messaging. See `isClaimedOwner`.
+   */
+  claimOwner?: boolean;
+  /**
+   * PR-3 §3: may the viewer flip the AUTO-MODE toggles (`auto_review` /
+   * `auto_merge`)? = `editable && claimOwner`. The GUI renders the auto
+   * toggle read-only when false; the POST handler enforces the same gate
+   * (the teeth). The personal reviewer-role + merge_method stay gated on
+   * `editable` only.
+   */
+  autoModeEditable?: boolean;
   /**
    * Hive-pr-rollup P-007 (D-002): when the viewer has NO settings row for this
    * harness but DOES have the reviewer role on its hive HOME, the role bit is
@@ -158,6 +177,110 @@ export function parseTrustRemoveBody(
     return { ok: false, error: 'trusted_github_user_id must be a positive integer' };
   }
   return { ok: true, trustedId: n };
+}
+
+// ─── PR-3: owner-gated auto-mode ──────────────────────────────────
+
+/**
+ * Does this patch flip an AUTO-MODE lever (`auto_review` / `auto_merge`)?
+ * Those are the per-hive "auto-apply agent recommendations" decision —
+ * gated on CLAIMED-OWNER authority (PLAN-pr-system-completion-dogfood
+ * PR-3 §3). The personal reviewer-role + merge_method are NOT auto-mode
+ * and stay gh-auth-gated. Pure — unit-tested.
+ */
+export function patchTouchesAutoMode(patch: PrReviewerSettingsPatch): boolean {
+  return patch.auto_review !== undefined || patch.auto_merge !== undefined;
+}
+
+/**
+ * Whether the viewer may edit AUTO-MODE for `slug`, given the GitHub
+ * sign-in state + the claimed-owner authority. Pure — unit-tested.
+ * `editable` is the gh-auth gate (a resolved viewer); `claimOwner` is the
+ * claimed-owner gate. Both must hold to flip the auto toggles.
+ */
+export function autoModeEditableFrom(opts: { editable: boolean; claimOwner: boolean }): boolean {
+  return opts.editable && opts.claimOwner;
+}
+
+type SrbcOwnerRow = {
+  github_repository_id: number | string;
+  claim_status: BindingClaimStatus;
+  provisional_owner_github_user_id: number | string;
+  provisional_owner_github_login: string | null;
+  claimed_by_github_user_ids: Array<number | string> | string | null;
+  superseded_by_harness_topic: string | null;
+};
+
+/** Postgres BIGINT[] arrives as number[], string[], or a `{1,2}` literal. */
+function parseClaimantIds(raw: SrbcOwnerRow['claimed_by_github_user_ids']): number[] {
+  if (raw == null) return [];
+  let arr: unknown[];
+  if (Array.isArray(raw)) arr = raw;
+  else {
+    const s = String(raw).trim();
+    if (!s || s === '{}' || s === '[]') return [];
+    if (s.startsWith('{') && s.endsWith('}')) arr = s.slice(1, -1).split(',');
+    else {
+      try {
+        const v = JSON.parse(s);
+        arr = Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    }
+  }
+  return arr
+    .map((v) => (typeof v === 'number' ? v : Number.parseInt(String(v).trim(), 10)))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+/**
+ * Is `viewerId` the CLAIMED OWNER of `slug` — the authority that may flip
+ * auto-mode? Rules (PR-3 §3 "an unclaimed/non-owner viewer sees it
+ * read-only"):
+ *   - NO binding row (a purely-local, never-shared harness) → the local
+ *     operator IS the implicit owner → true for any resolved viewer.
+ *   - binding row present → true ONLY when the binding is CLAIMED and the
+ *     viewer is a claimant. Unclaimed / stale / superseded / not-the-
+ *     claimant → false (read-only until claimed by this viewer).
+ * Best-effort: a missing table / PG error → false (fail closed).
+ */
+async function isClaimedOwner(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  slug: string,
+  viewerId: number | null,
+): Promise<boolean> {
+  if (viewerId == null) return false;
+  try {
+    const rows = (await sql`
+      SELECT github_repository_id, claim_status,
+             provisional_owner_github_user_id, provisional_owner_github_login,
+             claimed_by_github_user_ids, superseded_by_harness_topic
+        FROM harness_shared.shared_repo_binding_cache
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${slug}
+       LIMIT 1
+    `) as unknown as SrbcOwnerRow[];
+    const row = rows[0];
+    // No shared binding → local harness; the resolved operator is the owner.
+    if (!row) return true;
+
+    const claimRow: ClaimStatusRow = {
+      github_repository_id: Number(row.github_repository_id),
+      claim_status: row.claim_status,
+      provisional_owner_github_user_id: Number(row.provisional_owner_github_user_id),
+      provisional_owner_github_login: row.provisional_owner_github_login ?? '',
+      claimed_by_github_user_ids: parseClaimantIds(row.claimed_by_github_user_ids),
+      claimant_logins: {},
+      superseded_by_harness_topic: row.superseded_by_harness_topic,
+    };
+    const resolved = resolveClaimStatus(claimRow, viewerId);
+    return resolved.status === 'claimed' && resolved.isClaimant;
+  } catch {
+    // Missing table / PG error → fail closed (no auto-mode edit).
+    return false;
+  }
 }
 
 // ─── DB row → wire mappers ────────────────────────────────────────
@@ -395,12 +518,16 @@ const getSettings = defineTool({
         ts: new Date(r.ts).toISOString(),
       }));
 
+      // PR-3 §3: claimed-owner authority — the gate for editing auto-mode.
+      const claimOwner = await isClaimedOwner(sql, workspaceId, slug, v?.id ?? null);
       const resp: PrReviewerSettingsResponse = {
         settings: toToggles(settingsRow),
         trustList,
         audit,
         viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
         editable: !!v,
+        claimOwner,
+        autoModeEditable: autoModeEditableFrom({ editable: !!v, claimOwner }),
         inheritedFrom,
         grantedByOwnership,
       };
@@ -417,6 +544,8 @@ const getSettings = defineTool({
           audit: [],
           viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
           editable: !!v,
+          claimOwner: false,
+          autoModeEditable: false,
         };
         return Response.json(resp);
       }
@@ -446,6 +575,24 @@ const postSettings = defineTool({
 
     const { sql } = getOrgPg();
     const now = Date.now();
+
+    // PR-3 §3 (teeth): flipping AUTO-MODE (auto_review / auto_merge) requires
+    // CLAIMED-OWNER authority. A non-owner's auto-mode change is refused (403)
+    // — the GUI also renders the toggle read-only, but the server is the trust
+    // boundary. The personal reviewer-role + merge_method are NOT gated here.
+    if (patchTouchesAutoMode(parsed.patch)) {
+      const claimOwner = await isClaimedOwner(sql, workspaceId, slug, v.id);
+      if (!claimOwner) {
+        return Response.json(
+          {
+            error:
+              'Only the claimed owner of this harness can change auto-mode. Claim the harness to configure auto-apply.',
+            code: 'NOT_CLAIMED_OWNER',
+          },
+          { status: 403 },
+        );
+      }
+    }
 
     const existingRows = (await sql`
       SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at

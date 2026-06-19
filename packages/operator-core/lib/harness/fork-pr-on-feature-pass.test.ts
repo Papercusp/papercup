@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { handleFeaturePassed, type FeaturePassedDeps } from './fork-pr-on-feature-pass';
+import { AGENT_COAUTHOR_TRAILER } from './agent-trailer';
 
 const INPUT = { harnessSlug: 'papercup', featureId: 'F-001', workspaceId: 'ws1' };
 
@@ -25,6 +26,7 @@ function baseDeps(over: Partial<FeaturePassedDeps> = {}): FeaturePassedDeps {
       token: 'ghs_secret',
       upstreamOwner: 'papercupai',
       upstreamRepo: 'papercup',
+      authorGithubUserId: 4242,
     })),
     getPermission: vi.fn(async () => 'read' as const),
     ensureFeatureBranch: vi.fn(async () => {}),
@@ -117,5 +119,76 @@ describe('handleFeaturePassed', () => {
     const out = await handleFeaturePassed(INPUT, deps);
     expect(out.opened).toBe(false);
     if (!out.opened) expect(out.reason).toBe('error');
+  });
+});
+
+describe('handleFeaturePassed — PR-4 (WI↔PR producer + agent trailer + identity)', () => {
+  it('records the WI→PR row attributed to the human operator when a PR opens', async () => {
+    const recordFeaturePrOpened = vi.fn(async () => {});
+    const deps = baseDeps({ recordFeaturePrOpened });
+    const out = await handleFeaturePassed(INPUT, deps);
+    expect(out.opened).toBe(true);
+    expect(recordFeaturePrOpened).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      harnessSlug: 'papercup',
+      featureId: 'F-001',
+      prUrl: 'https://github.com/papercupai/papercup/pull/7',
+      authorGithubUserId: 4242, // the resolved gh operator id from the repo context
+    });
+  });
+
+  it('marks the PR body agent-authored (Co-authored-by: papercusp-bee trailer)', async () => {
+    const deps = baseDeps();
+    await handleFeaturePassed(INPUT, deps);
+    expect(deps.openForkPr).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining(AGENT_COAUTHOR_TRAILER) }),
+    );
+  });
+
+  it('a producer write failure does NOT flip a successful open to opened:false', async () => {
+    const recordFeaturePrOpened = vi.fn(async () => {
+      throw new Error('pg down');
+    });
+    const deps = baseDeps({ recordFeaturePrOpened });
+    const out = await handleFeaturePassed(INPUT, deps);
+    expect(out).toEqual({ opened: true, prUrl: 'https://github.com/papercupai/papercup/pull/7', forkOwner: 'aviynw' });
+  });
+
+  it('records NO row when not in fork mode (integration) or the PR fails', async () => {
+    const recIntegration = vi.fn(async () => {});
+    await handleFeaturePassed(
+      INPUT,
+      baseDeps({ getPermission: vi.fn(async () => 'write' as const), recordFeaturePrOpened: recIntegration }),
+    );
+    expect(recIntegration).not.toHaveBeenCalled();
+
+    const recFailed = vi.fn(async () => {});
+    await handleFeaturePassed(
+      INPUT,
+      baseDeps({
+        openForkPr: vi.fn(async () => ({ ok: false as const, error: 'no access' })),
+        recordFeaturePrOpened: recFailed,
+      }),
+    );
+    expect(recFailed).not.toHaveBeenCalled();
+  });
+
+  it('records author=null when the operator identity could not be resolved', async () => {
+    const recordFeaturePrOpened = vi.fn(async () => {});
+    const deps = baseDeps({
+      recordFeaturePrOpened,
+      resolveRepoContext: vi.fn(async () => ({
+        repoPath: '/tmp/clone',
+        baseBranch: 'main',
+        token: 'ghs_secret',
+        upstreamOwner: 'papercupai',
+        upstreamRepo: 'papercup',
+        // authorGithubUserId omitted (unresolved)
+      })),
+    });
+    await handleFeaturePassed(INPUT, deps);
+    expect(recordFeaturePrOpened).toHaveBeenCalledWith(
+      expect.objectContaining({ authorGithubUserId: null }),
+    );
   });
 });

@@ -108,4 +108,23 @@ describe('tryAutoMerge P-045', () => {
     expect(result.action).toBe('error');
     if (result.action === 'error') expect(result.detail).toContain('diverged');
   });
+
+  it('PR-5 TEETH: a revoked author is refused BEFORE the approved/checks gates (never merges)', async () => {
+    const host = makeHost();
+    // Approved + checks green would normally merge; authorRevoked must override.
+    const result = await tryAutoMerge(host, makePr({ checks_state: 'success' }), {
+      ...baseCtx,
+      authorRevoked: true,
+    });
+    expect(result.action).toBe('skipped_revoked');
+    expect(vi.mocked(host.merge)).not.toHaveBeenCalled();
+  });
+
+  it('PR-5: authorRevoked=false is byte-identical to today (still merges)', async () => {
+    const result = await tryAutoMerge(makeHost(), makePr({ checks_state: 'success' }), {
+      ...baseCtx,
+      authorRevoked: false,
+    });
+    expect(result.action).toBe('merged');
+  });
 });

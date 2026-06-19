@@ -222,11 +222,18 @@ export function diffTouchesTests(diff: string): boolean {
   return diffChangedPaths(diff).some(isTestPath);
 }
 
-/** Is the diff empty / unfetchable (nothing to review)? */
+/** Is the diff empty / unfetchable (nothing to review)? Non-empty if it
+ *  carries a file header, a hunk marker, OR any added/removed content
+ *  line — so a content-only fragment (no headers) still counts. */
 export function isDiffEmpty(diff: string): boolean {
   if (!diff || !diff.trim()) return true;
-  // A real unified diff has at least one file header or hunk marker.
-  return !/^diff --git /m.test(diff) && !/^@@ /m.test(diff);
+  if (/^diff --git /m.test(diff)) return false;
+  if (/^@@/m.test(diff)) return false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) return false;
+    if (line.startsWith('-') && !line.startsWith('---')) return false;
+  }
+  return true;
 }
 
 /**

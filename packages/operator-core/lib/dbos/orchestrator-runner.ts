@@ -1081,6 +1081,10 @@ const realFeaturePassedDeps: FeaturePassedDeps = {
       token: id.token,
       upstreamOwner: src.owner,
       upstreamRepo: src.repo,
+      // PR-4 (c): the SAME resolved gh identity that authors the PR — recorded as
+      // the human operator on the harness_feature_prs row (attributable; the EN-2
+      // P-RATE bucket key).
+      authorGithubUserId: id.githubUserId,
     };
   },
   getPermission: async ({ owner, repo }) => {
@@ -1112,6 +1116,13 @@ const realFeaturePassedDeps: FeaturePassedDeps = {
   openForkPr: async (opts) => {
     const { openForkPr } = await import('../harness/open-fork-pr');
     return openForkPr(opts);
+  },
+  // PR-4 (b): the live WI↔PR producer — UPSERT the harness_feature_prs row at
+  // PR-open so the merge-time completion stamp resolves the feature from the row
+  // (not the empty fallback) and the report GUI can link WI→PR→merged.
+  recordFeaturePrOpened: async (row) => {
+    const { upsertFeaturePrOnOpen } = await import('../harness/feature-pr-producer');
+    await upsertFeaturePrOnOpen(row);
   },
   log: (msg) => console.error(msg),
 };

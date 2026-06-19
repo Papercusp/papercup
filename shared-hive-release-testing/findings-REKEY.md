@@ -247,14 +247,22 @@ shipped provider; the `onEpochKeyApplied(hiveId,epoch)` drain callback my projec
   DARK/additive, auto-applies safely; ✅ **`hive-epoch-keys` projection + store** (P-005
   distribution data layer) — the projection (mirror hive-settings + D-001 LWW guard + harness_slug
   demux + the `onEpochKeyApplied` drain hook) + the store (`putWrappedKeys` +
-  `createPgWrappedKeyLoader` = the EpochKeyProvider's loader). **6 modules + 1 migration, 32 tests,
-  all teeth-verified; built AHEAD of the gate.** Plus J's pending-buffer (6/6).
+  `createPgWrappedKeyLoader` = the EpochKeyProvider's loader); ✅ **producer
+  `encryptForCurrentEpoch`** (P4 write-side — `hive-epoch-producer.ts`: getHiveEpoch →
+  deriveEpochKey → encryptOpPayload; returns `{epoch, ciphertext}` for J's capture hook to
+  stamp the envelope `epoch?`/`value`; e2e round-trip + "epoch N unreadable with N-1 key" proven
+  vs real crypto). **7 modules + 1 migration, 35 tests, all teeth-verified; built AHEAD of the
+  gate.** Plus J's pending-buffer (6/6). (Producer + consumer halves now BOTH landed → the
+  encrypt-on-write ↔ decrypt-on-read symmetry is complete; only the op-path WIRING remains.)
 - A-003 (a′) is now CODE-COMPLETE + integration-proven (dc9db swarm/announce + d2230 boot.ts/
   rebind; d2230's register-all composition test proves the hive-home→joiner crossing + the
   no-cross-merge gate; 935 suite green). Only 9140a's one-off LIVE binary re-witness remains.
-- REMAINING for K — the WIRING (gated on J's apply-gate + the green witness, to avoid the
-  register-all rebind collision): register the projection in register-all; `encryptForCurrentEpoch`
-  (the producer paired with J's envelope `epoch?` field); the P-004 boundary WIRING
-  (`revokeHiveContributor`/`setHiveListing` → `advanceEpochAndWrap` → `putWrappedKeys`); the
-  op-path encrypt/decrypt; then P-007/P-008: the flipped `revoked-swarm` test + the LIVE cut-off
-  witness (release gate). The data + crypto layers are DONE; what's left is integration + the live proof.
+- REMAINING for K — pure WIRING/integration (gated on J's apply-gate + the green witness, to
+  avoid the register-all rebind collision): (1) register the `hive-epoch-keys` projection in
+  register-all; (2) the P-004 boundary WIRING — call `advanceEpochAndWrap` + `putWrappedKeys`
+  from `revokeHiveContributor` + `setHiveListing` (private branch); (3) the op-path: J wires the
+  envelope `epoch?` field + calls my `encryptForCurrentEpoch` on capture + `decryptOpPayload`+the
+  provider on apply. Then P-007/P-008: the flipped `revoked-swarm` test + the LIVE cut-off witness
+  (release gate). **Every BUILDING BLOCK now exists + is teeth-verified** (crypto, epoch model,
+  boundary core, producer, consumer-provider, projection, store, J's pending-buffer); what's left
+  is connecting them into the live op path + the on-binary proof.

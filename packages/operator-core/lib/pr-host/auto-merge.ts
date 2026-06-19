@@ -16,11 +16,20 @@ export interface AutoMergeContext {
   autoMerge: boolean;
   /** Default squash. */
   mergeMethod: PrMergeMethod;
+  /**
+   * PR-5 (contribution-admission): the PR author is a REVOKED Hive contributor.
+   * When true the merge is refused BEFORE the approved/checks gates — a revoked
+   * contributor's code never reaches canonical, even if the PR carries a stale
+   * approval. The live chokepoint resolves this (isHiveContributorRevoked) and
+   * passes it in (default false ⇒ today's behavior).
+   */
+  authorRevoked?: boolean;
 }
 
 export type AutoMergeResult =
   | { action: 'merged'; mergeCommitSha: string; prNumber: number }
   | { action: 'skipped_disabled'; prNumber: number }
+  | { action: 'skipped_revoked'; prNumber: number }
   | { action: 'skipped_checks_failing'; prNumber: number }
   | { action: 'skipped_not_approved'; prNumber: number }
   | { action: 'error'; prNumber: number; detail: string };
@@ -42,6 +51,13 @@ export async function tryAutoMerge(
 
   if (!ctx.autoMerge) {
     return { action: 'skipped_disabled', prNumber };
+  }
+
+  // PR-5 contribution-admission: a REVOKED contributor's PR is refused before
+  // any approved/checks consideration — revocation is the strongest deny. Audited.
+  if (ctx.authorRevoked) {
+    await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'skipped_revoked', 'author is a revoked contributor');
+    return { action: 'skipped_revoked', prNumber };
   }
 
   // Must have been approved (by us or anyone — in auto-approve+auto-merge
