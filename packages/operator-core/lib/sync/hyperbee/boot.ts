@@ -1296,29 +1296,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     }
     if (!inScope) {
-      // A-003 fix: the slug scope can be UNRESOLVED at admit time. A joiner's member
-      // harness only learns its hive-home slug at the 2c re-key (`hiveHomeProjectionSlug`
-      // is set by `rekey`'s rebind, AFTER boot opens the topic + onAnnounce goes live).
-      // If the owner's hive-home log announce races in during that `home=<none>` window,
-      // a CONCLUSIVE out-of-scope reject would drop it permanently (announces are not
-      // re-delivered) → the hive-home log never federates (the live-RED bug the witness
-      // caught). So: while home is UNRESOLVED and the origin is some OTHER harness's slug
-      // (a hive-home candidate that the pending rebind may bring in-scope), buffer the
-      // frame for retry instead of rejecting — `retryPendingOnce` re-checks the slug
-      // scope against the now-resolved `hiveHomeProjectionSlug` and admits iff in-scope.
-      // Once home IS resolved, an out-of-scope frame is genuinely foreign → conclusive.
-      if (hiveHomeProjectionSlug == null && originSlug != null && originSlug !== slug) {
-        if (!pendingPeers.has(frame.device_pubkey)) {
-          pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
-        }
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'announce_pending',
-          `scope_unresolved origin=${originSlug} own=${slug} ${peerLabel(frame.log_core_key)}`,
-        );
-        return { admit: false, reason: 'pending' };
-      }
       // The NORMAL broadcast-filtering outcome (one topic, many harnesses) — not an
       // alarm. Recorded for observability; NOT forwarded to the admission-rejection
       // telemetry (it is not a forgery / binding failure). Conclusive (never retried).
@@ -1431,29 +1408,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         };
         const decision = await admit(input);
         if (decision.admit) {
-          // A-003: identity is verified, but the SLUG SCOPE may have been unresolved
-          // when this frame was first buffered (the joiner's hive-home rebind had not
-          // happened yet). Re-check scope against the now-current `hiveHomeProjectionSlug`
-          // (the rekey rebind updates it). Admit ONLY if in-scope; if still out-of-scope
-          // because home is STILL unresolved, keep pending (the rebind may yet land); if
-          // out-of-scope with home now RESOLVED, the frame is genuinely foreign →
-          // conclusive reject. (Identity-pending peers re-verified here are in-scope for
-          // this harness, so this gate is transparent to the D-006 channel-2 path.)
-          const originSlug = entry.frame.harness_slug ?? null;
-          const inScope = announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug);
-          if (inScope) {
-            pendingPeers.delete(devicePubkey);
-            await admitPeer(entry.frame);
-          } else if (hiveHomeProjectionSlug != null) {
-            pendingPeers.delete(devicePubkey);
-            recordBootEvent(
-              opts.workspaceId,
-              opts.harnessSlug,
-              'announce_rejected',
-              `out-of-scope origin=${originSlug} own=${slug} ${peerLabel(entry.frame.log_core_key)}`,
-            );
-          }
-          // else: home still unresolved → leave pending for the next retry tick.
+          // Verified! Remove from pending + admit.
+          pendingPeers.delete(devicePubkey);
+          await admitPeer(entry.frame);
         } else if (decision.reason !== 'pending') {
           // Conclusive failure (binding_invalid / bad_sig / revoked) —
           // stop retrying.
