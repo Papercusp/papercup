@@ -57,6 +57,16 @@ export function hiveDesktop(hiveSlug: string): SandboxDesktop | undefined {
 }
 
 /**
+ * The leased X display string for a hive (e.g. ":110"), or undefined. For wiring
+ * `DISPLAY` into a capability:bash exec (computer-tool-plan Gap C) so a bee can LAUNCH
+ * GUI apps on its leased desktop (`firefox &`); capability:computer then drives them.
+ * Never `:0` — a lease is always a sandbox display.
+ */
+export function displayForHive(hiveSlug: string): string | undefined {
+  return leases.get(hiveSlug)?.display;
+}
+
+/**
  * The env vars capability:computer reads — merge into a bee's spawn env so the
  * tool resolves the hive's leased display (and never the host :0). Empty object
  * when the hive has no desktop (→ the tool errors "no desktop leased", which is

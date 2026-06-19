@@ -309,10 +309,17 @@ import './capability/fetch';
 // the sanctioned inspect path for confined bees (capability:bash is envelope-gated).
 import './capability/inspect';
 // Bee-operated SANDBOX desktop (computer-tool-plan): screenshot/click/type via
-// xdotool against a LEASED Xvfb display (never host :0). Display resolved
-// server-side from the lease env; dormant (errors "no desktop leased") until a
-// hive desktop is provisioned. Pairs with deployment/desktop provisioning.
+// xdotool against a LEASED Xvfb display (never host :0). The handler runs in the
+// OPERATOR process, so it resolves the display per-caller from ctx.harnessSlug → the
+// in-process hive lease (open-Q#2), env fallback for direct/frame. Dormant (errors
+// "no desktop leased") until the hive is equipped via computer:provision_desktop.
 import './computer/computer';
+// Explicit per-hive desktop lease lifecycle (computer-tool-plan Gap A): the
+// operator/Queen surface that stands up / tears down / lists the sandbox desktops
+// capability:computer resolves via ctx.harnessSlug.
+import './computer/provision-desktop';
+import './computer/release-desktop';
+import './computer/list-desktops';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './dev/service_health';

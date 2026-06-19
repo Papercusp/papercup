@@ -23,6 +23,7 @@ import {
   startBackground,
 } from './bash-jobs';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
+import { displayForHive } from '../computer/desktop-lease';
 
 export default defineTool({
   name: 'capability:bash',
@@ -71,9 +72,17 @@ export default defineTool({
     // P-022/D-008: re-apply the OS sandbox to this operator-side shell when the
     // papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
     const sandboxEnabled = await capabilityExecSandboxEnabled();
+    // computer-tool-plan Gap C: if the calling bee's hive holds a leased sandbox desktop,
+    // run its shell with DISPLAY bound to that desktop so GUI apps it launches (`firefox &`,
+    // `soffice --calc &`) appear ON the leased Xvfb — capability:computer then drives them.
+    // The handler runs in the OPERATOR process, so resolve per-caller from ctx.harnessSlug
+    // (the bee's spawn-env never reaches here). No lease → no DISPLAY → unchanged. The lease
+    // is always a sandbox display, never host :0.
+    const leasedDisplay = ctx.harnessSlug ? displayForHive(ctx.harnessSlug) : undefined;
+    const desktopEnv = leasedDisplay ? { DISPLAY: leasedDisplay } : undefined;
 
     if (args.run_in_background) {
-      const job = startBackground({ command: args.command, cwd, stateDir: ctx.stateDir, sandboxEnabled }, timeoutMs);
+      const job = startBackground({ command: args.command, cwd, stateDir: ctx.stateDir, sandboxEnabled, ...(desktopEnv ? { env: desktopEnv } : {}) }, timeoutMs);
       return {
         content: [
           {
@@ -98,6 +107,7 @@ export default defineTool({
         stateDir: ctx.stateDir,
         onChunk: (chunk) => ctx.emit('output', chunk),
         sandboxEnabled,
+        ...(desktopEnv ? { env: desktopEnv } : {}),
       },
       ctx.signal,
       timeoutMs,

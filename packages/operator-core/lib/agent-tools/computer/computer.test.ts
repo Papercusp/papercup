@@ -20,7 +20,7 @@ import {
 
 /** A fake leased desktop on a sandbox display — no live Xvfb. */
 function fakeLease(display: string, width = 1024, height = 768) {
-  return { display, width, height, release: async () => {} };
+  return { display, number: Number(display.slice(1)), width, height, release: async () => {} };
 }
 
 /** A minimal valid PNG (magic + padding) so the capture passes the magic check. */
