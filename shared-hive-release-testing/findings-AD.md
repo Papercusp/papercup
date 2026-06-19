@@ -1,0 +1,67 @@
+# Findings AD — Workspace / tenancy isolation & routing
+
+**Owner:** su-860d3 · **Date:** 2026-06-19 · **Verdict: 🟡 PG-free core GREEN +
+1 latent finding (EI-1690); the S0/S1 routing MEAT is INTEGRATION → DEFERRED.**
+
+## TL;DR
+
+The PG-free tenancy-isolation primitives hold: the `local` swarm topic is distinct
+per-workspace (the federation tenancy boundary) and the workspace ALS isolates concurrent
+scopes. **One latent gap found** — the `local:<ws>/<slug>` swarm-topic binding has an
+unescaped `/` delimiter and there is no enforced `workspace_id` format guard, so a
+slashful workspace_id could collide two distinct tenancy pairs onto one topic (**EI-1690**,
+minor/latent — unreachable with today's slug-like ids). The **substantive** AD scope (the
+EI-126 default-mis-route guard, write-routing-to-correct-workspace E2E, cross-workspace
+PG-row isolation, multi-ws-per-box) is **integration** and is deferred to a calm box.
+
+## Coverage map — already-covered ↔ added ↔ deferred
+
+**Already covered (verified, not duplicated):**
+- `derive-swarm-topic.test.ts` — determinism, 32-byte length, gh/local/hive **domain
+  separation** (prefix collision impossible), explicit-topic-verbatim (the join-vs-owner
+  split fix), distinct hive pubkeys → distinct topics.
+- `workspace-als.test.ts` — `runWithWorkspace` exposes the id, preserves it across an
+  `await`, **"isolates concurrent scopes (no cross-talk)"** (the ALS-under-concurrency
+  property AD scenario 3 asks for), nested-scope restore, and
+  `runWithWorkspaceIfConcrete` correctly does NOT pin `'*'`/`''`/`undefined` (the
+  superuser-without-workspace path) — i.e. the P-021/P-022 default-fallthrough is honest.
+
+**Added here (`workspace-isolation-derive-topic.test.ts`, 4 tests, PG-free, ~44ms):**
+- Cross-workspace distinctness as a **fuzzed property** (the existing test only differed
+  gh-from-local, never ws-A-from-ws-B): distinct workspace_id (same slug) → distinct
+  topics; distinct slug (same ws) → distinct topics; `(ws,slug)→topic` is **injective**
+  over the slash-free id domain (200–300 seeds each).
+- The `local:<ws>/<slug>` **delimiter-ambiguity characterization** (EI-1690) — pins that
+  `("a/x","y")` and `("a","x/y")` derive the SAME topic today; flip to `.not` when hardened.
+
+**Deferred — the S0/S1 MEAT (integration, real PG + workspace-registry; calm-box):**
+- **Scenario 2 — write-routing correctness (the EI-126 class, S0/S1):** a federated write
+  captures under the harness's REAL workspace_id end-to-end (capture + outbox +
+  projection), never silently `'default'`. This is the highest-value AD case (EI-126 was
+  a 102 GB blowup from exactly this mis-route) and needs the real capture→drain→PG path.
+- **Scenario 6 — default-workspace trap:** a missing/ambiguous workspace_id must error or
+  resolve, not silently default-and-orphan. (The ALS side is covered — `isInRequestScope`
+  exists precisely to flag the P-021 fall-through; the WRITE side guard is the untested half.)
+- **Scenario 1 (full) — cross-workspace PG-row isolation:** no row visible across
+  workspace schemas (the topic-level isolation IS covered PG-free above).
+- **Scenarios 4/5 — multi-ws-per-box federation + workspace move/re-route.**
+
+## Finding — EI-1690 (minor / latent)
+
+`serializeBinding({kind:'local', …})` → `local:${workspace_id}/${harness_slug}` is hashed
+into the Hyperswarm topic (= the tenancy boundary). The `/` is not escaped and there is
+NO enforced workspace_id format guard (no `WORKSPACE_ID_RE` / validator anywhere; the id
+is also a filesystem path component via `workspaceDir(id)`). So distinct `(workspace,
+harness)` pairs can map to one topic if a workspace_id contains `/`. Minor today
+(harness_slug is slash-free by pattern; live ws ids are slug-like), but unguarded. Fix:
+length-prefix/escape the binding fields, or enforce a slash-free workspace_id format at
+creation. Pinned by the characterization test.
+
+## Done / verdict
+
+🟡 **PG-free isolation core GREEN** (topic per-workspace distinctness + ALS concurrency,
+the latter already covered), **+ EI-1690** (latent delimiter ambiguity, filed). The
+release-relevant S0/S1 — write-routing never-silently-default (EI-126 guard) and
+cross-workspace PG isolation — is **integration and deferred**; it is the real AD work and
+should be picked up on a calm box (it needs real PG + the workspace-registry, partly
+overlaps Brief Y's back-compat). Complements AG (idempotency) + AC (clock/HLC chaos).

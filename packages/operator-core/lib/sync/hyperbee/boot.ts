@@ -1125,11 +1125,23 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           })
         : scopedApply;
 
+      // C-001 re-key decrypt-gate seam (compose contract: findings-EN-4.md). The re-key's
+      // epoch DECRYPT-gate, when armed, wraps the enforcement stack OUTERMOST
+      // (decrypt → EN-4 → EN-2 → scopedApply) so policy/rate see PLAINTEXT and an
+      // undecryptable op — the read-cut — drops before spending rate budget / content checks.
+      // OWNERSHIP (op-path division, su-ee7e9 2026-06-19): the re-key lane owns `decryptGate`
+      // + flips `rekeyOn` to the papercusp-hive-rekey flag (and may hoist both to boot scope
+      // with the epoch-key deps). Identity stub today ⇒ `applyImpl === enforcedApply`,
+      // byte-for-byte unchanged. ONE owner per this expression — never raced.
+      const rekeyOn: boolean = false; // TODO(su-ee7e9): getFlag(FLAGS.<papercusp-hive-rekey>)
+      const decryptGate = (inner: (op: OpEnvelope) => Promise<boolean>) => inner; // TODO(su-ee7e9): real epoch decrypt-gate
+
       const mergeOpts = {
         // D-021: route through THIS harness's scoped projection apply, not the
         // global registry (which the last-booted harness would own). EN-4: wrapped by
-        // the owner-enforcement seam above (passthrough = scopedApply when no policy).
-        applyImpl: enforcedApply,
+        // the owner-enforcement seam above (passthrough = scopedApply when no policy); the
+        // C-001 re-key decrypt-gate wraps THAT outermost when armed (rekeyOn).
+        applyImpl: rekeyOn ? decryptGate(enforcedApply) : enforcedApply,
         // The old per-author cap, reshaped: a per-PASS read budget. A log with
         // more backlog than this advances chunk-by-chunk across the 1Hz poll
         // (≈50k ops/sec/log ingest ceiling) instead of losing its tail (EI-91).

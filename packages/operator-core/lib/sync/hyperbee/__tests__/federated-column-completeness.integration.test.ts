@@ -210,6 +210,14 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp; the federated content is the joiner fields + decision',
     updated_at: 'machine-local row timestamp; the federated content is the joiner fields + decision',
   },
+  hive_epoch_keys: {
+    // shared-hive-rekey-2026-06-19 (P-005): the federated subset is the WRAPPED per-member
+    // epoch key material + the epoch/member coords (carried by the value-mapper). Only the
+    // row timestamps are machine-local. DARK until papercusp-hive-rekey flips (capture is
+    // flag-gated), but the CDC map entry is unconditional so the column guard covers it now.
+    created_at: 'machine-local row timestamp',
+    updated_at: 'machine-local row timestamp',
+  },
   hive_members: {
     display_name: 'GitHub-derived cosmetic, re-resolved per machine',
     avatar_url: 'GitHub-derived cosmetic, re-resolved per machine',
@@ -279,11 +287,11 @@ afterAll(async () => {
 });
 
 describe('federated CDC tables — every column federates or is documented-local (column-drift guard)', () => {
-  it('sanity: the CDC-captured set is the 16 known federated tables', () => {
+  it('sanity: the CDC-captured set is the 17 known federated tables', () => {
     // A new CDC table without a case here means a new federated table shipped —
     // the per-table loop below will still cover it (it iterates CDC_CAPTURED_TABLES).
-    // 16 = the 14 prior + hive_reports + hive_pending_joins (EN-3 moderation/membership).
-    expect(CDC_CAPTURED_TABLES.length).toBe(16);
+    // 17 = 14 prior + hive_reports + hive_pending_joins (EN-3) + hive_epoch_keys (re-key).
+    expect(CDC_CAPTURED_TABLES.length).toBe(17);
   });
 
   for (const table of CDC_CAPTURED_TABLES) {

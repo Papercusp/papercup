@@ -21,6 +21,7 @@
  * full-handle live witness is the .deb lane, not a unit/integration concern.)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import postgres from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
 import { getHivePolicy } from '../../../hive-policy-store';
 import { isContentTakenDown } from '../../../hive-moderation';
@@ -70,18 +71,21 @@ const HIVE_POLICY_DDL = `
   );`;
 
 let db: MigratedTestDb;
+let sql: postgres.Sql;
 
 beforeAll(async () => {
   db = await createFreshTestDb({ prefix: 'enboot' });
-  await db.sql.unsafe(HIVE_POLICY_DDL);
+  sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
+  await sql.unsafe(HIVE_POLICY_DDL);
 }, 120_000);
 
 afterAll(async () => {
+  await sql?.end({ timeout: 5 });
   await db?.drop();
 });
 
 beforeEach(async () => {
-  await db.sql.unsafe('TRUNCATE harness_shared.hive_policy');
+  await sql.unsafe('TRUNCATE harness_shared.hive_policy');
 });
 
 /**
@@ -97,7 +101,7 @@ async function bootEnforcedApply(
     onWrite(op);
     return true;
   };
-  const ownerPolicy = (await getHivePolicy(WS, hiveHomeSlug, db.sql).catch(() => null))?.policy ?? null;
+  const ownerPolicy = (await getHivePolicy(WS, hiveHomeSlug, sql).catch(() => null))?.policy ?? null;
   const rateLimiter = new MemberRateLimiter();
   return ownerPolicy
     ? makePolicyEnforcedApply({
@@ -117,7 +121,7 @@ async function bootEnforcedApply(
 }
 
 async function storePolicy(slug: string): Promise<void> {
-  await db.sql.unsafe(
+  await sql.unsafe(
     `INSERT INTO harness_shared.hive_policy (workspace_id, harness_slug, policy_json, policy_version)
      VALUES ($1, $2, $3, 1)`,
     [WS, slug, POLICY_JSON],

@@ -64,6 +64,12 @@ ban → allowlist → takedown → content   (EN-4 makePolicyEnforcedApply, oute
   either decorator and a drop assertion flips RED.
 - `policy-admission.test.ts`, `rate-limit-enforcement.test.ts`, `rate-limit-admission.test.ts`
   — the deciders + the EN-2 wrapper (honest-majority, anti-OOM, fail-closed, default-off).
+- **`policy-admission-boot-composition.integration.test.ts`** (NEW, real PG) — pins the one
+  link the unit seams don't: a policy STORED in PG, READ by the production `getHivePolicy`,
+  fed into the EXACT boot composition through the real merge — banned/over-cap/takedown/oversize
+  dropped, own + good-under-cap kept, and default-off (no row ⇒ getHivePolicy null ⇒ the SAME
+  flood fully lands). Guards the EN-1-store → EN-4-seam data handoff against silent regression
+  (the c9577 EN-2-task-7 follow-up). 2/2 green.
 - **Boot-area regression** (the merge path my edit sits on): `boot.test.ts`, `boot-all.test.ts`,
   `boot-revoke-production-path.test.ts`, `cold-boot-resume.test.ts` — 49/49.
 - **Full backbone regression**: `vitest run lib/sync/hyperbee` = **131/132 files, 1076 passed
@@ -100,6 +106,13 @@ named value at the `applyImpl:` line only (flag-gated to `papercusp-hive-rekey`)
 `applyImpl: rekeyOn ? decryptGate(enforcedApply) : enforcedApply` — never rebuilding the EN
 construction. `enforcedApply` re-reads the CURRENT `scopedApply` per pass, so it survives the
 rekey rebind. One owner per expression ⇒ no clobber.
+
+**STATUS (landed 2026-06-19):** the indirection stub is now in `boot.ts` —
+`const rekeyOn: boolean = false; const decryptGate = (inner) => inner; … applyImpl: rekeyOn ?
+decryptGate(enforcedApply) : enforcedApply` (TODO(su-ee7e9) on both symbols). Identity today ⇒
+`applyImpl === enforcedApply` byte-for-byte (boot.test + apply-contract 20/20, tsc-clean). The
+re-key lane (su-ee7e9, op-path division 2026-06-19) owns flipping `rekeyOn` to the
+`papercusp-hive-rekey` flag + dropping in the real epoch decrypt-gate.
 
 ## Honest residuals / not-yet
 
