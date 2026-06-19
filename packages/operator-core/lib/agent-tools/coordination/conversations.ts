@@ -27,6 +27,26 @@ import { coordLog } from './log';
 import { captureResolvedAnswer } from './answer-capture';
 import { PgConversationStore, reparentThread } from './conversations-store';
 import { createIssue } from '../../issues-engineer';
+import { currentRequestWorkspaceId } from '../../workspace-als';
+
+/**
+ * EI-1534: scope conversations (and their thread/tags/subs) to the request's
+ * workspace so one shared operator sidecar doesn't leak every window's
+ * conversations into every other workspace. STRAND-SAFE resolution — request
+ * ALS first, then an explicit process pin, then 'default'. We deliberately do
+ * NOT fall through to the registry's volatile `reg.current` (what
+ * `activeWorkspaceId()` does): unscoped reads landing on `reg.current`
+ * (e.g. a lane fleet's 'generic-test') is exactly the strand that reverted the
+ * issues per-workspace flip (su-bdc3a, EI-1460). Request-scoped reads isolate
+ * correctly; unscoped/background reads stay on the stable 'default' home.
+ */
+function conversationsScopeWorkspace(): string {
+  const req = currentRequestWorkspaceId();
+  if (req && req.trim()) return req.trim();
+  const env = process.env.PAPERCUSP_WORKSPACE_ID;
+  if (env && env.trim()) return env.trim();
+  return DEFAULT_COORD_WORKSPACE;
+}
 import {
   getConversationCore,
   joinConversationCore,
@@ -59,6 +79,10 @@ const storeOpts = {
   // Schema is defined by migrations 123 (capabilities) + 132 (conversations);
   // the host seam is a no-op.
   ensureSchema: async () => {},
+  // EI-1534: per-call workspace scope (request → pin → default). The capability
+  // stores + PgConversationStore re-resolve this on every query, so the module
+  // singleton below no longer pins to 'default' for the process life.
+  getWorkspaceId: () => conversationsScopeWorkspace(),
 };
 
 const deps: ConversationDeps = {
@@ -88,7 +112,7 @@ const deps: ConversationDeps = {
       return { id: issue.id, title: issue.title };
     },
     reparentThread: (from, to, newThreadId) =>
-      reparentThread(getOrgPg().sql, DEFAULT_COORD_WORKSPACE, from, to, newThreadId),
+      reparentThread(getOrgPg().sql, conversationsScopeWorkspace(), from, to, newThreadId),
     // Mirrors issues-engineer.ts threadId(): `issue-thread-<EI-id>`.
     issueThreadId: (issueId) => `issue-thread-${issueId}`,
   },

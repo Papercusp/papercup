@@ -11,8 +11,8 @@
  *      liveness.ts) — fired by the one-shot `overwatch-wake` routine when due. It
  *      computes the OverwatchBrief (B-03 `computeOverwatchBrief` → B-02
  *      `renderOverwatchBrief`) and launches role=overwatch via the invoke route
- *      with the brief injected (`bpkind=overwatch`, `BLUEPRINT_ID=hive` so the
- *      persona resolves at `blueprints/hive/prompts/overwatch.md`, B-05/D-010).
+ *      with the brief injected (`bpkind=overwatch`, `BLUEPRINT_ID=coding` so the
+ *      persona resolves at `blueprints/coding/prompts/overwatch.md`, B-05/D-010).
  *      The brief rides the /invoke body as `overwatchBrief`; the route sets
  *      `OVERWATCH_WAKE_BRIEF`; invoke.ts hands it to buildPrompt as a
  *      `<system-reminder>` tail block (mirrors the Queen's QUEEN_WAKE_BRIEF).
@@ -101,8 +101,8 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({ installSlug, workspaceId,
   const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}&bpkind=overwatch`;
   const body: Record<string, unknown> = {
     kickoff,
-    // `BLUEPRINT_ID=hive` scopes the role's prompt resolution to
-    // `blueprints/hive/prompts/overwatch.md` (the canonical persona, B-05/D-010),
+    // `BLUEPRINT_ID=coding` scopes the role's prompt resolution to
+    // `blueprints/coding/prompts/overwatch.md` (the canonical persona, B-05/D-010),
     // falling back to the global stub if absent (D-007).
     extra: [`BLUEPRINT_ID=${OVERWATCH_BLUEPRINT_ID}`],
   };

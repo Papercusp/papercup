@@ -20,7 +20,7 @@ function owner(): HiveOwnerIdentity {
   return { githubLogin: 'alice', githubUserId: 4242, devicePubkey: pubkey, attestationGistId: 'gist-1' };
 }
 
-function deps(): HiveDirectoryDeps & { broadcasts: Array<{ topic: string }> } {
+function deps(reachable = 0): HiveDirectoryDeps & { broadcasts: Array<{ topic: string }> } {
   const broadcasts: Array<{ topic: string }> = [];
   // A real signer so buildHiveAnnounce inside announceLocalHive succeeds.
   const { privateKey } = generateKeyPairSync('ed25519');
@@ -31,6 +31,7 @@ function deps(): HiveDirectoryDeps & { broadcasts: Array<{ topic: string }> } {
     broadcast: async (topic) => {
       broadcasts.push({ topic });
     },
+    reachablePeers: () => reachable,
     now: () => NOW,
   };
 }
@@ -64,6 +65,21 @@ describe('publishHiveToDirectory (P-004)', () => {
     expect(res.announced).toBe(true);
     expect(d.broadcasts[0].topic).toBe(hiveTopicAsHex(deriveInviteTopic('s')));
     expect(d.broadcasts[0].topic).not.toBe(hiveTopicAsHex(deriveDirectoryTopic()));
+  });
+
+  it('deceptive-publish: announced is HONEST about reachable peers (0 = broadcast into the void)', async () => {
+    // No swarm connections — the announce frame is built + broadcast, but reaches NOBODY.
+    const d0 = deps(0);
+    const r0 = await publishHiveToDirectory(new HiveDirectory(d0), meta({ visibility: 'public' }), owner());
+    expect(r0.announced).toBe(true); // a frame WAS broadcast …
+    expect(r0.reachablePeers).toBe(0); // … but to ZERO peers — the UI must NOT claim "announced to the directory"
+    expect(d0.broadcasts).toHaveLength(1);
+
+    // 3 swarm peers connected — a real, reaching broadcast.
+    const d3 = deps(3);
+    const r3 = await publishHiveToDirectory(new HiveDirectory(d3), meta({ visibility: 'public' }), owner());
+    expect(r3.announced).toBe(true);
+    expect(r3.reachablePeers).toBe(3);
   });
 
   it('private → registers but NEVER announces (opt-in floor)', async () => {

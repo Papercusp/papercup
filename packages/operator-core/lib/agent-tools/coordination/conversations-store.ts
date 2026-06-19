@@ -71,6 +71,12 @@ export interface ConversationStoreOptions {
   ensureSchema: () => Promise<void>;
   /** Coordination scope (parity with the capability stores). Default 'default'. */
   workspaceId?: string;
+  /** Per-CALL workspace resolution (EI-1534). When provided AND non-empty,
+   *  OVERRIDES `workspaceId` on every query; the singleton operator store passes
+   *  this so each read/write scopes to the request's workspace instead of being
+   *  pinned to 'default' for the process life. Falls back to `workspaceId` /
+   *  'default'. Mirrors PgCapabilityStoreOptions.getWorkspaceId. */
+  getWorkspaceId?: () => string;
 }
 
 function tsToIso(v: unknown): string {
@@ -123,9 +129,14 @@ const SELECT_COLS = `id, kind, scope, harness_slug, asker_id, title, body, state
   accepted_answer, accepted_post_id, capture_target, promoted_issue_id, created_at, updated_at, resolved_at`;
 
 export class PgConversationStore {
-  private readonly ws: string;
-  constructor(private readonly opts: ConversationStoreOptions) {
-    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  constructor(private readonly opts: ConversationStoreOptions) {}
+  /** Dynamic scope: the per-call getWorkspaceId thunk wins, else the
+   *  construction-time workspaceId, else 'default'. A GETTER (not a field) so
+   *  `${this.ws}` re-resolves on every query — the EI-1534 fix: the singleton
+   *  operator store must not pin to 'default' for life. Mirrors the capability
+   *  stores' seam (pg-stores.ts). */
+  private get ws(): string {
+    return this.opts.getWorkspaceId?.()?.trim() || (this.opts.workspaceId ?? DEFAULT_COORD_WORKSPACE);
   }
 
   async create(input: CreateConversationInput): Promise<ConversationRow> {

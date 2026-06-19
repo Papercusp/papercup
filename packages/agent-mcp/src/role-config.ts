@@ -126,8 +126,8 @@ export const AGENT_ROLES = [
   // / messages:send, and its ROLE_ENVELOPES entry DENIES capability:fs-write +
   // capability:bash — it nudges, it never edits code. Registered statically + UNGATED
   // here (the `papercusp-overwatch` flag gates the LOOP/spawn/UI in B-04/B-08/B-10, not
-  // this type-level role id). Canonical persona ships at the hive blueprint
-  // (blueprints/hive/prompts/overwatch.md, B-05); the fallback prompts/overwatch.md is a
+  // this type-level role id). Canonical persona ships at the coding (hive) blueprint
+  // (blueprints/coding/prompts/overwatch.md, B-05); the fallback prompts/overwatch.md is a
   // thin STUB so the two cannot drift (D-007 / the EI-611 lesson).
   'overwatch',
   // ── Blueprint-shipped specialist roles (blueprint-role-bundling-2026-06-15 Phase 0 /

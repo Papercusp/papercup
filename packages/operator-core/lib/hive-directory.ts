@@ -162,6 +162,13 @@ export interface HiveDirectoryDeps {
   }): Promise<boolean>;
   /** Broadcast a signed frame onto a topic (prod: swarm send to the topic's peers). */
   broadcast(topicHex: string, frame: SignedHiveAnnounce): Promise<void>;
+  /** How many swarm peers the announce can actually REACH right now (prod: the
+   *  directory-swarm's connectionCount). Deceptive-publish fix: `broadcast`
+   *  returns void, so a frame "announced" to a swarm with ZERO connections looks
+   *  identical to a real broadcast. Surfacing this lets the publish result — and
+   *  the UI — be honest ("announced, 0 peers connected" vs "broadcasting to N").
+   *  Optional/additive: omitted seams report 0. */
+  reachablePeers?(): number;
   /** Load the cached discovered set (prod: PG). Optional — omit for in-memory only. */
   loadCache?(): Promise<DiscoveredHive[]>;
   /** Persist the discovered set (prod: PG). Optional. */
@@ -207,6 +214,12 @@ export class HiveDirectory {
 
   private nowMs(): number {
     return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /** Swarm peers an announce can reach right now (0 = broadcasting into the void).
+   *  Deceptive-publish fix — see HiveDirectoryDeps.reachablePeers. */
+  reachablePeers(): number {
+    return this.deps.reachablePeers?.() ?? 0;
   }
 
   /** Hydrate the in-memory set from the PG cache (offline listing before the swarm reconnects). */

@@ -58,6 +58,35 @@ beforeEach(async () => {
 });
 
 describe('PgConversationStore (PG)', () => {
+  // EI-1534: the getWorkspaceId thunk must re-resolve the scope on EVERY query
+  // (not pin once at construction) so one shared singleton store isolates
+  // per-request workspaces instead of leaking 'default' into every window.
+  it('getWorkspaceId thunk scopes dynamically per call — no cross-workspace leak', async () => {
+    let currentWs = 'wsA';
+    // ONE store instance (mirrors the operator singleton) whose scope follows a thunk.
+    const dyn = new PgConversationStore({
+      getSql: () => rootSql,
+      ensureSchema: async () => {},
+      getWorkspaceId: () => currentWs,
+    } as never);
+
+    currentWs = 'wsA';
+    await dyn.create(mk('a1', { title: 'in A' }));
+    currentWs = 'wsB';
+    await dyn.create(mk('b1', { title: 'in B' }));
+
+    // Reads re-resolve the thunk: A sees only A's, B sees only B's.
+    currentWs = 'wsA';
+    const inA = await dyn.list({});
+    expect(inA.map((c) => c.id)).toEqual(['a1']);
+    expect(await dyn.get('b1')).toBeNull(); // B's row is invisible from A's scope
+
+    currentWs = 'wsB';
+    const inB = await dyn.list({});
+    expect(inB.map((c) => c.id)).toEqual(['b1']);
+    expect(await dyn.get('a1')).toBeNull();
+  });
+
   it('create reads back and is idempotent (ON CONFLICT DO NOTHING)', async () => {
     const row = await store().create(mk('c1', { title: 'first' }));
     expect(row).toMatchObject({ id: 'c1', title: 'first', state: 'open' });

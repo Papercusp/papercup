@@ -66,7 +66,15 @@ export interface HiveOwnerIdentity {
 
 export interface PublishHiveResult {
   registered: boolean;
+  /** A signed announce frame was built + broadcast onto the topic. NOTE: true
+   *  does NOT mean any peer received it — `broadcast` is fire-and-forget. Read
+   *  `reachablePeers` for whether it could actually reach anyone. */
   announced: boolean;
+  /** Deceptive-publish fix: swarm peers reachable at announce time. 0 means the
+   *  announce was broadcast into the void (no swarm connections) — the hive is
+   *  registered but NOT discoverable yet. The UI must distinguish this from a
+   *  real broadcast instead of flatly saying "announced to the directory". */
+  reachablePeers: number;
   visibility: HiveVisibility;
 }
 
@@ -105,7 +113,10 @@ export async function publishHiveToDirectory(
   });
   // private never announces (announceLocalHive returns null for it).
   const frame = await dir.announceLocalHive(meta.hiveId);
-  return { registered: true, announced: frame !== null, visibility: meta.visibility };
+  const announced = frame !== null;
+  // Deceptive-publish fix: report how many peers the broadcast could actually
+  // reach. announced && reachablePeers===0 ⇒ "registered but nobody heard it".
+  return { registered: true, announced, reachablePeers: announced ? dir.reachablePeers() : 0, visibility: meta.visibility };
 }
 
 /**

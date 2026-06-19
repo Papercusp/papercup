@@ -1,0 +1,66 @@
+/**
+ * conversations-post.test.ts — the conversations:post HANDLER branch + result shaping
+ * (the store ops openConversation/postReply are mocked). Two paths:
+ *   • conversation_id present → REPLY: postReply, surfacing post_id + delivered, and
+ *     mapping a store {error} to {ok:false, reason};
+ *   • no conversation_id → NEW DISCUSSION: openConversation, and the unrouted HINT
+ *     logic — a discussion with no topics warns it reaches only direct subscribers
+ *     (the UX nudge to add topics for routing).
+ * A regression that loses the reply/new branch, drops the error mapping, or shows the
+ * wrong routing hint is what this catches.
+ *
+ * In-tree (operator-core, tab-visible).
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/conversations-post.test.ts
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
+vi.mock('../conversations', () => ({ openConversation: vi.fn(), postReply: vi.fn() }));
+
+import { openConversation, postReply } from '../conversations';
+const openM = vi.mocked(openConversation);
+const replyM = vi.mocked(postReply);
+const tool = (await import('./conversations-post')).default;
+
+type Out = { content: { text: string }[] };
+const call = (args: Record<string, unknown>) =>
+  tool.handler({ body: 'hello', ...args } as never, {} as never) as Promise<Out>;
+const body = (o: Out) => JSON.parse(o.content[0]!.text);
+
+beforeEach(() => vi.clearAllMocks());
+
+describe('conversations:post reply path', () => {
+  it('appends a reply and reports post_id + notified subscribers', async () => {
+    replyM.mockResolvedValue({ post: { id: 'p1' }, delivered: 3 } as never);
+    const b = body(await call({ conversation_id: 'c1', body: 'a reply' }));
+    expect(replyM).toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c1', body: 'a reply' });
+    expect(b).toMatchObject({ ok: true, conversation_id: 'c1', post_id: 'p1', notified_subscribers: 3 });
+    expect(openM).not.toHaveBeenCalled();
+  });
+
+  it('maps a store error to { ok:false, reason }', async () => {
+    replyM.mockResolvedValue({ error: 'not_a_member' } as never);
+    const b = body(await call({ conversation_id: 'c1' }));
+    expect(b).toMatchObject({ ok: false, reason: 'not_a_member' });
+  });
+});
+
+describe('conversations:post new-discussion path', () => {
+  it('starts a routed discussion and reports topics + a routed hint', async () => {
+    openM.mockResolvedValue({ conversation: { id: 'c9' }, topics: ['arch'], unrouted: false, delivered: 2 } as never);
+    const b = body(await call({ title: 'how to X', topics: ['arch'] }));
+    expect(openM).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({
+      ok: true, conversation_id: 'c9', kind: 'discussion', topics: ['arch'],
+      unrouted: false, notified_subscribers: 2,
+    });
+    expect(String(b.hint)).toMatch(/routed/i);
+  });
+
+  it('warns when a new discussion is unrouted (no topics → direct subscribers only)', async () => {
+    openM.mockResolvedValue({ conversation: { id: 'c10' }, topics: [], unrouted: true, delivered: 0 } as never);
+    const b = body(await call({}));
+    expect(b).toMatchObject({ ok: true, unrouted: true });
+    expect(String(b.hint)).toMatch(/NO topics|Add topics/i);
+  });
+});

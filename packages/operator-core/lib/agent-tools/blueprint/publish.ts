@@ -1,0 +1,131 @@
+/**
+ * blueprint:publish — list a local/private blueprint on the Comb
+ * (domain-generic-hive-architecture-2026-06-18 P-016).
+ *
+ * The publish entry point for blueprints, mirroring `learning_packs:publish`: it
+ * resolves the member repo's GitHub coords and publishes a `kind='blueprint'`
+ * listing (listing_ref = blueprintId) through THE shared Cupboard publish core
+ * (gh token + channel-2 attestation). The blueprint INSTALL side already exists
+ * (cupboard/install-blueprint-core.ts); this closes the loop by adding the way to
+ * promote a local/private blueprint to the published/installed tier.
+ *
+ * DELTA-NOT-COPY (P-016 / D-005): the blueprint is listed AS-IS, keeping its
+ * `extends:` parent — so an install composes the delta against the upstream
+ * parent and inherits upstream improvements, rather than freezing a flattened
+ * copy. The publish never reads or rewrites the blueprint body; it only points
+ * the listing at the repo location.
+ *
+ * Review policy (D-007): a `blueprint` listing lands PENDING and is publicly
+ * invisible until an operator approves it — the response says so.
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { z } from 'zod';
+import { parse as parseYaml } from 'yaml';
+import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../workspace-registry';
+
+const text = (payload: Record<string, unknown>) => ({
+  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+});
+
+export default defineTool({
+  name: 'blueprint:publish',
+  capability: 'harness:write',
+  description:
+    "List a local/private blueprint on the Comb: resolves the member repo's GitHub coords + publishes a kind='blueprint' listing (listing_ref = blueprintId) with the operator's gh token + attestation. DELTA-NOT-COPY — the blueprint is listed keeping its `extends:`, so an install composes it against the upstream parent and inherits upstream improvements. Lands PENDING (D-007) — an operator must approve it before it is publicly visible.",
+  guidance: {
+    when: "Sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
+    notWhen:
+      "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
+    chaining:
+      'Run after the blueprint files are committed + pushed via the project\'s normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing.',
+  },
+  crossWorkspace: true,
+  args: z.object({
+    blueprintId: z
+      .string()
+      .min(1)
+      .max(120)
+      .describe(
+        'The blueprint id to list — its dir is <repoDir>/.papercusp/blueprints/<blueprintId>/, and it becomes the Comb listing_ref.',
+      ),
+    title: z.string().min(1).max(200),
+    description: z.string().min(1).max(280),
+    repoDir: z
+      .string()
+      .min(1)
+      .describe(
+        'Absolute path of the member repo (its origin remote names the GitHub repo; must contain .papercusp/blueprints/<blueprintId>/blueprint.yaml).',
+      ),
+    workspace: z.string().max(120).optional(),
+  }),
+  async handler(args, ctx) {
+    void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
+
+    // 1. The blueprint must already be a file tree in the repo (delta-not-copy:
+    //    we list it, never materialize/flatten it). Read its `kind` for the
+    //    Cupboard "Hives" tab discriminator (blueprint_kind — hive | harness).
+    const bpYaml = join(args.repoDir, '.papercusp', 'blueprints', args.blueprintId, 'blueprint.yaml');
+    if (!existsSync(bpYaml)) {
+      return text({
+        ok: false,
+        error: 'blueprint_not_in_repo',
+        hint: `Expected ${bpYaml}. Author/materialize the blueprint into the repo's .papercusp/blueprints/<id>/ and push it before publishing.`,
+      });
+    }
+    let blueprintKind: 'hive' | 'harness' = 'harness';
+    try {
+      const parsed = parseYaml(readFileSync(bpYaml, 'utf8')) as { kind?: unknown } | null;
+      if (parsed && parsed.kind === 'hive') blueprintKind = 'hive';
+    } catch {
+      /* unreadable/partial yaml → default 'harness'; the worker re-derives on approve */
+    }
+
+    // 2. Resolve the repo's GitHub coords — the SAME path learning_packs:publish uses.
+    const { resolveRepoCoordsFromDir, gitOriginUrl, fetchGithubRepoMeta } = await import(
+      '../../cupboard/resolve-repo-coords'
+    );
+    const coords = await resolveRepoCoordsFromDir(args.repoDir, {
+      getOriginUrl: gitOriginUrl,
+      fetchRepoMeta: fetchGithubRepoMeta,
+    });
+    if (!coords || 'error' in coords) {
+      return text({
+        ok: false,
+        error: 'repo_coords_unresolvable',
+        ...(coords && 'error' in coords ? { detail: coords.error } : {}),
+        hint: 'repoDir must be a git repo with a GitHub origin remote.',
+      });
+    }
+
+    // 3. Publish the kind='blueprint' listing through the one shared Cupboard core.
+    const { publishListingToCupboard } = await import('../../cupboard/publish-listing');
+    const result = await publishListingToCupboard({
+      listing_kind: 'blueprint',
+      listing_ref: args.blueprintId,
+      blueprint_kind: blueprintKind,
+      project_ref: `${coords.github_owner}/${coords.github_name}`,
+      github_repository_id: coords.github_repository_id,
+      github_owner: coords.github_owner,
+      github_name: coords.github_name,
+      github_url: coords.github_url,
+      title: args.title,
+      description: args.description,
+    });
+    if (!result.ok) {
+      return text({ ok: false, error: result.error, detail: result.detail, status: result.status });
+    }
+    const data = result.data as { id?: string; review_status?: string; pending_review?: boolean };
+    return text({
+      ok: true,
+      listingId: data.id,
+      blueprintKind,
+      review_status: data.review_status ?? 'pending',
+      hint:
+        data.review_status === 'pending' || data.pending_review
+          ? 'Published PENDING — an operator must approve it before it is publicly visible (you can watch your own listing meanwhile).'
+          : undefined,
+    });
+  },
+});
