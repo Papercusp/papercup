@@ -1,10 +1,20 @@
 # Brief Z — Data-integrity edges (findings)
 
 **Owner:** su-d2230 (the del-guard / delete-resurrection class is mine — Z is built on it).
-**Status:** IN PROGRESS. Claimed while A-003 send-side waits on J's announce extension
-(I pivot to the A-003 re-apply the instant it lands — that's the critical path).
-**Verdict so far:** one **grounded S0 HYPOTHESIS** (resurrection-after-restart) staged for
-a teeth-verified integration test; payload/encoding/boundary legs not yet run.
+**Status:** H-Z1 **CONFIRMED S0** (deterministic test, su-53f39 2026-06-19 — A-003 closed,
+picked this up). Z#3–Z#6 (payload/encoding/boundary/tombstone-churn legs) not yet run.
+**Verdict:** **S0 CONFIRMED — snapshot-seeded folds PERMANENTLY resurrect a key deleted
+before the snapshot** when a stale lower-clock put arrives past the snapshot horizon. The
+read-merge "BOUNDED TRANSIENT" (put-after-del has no PG tombstone) is NOT bounded with
+`papercusp-substrate-log-snapshot` ON (verified ON). Proof:
+`__tests__/snapshot-stale-resurrection-s0.test.ts` (PG-free, deterministic): a full fold
+from 0 keeps the deleted key absent (del wins); the production snapshot-seeded fold
+RESURRECTS it (the winning del sits behind the snapshot horizon, never re-folded; no
+tombstone; the PG PUT guard fires only ON CONFLICT so a bare INSERT succeeds).
+**Security interaction:** a resurrected `hive_members`/revoked-pubkey row would UN-REVOKE a
+removed member — couples directly to C-001 (read-revocation / Brief K re-key). Filed as a
+work-item; fix is the owner/lead's call (durable per-key del-HLC tombstone the PUT guard
+checks, GC'd past a safe horizon) — NOT applied unilaterally.
 
 ---
 

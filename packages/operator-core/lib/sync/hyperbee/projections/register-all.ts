@@ -46,6 +46,7 @@ import { buildHivePolicyProjection } from './hive-policy';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
 import { buildHiveMembersProjection } from './hive-members';
+import { buildHiveEpochKeysProjection } from './hive-epoch-keys';
 import { buildEngineerIssuesProjection } from './engineer-issues';
 import { buildHarnessPlanPartsProjection } from './harness-plan-parts';
 
@@ -133,6 +134,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
   // (hive_members) federates across the Hive's Swarms so a revocation propagates.
   'hive-members',
+  // shared-hive-rekey-2026-06-19 (P-005): per-member WRAPPED epoch keys for the read-plane
+  // re-key (hive-epoch-keys.ts). Hive-home-grained. DARK until papercusp-hive-rekey flips.
+  'hive-epoch-keys',
   // fed-reanchor B5: the work-queue's issue/task family (engineer_issues, work_items
   // kind ∈ bug|change|task) federates over the Hive peer-log. The capture trigger
   // (mig 197) derives the federation slug from `scope` + stamps it as harness_slug.
@@ -187,6 +191,11 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // request↔decision federation lands on both the owner's home and a joiner's member harness.
     buildHiveReportsProjection(hiveScoped),
     buildHivePendingJoinsProjection(hiveScoped),
+    // shared-hive-rekey-2026-06-19 (P-005): hive_epoch_keys (per-member wrapped epoch keys
+    // for the read-plane re-key) is hive-home-grained too — scope to `hiveScoped` so a
+    // joiner's member harness lands the owner's epoch-key rows. DARK: the boundary trigger +
+    // producer are flag-gated (papercusp-hive-rekey), so the table stays empty until cutover.
+    buildHiveEpochKeysProjection(hiveScoped),
     buildEngineerIssuesProjection(opts),
     // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
     // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation

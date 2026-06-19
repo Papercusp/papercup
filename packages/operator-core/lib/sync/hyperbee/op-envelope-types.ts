@@ -49,4 +49,16 @@ export interface OpEnvelope {
    * that are built outside the merge path.
    */
   sourceLogKeyHex?: string;
+  /**
+   * Hive epoch RE-KEY (C-001 read-plane revocation, shared-hive-rekey-2026-06-19,
+   * gated on `papercusp-hive-rekey`): the epoch the op's `value` payload was encrypted
+   * under. The capture/producer side stamps this (via `encryptForCurrentEpoch`, which
+   * returns `{ epoch, ciphertext }`) and sets `value` = ciphertext; the apply-side
+   * decrypt-gate reads it to resolve the wrapped epoch key (EpochKeyProvider) and
+   * `decryptOpPayload`. Optional + additive: absent ⇒ plaintext op (today's path, and
+   * membership/key-distribution ops which must stay readable). The encrypt/decrypt AAD
+   * is bound via the shared deterministic `deriveOpId(table, hbKey, writerPubkey)`, so
+   * both sides assemble the identical OpAAD{hiveId, epoch, opId}.
+   */
+  epoch?: number;
 }

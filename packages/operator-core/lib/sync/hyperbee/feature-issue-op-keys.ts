@@ -41,6 +41,7 @@ import type { CoordThreadRow } from './projections/coord-thread';
 import type { CoordThreadPostRow } from './projections/coord-thread-post';
 import type { PlanItemAssignmentRow } from './projections/plan-item-assignments';
 import type { HiveMemberRow } from './projections/hive-members';
+import type { HiveEpochKeyRow } from './projections/hive-epoch-keys';
 import type { EngineerIssueRow } from './projections/engineer-issues';
 import type { PlanPartWireRow } from './projections/harness-plan-parts';
 
@@ -96,6 +97,13 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // The capture trigger (mig 189) writes outbox.harness_slug := NEW.hive_home_slug so
   // it rides the Hive peer-log.
   hive_members: 'hive-members',
+  // shared-hive-rekey-2026-06-19 (P-005): per-member WRAPPED epoch keys for the read-plane
+  // re-key. Projection 'hive-epoch-keys' (projections/hive-epoch-keys.ts); key ==
+  // '<epoch>:<member_device_pubkey>' (the generated epoch_key_fed_key column). The capture
+  // trigger (mig 316) writes outbox.harness_slug := the Hive home so it rides the Hive
+  // peer-log. DARK until papercusp-hive-rekey flips (the boundary trigger + producer are
+  // flag-gated, so nothing writes the table — the trigger never fires — until cutover).
+  hive_epoch_keys: 'hive-epoch-keys',
   // fed-reanchor B5: the work-queue's issue/task family. Projection 'engineer-issues'
   // (projections/engineer-issues.ts); key == issue_id. The capture trigger (mig 197)
   // derives the federation slug from `scope` + stamps it into the row as harness_slug.
@@ -480,6 +488,21 @@ function toHiveMemberValue(row: Record<string, unknown>): HiveMemberRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `HiveEpochKeyRow` the hive-epoch-keys projection
+ *  INSERT consumes (shared-hive-rekey-2026-06-19 P-005). The federated subset of
+ *  harness_shared.hive_epoch_keys — harness_slug = the Hive home (the projection demux),
+ *  epoch + member_device_pubkey = the compound peer-log key, wrapped_key = the epoch key
+ *  sealed to that member's device. workspace_id/author_pubkey/origin/fed_ts come from the
+ *  op envelope, not the wire value (mirrors toHiveSettingValue). */
+function toHiveEpochKeyValue(row: Record<string, unknown>): HiveEpochKeyRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    epoch: numOrZero(row.epoch),
+    member_device_pubkey: String(row.member_device_pubkey ?? ''),
+    wrapped_key: String(row.wrapped_key ?? ''),
+  };
+}
+
 /** Map an outbox `row` jsonb to the `EngineerIssueRow` the engineer-issues projection
  *  INSERT consumes — the federated subset of harness_shared.engineer_issues. The capture
  *  trigger (mig 197) stamped `harness_slug` (the federation slug derived from `scope`)
@@ -631,6 +654,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'hive_members':
       value = toHiveMemberValue(row);
+      break;
+    case 'hive_epoch_keys':
+      value = toHiveEpochKeyValue(row);
       break;
     case 'engineer_issues':
       value = toEngineerIssueValue(row);

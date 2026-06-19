@@ -79,6 +79,28 @@ excess/banned/taken-down/oversize op, so it never becomes canonical on the hones
 The documented residuals are EN-2's (the forged-`ts` slow-ramp rate residual — inherent to any
 convergent op-time scheme) and EN-3's approval-mode (the join gate, not the per-op seam, owns it).
 
+## Compose-order contract — the shared `applyImpl` seam (EN-4 ↔ C-001 re-key)
+
+The C-001 re-key (Move 2) adds a **decrypt-gate** that ALSO wraps `scopedApply` at the SAME
+`boot.ts mergeOpts.applyImpl` seam. The two must be COMPOSED in a fixed order, never raced
+(whoever edits the `applyImpl` expression last would clobber the other). Agreed contract
+(coordinated with the K/re-key lane, su-ee7e9):
+
+**Order (outer → inner):** `decrypt-gate (re-key) → EN-4 ban/allowlist/takedown/content →
+EN-2 rate → scopedApply`.
+
+Rationale: EN-4/EN-2 inspect `op.value` / `op.table` / `op.hbKey` / author, so the op must be
+PLAINTEXT before they run ⇒ decrypt is strictly outermost; and an undecryptable op (the
+read-cut) must drop BEFORE it spends rate budget or hits content checks.
+
+**Seam (designed for race-free composition):** boot.ts builds the EN stack as a NAMED const —
+`const enforcedApply = ownerPolicy ? makePolicyEnforcedApply(…makeRateLimitedApply(…scopedApply)) : scopedApply;`
+— and `mergeOpts.applyImpl = enforcedApply;`. The re-key lane composes by WRAPPING that stable
+named value at the `applyImpl:` line only (flag-gated to `papercusp-hive-rekey`), e.g.
+`applyImpl: rekeyOn ? decryptGate(enforcedApply) : enforcedApply` — never rebuilding the EN
+construction. `enforcedApply` re-reads the CURRENT `scopedApply` per pass, so it survives the
+rekey rebind. One owner per expression ⇒ no clobber.
+
 ## Honest residuals / not-yet
 
 - **Live witness:** suite + structural GREEN; a live .deb witness (owner sets a policy → a
