@@ -182,6 +182,12 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // Swarms so a revocation propagates. Keyed (workspace_id, hive_home_slug,
   // github_user_id) → workspace-owned + peer-log.
   'hive_members',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-SIGNED Hive policy
+  // record (projections/hive-policy.ts). SINGLETON per Hive — keyed (workspace_id,
+  // harness_slug = the Hive home) → workspace-owned + peer-log; rides the Hive-pubkey
+  // topic (P-004). The projection VERIFIES the owner signature before applying (a
+  // forged policy is dropped). Listed here so it resolves to sync:'peer-log'.
+  'hive_policy',
   // fed-reanchor B5: the work-queue's issue/task family (work_items kind ∈ bug|change|
   // task) federates over the Hive peer-log — closes engineer-issues-2026-06-03 D-009's
   // "federation deferred". Keyed (workspace_id, issue_id); the capture trigger (mig 197)

@@ -27,6 +27,7 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { Select } from '../../harness/Select';
+import { HivePolicyPanel } from './HivePolicyPanel';
 
 interface HiveRow {
   slug: string;
@@ -450,6 +451,9 @@ export default function HiveCustomizationPage() {
               onClear={clearConfig}
             />
           </section>
+
+          {/* EN-1: the owner-enforcement policy surface (claim-gated, signed + federated). */}
+          <HivePolicyPanel key={`policy:${hive}`} hive={hive} />
         </>
       )}
     </div>

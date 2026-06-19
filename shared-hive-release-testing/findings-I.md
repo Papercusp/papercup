@@ -5,15 +5,29 @@ Disjoint area: `register-all.ts` (binding) · `hive-federation.ts` (gate) · `bo
 (boot + rekey wiring). Coordinated with J (su-46b7a, fed_hlc/D-001) + H (su-dc9db,
 swarm.ts) — no source overlap realized.
 
-## Dimension verdict: **YELLOW → GREEN-on-deploy**
+## Dimension verdict: **CODE-COMPLETE — GREEN-on-live-witness**
 
-The fix is **landed + teeth-verified** at the two seams the brief allows for the
-joiner path ("the binding resolver directly" + a real-apply integration test). The
-end-to-end **live witness is deploy-gated**: the running pair (`shared-hive-retest`)
-runs the shipped `Papercusp_0.0.2` `.deb`, which **predates this fix** — so it
-re-confirms the BUG, not the fix (same constraint Brief G/L hit; git-sync owns the
-push, a fix-built artifact carries it). Flip to GREEN when the content-matrix smoke
-on a fix-`.deb` shows `hive-settings`/`hive-members` crossing to B `origin=remote`.
+A-003 turned out to be **two-sided** (receive AND send), and the send side is an
+architecture fix, not a one-liner — see **Fix direction** below for the full a/a′/b
+story. The complete path is now **landed + teeth-verified via approach (a′)**:
+- **dc9db (swarm.ts/announce.ts):** the announce channel carries MULTIPLE log
+  announces per topic + a SIGNED `harness_slug` origin field.
+- **d2230 boot.ts half:** populate `harness_slug` in `buildAnnounce`; a slug-aware
+  `onAnnounce` filter (`announceSlugInScope` — admit iff own-slug / rebind-home /
+  legacy-absent; new `out_of_scope` reason) so one topic can carry many harnesses'
+  logs WITHOUT cross-merge; re-applied the hive-home re-key (now safe).
+- **d2230 receive-side rebind** (`register-all` `hiveHomeSlug` + `joinerHiveHomeSlug`
+  + boot rekey) — committed; lands the admitted hive-home ops under the home.
+
+Verification: full hyperbee suite **935 green / 1 skip**; every component teeth-
+verified (announceSlugInScope 6 cases neuter→3 reject RED; the rebind RED/GREEN; the
+re-key 21-test RED-on-neuter); + a **durable in-suite composition proof**
+(`register-all-hive-home-binding.integration.test.ts`: slug-filter gate ↔ rebind apply
+over the real apply + full PG). Typecheck clean.
+
+**Remaining (the only thing):** su-9140a's **live content-matrix witness on a
+fix-`.deb`** → flip GREEN when `hive_members`/`hive_settings` cross to B
+`origin=remote` (RED today) with NO member features in the hive-home schema.
 
 ---
 

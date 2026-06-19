@@ -12,16 +12,21 @@
  * SAFETY: only the terminal statuses are ever matched — PENDING / ENQUEUED (in-flight)
  * rows are NEVER touched, so DBOS recovery (which resumes only non-terminal workflows)
  * is unaffected. operation_outputs are deleted FIRST (FK order). Batched (LIMIT) to
- * bound the transaction/lock. DEFAULT-OFF (arm with PAPERCUSP_DBOS_WORKFLOW_GC=1): a
- * DELETE on DBOS's own system tables is opt-in until validated; retention is env-tunable
- * (PAPERCUSP_DBOS_WORKFLOW_GC_DAYS, default 14).
+ * bound the transaction/lock. DEFAULT-ON + 2d retention (owner durable-stability
+ * directive, 2026-06-19): VALIDATED live on 2026-06-19 — this GC drained workflow_status
+ * 253MB→3MB and immediately un-froze the routine engine. It MUST run recurring or the
+ * table re-bloats; disable only with PAPERCUSP_DBOS_WORKFLOW_GC=0. Retention is env-tunable
+ * (PAPERCUSP_DBOS_WORKFLOW_GC_DAYS, default 2 — small enough that a daily run holds the
+ * table far under the ~300k freeze threshold).
  *
- * NOTE on the EI-1607 "bounded catch-up (run-latest-only)" half: DBOS scheduled workflows
- * already register `skip-missed` (periodic-workflows.ts header: "default skip-missed mode,
- * D-009 — no backfill storm after a long-closed desktop"), so the missed-cron storm is
- * already bounded at the scheduler. This GC addresses the remaining half — the unbounded
- * ACCUMULATION of terminal rows. The live routinesTick freeze was separately root-caused
- * to bg-host loop saturation (not the catch-up), so this is hygiene/defense-in-depth.
+ * ROOT CAUSE (corrected 2026-06-19): the freeze WAS the workflow_status bloat — 328k rows
+ * (325k terminal SUCCESS) made every DBOS executor dequeue scan 253MB, starving routinesTick
+ * → hive-wake never fired → Queen frozen. The bloat SOURCE is ~8 ephemeral high-freq checks
+ * persisted as durable DBOS workflows (~200k rows/day); the SOURCE fix (run them as in-process
+ * intervals) is EI-1622 — this GC is the BACKSTOP. NOTE on the EI-1607 "bounded catch-up"
+ * half: DBOS `skip-missed` did NOT prevent a missed-cron PENDING pile (~2380 stale scheduled
+ * instances observed re-piling mid-incident), so singleton-routinesTick (an EI-1622 sibling)
+ * is the real catch-up source-fix; bounded-catch-up is the maintenance backstop.
  */
 import { getOrgPg } from '@papercusp/db-org';
 
@@ -37,7 +42,12 @@ const DEFAULT_BATCH_LIMIT = 5000;
 const MAX_BATCHES = 2000; // hard backstop: ≤ 2000 × 5000 = 10M rows/run
 
 export function dbosWorkflowGcEnabled(): boolean {
-  return process.env.PAPERCUSP_DBOS_WORKFLOW_GC === '1';
+  // DEFAULT-ON (owner durable-stability directive, 2026-06-19): the GC MUST run
+  // recurring or workflow_status re-bloats (325k SUCCESS → DBOS scheduler scans
+  // saturate the loop → routine-engine freeze — the live incident). Validated live
+  // tonight (253MB→3MB, terminal-only, cascade-clean). Disable with
+  // PAPERCUSP_DBOS_WORKFLOW_GC=0.
+  return process.env.PAPERCUSP_DBOS_WORKFLOW_GC !== '0';
 }
 
 export function dbosWorkflowGcRetentionDays(): number {

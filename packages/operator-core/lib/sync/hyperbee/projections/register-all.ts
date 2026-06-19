@@ -42,6 +42,7 @@ import { buildCoordThreadProjection } from './coord-thread';
 import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
+import { buildHivePolicyProjection } from './hive-policy';
 import { buildHiveMembersProjection } from './hive-members';
 import { buildEngineerIssuesProjection } from './engineer-issues';
 import { buildHarnessPlanPartsProjection } from './harness-plan-parts';
@@ -118,6 +119,10 @@ export const REGISTERED_PROJECTION_TAGS = [
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
   // state, scoped to the Hive home harness slug (rides the Hive-pubkey topic, P-004).
   'hive-settings-by-key',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-SIGNED Hive policy
+  // record federates as Hive state, scoped to the Hive home (like hive_settings). The
+  // projection verifies the owner signature before applying.
+  'hive-policy',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
   // (hive_members) federates across the Hive's Swarms so a revocation propagates.
   'hive-members',
@@ -167,6 +172,9 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // to `hiveScoped` so a joiner's member harness lands the home-grained ops.
     buildHiveSettingsProjection(hiveScoped),
     buildHiveMembersProjection(hiveScoped),
+    // EN-1: hive_policy is hive-home-grained too (the owner-signed policy demuxes on
+    // the Hive home) — scope it to `hiveScoped` so a joiner receives + verifies it.
+    buildHivePolicyProjection(hiveScoped),
     buildEngineerIssuesProjection(opts),
     // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
     // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation

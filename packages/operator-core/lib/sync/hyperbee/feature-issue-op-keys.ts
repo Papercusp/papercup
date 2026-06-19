@@ -30,6 +30,7 @@ import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessPlanRow } from './projections/harness-plans';
 import type { HiveSettingRow } from './projections/hive-settings';
+import type { HivePolicyRow } from './projections/hive-policy';
 import type { HarnessIssueRow } from './projections/issues';
 import type { ContributorUsageEventRow } from './projections/usage';
 import type { CoordConversationRow } from './projections/coord-conversation';
@@ -77,6 +78,10 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings. Projection
   // 'hive-settings-by-key' (projections/hive-settings.ts); key == setting_key.
   hive_settings: 'hive-settings-by-key',
+  // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-signed Hive policy
+  // record. Projection 'hive-policy' (projections/hive-policy.ts); SINGLETON, so
+  // key == harness_slug (the Hive home).
+  hive_policy: 'hive-policy',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission.
   // Projection 'hive-members' (projections/hive-members.ts); key == github_user_id.
   // The capture trigger (mig 189) writes outbox.harness_slug := NEW.hive_home_slug so
@@ -392,6 +397,21 @@ function toHiveSettingValue(row: Record<string, unknown>): HiveSettingRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `HivePolicyRow` the hive-policy projection INSERT
+ *  consumes — the owner-signed federated subset (harness_slug = the Hive home,
+ *  policy_json = the canonical signed JSON TEXT, owner_pubkey, signature,
+ *  policy_version). No epoch dance, no jsonb (policy_json is TEXT — the exact bytes the
+ *  signature covers). The projection verifies the signature before applying. */
+function toHivePolicyValue(row: Record<string, unknown>): HivePolicyRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    policy_json: String(row.policy_json ?? ''),
+    owner_pubkey: String(row.owner_pubkey ?? ''),
+    signature: String(row.signature ?? ''),
+    policy_version: numOrZero(row.policy_version),
+  };
+}
+
 /** Map an outbox `row` jsonb to the `HiveMemberRow` the hive-members projection
  *  INSERT consumes — the federated subset of harness_shared.hive_members. The Hive
  *  scope key (`hive_home_slug`) is the projection demux; device_attestations stays a
@@ -516,6 +536,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | CoordThreadPostRow
     | PlanItemAssignmentRow
     | HiveSettingRow
+    | HivePolicyRow
     | HiveMemberRow
     | EngineerIssueRow
     | PlanPartWireRow;
@@ -546,6 +567,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'hive_settings':
       value = toHiveSettingValue(row);
+      break;
+    case 'hive_policy':
+      value = toHivePolicyValue(row);
       break;
     case 'hive_members':
       value = toHiveMemberValue(row);

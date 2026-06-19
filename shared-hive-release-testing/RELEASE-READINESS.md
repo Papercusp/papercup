@@ -24,6 +24,37 @@ public production?
 > to federate (fixes A-003 + lays the substrate); (2) build **Move 2** — the C-001 re-key on top.
 > The test program is complete; everything testable is GREEN; what remains is this build + its live witness.
 
+> ## OWNERSHIP + CODE-PLANE (owner questions 2026-06-19 — verified design-vs-impl, 2 research agents)
+> A dimension the A–G + waves program did NOT explicitly cover. Findings:
+> - ✅ **Provisional→claimed ownership — BUILT end-to-end.** Creator = provisional owner, hive starts
+>   `unclaimed`; the GitHub-`maintain`/`admin`-verified true owner claims it (`unclaimed→claimed`) via a
+>   live permission check. Full stack: `shared_repo_binding_cache.claim_status`, `binding-service.ts`
+>   (`createUnclaimedBinding`/`claimBinding`/`supersedeBinding` + 24h re-verify daemon), routes
+>   `/api/harness/:slug/claim-status` + `/binding/claim`, GUI (`ProvisionalOwnerExplainer`,
+>   `HarnessClaimHeader` Claim CTA, `ClaimStatusBadge`), tests. Plans: `papercusp-dogfood-v5` §15/§5.1,
+>   `dogfood-design-memo-binding-service-api`, phase-8 P-068/P-069.
+> - ❌ **GAP (release consideration): a claimed owner has NO enforcement-settings lever yet.** The claim
+>   gives a trust *badge* ("repo-authoritative"), but the "owner sets rules the hive enforces (rate
+>   limits, contribution rules, spam controls)" capability is **deferred to Phase 12+** (v5 Q-1/D-023),
+>   never built. For a PUBLIC launch where spam is the concern, this is the lever that's missing —
+>   claiming proves *who* the owner is but not yet *what they can enforce*. **Owner decision needed:** is
+>   Phase-12 enforcement a public-launch requirement, or ship claim-as-trust-signal first?
+> - ✅ **Code-plane contribution safety — BUILT + proven live.** Two paths by upstream permission:
+>   collaborator-with-write git-syncs DIRECTLY to upstream `main`; non-collaborator (`push:false`) NEVER
+>   direct-pushes — code reaches upstream via fork→cross-fork PR under the CONTRIBUTOR'S OWN account
+>   (`ensure-fork`/`open-fork-pr`/`fork-pr-on-feature-pass`, lazy at feature-pass; proven live:
+>   `aviynw/js_cols/pull/1`). NOTE: it's the contributor's own fork, NOT a Papercusp-owned staging fork
+>   (a divergence from the original mental model; D-007 — arguably cleaner; security goal still met).
+>   Plans: `non-collaborator-join-fork-pr`, `hive-from-github-url` D-005, `git-sync-any-hive` D-002/D-008.
+> - ✅ **Dogfood:** papercup IS the original `system:git-sync` member (same routine/code, generalized to
+>   all hives via `git-sync-any-hive` Phase 2); the whole-tree commit+push background routine = this exact
+>   system. papercup syncs as the privileged owner (direct push). `platform:enable` productizes the
+>   self-hive (`papercusp-platform`) for downloaders.
+> - 🔧 **TEST GAP → Brief AH:** the code-plane (collaborator direct-push + non-collaborator fork→PR + the
+>   S0 "non-collaborator can't direct-push main" invariant + EI-382 link-join-no-sync) is NOT in the
+>   systematic release-test program — the PIECES have unit/integration tests + a live proof, but no E2E
+>   release lane. `brief-AH-code-plane-git-sync-to-main.md` (handed off) closes it.
+
 ---
 ### Earlier synthesis (A–G program, now partly superseded by the live results above)
 This was the synthesis of the 7-lane adversarial test program (briefs A–G). The

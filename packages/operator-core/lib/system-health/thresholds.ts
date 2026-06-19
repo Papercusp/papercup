@@ -176,11 +176,15 @@ export function improvementsStatus(_d: ImprovementsHealth): PanelStatus {
   return 'ok';
 }
 
-/** Infra. unknown = PG unreadable. crit = the gateway is enabled but unreachable
- *  (the spine is down). ok otherwise. */
+/** Infra. crit = a per-thread perf WEDGE (operator unreachable / event-loop-lag /
+ *  CLOSE_WAIT storm — F1/P-030) or the gateway is enabled but unreachable (the spine
+ *  is down). unknown = PG unreadable. warn = a per-thread perf warn (hot worker / RSS
+ *  / gateway flap). ok otherwise. A null/stale perf verdict contributes nothing. */
 export function infraStatus(d: InfraHealth): PanelStatus {
+  if (d.perf?.status === 'crit') return 'crit';
   if (d.pg === null) return 'unknown';
   if (d.gatewayReachable === false) return 'crit';
+  if (d.perf?.status === 'warn') return 'warn';
   return 'ok';
 }
 

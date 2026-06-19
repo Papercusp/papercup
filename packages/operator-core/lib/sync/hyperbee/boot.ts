@@ -1282,7 +1282,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // (legacy / single-harness peer) → admit (backward-compatible: the field
     // post-dates single-harness federation + the two-hive integration test).
     const originSlug = frame.harness_slug ?? null;
-    if (!announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug)) {
+    const inScope = announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug);
+    // A-003 diagnostic (env-gated): the per-frame slug-filter decision — so a live
+    // witness can grep `[A-003] slug-filter` to see whether a joiner's member harness
+    // ADMITS the owner's hive-home log (origin=<hive-home> → ADMIT requires
+    // home=<hive-home>, i.e. the rebind resolved) or REJECTs it.
+    if (process.env.PAPERCUSP_A003_TRACE === '1') {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[A-003] slug-filter ${opts.harnessSlug}: origin=${originSlug ?? '<none>'} own=${slug} ` +
+          `home=${hiveHomeProjectionSlug ?? '<none>'} → ${inScope ? 'ADMIT' : 'REJECT'} ` +
+          `peer=${peerLabel(frame.log_core_key)}`,
+      );
+    }
+    if (!inScope) {
       // The NORMAL broadcast-filtering outcome (one topic, many harnesses) — not an
       // alarm. Recorded for observability; NOT forwarded to the admission-rejection
       // telemetry (it is not a forgery / binding failure). Conclusive (never retried).
@@ -1601,13 +1614,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // leaving the old topic is best-effort; the new join is what matters
         }
       }
-      await joinForBinding(binding);
-      // A-003: a FIRST join re-keys this member onto the Hive topic AFTER stamping
-      // hive_slug + the remote_hive home view (join-hive.ts 2/2b precede the 2c
-      // re-key), so re-resolve the joiner hive-home scope now and rebind the two
-      // hive projections if it changed. An `applyOverride` (the rigs) is never
-      // rebuilt — the rig owns its apply. The next merge pass reads the new
-      // scopedApply (mergeOnePass re-evaluates `applyImpl` each pass).
+      // A-003 (a′): re-resolve the joiner hive-home scope + rebind the two hive
+      // projections BEFORE joining the new topic. A FIRST join re-keys this member
+      // onto the Hive topic AFTER join-hive.ts stamps hive_slug + the remote_hive
+      // home view (2/2b precede the 2c re-key), so the home is now resolvable.
+      // ORDER MATTERS (A-003 live-RED root cause): `joinForBinding` opens the topic
+      // and its onAnnounce begins admitting inbound frames — including the OWNER's
+      // hive-home log announce. The onAnnounce slug-filter reads `hiveHomeProjection
+      // Slug`; if we joined FIRST, A's hive-home announce could race in with the home
+      // still UNRESOLVED → the slug-filter rejects it (and announces are not
+      // re-delivered) → the hive-home log never federates to the joiner. The
+      // resolution depends only on `binding` (+ the registry), never on the join, so
+      // doing it first is safe. An `applyOverride` (the rigs) is never rebuilt — the
+      // rig owns its apply. The next merge pass reads the new scopedApply
+      // (mergeOnePass re-evaluates `applyImpl` each pass).
       if (!opts.applyOverride) {
         const next = await resolveHiveHomeProjectionSlug(binding);
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
@@ -1629,6 +1649,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // eslint-disable-next-line no-console
         console.error(`[A-003] rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`);
       }
+      await joinForBinding(binding);
     },
     registerCloseHook(hook: () => void | Promise<void>): () => void {
       closeHooks.add(hook);

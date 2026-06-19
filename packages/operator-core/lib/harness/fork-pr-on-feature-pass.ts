@@ -27,6 +27,7 @@
  */
 
 import type { OpenForkPrOpts, OpenForkPrResult } from './open-fork-pr';
+import { checkContribPolicy, type ContribDecision, type ContribPolicy } from './contrib-policy';
 
 export type RepoPermission = 'admin' | 'maintain' | 'write' | 'read' | 'none';
 
@@ -60,14 +61,44 @@ export interface FeaturePassedDeps {
   ensureFeatureBranch: (args: { repoPath: string; featureBranch: string }) => Promise<void>;
   /** Push to the fork + open the cross-fork PR (lib/harness/open-fork-pr). */
   openForkPr: (opts: OpenForkPrOpts) => Promise<OpenForkPrResult>;
+  /**
+   * EN-4 P-CONTRIB (optional). Load the owner's contribution policy for the
+   * harness's hive, or null when none is set. ABSENT ⇒ no contribution-rule
+   * enforcement (byte-identical to the pre-EN-4 fork-PR flow).
+   */
+  loadContribPolicy?: (input: FeaturePassedInput) => Promise<ContribPolicy | null>;
+  /**
+   * EN-4 P-CONTRIB (optional). List the repo-relative files the feature branch
+   * changes vs the base branch — used for the editable-path allowlist check.
+   * Required only when `loadContribPolicy` returns a policy with `editablePaths`.
+   */
+  getChangedFiles?: (args: {
+    repoPath: string;
+    baseBranch: string;
+    featureBranch: string;
+  }) => Promise<string[]>;
   log?: (msg: string) => void;
 }
 
 export type FeaturePassedOutcome =
-  | { opened: true; prUrl: string; forkOwner: string }
+  | {
+      opened: true;
+      prUrl: string;
+      forkOwner: string;
+      /** EN-4 P-CONTRIB: the auto-merge verdict for this PR (present when an owner
+       *  contribution policy applies). A downstream auto-merge step must honor
+       *  `autoMergeAllowed` — false ⇒ the owner reviews/merges by hand. */
+      contrib?: ContribDecision;
+    }
   | {
       opened: false;
-      reason: 'not_shared' | 'no_repo_context' | 'integration_mode' | 'pr_failed' | 'error';
+      reason:
+        | 'not_shared'
+        | 'no_repo_context'
+        | 'integration_mode'
+        | 'pr_failed'
+        | 'error'
+        | 'contrib_path_denied';
       detail?: string;
     };
 
@@ -102,6 +133,35 @@ export async function handleFeaturePassed(
     const featureBranch = `harness/${input.featureId}`;
     await deps.ensureFeatureBranch({ repoPath: ctx.repoPath, featureBranch });
 
+    // EN-4 P-CONTRIB: apply the owner's contribution rules at the fork→PR
+    // boundary. The editable-path allowlist gates OPENING the PR (an out-of-bounds
+    // change is rejected before it becomes a PR); the auto-merge verdict is carried
+    // on the result for a downstream merge step to honor. Skipped entirely when no
+    // policy is wired/set (no behavior change).
+    let contrib: ContribDecision | undefined;
+    const contribPolicy = deps.loadContribPolicy ? await deps.loadContribPolicy(input) : null;
+    if (contribPolicy) {
+      const changedFiles =
+        deps.getChangedFiles && Array.isArray(contribPolicy.editablePaths)
+          ? await deps.getChangedFiles({
+              repoPath: ctx.repoPath,
+              baseBranch: ctx.baseBranch,
+              featureBranch,
+            })
+          : [];
+      contrib = checkContribPolicy(contribPolicy, { changedFiles });
+      if (!contrib.pathsAllowed) {
+        deps.log?.(
+          `[fork-pr] ${input.featureId} blocked by editable-path policy: ${contrib.deniedPaths.join(', ')}`,
+        );
+        return {
+          opened: false,
+          reason: 'contrib_path_denied',
+          detail: `changed files outside editable-path allowlist: ${contrib.deniedPaths.join(', ')}`,
+        };
+      }
+    }
+
     const res = await deps.openForkPr({
       upstreamRemote: `github.com/${ctx.upstreamOwner}/${ctx.upstreamRepo}`,
       upstreamOwner: ctx.upstreamOwner,
@@ -116,7 +176,12 @@ export async function handleFeaturePassed(
 
     if (res.ok) {
       deps.log?.(`[fork-pr] ${input.featureId} → ${res.prUrl}`);
-      return { opened: true, prUrl: res.prUrl, forkOwner: res.forkOwner };
+      return {
+        opened: true,
+        prUrl: res.prUrl,
+        forkOwner: res.forkOwner,
+        ...(contrib ? { contrib } : {}),
+      };
     }
     deps.log?.(`[fork-pr] ${input.featureId} PR failed: ${res.error}`);
     return { opened: false, reason: 'pr_failed', detail: res.error };

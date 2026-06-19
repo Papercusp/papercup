@@ -18,15 +18,17 @@ describe('terminal-status safety', () => {
 });
 
 describe('env knobs', () => {
-  it('default-OFF; armed only by PAPERCUSP_DBOS_WORKFLOW_GC=1', () => {
+  it('default-ON (recurring backstop); disabled only by PAPERCUSP_DBOS_WORKFLOW_GC=0', () => {
     vi.unstubAllEnvs();
+    expect(dbosWorkflowGcEnabled()).toBe(true);
+    vi.stubEnv('PAPERCUSP_DBOS_WORKFLOW_GC', '0');
     expect(dbosWorkflowGcEnabled()).toBe(false);
     vi.stubEnv('PAPERCUSP_DBOS_WORKFLOW_GC', '1');
     expect(dbosWorkflowGcEnabled()).toBe(true);
   });
-  it('retention defaults 14d, env-tunable', () => {
+  it('retention defaults 2d, env-tunable', () => {
     vi.unstubAllEnvs();
-    expect(dbosWorkflowGcRetentionDays()).toBe(14);
+    expect(dbosWorkflowGcRetentionDays()).toBe(2);
     vi.stubEnv('PAPERCUSP_DBOS_WORKFLOW_GC_DAYS', '30');
     expect(dbosWorkflowGcRetentionDays()).toBe(30);
   });

@@ -527,30 +527,95 @@ export async function recheckClaimantPermissions(): Promise<
   for (const row of rows) {
     const bind = rowToBinding(row);
     const [owner, repo] = bind.github_full_name.split('/');
-    const stillClaimers: number[] = [];
-    for (const userId of bind.claimed_by_github_user_ids) {
-      // We don't have a numeric-id → login lookup table on hand;
-      // for v1 the daemon trusts last-known login from the gist /
-      // contributor row. Skipping per-claimant re-check when the
-      // login resolution would require an extra API call. The
-      // memo treats this as best-effort.
-      void userId;
-      stillClaimers.push(userId);
+    if (!owner || !repo) continue; // malformed full_name — skip (can't verify safely)
+    const ids = bind.claimed_by_github_user_ids;
+
+    // Resolve numeric claimant ids → GitHub logins via the contributors mirror
+    // (github_user_id is globally unique; same join the claim-status route uses).
+    // Best-effort: a missing/unreachable contributors table leaves logins
+    // unresolved, which we treat as "cannot verify" → KEEP (never demote on
+    // uncertainty).
+    const loginMap: Record<number, string> = {};
+    if (ids.length > 0) {
+      try {
+        const cRows = (await sql`
+          SELECT DISTINCT github_user_id, github_username
+            FROM harness_shared.contributors
+           WHERE workspace_id = ${workspaceId}
+             AND github_user_id = ANY(${ids as unknown as string})
+        `) as unknown as Array<{ github_user_id: number | string; github_username: string }>;
+        for (const r of cRows) {
+          const id = Number(r.github_user_id);
+          if (Number.isFinite(id) && r.github_username) loginMap[id] = r.github_username;
+        }
+      } catch {
+        // contributors table missing / unreachable — can't resolve logins; the
+        // per-claimant loop below treats every id as unverifiable → keeps all.
+      }
     }
-    void owner;
-    void repo;
-    // v1 stub: no demotions yet. When the contributors table starts
-    // pinning github_user_id ↔ github_login per harness, this loop
-    // does a permission check per claimant and demotes when all fail.
-    if (stillClaimers.length === 0) {
-      const updated: BindingRecord = { ...bind, claim_status: 'stale' };
-      await upsertCacheRow(workspaceId, updated);
+
+    // Re-check each claimant LIVE. A claimant is dropped ONLY on a definitive
+    // GitHub result below maintain/admin. Two fail-SAFE rules so a transient
+    // GitHub outage (or an unresolvable login) never wrongly demotes a real
+    // owner: (1) unresolved login → keep; (2) getRepoPermission throw
+    // (GITHUB_API_DOWN / RATE_LIMIT) → keep.
+    const stillClaimers: number[] = [];
+    for (const userId of ids) {
+      const login = loginMap[userId];
+      if (!login) {
+        stillClaimers.push(userId); // can't resolve login → can't verify → keep
+        continue;
+      }
+      let perm: GithubRepoPermission;
+      try {
+        perm = await getRepoPermission(owner, repo, login);
+      } catch {
+        stillClaimers.push(userId); // GitHub unreachable → never demote on a transient error
+        continue;
+      }
+      if (hasRequiredPermission(perm, CLAIM_REQUIRED_PERMISSION)) {
+        stillClaimers.push(userId); // still maintain/admin
+      }
+      // else: a DEFINITIVE read/write/triage/none → this claimant lost the
+      // permission they claimed with → dropped.
+    }
+
+    if (ids.length === 0) {
+      // Inconsistent state: claimed with no claimants → stale (cleanup; this was
+      // the only branch the v1 stub could ever reach).
+      await upsertCacheRow(workspaceId, { ...bind, claim_status: 'stale' });
       changes.push({
         binding_id: composeBindingId('github', bind.github_repository_id),
         old_status: bind.claim_status,
         new_status: 'stale',
       });
+    } else if (stillClaimers.length === 0) {
+      // EVERY claimant definitively lost permission → stale; the trust signal no
+      // longer holds and provisional-owner controls re-enable (memo / scenario 5).
+      await upsertCacheRow(workspaceId, {
+        ...bind,
+        claim_status: 'stale',
+        claimed_by_github_user_ids: [],
+      });
+      changes.push({
+        binding_id: composeBindingId('github', bind.github_repository_id),
+        old_status: bind.claim_status,
+        new_status: 'stale',
+      });
+    } else if (stillClaimers.length !== ids.length) {
+      // SOME (not all) claimants lost permission → prune them; the binding stays
+      // claimed because ≥1 verified maintainer remains. No status change.
+      await upsertCacheRow(workspaceId, {
+        ...bind,
+        claimed_by_github_user_ids: stillClaimers,
+      });
+      changes.push({
+        binding_id: composeBindingId('github', bind.github_repository_id),
+        old_status: bind.claim_status,
+        new_status: 'claimed', // status unchanged; the change is a claimant prune
+      });
     }
+    // else: all claimants still valid → no change.
   }
   return changes;
 }

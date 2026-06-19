@@ -22,6 +22,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { armHiveCrossHiveDrainRoutine } from './arm-hive-cross-hive-drain';
 
 const SLUG = process.env.CROSS_HIVE_DRAIN_SLUG ?? operatorHomeHarnessSlug();
 
@@ -29,21 +30,10 @@ async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
-  const id = `rt_${SLUG}_cross_hive_outbox_drain`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       payload_template, concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, 'cross-hive-outbox-drain', 'cron',
-            ${JSON.stringify({ cron: '30 */2 * * * *' })}::text::jsonb, 'system:cross-hive-outbox-drain',
-            ${JSON.stringify({})}::text::jsonb,
-            'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      trigger_config = EXCLUDED.trigger_config,
-      target_role = EXCLUDED.target_role,
-      active = EXCLUDED.active,
-      updated_at = now()`;
-  console.log(`[seed-cross-hive-drain] routine ${id} seeded (install=${SLUG}, active=${active})`);
+  // Delegate to the shared arm helper (the per-hive twin used by hive:create) so
+  // the seeded row never drifts from what a freshly-created hive gets.
+  const { routineId } = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, hiveSlug: SLUG, active });
+  console.log(`[seed-cross-hive-drain] routine ${routineId} seeded (install=${SLUG}, active=${active})`);
   await sql.end({ timeout: 5 });
 }
 

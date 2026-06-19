@@ -190,6 +190,21 @@ export async function startDbos(): Promise<void> {
     `[dbos] launched (schema=dbos, source=${source}, appVersion=${PINNED_APP_VERSION})`,
   );
 
+  // EI-455 — start the dead-executor reaper: an immediate boot reap (clears dedup
+  // wedges left by a prior crash/restart) plus a 2-min process-level sweep that runs
+  // OUTSIDE the DBOS routine engine, so it un-wedges the scheduler even when the
+  // routine engine is itself frozen. See dbos-executor-reaper.ts. Best-effort —
+  // must not fail boot.
+  try {
+    const [{ startExecutorReaper }, { getOrgPg }] = await Promise.all([
+      import('./dbos-executor-reaper'),
+      import('@papercusp/db-org'),
+    ]);
+    startExecutorReaper(getOrgPg().sql);
+  } catch (e) {
+    console.warn('[dbos-executor-reaper] failed to start (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
   if (dbosCurationActive()) {
     // Arm the event-driven urgent wake (curator-operator P2): coord_inbox →
     // immediate urgent-only curation tick, so escalations/blockers surface

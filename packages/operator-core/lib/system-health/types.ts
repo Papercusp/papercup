@@ -14,6 +14,8 @@
  * (D-003). A flaky source greys its card (`unknown`) — it never blanks the tab.
  */
 
+import type { PerfVerdict } from './perf-budgets';
+
 /**
  * A panel's health light. `unknown` = the source could not be read this tick
  * (greyed, NOT a fabricated outage — fail-soft, mirroring learning-infra-health's
@@ -304,10 +306,15 @@ export interface ImprovementsHealth {
   bySeverity: Record<string, number>;
 }
 
-/** Infra — PG + gateway reachability. */
+/** Infra — PG + gateway reachability + the per-thread perf verdict (F1/P-030). */
 export interface InfraHealth {
   pg: { version: string; total: number; active: number; idle: number } | null;
   gatewayReachable: boolean | null;
+  /** Per-thread perf-SLO verdict from Lane E's latest perf-signals-v1 capture
+   *  (F1/P-030). null = no capture / E1 not running on this box; status 'unknown' =
+   *  stale. Budgets are per-thread (worker CPU%, event-loop lag, CLOSE_WAIT,
+   *  reachability) — never loadavg-absolute (128-core box; round-4 D-002 reframe). */
+  perf: PerfVerdict | null;
 }
 
 /** SU fleet (interactive collaborators) presence. */

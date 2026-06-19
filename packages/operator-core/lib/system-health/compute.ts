@@ -738,18 +738,34 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const h = await pgHealth();
       pg = { version: h.version, total: h.totalConnections, active: h.activeConnections, idle: h.idleConnections };
     } catch { /* PG unreadable — collector still returns (gateway leg) */ }
-    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable };
+    // Per-thread perf-SLO verdict from Lane E's latest perf-signals-v1 capture (F1/
+    // P-030). Fail-soft: no capture / E1 not running on this box ⇒ perf null ⇒ infra
+    // behaves exactly as before. Per-thread budgets (worker CPU%, event-loop lag,
+    // CLOSE_WAIT, reachability) — NEVER loadavg-absolute (128-core box; D-002 reframe).
+    let perf: InfraHealth['perf'] = null;
+    try {
+      const { readLatestPerfSignals, evaluatePerfSignals } = await import('./perf-budgets');
+      const sig = await readLatestPerfSignals();
+      if (sig) perf = evaluatePerfSignals(sig, ctx.now);
+    } catch { /* perf-signals unreadable — leave null */ }
+    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf };
     const status = infraStatus(data);
+    const perfCrit = perf?.status === 'crit';
     return {
       status,
-      summary: pg
-        ? `PG ${pg.active} active / ${pg.total} conns${ctx.gatewayEnabled ? `, gateway ${ctx.gatewayReachable ? 'up' : 'down'}` : ''}`
+      summary: perfCrit
+        ? `PER-THREAD WEDGE: ${perf!.reasons[0] ?? 'operator degraded'}`
+        : pg
+        ? `PG ${pg.active} active / ${pg.total} conns${ctx.gatewayEnabled ? `, gateway ${ctx.gatewayReachable ? 'up' : 'down'}` : ''}${perf?.status === 'warn' ? `, perf warn (${perf.reasons[0] ?? ''})` : ''}`
         : 'PG unreadable',
       data,
       link: { label: 'Tests', href: '/adv?tab=testing' },
       metrics: [
         m('pg conns', pg ? `${pg.active}/${pg.total}` : '?', pg === null ? 'unknown' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
+        m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
+        m(':3070 close-wait', perf?.closeWait ?? 'n/a'),
+        m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
       ],
     };
   });

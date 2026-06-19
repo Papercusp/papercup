@@ -20,11 +20,27 @@ nor several correctness/safety edges of multi-peer direct-to-main pushing.** For
 release where members on different machines push to one shared repo, the code plane is as
 load-bearing as the content plane — and it's the plane that can lose or mis-route *code*.
 
+## The two contribution paths (confirmed 2026-06-19 — test BOTH)
+The push target is governed by `decideGitSyncPush()` and the upstream permission:
+- **Collaborator WITH upstream write** (creator/owner): git-sync pushes their tree
+  **directly to upstream `origin`** (`git push origin HEAD:<branch>`).
+- **Non-collaborator WITHOUT write** (joiner): `push:false` — NEVER touches real `main`.
+  Code reaches upstream via a **fork→cross-fork PR** under the CONTRIBUTOR'S OWN account
+  (`ensure-fork.ts` → `open-fork-pr.ts`), fired LAZILY at feature-pass
+  (`fork-pr-on-feature-pass.ts` orchestrator hook). (NOT a Papercusp-owned fork — per
+  D-007 the fork is the user's own; PR is contributor-authored.)
+The **S0 safety invariant**: a non-collaborator can NEVER direct-push the owner's `main`.
+
 ## Scope / scenarios
-1. **E2E happy path (the headline):** a running shared hive, 2 members on 2 machines; a
-   Bee writes code in member-A's working tree → git-sync tick → assert the commit lands on
-   GitHub `main` (real or a controlled bare-repo origin) AND member-B's git-sync pulls it
-   → both trees + origin converge. The flow the owner asked about, proven.
+1. **E2E happy path — collaborator (the headline):** a running shared hive, 2 members on 2
+   machines, member-A HAS upstream write; a Bee writes code in member-A's tree → git-sync
+   tick → assert the commit lands on `main` (real or a controlled bare-repo origin) AND
+   member-B's git-sync pulls it → both trees + origin converge.
+1b. **E2E fork→PR — non-collaborator (the SAFETY path):** a joiner WITHOUT upstream write
+   writes code → on feature-pass, assert `ensureFork` creates a fork UNDER THE JOINER'S
+   account + `openForkPr` opens a cross-fork PR to upstream — and assert the joiner's
+   git-sync `push:false` so NO commit ever lands on the owner's `main` directly (the S0
+   invariant; teeth-verify: force push:true on a joiner → the no-direct-push assertion RED).
 2. **Multi-peer direct-to-main convergence under REAL conflict:** two Bees edit the SAME
    file on two members concurrently → both push to `main` → assert the non-FF retry
    (fetch+merge) converges with NO lost commit; a true merge CONFLICT (overlapping lines)

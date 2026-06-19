@@ -191,6 +191,12 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp; the federated content is the `value`',
     updated_at: 'machine-local row timestamp; the federated content is the `value`',
   },
+  hive_policy: {
+    // EN-1: the federated subset is policy_json + owner_pubkey + signature + policy_version
+    // (the owner-signed content, all carried by toHivePolicyValue). Only timestamps are local.
+    created_at: 'machine-local row timestamp; the federated content is policy_json + signature',
+    updated_at: 'machine-local row timestamp; the federated content is policy_json + signature',
+  },
   hive_members: {
     display_name: 'GitHub-derived cosmetic, re-resolved per machine',
     avatar_url: 'GitHub-derived cosmetic, re-resolved per machine',
@@ -260,10 +266,11 @@ afterAll(async () => {
 });
 
 describe('federated CDC tables — every column federates or is documented-local (column-drift guard)', () => {
-  it('sanity: the CDC-captured set is the 13 known federated tables', () => {
+  it('sanity: the CDC-captured set is the 14 known federated tables', () => {
     // A new CDC table without a case here means a new federated table shipped —
     // the per-table loop below will still cover it (it iterates CDC_CAPTURED_TABLES).
-    expect(CDC_CAPTURED_TABLES.length).toBe(13);
+    // 14 = the 13 prior + hive_policy (EN-1 owner-signed policy record).
+    expect(CDC_CAPTURED_TABLES.length).toBe(14);
   });
 
   for (const table of CDC_CAPTURED_TABLES) {

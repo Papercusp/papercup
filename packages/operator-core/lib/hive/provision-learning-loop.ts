@@ -308,7 +308,7 @@ export async function teardownHiveLearningLoop(
     await sql`
       DELETE FROM harness_shared.routines
        WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveSlug}
-         AND target_role IN ('system:git-sync', 'system:green-checkpoint', 'system:release-trigger')`;
+         AND target_role IN ('system:git-sync', 'system:green-checkpoint', 'system:release-trigger', 'system:cross-hive-outbox-drain')`;
     result.gitSyncRoutines = true;
   } catch {
     /* best-effort */

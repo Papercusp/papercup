@@ -28,6 +28,7 @@ import { insertHiveIfAbsent } from '../../../hive-store';
 import { loadRevokedHivePubkeys, getHiveMember } from '../../../hive-membership-store';
 import { getHiveSetting } from '../../../hive-settings-store';
 import { buildHarnessProjectionApply } from './register-all';
+import { announceSlugInScope } from '../read-admission';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 
@@ -153,5 +154,44 @@ describe('A-003 — hive_members/hive_settings reach a member-booted joiner', ()
     expect(await getHiveMember(WS, HOME, 9, db.adminSql)).toBeNull(); // not under our home
     expect(await getHiveMember(WS, 'other-hive', 9, db.adminSql)).toBeNull(); // and not blindly accepted
     expect(await getHiveSetting(WS, 'other-hive', 'theme', db.adminSql)).toBeNull();
+  });
+});
+
+// A-003 (a′): the SEND-SIDE composition. Once the owner's hive-home harness federates
+// its log on the shared topic (the re-key) and dc9db's (a′) broadcasts it alongside the
+// member's, the onAnnounce slug-filter (`announceSlugInScope`) decides WHICH logs a
+// harness merges — and the rebind (above) lands the admitted hive-home ops under the
+// home. This composes the two halves over the REAL apply: the slug-filter is the gate;
+// the rebind is the landing. (The full on-the-wire/binary crossing is su-9140a's live
+// content-matrix witness; this is the durable, in-suite regression guard for the
+// gate↔apply composition + the no-cross-merge invariant.)
+describe('A-003 (a′) — slug-filter gate composed with the rebind apply', () => {
+  it("a JOINER's member harness admits the hive-home log (slug-filter) → the rebind lands its ops under the home", async () => {
+    await seedHive(HOME);
+    // GATE: a joiner's member harness (ownSlug=MEMBER) whose joinerHiveHomeSlug rebinds
+    // HOME admits the hive-home log (origin-slug=HOME).
+    expect(announceSlugInScope(HOME, MEMBER, HOME)).toBe(true);
+    // LANDING: so the hive-home log's ops reach the member's (rebound) apply + materialise
+    // under the home slug — origin='remote' (a federated crossing), exactly the A-003 fix.
+    const apply = joinerApply();
+    await apply(memberOp());
+    await apply(settingsOp());
+    expect((await getHiveMember(WS, HOME, 7, db.adminSql))?.githubUsername).toBe('octo');
+    expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).not.toBeNull();
+  });
+
+  it("the OWNER's hive-home harness REJECTS a member-log (slug-filter) — the no-cross-merge gate", () => {
+    // The owner's hive-home harness (ownSlug=HOME, NOT a joiner → no rebind) must NOT admit
+    // a member-log (origin-slug=MEMBER). Without this gate, since every harness registers
+    // ALL projections and the apply dispatches purely on op.table, the member-log's
+    // member-scoped ops (e.g. features) would materialise in the HIVE-HOME schema =
+    // cross-merge pollution. The slug-filter rejects the log at admission, so those ops
+    // never reach the hive-home apply at all.
+    expect(announceSlugInScope(MEMBER, HOME, null)).toBe(false);
+    // Scope-PRECISE, not a blanket cross-slug reject: the joiner's member (rebinds HOME)
+    // still admits the hive-home log, and absent (legacy) still admits — so single-harness
+    // + the existing two-hive federation are unchanged.
+    expect(announceSlugInScope(HOME, MEMBER, HOME)).toBe(true);
+    expect(announceSlugInScope(null, HOME, null)).toBe(true);
   });
 });

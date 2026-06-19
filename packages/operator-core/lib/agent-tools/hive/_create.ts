@@ -366,6 +366,24 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       }
     }
 
+    // 6d. Arm this hive's OWN cross-Hive outbox-drain routine. Without it a hive's
+    //     substrate_outbox is never reconciled — every federated-table write enqueues
+    //     a row and they grow unbounded (papercusp hit 24k undrained, 2026-06-19,
+    //     because only the operator-home install was ever seeded). The drain action
+    //     self-gates to a no-op when the hive has no published peers, so seeding it
+    //     ACTIVE is safe. Best-effort + undo, like the learning-loop above; the
+    //     matching teardown is in teardownHiveLearningLoop (hive:dissolve).
+    try {
+      const { armHiveCrossHiveDrainRoutine } = await import('../../harness/routines/arm-hive-cross-hive-drain');
+      const { sql } = getOrgPg();
+      const armed = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, hiveSlug: opts.slug });
+      undo.push(armed.undo);
+    } catch (e) {
+      console.warn(
+        `[hive:create] arm cross-hive-outbox-drain failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
     // 6b. Record the QUEEN-HOME device pubkey (domain-generic-hive P-021 / I2 /
     //     closes queen-guard.ts D-008). The creating node IS this Hive's Queen home
     //     in the local flow, so stamp its device pubkey into hive_settings — a

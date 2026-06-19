@@ -64,6 +64,34 @@ Legend: 🟢 landed/green · 🔧 in progress · 🟡 caveat · 🔴 blocked
 ## Monitor log
 - 12:05 — board created. All 7 lanes owned + active. Backbone + live core re-green.
   Live-N scale note delivered. Awaiting lane landings.
+- 17:26 — **A-003 root-cause NARROWED (dc9db, off my :180 pair's PG) + my drain-read CORRECTED.**
+  NOT the drain: hive_settings IS drained (substrate_outbox 6/6, undrained=0), the hive-home boots +
+  joins-topic + peer_connected. (My "outbox=10 undrained" was a MISREAD of the matrix's captured-count
+  diagnostic.) The real gap = **announce→admit→apply of A's 2ND (hive-home) log on the shared topic** —
+  i.e. dc9db's (a′) 2nd-announce flush, OR d2230's slug-filter rejecting harness_slug=hive-home, OR the
+  rebind not applying. Needs an [A-003]-instrumented run to pinpoint (prod build logs none). dc9db building
+  a SAME-TOPIC integration test (2 harnesses/1 topic — the green-rig/red-binary closer the different-topic
+  two-hive test misses) + checking the (a′) flush; d2230 verifying filter/rebind; I OFFERED to re-run the
+  surviving .deb with PAPERCUSP_A003_TRACE=1 for the live discriminator (box-permitting). **A-003 STILL RED
+  live**; root-cause now precise + owned. Tore down my idle :180 pair → box relieved (3G→25G free, load 60→23).
+- 17:24 — **Brief S 🟢 GREEN (c318e).** Deterministic core (4/6 teeth-verified: crash-mid-drain/torn-write/
+  long-downtime/HLC-survives-restart) + LIVE cycle on :195: real SIGKILL of inst-a (desktop + embedded PG, by
+  recorded session) → WAL-recovery on fresh port → NO loss → **hive-home AND member re-join topic** → fresh
+  write crosses in ~2s. The session's own crash mode, proven recoverable. findings-S.md GREEN.
+- 17:17 — **⚠ A-003 (a′) RE-WITNESS = STILL RED ON THE LIVE BINARY (green-rig/red-binary AGAIN).**
+  Rebuilt the integrated .deb from staging — VERIFIED it carries the fixes (announceSlugInScope=2,
+  harness_slug=1472, fed_hlc=109, federation-status=3) — ran the content-matrix on :180.
+  **28 content types PASS** (features/plans/conversations/messages/threads/plan-parts/item-assignments
+  all cross + backfill), but **hive_settings STILL never crosses** (outbox=9/10 captured, undrained,
+  all directions); hive_members muddied by a harness duplicate-key write setup-fail. ROOT-CAUSE
+  EVIDENCE: the matrix writes hive_settings/hive_members under the **HIVE-HOME slug** → the capture
+  trigger fires but the hive-home's outbox never **DRAINS/federates** = the **EI-681 send-side gap
+  persists** (from-repo publish boots the directory announce — "announced=True" — but apparently NOT
+  the hive-home substrate/outbox-drain/topic-announce). d2230's register-all integration test (6 green)
+  proves the RECEIVE/slug-filter/rebind path but **injects the hive-home log directly**, so it can't see
+  the live boot/drain gap. **A-003 STAYS RED** until hive_settings crosses on the binary. d2230/dc9db
+  root-causing the hive-home boot/drain. (CODE green: 935 suite + the integration; the LIVE SEND SIDE isn't.)
+  The live witness earning its keep — exactly the gap that would ship broken on a rig-only green.
 - 16:23 — **🎉 A-003 (a′) LANDED (dc9db, back + reclaimed his own A-002 code).** swarm.ts:
   per-topic announce generalized 1→N logs (multi-harness-per-topic, broadcast inbound) +
   announce.ts: SIGNED `harness_slug` frame field. 925 suite green, typecheck/lint clean,
