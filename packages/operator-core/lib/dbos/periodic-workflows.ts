@@ -136,7 +136,19 @@ DBOS.registerScheduled(completionRefWorkflow, { name: 'completionRefVerify', cro
 async function embedBackfillTick(): Promise<void> {
   await DBOS.runStep(async () => {
     if (shouldShedHeavyTick('embed-backfill')) return;
-    await runEmbedBackfillOnce();
+    try {
+      await runEmbedBackfillOnce();
+    } catch (err) {
+      // F1/F4 (infra-perf-reliability-audit-2026-06-19): a transient embedder
+      // failure (embedder_disabled / openai_api_key_missing / a gateway or HTTP
+      // error) must NOT throw out of the scheduled step. DBOS would retry, then
+      // mark the workflow permanently dead (exceeded maxRecoveryAttempts) — which
+      // silently STOPS all future backfill (the cosine/embedding leg that mem0
+      // search depends on). This was the observed failure: `embedBackfill` dead,
+      // memory:search degraded to ~50% errors / 19.5s p95. Log + skip; the next
+      // 5-min tick retries once the embedder recovers.
+      console.warn(`[embed-backfill] sweep skipped (non-fatal): ${(err as Error).message}`);
+    }
   }, { name: 'embed-backfill' });
 }
 const embedBackfillWorkflow = DBOS.registerWorkflow(embedBackfillTick, {
