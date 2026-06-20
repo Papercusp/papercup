@@ -3,6 +3,9 @@ title: Workspace scoping (PG-enforced)
 description: Workspaces become a Postgres-enforced scoping key on `harness_shared.*` via session GUC + RLS. Filesystem-only workspace separation is replaced with row-level enforcement.
 sidebar:
   order: 24
+plans:
+  - harnesses-across-workspaces-2026-05-31
+  - agent-tools-workspace-isolation-2026-06-01
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -38,12 +41,12 @@ In scope:
 - RLS policies on every workspace-scoped table.
 - Migration script that backfills `workspace_id` from the on-disk workspace registry and is **idempotent**, **dry-runnable**, and **loud-fails on indeterminate rows** (no default-tag).
 - Retrofit existing Tier 3 REST endpoints and substrate services to use the GUC contract.
-- Hindsight bank derivation: `workspace → company_id` registry config; bank ID auth-derived.
+- Workspace registry `companyId` field (retained for future auth-derived scoping; see [Hindsight bank derivation](#hindsight-bank-derivation-deprecated)).
 
 Out of scope:
 
 - Per-harness schemas (`harness_<slug>`). These are already isolated by name; reads route through DI services that resolve workspace from session.
-- Single-workspace desktop modes. The default desktop backend (`embedded-postgres`) and the legacy backend (`pglite`) each run their own per-workspace data directory; both are isolated by process + data dir, so the GUC contract is a no-op there but does not interfere.
+- Single-workspace desktop modes. The desktop ships a single `embedded-postgres` backend (real PG over TCP) that runs its own per-workspace data directory; it is isolated by process + data dir, so the GUC contract is a no-op there but does not interfere.
 - Cross-workspace queries. Not exposed through any v1 surface.
 
 ## Schema
@@ -70,7 +73,11 @@ Tables in scope (initial enumeration):
 - `harness_shared.project_spec_revisions`
 - `harness_shared.token_index`
 
-Default `''` on the column lets the migration land additively before backfill; the migration script populates real values, after which `''` is rejected.
+Two more tables — `harness_shared.system_principals` and `harness_shared.pi_sessions` — were created with a built-in `workspace_id NOT NULL` column and gained workspace-isolation RLS plus a `<table>_workspace_nonempty` CHECK constraint in the same rollout.
+
+This 10-table list was the initial Phase-A enumeration. Workspace-scoping/RLS has since been rolled out to the broad majority of `harness_shared.*` tables — the realized scope is roughly 166 `*_workspace_isolation` policies (e.g. `adv_sessions`, `agent_chats_consolidated`, `feature_audit_consolidated`, `harness_plan_status`, `harness_project_files`, and many more), an order of magnitude beyond the original ten.
+
+Default `''` on the column lets the migration land additively before backfill; the migration script populates real values, after which `''` is rejected. A runtime trigger (`harness_shared.fill_workspace_id_from_projects()`) also resolves `workspace_id` from `projects` (by `harness_slug`) on insert, falling back to `'default'` when it cannot be resolved — see [Migration script](#migration-script).
 
 ## Session GUC contract
 

@@ -3,12 +3,17 @@ title: System and pi principal classes
 description: Two new principal classes alongside harness principals — `system:<name>` for persistent in-app concierges (Operator, Oracle) and `pi:<session-id>` for ephemeral pi sessions. Both inherit the bearer-token identity model from `auth-and-identity`.
 sidebar:
   order: 23
+plans:
+  - principal-rfc-2026-05-20
+  - tooldef-auth-rfc-2026-05-31
+  - agent-tools-workspace-isolation-2026-06-01
+  - unify-agent-spawn-chokepoint-2026-06-06
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="Status: implemented">
-Both principal classes ship. The `PrincipalKind` union (`'harness' | 'system' | 'pi'`) lives in `@papercusp/tooldef` (`libs/generic/tooldef/src/types.ts`); provisioning is `provisionSystemPrincipal` / `startPiSession` (`packages/agent-mcp/src/provisioning.ts`); the `harness_shared.system_principals` + `harness_shared.pi_sessions` tables are in `000-baseline.sql`. Two drifts from the original draft below: the per-workspace `config.json` bearer file was retired (PG-only now), and the `token_index` principal-slug column is named `harness_slug` (it holds `system:<name>` / `pi:<session-id>`, not just harness slugs).
+Both principal classes ship. `system` and `pi` are two members of the `PrincipalKind` union in `@papercusp/tooldef` (`libs/generic/tooldef/src/types.ts`) — a union the original draft had as the `'harness' | 'system' | 'pi'` triad but which principal-rfc-2026-05-20 (Phase 3b) extended to seven members (`'harness' | 'system' | 'pi' | 'user' | 'device' | 'service' | 'loopback'`). This page covers only the `system` and `pi` classes. Provisioning is `provisionSystemPrincipal` / `startPiSession` (`packages/agent-mcp/src/provisioning.ts`); the `harness_shared.system_principals` + `harness_shared.pi_sessions` tables are in `000-baseline.sql`. Two drifts from the original draft below: the per-workspace `config.json` bearer file was retired (PG-only now), and the `token_index` principal-slug column is named `harness_slug` (it holds `system:<name>` / `pi:<session-id>`, not just harness slugs).
 </Aside>
 
 ## Why
@@ -62,6 +67,10 @@ Each `system:<name>` principal has its own §10 capability set, declared in the 
 
 In-memory cap state (§10.7) is keyed by `(workspace_id, principal_slug)`. Revocation in workspace A does not affect workspace B; revocation of one capability from `system:operator` does not affect `system:oracle`.
 
+Beyond capabilities, `system:operator` alone also carries an RBAC **role** — `BRAIN_PRINCIPAL_ROLE` — attached to the resolved principal at auth time (`rolesForPrincipal` in `auth.ts` returns it only when `kind='system'` and the slug is `system:operator`). `requireRoles`-gated tools admit only the brain (plus superuser). `system:oracle` and every pi principal carry no role; the role is verified-identity-derived, never caller-asserted.
+
+Capability and revocation changes propagate to live, out-of-process MCP auth caches via a dedicated PG `NOTIFY` channel, `agent_mcp_principal_invalidate`. `notifyPrincipalChanged` fires `pg_notify` *inside the write tx* (`provisioning.ts`), so the signal is delivered on commit and dropped on rollback; it is emitted from `provisionSystemPrincipal`, `startPiSession`, and `endPiSession`. A `LISTEN`-backed cache in `auth.ts` invalidates on the notify. If `LISTEN` is down, staleness is still bounded by TTLs: 60s for positive (resolved) entries and 15s for negative (revoked / missing / out-of-scope) entries.
+
 ### Lifecycle
 
 System principals are persistent. The bearer is rotated only by an explicit operator-level rotation (analogous to harness token rotation, deferred to v2 of `auth-and-identity`).
@@ -111,9 +120,9 @@ Per-session overrides require explicit user action (e.g. clicking "grant write a
 
 ### Lifecycle invariants
 
-1. A pi bearer ceases to authenticate the moment the session ends (`token_index` row deleted).
+1. A pi bearer ceases to authenticate the moment the session ends, via **two independent mechanisms**: (a) the `token_index` row is deleted (so identity derivation finds no row), and (b) even if a `token_index` row survived, `loadCapabilities` rejects any pi session whose `pi_sessions.ended_at` is set (`if (rows[0].ended_at) return null` in the pi branch of `auth.ts`). `endPiSession` deletes the `token_index` row and sets `ended_at` in the same tx.
 2. A pi session cannot grant itself capabilities at runtime; capability changes require a substrate-level grant from the user.
-3. Two pi sessions with the same `session_id` cannot coexist (`token_index` PK enforces).
+3. Two pi sessions with the same `session_id` cannot coexist. The enforcing constraint is the workspace-scoped `UNIQUE INDEX token_index_ws_harness_slug_idx` on `(workspace_id, harness_slug)` (which makes `pi:<session-id>` unique per workspace), backed independently by `pi_sessions_pkey` on `(workspace_id, session_id)`. The `token_index` primary key is on `token`, not the slug, so it is *not* the mechanism that blocks a duplicate `session_id`.
 
 ## Substrate invariants (both classes)
 
@@ -162,6 +171,6 @@ Both new tables are workspace-scoped per the workspace-scoping amendment. RLS po
 
 ## Threats not addressed
 
-- **Compromised system principal config file**. Mitigated by mode 0600.
 - **A compromised operator process**. The operator is the source of truth; if it's malicious, all bets are off.
+- **Read access to the `token_index` table**. Bearers are now stored only in PG (the per-workspace `config.json` bearer file was retired, so there is no on-disk file to chmod `0600` — `provisioning.ts` performs no filesystem write). Anyone who can read `token_index` reads live bearers; this is mitigated at the DB-access / RLS layer, not by file permissions.
 - **A user knowingly granting a pi session full capabilities and then losing the device**. Out of scope; analogous to the user typing into a regular harness.

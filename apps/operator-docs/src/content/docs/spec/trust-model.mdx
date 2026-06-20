@@ -1,6 +1,12 @@
 ---
 title: Trust model
 description: How Papercusp decides what to trust — GitHub is the authority of record, peer state is advisory, and the real threat is the confused deputy. Distilled from the research-backed design memo.
+plans:
+  - papercusp-trust-model-2026-05-31
+  - papercusp-user-protection-gate-2026-05-31
+  - shared-hive-trust-admission-2026-06-14
+  - papercusp-substrate-model-b-impl-2026-06-01
+  - substrate-perop-signing-phase2-2026-06-02
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -64,11 +70,16 @@ remote peer writes op → replicated → projected into local PG
 | Gate | Where | What |
 |---|---|---|
 | **G1 — Provenance** (prerequisite) | replicated op → local PG projection | thread the unforgeable `writerPubkey` through; stamp `author_pubkey` + `origin: local\|remote`. Attribution, not rejection. |
-| **G2 — Auditor-admission** (primary) | orchestrator feature-pick (`readFeaturesPg`) | a read-only `auditor` role screens every `origin=remote` feature → `admit \| reject`; only `origin=local` or admitted features reach the pick loop. Rejects auto-escalate to a human. Keys on the unforgeable `writerPubkey`, never the forgeable GitHub user id. |
+| **G2 — Auditor-admission** (primary) | every claim/place chokepoint (frontier read + `claimNextWorkItem` / `claimWorkItem` / `claimReplicaSlotLocal` / `fleet:place_batch`) | a read-only `auditor` role screens every `origin=remote` feature → `admit \| reject`; only `origin=local` or admitted features reach the pick loop. Rejects auto-escalate to a human. Keys on the unforgeable `writerPubkey`, never the forgeable GitHub user id. |
 | **G3 — Untrusted-data framing** | prompt assembly | wrap remote-authored content (feature notes, debugger findings, inter-agent messages) as clearly-delimited third-party **DATA**, never instructions. |
 | **G4 — Spawn least-privilege** (backstop) | local agent spawn | hand the child only the env/tokens its role needs; tighten the tool/shell surface. Bounds damage if the auditor is fooled. |
 
 <Aside type="tip" title="The one-sentence principle">Replicated content is untrusted input — it may inform and propose, but it must never autonomously drive code execution on the local machine without local-human admission.</Aside>
+
+Two refinements landed in G2 after this memo (see `shared-hive-trust-admission-2026-06-14`):
+
+- **Every chokepoint, not one read.** The original gate lived on the single feature-frontier read; the fleet/blackboard distribution layer (`claimNextWorkItem`, `claimWorkItem`, `claimReplicaSlotLocal`, `fleet:place_batch`/`gatherFrontier`) grew up around that read and never inherited it — so un-screened remote work was claimable. The admission predicate (`isAutoPickable` / `autoPickableWhereSql`) is now the single source of truth applied at **every** claim/place chokepoint, so a future distribution path can't silently re-open the hole. The live DBOS frontier read carries the same inline `origin`/`audit_verdict` gate as a fail-safe.
+- **A verified-id trust fast-path — still not a forgeable one.** Admission also auto-admits a remote, un-admitted feature when its `author_pubkey` resolves to a `github_user_id` in the owner's workspace-scoped local trust list. Crucially, that id is resolved **only** via a verified, non-revoked device attestation (`resolveVerifiedAuthorGithubId`) — a self-claimed GitHub id never qualifies, and the trust check is workspace-scoped (no cross-workspace leak). So the "never the forgeable GitHub id" rule still holds: the new path keys on a verified-and-attested id, alongside the auditor verdict.
 
 G1 + G2 are substrate-independent and land first. Full sequencing lives in `papercusp-user-protection-gate-2026-05-31`.
 

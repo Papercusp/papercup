@@ -1,8 +1,13 @@
 ---
 title: Voice mode
-description: Browser-side voice runtime for app-level + Operator-panel voice control. STT/TTS via the Web Speech API, no backend.
+description: Browser-side voice runtime for app-level + Operator-panel voice control. STT/TTS across a selectable engine matrix (Web Speech, local Whisper/Kokoro, ElevenLabs, OpenAI, Deepgram, Cartesia).
 sidebar:
   order: 25
+plans:
+  - universal-voice-interface-2026-06-05
+  - silence-nudge-reliability-2026-05-14
+  - voice-production-test-coverage-2026-06-01
+  - voice-modality-spike-2026-05-13
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -20,7 +25,7 @@ Voice mode lets a user direct the app by speech instead of (or alongside) clicks
 off ──click──▶ push-to-talk ──click──▶ always-on ──click──▶ off
 ```
 
-- **off**: STT/TTS disabled. Voice button shows 🎤 with no border tint.
+- **off**: STT/TTS disabled. Voice button shows 🚫. (The 🎤 icon is the `idle` status, once voice is on; the button styles itself via `pc-voice-btn--mode-*` / `pc-voice-btn--status-*` classes, not a border tint.)
 - **push-to-talk** (PTT): hold the voice button; STT runs while held; release submits.
 - **always-on**: continuous wake-word listening. When the wake phrase is detected, the runtime switches to active listening for the rest of the utterance, then submits.
 
