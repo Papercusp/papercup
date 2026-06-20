@@ -43,7 +43,9 @@ beforeAll(async () => {
       id text PRIMARY KEY, install_slug text NOT NULL, name text NOT NULL,
       trigger_kind text NOT NULL, trigger_config jsonb NOT NULL, target_role text NOT NULL,
       active boolean DEFAULT true NOT NULL, last_fired_at timestamptz, next_fire_at timestamptz,
-      updated_at timestamptz DEFAULT now() NOT NULL, workspace_id text NOT NULL
+      updated_at timestamptz DEFAULT now() NOT NULL, workspace_id text NOT NULL,
+      -- migration 323 (B-LOOP-1): the loop recurrence kind.
+      reschedule_interval_sec integer, target_owner_id text
     )`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.harness_plans (
@@ -61,16 +63,25 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.routines, harness_shared.harness_plans`;
 });
 
-async function insertRoutine(o: { id: string; name?: string; targetRole?: string; cfg: object; active?: boolean; nextFireAt?: Date | null }) {
+async function insertRoutine(o: { id: string; name?: string; targetRole?: string; cfg: Record<string, unknown>; active?: boolean; nextFireAt?: Date | null; rescheduleIntervalSec?: number | null }) {
   const name = o.name ?? o.id;
+  const intervalSec = o.rescheduleIntervalSec ?? null;
   await rootSql`
-    INSERT INTO harness_shared.routines (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id)
-    VALUES (${o.id}, 'web', ${name}, 'schedule', ${rootSql.json(o.cfg)}, ${o.targetRole ?? 'worker'},
-            ${o.active ?? true}, ${o.nextFireAt ?? null}, 'ws1')`;
-  return { id: o.id, workspaceId: 'ws1', installSlug: 'web', name, targetRole: o.targetRole ?? 'worker', triggerConfig: o.cfg } as never;
+    INSERT INTO harness_shared.routines (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id, reschedule_interval_sec)
+    VALUES (${o.id}, 'web', ${name}, 'schedule', ${JSON.stringify(o.cfg)}::jsonb, ${o.targetRole ?? 'worker'},
+            ${o.active ?? true}, ${o.nextFireAt ?? null}, 'ws1', ${intervalSec})`;
+  // The stub MUST carry rescheduleIntervalSec — claimDueRoutine reads it to detect a loop.
+  return { id: o.id, workspaceId: 'ws1', installSlug: 'web', name, targetRole: o.targetRole ?? 'worker', triggerConfig: o.cfg, rescheduleIntervalSec: intervalSec } as never;
 }
 const activeOf = async (id: string) => (await rootSql<{ active: boolean }[]>`SELECT active FROM harness_shared.routines WHERE id=${id}`)[0]?.active;
 const nextFireOf = async (id: string) => (await rootSql<{ next_fire_at: Date | null }[]>`SELECT next_fire_at FROM harness_shared.routines WHERE id=${id}`)[0]?.next_fire_at;
+// A parked loop's next_fire_at is 'infinity' (postgres-js parses it to an Invalid Date,
+// so compare in SQL, not JS): true iff next_fire_at = 'infinity'::timestamptz.
+const parkedOf = async (id: string) =>
+  (await rootSql<{ parked: boolean }[]>`SELECT next_fire_at = 'infinity'::timestamptz AS parked FROM harness_shared.routines WHERE id=${id}`)[0]?.parked;
+// Simulate B-LOOP-2's completion-rebase: re-arm a parked loop to a DUE time.
+const rearmDue = async (id: string) =>
+  rootSql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second' WHERE id=${id}`;
 
 describe('claimDueRoutine — recurring', () => {
   it('claims a due cron routine and advances next_fire_at; a second claim then loses', async () => {
@@ -108,5 +119,57 @@ describe('claimDueRoutine — one-shot', () => {
     expect(await activeOf('ps1')).toBe(false); // routine deactivated
     const plan = (await rootSql<{ schedule_active: boolean }[]>`SELECT schedule_active FROM harness_shared.harness_plans WHERE plan_slug='myplan'`)[0]!;
     expect(plan.schedule_active).toBe(false); // plan un-armed too (the two-write)
+  });
+});
+
+// loop-routines-interval-recurrence-2026-06-20 P-003 (B-LOOP-1) — the THIRD recurrence kind.
+describe('claimDueRoutine — loop (P-003)', () => {
+  it('a PURE loop stays active + PARKS at infinity on claim (not deactivated, not NULL)', async () => {
+    const r = await insertRoutine({ id: 'lp1', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: null }); // due, no cron/rrule
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await activeOf('lp1')).toBe(true); // NOT deactivated (the one-shot trap)
+    expect(await parkedOf('lp1')).toBe(true); // next_fire_at='infinity', NOT NULL (the refire trap)
+  });
+
+  it('never refires while parked: a second claim on a parked loop LOSES', async () => {
+    const r = await insertRoutine({ id: 'lp2', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true); // claim → park
+    expect(await parkedOf('lp2')).toBe(true);
+    expect(await claimDueRoutine(rootSql, r)).toBe(false); // 'infinity' <= now() is false → not due → no re-claim
+    expect(await activeOf('lp2')).toBe(true); // still alive, still parked
+  });
+
+  it('re-fires after the completion-rebase re-arms it (survives MANY claims, never deactivates)', async () => {
+    const r = await insertRoutine({ id: 'lp3', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: null });
+    for (let i = 0; i < 5; i++) {
+      expect(await claimDueRoutine(rootSql, r)).toBe(true); // claim
+      expect(await parkedOf('lp3')).toBe(true); // parked in-flight
+      expect(await activeOf('lp3')).toBe(true); // P-003 regression: a pure loop NEVER deactivates
+      await rearmDue('lp3'); // B-LOOP-2 re-arm after the turn settles
+    }
+    expect(await activeOf('lp3')).toBe(true);
+  });
+
+  it('a pure loop NEVER touches harness_plans, even when named plan-schedule-*', async () => {
+    await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, schedule_active)
+                  VALUES ('ws1', 'web', 'looplan', true)`;
+    // A loop branch returns BEFORE the one-shot plan-unarm — the loop must not disarm the plan.
+    const r = await insertRoutine({ id: 'lp4', name: 'plan-schedule-looplan', targetRole: 'system:plan-run', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await parkedOf('lp4')).toBe(true); // parked, not deactivated
+    expect(await activeOf('lp4')).toBe(true);
+    const plan = (await rootSql<{ schedule_active: boolean }[]>`SELECT schedule_active FROM harness_shared.harness_plans WHERE plan_slug='looplan'`)[0]!;
+    expect(plan.schedule_active).toBe(true); // plan STILL armed — the loop never disarmed it
+  });
+
+  it('cron+loop is recurrence: advances to cron-next (does NOT park), stays active', async () => {
+    // hasRecurrence (cron present) → the recurrence branch; the loop re-arm is folded in later by B-LOOP-2.
+    const r = await insertRoutine({ id: 'cl1', cfg: { cron: '0 0 * * *' }, rescheduleIntervalSec: 60, nextFireAt: null });
+    expect(await claimDueRoutine(rootSql, r)).toBe(true);
+    expect(await activeOf('cl1')).toBe(true);
+    expect(await parkedOf('cl1')).toBe(false); // NOT parked at infinity
+    const nf = await nextFireOf('cl1');
+    expect(nf).toBeInstanceOf(Date); // advanced to a real cron-next time
+    expect(nf!.getTime()).toBeGreaterThan(Date.now()); // a finite future time, not infinity
   });
 });

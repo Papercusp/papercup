@@ -277,6 +277,15 @@ export const FLAGS = {
   // Safe always-on (bounded under the user's cap, self-recovering); the flag is the
   // operator's escape hatch.
   LOOP_PRESSURE_GOVERNOR: "papercusp-loop-pressure-governor",
+  // inference-gateway-robustness-audit-2026-06-20 (gateway P2 / B-GW-4): the fleet
+  // OPUS-BUDGET governor. ON (alpha default-on): as the aggregate Claude-Max 5h opus
+  // utilization climbs, a spawn's NON-CRITICAL opus tier-escalation is shed back to
+  // sonnet (background first, then normal), reserving 5h headroom so the fleet paces
+  // UNDER the ceiling instead of blow-then-starve; `critical` opus is never downgraded
+  // (paced only past near-cap). OFF: spawns run their resolved tier verbatim (today's
+  // behavior). Safe always-on (only removes an opus ESCALATION, never below a role's
+  // floor; self-healing as the window decays); the flag is the operator's escape hatch.
+  OPUS_BUDGET_PACING: "papercusp-opus-budget-pacing",
   // self-learning-frontier-2026-06-12 (P-020 / FB-06): the replay harness —
   // re-run an agent from a historical transcript point (or synthetic context)
   // under a modified prompt/policy and judge the divergence; the substrate for
@@ -771,6 +780,15 @@ export const FLAGS = {
   // encryption, byte-identical to today. KNOWN_DARK_FLAGS. Owner flips ON only after the
   // live cut-off witness (P-008) passes on the real binary.
   HIVE_REKEY: "papercusp-hive-rekey",
+  // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the master gate for
+  // engine-managed LOOPS — the tracked replacement for Claude /loop (loop:arm re-wakes a
+  // warm su session N sec after each turn settles). DEFAULT OFF (dark) because the loop
+  // engine is multi-part (B-LOOP-1 schema + B-LOOP-2 completion-rebase + B-LOOP-3 warm-wake
+  // fire) and the end-to-end warm-wake round-trip is not yet verified green — arming a loop
+  // before the fire lands would create a routine that never wakes. OFF ⇒ loop:arm refuses
+  // (loop:end/loop:status always work); inert otherwise (no loop rows exist). KNOWN_DARK_FLAGS.
+  // Owner flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes.
+  LOOPS: "papercusp-loops",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1082,6 +1100,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ON by default (alpha flags-default-on) — finished, safe work (bounded under the
   // user's concurrency cap, self-recovering). P5-2 kill-switch.
   [FLAGS.LOOP_PRESSURE_GOVERNOR]: true,
+  // ON by default (alpha flags-default-on) — B-GW-4 opus-budget pacing. Safe always-on:
+  // only sheds a non-critical opus ESCALATION to sonnet under 5h budget pressure, never
+  // below a role floor; self-healing as the window decays. Escape hatch flag.
+  [FLAGS.OPUS_BUDGET_PACING]: true,
   // ON by default (alpha flags-default-on policy) — queen-autonomous-execution
   // B-10 (P-041/P-045). Behavior-neutral throughput improvement (D-007): it only
   // changes what happens to a FLEET AGENT's otherwise-frozen card (route to a
@@ -1193,6 +1215,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // behavior-identical to today. Owner flips ON only after the P-008 live cut-off witness.
   // KNOWN_DARK_FLAGS.
   [FLAGS.HIVE_REKEY]: false,
+  // DEFAULT OFF (dark) — loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5): the
+  // engine-managed-loop master gate. OFF ⇒ loop:arm refuses with loops_disabled (the
+  // feature is inert — no loop rows exist; loop:end/loop:status are ungated). The loop
+  // engine (fire + completion-rebase) is in-flight, so the warm-wake round-trip is
+  // unverified; owner flips ON after the B-LOOP-1..5 chain is green + the manual e2e
+  // passes. KNOWN_DARK_FLAGS.
+  [FLAGS.LOOPS]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -30,9 +30,11 @@
  *                                      a FLOOR — the owner can only RAISE it).
  *   owner-steering:max-bees          — int; concurrency ceiling for running agents
  *                                      (effective = MIN(system ceiling, this)).
- *   owner-steering:idle-activities   — { gym?, scout?, curation? } booleans; each
- *                                      defaults ON, `false` suppresses that idle
- *                                      activity (gym/Scout/curation spend).
+ *   owner-steering:idle-activities   — { gym?, scout?, curation?, plan-review? }
+ *                                      booleans; each defaults ON, `false`
+ *                                      suppresses that idle activity (gym /
+ *                                      Scout-ideation / doc+memory curation /
+ *                                      Queen review-iteration of Scout drafts).
  *   owner-steering:auto-scale-out    — bool; `false` disables account-pool
  *                                      auto-scale-out (default = enabled).
  *   owner-steering:model-tiers       — SESSION model-tier MENU override (D-006).
@@ -70,8 +72,11 @@ export const OWNER_STEERING_KEYS = {
 } as const;
 
 /** The idle background activities the owner can gate per-Hive (P-006, D-005). Each
- *  defaults ON; only an explicit `false` suppresses it. */
-export const IDLE_ACTIVITY_KINDS = ['gym', 'scout', 'curation'] as const;
+ *  defaults ON; only an explicit `false` suppresses it. `plan-review` gates the
+ *  Queen's idle review+iteration of Scout-routed draft plans (the Queen↔Scout
+ *  feedback loop, queen-scout-feedback-loop-2026-06-20 D-003 #2 — review never
+ *  starves placement). */
+export const IDLE_ACTIVITY_KINDS = ['gym', 'scout', 'curation', 'plan-review'] as const;
 export type IdleActivityKind = (typeof IDLE_ACTIVITY_KINDS)[number];
 export type IdleActivityToggles = Partial<Record<IdleActivityKind, boolean>>;
 
@@ -110,8 +115,9 @@ export interface OwnerSteering {
   /** SESSION concurrency CEILING (P-006) — max concurrently-running agents/bees.
    *  Effective = MIN(system ceiling, this). null ⇒ no override (use the system ceiling). */
   maxBees?: number | null;
-  /** SESSION idle-activity gates (P-006) — gym/Scout/curation. Each defaults ON;
-   *  an explicit `false` suppresses that idle activity. null ⇒ all default ON. */
+  /** SESSION idle-activity gates (P-006) — gym/Scout/curation/plan-review. Each
+   *  defaults ON; an explicit `false` suppresses that idle activity. null ⇒ all
+   *  default ON. */
   idleActivities?: IdleActivityToggles | null;
   /** SESSION auto-scale-out toggle (P-006) — `false` disables automatic account-pool
    *  scale-out on sustained rate-limit exhaustion. null ⇒ default (enabled). */

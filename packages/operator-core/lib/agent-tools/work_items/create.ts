@@ -90,6 +90,13 @@ export default defineTool({
       .describe(
         'Override the mirror-duplicate guard (EI-316): create even when the title embeds an existing OPEN work-item id. Only set this when the reference is deliberate, not when you mean to work the referenced item.',
       ),
+    assign_to: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Atomically CLAIM the new item for this agent id in the SAME create (loop-routines P-007 / D-008) — it lands already owned, never momentarily unclaimed, so no create→claim race window. General: any agent id; self-assign = your own ownerId. e.g. a loop wakeup self-assigning its work, or the Queen creating + placing onto a bee. Omit ⇒ the item lands unclaimed.',
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -165,6 +172,12 @@ export default defineTool({
         payload: args.payload,
         createdBy: ident.ownerId,
         urgent: args.urgent,
+        // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`
+        // stamps the owner in the same write — no create→claim race. The creator is
+        // the durable delegator (`assignedBy`, issue-family only; the feature table
+        // has no assigned_by column so it is harmlessly ignored there).
+        assignee: args.assign_to,
+        assignedBy: args.assign_to ? ident.ownerId : undefined,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, workItem }) }] };
     } catch (e) {

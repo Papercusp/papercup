@@ -1,0 +1,65 @@
+# Inbound PR review & merge loop
+URL: /internal/docs/harness/pr-review-loop
+
+How a fork→PR contribution is autonomously noticed, tracked, agent-reviewed, gated, and (in owner auto-mode) merged — the as-built inbound spine (PR-1..5 of pr-system-completion-dogfood), its S0 safety invariants, and the manual/auto owner modes.
+
+import { Aside } from '@astrojs/starlight/components';
+
+This is the **as-built** maintainer reference for the inbound side of the
+contribution loop — a fork→PR landing back on a shared harness. The outbound
+side (a Bee opening a fork→PR) is covered under the contribution/platform docs.
+Design rationale lives in the source plans (`pr-system-completion-dogfood`,
+`papercusp-dogfood-phase7-pr-lifecycle`); this page is the wiring + invariants.
+
+## The loop at a glance
+
+```
+ new/updated PR on a shared harness (pr_reviewer_role_enabled)
+        │
+   [poll daemon]  system:pr-poll routine (per harness, ~60s + exp backoff)
+        │  list open PRs → diff vs last-seen (routine metadata)
+        │  per NEW/CHANGED PR:
+        │    • getPr + fetch check-runs → refresh pr_check_status_cache
+        │    • upsert harness_feature_prs            (WI↔PR producer)
+        │    • trigger the agent-reviewer            (in-process or blueprint)
+        ▼
+   [agent-reviewer]  runPrReviewTask → report {summary, recommendation,
+        │            rationale, risks, checksObserved}  → pr_review_reports
+        ▼
+   decideAutoReview(pr, settings)  +  report gate  +  revocation gate
+        │   (auto mode, all gates pass)
+        ▼
+   tryAutoApprove → tryAutoMerge → stampCompletionRefOnMerge
+        │                                   │
+        ▼                                   ▼
+   GitHub review/merge              feature status='shipped' +
+                                    harness_feature_prs.pr_state='merged'
+```
+
+## Components
+
+| Stage                                         | Module                                                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Poll daemon**                               | `pr-host/poll-daemon.ts` (`system:pr-poll`, seeded by `pr-poll-routine.ts`)             | The spine. Per harness with the reviewer role enabled, lists open PRs, diffs against a `last_seen` `{updated_at, head_sha}` snapshot on the routine metadata, and drives the per-PR flow. 60s cadence + exponential backoff (`retry-policy-types.ts`) on host errors; crash-safe (one durable step, idempotent). Registered via `registerSystemAction('pr-poll', …)` like git-sync.                               |
+| **WI↔PR producer**                            | `harness/feature-pr-producer.ts`                                                        | `upsertFeaturePrOnOpen` / `markFeaturePrState` link a feature ↔ its PR ↔ state, recording the human operator's `author_github_user_id` (per-operator identity). The daemon also best-effort upserts a row (workspace-scoped read).                                                                                                                                                                                |
+| **Agent reviewer**                            | `pr-host/agent-reviewer.ts` + `pr-review-report-types.ts`                               | `runPrReviewTask` reviews the PR diff and emits a safety-guarded report. `assembleReport` forces the recommendation no more permissive than the facts: a suspected secret → `reject`, failing checks / empty diff → `request_changes` (the LLM can never talk these down). Stored in `pr_review_reports`.                                                                                                         |
+| **Decision gate**                             | `pr-host/auto-review-decision-types.ts` (`decideAutoReview`)                            | Pure gate: role-enabled → `auto_review` → PR open → not draft → not self-authored → author trusted → not already-approved / changes-requested → then (`auto_merge` ∧ checks-green ∧ mergeable) ⇒ `approve_and_merge`, else `approve`.                                                                                                                                                                             |
+| **Report + revocation gates** (in the daemon) | `poll-daemon.ts`, `contribution-admission.ts`                                           | A **revoked** contributor's PR is refused before anything else (`isPrAuthorRevoked`, S0). Then: report **absent** ⇒ *defer* (await the review; the PR is excluded from `last_seen` so the next poll re-checks) — never auto-approve before the agent reviews; report **non-approve** ⇒ veto; **approve** ⇒ proceed. The read is head\_sha-aware (a report for an older diff reads as absent ⇒ defer + re-review). |
+| **Approve / merge**                           | `pr-host/auto-approve.ts`, `auto-merge.ts`                                              | Idempotent; both write `auto_review_audit`. Merge is `squash` by default, pinned with `expected_head_sha`.                                                                                                                                                                                                                                                                                                        |
+| **Completion stamp**                          | `harness/completion-ref-writer.ts`                                                      | On merge, `resolveMergedPrFeatureId` → `stampCompletionRefOnMerge`: feature `status='shipped'` + `completion_ref`.                                                                                                                                                                                                                                                                                                |
+| **Report GUI + modes**                        | `apps/operator/app/harness/PrsTab.tsx` / `PrRow.tsx` + the `pr-reviewer-settings` route | Renders the agent report (recommendation chip, rationale, risks, observed checks) + the linked WI. **Manual** mode: a human reads the report and clicks Approve / Approve+merge. **Auto** mode: a claimed-owner-gated toggle flips `pr_reviewer_settings.auto_review`/`auto_merge`; the daemon then auto-applies. Auto-status is shown honestly (why a PR is / isn't auto-mergeable — never a false "merged").    |
+| **Fork GC + dogfood witness**                 | `harness/fork-gc.ts`, `pr-host/dogfood-roundtrip.ts`                                    | GC keeps a fork on merge, collects only abandoned operator-owned forks (dry-run by default). `verifyDogfoodRoundTrip` asserts the loop round-tripped (prTracked ∧ merged ∧ shipped ∧ linked).                                                                                                                                                                                                                     |
+
+## S0 safety invariants
+
+These are teeth-tested (`pr-host/*.test.ts`, `inbound-pipeline.test.ts`); keep them when editing the daemon:
+
+1. **No auto-merge without checks-green + trusted author + `auto_merge` + not-revoked**, and — when a review report exists — a present `approve` report. `decideAutoReview` returns `approve_and_merge` only when checks are `success`; a red/pending/unknown check, untrusted/self/revoked author, or a `request_changes`/`reject` report can never reach `tryAutoMerge`.
+2. **Fail-closed on a checks-fetch error** — if the check-run fetch errors, `checks_state` stays `unknown`, so the gate yields `approve` (never `approve_and_merge`); a checks-API outage cannot sneak a merge through.
+3. **The agent never self-approves**, and **re-poll is idempotent** (the last-seen guard + `tryAutoApprove`/`tryAutoMerge` audit-state checks; a merged PR drops off the open list).
+4. **First-sight race closed** — a brand-new trusted+green PR is *deferred*, not auto-merged, until its review report lands.
+
+## Related
+
+* **Vaporware guard** (`packages/operator-core/lib/plan-claim-guard.ts`): a separate hygiene check that a plan item flipped shipped/done naming a repo file actually has that file — born from this arc (P-042 was marked shipped but never built).
+* **Live dogfood runbook**: `platform:enable` → member `platform:contribute` → daemon review → owner approve → `platform:dogfood_verify`. Outward-facing (opens a real PR to the canonical repo) — owner-authorised, not part of CI.

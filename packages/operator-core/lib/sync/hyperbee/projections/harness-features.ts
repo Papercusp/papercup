@@ -19,6 +19,7 @@ import { resolveVerifiedAuthorGithubId } from '../../../work-items-admission';
 import { normalizeJsonbInput } from './_jsonb-input';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { shouldApplyMemberContentOp } from '../member-content-guard';
 
 /**
  * Wire-shape of a feature row in Hyperbee. Mirrors the PG columns
@@ -135,6 +136,12 @@ export interface HarnessFeaturesProjectionOpts {
    * would be vacuous. Defaults to `getOrgPg().sql`.
    */
   sql?: postgres.Sql;
+  /** WI-259 P-002: hive-home slug when this harness is a hive MEMBER (cross-member content is
+   *  membership-gated only when set); undefined for a non-hive / owned-home harness. */
+  hiveHomeSlug?: string;
+  /** WI-259 P-002: resolve an op's VERIFIED source-log device pubkey from its receiver-stamped
+   *  sourceLogKeyHex (boot's admittedIdentities); threaded via RegisterAllOpts. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
 }
 
 function composeKey(row: HarnessFeatureRow): string {
@@ -151,7 +158,13 @@ async function writeToPg(
   row: HarnessFeatureRow,
   provenance?: ProvenanceContext,
 ): Promise<void> {
-  if (row.harness_slug !== opts.harnessSlug) return;
+  // WI-259 P-002 membership guard (see member-content-guard.ts): own-slug applies; a cross-member
+  // op applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. resolveAuthorDevice
+  // maps the immutable sourceLogKeyHex (provenance.authorPubkey for a remote op) → the admit-verified device.
+  const sourceLogDevice = provenance?.authorPubkey
+    ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+    : null;
+  if (!(await shouldApplyMemberContentOp(row.harness_slug, opts, sourceLogDevice))) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';

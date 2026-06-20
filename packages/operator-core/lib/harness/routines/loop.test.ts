@@ -1,0 +1,145 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock B-LOOP-1's upsertRoutine seam so we can assert the EXACT loop-routine row
+// materializeLoop produces — the row fd5c0's fire (loop-fire.ts) + su-15ea2's
+// completion-rebase consume. vi.hoisted so the spy exists when vi.mock hoists.
+const { upsertRoutineSpy } = vi.hoisted(() => ({ upsertRoutineSpy: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: {} }),
+  upsertRoutine: upsertRoutineSpy,
+}));
+
+import {
+  materializeLoop,
+  buildLoopWakePrompt,
+  loopRoutineName,
+  LOOP_WAKE_ACTION,
+  LOOP_INTERVAL_FLOOR_SEC,
+} from './loop';
+
+beforeEach(() => {
+  upsertRoutineSpy.mockReset();
+  // Echo the input back as a plausible RoutineRow (materializeLoop reads .id/.name/.nextFireAt/.targetRole).
+  upsertRoutineSpy.mockImplementation(async (_sql: unknown, input: any) => ({
+    id: `rt_${input.installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase(),
+    name: input.name,
+    installSlug: input.installSlug,
+    workspaceId: input.workspaceId,
+    triggerKind: input.triggerKind,
+    triggerConfig: input.triggerConfig,
+    targetRole: input.targetRole,
+    payloadTemplate: input.payloadTemplate,
+    concurrency: input.concurrency,
+    catchup: 'skip-old',
+    active: input.active,
+    lastFiredAt: null,
+    nextFireAt: input.nextFireAt ?? null,
+    rescheduleIntervalSec: input.rescheduleIntervalSec ?? null,
+    targetOwnerId: input.targetOwnerId ?? null,
+  }));
+});
+
+describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
+  it('interpolates the loop specifics and carries the locked B-LOOP-4 self-assign convention', () => {
+    const p = buildLoopWakePrompt({
+      ownerId: 'su-abc',
+      intervalSec: 300,
+      harness: 'papercusp',
+      goal: 'ship the widget',
+    });
+    expect(p).toContain('su-abc'); // the owner id the agent self-assigns to
+    expect(p).toContain('300'); // the interval
+    expect(p).toContain('papercusp'); // the harness
+    expect(p).toContain('ship the widget'); // the goal
+    // the locked atomic create+self-assign contract (B-LOOP-4 / su-1ec26)
+    expect(p).toContain('work_items:create');
+    expect(p).toContain('assign_to');
+    expect(p).toContain('set_state');
+    // how to stop (don't spin on empty wakes)
+    expect(p).toContain('loop:end');
+    // every placeholder was substituted
+    expect(p).not.toMatch(/\{(intervalSec|harness|ownerId|goal)\}/);
+  });
+});
+
+describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fire)', () => {
+  it('writes a PURE loop row the engine treats as the third recurrence kind', async () => {
+    const now = new Date('2026-06-20T00:00:00.000Z');
+    const res = await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      ownerId: 'su-pinned',
+      intervalSec: 120,
+      kickoff: 'do the thing',
+      costCapCents: 500,
+      now,
+    });
+
+    expect(upsertRoutineSpy).toHaveBeenCalledTimes(1);
+    const input = upsertRoutineSpy.mock.calls[0][1];
+
+    // A PURE loop: trigger_kind 'cron' (rides listDueCronRoutines) but trigger_config {}
+    // (no cron/rrule ⇒ claim.ts parks it at 'infinity' in-flight) + the loop columns set.
+    expect(input).toMatchObject({
+      installSlug: 'papercusp',
+      name: 'loop-su-pinned',
+      triggerKind: 'cron',
+      triggerConfig: {},
+      targetRole: LOOP_WAKE_ACTION,
+      concurrency: 'skip',
+      active: true,
+      rescheduleIntervalSec: 120,
+      targetOwnerId: 'su-pinned',
+    });
+
+    // The fire reads the wake text from payload_template.kickoff and the cap from .costCapCents.
+    expect(input.payloadTemplate).toEqual({ kickoff: 'do the thing', costCapCents: 500 });
+
+    // First fire = now + interval (FINITE, so the existing claim path fires it once; the
+    // completion-rebase then owns re-arming the parked loop).
+    expect(input.nextFireAt.getTime()).toBe(now.getTime() + 120_000);
+
+    expect(res.name).toBe('loop-su-pinned');
+    expect(res.targetRole).toBe(LOOP_WAKE_ACTION);
+  });
+
+  it('omits costCapCents from payload_template when no cap is given', async () => {
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+    });
+    const input = upsertRoutineSpy.mock.calls[0][1];
+    expect(input.payloadTemplate).toEqual({ kickoff: 'k' });
+    expect('costCapCents' in input.payloadTemplate).toBe(false);
+  });
+
+  it('honours an explicit firstFireInSec (first wake sooner than one interval)', async () => {
+    const now = new Date('2026-06-20T00:00:00.000Z');
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 600,
+      kickoff: 'k',
+      firstFireInSec: 60,
+      now,
+    });
+    const input = upsertRoutineSpy.mock.calls[0][1];
+    expect(input.nextFireAt.getTime()).toBe(now.getTime() + 60_000);
+  });
+});
+
+describe('loop constants / naming', () => {
+  it('loopRoutineName is deterministic per owner (the upsert key)', () => {
+    expect(loopRoutineName('su-x')).toBe('loop-su-x');
+  });
+  it('the policy floor is the 60s /loop floor', () => {
+    expect(LOOP_INTERVAL_FLOOR_SEC).toBe(60);
+  });
+  it('the loop target_role is the stable self-documenting value', () => {
+    expect(LOOP_WAKE_ACTION).toBe('system:loop-wake');
+  });
+});

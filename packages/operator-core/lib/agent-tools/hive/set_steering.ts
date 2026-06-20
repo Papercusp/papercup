@@ -95,10 +95,11 @@ export default defineTool({
         gym: z.boolean().optional(),
         scout: z.boolean().optional(),
         curation: z.boolean().optional(),
+        'plan-review': z.boolean().optional(),
       })
       .nullable()
       .optional()
-      .describe('THROTTLE (P-006): gate idle background activities. Each defaults ON; false suppresses that activity (gym cycles / Scout grading / doc-curation). null / {} clears it.'),
+      .describe('THROTTLE (P-006): gate idle background activities. Each defaults ON; false suppresses that activity (gym cycles / Scout ideation / doc-curation / Queen review-iteration of Scout drafts). null / {} clears it.'),
     autoScaleOut: z
       .boolean()
       .nullable()

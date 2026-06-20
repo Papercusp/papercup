@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
     windowMs: 3600_000, calls: 1, inputTokens: 10, outputTokens: 5,
     cacheReadTokens: 0, cacheCreationTokens: 0, spendUsd: 0.01, buckets: [],
   })),
+  loadAccountPool: vi.fn(async () => ({ accounts: [] as unknown[] })),
 }));
 
 vi.mock('@papercusp/papercup-shared/agent', () => ({
@@ -28,6 +29,8 @@ vi.mock('@papercusp/papercup-shared/agent', () => ({
 }));
 vi.mock('./rate-limit-config', () => ({ getCachedRateLimitConfig: h.getCachedRateLimitConfig }));
 vi.mock('./agent-usage-telemetry', () => ({ summarizeUsage: h.summarizeUsage }));
+// B-GW-4 opus-budget: mock only the pool loader; the pure summarizeOpusBudget runs for real.
+vi.mock('./deployment/account-pool-store', () => ({ loadAccountPool: h.loadAccountPool }));
 
 import { buildFleetRateStatus } from './fleet-rate-status';
 
@@ -61,6 +64,7 @@ beforeEach(() => {
     windowMs: 3600_000, calls: 1, inputTokens: 10, outputTokens: 5,
     cacheReadTokens: 0, cacheCreationTokens: 0, spendUsd: 0.01, buckets: [],
   });
+  h.loadAccountPool.mockResolvedValue({ accounts: [] });
 });
 
 describe('buildFleetRateStatus (Gap 1 — read-model assembly, isolated)', () => {
@@ -162,5 +166,36 @@ describe('buildFleetRateStatus (Gap 1 — read-model assembly, isolated)', () =>
     expect(h.summarizeUsage).toHaveBeenLastCalledWith(60 * 60 * 1000);
     await buildFleetRateStatus(30 * 60_000);
     expect(h.summarizeUsage).toHaveBeenLastCalledWith(30 * 60_000);
+  });
+
+  it('(B-GW-4) surfaces opusBudget: empty pool → no signal, headroom zone, nothing shedding', async () => {
+    h.snapshotGovernors.mockReturnValue([]);
+    h.loadAccountPool.mockResolvedValue({ accounts: [] });
+    const s = await buildFleetRateStatus();
+    expect(s.opusBudget).toMatchObject({
+      aggregateUtil: null,
+      zone: 'headroom',
+      shedding: { background: false, normal: false, critical: false },
+      pacingCritical: false,
+    });
+  });
+
+  it('(B-GW-4) surfaces opusBudget: a near-full pool → background+normal shed, critical paced', async () => {
+    h.snapshotGovernors.mockReturnValue([]);
+    h.loadAccountPool.mockResolvedValue({
+      accounts: [{ id: 'a', credentialRef: 'token:/c/a', addedAt: 1, boundTo: [], rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0, utilization: 0.97, utilizationAt: Date.now() } }],
+    });
+    const s = await buildFleetRateStatus();
+    expect(s.opusBudget?.zone).toBe('exhausted');
+    expect(s.opusBudget?.shedding).toMatchObject({ background: true, normal: true, critical: false });
+    expect(s.opusBudget?.pacingCritical).toBe(true);
+  });
+
+  it('(B-GW-4) opusBudget is null (never throws) when the pool load rejects', async () => {
+    h.snapshotGovernors.mockReturnValue([]);
+    h.loadAccountPool.mockRejectedValue(new Error('pool PG down'));
+    const s = await buildFleetRateStatus();
+    expect(s.opusBudget).toBeNull();
+    expect(s.ok).toBe(true);
   });
 });

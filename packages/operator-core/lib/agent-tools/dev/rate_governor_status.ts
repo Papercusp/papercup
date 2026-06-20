@@ -16,7 +16,7 @@ import { buildFleetRateStatus } from '../../fleet-rate-status';
 export default defineTool({
   name: 'dev:rate_governor_status',
   description:
-    'Snapshot the fleet rate-limit layer now: live config (maxSimultaneousAgents + AIMD floor), fleet cap vs in-flight vs AIMD-effective concurrency, per (provider, model-class) governor buckets (paused/until, in-flight vs maxConcurrent, RPM/ITPM/OTPM headroom), and recent usage telemetry (token throughput, $spend, usage% where a provider ceiling is known). Buckets are empty until a governed agent turn has run. Use to see whether the fleet/gym is currently rate-limit-paced, paused, or AIMD-throttled.',
+    'Snapshot the fleet rate-limit layer now: live config (maxSimultaneousAgents + AIMD floor), fleet cap vs in-flight vs AIMD-effective concurrency, per (provider, model-class) governor buckets (paused/until, in-flight vs maxConcurrent, RPM/ITPM/OTPM headroom), recent usage telemetry (token throughput, $spend, usage% where a provider ceiling is known), and the opusBudget pacing state (aggregate 5h opus utilization + zone + which criticality classes are shedding opus→sonnet to stay under the ceiling, B-GW-4). Buckets are empty until a governed agent turn has run. Use to see whether the fleet/gym is currently rate-limit-paced, paused, AIMD-throttled, or opus-budget-shedding.',
   guidance: {
     when: 'Diagnose whether agent spawns / stateless LLM calls are being paced or paused by the rate-limit governor (e.g. "why are runs slow / stalled?"), or read the fleet cap / effective concurrency / usage% the top-bar shows.',
     notWhen: 'Service up/down — dev:service_health. Migration drift — db:check_drift. EDITING the cap — operator:rate_limit_config.',

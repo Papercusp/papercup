@@ -11,7 +11,7 @@
  *     default would be the EI-7 class of bug); clamps never error.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { effectiveTierConfig, resolveTierSpec, roleDefaultSpec, roleHomeTier, resolveRoleOwnModelSpec, specModelId, tierMenuLines } from './model-tiers';
+import { downgradeOpusTierForBudget, effectiveTierConfig, resolveTierSpec, roleDefaultSpec, roleHomeTier, resolveRoleOwnModelSpec, specModelClass, specModelId, tierMenuLines } from './model-tiers';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -242,5 +242,74 @@ describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-ste
   it('null for a role with no home tier (no committed default)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(resolveRoleOwnModelSpec('reviewer', { tiers: [{ name: 'standard', spec: 'opus:xhigh' }] })).toBeNull();
+  });
+});
+
+describe('specModelClass', () => {
+  it('classifies opus/sonnet/haiku/other', () => {
+    expect(specModelClass('opus:xhigh')).toBe('opus');
+    expect(specModelClass('opus:high')).toBe('opus');
+    expect(specModelClass('sonnet')).toBe('sonnet');
+    expect(specModelClass('haiku')).toBe('haiku');
+    expect(specModelClass('vendor/model:7b')).toBe('other');
+  });
+});
+
+describe('downgradeOpusTierForBudget — floor-safe opus→sonnet shed (B-GW-4)', () => {
+  it('downgrades an opus escalation to sonnet for a SONNET-floored role (worker)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // worker floor = sonnet; an opus escalation (deep) sheds back to standard/sonnet.
+    const d = downgradeOpusTierForBudget({ currentSpec: 'opus:high', currentTier: 'deep', role: 'worker' });
+    expect(d.downgraded).toBe(true);
+    expect(specModelClass(d.spec)).toBe('sonnet');
+    expect(d.from).toBe('opus:high');
+    expect(d.tier).toBe('standard');
+  });
+
+  it('downgrades to sonnet for a HAIKU-floored role (bee) — sonnet is still ≥ the haiku floor', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const d = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'bee' });
+    expect(d.downgraded).toBe(true);
+    expect(specModelClass(d.spec)).toBe('sonnet');
+  });
+
+  it('is a NO-OP for an OPUS-floored role (release-manager) — never drops below the role floor (EI-7/EI-286)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const d = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'release-manager' });
+    expect(d.downgraded).toBe(false);
+    expect(d.spec).toBe('opus:xhigh');
+    expect(d.tier).toBe('max');
+  });
+
+  it('is a NO-OP when the current spec is already non-opus (nothing to shed)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const d = downgradeOpusTierForBudget({ currentSpec: 'sonnet', currentTier: 'standard', role: 'worker' });
+    expect(d.downgraded).toBe(false);
+    expect(d.spec).toBe('sonnet');
+  });
+
+  it('targets the strongest SONNET tier in a custom menu', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const tiers = [
+      { name: 'lite', spec: 'sonnet' },
+      { name: 'mid', spec: 'sonnet:high' },
+      { name: 'big', spec: 'opus:high' },
+    ];
+    const d = downgradeOpusTierForBudget({ currentSpec: 'opus:high', currentTier: 'big', role: 'worker', tiers });
+    expect(d.downgraded).toBe(true);
+    expect(d.tier).toBe('mid'); // strongest sonnet entry
+    expect(specModelClass(d.spec)).toBe('sonnet');
+  });
+
+  it('leaves opus unchanged when a custom menu has no sonnet entry (no safe target)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const tiers = [
+      { name: 'cheap', spec: 'haiku' },
+      { name: 'big', spec: 'opus:high' },
+    ];
+    const d = downgradeOpusTierForBudget({ currentSpec: 'opus:high', currentTier: 'big', role: 'worker', tiers });
+    // 'standard' isn't in this menu → resolveTierSpec errors → unchanged (never silently haiku).
+    expect(d.downgraded).toBe(false);
+    expect(d.spec).toBe('opus:high');
   });
 });

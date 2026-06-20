@@ -196,7 +196,39 @@ export interface WorkFeedHealth {
   deadRoutineNames: string[];
 }
 
-/** Tokens / gateway — the two starvation modes (5h-exhaustion AND RPM-pacing). */
+/**
+ * The structured gateway-internal metrics + the wedge/throttle verdict (B-GW-5). Sourced from the
+ * gateway's own `/stats` (its admission queue + AIMD state), DISTINCT from the fleet rate-governor's
+ * view (`fleetInFlight`/`fleetCap`). Makes the watchdog's silent auto-restart signature VISIBLE.
+ * Null on `TokensHealth.gateway` when the gateway is unreachable / not in the egress path.
+ */
+export interface GatewayPanelMetrics {
+  inFlight: number;
+  queueDepth: number;
+  /** Live effective admission cap (AIMD-adjusted). */
+  maxConcurrent: number;
+  /** Configured admission ceiling; null on a pre-AIMD gateway (deploy-skew). */
+  concurrencyCap: number | null;
+  shed429: number;
+  shedAllThrottled: number;
+  failovers: number;
+  upstream429: number;
+  utilizationPct: number | null;
+  /** AIMD effective concurrency; null on a pre-AIMD gateway. */
+  aimdEffective: number | null;
+  /** AIMD ceiling; null on a pre-AIMD gateway. */
+  aimdCap: number | null;
+  /** CONFIRMED wedge: every slot pinned + a growing queue + totalRequests frozen (watchdog restarts on this). */
+  wedge: boolean;
+  /** Instantaneous wedge-RISK: at the slot ceiling with work queued (not yet confirmed frozen). */
+  saturated: boolean;
+  /** Sustained upstream throttle (AIMD cut concurrency, fail-fast shed, or backlog overflow). */
+  sustainedThrottle: boolean;
+  /** Human reasons for any non-ok signal (surfaced on the panel + the overwatch anomaly). */
+  reasons: string[];
+}
+
+/** Tokens / gateway — the two starvation modes (5h-exhaustion AND RPM-pacing) + the gateway wedge. */
 export interface TokensHealth {
   gatewayEnabled: boolean;
   /** null when the gateway is not in the egress path (flag off) — not probed. */
@@ -211,6 +243,9 @@ export interface TokensHealth {
   accountsTotal: number;
   accountsAvailable: number;
   accountsPaused: number;
+  /** The gateway's own admission/AIMD metrics + wedge/throttle verdict (B-GW-5). null = not read
+   *  (gateway unreachable / flag off / /stats failed) — never fabricated. */
+  gateway: GatewayPanelMetrics | null;
 }
 
 /** Watchdog liveness. */

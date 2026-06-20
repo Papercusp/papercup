@@ -24,11 +24,13 @@ import {
   governorForBackend,
   PriorityAdmissionQueue,
   QueueFullError,
+  AimdConcurrencyController,
   priorityFromLabel,
   classifyHttpError,
   parseUsageResetMs,
   type RateLimitGovernor,
   type AdmissionSnapshot,
+  type AimdSnapshot,
 } from '@papercusp/papercup-shared/agent';
 import { withOAuthBeta } from './credential-store';
 import type { AccountEgress } from '../deployment/account-pool';
@@ -87,6 +89,18 @@ const TRANSIENT_429_BACKOFF_MS = 400;
  *  account; just wait briefly for the upstream to recover). */
 const OVERLOAD_529_BACKOFF_MS = 1000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
+/** AIMD admission-concurrency defaults (inference-gateway-robustness-audit-2026-06-20 P1 / B-GW-1). The
+ *  gateway shrinks the admission queue's EFFECTIVE maxConcurrent under sustained upstream 429s (fewer
+ *  concurrent upstream calls = lower per-IP RPM = the throttle eases — breaking the retry-storm
+ *  amplification) and additively recovers toward the cap when calls succeed. Semantics mirror the fleet
+ *  AIMD gate (governor-registry.ts). Floor ≥1; tunable via deps.aimd / env. The floor stays a few slots
+ *  so the pool can still rotate + absorb a short transient (the scout/gym no-CLI-retry protection). */
+const DEFAULT_AIMD_FLOOR = Number(process.env.PAPERCUSP_GATEWAY_AIMD_FLOOR) || 4;
+/** Net throttle pressure (429s minus successes) that trips one multiplicative halving — high enough that
+ *  a lone transient 429 never shrinks the pool, low enough that a real storm reaches the floor fast. */
+const DEFAULT_AIMD_DECREASE_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_AIMD_DECREASE_THRESHOLD) || 6;
+/** Consecutive clean 2xx that earn one additive +1 step back toward the cap (gentle recovery). */
+const DEFAULT_AIMD_INCREASE_EVERY = Number(process.env.PAPERCUSP_GATEWAY_AIMD_INCREASE_EVERY) || 8;
 /** Max requests allowed to WAIT for an admission slot before the gateway sheds load (429 + retry-after)
  *  instead of growing the backlog. Under a SUSTAINED pool-wide upstream throttle every in-flight request
  *  squats its slot for the full internal wait budget, so the queue would otherwise grow without bound
@@ -249,6 +263,11 @@ export interface GatewayDeps {
    *  activity timers is force-terminated (upstream abort + socket destroy) so it can't pin a slot from an
    *  unknown hang. Default 20 min (env PAPERCUSP_GATEWAY_REQUEST_CEILING_MS). */
   requestCeilingMs?: number;
+  /** AIMD admission-concurrency tuning (B-GW-1). The gateway shrinks the admission queue's effective
+   *  maxConcurrent under sustained upstream 429s and additively recovers when calls succeed. The cap is
+   *  `concurrency`; these override the floor + the trip thresholds. Omit for env/defaults (floor 4,
+   *  halve at net-pressure 6, +1 per 8 clean). Set `floor` ≥ cap to effectively DISABLE AIMD. */
+  aimd?: { floor?: number; decreaseFactor?: number; decreaseThreshold?: number; increaseEvery?: number };
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -268,8 +287,17 @@ export interface GatewayStats {
   queued429: number;
   /** Count of 429s returned because the admission queue hit `maxQueued` (load-shed, not a task error). */
   shed429: number;
+  /** Count of 429s shed at ADMISSION because the WHOLE pool was throttled with a far-off reset — the
+   *  fail-fast path (B-GW-1) that frees the slot immediately instead of taking the acquire/retry path. */
+  shedAllThrottled: number;
   /** The admission backlog cap that triggers load-shedding (0 = unbounded). */
   maxQueued: number;
+  /** The CONFIGURED admission-concurrency cap (the AIMD ceiling). `admission.maxConcurrent` is the LIVE
+   *  effective concurrency after AIMD adaptation; this is the ceiling it recovers toward. */
+  concurrencyCap: number;
+  /** AIMD admission-concurrency state (B-GW-1): effective vs cap/floor + lifetime decrease/increase
+   *  counts — the dashboard's adaptive-throttle signal (a climbing `decreases` = a sustained storm). */
+  aimd: AimdSnapshot;
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;
@@ -435,6 +463,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
   const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs, maxQueued });
 
+  // AIMD adaptive admission concurrency (B-GW-1): the queue's maxConcurrent is the cap; this controller
+  // shrinks the LIVE effective concurrency under sustained upstream 429s (driving queue.setMaxConcurrent
+  // down → fewer concurrent upstream calls → lower per-IP RPM → the throttle eases, breaking the
+  // retry-storm amplification) and additively recovers toward the cap as calls succeed. Fed by
+  // aimd.recordThrottle() on each upstream 429 + aimd.recordSuccess() on each forwarded 2xx below.
+  const aimd = new AimdConcurrencyController({
+    cap: concurrency,
+    floor: deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR,
+    decreaseFactor: deps.aimd?.decreaseFactor,
+    decreaseThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
+    increaseEvery: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
+    onChange: (eff) => {
+      queue.setMaxConcurrent(eff);
+      log('warn', `inference-gateway: AIMD admission concurrency → ${eff}/${concurrency} (effective/cap)`);
+    },
+  });
+
   // A single-account deps set synthesizes a one-entry, no-failover pool; a real `pool` supersedes it.
   const pool: AccountPool =
     deps.pool ??
@@ -464,13 +509,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
   async function dispatcherFor(account: ActiveAccount): Promise<UndiciDispatcher | undefined> {
     const eg = account.egress;
     if (!eg || (!eg.proxyUrl && !eg.localAddress)) return undefined;
-    const key = `${account.accountId}|${eg.proxyUrl ?? ''}|${eg.localAddress ?? ''}`;
+    // undici's ProxyAgent is an HTTP-CONNECT proxy client — it does NOT speak SOCKS. A socks:// (or any
+    // non-http(s)) proxyUrl CONSTRUCTS without error but fails at REQUEST time (the proxy rejects the
+    // HTTP CONNECT), which would silently 502 every request for this account. So honor only http(s)
+    // proxies here; a non-http(s) scheme is IGNORED with a loud warning and we fall through to a bound
+    // source IP (localAddress) if set, else default shared egress — fail SAFE, never silently break an
+    // account. Native SOCKS egress is a tracked follow-up (WI-284).
+    const httpProxy = eg.proxyUrl && /^https?:\/\//i.test(eg.proxyUrl) ? eg.proxyUrl : undefined;
+    if (eg.proxyUrl && !httpProxy) {
+      log('warn', `inference-gateway: egress proxyUrl for '${account.accountId}' ('${eg.proxyUrl}') is not http(s) — undici ProxyAgent is HTTP-CONNECT only; ignoring it (native SOCKS is a follow-up, WI-284)`);
+    }
+    if (!httpProxy && !eg.localAddress) return undefined;
+    const key = `${account.accountId}|${httpProxy ?? ''}|${eg.localAddress ?? ''}`;
     const hit = dispatcherCache.get(key);
     if (hit) return hit;
     try {
       undiciMod ??= await import('undici');
-      const d: UndiciDispatcher = eg.proxyUrl
-        ? new undiciMod.ProxyAgent(eg.proxyUrl)
+      const d: UndiciDispatcher = httpProxy
+        ? new undiciMod.ProxyAgent(httpProxy)
         : new undiciMod.Agent({ connect: { localAddress: eg.localAddress } });
       dispatcherCache.set(key, d);
       return d;
@@ -484,6 +540,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let upstream429 = 0;
   let queued429 = 0;
   let shed429 = 0; // load-shed: 429s returned because the admission queue was at maxQueued (backlog cap)
+  let shedAllThrottled = 0; // fail-fast: 429s shed at admission because the whole pool was throttled (B-GW-1)
   let upstreamErrors = 0;
   let failovers = 0;
 
@@ -503,7 +560,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       upstream429,
       queued429,
       shed429,
+      shedAllThrottled,
       maxQueued,
+      concurrencyCap: concurrency,
+      aimd: aimd.snapshot(),
       failovers,
       upstreamErrors,
       unified: snap.unified,
@@ -565,14 +625,40 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // still-pinned request is left on its pin (it already yielded to active() above if its pin was
     // paused). `pool.active()` round-robins, so each hop advances to a different account.
     if (active.accountId !== pinned?.accountId && gov.state.pausedUntil > Date.now()) {
+      let soonestPaused = gov.state.pausedUntil;
+      let found = false;
       for (let walk = 0; walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
         const cand = pool.active();
         const cgov = governorForAccount(model, cand.accountId);
         if (cgov.state.pausedUntil <= Date.now()) {
           active = cand;
           gov = cgov;
+          found = true;
           break;
         }
+        soonestPaused = Math.min(soonestPaused, cgov.state.pausedUntil);
+      }
+      // FAIL-FAST SHED when the WHOLE reachable pool is throttled (B-GW-1 / audit P1). The walk found no
+      // account with headroom AND the soonest reset is beyond maxQueueWaitMs — so gov.acquire would just
+      // fast-fail with a 429 anyway (its first iteration returns null when the pause exceeds maxWaitMs,
+      // never forwarding). Shed NOW instead: free the admission slot immediately (no acquire/retry path
+      // squatting it) and return an ACCURATE pool-wide retry-after + a distinct signal, rather than the
+      // chosen-account retry-after the acquire-timeout path emits. A NEARER pause (≤ maxQueueWaitMs) falls
+      // through to acquire, which waits it out → real 200, and the post-acquire retry-loop still absorbs a
+      // short transient for an in-process caller — AIMD (above), not this shed, bounds that absorb's blast
+      // radius by shrinking how many slots are admitted at once.
+      if (!found && soonestPaused - Date.now() > maxQueueWaitMs) {
+        totalRequests++;
+        shedAllThrottled++;
+        const retryAfterSec = Math.max(1, Math.ceil((soonestPaused - Date.now()) / 1000));
+        log('warn', `inference-gateway: whole pool throttled (soonest reset ${retryAfterSec}s > admission wait cap) → fail-fast shed 429 (slot freed, not squatted)`);
+        sendJson(
+          res,
+          429,
+          { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: all accounts throttled; retry after ${retryAfterSec}s` }, gateway: true },
+          { 'retry-after': String(retryAfterSec), [ROUTED_ACCOUNT_HEADER]: active.accountId },
+        );
+        return;
       }
     }
 
@@ -728,6 +814,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
         if (up.status === 429 || up.status === 529) {
           upstream429++;
+          // AIMD signal (B-GW-1): an upstream 429 is the per-IP-RPM throttle signal. Feed it so a
+          // SUSTAINED run shrinks admission concurrency (529 is server-overload, not per-IP RPM, so it
+          // does NOT count — reducing OUR concurrency can't ease an Anthropic-wide overload). A lone
+          // transient 429 is absorbed by the controller's leaky bucket; only a storm trips a decrease.
+          if (up.status === 429) aimd.recordThrottle();
           const reset = parseRateReset(hobj);
           const unifiedRejected = gov.snapshot().unified?.rejected === true;
           // Anthropic's AUTHORITATIVE per-request signal: `x-should-retry: true` on a 429 means a SHORT
@@ -867,6 +958,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
             continue;
           }
         }
+
+        // AIMD clean signal (B-GW-1): a forwarded 2xx means this account had real capacity — drain the
+        // throttle pressure + nudge admission concurrency back up toward the cap. A forwarded non-2xx
+        // (a 4xx client error, or a 429 we chose not to retry) is neither throttle nor clean-capacity,
+        // so it neither shrinks nor grows the limit (a 429 already recorded its throttle above).
+        if (up.status >= 200 && up.status < 300) aimd.recordSuccess();
 
         const outHeaders: Record<string, string> = {};
         up.headers.forEach((v, k) => {

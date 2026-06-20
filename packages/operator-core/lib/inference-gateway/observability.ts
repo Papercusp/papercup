@@ -10,6 +10,7 @@
  */
 import type { GatewayStats } from './gateway';
 import { gatewayPort } from './spawn-env';
+import type { RawGatewayStats } from './gateway-wedge';
 
 export interface GatewayHeadroom {
   reachable: boolean;
@@ -78,6 +79,31 @@ export async function fetchGatewayHeadroom(
     return projectHeadroom(stats);
   } catch (e) {
     return { reachable: false, error: (e as Error).message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch the RAW gateway `/stats` payload for the wedge/throttle detector (B-GW-5). Unlike
+ * `fetchGatewayHeadroom` (which projects the normalized admin read-model), this returns the raw
+ * shape the `gateway-wedge` detector reads — typed loosely (`RawGatewayStats`) because the live
+ * :8788 binary may predate the B-GW-1 AIMD fields (deploy-skew). Returns `null` (never throws) when
+ * the gateway is unreachable so the health collector greys the panel rather than erroring the tab.
+ */
+export async function fetchGatewayStatsRaw(
+  opts: { port?: number; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<RawGatewayStats | null> {
+  const port = opts.port ?? gatewayPort();
+  const doFetch = opts.fetchImpl ?? fetch;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 1500);
+  try {
+    const res = await doFetch(`http://127.0.0.1:${port}/stats`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    return (await res.json()) as RawGatewayStats;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }

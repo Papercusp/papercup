@@ -427,6 +427,30 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
       accountsPaused = pool.accounts.filter((a) => (a.rate?.pausedUntil ?? 0) > ctx.now).length;
     } catch { /* no account pool configured — single bound credential */ }
     const accountsAvailable = accountsTotal - accountsPaused;
+    // Gateway-internal wedge/throttle metrics (B-GW-5): read the gateway's OWN /stats (admission
+    // queue + AIMD state) and run the wedge detector. Makes the watchdog's silent auto-restart
+    // signature VISIBLE. Only when the gateway is in the egress path AND reachable; fail-soft to
+    // null (greyed) otherwise — never blanks the panel.
+    let gateway: TokensHealth['gateway'] = null;
+    if (ctx.gatewayEnabled && ctx.gatewayReachable) {
+      try {
+        const { fetchGatewayStatsRaw } = await import('../inference-gateway/observability');
+        const { summarizeGatewayMetrics } = await import('../inference-gateway/gateway-wedge');
+        const { readGatewayWedge } = await import('./gateway-sample-cache');
+        const raw = await fetchGatewayStatsRaw();
+        if (raw) {
+          const gm = summarizeGatewayMetrics(raw);
+          const v = readGatewayWedge(gm, ctx.now);
+          gateway = {
+            inFlight: gm.inFlight, queueDepth: gm.queueDepth, maxConcurrent: gm.maxConcurrent,
+            concurrencyCap: gm.concurrencyCap, shed429: gm.shed429, shedAllThrottled: gm.shedAllThrottled,
+            failovers: gm.failovers, upstream429: gm.upstream429, utilizationPct: gm.utilizationPct,
+            aimdEffective: gm.aimdEffective, aimdCap: gm.aimdCap,
+            wedge: v.wedge, saturated: v.saturated, sustainedThrottle: v.sustainedThrottle, reasons: v.reasons,
+          };
+        }
+      } catch { /* /stats unreadable — leave gateway null (greyed), panel still renders */ }
+    }
     const data: TokensHealth = {
       gatewayEnabled: ctx.gatewayEnabled,
       gatewayReachable: ctx.gatewayReachable,
@@ -434,20 +458,37 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
       fleetInFlight: rate.fleet.inFlight, fleetCap: rate.fleet.cap,
       spendUsd: rate.usage.spendUsd, windowMs: rate.usage.windowMs,
       accountsTotal, accountsAvailable, accountsPaused,
+      gateway,
     };
     const status = tokensStatus(data);
     const spend = `$${data.spendUsd.toFixed(2)}`;
+    // The gateway wedge/throttle takes the headline summary when present (the loud signal).
+    const gwSummary = gateway?.wedge
+      ? `GATEWAY WEDGED — ${gateway.reasons[0] ?? `inFlight ${gateway.inFlight}/${gateway.maxConcurrent}`} (watchdog auto-restarts)`
+      : gateway?.sustainedThrottle
+        ? `gateway throttling — ${gateway.reasons.find((r) => r.includes('AIMD') || r.includes('throttled')) ?? gateway.reasons[0] ?? 'sustained upstream 429s'}`
+        : gateway?.saturated
+          ? `gateway saturated — inFlight ${gateway.inFlight}/${gateway.maxConcurrent}, ${gateway.queueDepth} queued`
+          : null;
     return {
       status,
       summary: status === 'crit'
-        ? (accountsTotal > 0 && accountsAvailable === 0 ? 'all accounts paused — starved' : 'gateway unreachable')
-        : `${data.fleetInFlight}/${data.fleetCap} in flight, ${spend}/${Math.round(data.windowMs / 60000)}m${pausedBuckets > 0 ? `, ${pausedBuckets} paused bucket(s)` : ''}`,
+        ? (gateway?.wedge ? gwSummary! : (accountsTotal > 0 && accountsAvailable === 0 ? 'all accounts paused — starved' : 'gateway unreachable'))
+        : gwSummary
+          ?? `${data.fleetInFlight}/${data.fleetCap} in flight, ${spend}/${Math.round(data.windowMs / 60000)}m${pausedBuckets > 0 ? `, ${pausedBuckets} paused bucket(s)` : ''}`,
       data,
       link: { label: 'rate-governor', href: '/adv?tab=overview' },
       metrics: [
         m('in flight', `${data.fleetInFlight}/${data.fleetCap}`),
         m('paused buckets', pausedBuckets, pausedBuckets > 0 ? 'warn' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
+        ...(gateway ? [
+          m('gw queue', `${gateway.inFlight}/${gateway.maxConcurrent}+${gateway.queueDepth}`, gateway.wedge ? 'crit' : gateway.saturated ? 'warn' : undefined),
+          ...(gateway.wedge ? [m('WEDGE', 'yes', 'crit')]
+            : gateway.sustainedThrottle ? [m('throttle', 'sustained', 'warn')] : []),
+          ...(gateway.shed429 + gateway.shedAllThrottled > 0 ? [m('shed', gateway.shed429 + gateway.shedAllThrottled, 'warn')] : []),
+          ...(gateway.failovers > 0 ? [m('failovers', gateway.failovers)] : []),
+        ] : []),
         m('accounts', accountsTotal > 0 ? `${accountsAvailable}/${accountsTotal}` : 'n/a', accountsTotal > 0 && accountsAvailable === 0 ? 'crit' : undefined),
         m('spend', spend),
       ],

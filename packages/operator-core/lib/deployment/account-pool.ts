@@ -26,7 +26,13 @@
  * owner provisions the actual proxies (owner-gated infra, like the credentials themselves).
  */
 export interface AccountEgress {
-  /** `http(s)://` or `socks(5)://` proxy URL for this account's upstream requests. */
+  /**
+   * Forward-proxy URL for this account's upstream requests. Must be `http://` or `https://` — the
+   * gateway routes it through undici's ProxyAgent (HTTP CONNECT). A `socks://` URL is NOT yet
+   * supported: the gateway ignores it with a warning and falls back to `localAddress` (if set) or the
+   * default shared egress, rather than silently 502-ing the account. Native SOCKS egress is tracked in
+   * WI-284.
+   */
   proxyUrl?: string;
   /** Local source IP to bind the upstream socket to (when the host has multiple egress IPs). */
   localAddress?: string;

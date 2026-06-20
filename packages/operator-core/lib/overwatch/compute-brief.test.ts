@@ -81,7 +81,7 @@ test('detectAnomalies — a dark Queen → queen-dark, and it SUPPRESSES queen-s
 
 test('detectAnomalies — a paused bucket WITH accounts → token-paused warning OBSERVE (transient)', () => {
   const b = base();
-  b.tokens = { pausedBuckets: ['opus'], gatewayFailovers: 0, gw429s: 5, accountsAvailable: 2 };
+  b.tokens = { pausedBuckets: ['opus'], gatewayFailovers: 0, gw429s: 5, accountsAvailable: 2, gatewayWedged: false, gatewaySustainedThrottle: false };
   const a = only(detectAnomalies(b), 'token-paused');
   assert.equal(a.severity, 'warning');
   assert.equal(a.suggestedAction.type, 'observe');
@@ -90,11 +90,38 @@ test('detectAnomalies — a paused bucket WITH accounts → token-paused warning
 
 test('detectAnomalies — a paused bucket with ZERO accounts → token-paused critical ESCALATE (starvation)', () => {
   const b = base();
-  b.tokens = { pausedBuckets: ['opus', 'sonnet'], gatewayFailovers: 1, gw429s: 9, accountsAvailable: 0 };
+  b.tokens = { pausedBuckets: ['opus', 'sonnet'], gatewayFailovers: 1, gw429s: 9, accountsAvailable: 0, gatewayWedged: false, gatewaySustainedThrottle: false };
   const a = only(detectAnomalies(b), 'token-paused');
   assert.equal(a.severity, 'critical');
   assert.equal(a.suggestedAction.type, 'escalate');
   assert.match(a.detail, /no accounts available/);
+});
+
+test('detectAnomalies — gateway WEDGED → gateway-wedge critical ESCALATE owner (B-GW-5)', () => {
+  const b = base();
+  b.tokens.gatewayWedged = true;
+  const a = only(detectAnomalies(b), 'gateway-wedge');
+  assert.equal(a.severity, 'critical');
+  assert.equal(a.suggestedAction.type, 'escalate');
+  assert.equal(a.suggestedAction.target, 'owner');
+  assert.match(a.detail, /WEDGED/);
+});
+
+test('detectAnomalies — gateway sustained-throttle (not wedged) → gateway-throttle warning OBSERVE', () => {
+  const b = base();
+  b.tokens.gatewaySustainedThrottle = true;
+  const a = only(detectAnomalies(b), 'gateway-throttle');
+  assert.equal(a.severity, 'warning');
+  assert.equal(a.suggestedAction.type, 'observe');
+});
+
+test('detectAnomalies — a wedge SUPPRESSES the throttle anomaly (wedge is the louder superset)', () => {
+  const b = base();
+  b.tokens.gatewayWedged = true;
+  b.tokens.gatewaySustainedThrottle = true;
+  const kinds = detectAnomalies(b).map((a) => a.kind);
+  assert.ok(kinds.includes('gateway-wedge'));
+  assert.ok(!kinds.includes('gateway-throttle'), 'wedge wins; do not double-flag');
 });
 
 test('detectAnomalies — a dead routine → work-feed-stuck critical ESCALATE (B-11)', () => {
@@ -245,6 +272,7 @@ const tokensData = (o: Partial<TokensHealth> = {}): TokensHealth => ({
   accountsTotal: 3,
   accountsAvailable: 3,
   accountsPaused: 0,
+  gateway: null,
   ...o,
 });
 

@@ -316,14 +316,40 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       let buildOut = '';
       let buildOk = true;
       if (r.code === 0) {
-        const b = await exec('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
-          cwd: treeDir,
-          env,
-          allowNonZero: true,
-        });
-        buildOk = b.code === 0;
-        if (!buildOk) {
-          buildOut = '\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n' + b.stdout + b.stderr;
+        // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a
+        // cryptic CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such
+        // markers in globals.css (a bad git-sync auto-merge — the live-merge resolver
+        // doesn't catch already-committed ones) froze the SPA/sidecar/WI-280-witness/
+        // green-checkpoint builds: the whole fleet deploy, on a stray word in CSS, with
+        // no named root. Catch markers HERE, before the expensive+cryptic build, so the
+        // held gate NAMES the file:line. git grep (not scripts/check-conflict-markers.mjs)
+        // keeps this robust for an older candidate tree predating that script. The ERE
+        // mirrors its CONFLICT_MARKER_ERE: 7 of `<`/`>`/`|` at line start — brackets every
+        // git conflict, zero false positives (the bare `=======` separator is excluded as
+        // FP-prone). git grep exit 0 = match found, 1 = clean.
+        const markers = await exec(
+          'git',
+          ['grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.'],
+          { cwd: treeDir, env, allowNonZero: true },
+        );
+        if (markers.code === 0 && markers.stdout.trim()) {
+          // Treat exactly like a failed build (buildOk=false folds @papercusp/operator-vite
+          // into checkpointFailureSignature) and SKIP the build entirely — it would only
+          // die cryptically on the same markers.
+          buildOk = false;
+          buildOut =
+            '\n\n=== COMMITTED CONFLICT MARKERS (@papercusp/operator-vite, EI-1836) — would break the SPA build ===\n' +
+            markers.stdout;
+        } else {
+          const b = await exec('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
+            cwd: treeDir,
+            env,
+            allowNonZero: true,
+          });
+          buildOk = b.code === 0;
+          if (!buildOk) {
+            buildOut = '\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n' + b.stdout + b.stderr;
+          }
         }
       }
       const green = r.code === 0 && buildOk;

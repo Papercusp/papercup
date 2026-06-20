@@ -117,6 +117,40 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     }
   }
 
+  // ── Gateway wedge / sustained throttle (B-GW-5) ──────────────────────────────
+  // The gateway watchdog auto-restarts a wedge SILENTLY; surfacing it here makes it VISIBLE +
+  // escalable. A CONFIRMED wedge (slots pinned + a growing queue + a frozen counter) is a real
+  // incident even after the watchdog bandaids it — a recurring wedge means opus demand > pool
+  // capacity (the structural fix is scale-out / per-account egress IPs, which overwatch cannot do).
+  if (tokens.gatewayWedged) {
+    out.push({
+      kind: 'gateway-wedge',
+      severity: 'critical',
+      subject: 'inference gateway',
+      detail:
+        'Inference gateway WEDGED — every admission slot pinned with a growing queue and a frozen request counter. The watchdog auto-restarts it, but a recurring wedge is a capacity problem (opus demand exceeds the account pool).',
+      suggestedAction: {
+        type: 'escalate',
+        target: 'owner',
+        message:
+          'Gateway wedged (watchdog auto-restarting :8788). If this recurs, it is a structural capacity fix — scale out the account pool or provision per-account egress IPs (B-GW-3). Overwatch cannot rebind the gateway or add capacity.',
+      },
+    });
+  } else if (tokens.gatewaySustainedThrottle) {
+    out.push({
+      kind: 'gateway-throttle',
+      severity: 'warning',
+      subject: 'inference gateway',
+      detail:
+        'Inference gateway sustained-throttling — AIMD has cut admission concurrency below its cap, or the pool is fail-fast shedding (all accounts throttled). Capacity pressure, not yet a wedge.',
+      suggestedAction: {
+        type: 'observe',
+        message:
+          'Gateway throttling under sustained upstream 429s (AIMD adapting). Watching — escalate if it persists across wakes or tips into a wedge.',
+      },
+    });
+  }
+
   // ── Work feed ──────────────────────────────────────────────────────────────
   // A dead routine is structural (the feed stopped pumping — EI-584): escalate.
   if (workFeed.deadRoutines > 0) {
@@ -268,8 +302,8 @@ function msToIso(ms: number | null): string | null {
  * renderer-context only OR fail-soft-quiet for its detector, never a wrong alarm):
  *  - `tokens.pausedBuckets` is a COUNT in `TokensHealth`, not bucket NAMES; we
  *    surface a count descriptor so the detector still trips (length>0) and reads
- *    informatively. `tokens.gatewayFailovers` / `gw429s` aren't in the rate model
- *    yet (default 0; no detector keys on them). (Names + gw telemetry flagged.)
+ *    informatively. (`gatewayFailovers` / `gw429s` / `gatewayWedged` ARE now sourced
+ *    from the gateway's own /stats — B-GW-5 wired `tokens.gateway`.)
  *  - `bees.completed` (no per-window completed count in `BeesHealth`) and
  *    `workFeed.autoEligibleStuck` (su-3b017 adds the attempts:0 count when wiring)
  *    default to 0.
@@ -320,9 +354,13 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
       // detector trips (length>0) and the nudge reads informatively until names land.
       pausedBuckets:
         tokens.pausedBuckets > 0 ? [`${tokens.pausedBuckets} of ${tokens.totalBuckets} bucket(s)`] : [],
-      gatewayFailovers: 0, // not in the rate model yet — fail-soft default (no detector keys on it).
-      gw429s: 0, // not in the rate model yet — fail-soft default.
+      // Gateway telemetry now sourced from the gateway's own /stats (B-GW-5). null = gateway
+      // unreachable / not in the egress path → fail-soft defaults (no false alarm).
+      gatewayFailovers: tokens.gateway?.failovers ?? 0,
+      gw429s: tokens.gateway ? tokens.gateway.shed429 + tokens.gateway.shedAllThrottled : 0,
       accountsAvailable: tokens.accountsAvailable,
+      gatewayWedged: tokens.gateway?.wedge ?? false,
+      gatewaySustainedThrottle: tokens.gateway?.sustainedThrottle ?? false,
     };
   }
 

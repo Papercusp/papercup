@@ -118,6 +118,7 @@
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:no-sql-json": "node scripts/check-no-sql-json.mjs",
+    "lint:no-conflict-markers": "node scripts/check-conflict-markers.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
     "lint:env-feature-gates": "node scripts/check-env-feature-gates.mjs",

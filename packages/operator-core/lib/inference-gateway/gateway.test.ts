@@ -734,6 +734,36 @@ test('per-account egress isolation: each pinned account routes via its OWN dispa
   assert.equal(dP, undefined, 'an account with no egress falls back to the default shared egress (no dispatcher)');
 });
 
+test('a non-http(s) (socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3 / WI-284)', async () => {
+  // undici's ProxyAgent is HTTP-CONNECT only; a socks:// URL would 502 EVERY request for this account.
+  // The gateway must IGNORE it and fall back to default egress (no dispatcher), not hand fetch a broken one.
+  let captured: { dispatcher?: unknown } | undefined;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured = init;
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const socksAcct: ActiveAccount = { accountId: 'sx', token: async () => 'T', egress: { proxyUrl: 'socks5://127.0.0.1:1080' } };
+  const pool: AccountPool = { active: () => socksAcct, onExhausted: () => null };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(captured?.dispatcher, undefined, 'a socks:// proxyUrl is ignored → default shared egress (no dispatcher)');
+});
+
+test('socks proxyUrl + a bound localAddress → still binds the source IP (socks ignored, IP binding applied) (B-GW-3)', async () => {
+  let captured: { dispatcher?: unknown } | undefined;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured = init;
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const acct: ActiveAccount = { accountId: 'mix', token: async () => 'T', egress: { proxyUrl: 'socks5://127.0.0.1:1080', localAddress: '127.0.0.1' } };
+  const pool: AccountPool = { active: () => acct, onExhausted: () => null };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.ok(captured?.dispatcher, 'falls through to the bound-source-IP dispatcher when the proxy scheme is unusable');
+});
+
 test('a STALLED OAuth token refresh fails FAST with a retryable 503 + releases the slot (2026-06-20 token-hang wedge)', async () => {
   // active.token() does a deadline-less network refresh that runs BEFORE the upstream stall-guard, so a
   // stalled OAuth endpoint used to pin every admission slot forever (counters frozen, multi-minute log
@@ -824,3 +854,353 @@ test('the HARD per-request ceiling force-terminates a stuck request → slot rel
   assert.equal(stats.inFlight, 0, 'hard ceiling released the admission slot');
   await new Promise<void>((r) => hanging.close(() => r()));
 });
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// B-GW-2 — chaos / failure load harness.
+//
+// The three single-request regression tests above (token-hang 503, hung-client downstream-idle,
+// hard-ceiling backstop) each prove one wedge mode releases ONE slot. These extend them into a LOAD
+// harness: each pathology is driven under HIGH CONCURRENCY (N ≫ the admission cap) and asserts the two
+// universal invariants the production wedges all violated —
+//   (1) NO slot pinned   — gw.stats().inFlight drains back to 0 (the wedge signature is inFlight stuck
+//                          at maxConcurrent with totalRequests frozen; see the
+//                          inference-gateway-wedge-admission-slot-squat insight), and
+//   (2) bounded recovery — once the fault clears the gateway serves a fresh request fast, never a
+//                          multi-minute / manual-restart-only hang.
+// Goal (brief B-GW-2): catch the NEXT wedge before production. Pure-in-process (mock upstream + mock
+// token), so it runs under `npm run test:affected` / CI alongside the rest of this file — no .mjs script.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Poll the gateway's OWN /stats counter until inFlight drains to 0 (no admission slot leaked), or
+ *  give up at the deadline. inFlight stuck > 0 is the universal wedge signature — every chaos test
+ *  below asserts this returns 0. Reads gw.stats() directly (no HTTP round-trip). */
+async function drainToZeroInFlight(deadlineMs = 8000): Promise<number> {
+  const end = Date.now() + deadlineMs;
+  let inFlight = gw.stats().inFlight;
+  while (inFlight > 0 && Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 25));
+    inFlight = gw.stats().inFlight;
+  }
+  return inFlight;
+}
+
+test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 200, upstream peak ≤ the cap, inFlight drains to 0', async () => {
+  // 120 simultaneous requests against a healthy upstream with the admission queue capped at 8. The
+  // gateway must (a) bound upstream concurrency to the cap (no thundering herd onto Anthropic),
+  // (b) settle ALL of them (none dropped/hung — a healthy burst is PACED, never shed), and (c) drain
+  // every admission slot back to 0.
+  let cur = 0;
+  let peak = 0;
+  await boot(
+    (_req, res) => {
+      cur++;
+      peak = Math.max(peak, cur);
+      setTimeout(() => {
+        cur--;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      }, 6);
+    },
+    { concurrency: 8, maxQueued: 0 /* unbounded queue → prove a healthy burst is paced, never shed */ },
+  );
+  const N = 120;
+  const before = gw.stats().totalRequests;
+  const rs = await Promise.all(
+    Array.from({ length: N }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
+  );
+  assert.equal(rs.filter((r) => r.status === 200).length, N, 'every one of the 120 concurrent requests settled 200 (none dropped/shed/hung)');
+  assert.ok(peak <= 8, `upstream peak concurrency ${peak} stayed within the queue cap (8) — no thundering herd`);
+  assert.equal(gw.stats().totalRequests - before, N, 'every request was counted (counters never froze)');
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'all 120 admission slots drained back to 0 — no slot leak');
+}, 20_000);
+
+test('[B-GW-2 chaos] pool-wide throttle storm (slow upstream squats slots) under high concurrency — graceful load-shed (429+retry-after), inFlight bounded + drains, fast recovery', async () => {
+  // The PRIMARY production wedge (insight inference-gateway-wedge-admission-slot-squat): under a
+  // sustained pool-wide throttle, every in-flight request squats its admission slot for the internal
+  // wait budget, so the backlog grows WITHOUT BOUND until the gateway wedges (counters frozen, manual
+  // restart). Modeled as a SLOW upstream — each call squats its slot ~150ms. With concurrency:4 +
+  // maxQueued:8, of 40 simultaneous requests only 12 fit (4 running + 8 waiting); the rest MUST be shed
+  // as fast retryable 429s, keeping the gateway responsive + self-recovering instead of growing an
+  // unbounded backlog.
+  let mode: 'storm' | 'healthy' = 'storm';
+  let cur = 0;
+  let peak = 0;
+  await boot(
+    (_req, res) => {
+      cur++;
+      peak = Math.max(peak, cur);
+      const delay = mode === 'storm' ? 150 : 0; // storm: squat the slot; healthy: instant
+      setTimeout(() => {
+        cur--;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      }, delay);
+    },
+    { concurrency: 4, maxQueued: 8 },
+  );
+  const N = 40;
+  const shedBefore = gw.stats().shed429;
+  const rs = await Promise.all(
+    Array.from({ length: N }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
+  );
+  const shed = rs.filter((r) => r.status === 429);
+  const ok = rs.filter((r) => r.status === 200);
+  assert.equal(shed.length + ok.length, N, 'every request SETTLED (200 admitted or 429 shed) — none lost or hung');
+  assert.ok(shed.length >= 20, `excess load was shed as 429 (${shed.length}/${N}) — the backlog stayed BOUNDED, not unbounded`);
+  assert.ok(ok.length >= 1, 'the admitted requests (within the concurrency+queue budget) still succeeded');
+  const shedBody = (await shed[0].json()) as { gateway?: boolean };
+  assert.equal(shedBody.gateway, true, 'shed responses are gateway-synthesized retryable 429s, not crashes');
+  assert.ok(shed[0].headers.get('retry-after'), 'shed 429 carries retry-after so the caller backs off + retries');
+  assert.ok(gw.stats().shed429 - shedBefore >= shed.length, 'the shed429 counter advanced — graceful load-shed is observable in /stats');
+  assert.ok(peak <= 4, `upstream peak concurrency ${peak} never exceeded the cap (4) even under the storm`);
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'all admission slots drained — the storm pinned no slot');
+  // Bounded recovery: the moment the throttle clears, a fresh request succeeds FAST (no lingering wedge).
+  mode = 'healthy';
+  const t0 = Date.now();
+  const recovered = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'recover' }] });
+  assert.equal(recovered.status, 200, 'gateway recovered — a fresh request succeeds once the throttle clears');
+  assert.ok(Date.now() - t0 < 2000, 'recovery was prompt, not a multi-second wedge');
+}, 20_000);
+
+test('[B-GW-2 chaos] upstream 429 storm under high concurrency — every request sheds FAST (no slot squat), counters keep moving, inFlight drains to 0', async () => {
+  // The SECONDARY throttle path: the upstream ITSELF returns rate-limit 429s pool-wide (unified-rejected).
+  // The governor pauses, and every queued request must fail admission FAST (synthetic gateway 429) rather
+  // than squatting its slot waiting out the pause. Under a 40-wide burst: all settle quickly as 429s, the
+  // request counter keeps advancing (never frozen — the wedge signature), and inFlight drains to 0.
+  const resetSec = Math.round(Date.now() / 1000) + 3600;
+  await boot(
+    (_req, res) => {
+      res.writeHead(429, {
+        'content-type': 'application/json',
+        'anthropic-ratelimit-unified-5h-status': 'rejected',
+        'anthropic-ratelimit-unified-5h-utilization': '1.01',
+        'anthropic-ratelimit-unified-5h-reset': String(resetSec),
+      });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'pool throttled' } }));
+    },
+    { concurrency: 12, maxQueueWaitMs: 60 },
+  );
+  const N = 40;
+  const before = gw.stats().totalRequests;
+  const t0 = Date.now();
+  const rs = await Promise.all(
+    Array.from({ length: N }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
+  );
+  const elapsed = Date.now() - t0;
+  assert.ok(rs.every((r) => r.status === 429), 'every request under the storm settled as a 429 (real or synthetic) — none hung');
+  assert.ok(elapsed < 5000, `the whole 40-wide storm settled fast (${elapsed}ms) — no slot squatting on the pause`);
+  assert.equal(gw.stats().totalRequests - before, N, 'totalRequests advanced by all 40 — counters never froze (anti-wedge)');
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'no admission slot left pinned after the 429 storm');
+  // Bounded recovery / responsiveness: the control plane still answers and the gateway keeps shedding
+  // fast — it never wedged (a wedged gateway returns /healthz in <1ms but freezes /v1 forever).
+  const health = await ask('/healthz');
+  assert.ok(health.status === 200 || health.status === 503, 'control plane still responds after the storm');
+  const again = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'again' }] });
+  assert.equal(again.status, 429, 'a post-storm request still sheds fast (responsive), not a wedge');
+}, 20_000);
+
+test('[B-GW-2 chaos] a STORM of upstream HEADER-stalls under high concurrency — all abort (502) fast, every slot drains, recovers', async () => {
+  // The 2026-06-19 deadlock under LOAD: many concurrent requests to an upstream that accepts the socket
+  // but never sends headers. Each must abort at the headers stall-guard (502) and RELEASE its slot — a
+  // single leaked slot under a 30-wide stall storm would deadlock the pool at maxConcurrent. Then a
+  // healthy request proves recovery.
+  let mode: 'stall' | 'healthy' = 'stall';
+  await boot(
+    (_req, res) => {
+      if (mode === 'stall') return; // accept the socket, never respond
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { concurrency: 6, upstreamHeadersTimeoutMs: 120, upstreamBodyIdleTimeoutMs: 120 },
+  );
+  const N = 30;
+  const t0 = Date.now();
+  const rs = await Promise.all(
+    Array.from({ length: N }, () => post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] })),
+  );
+  const elapsed = Date.now() - t0;
+  assert.ok(rs.every((r) => r.status === 502), 'every stalled request aborted with a gateway 502 — none hung');
+  assert.equal((await rs[0].json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized 502');
+  assert.ok(elapsed < 10_000, `the 30-wide stall storm aborted in bounded time (${elapsed}ms), not a multi-minute hang`);
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'every admission slot released after the stall aborts — no deadlock under load');
+  mode = 'healthy';
+  const recovered = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+  assert.equal(recovered.status, 200, 'gateway recovered after the stall storm cleared');
+}, 20_000);
+
+test('[B-GW-2 chaos] a STORM of mid-stream BODY-stalls under high concurrency — the body-idle guard drains every slot, recovers', async () => {
+  // Headers + first chunk arrive, then the upstream stalls mid-stream. The per-chunk body-idle deadline
+  // must trip under load and release every slot — a leak here wedges the pool exactly like a header stall.
+  let mode: 'stall' | 'healthy' = 'stall';
+  await boot(
+    (_req, res) => {
+      if (mode === 'stall') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+        return; // then STALL — never send more, never end
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { concurrency: 6, upstreamHeadersTimeoutMs: 2000, upstreamBodyIdleTimeoutMs: 120 },
+  );
+  const N = 18;
+  const rs = await Promise.all(
+    Array.from({ length: N }, () => post({ model: 'claude-opus-4', stream: true, messages: [{ role: 'user', content: 'x' }] })),
+  );
+  assert.ok(rs.every((r) => r.status === 200), 'all streams opened (headers + first chunk forwarded)');
+  // Drain the truncated/reset bodies, bounded so a lingering read can't blow the test budget. The slot
+  // is freed by the UPSTREAM body-idle abort regardless of when the client read settles.
+  await Promise.all(rs.map((r) => Promise.race([r.text().catch(() => ''), new Promise((res) => setTimeout(res, 1500))])));
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'the body-idle guard released every slot mid-stream — no leak under load');
+  mode = 'healthy';
+  const recovered = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+  assert.equal(recovered.status, 200, 'recovered after the mid-stream stall storm');
+}, 20_000);
+
+test('[B-GW-2 chaos] a hung OAuth-TOKEN endpoint under high concurrency — every request fails fast (503), never reaches upstream, all slots drain, recovers', async () => {
+  // The 2026-06-20 token-hang wedge under LOAD: active.token() does a deadline-bounded refresh BEFORE the
+  // upstream fetch, so a stalled token endpoint used to pin every admission slot forever (counters frozen,
+  // multi-minute silence, restart-only). With a bounded tokenTimeoutMs every concurrent request must
+  // reject fast (503 + slot release) and never reach upstream. Then a working token proves recovery.
+  let tokenHangs = true;
+  let upstreamHits = 0;
+  await boot(
+    (_req, res) => {
+      upstreamHits++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    // concurrency 50 > N so every request gets an admission slot and deterministically hits the token
+    // timeout (503) — the overflow case (admission 429) is already covered by the throttle-storm tests.
+    { token: () => (tokenHangs ? new Promise<string>(() => {}) : Promise.resolve('tok')), tokenTimeoutMs: 80, concurrency: 50 },
+  );
+  const N = 30;
+  const t0 = Date.now();
+  const rs = await Promise.all(
+    Array.from({ length: N }, () => post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] })),
+  );
+  const elapsed = Date.now() - t0;
+  assert.ok(rs.every((r) => r.status === 503), 'every request fails fast with a retryable 503, not a hang');
+  assert.equal(upstreamHits, 0, 'no request reached upstream — the hang is BEFORE the fetch');
+  assert.ok(elapsed < 10_000, `the 30-wide token-hang storm settled fast (${elapsed}ms), not a multi-minute wedge`);
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'every admission slot released after the token timeout — wedge signature (inFlight stuck) absent');
+  // Bounded recovery: a token-refresh timeout penalizes the stalled credential OUT of rotation
+  // (gov.penalize) and releases every slot, so the gateway stays RESPONSIVE. With a SINGLE account there
+  // is nothing healthy to fail over to, so a post-storm request settles FAST as a retryable error (429
+  // governor-paused / 503 token-stalled) rather than hanging — the correct defensive outcome, and proof
+  // it never wedged. (Failover around a bad credential → a healthy account's 200 is covered by the
+  // session-cap / 403 / 5h-budget failover tests above.)
+  tokenHangs = false;
+  const t1 = Date.now();
+  const after = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+  assert.ok([200, 429, 503].includes(after.status), `post-storm request settles fast (got ${after.status}), not a hang`);
+  assert.ok(Date.now() - t1 < 2000, 'gateway stayed responsive after the token-hang storm — no wedge');
+}, 20_000);
+
+// ---------------------------------------------------------------------------------------------------
+// B-GW-1 — AIMD adaptive admission concurrency (inference-gateway-robustness-audit-2026-06-20 P1).
+// The controller's algorithm is unit-tested in libs/papercup-shared/.../aimd-concurrency.test.ts; these
+// assert the GATEWAY WIRING: a sustained upstream-429 storm drives the admission queue's effective
+// maxConcurrent DOWN (then a clean 200 stream recovers it), and the all-pool-throttled fail-fast shed.
+// ---------------------------------------------------------------------------------------------------
+
+test('[B-GW-1 AIMD] sustained upstream 429s SHRINK the effective admission concurrency, then 200s recover it', async () => {
+  // Pool of 3. The upstream 429s (usage-cap, backoff-0 internal rotation) for the first 2 calls then 200s.
+  // 3-account pool. ONLY the first upstream call 429s (a BARE transient burst → a SHORT ~15s pace, fast
+  // rotation), every later call 200s. Request 1: A 429 (recordThrottle → trips a decrease at threshold 1)
+  // → rotate to B 200. A is then briefly paced; later requests route to the clean accounts (B/C) → 200,
+  // each draining pressure + earning additive recovery. A short transient pace (not a long usage cap) is
+  // what keeps the later requests OFF the fail-fast-shed path so recovery can actually flow.
+  resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
+  const gwlogs: string[] = [];
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        // BARE 429: rate_limit_error, NO window headers → a short transient burst-throttle the gateway
+        // paces + rotates off (not a long usage cap), so the pool recovers fast.
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    },
+    { pool, concurrency: 8, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 2 }, log: (l, m) => gwlogs.push(`${l}: ${m}`) },
+  );
+
+  const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r1.status, 200, 'request recovered via failover off the throttled account');
+  await r1.text();
+  let s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; concurrencyCap: number; aimd: { effective: number; cap: number; decreases: number } };
+  assert.equal(s.concurrencyCap, 8, 'the cap is the configured concurrency');
+  assert.ok(s.aimd.decreases >= 1, `the upstream 429 tripped ≥1 AIMD decrease (got ${s.aimd.decreases})`);
+  assert.ok(s.admission.maxConcurrent < 8, `effective admission concurrency shrank below the cap (got ${s.admission.maxConcurrent}/8)`);
+  const shrunk = s.aimd.effective;
+
+  // Now drive a run of clean 200s (routing to the healthy accounts) → additive recovery toward the cap.
+  for (let i = 0; i < 10; i++) {
+    const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+    const rb = await r.text();
+    assert.equal(r.status, 200, `recovery request ${i} got ${r.status} (calls=${calls}, body=${rb.slice(0, 80)})\nGW LOGS:\n${gwlogs.join('\n')}`);
+  }
+  s = (await (await ask('/stats')).json()) as typeof s;
+  assert.ok(s.aimd.effective > shrunk, `effective concurrency recovered after clean 200s (${shrunk} → ${s.aimd.effective})`);
+  assert.ok(s.aimd.effective <= 8, 'recovery never exceeds the cap');
+  // No slot leak: every request settled, nothing pinned.
+  assert.equal(((await (await ask('/stats')).json()) as { inFlight: number }).inFlight, 0, 'no admission slot leaked under the AIMD storm + recovery');
+}, 20_000);
+
+test('[B-GW-1 AIMD] effective admission concurrency never drops below the floor under a relentless 429 storm', async () => {
+  // 6 accounts, all usage-cap-429: one request rotates through all 6 (6 recordThrottle, backoff 0) → many
+  // decreases, but the effective concurrency bottoms out at the configured floor, never lower.
+  resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool(['A', 'B', 'C', 'D', 'E', 'F'].map(acct));
+  await boot(
+    (_req, res) => {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: "You've hit your session limit · resets 10:50am" } }));
+    },
+    { pool, concurrency: 16, aimd: { floor: 3, decreaseThreshold: 1 } },
+  );
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 429, 'pool exhausted → the usage-cap 429 is forwarded after rotation');
+  await r.text();
+  const s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; aimd: { effective: number; floor: number; decreases: number } };
+  assert.ok(s.aimd.decreases >= 1, 'the storm tripped AIMD decreases');
+  assert.equal(s.aimd.effective, 3, `effective concurrency pinned at the floor (got ${s.aimd.effective}), never below`);
+  assert.equal(s.admission.maxConcurrent, 3, 'the queue cap was driven to the floor, not lower');
+}, 20_000);
+
+test('[B-GW-1] fail-fast SHED when the whole pool is throttled with a far-off reset (slot freed, not squatted)', async () => {
+  // Pre-pause the single account far beyond maxQueueWaitMs (boot uses 80ms). The next request finds no
+  // account with headroom at admission and the reset is far → it sheds IMMEDIATELY with a pool-wide
+  // retry-after instead of taking the acquire/retry path (which would just 429 anyway). Distinct counter.
+  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
+  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, {}, gov);
+  gov.penalize({ resetAt: Date.now() + 60_000 }); // pause ~60s ≫ maxQueueWaitMs (80ms)
+
+  const t0 = Date.now();
+  const res = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  const elapsed = Date.now() - t0;
+  assert.equal(res.status, 429, 'all-throttled → shed 429');
+  const body = (await res.json()) as { gateway?: boolean };
+  assert.equal(body.gateway, true, 'synthetic gateway fail-fast shed (not a forwarded upstream 429)');
+  assert.ok(Number(res.headers.get('retry-after')) > 0, 'carries a retry-after');
+  assert.ok(elapsed < 1000, `shed FAST (${elapsed}ms), did not squat the slot on the acquire wait`);
+  const s = (await (await ask('/stats')).json()) as { shedAllThrottled: number; inFlight: number };
+  assert.equal(s.shedAllThrottled, 1, 'the fail-fast shed is counted on its own metric');
+  assert.equal(s.inFlight, 0, 'the admission slot was freed immediately, not held');
+});
+

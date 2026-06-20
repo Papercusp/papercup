@@ -157,7 +157,7 @@ describe('tokensStatus', () => {
   const tk = (o: Partial<TokensHealth> = {}): TokensHealth => ({
     gatewayEnabled: false, gatewayReachable: null, pausedBuckets: 0, totalBuckets: 4,
     fleetInFlight: 1, fleetCap: 8, spendUsd: 1, windowMs: 3_600_000,
-    accountsTotal: 3, accountsAvailable: 3, accountsPaused: 0, ...o,
+    accountsTotal: 3, accountsAvailable: 3, accountsPaused: 0, gateway: null, ...o,
   });
   it('crit when all accounts paused (starved)', () => {
     expect(tokensStatus(tk({ accountsAvailable: 0 }))).toBe('crit');
@@ -173,6 +173,24 @@ describe('tokensStatus', () => {
   });
   it('does not crit on zero accounts configured (single bound credential)', () => {
     expect(tokensStatus(tk({ accountsTotal: 0, accountsAvailable: 0 }))).toBe('ok');
+  });
+  // ── Gateway wedge / throttle (B-GW-5) ──
+  const gw = (o: Partial<NonNullable<TokensHealth['gateway']>> = {}): NonNullable<TokensHealth['gateway']> => ({
+    inFlight: 3, queueDepth: 0, maxConcurrent: 24, concurrencyCap: 24, shed429: 0, shedAllThrottled: 0,
+    failovers: 0, upstream429: 0, utilizationPct: 40, aimdEffective: 24, aimdCap: 24,
+    wedge: false, saturated: false, sustainedThrottle: false, reasons: [], ...o,
+  });
+  it('crit when the gateway is WEDGED', () => {
+    expect(tokensStatus(tk({ gateway: gw({ wedge: true, saturated: true }) }))).toBe('crit');
+  });
+  it('warn when the gateway is saturated (wedge-risk, not yet frozen)', () => {
+    expect(tokensStatus(tk({ gateway: gw({ saturated: true }) }))).toBe('warn');
+  });
+  it('warn when the gateway is sustained-throttling', () => {
+    expect(tokensStatus(tk({ gateway: gw({ sustainedThrottle: true }) }))).toBe('warn');
+  });
+  it('ok with a healthy gateway sub-panel', () => {
+    expect(tokensStatus(tk({ gateway: gw() }))).toBe('ok');
   });
   it('ok when healthy', () => {
     expect(tokensStatus(tk())).toBe('ok');

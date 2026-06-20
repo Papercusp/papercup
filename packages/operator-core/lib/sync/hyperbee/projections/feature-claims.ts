@@ -13,7 +13,8 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
+import { shouldApplyMemberContentOp } from '../member-content-guard';
 
 export interface FeatureClaimRow {
   harness_slug: string;
@@ -32,6 +33,12 @@ export interface FeatureClaimsProjectionOpts {
   sql?: postgres.Sql;
   workspaceId: string;
   harnessSlug: string;
+  /** WI-259 P-002: hive-home slug when this harness is a hive MEMBER (cross-member content is
+   *  membership-gated only when set); undefined for a non-hive / owned-home harness. */
+  hiveHomeSlug?: string;
+  /** WI-259 P-002: resolve an op's VERIFIED source-log device pubkey from its receiver-stamped
+   *  sourceLogKeyHex (boot's admittedIdentities); threaded via RegisterAllOpts. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
 }
 
 /**
@@ -65,8 +72,18 @@ function decodeValue(raw: unknown): FeatureClaimRow | null {
   return isFeatureClaimRow(raw) ? raw : null;
 }
 
-async function writeToPg(opts: FeatureClaimsProjectionOpts, row: FeatureClaimRow): Promise<void> {
-  if (row.harness_slug !== opts.harnessSlug) return;
+async function writeToPg(
+  opts: FeatureClaimsProjectionOpts,
+  row: FeatureClaimRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
+  // WI-259 P-002 membership guard (see member-content-guard.ts): own-slug applies; a cross-member
+  // op applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. resolveAuthorDevice
+  // maps the immutable sourceLogKeyHex (provenance.authorPubkey for a remote op) → the admit-verified device.
+  const sourceLogDevice = provenance?.authorPubkey
+    ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+    : null;
+  if (!(await shouldApplyMemberContentOp(row.harness_slug, opts, sourceLogDevice))) return;
   const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     INSERT INTO harness_shared.feature_claims
@@ -92,7 +109,7 @@ export function buildFeatureClaimsProjection(opts: FeatureClaimsProjectionOpts):
     tableTag: CLAIMS_TABLE_TAG,
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }

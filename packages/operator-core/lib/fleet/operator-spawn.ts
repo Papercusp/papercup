@@ -32,7 +32,8 @@ import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
-import { selectSpawnAccount } from '../deployment/account-pool-store';
+import { evaluateOpusBudgetForSpawn, selectSpawnAccount } from '../deployment/account-pool-store';
+import { classifyRoleCriticality, type WorkCriticality } from '../opus-budget-governor';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { desktopEnvForHive } from '../agent-tools/computer/desktop-lease';
@@ -353,6 +354,13 @@ export interface OperatorSpawnInput {
    */
   tier?: string | null;
   modelSpec?: string | null;
+  /**
+   * Per-spawn opus-budget criticality (B-GW-4). Overrides the role-derived default
+   * (`classifyRoleCriticality`). When the fleet's aggregate 5h opus budget is tight, a
+   * non-critical opus tier-escalation is shed to sonnet (background sheds first, then
+   * normal); `critical` is never downgraded. Unset → derived from `role`.
+   */
+  criticality?: WorkCriticality | null;
   /** Extra KEY=value positional args for the child invoke. */
   extras?: string[];
   /** Optional per-spawn invoke timeout override (ms), threaded to
@@ -626,6 +634,38 @@ export async function spawnAgentInHarness(
     spawnModelTier = resolved.tier;
     spawnModelBackend = resolved.backend ?? null;
     if (resolved.note) console.log(`[operator-spawn] ${resolved.note}`);
+
+    // Fleet opus-budget pacing (B-GW-4 — inference-gateway-robustness-audit-2026-06-20 gateway P2):
+    // when the aggregate Claude-Max 5h opus budget is tight, shed a NON-CRITICAL opus ESCALATION
+    // back to sonnet so the fleet paces UNDER the 5h ceiling instead of blow-then-starve. Only the
+    // TIER path (a Queen escalation) is eligible — an explicit `modelSpec` (operator/bench escape
+    // hatch) never reaches here. `downgradeOpusTierForBudget` re-resolves through `resolveTierSpec`,
+    // so the role-floor clamp guarantees an opus-floored role is never dropped below it (EI-7/EI-286;
+    // the downgrade is then a no-op). Flag-gated + fail-soft: any fault leaves the resolved tier
+    // verbatim — pacing can never wedge or mis-route a spawn.
+    try {
+      if (await getFlag(FLAGS.OPUS_BUDGET_PACING, 'system')) {
+        const criticality: WorkCriticality = input.criticality ?? classifyRoleCriticality(role);
+        const budget = await evaluateOpusBudgetForSpawn(criticality, input.workspaceId);
+        if (budget.downgrade) {
+          const { downgradeOpusTierForBudget } = await import('./model-tiers');
+          const dg = downgradeOpusTierForBudget({ currentSpec: spawnModelSpec, currentTier: spawnModelTier, role, tiers, tierCeilings });
+          if (dg.downgraded) {
+            console.log(
+              `[operator-spawn] opus-budget pacing: ${role} (${criticality}) tier "${spawnModelTier}" (${dg.from}) → ` +
+                `"${dg.tier}" (${dg.spec}) — ${budget.reason}`,
+            );
+            spawnModelSpec = dg.spec;
+            spawnModelTier = dg.tier;
+            spawnModelBackend = dg.backend ?? null;
+          }
+        } else if (budget.pace) {
+          console.log(`[operator-spawn] opus-budget: ${role} (${criticality}) keeps opus but is paced — ${budget.reason}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[operator-spawn] opus-budget pacing skipped (fail-soft): ${(e as Error).message}`);
+    }
   }
 
   // Harness resolution. Explicit slug wins; with no slug, a single-harness

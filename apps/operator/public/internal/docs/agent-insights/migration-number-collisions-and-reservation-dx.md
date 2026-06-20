@@ -1,0 +1,128 @@
+# Migration-number collisions: the reservation tool is MCP-only and lint:migrations isn't gated
+URL: /internal/docs/agent-insights/migration-number-collisions-and-reservation-dx
+
+Two agents racing `ls | tail` pick the same NNN-*.sql number; on the native :5432 box only one colliding file applies, so a table silently goes dark. db:next-migration prevents this but is an MCP-only agent-tool (no npm script) and the MCP client is currently dropped, so peers hand-pick and collide. lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
+
+## What
+
+When several agents add SQL migrations concurrently they collide on the leading
+`NNN`. While implementing PR-4 (WI↔PR producer, `2026-06-20`) I wrote
+`319-pr4-feature-pr-producer-identity.sql` and found a peer had **already** taken
+`319` (`319-pr-review-reports.sql`) and another had taken `320`
+(`320-autovacuum-high-churn-telemetry.sql`). My file had to be re-numbered to
+`321`, allocated through the reservation ledger to avoid a third collision.
+
+### What a dup number actually breaks today (verify before you assume "silent dark")
+
+`next_migration.ts`'s docstring warns "only one of the colliding files applies, so
+a table goes silently dark." That is **not** how the current boot runner behaves:
+`applyPendingMigrations` (`libs/papercusp/packages/embedded-postgres-server/src/
+migration-runner.js`) keys `harness_shared.schema_migrations` by **filename**, so
+`319-foo.sql` and `319-bar.sql` are distinct keys and **both apply** (in
+lexicographic filename order). The desktop sidecar path applies the same way (its
+serve boot runs the same runner over the `db-sql` mirror). So the cited
+single-apply/silent-dark is path/history-specific, not a property of today's
+runner — don't propagate it as a current fact.
+
+The **real**, verifiable damage from a dup number today:
+
+* **`lint:migrations` goes red** (its `duplicateNumberGroups` check), and since
+  that lint isn't gated (below), nobody is told.
+* **Coordination confusion** — two unrelated features both claim "319"; tooling
+  and humans that key on the number get the wrong file.
+* **Possible loss at git-merge time** — when the two authors' divergent branches
+  reconcile, a careless merge can drop one of the same-numbered files (a VCS
+  hazard, not a runner one).
+
+The fix layers are therefore **prevention at creation** (the reservation
+tool/CLI) + **detection at PR** (the existing lint dup-check) — NOT a change to
+boot-apply semantics.
+
+## Why it keeps happening (three compounding gaps)
+
+1. **`db:next-migration` is MCP-only.** The atomic allocator (advisory lock +
+   `harness_shared.migration_reservations`, GREATEST(max-on-disk, max-reserved,
+   max-applied)+1) lives in `next_migration.ts` as a `defineTool` agent-tool.
+   There is **no `npm run db:next-migration`** script. An agent (or human) who
+   isn't already wired into the harness MCP just does `ls | tail` and hand-picks
+   — exactly the racing path the tool was built to replace. The lint error even
+   says "use db:next-migration", naming a command that doesn't exist as a script.
+
+2. **The MCP client is currently dropped.** Live peer presence this session
+   (`coord_presence`) notes *"harness MCP client still dropped… working via direct
+   MCP-over-curl."* So even MCP-aware agents can't reach `db:next-migration`
+   through the normal client right now, pushing everyone back to hand-picking.
+
+3. **`lint:migrations` is not gated.** `scripts/lint-migrations.mjs` already
+   detects (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would
+   end the runner's per-file wrapper txn early), and (c) numbers ≥215 absent from
+   the reservation ledger. But `lint:migrations` is **only an npm script** — it is
+   referenced in neither `.github/` (CI) nor `.husky/` / `.git/hooks`. So the
+   guard never runs automatically; the dup-number check (which is PG-free and
+   would run fine in CI) never fires on a PR.
+
+As of `2026-06-20`, `node scripts/lint-migrations.mjs` exits **1**: 7 files carry
+raw `BEGIN/COMMIT` (`299, 300, 306, 307, 308, 312, 317`) and \~10 numbers ≥215 are
+unreserved (`293, 294, 298, 301, 303–307, 319, 320`). The tree has been shipping
+with the linter red.
+
+## The two-dirs footgun (bonus)
+
+There are **two** migration directories and they are NOT the same role:
+
+* **`libs/papercusp/libs/db/sql/`** — CANONICAL. The operator auto-applies these
+  on boot (`migration-drift.ts` `resolveSqlDir()`), and `db:next-migration` scans
+  this dir for the on-disk max. **Write new migrations here.**
+* **`papercusp-desktop/src-tauri/sidecar/db-sql/`** — a build-time MIRROR, and it
+  is **gitignored inside the `papercusp-desktop` submodule** (`git check-ignore`
+  confirms). A file written only here is never committed and never applied.
+
+Both are submodules (`libs/papercusp`, `papercusp-desktop`). I initially wrote my
+migration into the sidecar mirror — it silently did nothing useful. Identical
+copies of `314–318` in both dirs make the mirror look authoritative; it isn't.
+
+## How to allocate a number now (the supported path)
+
+Use the CLI (added `2026-06-20` — works even with the MCP client down):
+
+```bash
+npm run db:next-migration -- --name add-foo-index --intent "what it does"
+# → reserves the next free NNN in harness_shared.migration_reservations and prints
+#   the canonical path: libs/papercusp/libs/db/sql/<NNN>-add-foo-index.sql
+# Add --dry-run to see the number without reserving it.
+```
+
+It scans BOTH dirs for the on-disk max, allocates under the advisory lock, and
+records the reservation — the same contract as the MCP `db:next-migration` tool.
+Then write the file to `libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the
+sidecar mirror). It auto-applies on the next operator restart. It refuses to hand
+out a number when PG is unreachable (an unreserved number re-opens the race).
+
+## Recommended fix (plan)
+
+Small, mostly additive; each item is independent:
+
+1. ~~**Add `npm run db:next-migration`.**~~ **DONE (`2026-06-20`)** —
+   `scripts/next-migration.mjs` + the `db:next-migration` npm script. Reservation
+   now works without the MCP client (the highest-leverage gap — it kills the
+   `ls | tail` path at the source). Mirrors the MCP tool via the shared ledger +
+   advisory key; a follow-up could DRY the two onto one exported core.
+2. **Gate `lint:migrations`** (the real detection layer — it already has a
+   `duplicateNumberGroups` check, which is PG-free and runs fine in CI). Wire it
+   into CI (and ideally pre-push). NOTE: the tree is red today, so this must be
+   sequenced AFTER cleaning the 7 raw `BEGIN/COMMIT` files + backfilling the
+   unreserved reservation rows — otherwise the new gate immediately fails. Don't
+   add the gate first. (Do NOT instead change the boot runner to abort on dup
+   numbers: it currently applies both colliding files by filename, and altering
+   boot-apply semantics — especially the `continueOnError` fleet path — is far
+   riskier than catching the dup at PR time.)
+3. **Mark the sidecar mirror.** Since the mirror dir is itself gitignored, a
+   `README` placed in it wouldn't be tracked — put the "this is a gitignored build
+   mirror; author migrations in the canonical libs dir" note where it's visible:
+   the canonical dir's own README, or `migration-drift.ts` (which already owns
+   `resolveSqlDir`).
+4. **DRY the allocator** (low priority). Export the allocation core from
+   `next_migration.ts` and have both the MCP tool and `scripts/next-migration.mjs`
+   call it, instead of the two mirroring the ledger contract independently.
+
+Sequencing matters for #3: clean first, gate second.

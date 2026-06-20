@@ -51,6 +51,7 @@ import { renderYieldPolicy } from './turn-yield-policy';
 import { renderTestingStandard } from './testing-standard-policy';
 import { renderAccountRoutingNote } from './account-routing-policy';
 import { renderDeployPipelineNote } from './deploy-pipeline-policy';
+import { renderReuseFirstNudge } from './reuse-first-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -133,6 +134,7 @@ export interface AssembledSection {
     | 'testing-standard'
     | 'account-routing-note'
     | 'deploy-pipeline-note'
+    | 'reuse-first-nudge'
     | 'runtime';
   chars: number;
 }
@@ -447,6 +449,18 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (deployNote) {
     parts.push(deployNote);
     sections.push({ name: 'deploy-pipeline-note', chars: deployNote.length });
+  }
+
+  // Reuse-first nudge (the soft "extend, don't fork" clause) — the SHARED base every
+  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts).
+  // Before adding a new durable surface, search for an existing one to extend + prefer the
+  // smallest extension; a new parallel surface duplicating an existing one is a top review
+  // smell. Sourced from the one REUSE_FIRST_NUDGE constant (orchestrator) so this base, the
+  // spawned-bee base, and the su persona base can't desync (agents-reuse-first-default P-001).
+  const reuseFirstNudge = renderReuseFirstNudge();
+  if (reuseFirstNudge) {
+    parts.push(reuseFirstNudge);
+    sections.push({ name: 'reuse-first-nudge', chars: reuseFirstNudge.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

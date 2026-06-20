@@ -288,6 +288,15 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // every superuser session, so it ships as a reversible kill-switch the owner flips ON after
   // an attended :3170 verification (OFF = today's unscoped '*' superuser, byte-identical).
   FLAGS.SCOPED_SUPERUSER_CLAMP,
+  // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the engine-managed-loop
+  // master gate (loop:arm — the tracked replacement for Claude /loop). DEFAULT OFF because the
+  // loop engine is multi-part (B-LOOP-1 schema + B-LOOP-2 completion-rebase + B-LOOP-3 warm-wake
+  // fire) and the end-to-end warm-wake round-trip is not yet verified green — arming a loop before
+  // the fire lands would create a routine that never wakes. OFF ⇒ loop:arm refuses (loops_disabled);
+  // the feature is otherwise inert (no loop rows exist; loop:end/loop:status are ungated). Owner
+  // flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes. Pending flip
+  // surfaced in the plan's ## Now + the lane completion report.
+  FLAGS.LOOPS,
 ]);
 
 /**

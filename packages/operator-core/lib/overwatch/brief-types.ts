@@ -78,12 +78,17 @@ export interface OverwatchWorkFeedHealth {
 export interface OverwatchTokenHealth {
   /** Rate buckets currently paused (e.g. `['opus','sonnet']`) — the 2026-06-15 RPM-saturation case. */
   pausedBuckets: string[];
-  /** Gateway failovers in the window. */
+  /** Gateway 5h-exhaustion failovers between pool accounts (cumulative). */
   gatewayFailovers: number;
-  /** Gateway 429 (rate-limit) responses in the window. */
+  /** Gateway 429s shed (admission backlog + fail-fast all-throttled). */
   gw429s: number;
   /** Accounts currently available (not exhausted / cooling). */
   accountsAvailable: number;
+  /** Gateway WEDGED — every slot pinned + a growing queue + frozen totalRequests (B-GW-5). The
+   *  watchdog auto-restarts it; overwatch makes it VISIBLE + escalates if it recurs. */
+  gatewayWedged: boolean;
+  /** Gateway sustained-throttling — AIMD cut concurrency / fail-fast shedding (capacity pressure). */
+  gatewaySustainedThrottle: boolean;
 }
 
 /** Plans + escalations health (`plans:*`, `coord:escalations`). */
@@ -130,6 +135,8 @@ export type AnomalyKind =
   | 'work-feed-stuck' // auto-eligible work not flowing (attempts:0) / dead routine (EI-584)
   | 'bees-churning' // bees re-spawning / holding stale claims without progress
   | 'escalation-aging' // an escalation has aged past the attention threshold
+  | 'gateway-wedge' // the inference gateway is WEDGED (slots pinned + frozen counter) — B-GW-5
+  | 'gateway-throttle' // the gateway is sustained-throttling (AIMD cut concurrency / fail-fast shed)
   | 'observation-dark'; // the observation lane is flat while agents are running
 
 /** Anomaly severity — drives ordering + the persona's urgency. */
@@ -226,7 +233,7 @@ export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
     queen: { lastWakeAt: null, stalled: false, cadenceOk: true, workingTracked: 0, nextFireAt: null, coordOwner: null },
     bees: { running: 0, completed: 0, churning: 0, deadClaims: 0 },
     workFeed: { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 },
-    tokens: { pausedBuckets: [], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0 },
+    tokens: { pausedBuckets: [], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0, gatewayWedged: false, gatewaySustainedThrottle: false },
     plans: { active: 0, stalledItems: 0, agingEscalations: 0 },
     observations: { laneCount: 0, recentByRole: {} },
     crossMonitor: { queenAlive: true, overwatchAlive: true },
@@ -392,7 +399,8 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   out.push('### Tokens / gateway');
   out.push(
     `- paused buckets: ${t.pausedBuckets.length ? t.pausedBuckets.join(', ') : 'none'} · ` +
-      `${t.gatewayFailovers} failover(s) · ${t.gw429s} 429(s) · ${t.accountsAvailable} account(s) available`,
+      `${t.gatewayFailovers} failover(s) · ${t.gw429s} 429(s) · ${t.accountsAvailable} account(s) available` +
+      `${t.gatewayWedged ? ' · ⚠ GATEWAY WEDGED' : t.gatewaySustainedThrottle ? ' · gateway throttling' : ''}`,
   );
 
   const p = brief.plans;

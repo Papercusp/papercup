@@ -138,6 +138,60 @@ export function resolveTierSpec(opts: {
   };
 }
 
+/** The coarse model CLASS of a spec — a local mirror of the governor's `modelClassOf` so model-tiers
+ *  needn't import the lower governor lib. Used by the opus-budget downgrade (B-GW-4). */
+export function specModelClass(spec: string): 'opus' | 'sonnet' | 'haiku' | 'other' {
+  const id = specModelId(spec).toLowerCase();
+  if (id.includes('opus')) return 'opus';
+  if (id.includes('sonnet')) return 'sonnet';
+  if (id.includes('haiku')) return 'haiku';
+  return 'other';
+}
+
+export interface OpusDowngrade {
+  /** True only when an OPUS spec was actually pulled back to a non-opus (sonnet) spec. */
+  downgraded: boolean;
+  /** The spec to run — the sonnet target when downgraded, else `currentSpec` unchanged. */
+  spec: string;
+  /** The tier name to record — the resolved sonnet tier when downgraded, else `currentTier`. */
+  tier: string | null;
+  /** The resolved tier's backend, set only when the downgrade adopted one. */
+  backend?: string;
+  /** The original opus spec, set only when an actual downgrade happened (for the log / nursery row). */
+  from?: string;
+}
+
+/**
+ * Pull an OPUS tier escalation back to sonnet under fleet opus-budget pressure (B-GW-4 —
+ * inference-gateway-robustness-audit-2026-06-20), respecting the role floor. ONLY acts when
+ * `currentSpec` is an opus class; re-resolves to the menu's sonnet tier through `resolveTierSpec`, so
+ * the existing floor-clamp guarantees a role whose OWN default is opus is never dropped below it
+ * (EI-7/EI-286) — in that case `downgraded` is false and the opus spec stands. The downgrade target
+ * is the STRONGEST menu tier whose spec runs sonnet (the smallest safe step down), falling back to
+ * the committed `standard` tier when a custom menu has no sonnet entry. Pure.
+ */
+export function downgradeOpusTierForBudget(opts: {
+  currentSpec: string;
+  currentTier: string | null;
+  role: string;
+  tiers?: readonly ModelTier[];
+  tierCeilings?: Record<string, string>;
+}): OpusDowngrade {
+  const unchanged: OpusDowngrade = { downgraded: false, spec: opts.currentSpec, tier: opts.currentTier };
+  if (specModelClass(opts.currentSpec) !== 'opus') return unchanged; // nothing to shed
+  const menu = opts.tiers && opts.tiers.length > 0 ? opts.tiers : DEFAULT_MODEL_TIERS;
+  // The downgrade TARGET: the strongest menu tier that runs sonnet (smallest safe step down from
+  // opus). Fall back to the committed 'standard' tier when a custom menu has no sonnet entry.
+  const sonnetTiers = menu.filter((t) => specModelClass(t.spec) === 'sonnet');
+  const targetTierName = sonnetTiers.length > 0 ? sonnetTiers[sonnetTiers.length - 1].name : 'standard';
+  const r = resolveTierSpec({ tier: targetTierName, role: opts.role, tiers: opts.tiers, tierCeilings: opts.tierCeilings });
+  if (!r.ok) return unchanged; // unknown target (no 'standard' in a custom menu) — leave opus as-is
+  // The floor-clamp may have pulled the target back UP to opus (the role's OWN floor is opus) → no
+  // real downgrade; keep the opus spec (the floor invariant, for free).
+  if (specModelClass(r.spec) === 'opus') return unchanged;
+  return { downgraded: true, spec: r.spec, tier: r.tier, backend: r.backend, from: opts.currentSpec };
+}
+
 /**
  * The EFFECTIVE tier config for a spawn: the owner's 👑-tab SESSION override
  * (queen-steering-panel D-006) takes precedence over the workspace agent-config

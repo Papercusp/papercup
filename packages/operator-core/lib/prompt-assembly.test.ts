@@ -308,6 +308,19 @@ describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibilit
   });
 });
 
+describe('assembleRolePrompt — reuse-first nudge (agents-reuse-first-default-2026-06-20 P-001/D-001)', () => {
+  it('injects the soft "extend, don\'t fork" nudge into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain("## Reuse-first (extend, don't fork)");
+    expect(out.text).toContain('new durable surface');
+    expect(out.text).toContain('smallest extension');
+    expect(out.text).toContain('top review smell');
+    expect(out.sections.some((s) => s.name === 'reuse-first-nudge')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — friction trip-wire (self-learning-central P-001/A, D-006)', () => {
   it('injects the near-zero friction trip-wire into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

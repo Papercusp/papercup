@@ -166,6 +166,17 @@ jobs:
       - name: Lint no sql.json on getOrgPg client
         run: npm run lint:no-sql-json
 
+      # Committed conflict-marker guard (EI-1836): a COMMITTED git conflict bracket
+      # (the live-merge resolver does NOT catch one already committed by a bad
+      # git-sync auto-merge) broke `vite build` with a cryptic CssSyntaxError, which
+      # froze the SPA build, the desktop sidecar, the WI-280 re-key witness, AND the
+      # green-checkpoint — the whole fleet deploy, on a stray "Stashed" word in CSS.
+      # GATING — flags any line starting with 7 of `<`/`>`/`|` (zero false positives;
+      # brackets every git conflict) so it is a loud NAMED failure, not a downstream
+      # cryptic build break.
+      - name: Lint no committed conflict markers
+        run: npm run lint:no-conflict-markers
+
       # Smart-quote guard (EI-418, found via EI-412): a curly quote used as a
       # code delimiter (copy-paste through a smart-quoting surface) is a hard
       # esbuild/tsc parse failure that reads as mysterious. GATING — flags

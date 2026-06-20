@@ -98,6 +98,9 @@ export async function getGitSyncRoutine(sql: Sql, installSlug: string): Promise<
     active: Boolean(r.active),
     lastFiredAt: (r.last_fired_at ?? null) as Date | null,
     nextFireAt: (r.next_fire_at ?? null) as Date | null,
+    // git-sync is a cron routine, never a loop — the loop fields are always null here.
+    rescheduleIntervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
+    targetOwnerId: (r.target_owner_id ?? null) as string | null,
   };
 }
 

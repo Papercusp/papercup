@@ -589,11 +589,11 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       : null;
   // queen-steering-panel P-008: stamp the source plan slug so the Queen's survey can
   // HARD-filter the frontier by owner eligible-plans. source_plan_slug is ALWAYS written
-  // ($11, NULL when unplanned — the column is nullable). workspace_id stays CONDITIONAL
-  // ($12, omitted when not explicit) so the fill_workspace_id_from_projects trigger / the
-  // column default still derives it (EI-728). Both cast ::text — the org pool runs
-  // prepare:false, so a bare trailing param leaves the server unable to infer its type
-  // ("could not determine data type of parameter $N"), same as the $6::jsonb cast.
+  // (NULL when unplanned — the column is nullable). workspace_id stays CONDITIONAL
+  // (omitted when not explicit) so the fill_workspace_id_from_projects trigger / the
+  // column default still derives it (EI-728). The text params cast ::text — the org pool
+  // runs prepare:false, so a bare trailing param leaves the server unable to infer its
+  // type ("could not determine data type of parameter $N"), same as the $6::jsonb cast.
   const sourcePlanSlug =
     typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
   // The fixed base columns/values (params $1..$11). $6 jsonb + $11 text carry
@@ -602,7 +602,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // taken_at (B-LOOP-4 atomic claim) and workspace_id (EI-728) — are appended in a
   // fixed order with each param index computed off `params.length`, so they never
   // collide on a positional slot regardless of which (or both) is present.
-  const params: unknown[] = [
+  const params: (string | number | null)[] = [
     input.harness,
     id,
     input.title,
@@ -682,6 +682,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     });
   }
   maybeFireUrgentWake(input, wi);
+  maybeFireClaimedEvent(assignTo, wi);
   return wi;
 }
 

@@ -1,0 +1,176 @@
+/**
+ * Tests for the gateway wedge/throttle detector (B-GW-5, inference-gateway-robustness-audit P3).
+ * Pure — the "alert on a simulated wedge" acceptance lives entirely here (no IO, injected clock).
+ */
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
+import {
+  summarizeGatewayMetrics,
+  detectGatewayWedge,
+  sampleGateway,
+  WEDGE_FREEZE_PRIOR_MAX_AGE_MS,
+  type RawGatewayStats,
+  type GatewayMetrics,
+} from './gateway-wedge';
+
+const NOW = 1_750_000_000_000;
+
+/** A healthy post-AIMD /stats payload: draining normally, slots free, no throttle. */
+const healthyStats = (over: Partial<RawGatewayStats> = {}): RawGatewayStats => ({
+  totalRequests: 1000,
+  admission: { running: 3, queued: 0, maxConcurrent: 24 },
+  upstream429: 0,
+  queued429: 0,
+  shed429: 0,
+  upstreamErrors: 0,
+  failovers: 0,
+  shedAllThrottled: 0,
+  concurrencyCap: 24,
+  unified: { utilization: 0.4 },
+  aimd: { effective: 24, cap: 24, floor: 4, decreases: 0 },
+  ...over,
+});
+
+// ── summarizeGatewayMetrics ─────────────────────────────────────────────────────────────────────
+
+test('summarizeGatewayMetrics — projects the post-AIMD structured bag', () => {
+  const m = summarizeGatewayMetrics(
+    healthyStats({ totalRequests: 4321, admission: { running: 24, queued: 7, maxConcurrent: 12 }, shed429: 5, shedAllThrottled: 2, failovers: 1, unified: { utilization: 0.97 }, aimd: { effective: 12, cap: 24, floor: 4, decreases: 3 } }),
+  );
+  assert.equal(m.totalRequests, 4321);
+  assert.equal(m.inFlight, 24);
+  assert.equal(m.queueDepth, 7);
+  assert.equal(m.maxConcurrent, 12); // LIVE effective cap (AIMD-adjusted), not the ceiling
+  assert.equal(m.concurrencyCap, 24);
+  assert.equal(m.shed429, 5);
+  assert.equal(m.shedAllThrottled, 2);
+  assert.equal(m.failovers, 1);
+  assert.equal(m.utilizationPct, 97);
+  assert.equal(m.aimdEffective, 12);
+  assert.equal(m.aimdCap, 24);
+  assert.equal(m.aimdDecreases, 3);
+});
+
+test('summarizeGatewayMetrics — DEPLOY-SKEW: a pre-AIMD gateway (no aimd/shedAllThrottled/concurrencyCap) degrades to nulls/0, never throws', () => {
+  // Exactly the legacy /stats contract — the live :8788 binary before B-GW-1 deploys.
+  const legacy: RawGatewayStats = {
+    totalRequests: 50,
+    inFlight: 2,
+    queueDepth: 0,
+    admission: { running: 2, queued: 0, maxConcurrent: 24 },
+    upstream429: 0,
+    queued429: 0,
+    shed429: 0,
+    upstreamErrors: 0,
+    failovers: 0,
+  };
+  const m = summarizeGatewayMetrics(legacy);
+  assert.equal(m.inFlight, 2);
+  assert.equal(m.maxConcurrent, 24);
+  assert.equal(m.shedAllThrottled, 0); // absent → 0
+  assert.equal(m.concurrencyCap, null); // absent → null
+  assert.equal(m.aimdEffective, null);
+  assert.equal(m.aimdCap, null);
+  assert.equal(m.aimdDecreases, null);
+  assert.equal(m.utilizationPct, null); // no unified window seen
+});
+
+test('summarizeGatewayMetrics — falls back to top-level inFlight/queueDepth when admission snapshot absent', () => {
+  const m = summarizeGatewayMetrics({ totalRequests: 9, inFlight: 5, queueDepth: 3, concurrencyCap: 24 });
+  assert.equal(m.inFlight, 5);
+  assert.equal(m.queueDepth, 3);
+  assert.equal(m.maxConcurrent, 24); // from concurrencyCap when no admission snapshot
+});
+
+// ── detectGatewayWedge — healthy + saturation ─────────────────────────────────────────────────
+
+test('detectGatewayWedge — healthy: not saturated, no wedge, no throttle', () => {
+  const v = detectGatewayWedge(summarizeGatewayMetrics(healthyStats()), undefined, NOW);
+  assert.equal(v.saturated, false);
+  assert.equal(v.wedge, false);
+  assert.equal(v.sustainedThrottle, false);
+});
+
+test('detectGatewayWedge — saturated but NO prior: saturated warn, but NOT a confirmed wedge', () => {
+  const stats = healthyStats({ admission: { running: 24, queued: 6, maxConcurrent: 24 } });
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), undefined, NOW);
+  assert.equal(v.saturated, true);
+  assert.equal(v.wedge, false, 'cannot confirm the freeze without a recent prior');
+  assert.ok(v.reasons.some((r) => r.includes('slot ceiling')));
+});
+
+test('detectGatewayWedge — inFlight at ceiling but EMPTY queue is NOT saturated (fully busy ≠ wedged)', () => {
+  const stats = healthyStats({ admission: { running: 24, queued: 0, maxConcurrent: 24 } });
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), undefined, NOW);
+  assert.equal(v.saturated, false);
+  assert.equal(v.wedge, false);
+});
+
+// ── detectGatewayWedge — the WEDGE acceptance ─────────────────────────────────────────────────
+
+test('detectGatewayWedge — SIMULATED WEDGE: saturated + totalRequests frozen vs a recent prior → wedge:true', () => {
+  // The exact wedge signature: every slot pinned, a growing queue, and the request counter NOT moving.
+  const stats = healthyStats({ totalRequests: 5000, admission: { running: 24, queued: 30, maxConcurrent: 24 } });
+  const prior = { totalRequests: 5000, shed429: 0, shedAllThrottled: 0, at: NOW - 90_000 }; // 90s ago, same count
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), prior, NOW);
+  assert.equal(v.saturated, true);
+  assert.equal(v.wedge, true, 'frozen-while-saturated is the wedge');
+  assert.ok(v.reasons.some((r) => r.includes('frozen')));
+});
+
+test('detectGatewayWedge — saturated but totalRequests ADVANCING vs prior → NOT a wedge (still draining)', () => {
+  const stats = healthyStats({ totalRequests: 5050, admission: { running: 24, queued: 30, maxConcurrent: 24 } });
+  const prior = { totalRequests: 5000, shed429: 0, shedAllThrottled: 0, at: NOW - 90_000 }; // advanced 50
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), prior, NOW);
+  assert.equal(v.saturated, true);
+  assert.equal(v.wedge, false, 'requests are still flowing — paced/busy, not wedged');
+});
+
+test('detectGatewayWedge — frozen but a STALE prior (>5min) → NOT a wedge (a long-quiet gateway is legitimately flat)', () => {
+  const stats = healthyStats({ totalRequests: 5000, admission: { running: 24, queued: 30, maxConcurrent: 24 } });
+  const prior = { totalRequests: 5000, shed429: 0, shedAllThrottled: 0, at: NOW - (WEDGE_FREEZE_PRIOR_MAX_AGE_MS + 60_000) };
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), prior, NOW);
+  assert.equal(v.saturated, true);
+  assert.equal(v.wedge, false, 'a stale prior cannot confirm the freeze');
+});
+
+// ── detectGatewayWedge — sustained throttle ───────────────────────────────────────────────────
+
+test('detectGatewayWedge — AIMD effective < cap → sustainedThrottle (the B-GW-1 adaptive-throttle signal)', () => {
+  const stats = healthyStats({ aimd: { effective: 6, cap: 24, floor: 4, decreases: 5 } });
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), undefined, NOW);
+  assert.equal(v.sustainedThrottle, true);
+  assert.ok(v.reasons.some((r) => r.includes('AIMD throttled')));
+});
+
+test('detectGatewayWedge — fail-fast all-throttled shedding climbing vs prior → sustainedThrottle', () => {
+  const stats = healthyStats({ shedAllThrottled: 12 });
+  const prior = { totalRequests: 1000, shed429: 0, shedAllThrottled: 4, at: NOW - 30_000 };
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), prior, NOW);
+  assert.equal(v.sustainedThrottle, true);
+  assert.ok(v.reasons.some((r) => r.includes('all accounts throttled')));
+});
+
+test('detectGatewayWedge — admission backlog load-shed climbing vs prior → sustainedThrottle', () => {
+  const stats = healthyStats({ shed429: 9 });
+  const prior = { totalRequests: 1000, shed429: 2, shedAllThrottled: 0, at: NOW - 30_000 };
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), prior, NOW);
+  assert.equal(v.sustainedThrottle, true);
+  assert.ok(v.reasons.some((r) => r.includes('admission backlog full')));
+});
+
+test('detectGatewayWedge — DEPLOY-SKEW: a pre-AIMD gateway never trips the AIMD throttle branch', () => {
+  const legacy: RawGatewayStats = { totalRequests: 10, admission: { running: 3, queued: 0, maxConcurrent: 24 }, shed429: 0 };
+  const v = detectGatewayWedge(summarizeGatewayMetrics(legacy), undefined, NOW);
+  assert.equal(v.sustainedThrottle, false);
+  assert.equal(v.wedge, false);
+  assert.equal(v.saturated, false);
+});
+
+// ── sampleGateway ─────────────────────────────────────────────────────────────────────────────
+
+test('sampleGateway — captures the minimal rolling sample for the next tick', () => {
+  const m: GatewayMetrics = summarizeGatewayMetrics(healthyStats({ totalRequests: 77, shed429: 3, shedAllThrottled: 1 }));
+  const s = sampleGateway(m, NOW);
+  assert.deepEqual(s, { totalRequests: 77, shed429: 3, shedAllThrottled: 1, at: NOW });
+});

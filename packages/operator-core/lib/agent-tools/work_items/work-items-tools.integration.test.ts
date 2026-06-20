@@ -502,3 +502,39 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
     expect(res.error).toMatch(/work_item 'WI-404' not found/);
   });
 });
+
+// B-LOOP-4 (loop-routines P-007 / D-008) — the `work_items:create {assign_to}` TOOL
+// envelope: the arg maps to the engine's atomic create+claim. assign_to → the claimee;
+// the CREATOR (ctx ownerId, here 'su-tester') is recorded as the durable delegator
+// (assigned_by, issue-family). Proves the mapping + that the row lands already-owned.
+describe('work_items:create {assign_to} — atomic create+claim envelope (real PG)', () => {
+  it('feature-family: assign_to lands the item already claimed by the target (taken_by)', async () => {
+    const res = await call(createTool, { kind: 'feature', title: 'placed onto a bee', harness: 'papercup', assign_to: 'bee-7' });
+    expect(res.ok).toBe(true);
+    const item = res.workItem as Record<string, unknown>;
+    expect(item.assignee).toBe('bee-7');
+    expect((await db.sql`SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id = ${item.id as string}`)[0].taken_by).toBe('bee-7');
+  });
+
+  it('self-assign: assign_to = own ownerId claims it for the caller', async () => {
+    const res = await call(createTool, { kind: 'feature', title: 'loop self-work', harness: 'papercup', assign_to: 'su-tester' });
+    expect((res.workItem as Record<string, unknown>).assignee).toBe('su-tester');
+  });
+
+  it('issue-family: assign_to sets assignee + records the creator as assigned_by (delegator)', async () => {
+    const res = await call(createTool, { kind: 'task', title: 'delegate task', harness: 'papercup', assign_to: 'bee-3' });
+    expect(res.ok).toBe(true);
+    const item = res.workItem as Record<string, unknown>;
+    expect(item.assignee).toBe('bee-3');
+    expect(item.assignedBy).toBe('su-tester'); // the creating ctx is the delegator
+    const [row] = await db.sql<{ assignee: string | null; assigned_by: string | null }[]>`
+      SELECT assignee, assigned_by FROM harness_shared.engineer_issues WHERE issue_id = ${item.id as string}`;
+    expect(row.assignee).toBe('bee-3');
+    expect(row.assigned_by).toBe('su-tester');
+  });
+
+  it('omitting assign_to leaves the item unclaimed (the default is unchanged)', async () => {
+    const res = await call(createTool, { kind: 'feature', title: 'no assign', harness: 'papercup' });
+    expect((res.workItem as Record<string, unknown>).assignee).toBeNull();
+  });
+});

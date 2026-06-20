@@ -76,8 +76,37 @@ being non-NULL regardless of status; you must NULL it. Within \~30s the next
 **The blind spot:** `trackGateStall` (release-actions.ts) increments
 `consecutiveReds` only on a red *verdict*. A running-but-collapsed routine never
 verdicts, so `consecutiveReds` stays 0 and `stallAlerted` never fires — the silent
-part. (Tracked: EI-455 — the deeper fix is a dead-executor workflow reaper / dedup
-TTL **and** a "no green verdict in N hours" alarm independent of the red counter.)
+part. (Tracked: EI-455. Now detected externally — see the 2026-06-20 update below.)
+
+**UPDATE 2026-06-19 — the reaper is now implemented.** The manual fix below is
+automated by `packages/operator-core/lib/dbos/dbos-executor-reaper.ts`: it NULLs the
+held `deduplication_id` + sets `status='CANCELLED'` on every `PENDING`/`ENQUEUED`
+workflow belonging to an executor that has had no `dbos.workflow_status` activity in
+
+> 5 min (a dead executor), and purges its orphaned `workflow_queue` rows. It runs once
+> at boot **and** on a 2-min `setInterval` started from `dbos/bootstrap.ts` right after
+> `DBOS.launch()` — deliberately a process-level interval, **NOT** a DBOS scheduled
+> routine, because a scheduled reaper would queue on the very executor that wedges and
+> so couldn't fire when it's most needed. Kill-switch: `PAPERCUSP_DBOS_EXECUTOR_REAPER=0`.
+> Still open after this: an optional dedup-TTL safety valve (for a hung-but-live
+> executor) and a "no green verdict in N hours" alarm independent of the red counter.
+
+**UPDATE 2026-06-20 — the "no green in N hours" alarm is now implemented too.** The
+blind spot above (a routine that *never verdicts*, or never *fires*, never trips
+`consecutiveReds`) is now covered by
+`packages/operator-core/lib/release/green-stall-watchdog.ts` — a second process-level
+sweep (started in `dbos/bootstrap.ts` right after the reaper, same "NOT a DBOS routine"
+rationale) that alarms when an `active` green-checkpoint routine is **fire-stale**
+(`last_fired_at` > 3h ⇒ the scheduler isn't running it — the exact case the in-routine
+detector structurally cannot see) or **verdict-stale** (`lastGreenAt` > 12h, a deep
+backstop set past the in-routine 6h alarm so the two don't double-ping). It reuses the
+same `notifyAttention` (urgent) + durable `harness_escalations` surfaces under its own
+phase `green-checkpoint-watchdog` and dedup flag `watchdogAlerted`, with cross-process
+exactly-once and an idempotent recovery clear. Kill-switch:
+`PAPERCUSP_GREEN_STALL_WATCHDOG=0`. (Note: an earlier P-006 fix already made `error` /
+timeout count as a red, so a *crashing/hanging* suite is caught in-routine; the watchdog
+specifically closes the "routine not firing at all" axis.) Still open under EI-455: only
+the optional dedup-TTL safety valve (for a hung-but-live executor).
 
 This applies to **any** routine, not just green-checkpoint — a `system:git-sync`,
 `release-trigger`, gym, etc. can wedge the same way (a gym cycle wedged 7.5h on a

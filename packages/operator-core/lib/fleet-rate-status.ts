@@ -13,6 +13,8 @@
 import { snapshotGovernors, globalConcurrencySnapshot, effectiveConcurrencySnapshot } from '@papercusp/papercup-shared/agent';
 import { getCachedRateLimitConfig, type RateLimitConfig } from './rate-limit-config';
 import { summarizeUsage, type UsageSummary } from './agent-usage-telemetry';
+import { loadAccountPool } from './deployment/account-pool-store';
+import { summarizeOpusBudget, type OpusBudgetStatus } from './opus-budget-governor';
 
 export interface FleetRateBucket {
   key: string;
@@ -48,6 +50,9 @@ export interface FleetRateStatus {
   };
   buckets: FleetRateBucket[];
   usage: UsageSummary;
+  /** Fleet opus-budget pacing state (B-GW-4): aggregate 5h opus pressure + which criticality classes
+   *  are shedding their opus → sonnet to stay under the ceiling. `null` if the pool is unreadable. */
+  opusBudget: OpusBudgetStatus | null;
 }
 
 /** Assemble the live read-model. `windowMs` bounds the usage/$spend lookback (default 1h). */
@@ -78,6 +83,10 @@ export async function buildFleetRateStatus(windowMs = 60 * 60 * 1000): Promise<F
     };
   });
   const usage = await summarizeUsage(windowMs).catch(() => emptyUsage());
+  // Fleet opus-budget pacing state (B-GW-4) — best-effort: an unreadable pool surfaces null, never throws.
+  const opusBudget = await loadAccountPool()
+    .then((pool) => summarizeOpusBudget(pool, now))
+    .catch(() => null);
   return {
     ok: true,
     now: new Date(now).toISOString(),
@@ -90,6 +99,7 @@ export async function buildFleetRateStatus(windowMs = 60 * 60 * 1000): Promise<F
     },
     buckets,
     usage,
+    opusBudget,
   };
 }
 

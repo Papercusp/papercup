@@ -18,6 +18,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { disarmPlanSchedule } from './arm-plan-schedule';
 import { autoPauseOnCostBreach } from './plan-run-cost';
+import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
 /** Work-item states that count as a finished execution. */
 const TERMINAL = ['passed', 'done', 'resolved', 'closed', 'deprecated', 'dropped', 'failed'];
@@ -128,10 +129,14 @@ export async function autoPauseOnFailureStreak(opts: {
  *   - failure streak (P-012 / D-011): a freshly-failed run completing K consecutive fails.
  * Cost is checked first (a successful-but-expensive run still pauses); a template paused on
  * cost is not re-checked for the streak.
+ *
+ * Also re-arms due interval-LOOPS on the same tick (loop-routines-interval-recurrence-2026-06-20
+ * P-002 / B-LOOP-2): a loop fire parks at next_fire_at='infinity' and is re-armed to
+ * completed_at + interval once its woken turn settles — see reconcileLoopRoutines.
  */
 export async function reconcileAndGovern(
   opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
-): Promise<{ reconciled: number; paused: string[] }> {
+): Promise<{ reconciled: number; paused: string[]; rearmed: number }> {
   const db = opts.sql ?? getOrgPg().sql;
   const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
   const paused: string[] = [];
@@ -157,5 +162,18 @@ export async function reconcileAndGovern(
     });
     if (r.paused) paused.push(s.planSlug);
   }
-  return { reconciled: settled.length, paused };
+
+  // Loop completion-rebase (B-LOOP-2) rides this same 30s tick. Workspace-wide (loops are
+  // keyed by target_owner_id, not a harness), so it runs independent of opts.harnessSlug.
+  // Best-effort — a loop-rebase failure must never break the scheduled-run governance it
+  // rides with (mirrors the sweep's own fail-soft contract).
+  let rearmed = 0;
+  try {
+    const loop = await reconcileLoopRoutines({ sql: db });
+    rearmed = loop.rearmed;
+  } catch (e) {
+    console.warn(`[loop-reconcile] rebase pass failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  return { reconciled: settled.length, paused, rearmed };
 }

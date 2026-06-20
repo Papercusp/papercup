@@ -49,6 +49,11 @@ import {
   DEFAULT_ACCOUNT_OVERRIDE,
   type AccountSessionOverride,
 } from './account-session-override';
+import {
+  evaluateOpusBudget,
+  type OpusBudgetDecision,
+  type WorkCriticality,
+} from '../opus-budget-governor';
 
 // ── P-004: the owner's session-now account override (fail-soft, no-op-when-unset) ──
 
@@ -179,6 +184,26 @@ export async function accountRoutingExhausted(ws?: string, now = Date.now()): Pr
   const pool = await loadAccountPool(ws).catch(() => null);
   if (!pool || pool.accounts.length <= 1) return false;
   return isClassExhausted(pool, now);
+}
+
+/**
+ * Evaluate the fleet OPUS-BUDGET decision for a spawn of the given criticality (B-GW-4 —
+ * inference-gateway-robustness-audit-2026-06-20 gateway P2). Loads the pool (fail-soft) and runs the
+ * pure `evaluateOpusBudget` over the live per-account 5h/7d utilization projection. The caller
+ * (operator-spawn) uses `decision.downgrade` to shed a non-critical OPUS escalation to sonnet,
+ * pacing fleet opus to stay UNDER the 5h ceiling. Fail-soft: any IO error → an `admit` decision
+ * (aggregateUtil null, downgrade false), so a bad pool read can never wedge or mis-route a spawn.
+ */
+export async function evaluateOpusBudgetForSpawn(
+  criticality: WorkCriticality,
+  ws?: string,
+  now = Date.now(),
+): Promise<OpusBudgetDecision> {
+  const pool = await loadAccountPool(ws).catch(() => null);
+  if (!pool) {
+    return { aggregateUtil: null, headroom: null, zone: 'headroom', downgrade: false, pace: false, reason: 'opus budget: pool unreadable — admit (fail-soft)' };
+  }
+  return evaluateOpusBudget({ pool, criticality, now });
 }
 
 /**

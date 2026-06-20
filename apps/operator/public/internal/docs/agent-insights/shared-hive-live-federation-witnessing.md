@@ -1,0 +1,50 @@
+# Live-witnessing shared-hive federation (the green-rig/red-binary trap + the two-instance smoke gotchas)
+URL: /internal/docs/agent-insights/shared-hive-live-federation-witnessing
+
+Shared-hive federation bugs pass the hermetic suite but fail the real binary, because the integration tests mock/inject the substrate. Only the live two-instance smokes catch them. This is how to run those witnesses, the harness gotchas that will eat hours if you don't know them, and the federation model (slug-binding) you need to read the results.
+
+## The trap: green rig, red binary
+
+The hermetic/integration suite (1090+ hyperbee backbone) **mocks or injects the substrate federation** (`bootHarnessSubstrate` rigs, direct apply-path injection). It validates the merge/projection LOGIC but **not** the live two-instance peer `announce → admit → apply` over a real swarm/DHT on the packaged binary. Bugs it structurally cannot catch: **boot-timing admit races (A-003), from-repo-vs-discovery-join binding differences (WI-259), packaging/minification stripped-seam regressions.** All three shipped green hermetically and were RED only on the binary, caught only by live witnessing. If a federation behavior matters for release, **you must witness it live** — a green suite is necessary, not sufficient.
+
+The live witnesses are `papercusp-desktop/bin/two-instance-*-smoke.sh` (directory / content-matrix / from-repo). `live-federation-gate.sh` (WI-261) wraps them in a load-gated scheduled gate that files an EI on RED, to catch the class automatically.
+
+## Running a witness — the gotchas (each cost hours to find)
+
+1. **Box load is the #1 killer — and the witness ITSELF adds \~+30 to the 1-min load.** The embedded PGs are `shared_buffers≈38GB` each (memory), but the real surprise is CPU: during the cupboard-off DHT discovery the sidecar/swarm pegs **\~25 cores** (one `node` proc at \~2500% CPU), so a 2-peer run adds \~+30 to the 1-min load on its own. Above \~load 40 (128-core host) the instances OOM-kill mid-run and discovery flakes \~50%; above \~70 the bg-host wedges. **⇒ Gate the run on fleet-load \< \~12, NOT \<20** — twice I ran at fleet-load \~22–23 and the witness's +30 spiked the box to 55–60 (mid-storm, toward the wedge point), forcing an abort. The number isn't caution-theatre; it's `headroom = wedge_point − witness_cost`. Never run heavy witnesses during a fleet infra storm — you false-fail, spike the box, AND worsen the contention everyone else is fighting.
+2. **`DISCOVERY_RETRIES`** — the smokes poll discovery 40×3s=120s by default, too short under any load. Set `DISCOVERY_RETRIES=100` (300s). Made env-configurable on both smokes.
+3. **The re-key witness block is gated on `WITNESS_PROBE=1`** (in the from-repo smoke). Without it the run silently skips the AK + K0–K3 block and does only the federation smoke — you'll think the re-key passed when it never ran.
+4. **`mcp_call` (MCP-over-HTTP) needs three things** or it 406s/parse-errors: `-H 'accept: application/json, text/event-stream'`, `-H "Authorization: Bearer <$HOME/.papercusp/superuser-token>"`, and a full JSON-RPC envelope `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{...}}`.
+5. **The re-key flag does NOT engage via the `PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1` env alone** — verified: the owner ends with 0 `hive_epoch_keys`. Flip it at runtime via `POST /api/flags/set {key:'papercusp-hive-rekey',enabled:true}` (persists a pg-override `getFlag` reads) BEFORE the hive is created.
+6. **Stale build = silent re-key no-op.** A `.deb`/`serve.mjs` built before a grant *call* seam landed carries the function but never calls it (e.g. `grantEpochKeysToMembers` present but no `'grantEpochKeysToMembers on admit'` string). Rebuild the sidecar (`bin/build-desktop-sidecar.sh`) and gate on a **minification-surviving code string**, not a comment (esbuild strips comments).
+7. **content-matrix needs a `.deb`; from-repo supports `HIVE_SMOKE_MODE=sidecar`** (no .deb). To test current HEAD on the content-matrix, rebuild the sidecar then `dpkg-deb -R` a base .deb, swap the fresh sidecar in, `dpkg-deb -b`.
+
+## The federation model you need to read results (the D-021 slug guard)
+
+A hive's per-table PG projections are keyed by `harness_slug`. On a JOINER, the merge's `scopedApply` rebind (`register-all.ts`, the `hiveHomeSlug` param) remaps **only the two hive-home-grained projections** — `hive_members` + `hive_settings` — to the hive-home slug. **The other \~16 projections (incl. `harness_features_consolidated`, the member-harness CONTENT) stay member-slug bound.** So:
+
+* **Owner→joiner `hive_settings`/`hive_members` cross** (they're remapped) — this is what A-003 fixed.
+* But if the joiner's member harness has a **different slug** than the owner's (the from-repo join creates `joined-<repo>` while the owner is `<member>`), the owner's `harness_features` ops carry the owner's slug and the joiner's content projection **guard-drops them silently — no throw, a guard skip** (WI-259). `hive_settings` escapes because it's remapped; features don't.
+* **The discovery-join flow does NOT hit this** (owner+joiner share a slug / it remaps + carries the hive\_pubkey on the binding so `rekey()` switches the topic off the `gh:<repo_id>` fallback). So a re-key/AK live witness that's blocked by WI-259 on the from-repo rig can be **proven on the discovery-join rig** — the crypto cut is join-flow-agnostic.
+
+**Practical:** if `hive_settings` crosses A→B but `harness_features` (a feature you wrote) does not, and there's no apply-throw in the logs, suspect a slug mismatch / the member-slug-bound projection guard — not delivery, not the topic.
+
+## Re-key (C-001) cut witness — the K-stage chain
+
+The cut = member-remove → epoch advance → removed member can't decrypt new content. Live legs (from-repo smoke, `WITNESS_PROBE=1`, flag on): **K0** joiner receives wrapped `hive_epoch_keys` (origin=remote) → **K1** reads pre-revoke F-CTRL (decrypts) → **K2** owner revokes (`substrate:revoke_contributor` → epoch advances) → **K3** owner writes F-CUT under the new epoch → removed member **cannot** read it. The grant that makes K0 pass fires on the **substrate auto-admit** (`boot.ts` Seam-2 `grantEpochKeysToMembers on admit`), NOT on `membership_decide` (open-mode public hives have no pending-join to approve). K0 needs the keys to *federate A→B* — so it's blocked by the same A→B path WI-259 breaks on from-repo, but not on discovery-join.
+
+### Make the cut witness CONTENT-FREE (the device-filtered reframe)
+
+The original K1/K3 read content (`F-CTRL`/`F-CUT` via `fed_hive_merge_probe` → `harness_features_consolidated`), which conflates the crypto cut with WI-259's content-federation stall → a false-RED. The cut is provable from `hive_epoch_keys` ALONE (hive-home-grained, A-003-proven to cross), so make it **device-filtered + content-free** (⇒ WI-259-orthogonal): **B\_DEV** (the cut-off device) = `A's member_device_pubkey at epoch=CUR EXCEPT at epoch=NEW` (A stays a member ⇒ excluded; the diff = the removed device). Then K1 = B has a CUR-epoch row for B\_DEV (origin=remote); K3 CUT = B has NO NEW-epoch row for B\_DEV **while** B DID receive the remaining members' NEW-epoch rows (teeth #2 — proves "B excluded", not "NEW epoch never federated"). Capture `CUR_EPOCH` BEFORE the revoke or the EXCEPT collapses to empty.
+
+### Re-key engagement — the membership dependency (WI-280, the 3rd green-rig/red-binary bug)
+
+Before expecting ANY meaningful K-stage, confirm the owner actually minted epoch keys: `drv_psql a "SELECT count(*),max(epoch) FROM harness_shared.hive_epoch_keys WHERE harness_slug='$HIVE'"`. If A has **0 keys / epoch=-1** the re-key never engaged (WI-280) — a re-key bug, NOT a witness bug. Why it happens live:
+
+* The epoch is minted ONLY on a **boundary** — `advanceEpochOnHiveBoundary` is called only from revoke (`hive-revoke-contributor`) + go-private (`hive-set-listing`), **never on create**. A fresh hive has no epoch key (content is plaintext until the first boundary).
+* The boundary + the join-grant wrap the new key to `loadAllHiveMemberDevicePubkeys()` — the **`hive_members` device set**. In the live open-mode from-repo flow `hive_members` is EMPTY: `upsertHiveMember` fires only via `approvePendingJoin` (open-mode auto-admits at the substrate, no pending-join), and nothing self-registers the owner at create. Wrap-set = `[]` → 0 keys, and even a revoke can't advance (nobody to wrap to).
+* The hermetic re-key tests **seed `hive_members`**, so they're green while the live binary mints 0 keys — exactly A-003/WI-259's pattern. The fix is to populate `hive_members` live (owner self-row at create + open-mode joiner at the Seam-2 admit), not anything in the witness.
+
+## Self-kill footgun (cleanup)
+
+Don't `pgrep -f '<pattern>'` for a string your own kill command contains — in a backgrounded command it matches and kills its own process tree before the work runs. Read PIDs into a var first, exclude `$$`, and prefer specific keys (an exact Xvfb display, a data-dir path) over broad name patterns. Never kill all `postgres -D /tmp/*` — peers run test PGs there too.

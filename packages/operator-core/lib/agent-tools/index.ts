@@ -160,6 +160,12 @@ import './memory/forget';
 import './memory/update';
 import './autoloop/status';
 import './autoloop/control';
+// loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008) — the engine-managed
+// LOOP surface: arm a tracked warm-wake loop on your own session (the /loop replacement),
+// end it, inspect it. Gated by FLAGS.LOOPS (loop:arm); loop:end/status are always available.
+import './loop/arm';
+import './loop/end';
+import './loop/status';
 import './operator/dedup_check';
 import './wiki/backlinks';
 import './harness/phase_path';

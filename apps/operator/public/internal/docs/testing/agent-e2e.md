@@ -1332,6 +1332,21 @@ loadavg 9.5–48.6):
   `for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}))`.
   Plain anchors are fine with `click`. (Found 2026-06-10; cost a full
   battery round of invalid tab numbers.)
+* **Harness-panel tabs need a WARM single-pot context — and the PRs panel
+  is NOT a standalone tab.** The per-pot tabs (`git`/`insights`/`docs`/
+  `testing`/`brainstorm`/`settings`, and the strip-hidden `prs`) render
+  `AdvHarnessPanelPage` keyed on `?slug=<pot>` + `?scope=expanded` (NOT
+  `all`). A COLD `location.href` straight to `?tab=git&slug=X` races the
+  mount-time slug-restore and bounces you to `?tab=harnesses`. Two-step it:
+  first load `?tab=harnesses&slug=X&scope=expanded` (warm projects + let the
+  restore run), THEN switch to `?tab=git`. Critically, **`prs` is excluded
+  from the visible tab strip** — there is no standalone PRs tab to deep-link
+  or click. The live PR-review surface (PrsTab → recommendation chip, report
+  panel, owner-gated auto-toggle) is auto-opened as a dock panel INSIDE the
+  **Git tab** (`AdvGitDock` seeds git-graph + `adv:prs`). So to e2e the PR
+  GUI, navigate to `tab=git` (a real strip tab), not `tab=prs`. (Found
+  2026-06-20 verifying PR-3; cost \~an hour targeting the vestigial `?tab=prs`
+  route that the router never honors.)
 * **Close the Web Inspector before ANY memory or perf measurement.**
   All Tauri instances share one webview profile
   (`~/.local/share/com.papercusp.desktop`), and it restores the

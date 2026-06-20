@@ -14,6 +14,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { normalizeJsonbInput } from './_jsonb-input';
 import type postgres from 'postgres';
+import { shouldApplyMemberContentOp } from '../member-content-guard';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface HarnessIssueRow {
@@ -47,6 +48,12 @@ export interface IssuesProjectionOpts {
    * `getOrgPg().sql`.
    */
   sql?: postgres.Sql;
+  /** WI-259 P-002: hive-home slug when this harness is a hive MEMBER (cross-member content is
+   *  membership-gated only when set); undefined for a non-hive / owned-home harness. */
+  hiveHomeSlug?: string;
+  /** WI-259 P-002: resolve an op's VERIFIED source-log device pubkey from its receiver-stamped
+   *  sourceLogKeyHex (boot's admittedIdentities); threaded via RegisterAllOpts. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
 }
 
 function composeKey(row: HarnessIssueRow): string {
@@ -90,7 +97,14 @@ async function writeToPg(
   row: HarnessIssueRow,
   provenance?: ProvenanceContext,
 ): Promise<void> {
-  if (row.harness_slug !== opts.harnessSlug) return;
+  // WI-259 P-002: membership-aware guard — apply own-slug, or a cross-member op iff its VERIFIED
+  // source-log device pubkey ∈ the hive's CURRENT members. resolveAuthorDevice maps the immutable
+  // sourceLogKeyHex (carried as provenance.authorPubkey for a remote op) → the admit-verified
+  // device; re-checked at apply so a removed member immediately loses write access.
+  const sourceLogDevice = provenance?.authorPubkey
+    ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+    : null;
+  if (!(await shouldApplyMemberContentOp(row.harness_slug, opts, sourceLogDevice))) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';

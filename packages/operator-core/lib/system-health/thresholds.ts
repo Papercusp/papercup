@@ -109,13 +109,17 @@ export function workFeedStatus(d: WorkFeedHealth): PanelStatus {
 }
 
 /**
- * Tokens / gateway. crit = full starvation (no account available) or the gateway
- * is in the egress path but unreachable. warn = a paused bucket (RPM-pacing) or a
- * paused account. ok otherwise.
+ * Tokens / gateway. crit = full starvation (no account available), the gateway is in the egress
+ * path but unreachable, OR the gateway is WEDGED (B-GW-5: the watchdog auto-restart signature —
+ * every slot pinned + a growing queue + frozen totalRequests). warn = the gateway is saturated or
+ * sustained-throttling (wedge-RISK / capacity pressure), a paused bucket (RPM-pacing), or a paused
+ * account. ok otherwise.
  */
 export function tokensStatus(d: TokensHealth): PanelStatus {
   if (d.accountsTotal > 0 && d.accountsAvailable === 0) return 'crit';
   if (d.gatewayEnabled && d.gatewayReachable === false) return 'crit';
+  if (d.gateway?.wedge) return 'crit';
+  if (d.gateway?.saturated || d.gateway?.sustainedThrottle) return 'warn';
   if (d.pausedBuckets > 0 || d.accountsPaused > 0) return 'warn';
   return 'ok';
 }

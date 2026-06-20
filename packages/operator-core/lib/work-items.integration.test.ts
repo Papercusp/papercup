@@ -481,3 +481,67 @@ describe('unified work_items surface (real PG)', () => {
     expect(onlyFeatures.every((w) => w.family === 'feature')).toBe(true);
   });
 });
+
+// B-LOOP-4 (loop-routines P-007 / D-008) — atomic create+claim. Passing `assignee`
+// to createWorkItem makes the row land already-claimed in ONE DB write — no separate
+// claim, no create→claim race window (a competing claim_next can't grab the row in the
+// gap). General: any agent id; self-assign = own id. Honored for BOTH families.
+describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', () => {
+  it('feature-family: create-with-assignee stamps taken_by + taken_at in one write; returns it claimed', async () => {
+    const wiItem = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA', assignee: 'bee-7' });
+    // The returned item is already owned (no second claim call happened).
+    expect(wiItem.assignee).toBe('bee-7');
+    expect(wiItem.state).toBe('todo');
+    const [row] = await db.sql<{ taken_by: string | null; taken_at: Date | null }[]>`
+      SELECT taken_by, taken_at FROM harness_shared.harness_features_consolidated WHERE feature_id = ${wiItem.id}`;
+    expect(row.taken_by).toBe('bee-7'); // claimed atomically in the INSERT
+    expect(row.taken_at).not.toBeNull(); // lease time stamped (mirrors claimWorkItem)
+  });
+
+  it('feature-family: NO race window — a competitor cannot claim/steal the just-created item', async () => {
+    const wiItem = await wi.createWorkItem({ kind: 'feature', title: 'owned', harness: 'papercup', createdBy: 'agA', assignee: 'bee-7' });
+    // A competing named claim on the already-held item is refused (atomic compare-and-claim).
+    expect(await wi.claimWorkItem(wiItem.id, 'bee-other', { harness: 'papercup' })).toBeNull();
+    // …and claim_next (the self-select path) never returns it — it was never in the unclaimed pool.
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-other' })).toBeNull();
+    // The owner re-claiming its own item is idempotent (not a refusal).
+    expect((await wi.claimWorkItem(wiItem.id, 'bee-7', { harness: 'papercup' }))?.assignee).toBe('bee-7');
+  });
+
+  it('issue-family: create-with-assignee+assignedBy stamps assignee + assigned_by + assigned_at atomically', async () => {
+    const task = await wi.createWorkItem({ kind: 'task', title: 'delegated', harness: 'papercup', createdBy: 'queen', assignee: 'bee-3', assignedBy: 'queen' });
+    expect(task.family).toBe('issue');
+    expect(task.assignee).toBe('bee-3');
+    expect(task.assignedBy).toBe('queen'); // the durable delegator
+    const [row] = await db.sql<{ assignee: string | null; assigned_by: string | null; assigned_at: Date | null }[]>`
+      SELECT assignee, assigned_by, assigned_at FROM harness_shared.engineer_issues WHERE issue_id = ${task.id}`;
+    expect(row.assignee).toBe('bee-3');
+    expect(row.assigned_by).toBe('queen');
+    expect(row.assigned_at).not.toBeNull(); // assigned_at is stamped when assignedBy is present
+  });
+
+  it('self-assign (assignee = own id) works for both families', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'self-feat', harness: 'papercup', createdBy: 'su-me', assignee: 'su-me' });
+    expect(feat.assignee).toBe('su-me');
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'self-bug', harness: 'papercup', createdBy: 'su-me', assignee: 'su-me', assignedBy: 'su-me' });
+    expect(bug.assignee).toBe('su-me');
+  });
+
+  it('omitting assignee leaves the item UNCLAIMED (the default is unchanged)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'unclaimed', harness: 'papercup', createdBy: 'agA' });
+    expect(feat.assignee).toBeNull();
+    const [row] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id = ${feat.id}`;
+    expect(row.taken_by).toBeNull();
+    // …and it IS claimable by the self-select path (it landed in the unclaimed pool).
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'w1' }))?.id).toBe(feat.id);
+  });
+
+  it('a blank/whitespace assignee is treated as "no assign" (lands unclaimed)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'blank', harness: 'papercup', createdBy: 'agA', assignee: '   ' });
+    expect(feat.assignee).toBeNull();
+    const [row] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id = ${feat.id}`;
+    expect(row.taken_by).toBeNull();
+  });
+});
