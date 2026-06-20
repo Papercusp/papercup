@@ -196,7 +196,6 @@
     "dockview": "^5.2.0",
     "dockview-react": "^5.2.0",
     "drizzle-orm": "^0.45.2",
-    "drizzle-zero": "^0.18.0",
     "livekit-client": "^2.16.1",
     "lucide-react": "^1.14.0",
     "markmap-common": "^0.18.9",
