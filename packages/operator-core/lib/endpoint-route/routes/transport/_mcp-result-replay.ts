@@ -96,7 +96,7 @@ export async function lookupStoredMcpResult(
   };
 }
 
-function serializeStoredMcpResult(result: StoredMcpResult): string {
+export function serializeStoredMcpResult(result: StoredMcpResult): string {
   const contentParts: string[] = [];
   if (Array.isArray(result.content)) {
     for (const item of result.content) {
