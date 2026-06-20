@@ -941,9 +941,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // dispatcher (proxy / bound source IP) when configured; absent ⇒ default (shared) egress.
           const dispatcher = await dispatcherFor(active);
           if (dispatcher) init.dispatcher = dispatcher;
-          // Wait for response HEADERS under the (generous) headers deadline; once they arrive, switch
-          // to the per-chunk body-idle deadline (reset on each streamed byte below).
-          armStall(isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs);
+          // Wait for response HEADERS under the headers deadline; once they arrive, switch to the
+          // per-chunk body-idle deadline (reset on each streamed byte below).
+          // WEDGE-PREVENTION LADDER: while waiting for headers the request has made NO progress, so it may
+          // not hold its admission slot past the retry deadline — cap the headers wait by the remaining
+          // deadline (Math.max floor so an at-deadline retry still gets a brief attempt, not a 0ms abort).
+          // This bounds even the generous 5-min non-streaming headers timeout under an upstream stall storm.
+          // NB: only the HEADERS wait is deadline-capped; once headers arrive we arm body-idle (below), which
+          // is NOT deadline-bounded — a healthy long STREAM keeps its slot as long as bytes flow (progress
+          // resets body-idle), so this never aborts a legitimately-streaming response.
+          const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
+          armStall(Math.max(1000, Math.min(headersStallMs, retryDeadlineAt - Date.now())));
           up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
           armStall(upstreamBodyIdleTimeoutMs);
           // Transport succeeded for THIS account (response headers arrived) — its egress proxy works, so
