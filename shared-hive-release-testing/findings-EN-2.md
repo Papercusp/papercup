@@ -106,8 +106,22 @@ limiter (`size()===0`, no state) and the wrapper (every op applies).
   bounds the OOM dimension (a single far-future op cannot jump many windows; live
   windows stay ≤ retention) and the naive single-jump evasion; the slow-ramp
   residual is captured explicitly in `rate-limiter.test.ts > DOCUMENTED RESIDUAL`.
-  Mitigation fast-follow: a non-convergent receiver-wall-clock burst guard
-  (defense-in-depth, best-effort) and/or HLC-monotonicity bounds.
+  **Mitigation (IMPLEMENTED, WI-268):** a CONVERGENT, `Date.now`-free *detector*
+  (better than the receiver-wall-clock burst guard first floated — that would have
+  diverged honest peers and broken the seam's no-clock property the C-001 gate
+  relies on). Insight: forging FUTURE `ts` to evade the per-window cap necessarily
+  ramps the author's op-time hwm AHEAD of the honest population's, and the `±1-window`
+  clamp makes an N-window gap require ≥N ramping ops (a stray future op can't fake
+  it). So `MemberRateLimiter.snapshot()` flags `suspectedTimestampSkew` when an
+  author's hwm sits > `skewThresholdWindows` (default 5) ahead of the highest OTHER
+  author's hwm in the same class — a pure function of the convergent per-author hwm
+  values (identical on every honest peer at the fixpoint). DETECTION ONLY: surfaced
+  for owner MANUAL revoke (`substrate:revoke_contributor` + C-001 re-key); it never
+  gates a drop (a cross-author/wall-clock drop would diverge). The flag self-clears
+  once honest real-time traffic surpasses the forged horizon. Teeth:
+  `rate-limiter.test.ts > forged-op-time detection (WI-268)` — ramp flagged,
+  truthful flood NOT flagged, single stray op can't trip it, lone-author no-baseline,
+  honest multi-author no-FP, and cross-peer convergence of the flag.
 
 ## Tests (teeth-verified) — 42 green, type-clean
 
