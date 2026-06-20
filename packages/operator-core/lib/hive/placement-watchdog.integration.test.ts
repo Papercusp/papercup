@@ -169,7 +169,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
         (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${HIVE}, 'F-200', ${HIVE}, ${QUEEN},
-              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), now(), now())`;
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
     await seedBee({ owner: 'bee-2', featureId: 'F-200', status: 'failed' });
     await seedUnit({ id: 'F-200', status: 'in_progress', takenBy: 'bee-2' });
 
@@ -194,7 +194,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
         (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${HIVE}, 'F-ALIVE', ${HIVE}, ${QUEEN},
-              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), now(), now())`;
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
     await seedBee({
       owner: 'bee-alive',
       featureId: 'F-ALIVE',
@@ -223,7 +223,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
         (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${HIVE}, 'F-DEAD', ${HIVE}, ${QUEEN},
-              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), now(), now())`;
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
     await seedBee({
       owner: 'bee-dead',
       featureId: 'F-DEAD',

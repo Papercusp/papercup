@@ -60,6 +60,11 @@ export interface MembershipPolicyView {
     /** Stable numeric GitHub user ids (as strings) the owner banned — denied re-join
      *  in every mode. */
     bannedGithubIds?: string[];
+    /** Owner enabled member reporting (the report tool gates on this). NOT read by
+     *  membership admission — declared here only so a full HivePolicy.moderation (which
+     *  carries it, hive-policy-schema.ts) type-checks where a MembershipPolicyView is
+     *  expected (e.g. evaluateMembershipAdmission in the policy tests). */
+    reportable?: boolean;
   };
 }
 

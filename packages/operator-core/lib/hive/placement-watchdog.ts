@@ -81,20 +81,32 @@ export interface PlacementConfig {
    *  placements) exceeds this, the operator/bg-host was DORMANT in between (a frozen
    *  ticker, the EI-1873 session wedge, an overnight dormancy window) — so this is a
    *  post-dormancy RECOVERY sweep and every placement looks "lost" for an INFRA reason,
-   *  not item-pathology. On such a sweep a loss is re-placed but NOT counted toward the
-   *  curse (so tractable items don't false-curse when the operator was down). Far above
+   *  not item-pathology. On such a sweep a loss is re-placed but counted toward the
+   *  BOUNDED infra breaker (infraBreakerThreshold), not the pathology breaker. Far above
    *  the 30s cadence so a merely-slow tick never trips it. */
   dormancyGraceMs: number;
+  /** F-FIX-041 — the BOUNDED infra-loss breaker threshold. Infra-attributed losses
+   *  (operator dormancy + EI-1758 zombie bees that made 0 tool calls — a no-fair-attempt
+   *  loss, NOT item-pathology) accrue in `infra_loss_count` and curse only here, far above
+   *  the 3-strike pathology `breakerThreshold`. The BOUND is the safety property: even if a
+   *  genuinely-wedging item's losses were all mis-attributed to infra, it still curses at
+   *  this count (never the unbounded-retry of EI-865); a real infra outage gets this many
+   *  graced re-places to heal. (A reaper-reclaim-WHILE-ACTIVE loss is exempt entirely —
+   *  it has positive proof-of-life, see servingBeeReclaimedWhileActive — and never reaches
+   *  this counter.) */
+  infraBreakerThreshold: number;
 }
 
 export function placementConfig(): PlacementConfig {
   const threshold = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_BREAKER ?? 3);
   const debounce = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_DEBOUNCE_MS ?? 5 * 60_000);
   const dormancy = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_DORMANCY_MS ?? 10 * 60_000);
+  const infra = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_INFRA_BREAKER ?? 12);
   return {
     breakerThreshold: Number.isFinite(threshold) && threshold >= 1 ? threshold : 3,
     recoveryDebounceMs: Number.isFinite(debounce) && debounce >= 0 ? debounce : 5 * 60_000,
     dormancyGraceMs: Number.isFinite(dormancy) && dormancy >= 0 ? dormancy : 10 * 60_000,
+    infraBreakerThreshold: Number.isFinite(infra) && infra >= 1 ? infra : 12,
   };
 }
 
