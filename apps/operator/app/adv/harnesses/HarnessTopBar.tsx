@@ -9,6 +9,7 @@ import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@papercusp/ui-primitives';
 import { useLexicon } from '@/lib/useLexicon';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import HealthBadge from '../../harness/HealthBadge';
 import HarnessWorkspacesButton from './HarnessWorkspacesButton';
 
@@ -39,6 +40,7 @@ interface Props {
  */
 export default function HarnessTopBar({ slug }: Props) {
   const t = useLexicon();
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [lanes, setLanes] = useState<LanesPayload | null>(null);
 
@@ -48,7 +50,7 @@ export default function HarnessTopBar({ slug }: Props) {
   // starts/stops, alive) pushes. Server-side dedupe bounds the refetch rate.
   const { data: featureRows } = useSyncQuery<unknown>({
     queryName: 'featuresConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug } : undefined,
+    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
   });
   const { data: runRows } = useSyncQuery<unknown>({

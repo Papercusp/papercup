@@ -15,6 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { PanelComponentProps } from './panel-registry';
 
 interface StatusResponse {
@@ -46,6 +47,7 @@ const STATUS_COLORS: Record<string, string> = {
 export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const phase = ((params.phase as Phase) ?? 'staging') as Phase;
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [data, setData] = useState<StatusResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [phaseHydrated, setPhaseHydrated] = useState(false);
@@ -97,7 +99,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
   // stays bounded.
   const { data: featureRows } = useSyncQuery<unknown>({
     queryName: 'featuresConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug } : undefined,
+    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
   });
   const { data: runRows } = useSyncQuery<unknown>({

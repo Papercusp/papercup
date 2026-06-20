@@ -73,6 +73,21 @@ export function serializeBinding(b: SwarmBinding): string {
   }
   if (!b.workspace_id) throw new Error('serializeBinding: local binding requires workspace_id');
   if (!b.harness_slug) throw new Error('serializeBinding: local binding requires harness_slug');
+  // EI-1690: the `/` delimiter is not escaped, so a slashful workspace_id would make
+  // `local:<ws>/<slug>` AMBIGUOUS — (ws:'a/x', slug:'y') and (ws:'a', slug:'x/y')
+  // both serialize to `local:a/x/y`, so two distinct tenancy pairs could derive the
+  // SAME swarm topic (cross-tenant federation onto one swarm — the topic IS the
+  // tenancy boundary). A `/`-free workspace_id makes the FIRST `/` an unambiguous
+  // separator (harness_slug is already `/`-free by its `^[a-z0-9][a-z0-9-]*$`
+  // pattern). REJECT rather than escape/length-prefix: changing the serialization
+  // would change the derived topic hash and break federation with already-connected
+  // peers. Latent today (live ids are slug-like: 'default', 'papercusp-workspace'),
+  // this closes the gap loudly instead of silently colliding.
+  if (b.workspace_id.includes('/')) {
+    throw new Error(
+      `serializeBinding: local binding workspace_id must not contain "/" (swarm-topic delimiter ambiguity, EI-1690): ${b.workspace_id}`,
+    );
+  }
   return `local:${b.workspace_id}/${b.harness_slug}`;
 }
 

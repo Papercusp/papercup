@@ -95,4 +95,30 @@ describe('derive-swarm-topic', () => {
       expect(() => serializeBinding({ kind: 'hive', hive_pubkey: '' } as SwarmBinding)).toThrow(/hive_pubkey/);
     });
   });
+
+  // EI-1690: the `local:<ws>/<slug>` delimiter is unescaped, so a slashful
+  // workspace_id would let two distinct tenancy pairs collide onto ONE swarm topic.
+  // The serializer now rejects `/` in workspace_id (rejecting, not escaping —
+  // escaping would change the derived topic and break federation with live peers).
+  describe('local binding workspace_id delimiter guard (EI-1690)', () => {
+    it('rejects a workspace_id containing the "/" delimiter', () => {
+      expect(() =>
+        serializeBinding({ kind: 'local', workspace_id: 'a/x', harness_slug: 'y' }),
+      ).toThrow(/EI-1690/);
+    });
+
+    it('closes the former collision: the ambiguous pair (ws:"a/x",slug:"y") throws; the slash-free pair is unambiguous', () => {
+      // Pre-fix BOTH of these serialized to "local:a/x/y" → same topic.
+      expect(() =>
+        serializeBinding({ kind: 'local', workspace_id: 'a/x', harness_slug: 'y' }),
+      ).toThrow();
+      expect(serializeBinding({ kind: 'local', workspace_id: 'a', harness_slug: 'x' })).toBe('local:a/x');
+    });
+
+    it('accepts every workspace_id in production use unchanged (no topic change, incl. the "*" sentinel)', () => {
+      for (const ws of ['default', 'papercusp-workspace', 'generic-test', 'lane7', '*']) {
+        expect(serializeBinding({ kind: 'local', workspace_id: ws, harness_slug: 's' })).toBe(`local:${ws}/s`);
+      }
+    });
+  });
 });

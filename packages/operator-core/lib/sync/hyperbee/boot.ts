@@ -1025,8 +1025,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             } catch (e) {
               // eslint-disable-next-line no-console
               console.error(
+                // WI-280: log the STACK (not just the message) — this grant THROWS at
+                // epoch-0 and the throw was being swallowed message-only, hiding WHICH
+                // produce call fails (deriveEpochKey / wrapKeyToMember / putWrappedKeys).
                 `[hive-rekey] grantEpochKeysToMembers on admit failed (best-effort): ${
-                  e instanceof Error ? e.message : String(e)
+                  e instanceof Error ? (e.stack ?? e.message) : String(e)
                 }`,
               );
             }
@@ -1472,6 +1475,44 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     }
     if (!inScope) {
+      // WI-259 STEP 1 (membership-aware admission): a SAME-HIVE cross-member log is
+      // admitted by VERIFIED IDENTITY, even when its signed slug is out of this
+      // harness's own/rebind scope. Identity, NOT slug: `harness_registry` is
+      // per-workspace / un-federated, so a peer has no entry for ANOTHER member's slug
+      // (the peer-instability that makes a slug-set guard fail cross-machine); but
+      // `hive_members` IS federated (P-006). We admit iff the announce's
+      // `github_user_id` is a member of THIS harness's Hive AND its `device_pubkey` is
+      // one of that member's REGISTERED (non-revoked) devices — both already
+      // D-004-verified on the frame above, so this is strictly tighter than a slug.
+      // SAFETY: this only lets the member's LOG replicate; every projection's apply
+      // drops a wrong-slug op (`row.harness_slug !== opts.harnessSlug → return`), so
+      // cross-member CONTENT does not land in PG until WI-259 STEP 2 opts shared-content
+      // in. Ordered BEFORE the A-003 buffer so a member log is admitted immediately
+      // rather than buffered; the owner's hive-home log (origin = the home slug, owner
+      // typically not in hive_members) still falls through to the buffer below.
+      if (originSlug != null && originSlug !== slug && frame.github_user_id) {
+        const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+        const myHiveHome =
+          hiveHomeProjectionSlug ??
+          (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+        if (myHiveHome != null) {
+          const { loadHiveMemberDevicePubkeys } = await import('../../hive-membership-store');
+          const memberDevices = await loadHiveMemberDevicePubkeys(
+            opts.workspaceId,
+            myHiveHome,
+            frame.github_user_id,
+          ).catch(() => [] as string[]);
+          if (memberDevices.includes(frame.device_pubkey)) {
+            recordBootEvent(
+              opts.workspaceId,
+              opts.harnessSlug,
+              'announce_admitted',
+              `same_hive_member origin=${originSlug} hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
+            );
+            return admitPeer(frame);
+          }
+        }
+      }
       // A-003 fix: the slug scope can be UNRESOLVED at admit time. A joiner's member
       // harness only learns its hive-home slug at the 2c re-key (`hiveHomeProjectionSlug`
       // is set by `rekey`'s rebind, AFTER boot opens the topic + onAnnounce goes live).

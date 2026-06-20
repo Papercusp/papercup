@@ -138,26 +138,26 @@ function HealthBadgeInner({ slug }: Props) {
   // closely enough for a verdict).
   const decisionsQ = useSyncQuery<Decision>({
     queryName: 'harnessDecisions.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId }, // EI-1763: tenant-scope
   });
 
   // Pending checkpoints: harnessCheckpoints.byHarness, count where granted=false.
   const checkpointsQ = useSyncQuery<Checkpoint>({
     queryName: 'harnessCheckpoints.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId }, // EI-1763: tenant-scope
   });
 
   // Smoke test: harnessSmokeTest.byHarness (single-row aggregate).
   const smokeQ = useSyncQuery<Smoke>({
     queryName: 'harnessSmokeTest.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId }, // EI-1763: tenant-scope
   });
 
   // Features for THIS slug. The /health endpoint reads parseFeatures(project)
   // Slug-agnostic via featuresConsolidated.bySlug (post-029).
   const featuresQ = useSyncQuery<FeatureRow>({
     queryName: 'featuresConsolidated.bySlug',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId }, // EI-1763: tenant-scope
   });
   const myFeatures = featuresQ.data ?? [];
 
