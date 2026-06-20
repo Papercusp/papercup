@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   startWorkflow: vi.fn((_wf: unknown, _opts: unknown) => (_input: unknown) => Promise.resolve()),
-  loopbackFetch: vi.fn(async () => ({ ok: true, status: 200 })),
+  loopbackFetch: vi.fn(async (): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   state: { dbosOn: true },
@@ -39,7 +39,7 @@ vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 
-import { durableSpawnFire, durableSpawnFireImpl, startDurableSpawns } from './durable-spawn';
+import { durableSpawnFire, durableSpawnFireImpl, startDurableSpawns, isPermanentSpawnStatus } from './durable-spawn';
 
 const INPUT = {
   url: 'http://x/api/harness/h/invoke?role=worker',
@@ -229,14 +229,42 @@ describe('durableSpawnFireImpl — permanent (target-gone) vs transient fire fai
     },
   );
 
-  it('captures the response body into the thrown error so a non-2xx fire is self-diagnosing', async () => {
+  it('captures the response body into the THROWN error for a transient failure (self-diagnosing)', async () => {
+    h.loopbackFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => '{"error":"gateway paused"}',
+    });
+    await expect(durableSpawnFireImpl(IMPL)).rejects.toThrow(
+      /HTTP 503 — \{"error":"gateway paused"\}/,
+    );
+  });
+
+  it('captures the response body into the permanent WARNING for a deterministic 4xx (self-diagnosing)', async () => {
     h.loopbackFetch.mockResolvedValue({
       ok: false,
       status: 400,
-      text: async () => '{"error":"harness paused"}',
+      text: async () => '{"error":"unknown_workspace"}',
     });
-    await expect(durableSpawnFireImpl(IMPL)).rejects.toThrow(
-      /HTTP 400 — \{"error":"harness paused"\}/,
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(durableSpawnFireImpl(IMPL)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('HTTP 400 — {"error":"unknown_workspace"}'),
     );
+  });
+});
+
+describe('isPermanentSpawnStatus (D1/WI-262 — deterministic 4xx are not retried)', () => {
+  it('treats deterministic client/target errors as permanent (no retry storm)', () => {
+    expect(isPermanentSpawnStatus(400)).toBe(true);  // unknown_workspace ("*") on durable replay
+    expect(isPermanentSpawnStatus(404)).toBe(true);  // harness deleted
+    expect(isPermanentSpawnStatus(410)).toBe(true);  // gone
+    expect(isPermanentSpawnStatus(422)).toBe(true);  // unprocessable payload
+  });
+  it('keeps genuinely transient statuses retryable', () => {
+    expect(isPermanentSpawnStatus(408)).toBe(false); // request timeout
+    expect(isPermanentSpawnStatus(429)).toBe(false); // rate-limit / gateway pacing
+    expect(isPermanentSpawnStatus(500)).toBe(false); // server error
+    expect(isPermanentSpawnStatus(503)).toBe(false); // pacing pause / restart
   });
 });

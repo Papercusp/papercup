@@ -75,10 +75,10 @@ const proj = () => buildPresenceProjection({ sql: rootSql, workspaceId: WS, harn
 
 describe('presence writeToPg (PG)', () => {
   it('keys on (user, machine): two machines are distinct rows; same machine upserts', async () => {
-    await proj().writeToPg(row({ machine_label: 'laptop', current_view: 'A' }), { ts: 100 });
-    await proj().writeToPg(row({ machine_label: 'desktop', current_view: 'B' }), { ts: 100 }); // 2nd machine
+    await proj().writeToPg(row({ machine_label: 'laptop', current_view: 'A' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
+    await proj().writeToPg(row({ machine_label: 'desktop', current_view: 'B' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' }); // 2nd machine
     expect(await rootSql`SELECT 1 FROM harness_shared.shared_presence`).toHaveLength(2);
-    await proj().writeToPg(row({ machine_label: 'laptop', current_view: 'A2' }), { ts: 200 }); // same machine → upsert
+    await proj().writeToPg(row({ machine_label: 'laptop', current_view: 'A2' }), { ts: 200, authorPubkey: 'pk-a', origin: 'local' }); // same machine → upsert
     const rows = await rootSql<{ machine_label: string; current_view: string }[]>`SELECT machine_label, current_view FROM harness_shared.shared_presence ORDER BY machine_label`;
     expect(rows).toHaveLength(2);
     expect(rows.find((r) => r.machine_label === 'laptop')!.current_view).toBe('A2'); // updated
@@ -86,16 +86,16 @@ describe('presence writeToPg (PG)', () => {
   });
 
   it('HARNESS ISOLATION + EI-79 LWW', async () => {
-    await proj().writeToPg(row({ harness_slug: 'api' }), { ts: 1 });
+    await proj().writeToPg(row({ harness_slug: 'api' }), { ts: 1, authorPubkey: 'pk-a', origin: 'local' });
     expect(await rootSql`SELECT 1 FROM harness_shared.shared_presence`).toHaveLength(0); // wrong harness dropped
 
-    await proj().writeToPg(row({ device_pubkey: 'first' }), { ts: 100 });
-    await proj().writeToPg(row({ device_pubkey: 'older' }), { ts: 50 }); // older → dropped
+    await proj().writeToPg(row({ device_pubkey: 'first' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
+    await proj().writeToPg(row({ device_pubkey: 'older' }), { ts: 50, authorPubkey: 'pk-a', origin: 'local' }); // older → dropped
     expect((await rootSql`SELECT device_pubkey FROM harness_shared.shared_presence`)[0]!.device_pubkey).toBe('first');
   });
 
   it('deleteFromPg by <user>/<machine>, ts-guarded', async () => {
-    await proj().writeToPg(row({ github_user_id: 5, machine_label: 'm1' }), { ts: 100 });
+    await proj().writeToPg(row({ github_user_id: 5, machine_label: 'm1' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
     await proj().deleteFromPg('5/m1', 50); // stale → blocked
     expect(await rootSql`SELECT 1 FROM harness_shared.shared_presence WHERE github_user_id=5`).toHaveLength(1);
     await proj().deleteFromPg('5/m1', 200); // newer → applies

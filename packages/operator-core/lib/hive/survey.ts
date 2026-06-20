@@ -367,6 +367,63 @@ export async function fetchFrontierRows(
 }
 
 /**
+ * COUNT of the hive's REAL placeable frontier — the same row set
+ * {@link fetchFrontierRows} returns (feature-family, `todo`, unassigned, not
+ * cursed), scoped to the hive's member harnesses. This is the depth a per-hive
+ * STARVATION signal must gate on (WI-267).
+ *
+ * The throughput breach previously read `hiveDemandCheck.todoItems` — a
+ * WORKSPACE-WIDE `harness_features_consolidated status='todo'` count that ignored
+ * `item_kind`, `taken_by`, the cursed exclusion, AND hive membership. So one
+ * workspace-wide number fired identical false "fleet saturated with work still
+ * queued" alarms across every hive in the workspace at once (a hive whose own
+ * placement frontier is empty/all-taken/cursed was flagged "starved" off another
+ * hive's queued work it could never place).
+ *
+ * MUST mirror fetchFrontierRows' WHERE clause. (Pre-readiness: a `blocked_by`
+ * lane is still counted here — the survey's {@link filterReadyFrontier} refines
+ * that; a cheap per-tick count omits the block-graph fetch. This already kills
+ * the dominant scope/kind/taken/cursed false-positive set; the residual
+ * all-blocked-frontier edge is a follow-up.)
+ */
+export async function countPlaceableFrontier(
+  sql: postgres.Sql,
+  workspaceId: string,
+  surveySlugs: readonly string[],
+): Promise<number> {
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.harness_features_consolidated f
+     WHERE workspace_id = ${workspaceId}
+       AND item_kind IN ('feature', 'research-task', 'chunk')
+       AND status = 'todo'
+       AND (taken_by IS NULL OR taken_by = '')
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.hive_placements p
+          WHERE p.workspace_id = f.workspace_id
+            AND p.work_item_id = f.feature_id
+            AND p.status = 'cursed'
+       )
+       ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}`;
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Resolve a hive's membership and return its placeable-frontier depth (WI-267) —
+ * the count a per-hive starvation breach should use instead of the workspace-wide
+ * `hiveDemandCheck.todoItems`. Member-scoped when membership is wired, else the
+ * workspace-wide P-012 fallback (mirrors {@link surveyHive}'s own scope choice).
+ */
+export async function hivePlaceableFrontierDepth(
+  workspaceId: string,
+  hiveHomeSlug: string,
+): Promise<number> {
+  const { sql } = getOrgPg();
+  const membership = await resolveHiveMembership(workspaceId, hiveHomeSlug);
+  return countPlaceableFrontier(sql, workspaceId, membership.surveySlugs);
+}
+
+/**
  * One harness's blocking graph for the readiness filter: the blocker sets (the
  * orchestrator's single source of truth, `getFeatureBlockers`) plus the statuses
  * of the referenced blockers (one indexed lookup; skipped when nothing blocks).

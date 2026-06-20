@@ -516,18 +516,24 @@ export class PgThreadStore implements ThreadableStore {
     // harness_slug (federation): set from the parent's harness when the caller is
     // harness-scoped (a harness conversation); NULL = operator-scope / local
     // (workspace engineer-issues) → the thread + its posts stay local.
+    // Bare `ON CONFLICT DO NOTHING` (no arbiter) so EITHER unique constraint is tolerated: the
+    // parent index (coord_threads_parent_uq) AND the thread_id PRIMARY KEY (coord_threads_pkey).
+    // thread_id is derived from the item's STABLE id, but parent_ref can change as the item mutates
+    // (e.g. work_items `workItemObjectRef`), so a re-derived thread_id can collide with the SAME
+    // thread_id sitting under a now-stale parent — get-or-create must RETURN that existing thread,
+    // not crash on coord_threads_pkey (EI-1743: work_items:comment errored 5× on exactly this — a
+    // named-arbiter ON CONFLICT only swallows the parent conflict, letting the PK conflict throw).
     await sql`
       INSERT INTO harness_shared.coord_threads
         (workspace_id, thread_id, parent_kind, parent_ref, title, created_by, created_at, harness_slug)
       VALUES (${this.ws}, ${opts.thread_id}, ${parent.kind}, ${parent.ref}, ${opts.title ?? null}, ${opts.created_by ?? null}, ${opts.created_ts}, ${opts.harness_slug ?? null})
-      ON CONFLICT (workspace_id, parent_kind, parent_ref) DO NOTHING`;
-    // Idempotency is keyed on the PARENT (the get-or-create semantic key), NOT the
-    // thread_id — a second call for the same parent with a DIFFERENT thread_id must
-    // return the existing thread, not violate coord_threads_parent_uq. (Current
-    // callers derive thread_id deterministically from the parent, so the PK arbiter
-    // happened to suffice; conformance proved it diverges from the in-memory store.)
-    const existing = await this.getThreadByParent(parent);
-    if (!existing) throw new Error(`coord_threads: failed to read back thread for ${parent.kind}:${parent.ref}`);
+      ON CONFLICT DO NOTHING`;
+    // Idempotency is keyed on the PARENT (the get-or-create semantic key) — a second call for the
+    // same parent with a DIFFERENT thread_id returns the existing thread. Fall back to the thread_id
+    // when the parent moved off a stable id-derived thread_id (the PK-collision path above): the
+    // thread_id IS that item's thread, so returning it is correct; posts attach by thread_id.
+    const existing = (await this.getThreadByParent(parent)) ?? (await this.getThreadById(opts.thread_id));
+    if (!existing) throw new Error(`coord_threads: failed to read back thread for ${parent.kind}:${parent.ref} / ${opts.thread_id}`);
     return existing;
   }
 
@@ -582,6 +588,18 @@ export class PgThreadStore implements ThreadableStore {
       SELECT thread_id, parent_kind, parent_ref, title, created_by, created_at, last_post_at, post_count
         FROM harness_shared.coord_threads
        WHERE workspace_id = ${this.ws} AND parent_kind = ${parent.kind} AND parent_ref = ${parent.ref}`;
+    return rows[0] ? toThreadRow(rows[0]) : null;
+  }
+
+  /** Read a thread by its thread_id (the PK). Used by getOrCreateThread's fallback when a stable
+   *  id-derived thread_id outlives a changed parent_ref (EI-1743). */
+  async getThreadById(thread_id: string): Promise<ThreadRow | null> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const rows = await sql<ThreadRowDb[]>`
+      SELECT thread_id, parent_kind, parent_ref, title, created_by, created_at, last_post_at, post_count
+        FROM harness_shared.coord_threads
+       WHERE workspace_id = ${this.ws} AND thread_id = ${thread_id}`;
     return rows[0] ? toThreadRow(rows[0]) : null;
   }
 }

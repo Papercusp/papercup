@@ -1,9 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   mergeAdmittedLogsIncremental,
   createMergeCursor,
 } from '../read-merge';
 import type { OwnLog, PeerLogOp } from '../peer-log';
+
+/*
+ * WI-255 UPDATE (2026-06-20, su-328af): the "self-heals via winners-dedup (no re-throw)"
+ * behavior this test documented was ALSO the data-loss bug — the winner was recorded
+ * BEFORE apply, so a VALID op whose apply threw transiently got dedup-skipped forever too,
+ * not just a poison NUL. WI-255 records the winner only AFTER a non-throwing apply: a
+ * poison op now RE-THROWS up to MAX_APPLY_THROWS (a valid transient recovers in that
+ * window) then QUARANTINES (record+skip+log), instead of an immediate silent dedup-skip.
+ * Test 2 below is updated to that behavior; the Brief Z finding (poison NUL is dropped
+ * consistently across peers → no divergence) is unchanged — only the mechanism (bounded
+ * retry→quarantine, not dedup-before-apply) changed. Full NUL-sanitization (zero throws,
+ * the it.fails DESIRED) is still a follow-up.
+ */
 
 /**
  * Brief Z (shared-hive-release-testing) — Z#4/Z#5: NUL-bearing federated op handling.
@@ -105,17 +118,36 @@ describe('Brief Z Z#4/Z#5 — NUL-bearing federated op (transient throw, self-he
     expect(pg.has('queue::GOOD-2')).toBe(false);
   });
 
-  it('self-heals on the NEXT pass: the poison op is skipped via winners-dedup (no re-throw) and later good ops apply', async () => {
+  it('self-heals via BOUNDED retry → quarantine (WI-255): the poison op re-throws then quarantines, and later good ops apply', async () => {
     const log = await buildLog();
     const pg = new Map<string, unknown>();
     const cursor = createMergeCursor();
     const apply = pgLikeApply(pg);
-    // Pass 1 throws (poison op recorded as its key's winner BEFORE the apply throws).
-    await expect(mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: apply })).rejects.toThrow();
-    // Pass 2 does NOT throw — the poison op matches the stale-dedup guard and is skipped;
-    // the merge proceeds and GOOD-2 lands. (winners is in-memory → recovery is per-lifetime.)
-    await mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: apply });
-    expect(pg.has('queue::GOOD-2')).toBe(true); // recovered
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // WI-255: the winner is NOT recorded after a throw, so the poison op RE-THROWS each
+    // pass (a valid transient would recover in this window — that's the fixed data loss)
+    // until the bounded retry budget QUARANTINES it; later passes converge. Run to settle.
+    let throwingPasses = 0;
+    let settled = false;
+    for (let i = 0; i < 8 && !settled; i++) {
+      try {
+        await mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: apply });
+        settled = true;
+      } catch {
+        throwingPasses++;
+      }
+    }
+    expect(settled).toBe(true); // BOUNDED — never an infinite retry loop
+    expect(throwingPasses).toBeGreaterThanOrEqual(1); // it DID re-throw (not silently dedup-skipped — the bug)
+    expect(throwingPasses).toBeLessThanOrEqual(3); // MAX_APPLY_THROWS-bounded
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('WI-255 quarantine'),
+      expect.stringContaining('UTF8'),
+    ); // quarantine logged, not silent
+    errSpy.mockRestore();
+
+    expect(pg.has('queue::GOOD-2')).toBe(true); // recovered — later good ops apply
     expect(pg.has('queue::POISON')).toBe(false); // NUL content never stored (PG can't anyway) — consistent across peers
     expect(cursor.positions.get(log.keyHex) ?? 0).toBe(log.length); // caught up
   });

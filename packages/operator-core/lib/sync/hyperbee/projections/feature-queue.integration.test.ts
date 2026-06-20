@@ -87,27 +87,27 @@ describe('feature-queue writeToPg (PG)', () => {
   });
 
   it('EI-79 LWW: a strictly-OLDER fed_ts op is DROPPED; a newer one applies', async () => {
-    await proj().writeToPg(row({ queued_at: 1000 }), { ts: 100, authorPubkey: 'first' });
-    await proj().writeToPg(row({ queued_at: 2000 }), { ts: 50, authorPubkey: 'older' }); // older fed_ts → dropped
+    await proj().writeToPg(row({ queued_at: 1000 }), { ts: 100, authorPubkey: 'first', origin: 'local' });
+    await proj().writeToPg(row({ queued_at: 2000 }), { ts: 50, authorPubkey: 'older', origin: 'local' }); // older fed_ts → dropped
     let r = (await rootSql<{ author_pubkey: string; fed_ts: string }[]>`SELECT author_pubkey, fed_ts FROM harness_shared.feature_queue`)[0]!;
     expect(r.author_pubkey).toBe('first'); // older op did NOT overwrite
     expect(Number(r.fed_ts)).toBe(100);
 
-    await proj().writeToPg(row({ queued_at: 3000 }), { ts: 200, authorPubkey: 'newer' }); // newer fed_ts → applies
+    await proj().writeToPg(row({ queued_at: 3000 }), { ts: 200, authorPubkey: 'newer', origin: 'local' }); // newer fed_ts → applies
     r = (await rootSql<{ author_pubkey: string; fed_ts: string }[]>`SELECT author_pubkey, fed_ts FROM harness_shared.feature_queue`)[0]!;
     expect(r.author_pubkey).toBe('newer');
     expect(Number(r.fed_ts)).toBe(200);
   });
 
   it('HARNESS ISOLATION: drops a row for a different harness', async () => {
-    await proj().writeToPg(row({ harness_slug: 'api' }), { ts: 1 });
+    await proj().writeToPg(row({ harness_slug: 'api' }), { ts: 1, authorPubkey: 'pk-a', origin: 'local' });
     expect(await rootSql`SELECT 1 FROM harness_shared.feature_queue`).toHaveLength(0);
   });
 });
 
 describe('feature-queue deleteFromPg (PG)', () => {
   it('hard-deletes the parsed <userId>/<featureId>, but a STALE del (older ts) does not erase a newer row', async () => {
-    await proj().writeToPg(row({ github_user_id: 7, feature_id: 'F-9' }), { ts: 100 });
+    await proj().writeToPg(row({ github_user_id: 7, feature_id: 'F-9' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
     await proj().deleteFromPg('7/F-9', 50); // stale del (50 < fed_ts 100) → ts-guard blocks
     expect(await rootSql`SELECT 1 FROM harness_shared.feature_queue WHERE github_user_id=7`).toHaveLength(1); // survived
     await proj().deleteFromPg('7/F-9', 200); // newer del → applies

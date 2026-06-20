@@ -334,6 +334,23 @@ describe('pollHarnessPrs — PR-2 first-sight race (Gap 2, su-pr2 handoff)', () 
     expect(second.merged).toEqual([42]);
     expect(merge).toHaveBeenCalledTimes(1);
   });
+
+  it('TEETH (staleness): the gate reads the report scoped to the CURRENT head_sha → a stale report defers, not merges', async () => {
+    const { host, merge } = makeHost();
+    const { store } = makeStore();
+    // A reader that only has a report for SOME OTHER commit (returns null for the PR's
+    // current head_sha) — models a stale report after a force-push.
+    const readReport = vi.fn(async ({ headSha }: { headSha?: string }) =>
+      headSha === 'a'.repeat(40) ? null : ({ recommendation: 'approve' as const }),
+    );
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { readReport }));
+    // The daemon passed the PR's CURRENT head_sha to the reader (engages the staleness filter)…
+    expect(readReport).toHaveBeenCalledWith(expect.objectContaining({ headSha: 'a'.repeat(40) }));
+    // …and a stale-for-that-sha report reads as absent ⇒ defer (re-review), never merge.
+    expect(out.awaitingReview).toEqual([42]);
+    expect(out.merged).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+  });
 });
 
 describe('pollHarnessPrs — PR-2 report veto', () => {

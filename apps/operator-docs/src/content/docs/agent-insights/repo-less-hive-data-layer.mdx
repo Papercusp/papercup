@@ -81,6 +81,6 @@ For any shared/repo-less hive: it must resolve its member repo for repo-backed r
 (#1), arm its own outbox-drain (#2, now automatic at create), and the operator must
 run the dead-executor reaper (#3). Miss any one and the hive looks broken — blank
 tabs, an unbounded outbox, or a silently dead scheduler — while its data is perfectly
-intact. Still open under EI-455: an optional dedup-TTL safety valve and a
-an optional dedup-TTL safety valve for a hung-but-live executor (the
-"no-green-verdict-in-N-hours" alarm, EI-455 bug #2, is now shipped — see facet #3 above).
+intact. Still open under EI-455: only an optional dedup-TTL safety valve for a
+hung-but-live executor (the "no-green-verdict-in-N-hours" alarm, EI-455 bug #2, is now
+shipped — see facet #3 above).

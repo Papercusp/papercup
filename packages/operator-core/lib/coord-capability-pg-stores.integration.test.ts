@@ -21,7 +21,7 @@
  * Run: npx vitest run --config vitest.integration.config.ts \
  *   packages/operator-core/lib/coord-capability-pg-stores.integration.test.ts
  */
-import { afterAll, beforeAll } from 'vitest';
+import { afterAll, beforeAll, test, expect } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
@@ -92,4 +92,29 @@ describeResolveObjectSubscribers('Pg trio', () => {
     tags: new PgTaggableStore(opts(ws)),
     topics: new PgTopicStore(opts(ws)),
   };
+});
+
+// EI-1743 regression: a stable id-derived thread_id can outlive a CHANGED parent_ref (e.g. a
+// work-item whose workItemObjectRef mutates). The second getOrCreateThread then inserts the SAME
+// thread_id under a new parent → before the fix the named-arbiter ON CONFLICT let the PK conflict
+// throw `coord_threads_pkey` and work_items:comment crashed. It must instead return the existing
+// thread (the thread_id IS that item's thread; posts attach by thread_id).
+test('PgThreadStore.getOrCreateThread tolerates a thread_id reused under a different parent (EI-1743)', async () => {
+  const store = new PgThreadStore(opts(freshWs()));
+  const TID = 'work-item-thread-WI-EI1743';
+  const t1 = await store.getOrCreateThread(
+    { kind: 'feature', ref: 'F-OLD' },
+    { thread_id: TID, created_ts: '2026-06-20T00:00:00.000Z' },
+  );
+  expect(t1.thread_id).toBe(TID);
+  // Same stable thread_id, but the item's ObjectRef has since changed — must NOT throw on the PK.
+  const t2 = await store.getOrCreateThread(
+    { kind: 'feature', ref: 'F-NEW' },
+    { thread_id: TID, created_ts: '2026-06-20T00:01:00.000Z' },
+  );
+  expect(t2.thread_id).toBe(TID);
+  // The thread is resolvable by thread_id and a post still attaches (the comment is recorded).
+  expect((await store.getThreadById(TID))?.thread_id).toBe(TID);
+  const post = await store.addPost({ thread_id: TID, author_id: 'su-ei1743', body: 'comment after ref change', created_ts: '2026-06-20T00:02:00.000Z' });
+  expect(post).toBeTruthy();
 });

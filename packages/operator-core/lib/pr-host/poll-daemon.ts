@@ -150,6 +150,10 @@ export interface PollDaemonDeps {
     installSlug: string;
     workspaceId: string;
     prNumber: number;
+    /** Gap-2 staleness: when set, the reader returns a report ONLY if it reviewed THIS
+     *  head_sha — a stale report (an earlier commit, e.g. after a force-push) reads as
+     *  absent so the gate defers + re-reviews the new diff rather than gating on it. */
+    headSha?: string;
   }) => Promise<{ recommendation: 'approve' | 'request_changes' | 'reject' } | null>;
   /**
    * PR-5 (contribution-admission): is the PR author a REVOKED contributor on this
@@ -215,6 +219,7 @@ interface ResolvedDeps {
     installSlug: string;
     workspaceId: string;
     prNumber: number;
+    headSha?: string;
   }) => Promise<{ recommendation: 'approve' | 'request_changes' | 'reject' } | null>;
   isAuthorRevoked: (args: {
     workspaceId: string;
@@ -380,7 +385,12 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
     //     once the report lands. (NB known follow-up: readReport returns the latest report for
     //     ANY head_sha — a force-push could read a stale report; head_sha-scoping is the refinement
     //     tracked in findings-PR-2-reviewer-trigger-seam.md.)
-    const report = await d.readReport({ installSlug, workspaceId, prNumber: enriched.ref.number });
+    const report = await d.readReport({
+      installSlug,
+      workspaceId,
+      prNumber: enriched.ref.number,
+      headSha: enriched.head_sha, // staleness gate: a report for an older diff reads as absent
+    });
     if (!report) {
       counts.awaitingReview.push(enriched.ref.number);
       deferred.add(enriched.ref.number);
@@ -716,6 +726,7 @@ async function defaultReadReport(args: {
   installSlug: string;
   workspaceId: string;
   prNumber: number;
+  headSha?: string;
 }): Promise<{ recommendation: 'approve' | 'request_changes' | 'reject' } | null> {
   try {
     const { readLatestReviewReport } = await import('./pr-review-report-store');
@@ -724,7 +735,15 @@ async function defaultReadReport(args: {
       prNumber: args.prNumber,
       workspaceId: args.workspaceId,
     });
-    return r ? { recommendation: r.recommendation } : null;
+    if (!r) return null;
+    // Gap-2 staleness: the store returns the NEWEST report for the PR regardless of
+    // head_sha. When the caller asks about a specific head_sha (the daemon's AUTO gate),
+    // a report that reviewed a DIFFERENT (older) commit must read as absent — so the
+    // gate defers + re-reviews the current diff rather than auto-approving on a stale
+    // recommendation (e.g. a force-push after an approve). No head_sha given ⇒ latest
+    // (back-compat, e.g. the GUI which shows a "reviewed earlier commit" badge instead).
+    if (args.headSha && r.head_sha !== args.headSha) return null;
+    return { recommendation: r.recommendation };
   } catch {
     return null; // PR-2's pr_review_reports table absent / no report yet ⇒ no veto.
   }

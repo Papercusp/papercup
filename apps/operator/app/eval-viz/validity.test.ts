@@ -69,6 +69,30 @@ describe('computeValiditySignals', () => {
     expect(isRunValid(signals)).toBe(false);
   });
 
+  it('a phantom win (resolved task with zero recorded generation) FAILS generation-attributed → not valid', () => {
+    // m3-like: protonmail + qutebrowser graded RESOLVED on non-empty diffs but turns=0/cost=0/0 tokens.
+    const { by, signals } = sig({ taskCount: 11, nonEmptyDiffs: 8, capValue: 5, recovered: true, resolvedZeroGen: 2, live: null });
+    expect(by['generation-attributed'].status).toBe('fail');
+    expect(by['generation-attributed'].detail).toMatch(/2 resolved task\(s\) have zero recorded generation/);
+    expect(isRunValid(signals)).toBe(false);
+  });
+
+  it('all resolved tasks attributed (resolvedZeroGen 0) PASSES generation-attributed', () => {
+    const { by } = sig({ taskCount: 11, nonEmptyDiffs: 11, capValue: 5, recovered: true, resolvedZeroGen: 0, live: null });
+    expect(by['generation-attributed'].status).toBe('pass');
+  });
+
+  it('a recovered run with no per-task breakdown WARNS generation-attributed (phantom-win risk) but stays valid', () => {
+    const { by, signals } = sig({ taskCount: 11, nonEmptyDiffs: 8, capValue: 5, recovered: true, live: null });
+    expect(by['generation-attributed'].status).toBe('warn');
+    expect(isRunValid(signals)).toBe(true);
+  });
+
+  it('a non-recovered run with no breakdown leaves generation-attributed unknown (not a caveat)', () => {
+    const { by } = sig({ taskCount: 11, nonEmptyDiffs: 8, capValue: 5, live: null });
+    expect(by['generation-attributed'].status).toBe('unknown');
+  });
+
   it('an uncapped run warns on fleet-cap', () => {
     const { by } = sig({ taskCount: 11, nonEmptyDiffs: 8, capValue: null, live: null });
     expect(by['fleet-cap'].status).toBe('warn');

@@ -24,9 +24,11 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { coerceJson } from '../pg-jsonb';
 import {
   type PrReviewReport,
   type StoredPrReviewReport,
+  type PrReviewChecksObserved,
   type PrReviewRecommendation,
 } from './pr-review-report-types';
 
@@ -127,8 +129,13 @@ function rowToStored(row: PrReviewReportDbRow): StoredPrReviewReport {
     recommendation: row.recommendation as PrReviewRecommendation,
     summary: row.summary,
     rationale: row.rationale,
-    risks: Array.isArray(row.risks) ? (row.risks as string[]) : [],
-    checks_observed: (row.checks_observed ?? {}) as StoredPrReviewReport['checks_observed'],
+    // jsonb columns read back as a raw STRING under prepare:false clients
+    // (testcontainer) but as a parsed value under prod getOrgPg — decode
+    // defensively across both (pg-jsonb runbook, EI-607).
+    risks: coerceJson<string[]>(row.risks) ?? [],
+    checks_observed:
+      coerceJson<PrReviewChecksObserved>(row.checks_observed) ??
+      ({} as PrReviewChecksObserved),
     model: row.model,
     tokens_in: Number(row.tokens_in ?? 0),
     tokens_out: Number(row.tokens_out ?? 0),

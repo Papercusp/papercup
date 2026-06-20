@@ -41,7 +41,7 @@ describe('WI-255 — incremental merge apply-throw recovery (no permanent drop)'
         throwOnce = false;
         throw new Error('transient PG blip');
       }
-      applied.push(op.hbKey);
+      applied.push(op.hbKey ?? '');
       return true;
     };
 

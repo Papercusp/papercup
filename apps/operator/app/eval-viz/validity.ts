@@ -19,6 +19,7 @@ export type ValidityKey =
   | 'opus-only'
   | 'queen-survival'
   | 'empty-diff'
+  | 'generation-attributed'
   | 'fleet-cap'
   | 'subset-size'
   | 'single-seed';
@@ -47,7 +48,13 @@ export interface ValidityInput {
   nonEmptyDiffs: number;
   /** The fleet cap the run ran under (null = uncapped). */
   capValue?: number | null;
+  /** The run used orphan-recovery / bee re-placement (a reclaim path ran). */
   recovered?: boolean;
+  /** Count of RESOLVED tasks whose per-task generation telemetry is zero
+   *  (turns=0 AND cost=0 AND tokensOut=0) — i.e. a non-empty, grade-passing diff
+   *  with no recorded in-run model work. A "phantom win" (see generation-attributed
+   *  signal). Undefined = the per-task generation breakdown wasn't supplied. */
+  resolvedZeroGen?: number;
   /** Independent attempts of the run (1 = single-seed). */
   seedCount?: number;
   /** Live fleet signals (only present during a run). */
@@ -109,6 +116,34 @@ export function computeValiditySignals(input: ValidityInput): ValiditySignal[] {
     emptyDiffSig = { key: 'empty-diff', label: 'Non-empty diffs', status: 'warn', detail: `${emptyDiff}/${taskCount} task(s) produced an empty diff (counted as unresolved)` };
   }
 
+  // GENERATION-ATTRIBUTED — every RESOLVED task must trace to a real in-run model
+  // generation. A non-empty, grade-passing diff with turns=0 AND cost=0 AND tokensOut=0
+  // (the recovery / re-placement path) is a "phantom win": it inflates resolved% with
+  // work the run never measured, and it slips past BOTH opus-only (no live samples →
+  // unknown, not fail) AND empty-diff (the diff is non-empty). This is the gap that hid
+  // the m3 protonmail+qutebrowser wins (2 of 6) — see benchmark-credibility-roadmap D-027.
+  let genAttributed: ValiditySignal;
+  if (input.resolvedZeroGen != null) {
+    genAttributed =
+      input.resolvedZeroGen === 0
+        ? { key: 'generation-attributed', label: 'Generation-attributed', status: 'pass', detail: 'every resolved task traces to a recorded in-run generation' }
+        : {
+            key: 'generation-attributed',
+            label: 'Generation-attributed',
+            status: 'fail',
+            detail: `${input.resolvedZeroGen} resolved task(s) have zero recorded generation (turns=0, cost=0, 0 tokens) — phantom win(s): the diff graded as resolved but no in-run model work is accounted, so resolved% is inflated`,
+          };
+  } else if (input.recovered) {
+    genAttributed = {
+      key: 'generation-attributed',
+      label: 'Generation-attributed',
+      status: 'warn',
+      detail: 'run used orphan-recovery / re-placement but the per-task generation breakdown was not supplied — recovered wins may be unattributed (phantom-win risk); supply resolvedZeroGen to confirm',
+    };
+  } else {
+    genAttributed = { key: 'generation-attributed', label: 'Generation-attributed', status: 'unknown', detail: 'per-task generation attribution not supplied' };
+  }
+
   // FLEET-CAP — an uncapped run has no contention control (the Queen makes no sequencing decision).
   const cap = input.capValue ?? null;
   const fleetCap: ValiditySignal =
@@ -128,7 +163,7 @@ export function computeValiditySignals(input: ValidityInput): ValiditySignal[] {
       ? { key: 'single-seed', label: 'Seeds', status: 'pass', detail: `${seedCount} seeds` }
       : { key: 'single-seed', label: 'Seeds', status: 'warn', detail: `${seedCount} seed — single-seed variance not captured` };
 
-  return [opusOnly, queenSurvival, emptyDiffSig, fleetCap, subsetSize, singleSeed];
+  return [opusOnly, queenSurvival, emptyDiffSig, genAttributed, fleetCap, subsetSize, singleSeed];
 }
 
 /** A run's result may be presented as "valid" only when no signal FAILED

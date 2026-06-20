@@ -293,7 +293,8 @@ export async function recordHiveThroughputTick(opts: {
     // Frontier + headroom + spawns + last-tick, all cheap workspace-scoped reads.
     const { hiveDemandCheck } = await import('./watchdog');
     const { getSpawnHeadroom } = await import('../fleet/operator-spawn');
-    const [demand, headroom, spawnRows, lastRows] = await Promise.all([
+    const { hivePlaceableFrontierDepth } = await import('./survey');
+    const [demand, headroom, spawnRows, lastRows, placeableFrontier] = await Promise.all([
       hiveDemandCheck(ws).catch(() => ({ demand: false, todoItems: 0, startedPlans: 0 })),
       getSpawnHeadroom(ws).catch(() => ({ ceiling: 0, running: 0, headroom: 0 })),
       sql<SpawnRow[]>`
@@ -305,6 +306,11 @@ export async function recordHiveThroughputTick(opts: {
         SELECT tick_at FROM harness_shared.hive_throughput_ticks
          WHERE workspace_id = ${ws} AND hive_slug = ${opts.hiveSlug}
          ORDER BY tick_at DESC LIMIT 1`.catch(() => [] as Array<{ tick_at: string | Date }>),
+      // WI-267: the hive's REAL placeable-frontier depth (member-scoped; feature-kind,
+      // todo, unassigned, not-cursed) — NOT the workspace-wide demand.todoItems — so the
+      // starvation breach gates on what THIS Queen can actually place. Fail-soft ⇒ 0 (a
+      // flaky read must never manufacture a false 'saturated with work queued' alarm).
+      hivePlaceableFrontierDepth(ws, opts.hiveSlug).catch(() => 0),
     ]);
 
     const spawns: HiveSpawnSnapshot[] = spawnRows.map((r) => ({
@@ -317,7 +323,8 @@ export async function recordHiveThroughputTick(opts: {
 
     const metrics = computeHiveThroughput({
       nowMs,
-      frontierDepth: demand.todoItems,
+      // WI-267: real placeable frontier (member-scoped) — was demand.todoItems (workspace-wide).
+      frontierDepth: placeableFrontier,
       ceiling: headroom.ceiling,
       running: headroom.running,
       spawns,

@@ -48,6 +48,50 @@ export function blankFrontmatter(text: string): string {
   return lines.join('\n');
 }
 
+/**
+ * Validate a leading YAML frontmatter block (--- … ---). astro parses the
+ * frontmatter as YAML *before* it compiles the MDX body, so a frontmatter YAML
+ * error — classically an UNQUOTED value containing `": "` (a quoted phrase) or
+ * any `key: value`-looking substring, which YAML reads as a nested mapping and
+ * rejects with "bad indentation of a mapping entry" — fails `astro build` HARD
+ * and wedges the WHOLE apps/operator-docs build fleet-wide. Yet
+ * `findMdxCompileError` blanks the frontmatter and never sees it: EI-438 closed
+ * only the body-JSX half; this closes the frontmatter half (EI-1449).
+ *
+ * Returns the YAML error mapped to the real 1-based source line, or null when the
+ * frontmatter parses cleanly (or there is none). `js-yaml` is astro's frontmatter
+ * loader (the "bad indentation…" wording is its own), lazily imported like the
+ * MDX core. Fails OPEN if the loader shape ever changes (don't wedge the guard).
+ */
+export async function findFrontmatterYamlError(text: string): Promise<MdxCompileError | null> {
+  const lines = text.split('\n');
+  if (lines[0]?.trim() !== '---') return null; // no frontmatter block
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') { end = i; break; }
+  }
+  if (end === -1) return null; // unterminated fence — the MDX compile path reports it
+  const body = lines.slice(1, end).join('\n');
+  const mod = (await import('js-yaml')) as {
+    load?: (s: string) => unknown;
+    default?: { load?: (s: string) => unknown };
+  };
+  const load = mod.load ?? mod.default?.load;
+  if (typeof load !== 'function') return null; // loader shape changed — fail open
+  try {
+    load(body);
+    return null;
+  } catch (err) {
+    const e = err as { mark?: { line?: number; column?: number }; reason?: string; message?: string };
+    // js-yaml `mark.line` is 0-based WITHIN `body` (which starts after the opening
+    // `---` on source line 1) → +2 maps to the 1-based source line.
+    const line = typeof e?.mark?.line === 'number' ? e.mark.line + 2 : null;
+    const col = typeof e?.mark?.column === 'number' ? e.mark.column + 1 : null;
+    const reason = `frontmatter YAML: ${(e?.reason ?? e?.message ?? String(err)).split('\n')[0]}`;
+    return { line, col, reason };
+  }
+}
+
 // Memoised lazy loaders for the MDX core + remark-gfm (heavy; only when needed).
 type MdxCompile = (value: string, opts?: Record<string, unknown>) => Promise<unknown>;
 let _compile: MdxCompile | null = null;
@@ -72,6 +116,12 @@ async function loadMdx(): Promise<{ compile: MdxCompile; remarkGfm: unknown }> {
  * as "can't check — don't block").
  */
 export async function findMdxCompileError(fileName: string, text: string): Promise<MdxCompileError | null> {
+  // astro parses the YAML frontmatter BEFORE it compiles the MDX body, so a
+  // frontmatter YAML error wedges the build just as hard (EI-1449). Check it
+  // first — the body compile below blanks the frontmatter and can't see it.
+  const fmErr = await findFrontmatterYamlError(text);
+  if (fmErr) return fmErr;
+
   const { compile, remarkGfm } = await loadMdx();
   try {
     await compile(blankFrontmatter(text), { format: 'mdx', remarkPlugins: [remarkGfm] });

@@ -87,21 +87,21 @@ describe('coord-thread writeToPg (PG)', () => {
   });
 
   it('a null last_post_at stays NULL (nullable epoch conditional)', async () => {
-    await proj().writeToPg(row({ last_post_at: null }), { ts: 1 });
+    await proj().writeToPg(row({ last_post_at: null }), { ts: 1, authorPubkey: 'pk-a', origin: 'local' });
     expect((await rootSql`SELECT last_post_at FROM harness_shared.coord_threads`)[0]!.last_post_at).toBeNull();
   });
 
   it('POST_COUNT RIDES THE HEADER: a newer re-federation carries the updated post_count', async () => {
-    await proj().writeToPg(row({ thread_id: 'T1', post_count: 5 }), { ts: 100 });
-    await proj().writeToPg(row({ thread_id: 'T1', post_count: 10 }), { ts: 200 }); // newer fed_ts → applies
+    await proj().writeToPg(row({ thread_id: 'T1', post_count: 5 }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
+    await proj().writeToPg(row({ thread_id: 'T1', post_count: 10 }), { ts: 200, authorPubkey: 'pk-a', origin: 'local' }); // newer fed_ts → applies
     expect(Number((await rootSql`SELECT post_count FROM harness_shared.coord_threads WHERE thread_id='T1'`)[0]!.post_count)).toBe(10);
   });
 
   it('HARNESS ISOLATION + ts-guarded delete', async () => {
-    await proj().writeToPg(row({ harness_slug: 'api', thread_id: 'X' }), { ts: 1 });
+    await proj().writeToPg(row({ harness_slug: 'api', thread_id: 'X' }), { ts: 1, authorPubkey: 'pk-a', origin: 'local' });
     expect(await rootSql`SELECT 1 FROM harness_shared.coord_threads`).toHaveLength(0); // wrong harness dropped
 
-    await proj().writeToPg(row({ thread_id: 'D1' }), { ts: 100 });
+    await proj().writeToPg(row({ thread_id: 'D1' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
     await proj().deleteFromPg('D1', 50); // stale → blocked
     expect(await rootSql`SELECT 1 FROM harness_shared.coord_threads WHERE thread_id='D1'`).toHaveLength(1);
     await proj().deleteFromPg('D1', 200); // newer → applies

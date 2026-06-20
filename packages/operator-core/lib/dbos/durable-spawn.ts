@@ -41,14 +41,27 @@ import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
 
 /**
- * HTTP statuses where the spawn TARGET IS PERMANENTLY GONE — the harness was
- * deleted, so its `/invoke` route will 404 (or 410) forever. The fire step does
- * NOT retry or DBOS-recover these: retrying a deleted-harness spawn can never
- * succeed and only amplifies one dead spawn into perpetual `→ HTTP 404` log spam
- * (observed on green for deleted harnesses like offsite-planner-demo). Every
- * other non-2xx (5xx, 429, network) stays transient → step-retry + recovery.
+ * HTTP statuses where retrying the IDENTICAL replayed request can never succeed,
+ * so the fire step does NOT retry or DBOS-recover them — it returns a terminal
+ * result, closes the fleet:tree row `failed`, and stops.
+ *
+ * Two deterministic-failure families:
+ *   • TARGET GONE (404/410): the harness was deleted, so `/invoke` 404s forever
+ *     (observed on green for deleted harnesses like offsite-planner-demo).
+ *   • CLIENT ERROR (other 4xx): the persisted request is malformed for the target
+ *     — e.g. WI-262/D1: a durable replay after a bg-host restart lost its resolved
+ *     workspace and re-fires with `workspace:"*"` → 400 `unknown_workspace`. The
+ *     same persisted body 400s on every replay, so 3 step-retries × 5 DBOS
+ *     recoveries spam `→ HTTP 400` every ~1s and hold a zombie row. Deterministic
+ *     → terminal.
+ *
+ * EXCEPT the genuinely transient 4xx — 408 (timeout) + 429 (rate-limit / gateway
+ * pacing) — which stay retryable, as do all 5xx + network errors.
  */
-const PERMANENT_SPAWN_STATUSES = new Set([404, 410]);
+export function isPermanentSpawnStatus(status: number): boolean {
+  if (status === 408 || status === 429) return false; // transient 4xx
+  return status >= 400 && status < 500;
+}
 
 export interface DurableSpawnFireInput {
   /** The `/invoke?role=<role>` URL to POST. */
@@ -120,7 +133,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   let fireError: unknown = null;
   // The fire step returns a discriminated result (memoized by DBOS, so it
   // survives a recovery replay) instead of leaking via closure side-effects.
-  let fireResult: { ok: true } | { ok: false; permanentStatus: number } | null = null;
+  let fireResult: { ok: true } | { ok: false; permanentStatus: number; detail: string } | null = null;
   try {
     fireResult = await DBOS.runStep(
       async () => {
@@ -143,12 +156,13 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
         const body =
           typeof r.text === 'function' ? await r.text().catch(() => '') : '';
         const detail = body ? ` — ${body.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
-        // Permanent (target-gone) failure: the harness was deleted, so retrying
-        // (3×) + DBOS recovery (5×) can never succeed and just spams the log.
-        // Return — the step SUCCEEDS, so neither retries nor recovery fire and the
-        // workflow ends. Transient non-2xx (5xx, 429, network) throws → retry.
-        if (PERMANENT_SPAWN_STATUSES.has(r.status)) {
-          return { ok: false, permanentStatus: r.status } as const;
+        // Deterministic failure (target gone 404/410, or a non-retryable 4xx like
+        // the workspace:"*" 400 — see isPermanentSpawnStatus): retrying (3×) + DBOS
+        // recovery (5×) can never succeed and just spams the log. Return — the step
+        // SUCCEEDS, so neither retries nor recovery fire and the workflow ends.
+        // Transient non-2xx (5xx, 408, 429, network) throws → retry.
+        if (isPermanentSpawnStatus(r.status)) {
+          return { ok: false, permanentStatus: r.status, detail } as const;
         }
         throw new Error(`durable-spawn fire ${input.label ?? ''} → HTTP ${r.status}${detail}`);
       },
@@ -162,7 +176,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   // fleet:tree row close `failed` below.
   const permanentMsg =
     fireResult && !fireResult.ok
-      ? `durable-spawn fire ${input.label ?? ''} → HTTP ${fireResult.permanentStatus} (permanent — spawn target gone; not retried)`
+      ? `durable-spawn fire ${input.label ?? ''} → HTTP ${fireResult.permanentStatus}${fireResult.detail} (permanent client/target error — not retried)`
       : null;
   if (permanentMsg) {
     console.warn(`[durable-spawn] ${permanentMsg}`);

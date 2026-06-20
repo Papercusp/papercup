@@ -73,7 +73,7 @@ const proj = () => buildUsageProjection({ sql: rootSql, workspaceId: WS, harness
 
 describe('usage writeToPg (PG)', () => {
   it('inserts an event: jsonb payload, epoch ts, echo-guard origin (remote vs local default)', async () => {
-    await proj().writeToPg(row({ event_id: 'E1', payload: { count: 5, action: 'view' } }), { origin: 'remote' });
+    await proj().writeToPg(row({ event_id: 'E1', payload: { count: 5, action: 'view' } }), { origin: 'remote', authorPubkey: 'pk-a' });
     await proj().writeToPg(row({ event_id: 'E2' })); // no provenance → origin default 'local'
     const r = (await rootSql<{ typ: string; cnt: string; origin: string; ms: string }[]>`
       SELECT jsonb_typeof(payload) AS typ, payload->>'count' AS cnt, origin,

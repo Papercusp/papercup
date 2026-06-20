@@ -146,8 +146,9 @@ function globMatches(g: CompiledGlob, relPath: string): boolean {
   return g.re.test(rel);
 }
 
-/** Recursively list every file under `dir`, POSIX-relative, skipping ignore dirs. */
-async function walkAll(dir: string, base = ''): Promise<string[]> {
+/** Recursively list every file under `dir` whose basename matches `match`,
+ * POSIX-relative, skipping ignore dirs. Defaults to canonical TS/JS tests. */
+async function walkAll(dir: string, match: RegExp = CANONICAL_TEST_RE, base = ''): Promise<string[]> {
   let entries: Awaited<ReturnType<typeof readdir>>;
   try { entries = await readdir(dir, { withFileTypes: true }); } catch { return []; }
   const out: string[] = [];
@@ -155,12 +156,26 @@ async function walkAll(dir: string, base = ''): Promise<string[]> {
     const rel = base ? posix.join(base, e.name) : e.name;
     if (e.isDirectory()) {
       if (COVERAGE_IGNORE_DIRS.has(e.name)) continue;
-      out.push(...await walkAll(join(dir, e.name), rel));
-    } else if (e.isFile() && CANONICAL_TEST_RE.test(e.name)) {
+      out.push(...await walkAll(join(dir, e.name), match, rel));
+    } else if (e.isFile() && match.test(e.name)) {
       out.push(rel);
     }
   }
   return out;
+}
+
+/* ----------------------------------------------------------------- *
+ * Forbidden #4 — bash `*.test.sh` / `*.spec.sh` (EI-1736). These are
+ * invisible to every CI runner (test:affected only globs Vitest
+ * `*.test.ts`), so they masquerade as coverage while never running, and
+ * the classic `set -e` + `((x++))` shell-arithmetic trap aborts them
+ * after the first test. There is NO debt list: zero exist today, and the
+ * canonical pattern is a Vitest `*.test.ts` that shells out to bash
+ * (e.g. apps/operator/lib/release/verify-release-paths.test.ts).
+ * ----------------------------------------------------------------- */
+const SHELL_TEST_RE = /\.(test|spec)\.sh$/;
+async function findShellTests(): Promise<string[]> {
+  return (await walkAll(REPO_ROOT, SHELL_TEST_RE)).sort();
 }
 
 /** Load every glob declared in the harness testing contract. */
@@ -221,6 +236,17 @@ async function main(): Promise<void> {
     offenders.push(`[ORPHAN] ${o}\n        → matches no registry glob → invisible in the /adv Tests tab. ` +
       `Widen a domain in apps/operator/lib/testing-domains-registry.ts, then ` +
       `regenerate: npx tsx scripts/gen-testing-domains-contract.ts`);
+  }
+
+  // Forbidden #4: bash *.test.sh / *.spec.sh — invisible to every CI runner
+  // (test:affected only globs Vitest *.test.ts) AND a known foot-gun (`set -e`
+  // + `((x++))` aborts after Test 1, so later assertions silently never run).
+  // EI-1736. Use a Vitest *.test.ts that shells out to bash instead.
+  const shellTests = await findShellTests();
+  for (const s of shellTests) {
+    offenders.push(`[NEW] ${s}\n        → bash *.test.sh/*.spec.sh are invisible to CI (no runner globs them) ` +
+      `and abort after Test 1 under \`set -e\` + \`((x++))\` (D-006 / EI-1736). Use a Vitest *.test.ts ` +
+      `that shells out to bash, e.g. apps/operator/lib/release/verify-release-paths.test.ts.`);
   }
 
   // Stale debt entries — files in the JSON that no longer exist.

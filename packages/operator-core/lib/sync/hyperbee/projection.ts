@@ -19,7 +19,7 @@
 import type { OpEnvelope } from './op-envelope-types';
 import { observeMergedOp } from './clobber-events';
 import { observeRemoteHlc } from './hlc-stamp';
-import type { HlcClock } from '@papercusp/locks-core';
+import { encodeHlc, type HlcClock } from '@papercusp/locks-core';
 
 /**
  * G1 Provenance context (P-002). Passed to `writeToPg` so each per-table writer
@@ -338,17 +338,21 @@ export async function applyHyperbeeOpToPg(op: OpEnvelope): Promise<boolean> {
  * merge path) is treated as `''` so the comparison stays total and stable.
  */
 export function lwwPick(a: OpEnvelope, b: OpEnvelope): OpEnvelope {
-  // Step 1 — causal clock. Prefer HLC when both ops carry one (sortable
-  // encoding → string compare == compareHlc); else fall back to wall-clock ts.
-  if (a.hlc && b.hlc) {
-    if (a.hlc > b.hlc) return a;
-    if (b.hlc > a.hlc) return b;
-  } else {
-    const ta = a.ts ?? 0;
-    const tb = b.ts ?? 0;
-    if (ta > tb) return a;
-    if (tb > ta) return b;
-  }
+  // Step 1 — causal clock, as a SINGLE TOTAL order (EI-1698). Give EVERY op one
+  // comparable key: its HLC when present, else a DERIVED HLC `{ms: ts, count: 0}`
+  // (a no-HLC op behaves like an HLC op at wall-time `ts`, logical 0). Comparing
+  // the SAME key for every pair is transitive. The previous rule — "HLC when BOTH
+  // carry one, ELSE ts" — switched basis per pair and was NON-TRANSITIVE under
+  // mixed HLC presence: a no-HLC op whose ts sat BETWEEN two HLC ops on a key
+  // formed a winner cycle (X>Z, Z>Y, Y>X), so two peers folding the same ops in
+  // different delivery orders diverged on a contended key (rolling-upgrade skew).
+  // Backward-compatible: HLC-only pairs still compare by HLC, ts-only pairs still
+  // compare by ts (both via encodeHlc's fixed-width sortable `ms:count` string),
+  // and a no-HLC op (pre-P-010 = oldest ts) sorts below the newer HLC ops as before.
+  const ka = a.hlc ?? encodeHlc({ ms: a.ts ?? 0, count: 0 });
+  const kb = b.hlc ?? encodeHlc({ ms: b.ts ?? 0, count: 0 });
+  if (ka > kb) return a;
+  if (kb > ka) return b;
   // ── clock tie ──
   // del beats put.
   if (a.type === 'del' && b.type !== 'del') return a;

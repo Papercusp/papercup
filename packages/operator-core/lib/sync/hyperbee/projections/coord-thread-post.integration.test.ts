@@ -95,12 +95,12 @@ describe('coord-thread-post writeToPg (PG)', () => {
   });
 
   it('HARNESS ISOLATION: drops a post for a different harness', async () => {
-    await proj().writeToPg(row({ harness_slug: 'api', post_msg_id: 'X' }), { ts: 1 });
+    await proj().writeToPg(row({ harness_slug: 'api', post_msg_id: 'X' }), { ts: 1, authorPubkey: 'pk-a', origin: 'local' });
     expect(await rootSql`SELECT 1 FROM harness_shared.coord_thread_posts`).toHaveLength(0);
   });
 
   it('deleteFromPg by post_msg_id, ts-guarded', async () => {
-    await proj().writeToPg(row({ post_msg_id: 'D1' }), { ts: 100 });
+    await proj().writeToPg(row({ post_msg_id: 'D1' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
     await proj().deleteFromPg('D1', 50); // stale → blocked
     expect(await rootSql`SELECT 1 FROM harness_shared.coord_thread_posts WHERE post_msg_id='D1'`).toHaveLength(1);
     await proj().deleteFromPg('D1', 200); // newer → applies

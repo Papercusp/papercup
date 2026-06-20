@@ -83,7 +83,7 @@ const proj = () => buildContributorsProjection({ sql: rootSql, workspaceId: WS, 
 
 describe('contributors writeToPg (PG)', () => {
   it('stores device_attestations as a proper jsonb ARRAY (::text::jsonb), revoked_pubkeys as text[], epoch joined_at', async () => {
-    await proj().writeToPg(row(), { ts: 100, authorPubkey: 'pk-a' });
+    await proj().writeToPg(row(), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
     const r = (await rootSql<{ typ: string; pk: string; revoked: string[]; ms: string; fed_ts: string; binding_status: string }[]>`
       SELECT jsonb_typeof(device_attestations) AS typ, device_attestations->0->>'pubkey' AS pk,
              revoked_pubkeys AS revoked, (extract(epoch from joined_at)*1000)::bigint AS ms,
@@ -98,20 +98,20 @@ describe('contributors writeToPg (PG)', () => {
   });
 
   it('HARNESS ISOLATION: drops a row for a different harness', async () => {
-    await proj().writeToPg(row({ harness_slug: 'api' }), { ts: 1 });
+    await proj().writeToPg(row({ harness_slug: 'api' }), { ts: 1, authorPubkey: 'pk-a', origin: 'local' });
     expect(await rootSql`SELECT 1 FROM harness_shared.contributors`).toHaveLength(0);
   });
 
   it('EI-79 LWW: an older fed_ts op does not overwrite a newer row', async () => {
-    await proj().writeToPg(row({ github_username: 'first' }), { ts: 100 });
-    await proj().writeToPg(row({ github_username: 'older' }), { ts: 50 }); // dropped
+    await proj().writeToPg(row({ github_username: 'first' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
+    await proj().writeToPg(row({ github_username: 'older' }), { ts: 50, authorPubkey: 'pk-a', origin: 'local' }); // dropped
     expect((await rootSql`SELECT github_username FROM harness_shared.contributors`)[0]!.github_username).toBe('first');
   });
 });
 
 describe('contributors deleteFromPg (PG)', () => {
   it('hard-deletes by github_user_id; a stale del (older ts) does not erase a newer row', async () => {
-    await proj().writeToPg(row({ github_user_id: 7 }), { ts: 100 });
+    await proj().writeToPg(row({ github_user_id: 7 }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
     await proj().deleteFromPg('7', 50); // stale → blocked by ts-guard
     expect(await rootSql`SELECT 1 FROM harness_shared.contributors WHERE github_user_id=7`).toHaveLength(1);
     await proj().deleteFromPg('7', 200); // newer → applies
