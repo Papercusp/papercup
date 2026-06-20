@@ -312,6 +312,28 @@ const steeringChurnSweepCheck: PeriodicCheck = {
   },
 };
 
+// Every 5min: federation-drain reconcile (WI-254 / EI-1618 item 2). Flags a LIVE
+// booted harness whose substrate_outbox is undrained past 60s (content captured but
+// NOT federating — the EI-681 silent-stall class) and files a DEDUPED improvement —
+// the proactive half of EI-1618's on-read drain-health surface, so a silent stall is
+// caught without a reader. Composes with substrate-outbox-backstop-gc (alert@60s vs
+// its GC@48h — a huge no-race margin). Lives here (NOT a DBOS workflow) per EI-1622:
+// an ephemeral health check on a durable workflow is the workflow_status-bloat that
+// froze the routine engine. Default OFF (opt-in PAPERCUSP_FEDERATION_DRAIN_RECONCILE=1)
+// pending fleet-alert review — the code ships ready + tested, enablement is a human
+// decision. HEAVY (substrate_outbox group-scan) → sheds under saturation; a stall
+// persists, so a shed tick is caught next interval.
+const federationDrainReconcileCheck: PeriodicCheck = {
+  name: 'federation-drain-reconcile',
+  intervalMs: 300_000,
+  shed: true,
+  tick: async () => {
+    if (process.env.PAPERCUSP_FEDERATION_DRAIN_RECONCILE !== '1') return;
+    const { runDrainReconcileOnce } = await import('../sync/hyperbee/run-drain-reconcile');
+    await runDrainReconcileOnce();
+  },
+};
+
 /** The converted ex-DBOS-workflow set. */
 export function buildDefaultChecks(): PeriodicCheck[] {
   return [
@@ -324,6 +346,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     staleClaimSweepCheck,
     learningInfraHealthCheck,
     steeringChurnSweepCheck,
+    federationDrainReconcileCheck,
   ];
 }
 
