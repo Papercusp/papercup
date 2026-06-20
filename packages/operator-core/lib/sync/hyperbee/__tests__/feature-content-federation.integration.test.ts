@@ -1032,7 +1032,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   //      This check FLIPS to an admission→presence assertion when WI-259 P-002 lands.
   // ──────────────────────────────────────────────────────────────────────────
   it(
-    'WI-259 STEP 1 (P-001): B ADMITS A’s same-hive cross-member log by membership identity (feature still apply-dropped — P-002 pending)',
+    'WI-259 (P-001+P-002): B ADMITS A’s same-hive cross-member log by membership identity AND applies its content — A’s feature lands in B under A’s member slug',
     async () => {
       const A_SLUG = 'hive-repo'; // owner A's member harness slug
       const B_SLUG = 'joined-hive-repo'; // joiner B's from-repo member slug

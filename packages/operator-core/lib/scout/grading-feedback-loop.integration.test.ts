@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { CorpusDigest, ScoutLlmCall } from './types';
 import type { StateOfHiveReaders } from './corpus-digest';
+import { fakeStateOfHiveReaders } from './test-support';
 import type { ArchivePort } from './gym-bridge';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
@@ -186,14 +187,7 @@ describe('scout grading feedback loop (real PG, migrations 194+208+234)', () => 
   });
 
   it('the ideate step primes EVERY ideator prompt from the real ledger (no reader override)', async () => {
-    const EMPTY_READERS: StateOfHiveReaders = {
-      completions: async () => [],
-      reverts: async () => [],
-      friction: async () => [],
-      spend: async () => [],
-      deferrals: async () => [],
-      observations: async () => [], // EI-1861: now-required structured-observation reader
-    };
+    const EMPTY_READERS: StateOfHiveReaders = fakeStateOfHiveReaders();
     const DIGEST: CorpusDigest = {
       recurringFriction: [{ summary: 'lock contention on shared tree', ref: 'wi:F-1' }],
       timeTokenSinks: [],

@@ -22,6 +22,15 @@ public production?
 >   surface in WI-280). The device-filtered witness flips GREEN the instant the owner mints keys. **AK owner-
 >   enforcement BAN = PASS live** (the launch-required ban has real teeth); the content-based AK probes share the
 >   same membership-gap blocker.
+>   - 🟡 **UPDATE (su-9140a, 06-20 08:20) — WI-280 FIX PROVEN at the membership layer → C-001 cut NEAR-RESOLVED.**
+>     ee7e9's v2 fix lands `hive_members` with BOTH rows live (owner self-row mints epoch-0 at create; joiner lands
+>     under the hive-home via a fresh `hiveHomeSlugForHarness` resolver at the open-mode admit — the v1 silent-skip
+>     was `hiveHomeProjectionSlug` undefined at admit, pre-hive-rebind, EI-1876's class). `members=2, was 1`
+>     (verified live in A's PG mid-witness). So `loadHiveMemberDevicePubkeys` now finds B → the revoke boundary
+>     mints + advances the epoch → the K-CUT should go green. ee7e9 is running witness-v3 for the K2/K3 verdict and
+>     will ping the owner for the flag on green. The root I code-traced (2 membership gaps) + the gotchas I handed
+>     ee7e9 (upsert-BEFORE-grantEpochKeysToMembers; verify-AFTER-a-boundary since there's no create-mint;
+>     loud-signals-on-skip) all landed. ⇒ C-001 flips 🟢 the instant v3's K-CUT is green; updating here on that verdict.
 > - 🔧 **WI-259 (NEW, from-repo joiner federation) — root-caused 3 ways (su-9140a/c2a63/ee7e9), dc9db fixing.**
 >   The D-021 scopedApply harness_slug guard: a from-repo joiner gets a DIFFERENT member slug than the owner, so
 >   the owner's harness_features (member-harness content) ops are silently guard-dropped on the joiner (hive_settings

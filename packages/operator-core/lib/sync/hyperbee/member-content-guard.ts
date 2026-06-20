@@ -65,6 +65,12 @@ export async function shouldApplyMemberContentOp(
   if (!opts.hiveHomeSlug) return false;
   // Cross-member op with no VERIFIED source-log identity — cannot confirm membership → drop (fail-closed).
   if (!sourceLogDevicePubkey) return false;
-  const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.hiveHomeSlug, opts.sql, deps);
+  // Membership lives in `harness_shared.hive_members` — WORKSPACE-shared, NOT per-harness content.
+  // Read it from the workspace source (getOrgPg, sql omitted), the SAME seam STEP 1 admission uses
+  // (boot.ts onAnnounce → resolveHiveMemberDeviceSet with no sql). Do NOT pass `opts.sql`: that is the
+  // per-harness CONTENT-write connection (the projection's own DB), a different concern that merely
+  // coincides with the workspace PG in production but diverges under a per-peer test topology. Passing
+  // it sent the membership read at a content DB with no `hive_members` table (WI-259 close-gate repro).
+  const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.hiveHomeSlug, undefined, deps);
   return memberSet.has(sourceLogDevicePubkey);
 }

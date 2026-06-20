@@ -59,7 +59,7 @@ import { buildScoutCycleDeps } from './cycle-deps';
 import { createScoutPlanDraft } from './scout-plan-draft';
 import { buildScoutArchivePort, type ScoutArchivePort } from './scout-archive-port';
 import { readRoutedIdeas, recordRoutedIdea } from './routed-ledger';
-import { makeFakeScoutLlm, type ScoutLlmResponder } from './test-support';
+import { makeFakeScoutLlm, fakeStateOfHiveReaders, type ScoutLlmResponder } from './test-support';
 import type { StateOfHiveReaders } from './corpus-digest';
 import type { RoutingDecision } from './router';
 import { listIssues } from '../issues-engineer';
@@ -200,10 +200,7 @@ const recombineResponder: ScoutLlmResponder = (opts) => {
 
 /** Digest substrate: a 2-member friction cluster whose newest member yields the
  *  `wi:F-101` meta-pattern ref every fake idea grounds in. Real synthesis. */
-const fakeReaders: StateOfHiveReaders = {
-  completions: async () => [],
-  reverts: async () => [],
-  observations: async () => [], // EI-1861: now-required structured-observation reader
+const fakeReaders: StateOfHiveReaders = fakeStateOfHiveReaders({
   friction: async () => [
     {
       id: 'F-100',
@@ -224,9 +221,7 @@ const fakeReaders: StateOfHiveReaders = {
       updatedAt: '2026-06-09T00:00:00.000Z',
     },
   ],
-  spend: async () => [],
-  deferrals: async () => [],
-};
+});
 
 describe('Scout cycle — all four rails land in real PG storage (one cycle)', () => {
   let db: OrgTestDb;

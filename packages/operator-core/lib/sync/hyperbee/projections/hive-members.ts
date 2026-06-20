@@ -37,6 +37,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
+import { invalidateHiveMemberDeviceSet } from '../hive-member-identity-set';
 
 /** Wire-shape of a hive_members row in Hyperbee — the federated subset. Defensive
  *  on every field; a malformed remote op is dropped (decodeValue → null). */
@@ -127,6 +128,14 @@ async function writeToPg(
              AND (harness_shared.hive_members.fed_ts IS NULL
                   OR EXCLUDED.fed_ts >= harness_shared.hive_members.fed_ts))
   `;
+  // WI-259 P-003 fast-path invalidation (the onMemberApplied hook): a member join /
+  // device-change may change the hive's member DEVICE set, so drop the P-002 guard's
+  // cached set for this hive — the next applied content op re-checks membership against
+  // a FRESH set instead of waiting out the 30s TTL backstop (during which a just-joined
+  // member's content would be wrongly dropped). opts.harnessSlug IS the hive_home_slug =
+  // the (ws, hiveHome) cache key. Shared hook: P-004's PendingMembershipContent drain
+  // hangs off this same apply point (ee7e9 P-003 review refinement #1).
+  invalidateHiveMemberDeviceSet(opts.workspaceId, opts.harnessSlug);
 }
 
 async function deleteFromPg(
@@ -152,6 +161,10 @@ async function deleteFromPg(
               AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
       )
   `;
+  // WI-259 P-003: a member LEAVE removes a device from the hive member set — invalidate
+  // the P-002 guard's cache so a just-left member's NEW content stops applying immediately
+  // (not after the 30s TTL). Same (ws, hiveHome) key as the put path above.
+  invalidateHiveMemberDeviceSet(opts.workspaceId, opts.harnessSlug);
 }
 
 export function buildHiveMembersProjection(
