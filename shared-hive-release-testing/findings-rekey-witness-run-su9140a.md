@@ -81,6 +81,28 @@ confirm real-gap vs known from-repo-vs-content-matrix flow difference (content-m
 A→B fine). NOT confirmed as a defect by me — flagged for d2230/the federation lane. (My MERGE_PROBE_SEC=120
 was iterations not seconds → made the failing probe ~7min; default 40 is fine for a fail-fast.)
 
+## 🎯 CONCLUSIVE ROOT CAUSE (run 5 — flag set FOR REAL via /api/flags/set, then traced) — why C-001 can't be witnessed
+I fixed the broken recipe: the smoke now flips the flag via the loopback **`POST /api/flags/set`**
+(`{"ok":true,"enabled":true,"backend":"pg-override"}` on BOTH instances — the path getFlag reads), BEFORE
+create. Run 5 then WON the discovery coin-flip + B JOINED. Yet I queried the live PGs:
+- **A (owner) `hive_epoch_keys` = 0, B `hive_epoch_keys` = 0, AND A `hive_members` = 0** — even after B joined.
+- The re-key's join-time grant `grantEpochKeysToMembers` fires on **member-add (`upsertHiveMember`)**. **A
+  never gets a `hive_members` row for B**, so the grant NEVER FIRES → no epoch keys exist → there is NO
+  encryption → the K3 cut is structurally un-witnessable.
+- This is EXACTLY K's note: K had to **manually SEED `hive_members` on A** because "a joiner's membership
+  never crosses to the owner naturally" (the joiner→owner membership-delivery gap; A-003 fixed owner→joiner,
+  NOT joiner→owner). The re-key cut-off depends on the owner KNOWING its members — which the from-repo
+  join does not establish on A.
+
+**⇒ THE REAL C-001 WITNESS BLOCKER (handed to the re-key lane):** the epoch-key grant is gated on a
+`hive_members` row the witness flow never produces on the owner. To witness the cut-off, EITHER (a) the
+P-008 witness must SEED A's `hive_members` (the owner's own row + the joiner's, w/ real device pubkey —
+exactly K's §Witness step-1 workaround), THEN advance the epoch; OR (b) fix the underlying joiner→owner
+membership delivery so the owner naturally registers the joiner (which also triggers the grant). My
+`/api/flags/set` smoke fix is correct + necessary (the env recipe is dead) but INSUFFICIENT alone — the
+membership-seed/delivery is the second required piece. Implementation still proven hermetically; the LIVE
+ship-gate is blocked on this 2-part witness-setup gap, not on re-key correctness.
+
 ## Status of the rest (context)
 A-003 is CLOSED + live-green (su-c2a63's converged fix; my binary witness + suite 1085 green). The re-key
 is BUILT + hermetically tested. This P-008 LIVE witness is the one remaining ship-gate proof for C-001 —
