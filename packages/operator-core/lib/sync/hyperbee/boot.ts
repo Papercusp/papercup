@@ -1037,6 +1037,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // github_user_id + github_login (the attested identity, == admittedIdentities[…].githubLogin).
           void (async () => {
             try {
+              // WI-280 FK gate: hive_members FKs harness_shared.hives(workspace_id, home_slug), so this
+              // upsert is valid ONLY when opts.harnessSlug is the HIVE HOME. The open-mode admit ALSO fires
+              // for the MEMBER topic (e.g. 'hello-world'), which has no hives parent row → a bare upsert
+              // violates hive_members_hive_fkey (the live witness surfaced this LOUDLY as 'open-mode admit
+              // upsertHiveMember failed', exactly as the loud-signal is meant to). loadHivePubkey is non-null
+              // only on the box that owns the hive keypair — the SAME self-gate grantEpochKeysToMembers uses
+              // (resolveAuthorPubkey → 'no-author' off the hive home). Gating here keeps admit a no-op on the
+              // member topic instead of a loud FK error every join.
+              const { loadHivePubkey } = await import('../../identity/hive-keypair');
+              if (!(await loadHivePubkey(opts.workspaceId, opts.harnessSlug))) return;
               const { upsertHiveMember } = await import('../../hive-membership-store');
               await upsertHiveMember({
                 workspaceId: opts.workspaceId,
