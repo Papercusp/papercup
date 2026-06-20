@@ -425,6 +425,20 @@ export function runBootstrap(): void {
       const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
       await applyPendingMigrationsAtBoot();
 
+      // [B-TOK-ROLL token-tracking] Refresh the model_pricing projection (migration
+      // 334) from the canonical in-code MODEL_PRICES, right after migrations create
+      // the table. The DB table is a derived snapshot for SQL-side $-transparency;
+      // this UPSERT keeps it from drifting when MODEL_PRICES changes. Best-effort —
+      // the helper swallows its own errors and never wedges boot.
+      try {
+        const { syncModelPricingFromCode } = await import(
+          '@papercusp/operator-core/lib/harness-insights/model-pricing-sync'
+        );
+        await syncModelPricingFromCode();
+      } catch (e) {
+        console.warn('[model-pricing-sync] boot sync failed (non-fatal):', e instanceof Error ? e.message : e);
+      }
+
       // [benchmark-evaluation-ui P-005 / D-022] Spend-safety reaper — AWAITED here,
       // right after migrations and BEFORE the boot-gate flips (so it runs before
       // the routines engine could re-arm an orphan's wake/git-sync). A UI-launched

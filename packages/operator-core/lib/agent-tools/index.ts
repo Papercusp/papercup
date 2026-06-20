@@ -26,6 +26,8 @@ import './pre-prompt-registry-config';
 
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
+// code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.
+import './code/tools';
 
 import './operator/stats';
 import './operator/converse';

@@ -27,11 +27,15 @@ export default defineTool({
     when:
       'A task needs MANY tool calls with control flow — loop/branch/filter over results (e.g. ' +
       'list N items then act per item, fan-out reads, retry-until). Orchestrate them in ONE ' +
-      'code:run and return a compact summary instead of paying a round-trip per call.',
+      'code:run and return a compact summary instead of paying a round-trip per call. Call ' +
+      'code:tools first to fetch the exact typed tools.ns.verb(args) signatures for the ' +
+      'namespaces you will use (fewer arg-shape errors).',
     notWhen:
       'A single tool call, or a step that needs YOUR judgment mid-flow (read a result, then ' +
       'decide) — call tools directly. Preview mutations with dryRun before a committing run.',
-    chaining: 'code:run { dryRun:true } → inspect plannedMutations → code:run { dryRun:false }',
+    chaining:
+      'code:tools { namespaces } → write the script against the typed signatures → ' +
+      'code:run { dryRun:true } → inspect plannedMutations → code:run { dryRun:false }',
   },
   // Role-gated tools gate on agentRoles (not capability); capability sets tier + write-effect.
   // code:run is as powerful as the shell capability — it can call any of the agent's write tools.

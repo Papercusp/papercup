@@ -1,0 +1,90 @@
+import { z } from 'zod';
+import {
+  defineTool,
+  listAllProjectedTools,
+  generateToolFacadeTypes,
+  listFacadeNamespaces,
+  SU_ROLES,
+} from '@papercusp/agent-mcp';
+
+/**
+ * `code:tools` — on-demand typed signatures for the `code:run` facade
+ * (code-execution-tool-orchestration B-CX-API).
+ *
+ * `code:run` scripts call `tools.<ns>.<verb>(args)`. The exact arg shapes come from each tool's
+ * schema — but dumping every tool's full signature into the prompt is the very per-prompt catalog
+ * cost the code-mode feature exists to avoid. So instead the model fetches signatures ON DEMAND:
+ *
+ *   1. `code:tools {}`                      → the namespace index (ns + verb names, no arg types) — cheap.
+ *   2. `code:tools { namespaces:['plans'] }`→ full typed signatures for just those namespaces.
+ *   3. write the `code:run` script against the real signatures (fewer arg-shape errors).
+ *
+ * Signatures are generated from each tool's projected `inputSchema` (already JSON Schema) and
+ * SCOPED to the caller's role-allowed set — identical scoping to `code:run`'s facade — so the model
+ * only ever sees tools it can actually call. Read-only: this renders types; it dispatches nothing.
+ */
+export default defineTool({
+  name: 'code:tools',
+  description:
+    'On-demand typed signatures for code:run. No args → the namespace index (cheap). ' +
+    '{ namespaces } / { names } → full TS `tools.ns.verb(args)` signatures for just those, scoped ' +
+    'to your allowed set. Read the signatures, then write a code:run script.',
+  guidance: {
+    when:
+      'Before writing a code:run script, to fetch the exact typed signatures for the namespaces ' +
+      'you will use instead of guessing arg shapes. Start with no args to list namespaces, then ' +
+      'request the one or two you need.',
+    notWhen:
+      'A single direct tool call (no script), or you already know the signatures. This is a ' +
+      'lookup — it executes nothing.',
+    chaining: 'code:tools {} → pick namespaces → code:tools { namespaces } → code:run { script }',
+  },
+  // Read-only signature rendering over the tool catalog — same capability as agent_tools:list (its
+  // code-mode sibling). The `:read` suffix infers effect:'read' (never dry-run-gated); agentRoles
+  // mirrors code:run's audience and the role-scoped allowed set is the real boundary.
+  capability: 'agent_tools:read',
+  requirePrincipal: false,
+  agentRoles: [...SU_ROLES],
+  args: z.object({
+    namespaces: z
+      .array(z.string())
+      .optional()
+      .describe('Render full signatures for just these namespaces (e.g. ["work_items","coord"]).'),
+    names: z
+      .array(z.string())
+      .optional()
+      .describe('Render signatures for these exact tool names (e.g. ["plans:set-status"]). Union with namespaces.'),
+  }),
+  async handler(args, ctx) {
+    const all = listAllProjectedTools();
+    const role = ctx.role;
+    // Scope to tools this agent's role may call — identical to code:run's facade scoping. Exclude
+    // the code-mode meta-tools so a script/catalog never surfaces code:run / code:tools themselves.
+    const allowed = new Set<string>();
+    for (const t of all) {
+      const name = t.expose?.mcp?.name;
+      if (!name || name === 'code:run' || name === 'code:tools') continue;
+      const roles = t.agentRoles;
+      const roleOk = !roles || roles.length === 0 || (role != null && roles.includes(role));
+      if (roleOk) allowed.add(name);
+    }
+
+    const wantNs = args.namespaces?.length ? args.namespaces : undefined;
+    const wantNames = args.names?.length ? args.names : undefined;
+
+    if (!wantNs && !wantNames) {
+      // The cheap index: namespaces + their verbs, no arg types. The model reads this, then asks
+      // for the namespaces it needs.
+      const namespaces = listFacadeNamespaces(all, allowed);
+      const body = {
+        namespaces,
+        count: namespaces.reduce((n, e) => n + e.verbs.length, 0),
+        hint: 'Call code:tools { namespaces:[...] } (or { names:[...] }) for the full typed signatures, then write a code:run script.',
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(body) }] };
+    }
+
+    const dts = generateToolFacadeTypes(all, { allowed, namespaces: wantNs, names: wantNames });
+    return { content: [{ type: 'text' as const, text: dts }] };
+  },
+});

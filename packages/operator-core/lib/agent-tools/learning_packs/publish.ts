@@ -19,6 +19,11 @@ import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
 export const exportTool = defineTool({
   name: 'learning_packs:export',
   capability: 'memory:read',
+  // Writes `learning-packs/<packId>/` files into a member repo's working tree — a real FS
+  // mutation, so it must be dry-run/confirm-gated even though its capability is the shared
+  // read cap `memory:read`. An explicit override (not WRITE_CAPABILITIES) so memory:read's
+  // genuine readers stay read. B-CX-EFFECT audit.
+  effect: 'write',
   description:
     "Export a hive's shared learnings into the standard pack shape (learning-packs/<packId>/ — manifest + one-learning-per-file) inside a member repo's working tree, ready to commit + publish. Defaults to the hive's ORGANIC learnings only; includePackRows re-exports installed-pack content too (explicit opt-in).",
   guidance: {

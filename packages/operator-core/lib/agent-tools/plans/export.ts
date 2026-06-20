@@ -49,6 +49,11 @@ export default defineTool({
     chaining: 'plans:list → plans:export { slug } for the markdown of any plan.',
   },
   capability: 'plans:read',
+  // `{ toDir }` re-materializes every plan as .md files on disk — a real FS mutation, so it
+  // must be dry-run/confirm-gated even though the capability is the shared read cap
+  // `plans:read`. An explicit override (not WRITE_CAPABILITIES) so plans:read's many genuine
+  // readers stay read. B-CX-EFFECT audit.
+  effect: 'write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   modality: ['text'],
