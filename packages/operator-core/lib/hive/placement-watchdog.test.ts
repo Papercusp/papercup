@@ -21,7 +21,7 @@ import {
 } from './placement-watchdog';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 
-const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000 };
+const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000 };
 const NOW = 1_000_000_000_000;
 
 function obs(over: Partial<PlacementObservation>): PlacementObservation {
@@ -139,14 +139,15 @@ describe('evaluatePlacement — P-021 cursed-item circuit breaker (mirrors repla
     expect([fail1.kind, fail2.kind, fail3.kind]).toEqual(['recover', 'recover', 'breaker']);
   });
   it('honors a custom (lower) breaker threshold', () => {
-    const cfg: PlacementConfig = { breakerThreshold: 1, recoveryDebounceMs: 0 };
+    const cfg: PlacementConfig = { breakerThreshold: 1, recoveryDebounceMs: 0, dormancyGraceMs: 10 * 60_000 };
     // First failure already reaches threshold 1 → breaker, never re-placed.
     expect(evaluatePlacement(obs({ failCount: 0 }), cfg).kind).toBe('breaker');
   });
-  it('placementConfig defaults mirror replanStrikes (3) and a 5-min debounce', () => {
+  it('placementConfig defaults mirror replanStrikes (3), a 5-min debounce, and a 10-min dormancy grace', () => {
     const cfg = placementConfig();
     expect(cfg.breakerThreshold).toBe(3);
     expect(cfg.recoveryDebounceMs).toBe(5 * 60_000);
+    expect(cfg.dormancyGraceMs).toBe(10 * 60_000); // F-FIX-041
   });
 });
 
@@ -267,6 +268,48 @@ describe('evaluatePlacement — WI-233 a reaper-reclaim of a STILL-ALIVE bee doe
   it('the recovery debounce still applies to a false reclaim (no re-wake spam mid-recovery)', () => {
     const d = evaluatePlacement(
       obs({ placementStatus: 'recovering', failCount: 0, lastRecoveryAtMs: NOW - 60_000, servingBeeReclaimedWhileActive: true }),
+      CFG,
+    );
+    expect(d.kind).toBe('debounced');
+  });
+});
+
+describe('evaluatePlacement — F-FIX-041 operator-dormancy grace (infra-induced losses do NOT curse)', () => {
+  it('a post-dormancy sweep → recover with the fail count held FLAT (no progress toward the curse)', () => {
+    const d = evaluatePlacement(obs({ postDormancySweep: true, failCount: 0 }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextFailCount).toBe(0); // FLAT — a normal failure would be 1
+  });
+
+  it('a string of post-dormancy losses NEVER reaches the breaker (the false-curse the fix targets)', () => {
+    // failCount 2 + a NORMAL loss trips the breaker (== threshold 3); the SAME count under a
+    // post-dormancy sweep must recover flat instead — operator-down losses don't curse.
+    const normal = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2 }), CFG);
+    expect(normal.kind).toBe('breaker');
+    const dormancy = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2, postDormancySweep: true }), CFG);
+    expect(dormancy.kind).toBe('recover');
+    if (dormancy.kind === 'recover') expect(dormancy.nextFailCount).toBe(2); // held, never 3
+  });
+
+  it('SAFETY: a genuinely-wedging item still curses on the next NORMAL-cadence sweep (operator healthy)', () => {
+    // The grace is per-sweep + item-independent: once the operator is back (postDormancySweep
+    // false) the SAME item at the breaker-edge count curses normally — no unbounded exemption.
+    const d = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2, postDormancySweep: false }), CFG);
+    expect(d.kind).toBe('breaker');
+    if (d.kind === 'breaker') expect(d.nextFailCount).toBe(3);
+  });
+
+  it('an already-cursed item stays LATCHED even on a post-dormancy sweep (latch is checked first)', () => {
+    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, postDormancySweep: true }), CFG).kind).toBe('latched');
+  });
+
+  it('a live holder still wins over the dormancy flag (healthy — the flag only matters with no live holder)', () => {
+    expect(evaluatePlacement(obs({ hasLiveHolder: true, postDormancySweep: true }), CFG).kind).toBe('healthy');
+  });
+
+  it('the recovery debounce still applies on a post-dormancy sweep (no re-wake spam mid-recovery)', () => {
+    const d = evaluatePlacement(
+      obs({ placementStatus: 'recovering', failCount: 0, lastRecoveryAtMs: NOW - 60_000, postDormancySweep: true }),
       CFG,
     );
     expect(d.kind).toBe('debounced');

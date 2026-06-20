@@ -3,12 +3,16 @@ import {
   planIdleSessionReap,
   classifyLiveIdle,
   terminateIdleLiveSessions,
+  planZombieReap,
+  reapZombieResumeProcs,
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
   type ReapableSession,
   type LiveIdleCandidate,
   type IdleLiveSession,
   type TerminateDeps,
+  type ResumeProc,
+  type ZombieReapDeps,
 } from './idle-session-reaper';
 import { FLAGS } from '@papercusp/flags';
 
@@ -294,5 +298,100 @@ describe('terminateIdleLiveSessions (P-011 slice 2 / WI-152: live-but-idle TERMI
     expect(r).toMatchObject({ enabled: true, targeted: 0, terminated: 0, failed: 0, terminatedIds: [] });
     expect(calls.graceful).toHaveLength(0);
     expect(calls.marked).toHaveLength(0);
+  });
+});
+
+describe('planZombieReap (slice 3: ended-session zombie procs — EI-1873, pure)', () => {
+  const p = (pid: number, sessionId: string): ResumeProc => ({ pid, sessionId });
+  it('keeps ONLY procs whose session is in the ENDED set', () => {
+    const procs = [p(1, 'sess-a'), p(2, 'sess-b'), p(3, 'sess-c')];
+    expect(planZombieReap(procs, new Set(['sess-a', 'sess-c'])).map((z) => z.pid)).toEqual([1, 3]);
+  });
+  it('empty ended set → no zombies (an OPEN session is never a zombie)', () => {
+    expect(planZombieReap([p(1, 'sess-a')], new Set())).toEqual([]);
+  });
+  it('two procs sharing one ended session are BOTH zombies (the dup-proc leak)', () => {
+    expect(planZombieReap([p(1, 'x'), p(2, 'x')], new Set(['x'])).map((z) => z.pid)).toEqual([1, 2]);
+  });
+});
+
+describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write half)', () => {
+  const p = (pid: number, sessionId: string): ResumeProc => ({ pid, sessionId });
+  function makeDeps(over: {
+    master?: boolean;
+    terminate?: boolean;
+    procs?: ResumeProc[];
+    ended?: string[];
+    aliveByPid?: Record<number, boolean>;
+    stillByPid?: Record<number, boolean>;
+  }) {
+    const calls = { listed: 0, endedQ: [] as string[][], sigterm: [] as number[], sigkill: [] as number[] };
+    const deps: ZombieReapDeps = {
+      isFlagOn: vi.fn(async (flag) => {
+        if (flag === FLAGS.IDLE_SESSION_REAPER) return over.master ?? true;
+        if (flag === FLAGS.IDLE_SESSION_REAPER_TERMINATE) return over.terminate ?? true;
+        return false;
+      }),
+      listResumeProcs: vi.fn(async () => { calls.listed += 1; return over.procs ?? []; }),
+      endedSessionIds: vi.fn(async (ids: string[]) => { calls.endedQ.push(ids); return new Set(over.ended ?? []); }),
+      sigterm: vi.fn((pid: number) => { calls.sigterm.push(pid); return true; }),
+      pidAlive: vi.fn((pid: number) => over.aliveByPid?.[pid] ?? false),
+      sigkill: vi.fn((pid: number) => { calls.sigkill.push(pid); return true; }),
+      stillTheProc: vi.fn(async (pid: number) => over.stillByPid?.[pid] ?? true),
+      wait: vi.fn(async () => {}),
+    };
+    return { deps, calls };
+  }
+
+  it('DOUBLE-GATE: no-op (no proc scan, no kills) unless BOTH flags are on', async () => {
+    for (const [m, tn] of [[false, true], [true, false], [false, false]] as const) {
+      const { deps, calls } = makeDeps({ master: m, terminate: tn, procs: [p(1, 'a')], ended: ['a'] });
+      const r = await reapZombieResumeProcs({ deps });
+      expect(r.enabled).toBe(false);
+      expect(calls.listed).toBe(0);
+      expect(calls.sigterm).toHaveLength(0);
+    }
+  });
+
+  it('kills ONLY the ended-session procs; spares an open-session proc', async () => {
+    const { deps, calls } = makeDeps({
+      procs: [p(11, 'ended-x'), p(22, 'open-y')],
+      ended: ['ended-x'],
+      aliveByPid: { 11: false }, // exits on SIGTERM
+    });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(r).toMatchObject({ enabled: true, scannedProcs: 2, zombies: 1, killedPids: [11] });
+    expect(calls.sigterm).toEqual([11]); // never 22 (open session)
+    expect(calls.sigkill).toHaveLength(0); // exited on TERM
+  });
+
+  it('SIGKILLs a survivor (still alive after TERM) after re-verifying the cmdline', async () => {
+    const { deps, calls } = makeDeps({ procs: [p(33, 'z')], ended: ['z'], aliveByPid: { 33: true }, stillByPid: { 33: true } });
+    await reapZombieResumeProcs({ deps });
+    expect(calls.sigterm).toEqual([33]);
+    expect(calls.sigkill).toEqual([33]);
+  });
+
+  it('PID-recycle guard: a pid whose cmdline no longer matches is NEVER signalled', async () => {
+    const { deps, calls } = makeDeps({ procs: [p(44, 'z')], ended: ['z'], stillByPid: { 44: false } });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(calls.sigterm).toHaveLength(0);
+    expect(calls.sigkill).toHaveLength(0);
+    expect(r.killedPids).toEqual([]);
+  });
+
+  it('dryRun: reports the zombies but sends NO signals', async () => {
+    const { deps, calls } = makeDeps({ procs: [p(1, 'a'), p(2, 'b')], ended: ['a', 'b'] });
+    const r = await reapZombieResumeProcs({ deps, dryRun: true });
+    expect(r).toMatchObject({ enabled: true, scannedProcs: 2, zombies: 2, dryRun: true, killedPids: [1, 2] });
+    expect(calls.sigterm).toHaveLength(0);
+    expect(calls.sigkill).toHaveLength(0);
+  });
+
+  it('dedups the session-id query input (two procs, one ended session → both zombies)', async () => {
+    const { deps, calls } = makeDeps({ procs: [p(1, 'x'), p(2, 'x')], ended: ['x'], aliveByPid: { 1: false, 2: false } });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(calls.endedQ[0]).toEqual(['x']); // queried once, deduped
+    expect(r.zombies).toBe(2);
   });
 });

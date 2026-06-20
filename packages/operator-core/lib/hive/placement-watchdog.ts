@@ -76,14 +76,25 @@ export interface PlacementConfig {
    *  a unit that stays stalled across many 30s ticks wakes the Queen at most once
    *  per window, not every tick. */
   recoveryDebounceMs: number;
+  /** F-FIX-041 — the operator-dormancy grace window. The watchdog runs on the 30s
+   *  routinesTick; if the gap since this hive's LAST sweep (max last_seen_at over its
+   *  placements) exceeds this, the operator/bg-host was DORMANT in between (a frozen
+   *  ticker, the EI-1873 session wedge, an overnight dormancy window) — so this is a
+   *  post-dormancy RECOVERY sweep and every placement looks "lost" for an INFRA reason,
+   *  not item-pathology. On such a sweep a loss is re-placed but NOT counted toward the
+   *  curse (so tractable items don't false-curse when the operator was down). Far above
+   *  the 30s cadence so a merely-slow tick never trips it. */
+  dormancyGraceMs: number;
 }
 
 export function placementConfig(): PlacementConfig {
   const threshold = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_BREAKER ?? 3);
   const debounce = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_DEBOUNCE_MS ?? 5 * 60_000);
+  const dormancy = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_DORMANCY_MS ?? 10 * 60_000);
   return {
     breakerThreshold: Number.isFinite(threshold) && threshold >= 1 ? threshold : 3,
     recoveryDebounceMs: Number.isFinite(debounce) && debounce >= 0 ? debounce : 5 * 60_000,
+    dormancyGraceMs: Number.isFinite(dormancy) && dormancy >= 0 ? dormancy : 10 * 60_000,
   };
 }
 
@@ -169,6 +180,16 @@ export interface PlacementObservation {
    *  re-places the unit but does NOT count toward the curse — only a genuine bee
    *  failure / wedge (no recent activity, or a non-zero exit) does. Default false. */
   servingBeeReclaimedWhileActive?: boolean;
+  /** F-FIX-041 — this sweep is a post-dormancy RECOVERY sweep: the gap since this
+   *  hive's previous sweep exceeded the dormancy grace, so the operator/bg-host was
+   *  down in between and a "lost" placement is INFRA-induced, not item-pathology.
+   *  An ITEM-INDEPENDENT signal (computed from the watchdog's own run cadence, not
+   *  per-bee) — an item cannot fake "the operator was dormant", so unlike a per-bee
+   *  zombie signal this can't grant a doomed item an unbounded curse-exemption. On
+   *  such a sweep a loss recovers with fail_count held FLAT (no curse progress);
+   *  the NEXT (normal-cadence) sweep counts again, so a genuinely-wedging item still
+   *  curses once the operator is healthy. Default false. */
+  postDormancySweep?: boolean;
   now: number;
 }
 
@@ -239,6 +260,24 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
       kind: 'recover',
       nextFailCount: obs.failCount, // FLAT — a false reclaim never progresses the breaker
       reason: 'serving bee reaper-reclaimed while still active (slow-but-alive) — re-placing, not counting toward the curse',
+    };
+  }
+
+  // F-FIX-041 — operator-dormancy grace: this is a post-dormancy RECOVERY sweep (the
+  // gap since the hive's previous sweep exceeded the dormancy grace), so the operator/
+  // bg-host was down in between and this "lost" placement is INFRA-induced, not item-
+  // pathology. Re-place it but keep fail_count FLAT (no curse progress) — exactly the
+  // WI-233 false-reclaim relaxation, for the operator-down case the Queen named.
+  // SAFE: the signal is ITEM-INDEPENDENT (the watchdog's own run cadence), so an item
+  // cannot fake it to win an unbounded exemption; and the NEXT normal-cadence sweep
+  // counts again, so a genuinely-wedging item still curses once the operator is healthy.
+  // (Ordered AFTER the cursed latch + debounce so a cursed item stays latched and a
+  // mid-recovery wake is still debounced.)
+  if (obs.postDormancySweep) {
+    return {
+      kind: 'recover',
+      nextFailCount: obs.failCount, // FLAT — an operator-dormancy loss never progresses the breaker
+      reason: 'post-dormancy recovery sweep (operator/bg-host was down) — re-placing, not counting toward the curse',
     };
   }
 
@@ -333,6 +372,9 @@ interface PlacementRow {
   fail_count: number;
   last_recovery_ms: number | null;
   escalation_msg_id: string | null;
+  /** F-FIX-041 — last sweep time for this row (ms). max() over the hive ≈ the hive's
+   *  previous sweep; a large gap to `now` means the operator was dormant in between. */
+  last_seen_ms: number | null;
 }
 
 function num(v: unknown): number | null {
@@ -569,10 +611,22 @@ export async function reconcileOneHive(
   const placeRows = await sql<PlacementRow[]>`
     SELECT work_item_id, status, fail_count,
            extract(epoch from last_recovery_at) * 1000 AS last_recovery_ms,
-           escalation_msg_id
+           escalation_msg_id,
+           extract(epoch from last_seen_at) * 1000 AS last_seen_ms
       FROM harness_shared.hive_placements
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}`;
   const placeById = new Map<string, PlacementRow>(placeRows.map((p) => [p.work_item_id, p]));
+
+  // F-FIX-041 — operator-dormancy detection (item-INDEPENDENT). The watchdog runs on the
+  // 30s routinesTick; the most-recent last_seen_at over this hive's placements is its
+  // PREVIOUS sweep. If the gap to `now` exceeds the dormancy grace, the operator/bg-host
+  // was DORMANT in between (frozen ticker / session wedge / overnight dormancy), so every
+  // placement "lost" for an infra reason, not item-pathology — this sweep grants the
+  // grace (losses recover FLAT, not toward the curse). One flag per sweep (operator-wide
+  // state), not per bee — an item cannot fake it. A hive with no prior placements
+  // (maxLastSeenMs 0) is never post-dormancy (nothing to false-count; failCount starts 0).
+  const maxLastSeenMs = placeRows.reduce((m, p) => Math.max(m, num(p.last_seen_ms) ?? 0), 0);
+  const postDormancySweep = maxLastSeenMs > 0 && now - maxLastSeenMs > cfg.dormancyGraceMs;
 
   if (candidateIds.size > 0) {
     const ids = [...candidateIds];
@@ -606,6 +660,7 @@ export async function reconcileOneHive(
         placementStatus: existing?.status ?? null,
         lastRecoveryAtMs: existing?.last_recovery_ms ?? null,
         servingBeeReclaimedWhileActive,
+        postDormancySweep, // F-FIX-041 — operator-dormancy grace (item-independent, per-sweep)
         now,
       };
       const decision = evaluatePlacement(obs, cfg);

@@ -497,3 +497,190 @@ export async function terminateIdleLiveSessions(
 
   return result;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 3: ZOMBIE-PROC reap — a `claude --resume <uuid>` OS process whose
+// adv_session is ENDED (exit recorded) but the process never exited (EI-1873).
+//
+// The dominant fleet session-leak: 32 such zombies (sessions ended 16–18h prior,
+// exit_code=0) accumulated PAST the bg-host wedge point, each holding LISTEN conns
+// + polling on the :3070 event loop. No DB-roster reaper saw them — they are
+// CLOSED in the DB (ended_at set) yet ALIVE as OS procs, so slices 1/2 (which scan
+// OPEN sessions) reap 0 (verified live: a non-starved reaper run still reaped 0).
+// The signal here is DETERMINISTIC + zero-heuristic: ended session + live proc =
+// zombie. It is STARVATION-INDEPENDENT — it does NOT rely on the per-60s
+// supervisor heartbeat that the very overload starves (the feedback loop that
+// defeated the presence-based slices). DOUBLE-GATED like slice 2 (a process kill);
+// best-effort; Linux /proc enumeration (a no-op where /proc is absent).
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A live `claude --resume <uuid>` OS process. */
+export interface ResumeProc {
+  pid: number;
+  sessionId: string;
+}
+
+/** PURE: the resume-procs whose session is ENDED → the zombies to kill. The
+ *  ended-set is injected so the keep/kill boundary unit-tests without OS/PG. */
+export function planZombieReap(procs: ResumeProc[], endedSessionIds: ReadonlySet<string>): ResumeProc[] {
+  return procs.filter((p) => endedSessionIds.has(p.sessionId));
+}
+
+const RESUME_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Discover live `claude --resume <uuid>` procs via /proc (Linux). Best-effort: a
+ * non-Linux host (no /proc) or a per-pid read error yields [] (the slice no-ops).
+ * A proc qualifies only when its cmdline references `claude` AND carries
+ * `--resume <uuid>` — so a node/tsx wrapper around the CLI still matches.
+ */
+export async function discoverResumeProcs(): Promise<ResumeProc[]> {
+  const out: ResumeProc[] = [];
+  let entries: string[];
+  try {
+    entries = await readdir('/proc');
+  } catch {
+    return out; // not Linux / no /proc → no-op
+  }
+  for (const ent of entries) {
+    if (!/^\d+$/.test(ent)) continue;
+    let raw = '';
+    try {
+      raw = await readFile(`/proc/${ent}/cmdline`, 'utf8');
+    } catch {
+      continue; // proc vanished / unreadable
+    }
+    if (!raw || !raw.includes('claude')) continue;
+    const args = raw.split('\0').filter(Boolean);
+    const i = args.indexOf('--resume');
+    if (i >= 0 && args[i + 1] && RESUME_UUID_RE.test(args[i + 1])) {
+      out.push({ pid: Number(ent), sessionId: args[i + 1] });
+    }
+  }
+  return out;
+}
+
+export interface ZombieReapResult {
+  /** False when EITHER flag is off (a no-op). */
+  enabled: boolean;
+  /** Live `claude --resume` procs discovered. */
+  scannedProcs: number;
+  /** Procs whose session is ended (zombies). */
+  zombies: number;
+  /** Pids signalled (or that WOULD be, when dryRun). */
+  killedPids: number[];
+  dryRun: boolean;
+}
+
+/** Injectable side-effects so the sweep unit-tests without OS/PG (mirrors the
+ *  slice-2 TerminateDeps seam). */
+export interface ZombieReapDeps {
+  isFlagOn: (flag: (typeof FLAGS)[keyof typeof FLAGS]) => Promise<boolean>;
+  listResumeProcs: () => Promise<ResumeProc[]>;
+  /** The subset of `sessionIds` whose adv_session is ENDED (ended_at NOT NULL). */
+  endedSessionIds: (sessionIds: string[]) => Promise<Set<string>>;
+  sigterm: (pid: number) => boolean;
+  pidAlive: (pid: number) => boolean;
+  sigkill: (pid: number) => boolean;
+  /** PID-recycle guard: true iff pid's cmdline still carries `--resume <sessionId>`. */
+  stillTheProc: (pid: number, sessionId: string) => Promise<boolean>;
+  /** Pause between SIGTERM and the SIGKILL re-check. */
+  wait: (ms: number) => Promise<void>;
+}
+
+async function defaultEndedSessionIds(sessionIds: string[]): Promise<Set<string>> {
+  if (sessionIds.length === 0) return new Set();
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ session_id: string }>>`
+    SELECT DISTINCT session_id
+      FROM harness_shared.adv_sessions
+     WHERE session_id = ANY(${sessionIds}) AND ended_at IS NOT NULL`;
+  return new Set(rows.map((r) => r.session_id));
+}
+
+async function defaultStillTheProc(pid: number, sessionId: string): Promise<boolean> {
+  try {
+    const raw = await readFile(`/proc/${pid}/cmdline`, 'utf8');
+    return raw.includes('--resume') && raw.includes(sessionId);
+  } catch {
+    return false; // gone → never signal a recycled pid
+  }
+}
+
+const defaultZombieDeps: ZombieReapDeps = {
+  isFlagOn: (flag) => getFlag(flag, 'system').catch(() => false),
+  listResumeProcs: () => discoverResumeProcs(),
+  endedSessionIds: (ids) => defaultEndedSessionIds(ids),
+  sigterm: (pid) => {
+    try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; }
+  },
+  pidAlive: defaultPidAlive,
+  sigkill: (pid) => {
+    try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
+  },
+  stillTheProc: (pid, sessionId) => defaultStillTheProc(pid, sessionId),
+  wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+/**
+ * Slice 3: reap ZOMBIE `claude --resume` procs — sessions already ENDED whose OS
+ * process never exited (EI-1873). Discovers the live resume-procs, asks PG which
+ * of their sessions are ended, and SIGTERM→(wait)→SIGKILLs the zombies. Re-verifies
+ * each pid's cmdline immediately before EACH signal (PID-recycle guard). The
+ * adv_session is already ended, so no PG write is needed. DOUBLE-GATED DEFAULT-OFF
+ * (both IDLE_SESSION_REAPER + IDLE_SESSION_REAPER_TERMINATE); dryRun plans only;
+ * best-effort — a per-proc failure is isolated and the sweep never throws.
+ */
+export async function reapZombieResumeProcs(
+  opts: { dryRun?: boolean; deps?: Partial<ZombieReapDeps> } = {},
+): Promise<ZombieReapResult> {
+  const dryRun = !!opts.dryRun;
+  const deps: ZombieReapDeps = { ...defaultZombieDeps, ...opts.deps };
+  const empty: ZombieReapResult = { enabled: false, scannedProcs: 0, zombies: 0, killedPids: [], dryRun };
+
+  const [master, terminate] = await Promise.all([
+    deps.isFlagOn(FLAGS.IDLE_SESSION_REAPER).catch(() => false),
+    deps.isFlagOn(FLAGS.IDLE_SESSION_REAPER_TERMINATE).catch(() => false),
+  ]);
+  if (!master || !terminate) return empty;
+
+  let procs: ResumeProc[] = [];
+  try {
+    procs = await deps.listResumeProcs();
+  } catch {
+    return { ...empty, enabled: true };
+  }
+  let ended: Set<string>;
+  try {
+    ended = await deps.endedSessionIds([...new Set(procs.map((p) => p.sessionId))]);
+  } catch {
+    return { ...empty, enabled: true, scannedProcs: procs.length };
+  }
+  const zombies = planZombieReap(procs, ended);
+  const result: ZombieReapResult = {
+    enabled: true,
+    scannedProcs: procs.length,
+    zombies: zombies.length,
+    killedPids: [],
+    dryRun,
+  };
+
+  for (const z of zombies) {
+    try {
+      if (dryRun) {
+        result.killedPids.push(z.pid);
+        continue;
+      }
+      if (!(await deps.stillTheProc(z.pid, z.sessionId))) continue; // recycle guard (pre-SIGTERM)
+      deps.sigterm(z.pid);
+      await deps.wait(TERMINATE_GRACE_MS);
+      // SIGKILL survivors — re-verify the cmdline again so a pid recycled during
+      // the grace pause into an unrelated process is never signalled.
+      if (deps.pidAlive(z.pid) && (await deps.stillTheProc(z.pid, z.sessionId))) deps.sigkill(z.pid);
+      result.killedPids.push(z.pid);
+    } catch {
+      // per-proc isolation — never break the sweep.
+    }
+  }
+  return result;
+}

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { listWorkItems, WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
+import { boundRowField } from '../_bound-output';
 
 /**
  * Output `data` schema (token-efficient-tool-result-formats P-011). The result
@@ -50,22 +51,10 @@ const WORK_ITEM_ROW = z.object({
 export const SUMMARY_ROW_CAP = 240;
 export const SUMMARIES_TOTAL_BUDGET = 16_000;
 
-export function boundSummaries<T extends { summary?: string | null }>(
-  rows: T[],
-): Array<T | (T & { summary: string; summary_truncated: true; summary_full_chars: number })> {
-  const n = rows.length;
-  if (n === 0) return rows;
-  const cap = Math.min(SUMMARY_ROW_CAP, Math.floor(SUMMARIES_TOTAL_BUDGET / n));
-  return rows.map((r) => {
-    const full = typeof r.summary === 'string' ? r.summary : '';
-    if (full.length <= cap) return r;
-    return {
-      ...r,
-      summary: full.slice(0, cap),
-      summary_truncated: true as const,
-      summary_full_chars: full.length,
-    };
-  });
+// EI-1597: a thin semantic wrapper over the shared budget-aware bound — single
+// source of truth for the per-field excerpt (was an inlined copy of the loop).
+export function boundSummaries<T extends { summary?: string | null }>(rows: T[]): T[] {
+  return boundRowField(rows, 'summary', SUMMARY_ROW_CAP, SUMMARIES_TOTAL_BUDGET);
 }
 
 export default defineTool({

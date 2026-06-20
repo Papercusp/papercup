@@ -27,6 +27,7 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { boundRowField } from '../_bound-output';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
@@ -67,17 +68,10 @@ interface PlanSection {
 export const DECISION_BODY_CAP = 1000;
 export const DECISIONS_TOTAL_BUDGET = 15_000;
 
-export function boundDecisionBodies<T extends { body: string }>(
-  decisions: T[],
-): Array<T | (T & { body_truncated: true; body_full_chars: number })> {
-  const n = decisions.length;
-  if (n === 0) return decisions;
-  const cap = Math.min(DECISION_BODY_CAP, Math.floor(DECISIONS_TOTAL_BUDGET / n));
-  return decisions.map((d) => {
-    const full = d.body ?? '';
-    if (full.length <= cap) return d;
-    return { ...d, body: full.slice(0, cap), body_truncated: true as const, body_full_chars: full.length };
-  });
+// EI-1597: a thin semantic wrapper over the shared budget-aware bound — single
+// source of truth for the per-field excerpt (was an inlined copy of the loop).
+export function boundDecisionBodies<T extends { body: string }>(decisions: T[]): T[] {
+  return boundRowField(decisions, 'body', DECISION_BODY_CAP, DECISIONS_TOTAL_BUDGET);
 }
 
 /** Split a plan's markdown body into level-1/2 sections, tracking fenced code

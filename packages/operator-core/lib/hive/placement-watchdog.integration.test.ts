@@ -37,7 +37,7 @@ import { reconcileOneHive, type PlacementConfig } from './placement-watchdog';
 const WS = 'default'; // coord_links default workspace == the org workspace here
 const HIVE = 'papercup';
 const QUEEN = 'queen-owner-1';
-const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000 };
+const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000 };
 const NOW = 1_900_000_000_000;
 
 let db: OrgTestDb;
@@ -240,6 +240,53 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(p?.fail_count).toBe(3);
     expect(out.find((r) => r.workItemId === 'F-DEAD')?.decision).toBe('breaker');
     expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
+  });
+
+  it('F-FIX-041: a loss during an OPERATOR-DORMANCY window does NOT curse — fail_count held, item not false-cursed', async () => {
+    // Same shape as the P-021 breaker test (fail_count 2, a GENUINE dead bee — not a reclaim,
+    // no usage sample), so it WOULD curse. But this hive's previous sweep (last_seen_at) was
+    // 30 min ago — far past the 10-min dormancy grace — so the operator/bg-host was DORMANT in
+    // between and this "lost" placement is infra-induced, not item-pathology. The grace re-places
+    // it with fail_count held FLAT (the overnight false-curse of tractable items, fixed).
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-DORMANT', ${HIVE}, ${QUEEN},
+              'recovering', 2, ${new Date(NOW - 30 * 60_000)}, now(), ${new Date(NOW - 30 * 60_000)}, now())`;
+    await seedBee({ owner: 'bee-dorm', featureId: 'F-DORMANT', status: 'failed' }); // genuine dead bee
+    await seedUnit({ id: 'F-DORMANT', status: 'in_progress', takenBy: 'bee-dorm' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-DORMANT');
+    expect(p?.status).toBe('recovering'); // NOT cursed
+    expect(p?.fail_count).toBe(2); // HELD FLAT — the dormancy-window loss did not climb to 3
+    expect(out.find((r) => r.workItemId === 'F-DORMANT')?.decision).toBe('recover');
+    expect(mocks.openEscalation).not.toHaveBeenCalled(); // no curse → no escalation
+    expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1); // re-placement wake still fires
+  });
+
+  it('F-FIX-041 contrast: the SAME loss on a NORMAL-cadence sweep (recent last_seen_at) DOES curse — the gap gates the grace', async () => {
+    // Identical to the dormancy case but last_seen_at is recent (operator healthy) → the gap is
+    // under the grace → not a post-dormancy sweep → the loss counts → curse. Proves it is the
+    // dormancy GAP that grants the grace (item-independent), and a healthy operator's losses
+    // still curse — the breaker is not weakened in normal operation.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-HEALTHY', ${HIVE}, ${QUEEN},
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW - 60_000)}, now())`;
+    await seedBee({ owner: 'bee-h', featureId: 'F-HEALTHY', status: 'failed' });
+    await seedUnit({ id: 'F-HEALTHY', status: 'in_progress', takenBy: 'bee-h' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-HEALTHY');
+    expect(p?.status).toBe('cursed'); // operator healthy → the loss counts → breaker trips
+    expect(p?.fail_count).toBe(3);
+    expect(out.find((r) => r.workItemId === 'F-HEALTHY')?.decision).toBe('breaker');
   });
 
   it('EI-865: an already-cursed item is LATCHED on re-sweep — failCount frozen, no re-escalation, no wake', async () => {

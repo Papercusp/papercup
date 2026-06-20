@@ -14,11 +14,32 @@
  * trigger_config (optional): `dry_run` — plan + log, mark nothing.
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { runIdleSessionReap, findIdleLiveSessions, terminateIdleLiveSessions } from '../../idle-session-reaper';
+import {
+  runIdleSessionReap,
+  findIdleLiveSessions,
+  terminateIdleLiveSessions,
+  reapZombieResumeProcs,
+} from '../../idle-session-reaper';
 
 registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const dryRun = cfg.dry_run === true;
+
+  // Slice 3 (EI-1873) FIRST — the dominant fleet leak: ZOMBIE `claude --resume`
+  // procs whose adv_session is ENDED but the process never exited (32 of them
+  // wedged the box on 2026-06-20). Deterministic (ended session + live proc) and
+  // starvation-independent — unlike the presence-based slices below, it does not
+  // depend on the supervisor heartbeat the overload starves. DOUBLE-GATED.
+  const zomb = await reapZombieResumeProcs({ dryRun });
+  if (zomb.enabled) {
+    console.log(
+      `[idle-session-reaper] zombie-proc reap: scanned ${zomb.scannedProcs} resume-proc(s) → ` +
+        `${zomb.dryRun ? 'WOULD kill' : 'killed'} ${zomb.zombies} zombie(s)` +
+        (zomb.killedPids.length
+          ? ` [pids: ${zomb.killedPids.slice(0, 20).join(',')}${zomb.killedPids.length > 20 ? ',…' : ''}]`
+          : ''),
+    );
+  }
 
   // Read-only D-007 saturation metric — the LIVE-but-idle cohort (the sessions
   // that actually hold the event loop). Slice 2 terminates these (double-gated);
