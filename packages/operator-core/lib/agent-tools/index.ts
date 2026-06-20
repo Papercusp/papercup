@@ -587,6 +587,8 @@ import './plans/set-frontmatter';
 import './plans/transfer-owner';
 // shared-hive-collaboration-2026-06-14 P-015 — initiative grouping label.
 import './plans/set-initiative';
+// plan-templates-and-rubric-v2-2026-06-20 P-002 — generic arbitrary-frontmatter-key setter (templates blocker).
+import './plans/set-frontmatter-field';
 // plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
 import './plans/set-plan-status';
 // scheduled-recurring-plans-2026-06-16 P-014 — author/clear a plan's schedule + manual run-now.

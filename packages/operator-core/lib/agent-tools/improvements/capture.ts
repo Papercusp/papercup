@@ -75,6 +75,12 @@ export default defineTool({
           .optional()
           .describe('per-criterion ratings against rubricRef, KEYED by rubric criterion `key` (a scorecard: one rating per criterion). evidence is mandatory on every entry'),
       })
+      // plan-templates-and-rubric-v2 P-012 (strict/fail-loud): reject UNKNOWN observation keys
+      // LOUDLY instead of silently STRIPPING them. A silent strip dropped data live (su-2a0b4: an
+      // Overwatch scorecard emitted against the not-yet-deployed schema persisted scope-only with no
+      // error, corrupting the trend). A schema-evolution / deploy-timing mismatch now surfaces as a
+      // named-key validation error at arg-parse instead of vanishing.
+      .strict()
       .optional()
       .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.'),
   }),

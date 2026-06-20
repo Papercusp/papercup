@@ -125,21 +125,20 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const key = args.key.trim();
-    if (!KEY_RE.test(key)) {
-      return text(
-        {
-          error: 'invalid_key',
-          key,
-          hint: 'A frontmatter key is a leading letter then letters/digits/underscores (no spaces, colons, or newlines).',
-        },
-        true,
-      );
+    const v = validateFrontmatterKey(args.key);
+    if (!v.ok) {
+      return v.code === 'reserved_key'
+        ? text({ error: 'reserved_key', key: args.key.trim(), use: v.use }, true)
+        : text(
+            {
+              error: 'invalid_key',
+              key: args.key.trim(),
+              hint: 'A frontmatter key is a leading letter then letters/digits/underscores (no spaces, colons, or newlines).',
+            },
+            true,
+          );
     }
-    const reserved = RESERVED_FRONTMATTER_KEYS[key];
-    if (reserved) {
-      return text({ error: 'reserved_key', key, use: reserved }, true);
-    }
+    const key = v.key;
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
