@@ -587,6 +587,9 @@ import './plans/get-item';
 // (validate-on-write against the per-template registry zod schema).
 import './plans/get-template-data';
 import './plans/set-template-data';
+// plan-templates-and-rubric-v2-2026-06-20 P-006 — registers the built-in `rubric`
+// template type (side-effect import) so set-template-data can validate it on write.
+import './plans/rubric-template';
 import './plans/attention';
 import './plans/search';
 import './plans/lint';
