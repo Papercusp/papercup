@@ -88,6 +88,13 @@ the origin converge.
   - This strictly strengthens the prior `seed-any-hive` S4 "push:false → origin untouched", which
     only covered the **no-upstream** case (`no_upstream_remote`) and carried **no teeth** — AH-2
     covers the actual S0 case: a joiner **with a real upstream remote present**.
+  - **The invariant holds TREE-WIDE (submodules included):** **NEW** AH-6 — a joiner that writes
+    code in BOTH a submodule and the superproject commits LOCALLY in both but advances **neither
+    origin** (super OR submodule): `o.pushed === []`. Every prior joiner/push:false test was
+    single-repo and every submodule test was push:true — AH-6 closes the gap that a joiner could
+    otherwise leak commits to a *submodule's* origin even with the superproject held back.
+    Teeth-verified at the source (forcing the submodule's `doPush` makes the joiner leak → RED) and
+    inline (the creator variant pushes both origins, submodule-first then the pointer).
 - **The fork→PR half — 🟢 logic-tested / 🟡 live-untested:** `handleFeaturePassed` gates fork-mode
   on `getPermission ∈ {read,none}` (non-collaborator) → `openForkPr`; `{write,maintain,admin}` →
   `integration_mode` (direct push, no PR). `ensureFork` short-circuits when the authed user owns
@@ -135,6 +142,12 @@ sync (as a local mirror; it never direct-pushes — consistent with the S0 invar
   error-escalation (the asymmetry the decider exists for, documented in its header). The unknown
   case is loud-optimistic (`permissions_unknown_optimistic → push:true`) and surfaces a wrong guess
   via the existing `git-sync-error` escalation.
+- **The probe itself is teeth-tested to fail closed without hanging** —
+  `github-repo-permissions.test.ts` (re-confirmed) covers `fetchRepoPushPermission` returning `null`
+  and NEVER throwing across 404, rate-limit (403), network ETIMEDOUT, unauthenticated
+  (`getOctokit→null`), no-permissions-block, and even the client-getter itself throwing — and
+  asserts it resolves the RIGHT repo (`repos.get` called with the exact `{owner,repo}`). So a
+  no-permission member fails closed with an honest `null`→`push:false`, not a silent skip or a hang.
 - **Live-gated:** the actual `gh` credential-helper resolution at push time (the in-process-token-free
   path) is creds-gated and not exercised hermetically. The DECISION layer is fully tested; the
   resolution layer needs the live witness (same gate as §5's fork-PR leg).
@@ -212,13 +225,14 @@ launch where untrusted members contribute code.
 
 | Suite | Result | Covers |
 |---|---|---|
-| `code-plane-federation.test.ts` (**NEW**) | 6/6 | AH-1 headline content round-trip; AH-2 S0 no-direct-push + teeth; AH-3 orthogonality; AH-4 non-main branch |
+| `code-plane-federation.test.ts` (**NEW**) | 8/8 | AH-1 headline content round-trip; AH-2 S0 no-direct-push + teeth; AH-3 orthogonality; AH-4 non-main branch; AH-6 S0 holds tree-wide (joiner never leaks to a submodule origin) + teeth |
 | `two-peer-convergence.integration.test.ts` | 6/6 | scenario 2 conflict convergence (P0/C1–C4) |
 | `seed-any-hive.integration.test.ts` | 13/13 | scenarios 1/3 (push lands; push:false origin untouched; reconcile; conflict tick) |
 | `join-link.test.ts` + `fork-pr-on-feature-pass.test.ts` + `decide-git-sync-push.test.ts` | 33/33 | EI-382 fix; fork-mode gate; push decision |
 
 **Teeth-verify ledger** (neuter source invariant → confirm RED → restore → confirm GREEN; all
 confirmed): AH-1 ← neuter the push exec; AH-2 ← neuter the joiner `push:false` rule; AH-3(a) ←
-inject a substrate reference; AH-4 ← force the last-resort `defaultBranch`. AH-2 additionally
-carries its teeth inline (creator-push variant). AH-3(b) is teeth-verified by positive-control
-contrast (working remote → `synced`; broken remote → `error`).
+inject a substrate reference; AH-4 ← force the last-resort `defaultBranch`; AH-6 ← force the
+submodule's `doPush` (makes the joiner leak a commit to the submodule origin → RED). AH-2 and AH-6
+additionally carry their teeth inline (creator-push variant). AH-3(b) is teeth-verified by
+positive-control contrast (working remote → `synced`; broken remote → `error`).

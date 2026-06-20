@@ -79,7 +79,11 @@ async function configRepo(dir: string): Promise<void> {
   await git(['config', 'user.email', 'ah-it@example.com'], dir);
   await git(['config', 'user.name', 'AH integration'], dir);
   await git(['config', 'commit.gpgsign', 'false'], dir);
+  await git(['config', 'core.hooksPath', '/nonexistent'], dir);
 }
+
+// `file://` submodule add/update is blocked by default (CVE-2022-39253) — allow in setup.
+const allowFile = ['-c', 'protocol.file.allow=always'];
 
 let tmpRoot: string;
 
@@ -108,6 +112,50 @@ async function makeSharedOrigin(
   }
   await rm(seedDir, { recursive: true, force: true });
   return { bare, works };
+}
+
+/** A super origin (with a submodule at `libs/sub` whose own bare origin is shared)
+ *  + N super clones with the submodule checked out — models a shared-hive tree that
+ *  includes a submodule. Used to prove the S0 no-direct-push invariant holds for the
+ *  WHOLE tree, submodules included. */
+async function makeSuperWithSub(
+  name: string,
+  clones: string[],
+): Promise<{ superBare: string; subBare: string; works: string[] }> {
+  const superBare = join(tmpRoot, `${name}-super.git`);
+  const subBare = join(tmpRoot, `${name}-sub.git`);
+  await mkdir(superBare, { recursive: true });
+  await mkdir(subBare, { recursive: true });
+  await git(['init', '--bare', '-b', 'main'], superBare);
+  await git(['init', '--bare', '-b', 'main'], subBare);
+
+  const subSeed = join(tmpRoot, `${name}-subseed`);
+  await git(['clone', subBare, subSeed], tmpRoot);
+  await configRepo(subSeed);
+  await writeFile(join(subSeed, 'sub.txt'), 'sub init\n');
+  await git(['add', '-A'], subSeed);
+  await git(['commit', '--no-verify', '-m', 'sub init'], subSeed);
+  await git(['push', '-u', 'origin', 'main'], subSeed);
+
+  const superSeed = join(tmpRoot, `${name}-superseed`);
+  await git(['clone', superBare, superSeed], tmpRoot);
+  await configRepo(superSeed);
+  await git([...allowFile, 'submodule', 'add', subBare, 'libs/sub'], superSeed);
+  await git(['add', '-A'], superSeed);
+  await git(['commit', '--no-verify', '-m', 'super init + submodule'], superSeed);
+  await git(['push', '-u', 'origin', 'main'], superSeed);
+
+  const works: string[] = [];
+  for (const c of clones) {
+    const dir = join(tmpRoot, c);
+    await git(['clone', superBare, dir], tmpRoot);
+    await configRepo(dir);
+    await git([...allowFile, 'submodule', 'update', '--init', '--recursive'], dir);
+    works.push(dir);
+  }
+  await rm(subSeed, { recursive: true, force: true });
+  await rm(superSeed, { recursive: true, force: true });
+  return { superBare, subBare, works };
 }
 
 const headOf = (dir: string): Promise<string> => git(['rev-parse', 'HEAD'], dir);
@@ -274,4 +322,71 @@ describe('AH-4: git-sync federates to the repo default branch (trunk), not a har
     const mainRef = await shx('git', ['rev-parse', '--verify', 'main'], bare);
     expect(mainRef.code).not.toBe(0);
   }, 30_000);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// AH-6 — the S0 no-direct-push invariant holds for the WHOLE TREE: a joiner must
+// not leak commits to a SUBMODULE's origin either (every joiner/push:false test
+// is single-repo; every submodule test is push:true — this closes the gap).
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('AH-6: S0 no-direct-push covers submodules — a joiner pushes NOTHING, anywhere', () => {
+  it('joiner (push:false) commits in BOTH the submodule and the super LOCALLY; neither origin advances', async () => {
+    const joiner = decideGitSyncPush({ joinerSide: true, hasUpstreamRemote: true, permissionsPush: true });
+    expect(joiner.push).toBe(false);
+
+    const { superBare, subBare, works } = await makeSuperWithSub('ah6j', ['ah6-joiner']);
+    const [jw] = works;
+    const superBefore = await tipOf(superBare, 'main');
+    const subBefore = await tipOf(subBare, 'main');
+    const superHeadBefore = await headOf(jw);
+    const subHeadBefore = await headOf(join(jw, 'libs/sub'));
+
+    // The joiner writes code in BOTH repos of the tree.
+    await writeFile(join(jw, 'libs/sub', 'sub-change.ts'), 'export const fromJoinerSub = true;\n');
+    await writeFile(join(jw, 'super-change.ts'), 'export const fromJoinerSuper = true;\n');
+
+    const o = await runGitSync('ah6-joiner', {
+      repoPath: jw,
+      config: { branch: 'main', push: joiner.push },
+    });
+
+    // A local mirror across the whole tree — but pushed NOTHING.
+    expect(o.status).toBe('synced');
+    if (o.status !== 'synced') throw new Error('expected synced');
+    expect(o.pushed).toEqual([]); // nothing pushed in ANY scope
+
+    // S0: NEITHER origin advanced — the joiner direct-pushed nothing, super OR submodule.
+    expect(await tipOf(superBare, 'main')).toBe(superBefore);
+    expect(await tipOf(subBare, 'main')).toBe(subBefore);
+    // …yet the work IS committed locally in both repos (not lost).
+    expect(await headOf(jw)).not.toBe(superHeadBefore);
+    expect(await headOf(join(jw, 'libs/sub'))).not.toBe(subHeadBefore);
+  }, 45_000);
+
+  it('TEETH: the SAME tree-wide write under the creator decision (push:true) advances BOTH origins', async () => {
+    const creator = decideGitSyncPush({ joinerSide: false, hasUpstreamRemote: true, permissionsPush: true });
+    expect(creator.push).toBe(true);
+
+    const { superBare, subBare, works } = await makeSuperWithSub('ah6c', ['ah6-creator']);
+    const [cw] = works;
+    const superBefore = await tipOf(superBare, 'main');
+    const subBefore = await tipOf(subBare, 'main');
+
+    await writeFile(join(cw, 'libs/sub', 'sub-change.ts'), 'export const fromCreatorSub = true;\n');
+    await writeFile(join(cw, 'super-change.ts'), 'export const fromCreatorSuper = true;\n');
+
+    const o = await runGitSync('ah6-creator', {
+      repoPath: cw,
+      config: { branch: 'main', push: creator.push },
+    });
+
+    expect(o.status).toBe('synced');
+    if (o.status !== 'synced') throw new Error('expected synced');
+    // Submodule-push-FIRST then the superproject pointer (deepest-first) — both pushed.
+    expect(o.pushed).toContain('libs/sub');
+    expect(o.pushed).toContain('superproject');
+    expect(await tipOf(superBare, 'main')).not.toBe(superBefore); // the teeth
+    expect(await tipOf(subBare, 'main')).not.toBe(subBefore);
+  }, 45_000);
 });

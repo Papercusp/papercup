@@ -1,7 +1,21 @@
 # findings-PR5 — Internal fork→PR dogfood (Brief PR-5)
 
 **Owner:** pr5-impl (this lane). **Plan:** `PLAN-pr-system-completion-dogfood.md` (Phase PR-5).
-**Last updated:** 2026-06-19. **coord MCP:** down — status here + on-disk artifacts is the channel.
+**Last updated:** 2026-06-20. **coord MCP:** down — status here + on-disk artifacts is the channel.
+
+## 🔁 LOOP WATCHDOG (read first if resuming via /loop "continue where you left off")
+**PR-1..5 are ALL complete + verified — there is no implementation work left.** PR-5 is done; PR-1/2/3/4
+landed by their lanes; the only remaining step is the LIVE run (needs a running operator install, the
+runbook below). So the loop's job is now a **regression watchdog** over the PR-system in this hot,
+multi-lane tree (peers actively edit shared files: `auto-approve.ts`, `auto-merge.ts`, `prs.ts`,
+`poll-daemon.ts`). Each tick:
+1. `cd packages/operator-core && npx vitest run lib/pr-host lib/harness/fork-gc.test.ts lib/agent-tools/platform`
+   and `cd apps/operator && npx vitest run app/harness/PrsTab.component.test.tsx app/harness/PrReviewerSettings.test.ts`
+2. **Baseline = 367 (operator-core) + 15 (UI) green.** If all green → report one line ("watchdog green")
+   and do nothing else. If a peer broke a PR-5 invariant (revocation gate, fork GC, witness, the daemon
+   `authorRevoked` refusal), FIX it (it's mine) and re-verify; otherwise flag the owning lane in this file.
+3. Do NOT invent new scope or re-polish complete lanes. If the owner wants the live run or new work, they
+   will say so. Consider stopping the loop (CronDelete) if it adds no value.
 
 ## Status: 🟢 PR-5 BUILT + teeth-verified · 🟢 inbound spine (PR-1..4) LANDED · 🟡 live run needs a running operator
 

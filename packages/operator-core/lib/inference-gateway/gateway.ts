@@ -827,12 +827,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // instead of growing an unbounded backlog until it wedges.
       if (e instanceof QueueFullError) {
         shed429++;
+        // proxy() never ran, so the request body was never consumed — drain it (and close the
+        // connection) or the unread socket stays busy and can't be released cleanly (leaks sockets;
+        // hangs a graceful server.close()).
+        req.resume();
         if (!res.headersSent) {
           sendJson(
             res,
             429,
             { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: backlog full (${queue.snapshot().queued} waiting); shedding load, retry shortly` }, gateway: true },
-            { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC) },
+            { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC), connection: 'close' },
           );
         }
         return;

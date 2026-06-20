@@ -48,6 +48,7 @@ import {
 import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
+import { drainQueuedEpochContent, type DrainedEpoch } from './hive-epoch-op-gate';
 import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
@@ -599,6 +600,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     );
   }
 
+  // ── C-001 re-key apply deps (shared-hive-rekey-2026-06-19, su-ee7e9) ── Built ONCE here
+  // (like the rateLimiter): the decrypt gate + its pending-content buffer are stateful across
+  // passes. null when the re-key is OFF for this harness (flag off / non-hive / no device
+  // identity) ⇒ the per-pass applyImpl stays `enforcedApply`, byte-for-byte today. The
+  // boot-deps helper owns the LocalDevice/crypto build behind a cheap flag-FIRST off-path, so
+  // a non-rekey harness pays one cached flag read. Built BEFORE registerAllHarnessProjections
+  // so the drain hook (below) can wire into the projection registration.
+  const rekeyDeps = await buildHiveRekeyBootDeps({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+  });
+  // ── Re-key DRAIN HOOK queue (su-c2a63) ── The hive_epoch_keys projection's
+  // `onEpochKeyApplied(hive, epoch)` PUSHES here when a key row applies — RECORDING, not
+  // draining (so it never re-enters the apply that is firing it). `mergeOnePass` drains it
+  // AFTER each pass via `drainQueuedEpochContent`, re-applying the now-decryptable deferred
+  // content. Empty + unused when the re-key is off.
+  const epochDrainQueue: DrainedEpoch[] = [];
+
   // Wire the per-table PG projection writers into the GLOBAL registry too —
   // some non-Model-B callers (CLI introspection, single-harness contexts) still
   // read the global registry via `applyHyperbeeOpToPg`. Idempotent (re-running
@@ -607,6 +626,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
     hiveHomeSlug: hiveHomeProjectionSlug,
+    // Drain hook: feed the queue ONLY when the re-key is active (rekeyDeps non-null) — else
+    // the hive_epoch_keys projection's onEpochKeyApplied stays undefined (today's behavior).
+    ...(rekeyDeps
+      ? {
+          onEpochKeyApplied: (hiveHomeSlug: string, epoch: number) => {
+            epochDrainQueue.push({ hiveHomeSlug, epoch });
+          },
+        }
+      : {}),
   });
 
   // ── Per-harness scoped projection apply (D-021 collision fix). ──
@@ -630,16 +658,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // sets a rate cap (no caps ⇒ the wrapper is a pure passthrough).
   const rateLimiter = new MemberRateLimiter();
 
-  // ── C-001 re-key apply deps (shared-hive-rekey-2026-06-19, su-ee7e9) ── Built ONCE here
-  // (like the rateLimiter): the decrypt gate + its pending-content buffer are stateful
-  // across passes. null when the re-key is OFF for this harness (flag off / non-hive / no
-  // device identity) ⇒ the per-pass applyImpl stays `enforcedApply`, byte-for-byte today.
-  // The boot-deps helper owns the LocalDevice/crypto build + the cheap flag-FIRST off-path,
-  // so a non-rekey harness pays one cached flag read here.
-  const rekeyDeps = await buildHiveRekeyBootDeps({
-    workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug,
-  });
+  // (rekeyDeps + epochDrainQueue are built above, before registerAllHarnessProjections, so
+  // the re-key drain hook can wire into the projection registration — see there.)
 
   // ── Admitted-set ── keyHex → log. Seeded with the own log (which is
   // structurally an AdmittedLog). Remote logs are added on admit (4b).
@@ -1231,6 +1251,23 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
       }
       const { applied } = result;
+
+      // ── C-001 re-key DRAIN HOOK (su-c2a63) ── A `hive_epoch_keys` row applying THIS pass
+      // fired `onEpochKeyApplied` → queued its (hive, epoch). Re-apply the deferred epoch-N
+      // content for those epochs (decryptable now the key is local) through THIS pass's
+      // applyImpl (decrypt → EN-4 → EN-2 → scopedApply — the same path). No-op when the
+      // re-key is off (queue stays empty) or nothing was deferred (the common keys-first
+      // ordering). Bounded + non-re-entrant (content ops never fire onEpochKeyApplied). The
+      // P-008 witness can't exercise this (it orders keys-first), so without it a REMAINING
+      // member that receives content before its key would silently lose it — this is the
+      // pre-ship convergence guarantee. Runs inside the serialized merge block.
+      if (rekeyDeps && epochDrainQueue.length > 0) {
+        await drainQueuedEpochContent({
+          pending: rekeyDeps.pending,
+          drainQueue: epochDrainQueue,
+          applyImpl: mergeOpts.applyImpl,
+        });
+      }
 
       // P-005 (design A, flag-gated): compact the OWN log once it has grown past
       // the threshold since its last snapshot — append ONE additive snapshot op

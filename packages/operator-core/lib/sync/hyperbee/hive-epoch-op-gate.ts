@@ -150,3 +150,54 @@ export function buildEpochDecryptGate(
       return inner({ ...op, value: bytesToValue(plaintext), epoch: undefined });
     };
 }
+
+/** A boot-scope drain-queue entry: a `(hive, epoch)` whose `hive_epoch_keys` row just
+ *  applied this merge pass (recorded by the projection's `onEpochKeyApplied` hook). */
+export interface DrainedEpoch {
+  hiveHomeSlug: string;
+  epoch: number;
+}
+
+/**
+ * The DRAIN HOOK (shared-hive-rekey-2026-06-19) — the complement of the decrypt gate's
+ * DEFER, and the pre-ship convergence guarantee the P-008 witness can't exercise (it
+ * orders keys-first so it never defers).
+ *
+ * The gate defers an epoch-N content op into `pending` when its epoch-N key is not yet
+ * local (production has no keys-before-content ordering: the merge applies on ARRIVAL, not
+ * by a global cross-table HLC sort). This re-applies those deferred ops once the key row
+ * lands. Boot wires the `hive_epoch_keys` projection's `onEpochKeyApplied(hive, epoch)` to
+ * PUSH onto `drainQueue` (recording, NOT draining, so it never re-enters the apply that is
+ * firing it), and calls this AFTER each merge pass: for each queued `(hive, epoch)`, pull
+ * that bucket's deferred content (now decryptable) and re-run it through THIS pass's
+ * `applyImpl` (decrypt → EN-4 → EN-2 → scopedApply — the SAME path).
+ *
+ * Bounded + non-re-entrant: a CONTENT op never fires `onEpochKeyApplied`, so re-applying
+ * drained ops adds no new queue entries (no cascade); the queue is CONSUMED (spliced) so
+ * each signal drains once. Best-effort: a re-apply throw must not abort the merge pass —
+ * the ciphertext stays in the peer log, so a dropped re-apply re-defers on a later fold.
+ *
+ * Returns the number of deferred ops re-applied (observability / tests). Pure over its
+ * injected deps (no boot, no PG) — fully unit-testable.
+ */
+export async function drainQueuedEpochContent(deps: {
+  pending: PendingEpochContent;
+  drainQueue: DrainedEpoch[];
+  applyImpl: (op: OpEnvelope) => Promise<boolean>;
+}): Promise<number> {
+  if (deps.drainQueue.length === 0) return 0;
+  // Take + clear: a later pass re-queues on the next key apply. Snapshot so a re-apply
+  // that (defensively) somehow re-queued can't grow the loop within one drain.
+  const toDrain = deps.drainQueue.splice(0);
+  let reapplied = 0;
+  for (const { hiveHomeSlug, epoch } of toDrain) {
+    for (const deferred of deps.pending.drainEpoch(hiveHomeSlug, epoch)) {
+      try {
+        if (await deps.applyImpl(deferred.op)) reapplied++;
+      } catch {
+        // best-effort — a re-apply failure must not abort the merge pass.
+      }
+    }
+  }
+  return reapplied;
+}
