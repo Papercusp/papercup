@@ -45,7 +45,7 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  await rootSql.unsafe(`CREATE SCHEMA papercup_shared`);
+  await rootSql.unsafe(`CREATE SCHEMA papercusp_shared`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.pending_events (
       id text NOT NULL, consumed_at timestamptz, source_id text,
@@ -57,8 +57,8 @@ beforeAll(async () => {
       status text NOT NULL, slug text, workspace_id text NOT NULL,
       CONSTRAINT projects_workspace_nonempty CHECK (workspace_id <> '')
     )`);
-  await rootSql.unsafe(`CREATE TABLE papercup_shared.messages (id text PRIMARY KEY, status text NOT NULL)`);
-  await rootSql.unsafe(`CREATE TABLE papercup_shared.message_recipients (message_id text NOT NULL, dept_slug text NOT NULL)`);
+  await rootSql.unsafe(`CREATE TABLE papercusp_shared.messages (id text PRIMARY KEY, status text NOT NULL)`);
+  await rootSql.unsafe(`CREATE TABLE papercusp_shared.message_recipients (message_id text NOT NULL, dept_slug text NOT NULL)`);
   // audit_log intentionally NOT created → perHarness degrades to undefined via try/catch.
   h.sql = rootSql;
 }, 90_000);
@@ -68,7 +68,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.pending_events, harness_shared.projects, papercup_shared.messages, papercup_shared.message_recipients`;
+  await rootSql`TRUNCATE harness_shared.pending_events, harness_shared.projects, papercusp_shared.messages, papercusp_shared.message_recipients`;
 });
 
 describe('readTriggerState (PG, cross-schema)', () => {
@@ -77,8 +77,8 @@ describe('readTriggerState (PG, cross-schema)', () => {
       ('e1', NULL, ${WS}), ('e2', NULL, ${WS}), ('e3', now(), ${WS})`; // e3 consumed
     await rootSql`INSERT INTO harness_shared.projects (status, slug, workspace_id) VALUES
       ('active', 'web', ${WS}), ('paused', 'api', ${WS})`;
-    await rootSql`INSERT INTO papercup_shared.messages (id, status) VALUES ('m1','pending'), ('m2','pending'), ('m3','done')`;
-    await rootSql`INSERT INTO papercup_shared.message_recipients (message_id, dept_slug) VALUES
+    await rootSql`INSERT INTO papercusp_shared.messages (id, status) VALUES ('m1','pending'), ('m2','pending'), ('m3','done')`;
+    await rootSql`INSERT INTO papercusp_shared.message_recipients (message_id, dept_slug) VALUES
       ('m1','system:operator'), ('m2','some-harness'), ('m3','system:operator')`; // m2 not operator; m3 done
 
     const s = await readTriggerState();

@@ -48,8 +48,8 @@ export async function readTriggerState(): Promise<TriggerState> {
       // status lives on the parent messages row.
       const rows = await tx<{ count: number }[]>`
         SELECT COUNT(*)::int AS count
-          FROM papercup_shared.message_recipients r
-          JOIN papercup_shared.messages m ON m.id = r.message_id
+          FROM papercusp_shared.message_recipients r
+          JOIN papercusp_shared.messages m ON m.id = r.message_id
          WHERE r.dept_slug = 'system:operator'
            AND m.status    = 'pending'
       `;

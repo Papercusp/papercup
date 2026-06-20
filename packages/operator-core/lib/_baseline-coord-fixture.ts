@@ -60,7 +60,7 @@ export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture>
   const admin = postgres(withUser(dsn, 'harness_admin', 'harness_admin_pwd'), {
     max: 4,
     onnotice: () => {},
-    connection: { search_path: 'harness_shared, papercup_shared, public' },
+    connection: { search_path: 'harness_shared, papercusp_shared, public' },
   });
 
   const dispose = async () => {

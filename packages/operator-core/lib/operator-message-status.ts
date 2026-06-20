@@ -3,7 +3,7 @@
  *
  * After the panel dispatches a card via send_message, we store the
  * returned messageId on the card. This module queries
- * papercup_shared.messages.status for batches of those ids so the
+ * papercusp_shared.messages.status for batches of those ids so the
  * panel can derive `consumed` / `escalated` / `rejected` from the
  * recipient harness's processing.
  *
@@ -47,7 +47,7 @@ export async function readMessageStatuses(
     return await withWorkspace(workspaceId, async (tx) => {
       const rows = await tx<{ id: string; status: string }[]>`
         SELECT id, status
-          FROM papercup_shared.messages
+          FROM papercusp_shared.messages
          WHERE id IN ${tx(messageIds)}
       `;
       return rows.map((r) => ({

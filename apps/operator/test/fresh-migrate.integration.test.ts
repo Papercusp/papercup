@@ -120,11 +120,11 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
   });
 
   it('builds the core global schemas (papercusp_auth + audit, migration 109)', async () => {
-    // The reference dump was scoped to harness_shared + papercup_shared, so these were a
+    // The reference dump was scoped to harness_shared + papercusp_shared, so these were a
     // baseline blind spot until 109 restored them.
     const rows = await sql.unsafe(
       `SELECT nspname FROM pg_namespace WHERE nspname = ANY($1)`,
-      [['harness_shared', 'papercup_shared', 'papercusp_auth', 'audit']],
+      [['harness_shared', 'papercusp_shared', 'papercusp_auth', 'audit']],
     );
     expect(rows.length).toBe(4);
   });

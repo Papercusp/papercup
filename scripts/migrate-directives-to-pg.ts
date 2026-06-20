@@ -24,7 +24,7 @@ async function main() {
   }));
   if (rows.length > 0) {
     await sql`
-      INSERT INTO papercup_shared.directives ${sql(rows, 'id', 'title', 'body', 'status', 'created_by', 'created_ts', 'deadline_ts', 'budget_cents', 'priority', 'assigned_departments', 'linked_project_ids', 'updated_ts')}
+      INSERT INTO papercusp_shared.directives ${sql(rows, 'id', 'title', 'body', 'status', 'created_by', 'created_ts', 'deadline_ts', 'budget_cents', 'priority', 'assigned_departments', 'linked_project_ids', 'updated_ts')}
       ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title, body = EXCLUDED.body, status = EXCLUDED.status,
         deadline_ts = EXCLUDED.deadline_ts, budget_cents = EXCLUDED.budget_cents,
@@ -34,7 +34,7 @@ async function main() {
         updated_ts = EXCLUDED.updated_ts
     `;
   }
-  const result = await sql<{c: string}[]>`SELECT count(*)::text AS c FROM papercup_shared.directives`;
+  const result = await sql<{c: string}[]>`SELECT count(*)::text AS c FROM papercusp_shared.directives`;
   console.log('PG total:', result[0].c);
   await sql.end();
 }

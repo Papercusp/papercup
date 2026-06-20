@@ -53,8 +53,8 @@ beforeAll(async () => {
   sql = postgres(u.toString(), { max: 4, onnotice: () => {} });
 
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
-  // getOrgPg() opens with search_path [harness_shared, papercup_shared, public].
-  await sql.unsafe('CREATE SCHEMA IF NOT EXISTS papercup_shared');
+  // getOrgPg() opens with search_path [harness_shared, papercusp_shared, public].
+  await sql.unsafe('CREATE SCHEMA IF NOT EXISTS papercusp_shared');
 
   // work_items BASE table (harness_features_consolidated) — the columns the action writes,
   // incl. P-020/mig-135's item_kind + payload. PK (harness_slug, feature_id).

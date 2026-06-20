@@ -117,7 +117,7 @@ export async function attachGitCaptureTrigger(
 /**
  * Attach the capture trigger to every harness_shared `sync:'git'` table.
  * Tables that don't exist on this install (or aren't in harness_shared, e.g.
- * the papercup_shared document tables) are skipped, not fatal.
+ * the papercusp_shared document tables) are skipped, not fatal.
  */
 export async function attachAllGitCaptureTriggers(
   sql: postgres.Sql,

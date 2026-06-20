@@ -96,7 +96,7 @@ const GIT_DOCS = [
  *     outbox rows. It's operational runtime state, not a document → DEFAULT.
  *   • `messages` / `directives` / `briefings` / `directive_summaries` — the
  *     RETIRED papercup-org demo bus (003-papercusp-shared.sql, D-008 family). They
- *     live in the `papercup_shared` schema with NO workspace_id/harness_slug/origin,
+ *     live in the `papercusp_shared` schema with NO workspace_id/harness_slug/origin,
  *     so they cannot fit the per-harness git-export model (keyed by harness root) —
  *     the engine only attaches to `harness_shared.*` and silently skipped them. The
  *     bare names also collide with the REAL inter-agent bus (`harness_<slug>.messages`,
@@ -293,7 +293,7 @@ export const NEEDS_REVIEW: Record<string, string> = {};
 /**
  * Resolve a table's two-axis spec. Order: security → git → peer-log →
  * workspace-explicit → legacy → workspace-prefix → DEFAULT. Strip a
- * `harness_shared.` / `papercup_shared.` schema qualifier before calling.
+ * `harness_shared.` / `papercusp_shared.` schema qualifier before calling.
  */
 export function resolveTableSpec(table: string): TableSpec {
   const t = table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;

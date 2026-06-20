@@ -7,7 +7,7 @@ vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('@papercusp/db-org', () => {
   function tagged(strings: TemplateStringsArray, ..._values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
-    if (/SELECT id, status[\s\S]*FROM papercup_shared\.messages/.test(sqlText)) {
+    if (/SELECT id, status[\s\S]*FROM papercusp_shared\.messages/.test(sqlText)) {
       // The IN clause's value is built via tx(arr), which emits its own
       // tagged query — values[0] here will be the arrayified value, not
       // the IDs directly. Just return everything we have; the caller

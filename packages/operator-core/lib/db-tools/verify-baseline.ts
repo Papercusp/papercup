@@ -111,11 +111,11 @@ async function main() {
       // 2 schemas + --no-privileges). Migration 109 closed them; assert here so they can't reopen.
       const schemas = await sql.unsafe(
         `SELECT nspname FROM pg_namespace WHERE nspname = ANY($1)`,
-        [['harness_shared', 'papercup_shared', 'papercusp_auth', 'audit']],
+        [['harness_shared', 'papercusp_shared', 'papercusp_auth', 'audit']],
       );
       const got = schemas.map((r: { nspname: string }) => r.nspname).sort();
       console.log(`[verify-baseline] core global schemas: ${got.join(', ')}`);
-      if (got.length < 4) fail(`missing core schemas — have [${got.join(', ')}], need harness_shared/papercup_shared/papercusp_auth/audit (migration 109)`);
+      if (got.length < 4) fail(`missing core schemas — have [${got.join(', ')}], need harness_shared/papercusp_shared/papercusp_auth/audit (migration 109)`);
     } finally {
       await sql.end({ timeout: 5 });
     }

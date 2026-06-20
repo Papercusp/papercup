@@ -92,11 +92,11 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
   it('strips a schema qualifier before resolving', () => {
     expect(resolveTableSpec('harness_shared.harness_decisions')).toMatchObject({ sync: 'git' });
     // strip still works for a non-harness_shared qualifier:
-    expect(resolveTableSpec('papercup_shared.messages')).toEqual(resolveTableSpec('messages'));
+    expect(resolveTableSpec('papercusp_shared.messages')).toEqual(resolveTableSpec('messages'));
   });
 
   it('the retired papercup-org demo bus is NOT git-synced (no harness scoping)', () => {
-    // papercup_shared.{messages,directives,briefings,directive_summaries} (D-008
+    // papercusp_shared.{messages,directives,briefings,directive_summaries} (D-008
     // org demo) have no workspace_id/harness_slug → cannot fit per-harness
     // git-export; they were silently skipped (different schema). Removing them
     // from GIT_DOCS makes the classification honest (they were never synced).

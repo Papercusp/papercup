@@ -42,7 +42,7 @@ const DIR_OVERRIDE: Record<string, string> = {
 /** Body-column candidates, in priority order, for the prose `.md` body. */
 const BODY_FIELDS = ['body', 'content', 'markdown', 'md', 'text', 'summary', 'notes'];
 
-/** Strip a `harness_shared.` / `papercup_shared.` qualifier. */
+/** Strip a `harness_shared.` / `papercusp_shared.` qualifier. */
 export function bareTable(table: string): string {
   return table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;
 }

@@ -43,9 +43,9 @@ beforeAll(async () => {
 
   // harness_registry shape from migration 025.
   await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
-  // getOrgPg() opens with search_path [harness_shared, papercup_shared, public];
-  // create papercup_shared so the SET search_path on its client is clean.
-  await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS papercup_shared`);
+  // getOrgPg() opens with search_path [harness_shared, papercusp_shared, public];
+  // create papercusp_shared so the SET search_path on its client is clean.
+  await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS papercusp_shared`);
   await sql.unsafe(`
     CREATE TABLE harness_shared.harness_registry (
       workspace_id TEXT PRIMARY KEY,
