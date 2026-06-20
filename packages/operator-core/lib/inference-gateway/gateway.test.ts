@@ -675,3 +675,27 @@ test('no per-account egress → no dispatcher (default shared egress)', async ()
   await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
   assert.equal(captured?.dispatcher, undefined, 'no egress → fetch gets no dispatcher');
 });
+
+test('a STALLED OAuth token refresh fails FAST with a retryable 503 + releases the slot (2026-06-20 token-hang wedge)', async () => {
+  // active.token() does a deadline-less network refresh that runs BEFORE the upstream stall-guard, so a
+  // stalled OAuth endpoint used to pin every admission slot forever (counters frozen, multi-minute log
+  // silence, manual-restart-only recovery). With a bounded tokenTimeoutMs it must reject fast → 503 +
+  // slot release, never reaching upstream and never wedging the pool.
+  let upstreamHits = 0;
+  await boot(
+    (_req, res) => {
+      upstreamHits++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { token: () => new Promise<string>(() => {}) /* never resolves */, tokenTimeoutMs: 50 },
+  );
+  const t0 = Date.now();
+  const res = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  const elapsed = Date.now() - t0;
+  assert.equal(res.status, 503, 'a stalled token refresh returns a retryable 503, not a hang');
+  assert.ok(elapsed < 2000, `failed fast (${elapsed}ms) instead of pinning the admission slot`);
+  assert.equal(upstreamHits, 0, 'never reached upstream — the hang was before the fetch');
+  const stats = (await (await ask('/stats')).json()) as { inFlight: number };
+  assert.equal(stats.inFlight, 0, 'admission slot released after the token timeout (wedge signature is inFlight stuck at max)');
+});

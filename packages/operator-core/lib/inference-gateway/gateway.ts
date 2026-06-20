@@ -113,6 +113,15 @@ const LOADSHED_RETRY_AFTER_SEC = 5;
 const DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_HEADERS_MS) || 5 * 60 * 1000;
 const DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_STREAM_HEADERS_MS) || 60 * 1000;
 const DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_BODY_IDLE_MS) || 90 * 1000;
+/** Max wait for an OAuth token refresh before the attempt is FAILED instead of hung (the 2026-06-20
+ *  token-hang wedge). `active.token()` does a network refresh (grant_type=refresh_token) with NO deadline
+ *  of its own AND runs BEFORE the upstream stall-guard is armed — so when the OAuth endpoint stalls (it
+ *  tends to during an upstream incident) every in-flight slot that needed a refresh blocked there forever,
+ *  pinning all maxConcurrent slots until a manual restart (symptom: counters frozen, multi-minute log
+ *  silence, queue climbing to the shed cap — distinct from the streaming-TTFB wedge above). Bounding it
+ *  turns the hang into a fast reject → penalize the account + the finally releases the slot. Generous by
+ *  default (a refresh is normally <2s). Env-overridable. */
+const DEFAULT_TOKEN_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_TOKEN_MS) || 20 * 1000;
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
  *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
@@ -210,6 +219,11 @@ export interface GatewayDeps {
    *  Reset on every chunk, so a legitimately long stream is never clipped — only a true mid-stream
    *  stall trips it. Default 90s (env PAPERCUSP_GATEWAY_UPSTREAM_BODY_IDLE_MS). */
   upstreamBodyIdleTimeoutMs?: number;
+  /** Max wait for an OAuth token refresh (`active.token()`) before the attempt fails instead of hanging.
+   *  token() does a deadline-less network refresh and runs BEFORE the upstream stall-guard, so a stalled
+   *  refresh used to pin every admission slot until a manual restart (the 2026-06-20 token-hang wedge).
+   *  Default 20s (env PAPERCUSP_GATEWAY_TOKEN_MS). */
+  tokenTimeoutMs?: number;
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -310,6 +324,20 @@ export function parseUnified7dWindow(h: Record<string, string | undefined>): { u
   return out;
 }
 
+/** Reject if `p` doesn't settle within `ms` — bounds an otherwise deadline-less await (the OAuth token
+ *  refresh, which has no timeout of its own and runs before the upstream stall-guard). The timer is
+ *  unref'd so it never keeps the event loop alive, and is cleared the moment `p` settles. */
+function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    t.unref?.();
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
 function headersToObject(h: Headers): Record<string, string | undefined> {
   const o: Record<string, string | undefined> = {};
   h.forEach((v, k) => {
@@ -375,6 +403,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
   const upstreamStreamHeadersTimeoutMs = deps.upstreamStreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS;
   const upstreamBodyIdleTimeoutMs = deps.upstreamBodyIdleTimeoutMs ?? DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS;
+  const tokenTimeoutMs = deps.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS;
   const log = deps.log ?? (() => {});
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
   const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs, maxQueued });
@@ -585,7 +614,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
       let attempt = 0;
       let transientWaitedMs = 0; // total time spent WAITING out short transient throttles (budget #2)
       for (;;) {
-        const token = await active.token();
+        // Bound the OAuth token refresh (2026-06-20 token-hang wedge). active.token() does a deadline-less
+        // network refresh AND runs before the per-attempt stall-guard below, so a stalled refresh used to
+        // pin this admission slot forever (every slot hung here → manual-restart-only recovery). On
+        // timeout/failure: penalize THIS account out of rotation (the per-request selector routes the
+        // bee's retry to a healthy account) and return a retryable 503. The finally releases the slot, so
+        // one stalled credential can never wedge the pool.
+        let token: string;
+        try {
+          token = await withDeadline(active.token(), tokenTimeoutMs, `token refresh '${active.accountId}'`);
+        } catch (e) {
+          upstreamErrors++;
+          log('error', `inference-gateway: token refresh failed on '${active.accountId}': ${(e as Error).message} — penalizing account + 503`);
+          gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
+          if (!res.headersSent) {
+            sendJson(
+              res,
+              503,
+              { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: token refresh stalled on '${active.accountId}'; retry shortly` }, gateway: true },
+              { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
+            );
+          }
+          return;
+        }
         const headers: Record<string, string> = { ...baseHeaders, authorization: `Bearer ${token}` };
 
         // Per-attempt abort + stall deadline: aborts THIS upstream call (headers or body) if it
