@@ -22,7 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
-import { checkConflicts } from '../../memory/conflict-check';
+import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { getSessionUserOrDefault } from '../../auth';
@@ -169,11 +169,18 @@ export default defineTool({
     // Defensive: any failure of the search falls through to insert. The
     // dedup check is a hygiene layer, never load-bearing. Same posture
     // as injection.ts (failures degrade silently).
-    if (dedupEnabled() && !args.force) {
+    // EI-2032: run the neighbor search when EITHER dedup (opt-in) OR the
+    // conflict-check (default ON) is enabled. Previously the conflict-check was
+    // nested INSIDE `if (dedupEnabled())`, so with dedup off-by-default the
+    // contradiction gate never fired — a new memory could silently contradict an
+    // existing one. Decoupled here: dedup-rejection stays gated on dedupEnabled()
+    // (it is false-positive-prone, hence opt-in), but the conflict-check runs
+    // independently whenever it is enabled.
+    if (!args.force && (dedupEnabled() || conflictCheckEnabled())) {
       try {
-        // B1: bounded — a dedup-search hang must not block the write. On
-        // timeout this throws into the surrounding catch, which proceeds with
-        // the write (degraded dedup), exactly as a search error already does.
+        // B1: bounded — a search hang must not block the write. On timeout this
+        // throws into the surrounding catch, which proceeds with the write
+        // (degraded dedup/conflict), exactly as a search error already does.
         const neighbors = await withMemoryToolTimeout(
           backend.search(args.content, {
             scope: scopeKey,
@@ -181,29 +188,33 @@ export default defineTool({
           }),
           'memory:remember dedup-search',
         );
-        const top = neighbors[0];
-        const topScore = typeof top?.score === 'number' ? top.score : null;
-        if (top && topScore !== null && topScore >= dedupThreshold()) {
-          return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                ok: false,
-                reason: 'similar_exists',
-                similar_memory_id: top.id,
-                similar_score: topScore,
-                similar_text: top.text,
-                hint: 'Set force=true to write anyway, or call memory:forget on the similar memory first.',
-              }),
-            }],
-          };
+        // P-016 dedup-on-write (opt-in via PAPERCUSP_MEMORY_DEDUP): refuse a
+        // near-duplicate above the similarity threshold.
+        if (dedupEnabled()) {
+          const top = neighbors[0];
+          const topScore = typeof top?.score === 'number' ? top.score : null;
+          if (top && topScore !== null && topScore >= dedupThreshold()) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  ok: false,
+                  reason: 'similar_exists',
+                  similar_memory_id: top.id,
+                  similar_score: topScore,
+                  similar_text: top.text,
+                  hint: 'Set force=true to write anyway, or call memory:forget on the similar memory first.',
+                }),
+              }],
+            };
+          }
         }
 
-        // P-017: conflict-check on the top-K neighbors (semantic
-        // similarity didn't trip dedup, but the new fact may directly
-        // contradict an existing one — Haiku judges). Same posture as
-        // dedup: feature-flagged, failures fall through to write,
-        // bypassable via force=true.
+        // P-017: conflict-check on the top-K neighbors (default ON via
+        // PAPERCUSP_MEMORY_CONFLICT_CHECK; checkConflicts self-gates + degrades).
+        // Catches a new fact that directly CONTRADICTS a near neighbor (Haiku
+        // judges) even when dedup similarity did not trip — runs independently of
+        // the dedup flag now. Bypassable via force=true.
         if (neighbors.length > 0) {
           const conflict = await checkConflicts({
             newText: args.content,

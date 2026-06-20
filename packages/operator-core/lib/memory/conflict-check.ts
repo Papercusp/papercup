@@ -38,7 +38,7 @@ export type LlmJudge = (input: {
   neighbors: NeighborMemory[];
 }) => Promise<ConflictReport>;
 
-function conflictCheckEnabled(): boolean {
+export function conflictCheckEnabled(): boolean {
   return process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK !== 'off';
 }
 
