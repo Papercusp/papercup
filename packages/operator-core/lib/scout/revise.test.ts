@@ -87,7 +87,7 @@ describe('runScoutRevisionCycle (P-001 targeted revision)', () => {
       planWorkspaceId: 'default',
       harnessSlug: 'papercusp',
     });
-    expect(res.revisions[0].status).toBe('error');
+    expect(res.revisions[0].status).toBe('rejected');
     expect(res.revisions[0].note).toMatch(/plan shape/);
     expect(store.get(slug)).toBe(planBody(slug)); // untouched
   });

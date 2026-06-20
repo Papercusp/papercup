@@ -204,3 +204,31 @@ describe('shouldRunScoutCycle — clock edges (scout-loop-test-plan P-005)', () 
       .toEqual({ fire: true, reason: 'friction-triggered' });
   });
 });
+
+describe('queen-feedback bypass (P-002 — queen-scout-feedback-loop)', () => {
+  it('fires queen-feedback out-of-cadence, PAST the min-interval floor', () => {
+    // Just-ran (1m ago) → the normal floor would withhold; queen feedback overrides.
+    const v = shouldRunScoutCycle(state({ queenWakePending: true, lastRunAtMs: minutesAgo(1), idleRatio: 0 }));
+    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+  });
+
+  it('PREEMPTS friction (D-003 #4 — revision before fresh ideation)', () => {
+    const v = shouldRunScoutCycle(
+      state({ queenWakePending: true, frictionSignals: 9, idleRatio: 1, lastRunAtMs: minutesAgo(0.1) }),
+    );
+    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+  });
+
+  it('fires even when never run', () => {
+    const v = shouldRunScoutCycle(state({ queenWakePending: true, lastRunAtMs: null }));
+    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+  });
+
+  it('is inert (pure-gate default) when queenWakePending is absent/false — cadence unchanged', () => {
+    // Same withholding state as the min-interval test, but without the flag.
+    expect(shouldRunScoutCycle(state({ idleRatio: 1, lastRunAtMs: minutesAgo(10) })).reason).toBe('min-interval');
+    expect(
+      shouldRunScoutCycle(state({ queenWakePending: false, idleRatio: 1, lastRunAtMs: minutesAgo(10) })).reason,
+    ).toBe('min-interval');
+  });
+});

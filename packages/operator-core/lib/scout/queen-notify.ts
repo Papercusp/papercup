@@ -134,6 +134,11 @@ function revisedMessage(o: RevisionOutcome): { summary: string; body: string } {
         summary: `Scout: draft ${o.planSlug} no longer exists`,
         body: `I couldn't revise ${o.planSlug} — it no longer exists (${o.note}).`,
       };
+    case 'rejected':
+      return {
+        summary: `Scout: revision of ${o.planSlug} didn't produce a usable plan`,
+        body: `My revision attempt on ${o.planSlug} didn't produce a usable plan (${o.note}), so the draft is unchanged. Send sharper guidance, or consider promoting / deprecating.`,
+      };
     case 'error':
     default:
       return {

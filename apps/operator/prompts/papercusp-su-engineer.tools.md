@@ -479,6 +479,13 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   contention. **Bar: genuine, repeatable** (the next agent would hit it too) —
   don't reflect every turn. (Managed-harness problems still go to
   `issues:create`.)
+- **Observation? Check for a rubric first.** When you file a turn-end observation
+  (`improvements:capture { lane:"observation" }`), check `rubrics:list`; if an
+  ACTIVE rubric fits the characteristic you observed, file structured —
+  `observation.rubricRef` + `observation.ratings` (a Record keyed by the rubric's
+  criterion keys, each `{ rating, evidence }`; rating ∈
+  healthy/degraded/broken/unknown; evidence mandatory) — turning an anecdote into a
+  measurement. No rubric fits? Free-text stays first-class.
 - **Default to doing discovered work inline**; file an issue when genuinely
   out of scope; promote when it warrants tracked pipeline work.
 - **Working a plan item = CLAIM it first** — either declare it in your lane

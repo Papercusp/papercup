@@ -32,8 +32,17 @@ import type { QueenFeedbackItem } from './scheduler';
  *  step uses (cheaper than the opus ideators; revision is synthesis, not divergence). */
 export const DEFAULT_REVISION_MODEL = 'claude-sonnet-4-6';
 
-/** What happened to one draft this revision tick. */
-export type RevisionStatus = 'revised' | 'missing' | 'unchanged' | 'error';
+/**
+ * What happened to one draft this revision tick.
+ *   - revised   — success (the draft was rewritten).
+ *   - missing   — the draft no longer exists (terminal; ack + ping).
+ *   - unchanged — the LLM returned no change (terminal; ack + ping).
+ *   - rejected  — the LLM produced an UNUSABLE output (declined / non-plan); terminal,
+ *                 ack + ping (retrying a deterministic non-plan would loop forever).
+ *   - error     — a TRANSIENT failure (llmCall threw / plan busy); retryable. When
+ *                 EVERY item is `error`, the cycle THROWS so the tick retries (no ack).
+ */
+export type RevisionStatus = 'revised' | 'missing' | 'unchanged' | 'rejected' | 'error';
 
 /** Per-feedback-item revision outcome (the runner pings the Queen back from these). */
 export interface RevisionOutcome {
@@ -173,8 +182,10 @@ export async function runScoutRevisionCycle(
         continue;
       }
       if (!looksLikePlanMarkdown(revised, item.planSlug)) {
-        // Refuse to overwrite a real draft with a non-plan response.
-        outcomes.push({ ...base, status: 'error', costUsd: cost, note: 'revision did not preserve plan shape — not written' });
+        // Refuse to overwrite a real draft with a non-plan response. This is a
+        // TERMINAL 'rejected' (not a transient 'error'): the output is deterministic
+        // for this prompt, so retrying would loop — ack it + ping the Queen instead.
+        outcomes.push({ ...base, status: 'rejected', costUsd: cost, note: 'revision did not preserve plan shape — not written' });
         continue;
       }
 

@@ -41,10 +41,19 @@ vi.mock('drizzle-orm/postgres-js', () => ({
 
 import tool from './get';
 
+// The handler's declared return is the generic ToolResult union; these tests read the
+// degraded-envelope fields, so narrow with a local shape (EI-1834 additions stay typed).
+type GetResult = { data: unknown; degraded?: boolean; degradedReasons?: string[] };
+
+// EI-1834: the not-found branch reads the harness registry via ctx.tx (a tagged
+// template — `readRegistryProjects`). Tests set `registryProjects` to control what
+// the registry returns; the drizzle path (project row) is mocked separately above.
+let registryProjects: unknown[] = [];
 const CTX = () =>
   ({
     principal: { slug: 'op', workspaceId: 'ws_1' },
-    tx: {} as never,
+    tx: ((_s: TemplateStringsArray, ..._v: unknown[]) =>
+      Promise.resolve([{ payload: { projects: registryProjects } }])) as never,
     log: vi.fn(),
   }) as never;
 
@@ -60,20 +69,50 @@ const PROJECT_ROW = {
 beforeEach(() => {
   fixtureQueue = [];
   queriesBuilt = 0;
+  registryProjects = [];
 });
 
 describe('harness:get', () => {
-  it('degrades when the harness is missing', async () => {
+  it('degrades with a project-lookup reason when the slug is in neither projects nor the registry', async () => {
     fixtureQueue = [[]];
-    const res = await tool.handler({ slug: 'nope', detail: 'summary' } as never, CTX());
+    registryProjects = [];
+    const res = (await tool.handler({ slug: 'nope', detail: 'summary' } as never, CTX())) as GetResult;
     expect(res.data).toBeNull();
     expect(res.degraded).toBe(true);
-    expect(res.degradedReasons).toEqual(['harness nope not found']);
+    const reason = res.degradedReasons?.[0] ?? '';
+    expect(reason).toContain('not found');
+    expect(reason).toContain('harness registry'); // names BOTH stores so it can't read as "doesn't exist"
+    expect(reason).toContain('PROJECT lookup');
+  });
+
+  // EI-1834: a registered HIVE has no projects row, so the old generic "not found" was
+  // ambiguous and misled a live diagnosis. The reason now affirmatively names the kind.
+  it('degrades with a HIVE-disambiguating reason when the slug is a registered hive (not a project)', async () => {
+    fixtureQueue = [[]]; // no projects row
+    registryProjects = [{ slug: 'papercusp', path: '/x', harness_kind: 'hive' }];
+    const res = (await tool.handler({ slug: 'papercusp', detail: 'summary' } as never, CTX())) as GetResult;
+    expect(res.data).toBeNull();
+    expect(res.degraded).toBe(true);
+    const reason = res.degradedReasons?.[0] ?? '';
+    expect(reason).toContain("harness_kind='hive'");
+    expect(reason).toContain('EXISTS');
+    expect(reason).toContain('hive:get'); // points at the right inspect tool for a hive
+    expect(reason).toContain('Do NOT read this as "no such harness"');
+  });
+
+  it('a registered NON-hive, non-project kind also disambiguates (reports its kind)', async () => {
+    fixtureQueue = [[]];
+    registryProjects = [{ slug: 'depX', path: '/d', harness_kind: 'department' }];
+    const res = (await tool.handler({ slug: 'depX', detail: 'summary' } as never, CTX())) as GetResult;
+    const reason = res.degradedReasons?.[0] ?? '';
+    expect(reason).toContain("harness_kind='department'");
+    expect(reason).toContain('non-project harness kinds');
+    expect(reason).not.toContain('hive:get'); // hive-specific hint not shown for a non-hive
   });
 
   it('summary projects {slug, name, status, updated_ts} and skips the counts query', async () => {
     fixtureQueue = [[PROJECT_ROW]];
-    const res = await tool.handler({ slug: 'sheets', detail: 'summary' } as never, CTX());
+    const res = (await tool.handler({ slug: 'sheets', detail: 'summary' } as never, CTX())) as GetResult;
     expect(res.data).toEqual({
       slug: 'sheets',
       name: 'Sheets',
@@ -93,7 +132,7 @@ describe('harness:get', () => {
         { status: null, n: 9 }, // dropped
       ],
     ];
-    const res = await tool.handler({ slug: 'sheets', detail: 'full' } as never, CTX());
+    const res = (await tool.handler({ slug: 'sheets', detail: 'full' } as never, CTX())) as GetResult;
     expect(res.degraded).toBeUndefined();
     expect(res.data).toEqual({
       ...PROJECT_ROW,

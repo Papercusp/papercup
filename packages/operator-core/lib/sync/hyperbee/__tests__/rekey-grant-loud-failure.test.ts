@@ -62,6 +62,20 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
+// WI-280 FK fix (ee7e9, boot.ts:1049): the open-mode admit upsert is now self-gated on
+// loadHivePubkey(ws, slug) being non-null — only the hive HOME holds the key; member topics have no
+// hive parent row, so the unconditional upsert FK-violated there (the bare grant used to no-op via
+// the same gate). The hermetic harness has no hive key for the test slug, so the gate would
+// early-return and skip the upsert → no grant → no boot event. Mock loadHivePubkey non-null so the
+// admit reaches the grant (the path under test).
+vi.mock('../../../identity/hive-keypair', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../identity/hive-keypair')>();
+  return {
+    ...actual,
+    loadHivePubkey: vi.fn(async () => 'fake-hive-pubkey-base64') as unknown as typeof actual.loadHivePubkey,
+  };
+});
+
 import { bootHarnessSubstrate } from '../boot';
 import { grantEpochKeysToMembers } from '../hive-epoch-boundary-wiring';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
