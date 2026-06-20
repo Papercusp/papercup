@@ -14,13 +14,13 @@ sidebar:
           <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)</td><td>`PluginHooks`</td></tr>
           <tr><td><strong>Event-reaction rules</strong></td><td>Declarative "when X settles, fire my tool" rules over the one reaction registry — the live pipeline extension surface (§7.0)</td><td>`PluginReactionRule`</td></tr>
           <tr><td><strong>UI (full-route)</strong></td><td>A complete React panel mounted at `/harness/&lt;slug&gt;` — <strong>see §8</strong></td><td>`UiContribution`</td></tr>
-          <tr><td><strong>API routes</strong></td><td>HTTP endpoints under `/api/plugins/&lt;name&gt;/*`</td><td>`ApiRoute[]`</td></tr>
-          <tr><td><strong>DB schema</strong></td><td>Postgres migrations under the plugin's own schema</td><td>`SchemaMigration[]`</td></tr>
+          <tr><td><strong>API routes</strong></td><td>A Hono sub-app the runtime mounts at `/api/plugins/&lt;name&gt;/`</td><td>`PluginApiRoutes`</td></tr>
+          <tr><td><strong>DB schema</strong></td><td>Postgres DDL (schemaName + ddlPath, or a bare DDL-path array) applied at install under the plugin's own schema</td><td>`PluginSchemaField`</td></tr>
         </tbody>
       </table>
 
       <p>
-        <strong>Retired axes (2026-06-12, plugin-system-hive-port D-004):</strong> <strong>Roles</strong> (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and <strong>Routines</strong> (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). A manifest-level `roles` entry remains schema-tolerated as inert declarative data.
+        <strong>Retired axes (2026-06-12, plugin-system-hive-port D-004):</strong> <strong>Roles</strong> (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and <strong>Routines</strong> (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). Both manifest-level `roles` and `routines` entries remain schema-tolerated as inert `array<object>` declarative data — the loader ignores them; there are no `RoleDefinition` / `RoutineDefinition` SDK types.
       </p>
 
       <p>
@@ -91,10 +91,23 @@ sidebar:
 
 
       <p>
-        Plugins frequently rely on services or hooks declared by other
-        plugins. The substrate makes this dependency explicit in the
-        manifest so install-time resolution can refuse incoherent
-        configurations rather than fail at runtime.
+        Plugins frequently rely on services or tools declared by other
+        plugins. The manifest carries this dependency as plugin-slug
+        metadata so lock-resolve can build a dependency graph at
+        Cupboard install time.
+      </p>
+
+      <p>
+        Today `requires` is a bare array of plugin slug strings (hard
+        dependencies, used by `papercusp install` / `papercusp plugin
+        install` to build the lock-resolve graph), with a sibling
+        `recommends` array for soft dependencies — surfaced to the user
+        during install but never auto-installed. There is no
+        name→version-range object form and no per-entry `{ version,
+        optional }` shape; both fields are arrays of slugs like
+        `"@org/dep-plugin"`. (The manifest's top-level is
+        `additionalProperties: false`, so only schema-known keys are
+        accepted.)
       </p>
 
       ```json
@@ -102,42 +115,23 @@ sidebar:
 {
   "name": "shareholder-briefings",
   "version": "1.2.0",
-  "requires": {
-    // Hard dependency — install fails if not satisfied.
-    "audit-log": "^1.0",
-    // Optional — plugin loads either way; check `api.hasPlugin('papercup')` at runtime.
-    "papercup": { "version": "^0.0.3", "optional": true }
-  }
+  // Hard dependencies — slugs lock-resolve includes in the graph.
+  "requires": ["@org/audit-log"],
+  // Soft dependencies — surfaced at install, never auto-installed.
+  "recommends": ["@org/papercup"]
   // ...
 }
 ```
 
-      <p><strong>Resolution at install time.</strong></p>
-
-      ```
-$ papercusp install shareholder-briefings@1.2.0
-
-shareholder-briefings@1.2.0 requires:
-  audit-log    ^1.0    ✓ found (audit-log@1.4.2 installed)
-  papercup     ^0.0.3  ⚠ not installed (optional)
-
-Continue? [Y/n]: y
-```
-
       <p>
-        If a hard `requires` entry is missing or version-incompatible,
-        the install aborts with a one-line `papercusp install &lt;dep&gt;`
-        suggestion. Optional dependencies surface as warnings only;
-        the plugin must check `api.hasPlugin(name)` at runtime and
-        degrade gracefully when absent.
+        Note: there is no implemented version-range dependency resolver
+        or `api.hasPlugin(name)` presence-check API today — `requires`
+        and `recommends` are schema-tolerated metadata that lock-resolve
+        reads to order installs, not a runtime semver gate. The
+        per-version-range resolution, cascading-uninstall, and
+        `--orphan` behaviors described in earlier drafts are design
+        intent tracked in the plugin-system plans, not shipped code.
       </p>
-
-      <p><strong>Cascading uninstall.</strong> Removing plugin A while
-      plugin B has `requires: { 'A': '^1.0' }` aborts by default; the
-      user must explicitly `papercusp uninstall A --cascade` (which
-      uninstalls B too, after a per-plugin confirmation) or
-      `--orphan` (which leaves B installed but disabled, with a banner
-      in the UI explaining why).</p>
 
       <p><strong>Runtime version pinning.</strong> Independently of
       plugin-to-plugin deps, every manifest declares the substrate

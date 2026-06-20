@@ -40,7 +40,7 @@ one job.
 
 ## Hooks that fire today
 
-The legacy bash run-loop fired twelve hook events; that loop is retired
+The legacy bash run-loop fired ten hook events; that loop is retired
 (`libs/papercusp/_retired/orchestrator-run-loop/`). In the current DBOS
 pipeline, hooks fire from the **finalizer** — the step list that
 `planFinalization()` builds when a feature pipeline ends in DONE or ESCALATE
@@ -68,8 +68,10 @@ blueprint's recipe (`onDone`: curator → postCuratorOutputs → documenter →
 `gates.finalize`, so the hooks fire around whatever finalize recipe that
 harness declares. A `judge`-acceptance blueprint additionally inserts a
 `judge`-role acceptance gate before the `onDone` recipe whose `revise` verdict
-hard-blocks the output recipe (artifacts/documenter), though the `afterDone`
-hook itself still fires per the recipe.
+hard-blocks the **rest** of the finalize recipe: the runner `break`s out of the
+finalize step loop, so every remaining step — including the `afterDone` hook,
+which the finalizer appends last — is skipped. `afterDone` fires only on a
+normal accepted `DONE` finalize.
 
 `runHook()` itself accepts any name — the engine isn't limited to these two —
 but no other call site exists in the live tree, so no other event fires. The

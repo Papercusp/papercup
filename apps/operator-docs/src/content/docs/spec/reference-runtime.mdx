@@ -2,6 +2,12 @@
 title: 12. Reference runtime walkthrough
 sidebar:
   order: 28
+plans:
+  - legacy-docs-audit-revival-2026-06-06
+  - finish-next-removal-2026-06-01
+  - next-removal-2026-05-20
+  - operator-vite-migration-2026-05-20
+  - revive-cupboard-distribution-2026-06-04
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -19,7 +25,9 @@ and the `apps/papercup` reference install is retired to `_retired/papercup/`.
 <table>
         <thead><tr><th>Path</th><th>Contains</th></tr></thead>
         <tbody>
-          <tr><td>`libs/papercusp/packages/harness`</td><td>The substrate: `run.sh`, `prompts/`, role templates. The thing that boots an iteration loop.</td></tr>
+          <tr><td>`libs/papercusp/packages/harness`</td><td>The substrate: blueprint prompts (`blueprints/*/prompts/`), role/identity templates (`identity/`), and `bin/` scripts (e.g. `bin/supervisor.sh`). Iterations boot from the per-blueprint DBOS/director pipeline — the standalone `run.sh` run-loop is retired.</td></tr>
+          <tr><td>`libs/papercusp/packages/harness/blueprints/coding`</td><td>The HIVE/Queen blueprint (`id: coding`, `kind: 'hive'`) — the minimal single-role operator that surveys the blackboard and decides its own next wake. The judgment layer over the fleet.</td></tr>
+          <tr><td>`libs/papercusp/packages/harness/blueprints/coding-factory`</td><td>The default coding harness (`id: coding-factory`) — a per-feature director driving scoper &rarr; architect &rarr; worker &rarr; validator &rarr; reviewer &rarr; documenter &rarr; curator, with opt-in quality gates (tester / security / crosscheck / ui-qa).</td></tr>
           <tr><td>`packages/plugin-sdk` (`@papercusp/plugin-sdk`)</td><td>TypeScript types for plugin authors. `PapercuspPlugin`, `UiContribution`, `Capability`, etc.</td></tr>
           <tr><td>`packages/plugin-loader` (`@papercusp/plugin-loader`)</td><td>Discovers plugins, validates manifests, applies migrations, registers routines, mounts hooks/tabs/routes, enforces capabilities.</td></tr>
           <tr><td>`libs/papercusp/libs/db`</td><td>Drizzle schema for the substrate (goals, tasks, issues, pending_events, routines, audit).</td></tr>

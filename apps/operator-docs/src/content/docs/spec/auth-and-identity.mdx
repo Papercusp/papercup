@@ -3,6 +3,11 @@ title: Auth & identity
 description: Per-harness shared-secret tokens. Identity is bearer-derived, not body-supplied. Threat model and recovery procedures.
 sidebar:
   order: 22
+plans:
+  - deprecate-harness-config-json-2026-06-06
+  - promote-spawn-child-harness-2026-05-31
+  - tooldef-auth-rfc-2026-05-31
+  - auth-hardening-coord-note-2026-05-12
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -18,7 +23,9 @@ Generated at scaffold time:
   1. `<harnessDir>/.papercusp/config.json:harness_token` (mode 0600)
   2. `harness_shared.token_index` (token → `harness_slug`, with `kind`/`workspace_id`, O(1) lookup) — the **authoritative** store
 
-  *(Implemented: see `executeAction`'s `scaffold_harness` path in `packages/operator-core/lib/execute-action.ts`. The earlier per-harness `harness_<slug>.config_token` row was retired — `token_index` is now the single source of truth for token→harness lookups.)*
+  *(Implemented in `doScaffoldHarness` in `packages/operator-core/lib/execute-action.ts` — the `scaffold_harness` op that `dispatchAction` routes to. The `INSERT INTO harness_shared.token_index … kind = 'harness'` runs there, after the token is written to `config.json`. The earlier per-harness `harness_<slug>.config_token` row was retired — `token_index` is now the single source of truth for token→harness lookups.)*
+
+Both scaffold and rotation derive the token the same way — `base64url(randomBytes(32))`, i.e. 256-bit random with `=` padding stripped — so the no-padding/256-bit property holds across both issuance and rotation.
 
 Generated once per harness. **Rotation is implemented** via `POST /api/admin/rotate-token` (`packages/operator-core/lib/endpoint-route/routes/admin/rotate-token.ts`), which mints a fresh token, mirrors it to PG + `config.json`, and invalidates the old one.
 
@@ -32,14 +39,21 @@ Every executeAction request needs this. Missing or unrecognized → `401 invalid
 
 ## Identity derivation
 
-The middleware:
+There is no middleware. The auth and identity-validation steps run inline in the route handler (`routes/admin/execute-action.ts`), as two plain functions exported from `execute-action.ts`:
 
-1. Looks up `harness_shared.token_index WHERE token = <bearer>` → `derivedCallingHarness`.
-2. **`callingHarness` in body must equal `derivedCallingHarness`** or be omitted; mismatch → `403 identity_mismatch`.
-3. **`from` in `send_message` body**: same rule, 403 on mismatch.
-4. **`parent_slug` in `scaffold_harness` body**: server-controlled. Presence in body → `400 parent_slug_not_caller_controlled`.
+1. `deriveCallerFromBearer(req.headers.get('authorization'))` looks up `harness_shared.token_index WHERE token = <bearer>` → `derivedCallingHarness`.
+2. `validateIdentityFields(derivedSlug, body)` then enforces:
+   - **`callingHarness` in body must equal `derivedCallingHarness`** or be omitted; mismatch → `403 identity_mismatch`.
+   - **`from` in `send_message` body**: same rule, 403 on mismatch.
+   - **`parent_slug` in `scaffold_harness` body**: server-controlled. Presence in body → `400 parent_slug_not_caller_controlled`.
 
 After this, the handler trusts `derivedCallingHarness` as the caller's identity. Any body-supplied identity field is dropped or rejected.
+
+### System principals
+
+The bearer lookup has no `kind` filter, so the caller is not always a harness. A **system principal** — a slug prefixed `system:` (e.g. `system:operator`) — resolves through the same `token_index` lookup and is bearer-derived identically. System callers are handled specially in the dispatch path: they have no per-harness schema, so they bypass the per-harness `executed_actions` idempotency cache (`getCachedAction`) and the per-caller send-message rate limit (`checkSendMessageRate`). Identity is still bearer-derived for them.
+
+This per-harness bearer check sits *behind* an outer transport-trust gate: both `/admin/execute-action` and `/admin/rotate-token` are registered with `auth: { trust: ['verified', 'trusted'] }`, so the request must already be on a verified/trusted transport before `deriveCallerFromBearer` ever runs.
 
 ## Substrate invariants
 
@@ -51,11 +65,16 @@ These hold by construction. If they fail, the substrate is broken:
 4. No body-supplied identity field ever overrides the derived value.
 5. A harness can read any other harness's state (operator-local reads, no auth) but can only **write** to its own schema (`mark_message_status`) or insert into other harnesses' inboxes (`send_message`, with from-spoofing prevented by #2).
 
+The dispatcher (`dispatchAction`) now routes nine ops, not the original four — beyond `send_message` / `mark_message_status` / `spinup_project` / `scaffold_harness` it also handles `create_feature`, `add_directive_summary`, `pause_project`, `resume_project`, and `mark_campaign_published`. The identity-binding invariants above apply to **every** `caller_slug`-stamped write, not just `messages` (`from_slug`) and `projects` (`parent_slug`). In particular:
+
+- `create_feature` rejects cross-harness writes: caller must own the target harness — `callerSlug !== harness_slug` → `403 forbidden`.
+- `add_directive_summary` stamps `caller_slug` on the inserted row from the bearer-derived identity (not from any body field).
+
 ## Threat model
 
 This is **not a network-attacker model** — the operator is local-only by default. The threats it does protect against:
 
-- **Malicious local processes**: any other app on the machine can hit `:3055`. Without a valid bearer, every `executeAction` call is rejected. Without a *bound* bearer, every cross-harness write is rejected as identity_mismatch.
+- **Malicious local processes**: another app on the machine reaching `:3055` faces two gates. First the route's `auth: { trust: ['verified', 'trusted'] }` requires a verified/trusted transport; then, even past that, without a valid bearer every `executeAction` call is rejected, and without a *bound* bearer every cross-harness write is rejected as identity_mismatch.
 - **Buggy harness emitting wrong slug**: the substrate refuses to write `from_slug = "papercup-org"` if the bearer isn't bound to `papercup-org`. The harness can't accidentally claim someone else's identity.
 - **Future plugin holding the operator API**: same identity-binding rule. A plugin spawning on behalf of a harness must use that harness's token; cannot impersonate.
 

@@ -2,60 +2,73 @@
 title: 15. Snapshots — share working harness state via marketplace (v1.2)
 sidebar:
   order: 15
+plans:
+  - retire-snapshots-instance-spec-2026-06-09
+  - comb-retire-per-harness-sharing-2026-06-11
+  - shared-hive-federation-2026-06-08
+  - hive-from-github-url-2026-06-11
+  - comb-hive-native-sharing-2026-06-11
+  - harness-blueprint-distribution-2026-06-03
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="2026-06-11: per-harness sharing is RETIRED — the Hive is the sharing unit">
-The snapshot system this page specifies was retired
-(`retire-snapshots-instance-spec-2026-06-09`; surface preserved at
-`_retired/snapshot-system/`), and **per-harness sharing as a Comb/Cupboard
-product surface was retired too** (plan
-`comb-retire-per-harness-sharing-2026-06-11`): the ShareWizard, the
+<Aside type="caution" title="RETIRED — the whole snapshot system is gone; the Hive is the sharing unit">
+**The entire snapshot system this page specifies was retired and physically
+moved to `_retired/snapshot-system/`** (plan
+`retire-snapshots-instance-spec-2026-06-09`; restore tag
+`snapshot-system-retired-2026-06-09`). Gone from the live tree: the
+`@papercusp/export-state` capture/restore lib (was `libs/papercusp-export-state/`),
+the `/api/snapshots/*` endpoint routes (was
+`packages/operator-core/lib/endpoint-route/routes/snapshots/`, incl.
+`fork-from-cupboard.ts`), the `snapshots:list` / `snapshots:get` agent tools,
+the Cupboard `kind='snapshot'` listing path, the R2 tarball blob routes, the
+`SNAPSHOTS` feature flag, and the `harness_shared.snapshot_index` PG discovery
+index (dropped in migration 199). The whole thing was a monolithic-era
+abstraction built when a "harness" *was* the whole world.
+
+Its three jobs were re-homed: **distribution → blueprints** (the Cupboard
+distributes recipes), **backup → git + PG** (code + state are already durable),
+and the one remaining job — the **reproducible clone** — became the lightweight
+**`InstanceSpec`** (`blueprintRef + repoSha + deploymentConfig + genome`;
+`capture` / `boot` / `vary`), which lives at
+`packages/operator-core/lib/instance-spec/` and is exposed as the
+`instance:capture` / `instance:boot` / `instance:clone` agent tools
+(`packages/operator-core/lib/agent-tools/instance/`). So the "fork a captured
+harness" use case this whole spec was written around is now served by
+InstanceSpec, not by snapshots.
+
+**Per-harness sharing as a Comb/Cupboard product surface was retired too**
+(plan `comb-retire-per-harness-sharing-2026-06-11`): the ShareWizard, the
 `share/finalize` + `binding/resolve` + harness `cupboard/publish` routes, and
 the storefront's per-harness Join are gone. Sharing now happens at the **Hive**
 level — `discovery:set_hive` publishes a hive to the P2P directory, the Comb
 indexes its member repos (`hive_pubkey` rows), and joiners join the hive
 (`shared-hive-federation-2026-06-08`, `hive-from-github-url-2026-06-11`).
-`kind='harness'` Cupboard rows remain as the repo→Hive lookup index only.
-Successor product work: `comb-hive-native-sharing-2026-06-11`.
-</Aside>
+`kind='harness'` Cupboard rows remain as the repo→Hive lookup index only;
+the live Cupboard `LISTING_KINDS` are `['harness', 'blueprint', 'plugin',
+'tool-pack', 'learning-pack']` — there is no `snapshot` kind (the D1
+`tarball_*` columns from migration 005 remain only as vestigial/nullable
+columns). Successor product work: `comb-hive-native-sharing-2026-06-11`.
 
-<Aside type="note" title="Status: shipped — but the cross-machine transport is the Cupboard, NOT Gitea/Cosign">
-**Snapshots** — sharing a working harness instance (template + state) so
-other developers can fork and continue it. **Local capture + restore**
-shipped (`libs/papercusp-export-state/`; the snapshot endpoint routes
-`create` / `instantiate` / `publish` / `retract` under
-`packages/operator-core/lib/endpoint-route/routes/snapshots/`; the
-`snapshots:list` / `snapshots:get` agent tools).
+**Note — a different, still-live "iteration snapshot" concept exists.** The
+`harness_shared.harness_snapshots` / `harness_snapshots_consolidated` tables
+(`features_json` / `validation_md` / `iter_num`, trigger-fed + git-exported)
+are a SEPARATE, still-live per-iteration snapshot concept — deliberately NOT
+dropped by migration 199. Do not conflate them with this retired export-state
+snapshot system.
 
-**Cross-machine sharing also shipped — but via the in-app Cupboard, not
-the Gitea/Forgejo + ORAS + Cosign + papercuspai.com design that sections
-15.3–15.8, 15.10, 15.21–15.23 describe.** A snapshot is published to the
-Cupboard (`apps/operator-public`, Cloudflare Workers + D1) as a
-`listing_kind='snapshot'` whose tarball is **content-addressed by SHA-256**
-and stored in **R2** (`snapshots/<hash>.tar.gz`); a consumer forks it via
-`fork-from-cupboard` (`…/routes/snapshots/fork-from-cupboard.ts`). Auth is
-a **GitHub bearer** (validated against `api.github.com/user`), publisher
-trust is the GitHub repo-permission signal + an optional Ed25519
-device-pubkey ↔ login gist attestation — **not** Cosign/Sigstore/Rekor,
-`tenantId`/`tenantSecret`, or OCI manifests. There is no Gitea instance.
-
-Treat the Gitea/OCI/Cosign/ORAS material below, and the
-`papercuspai.com/snapshots` marketplace UI, as **superseded design
-history**; the redaction / capture-pass / restore-pass / migration /
-abuse-and-moderation reasoning (§15.4–15.6, §15.9, §15.11, §15.24) remains
-the conceptual reference. Eight rounds of architectural research and
-critique have been incorporated.
-
-**This is a different feature from §16 (Publishing).** Snapshots ship the
-entire working harness (DB rows + filesystem + git history) to a marketplace
-for other operators to fork. Publishing ships a static-site bundle of build
-output to a public web URL for end users. Both features are real and both
-ship. They share infrastructure (auth, redaction, audit log) but have
-distinct artifact formats, audiences, and lifecycles. The dashboard exposes
-two top-right buttons: **Save snapshot** (this spec) and **Publish website**
-(§16). See §15.13 for the full sibling-feature comparison.
+Everything below — the OCI/Gitea/Cosign/ORAS/Cupboard transport, the
+`papercuspai.com/snapshots` marketplace UI, the capture / restore / migration /
+redaction / abuse-and-moderation passes — is preserved as **superseded design
+history**. It never described shipped code at the time it was written, and the
+code it does describe no longer exists in the live tree; the conceptual
+reasoning (redaction, cross-harness leak prevention, deserialization safety,
+schema-migration drift) is the only part worth mining. Note also that **§16
+(Publishing) is a separate feature** — it ships a static-site bundle to a
+public web URL via Cloudflare Pages and the genuinely-live
+`papercusp-publish-auth` library (`libs/papercusp-publish-auth/`), unaffected
+by this retirement.
 </Aside>
 
 <Aside type="note" title="Changes in v1.2 (from v1.1 review feedback, rounds 7-8)">
@@ -417,8 +430,10 @@ order; no pluggable actions in v1.
      > staging/state/shared-routines.csv
    ```
 
-   The registry lives in `apps/papercusp/lib/snapshot/shared-table-filters.ts`
-   with one entry per shared table. CI enforces (see §15.22): any new
+   The registry was implemented at
+   `_retired/snapshot-system/papercusp-export-state/src/shared-table-filters.ts`
+   (the planned `apps/papercusp/lib/snapshot/` location never existed — there is
+   no `papercusp` app) with one entry per shared table. CI enforces (see §15.22): any new
    table added to `libs/db/sql/*.sql` under `harness_shared.*` without
    a corresponding registry entry fails the build. Forces the
    leak-prevention conversation at PR time, not at incident time.
@@ -1167,11 +1182,13 @@ audit log. Different artifact, different audience, different lifecycle.
 - D1 audit log
 - Canonical-manifest sha256 hashing (RFC 8785 JCS)
 
-**Diverging infrastructure** (separate libraries — see §15.21):
-- `papercusp-export-build` — for publishing's smaller, build-output-specific
-  capture
-- `papercusp-export-state` — for snapshots' bigger, harness-state-specific
-  capture (this spec)
+**Diverging infrastructure** (separate libraries — see §15.21; neither is live
+today: `papercusp-export-build` was never built, and `papercusp-export-state`
+is retired to `_retired/snapshot-system/`):
+- `papercusp-export-build` — was to provide publishing's smaller,
+  build-output-specific capture (never created)
+- `papercusp-export-state` — provided snapshots' bigger,
+  harness-state-specific capture (this spec; retired)
 
 The substrate's two top-right buttons:
 - **Publish website** → §16 flow (build + cloudflare-pages-hosted)
@@ -1558,8 +1575,11 @@ On `npm install -g papercusp`, postinstall script:
      - gitleaks (https://github.com/zricethezav/gitleaks/releases/...)
      - cosign (https://github.com/sigstore/cosign/releases/...)
      - oras (https://github.com/oras-project/oras/releases/...)
-  3. Verify sha256 against substrate-pinned manifest in
-     `apps/papercusp/lib/snapshot/binary-versions.ts`.
+  3. Verify sha256 against the substrate-pinned manifest (the binary probes
+     lived in the now-retired export-state lib at
+     `_retired/snapshot-system/papercusp-export-state/src/binaries.ts`; the
+     planned `apps/papercusp/lib/snapshot/binary-versions.ts` path never
+     existed — there is no `papercusp` app).
   4. Write to ~/.papercusp/bin/.
   5. Add to PATH for substrate's child processes (NOT user shell).
 ```
@@ -1604,9 +1624,10 @@ Used by both publishing and snapshots. Ships:
 
 Located at `libs/papercusp-publish-auth/`.
 
-### `papercusp-export-build` — publishing-specific (~400 LOC)
+### `papercusp-export-build` — publishing-specific (~400 LOC) — NEVER BUILT
 
-Used by §16 Publishing only. Ships:
+This planned publishing-only library was never created (no
+`libs/papercusp-export-build/` ever existed in the tree). It was to ship:
 
 - File selection from `<exportDir>/` (built site output)
 - Light redaction policy (build artifacts rarely leak secrets;
@@ -1614,11 +1635,11 @@ Used by §16 Publishing only. Ships:
 - Tarball composition optimized for 5-25 MB sites
 - Cloudflare Pages deployment client
 
-Located at `libs/papercusp-export-build/`.
+### `papercusp-export-state` — snapshot-specific (~600 LOC) — RETIRED
 
-### `papercusp-export-state` — snapshot-specific (~600 LOC)
-
-Used by §15 Snapshots only (this spec). Ships:
+This snapshot-only library was built but is now **retired** along with the rest
+of the snapshot system; it lives at
+`_retired/snapshot-system/papercusp-export-state/`, not `libs/`. It shipped:
 
 - Whole-harness file selection with denylist
 - Heavy redaction policy (source + .papercusp/ + agent transcripts)
@@ -1627,7 +1648,8 @@ Used by §15 Snapshots only (this spec). Ships:
 - ALTER SCHEMA-based restore flow
 - Slug rewrite over text artifacts
 
-Located at `libs/papercusp-export-state/`.
+Of the three libraries this section names, **only `papercusp-publish-auth`
+(`libs/papercusp-publish-auth/`) is genuinely live.**
 
 ### Why three libraries instead of one
 
@@ -1655,8 +1677,10 @@ months of shipping.
 ### Shared-table-filter-registry check
 
 When a developer adds a new `harness_shared.<table>` in
-`libs/db/sql/*.sql`, the corresponding entry must also exist in
-`apps/papercusp/lib/snapshot/shared-table-filters.ts`. Otherwise
+`libs/db/sql/*.sql`, the corresponding entry must also exist in the
+shared-table-filter registry (implemented at
+`_retired/snapshot-system/papercusp-export-state/src/shared-table-filters.ts`;
+the planned `apps/papercusp/lib/snapshot/` location never existed). Otherwise
 snapshots from harnesses that have rows in that table would silently
 omit them on capture, or include all rows globally on capture (cross-
 harness leak).
@@ -1763,7 +1787,7 @@ artifacts, or `<projectDir>/.papercusp/` fails the build with a clear
 - name: Check forbidden deserializers in snapshot code paths
   run: |
     npx tsx scripts/check-forbidden-deserializers.ts \
-      --paths apps/papercusp/lib/snapshot/ libs/papercusp-export-state/
+      --paths _retired/snapshot-system/papercusp-export-state/
 ```
 
 ## 15.23 Trust model

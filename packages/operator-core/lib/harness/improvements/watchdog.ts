@@ -2238,8 +2238,10 @@ export async function runWatchdogTick(
 
 // ── P-012 (audit): routine-tunable options ───────────────────────────────────
 
-/** The numeric tick options tunable from the routine's `payload_template` (audit P-012). */
-const PAYLOAD_TUNABLE_KEYS = [
+/** The numeric tick options tunable from the routine's `payload_template` (audit P-012).
+ *  Exported so the `improvements:set-watchdog-tunables` control tool
+ *  (live-configurability-audit P-004) validates writes against the same whitelist. */
+export const PAYLOAD_TUNABLE_KEYS = [
   // planning caps
   'maxPerTick', 'perSourceCap',
   // collector bars (CollectOptions)

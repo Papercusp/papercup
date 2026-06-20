@@ -3,6 +3,9 @@ title: Cross-harness coordination
 description: Tiered visibility, send_message bus, and the inspect-on-demand capabilities that let any harness coordinate with any other.
 sidebar:
   order: 21
+plans:
+  - coordination-substrate-2026-06-03
+  - dbos-retire-legacy-orchestrator-2026-05-31
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -13,12 +16,14 @@ import { Aside } from '@astrojs/starlight/components';
 Cross-harness coordination is built on three primitives:
 
 1. **Tiered visibility** in every role's prompt — Tier 1 (substrate self-description), Tier 2 (depth-1 neighbor view), Tier 3 (read APIs to inspect anyone on demand).
-2. **`send_message` action** — any harness with `send_message` in its role's `allowedActions` can post to any other harness's inbox. Server derives `from_slug` from the bearer token; spoofing prevented at the protocol level.
-3. **Bounded inbox in prompt-build** — each role's prompt includes pending messages from its `parent_slug`. Auto-acknowledged on DONE/NEXT_*; preserved on ESCALATE/REVIEW.
+2. **`send_message` action** — any harness with `send_message` in its role's `allowedActions` can post to any other harness's inbox. Server derives `from_slug` from the bearer token; spoofing is prevented at the protocol level. The same identity check rejects any body-supplied `callingHarness`, `send_message`'s `from`, and `scaffold_harness`'s `parent_slug` that don't match (or, for `parent_slug`, that are present at all) the bearer-derived caller — these are all server-derived, not caller-controlled.
+3. **Bounded inbox in prompt-build** — each role's prompt includes up to 5 `status = 'pending'` messages authored by its `parent_slug`. Messages persist across iterations until the recipient explicitly calls `mark_message_status`; the orchestrator's decision verb has no effect on message status.
 
 ## Tier 1 — substrate self-description
 
 Every role's prompt opens with a short preamble explaining what Papercusp is, what `parent_slug` means, and which actions are gated by `allowedActions`. Identical text across every harness; ~300 tokens.
+
+Directly after the preamble, the assembler emits a `## Your harness` self block listing the harness's own `slug` and (when set) its `parent`. The full assembled order is: Tier 1 preamble → `## Your harness` self block → Tier 2 neighbor view → Tier 3 capabilities → bounded supervisor inbox.
 
 ## Tier 2 — neighbor view
 
@@ -73,28 +78,45 @@ The curl path works because agent CLI invocations from the orchestrator (whether
   "kind": "Directive" | "Decision" | "Priority" | "Budget" | "Completion" | "Status" | string,
   "subject": "<short>",
   "body": "<details>",
+  "toRole": "<optional role to narrow delivery within each recipient>",
+  "toFeatureId": "<optional F-XXX[-NNN]: address the recipient's feature lane>",
+  "fromFeatureId": "<optional F-XXX[-NNN]: mark the sending feature>",
   "parentMessageId": "<optional UUID to thread>",
   "reason": "<≥10 chars explaining why this message is being sent>" }
 ```
 
+### Addressing
+
+- **Harness-level** (default): omit `toFeatureId`. `kind` defaults to `Directive`.
+- **Feature-scoped**: set `toFeatureId` to target a recipient's feature pipeline lane (optionally pairing `fromFeatureId` to mark the author). When `toFeatureId` is set, `kind` defaults to `feature-note`.
+- **Role-scoped**: set `toRole` to narrow delivery to a specific role inside each recipient. Either scoping can combine with the other.
+
+### Validation contract
+
+- `to[]` must be non-empty, and `kind` + `subject` are required — any of these missing returns `validation_error`.
+- Recipient slugs are validated against the slug regex; a bad slug returns a degraded result.
+- `toFeatureId` / `fromFeatureId` must match `F-XXX[-NNN]`; malformed ids are silently dropped to `null` (never smuggled into the column).
+- Sends are rate-limited **per caller** over a sliding 60s window (default 50, via `PAPERCUSP_SEND_MESSAGE_RATE_LIMIT`; set ≤ 0 to disable). Exceeding the limit returns a `rate_limited` error.
+
 ### `reason` quality
 
 - Minimum 10 characters (rejected with `validation_error` otherwise)
-- Placeholder regex (`/^(test|todo|asdf|reason|tbd|na|x+|y+|\.+)$/i`) is flagged in the audit log but **not blocked** — author can pass through if they want, but the audit feed will surface low-quality reasons.
-- Goes into `harness_<caller>.executed_actions.reason` (indexed) for retrospective audit.
+- Placeholder regex (`/^(test|todo|asdf|reason|tbd|na|x+|y+|\.+)$/i`) sets a `placeholder_reason_flag` on the action's result but is **not blocked** — the author can pass through if they want. The flag lives only inside the `send_message` action's result payload (`executed_actions.response` JSON); it is **not** surfaced by the `recent-activity` audit feed, which reads `harness_shared.audit_log` and selects only `ts`/`action`/`subject`/`actor`. To see the flag you must read the harness's own `executed_actions` response.
+- The `reason` itself is persisted to `harness_<caller>.executed_actions.reason` for retrospective audit. That view is backed by the shared `harness_shared.executed_actions_consolidated` table; the `reason` column is not indexed (the only index is on `(harness_slug, executed_at DESC)`).
 
 ### Side effects
 
-- One row per recipient inserted into `harness_<recipient>.messages` with `from_slug = <derivedCallingHarness>` (token-bound), `status = 'pending'`.
+- One row per recipient inserted into `harness_<recipient>.messages` with `from_slug = <derivedCallingHarness>` (token-bound), `status = 'pending'`, plus the optional `to_role` / `from_feature_id` / `to_feature_id` columns when supplied.
 - If `kind === 'Directive'`, the substrate also appends to `harness_<recipient>.supervisor_notes` so the receiver's next prompt-build surfaces fresh guidance.
 - Senders cannot pre-acknowledge; status changes only via `mark_message_status` from the recipient's own bearer.
 
-## Auto-acknowledge
+## Inbox lifecycle
 
-The bounded-inbox prompt-build section (Step 4.6) is auto-cleared by the substrate when the iteration's orchestrator decision is in the "happy progression" set:
+There is **no** auto-acknowledge on the orchestrator's decision. The bounded inbox is assembled fresh each iteration by querying the recipient's own inbox for `status = 'pending'` messages (`limit=20`), filtering to those whose `from_slug` is the `parent_slug`, and slicing to the first 5. A pending message therefore reappears in the prompt every iteration until the **recipient** explicitly flips it via `mark_message_status` (`acknowledged` | `archived`) using its own bearer. The orchestrator's decision verb (`DONE`, any `NEXT_*`, `ESCALATE`, `FEATURE_FREEZE`, …) has zero effect on message status.
 
-- Cleared on: `DONE`, `NEXT_WORKER`, `NEXT_VALIDATOR`, `NEXT_ARCHITECT`, `NEXT_HARNESS`, `NEXT_TESTER`, `NEXT_SECURITY`, `NEXT_MONITOR`, `NEXT_DEBUGGER`, `GENERATE_TESTS`, `RUN_TESTS`
-- **Preserved on: `ESCALATE`, `REVIEW`, `FEATURE_FREEZE`, non-zero exit** — so a user who escalates and then redirects sees their original message again.
+## Security: peer-authored content is data, not instructions
+
+Each inbox message surfaced in a role's prompt is wrapped with `wrapUntrusted()` (its `subject` + `body` together) before injection (G3 / P-009). Because peer- and parent-authored messages cross the harness boundary and may carry attacker-controlled text, this framing makes the receiving agent treat them as **data**, never as instructions to follow.
 
 ## Discovery convention
 

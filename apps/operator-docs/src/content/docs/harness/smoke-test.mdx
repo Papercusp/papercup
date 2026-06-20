@@ -42,22 +42,24 @@ only — pushes a high-importance `smoke-fail` attention item. So the sentinels
 `smoke_test_clean` reads are exactly what this live endpoint writes; they are
 not only "earlier engines / out-of-band".
 
-**The health signal.** The FS sentinel feeds two differently-named composite
-checks off the same `smoke-failure.md` file: `smoke_test_clean` (the
+**The health signal.** A smoke failure surfaces through two differently-named
+composite checks with **different data sources**: `smoke_test_clean` (the
 harness-readers composite health in
-`packages/operator-core/lib/harness-readers.ts`) and `smoke_passing` (the
-operator-UI `HealthBadge`). Both fail whenever a `smoke-failure.md` sentinel
-exists in the harness state dir. Separately, the PG `harness_smoke_test` row
-(written by the smoke-test-event route above) is the surface the Planning
-attention feed reads to list failing harnesses — so a failed smoke run is
-visible across both the FS-health checks and the Planning feed.
+`packages/operator-core/lib/harness-readers.ts`) fails when the
+`smoke-failure.md` FS sentinel exists in the harness state dir; `smoke_passing`
+(the operator-UI `HealthBadge`) fails when the latest PG `harness_smoke_test`
+row has `status: 'fail'` (the "see smoke-failure.md" text it shows is only a
+label, not its source). That same `harness_smoke_test` row (written by the
+smoke-test-event route above) is also what the Planning attention feed reads to
+list failing harnesses — so a failed smoke run is visible across the FS-fed
+health check, the PG-fed badge, and the Planning feed.
 
 **The hooks.** `on-smoke-pass` / `on-smoke-fail` are catalogued in the hook
 registry (`packages/operator-core/lib/known-hooks.ts`) with `status: 'lost'` —
 bash-era [lifecycle](/internal/docs/harness/hooks) points the bash→DBOS
 migration dropped (EI-95 backlog): "not fired, not advertised". `runHook(name)`
 itself takes any string and just looks for a `<name>.sh` file (no validation,
-and a test covers the `on-smoke-pass` env shape), but `getKnownHooks()` returns
+and a test exercises `on-smoke-pass` only for its `<ts>-<name>.log` log-file naming, not an env shape), but `getKnownHooks()` returns
 only the `live` set (`afterDone`, `on-escalate`), and the hook write/delete API
 rejects any non-live name with `unknown hook: <name>`. So an operator cannot
 install an `on-smoke-pass.sh` / `on-smoke-fail.sh` hook through the API, and

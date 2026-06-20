@@ -1,18 +1,28 @@
 ---
 title: Plugin runtime — pre-release hardening + roadmap
 description: What landed for v1.0, what was deferred, and what's deliberately not on the path.
+plans:
+  - plugin-mcp-migration-brief-2026-05-10
+  - self-contained-migration-baseline-2026-06-02
+  - revive-plugin-system-2026-06-04
+  - plugin-system-hive-port-2026-06-11
+  - tool-distribution-granularity-2026-06-05
 ---
 
 This page tracks the plugin-runtime hardening pass driven by feedback
-from the Rust-port plugin agent (2026-05-10). The pass is split into six
-batches; A–E shipped pre-release, F is intentionally deferred.
+from the Rust-port plugin agent (2026-05-10). The original pass was split
+into six batches; A–E shipped pre-release, F was intentionally deferred
+(and has since shipped). Two later batches — **G** (out-of-process WASM
+and daemon runtimes) and **H** (sandboxed iframe UI surfaces) — landed
+after the A–F hardening pass and supersede the original in-process-only
+non-goal; see [Post-A–F: out-of-process runtimes](#post-af-out-of-process-runtimes).
 
 ## Shipped pre-release
 
 | Batch | Theme | Key changes |
 |---|---|---|
-| **A** — Manifest hardening | Reject silent typos | `papercusp-plugin.schema.json` + ajv `additionalProperties:false`; plugin id regex `^(@scope/)?[a-z][a-z0-9_.-]{2,62}$`; bare-name length floor; `protocol`/`papercusp` separated; hookbus event-namespace rule (substrate-reserved names rejected, plugin events must be `<id>.<rest>`); `apiRoutes` is a structural `PluginApiRoutes` not `unknown`. |
-| **B** — Two-tier capability check | Biggest security win | `CapabilityCheckContext.granted` ANDs with manifest. PG-canonical store `harness_shared.plugin_capability_grants` (Migration 051). Boot-time silent backfill from `enabled-plugins.json` + legacy file so existing harnesses don't break. `/api/plugins/grants` GET/POST. |
+| **A** — Manifest hardening | Reject silent typos | `papercusp-plugin.schema.json` + ajv `additionalProperties:false`; plugin id regex is the scoped form `^(@[a-z][a-z0-9_.-]{0,62}/)?[a-z][a-z0-9_.-]{2,62}$` (the validator's `^(@scope/)?…` error hint abbreviates it — the scope segment is itself a bounded `[a-z][a-z0-9_.-]{0,62}`); bare-name length floor of 3; `protocol`/`papercusp` separated; `apiRoutes` is a structural `PluginApiRoutes` not `unknown`. |
+| **B** — Two-tier capability check | Biggest security win | `CapabilityCheckContext.granted` ANDs with manifest. PG-canonical store `harness_shared.plugin_capability_grants` (Migration 051). The upgrade is silent without a boot backfill: when the grant set is empty, `loadGrantedCapsSafe` returns `undefined` (not `[]`), and `hasCapability` treats `granted === undefined` as the legacy single-tier path — manifest-declared caps still pass. Grants are written at install/enable time via `grantCapabilities` (the `/api/plugins/grants` POST), not at boot. `/api/plugins/grants` GET/POST. |
 | **C** — Lifecycle + audit correctness | Debuggable in prod | `init/onLoad` failure rolls back `initialized`/`registries`/`grants` so a retry re-runs cleanly. `recordAudit` is async, `invoke()` awaits it, audit-write failure becomes the action's failure (fail-closed). PgAuditWriter against `harness_shared.plugin_audit_log`; `NODE_ENV=test` keeps in-memory. AuditRow gains `capabilitiesUsed[]`, `killedByTimeout`, `stdout/stderrBytes`, `truncated`. New hookbus isolation tests pin the "one bad handler doesn't abort the chain" contract. |
 | **D** — Spawn hardening | Riskiest API tightened | `FROZEN_PATH` snapshot at host startup; spawn always uses it regardless of `process.env.PATH` mutation. Absolute paths require the manifest to declare the exact path or a covering wildcard like `compute:exec:/usr/bin/*`. Relative paths still rejected. |
 | **E** — Author tooling | Errors at build, not deploy | `PROTOCOL_VERSION = '1.0.0'`; plugins may declare `protocol: '^1.0'` separate from `papercusp` runtime range. `papercusp plugin lint` runs the loader's manifest validation + entry-point check + capabilities sanity at build time. |

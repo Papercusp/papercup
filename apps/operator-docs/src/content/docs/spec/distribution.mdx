@@ -2,6 +2,14 @@
 title: 11. Distribution
 sidebar:
   order: 13
+plans:
+  - papercusp-dogfood-v5-2026-05-23
+  - papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24
+  - revive-cupboard-distribution-2026-06-04
+  - harness-blueprint-distribution-2026-06-03
+  - retire-snapshots-instance-spec-2026-06-09
+  - learning-packs-2026-06-11
+  - tool-distribution-granularity-2026-06-05
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -17,15 +25,35 @@ claims, the `marketplace-api`/`marketplace-site` apps, the Gitea/OCI and
 `marketplace-api`/`marketplace-site` apps are gone; the old
 `apps/papercup` reference install is retired to `_retired/papercup/`.
 
-The Cupboard is **one storefront with several listing kinds**
-(`harness` → join, `blueprint` → fork, `plugin`/`pack` →
-install), keyed on the GitHub-backed project remote. Auth is a GitHub
-bearer (validated against `https://api.github.com/user`), **not**
-namespace OAuth + Ed25519-server-signing as §11.6 describes; publisher
-trust is the GitHub repo-permission signal plus an optional Ed25519
-device-pubkey ↔ login attestation (gist-bound). See
-`apps/operator-public/README.md` and the `/listings` route
-(`apps/operator-public/src/routes/listings.ts`).
+The Cupboard is **one storefront with five listing kinds**
+(`LISTING_KINDS` in `apps/operator-public/src/db.ts`): `harness` →
+join, `blueprint` → fork, `plugin` → install, `tool-pack` → install (a
+runtime-less code-tool pack), and `learning-pack` → install (curated
+hive learnings). `pack` is **not** a current kind — it survives only as
+a normalized wire alias for older clients (`normalizeListingKind`:
+`pack` → `tool-pack`). Listings are keyed on the GitHub-backed project
+remote.
+
+Instruction-carrying kinds (`learning-pack`, `blueprint`) publish as
+`pending` and are publicly invisible until an operator approves them;
+code kinds (`harness`, `plugin`, `tool-pack`) publish as `approved`
+immediately. A non-approved row is `not_found` to everyone except its
+publisher. See `REVIEW_POLICY_KINDS` in
+`apps/operator-public/src/routes/listings.ts`.
+
+Auth is a GitHub bearer (validated against
+`https://api.github.com/user`), **not** namespace OAuth +
+Ed25519-server-signing as §11.6 describes; publisher trust is the
+GitHub repo-permission signal plus an optional Ed25519 device-pubkey ↔
+login attestation (gist-bound). The live route surface is broader than
+just `/listings`: there is also the `/harnesses*` back-compat view
+(`fixedKind: 'harness'`), the repo → harness binding lookup
+(`GET /binding/:github_repository_id`), abuse reporting
+(`POST /reports`), and an operator moderation surface (`/admin`, with a
+publisher-pubkey ban-list). The publish path enforces private-repo
+rejection, a 5/hr-per-user publish cap, and pubkey ban-list filtering.
+See `apps/operator-public/README.md` and the route handlers under
+`apps/operator-public/src/routes/`.
 
 The sections below are **retained as design history**; treat the
 namespace-policy / federation / SBOM / webhook material as aspirational,

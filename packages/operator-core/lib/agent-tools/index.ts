@@ -189,6 +189,8 @@ import './accounts/accounts';
 import './accounts/link';
 // accounts-pool-tab-2026-06-15 P-004 — the owner's session-now account override tools.
 import './accounts/session-override';
+// gateway-live-control-and-egress-plan-2026-06-20 B-GWCTL — gateway:status / gateway:reload (hot-config).
+import './gateway/gateway';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';
@@ -438,6 +440,7 @@ import './improvements/resolve';
 import './improvements/watchdog-status';
 import './improvements/keyless-digest';
 import './improvements/learning-loops';
+import './improvements/set-watchdog-tunables';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

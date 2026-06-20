@@ -2,6 +2,14 @@
 title: 14. Plugin marketplace — design proposal (v1, post-review-round-2)
 sidebar:
   order: 14
+plans:
+  - revive-plugin-system-2026-06-04
+  - revive-cupboard-distribution-2026-06-04
+  - papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24
+  - tool-distribution-granularity-2026-06-05
+  - retire-snapshots-instance-spec-2026-06-09
+  - learning-packs-2026-06-11
+  - plugin-system-hive-port-2026-06-11
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -13,10 +21,13 @@ The plugin **distribution** model it proposes (a `kind` discriminator on
 `actions` primitive, lockfiles) has shipped — but the storefront is now the
 **in-app Cupboard** (`apps/operator-public` = `@papercusp/cupboard-worker`, a
 Cloudflare Worker + D1, live at `cupboard.papercusp.com`), not a
-`papercuspai.com/marketplace/` site. The Cupboard is a single catalog with four
-listing **kinds** — `plugin` (install), `blueprint` (fork), `snapshot` (fork),
-and `harness` (join) — exposed over HTTP (`/api/cupboard/*`), with no
-`cupboard:*` MCP verbs. Plugins install to `~/.papercusp/global-plugins/<slug>/`
+`papercuspai.com/marketplace/` site. The Cupboard is a single catalog with five
+listing **kinds** — `harness` (join), `blueprint` (fork), `plugin` (install),
+`tool-pack` (install), and `learning-pack` (install) — exposed over HTTP at the
+worker root: `/listings` (kind-aware) and `/harnesses` (the `kind='harness'`
+view), with no `cupboard:*` MCP verbs. (The original proposal's `snapshot` kind
+was **retired** — `retire-snapshots-instance-spec-2026-06-09` D-005.) Plugins
+install to `~/.papercusp/global-plugins/<slug>/`
 and mount under `/api/plugins/<name>/`. Treat the URLs, package names
 (`papercusp-marketplace`, `papercusp-plugin-sdk`), and `~/.papercusp/installed/`
 paths below as the historical proposal's wording, not current identifiers; the
@@ -53,7 +64,7 @@ capabilities that any template can pull in.
 | Install scope | Per-instance (each `papercusp run` produces a fresh instance) | Per-machine (installed globally; enabled per harness instance) |
 | Examples | papercup-coding, papercup-org, "research-org", "habit-tracker" | cloudflare-pages, vscode-server, slack-notifier, gemini-narrator |
 | Composition | One template per harness | Multiple plugins per harness instance |
-| Manifest field | `kind: 'template'` (default) | `kind: 'plugin'` |
+| Manifest field | `kind: 'template'` | `kind: 'plugin'` (the default) |
 | Closest analog | WordPress *themes*; npm-create-* | WordPress *plugins*; VS Code *extensions* |
 | Lifecycle hook | `papercusp run` — instantiates a harness from the template | Substrate boot — discovers + mounts global-plugins for active harnesses |
 
@@ -106,6 +117,29 @@ Both flows go through the same publish + signing + retraction infrastructure.
 Operators get the same ops dashboard counts. Authors see "5 templates and
 12 plugins published" on their profile.
 
+**Shipped `kind` enum (a third category landed).** The proposal frames the world
+as templates vs plugins, but the manifest `kind` enum that shipped is
+`plugin | pack | template | snapshot | service | theme | harness`, and the
+default is **`plugin`** (not `template` as this proposal originally said). `'pack'`
+is a real third distribution category: a **runtime-less code-tool pack** — tools
+only, no `ui`/`roles`/`routines`/`actions`, and the runtime must stay `js`. The
+loader specially constrains it, rejecting any of those contributions on a pack
+(`tool-distribution-granularity-2026-06-05` D-001/D-004). `'snapshot'`,
+`'service'`, `'theme'`, and `'harness'` are reserved/dormant — the loader treats
+every non-`'pack'` value as a default plugin. The Cupboard's `tool-pack` listing
+kind is how these packs surface in the storefront (and `learning-pack` is its
+sibling install kind for curated hive learnings).
+
+**Plugins ship in one of three runtimes.** Orthogonal to the action handler
+model, a plugin declares a `runtime` descriptor in `papercusp.json`. It defaults
+to `{ kind: 'js' }`; the other two are `wasm` (a `wasm32-wasip2` component
+artifact, loaded via `@papercusp/plugin-loader/wasm`, with a hard
+linear-memory budget) and `daemon` (a long-running stdio JSON-RPC peer, loaded
+via `@papercusp/plugin-loader/daemon`, with a restart policy). Action-invocation
+`concurrency` is `serial` or `parallel` — WASM defaults to serial (mpsc actor),
+daemon to parallel. JS plugins keep the in-process model the rest of this page
+describes.
+
 ### 14.3.2 Plugin lifecycle: install-time consent, harness-time mount
 
 A plugin is **installed once globally** — capability-consent prompt at that
@@ -116,43 +150,33 @@ cloudflare-pages --harness sheets-clone`).
 This matches WordPress's "active plugins per site" + Backstage's "plugins
 mounted into the app".
 
-### 14.3.3 New primitive: `actions` (button-shaped, presence-determined runtime)
+### 14.3.3 New primitive: `actions` (button-shaped, server runtime)
 
 The current SDK has hooks, routes, UI, routines, schema. Missing: a
 user-triggered action that the harness UI can surface as a button.
 
 ```typescript
 export interface ActionDefinition {
-  /** Stable name within the plugin. */
+  /** Action name. Must match a key registered via ctx.actions.register(). */
   name: string;
-  /** Display label in UI. */
-  label: string;
-  /** Lucide icon name. */
-  icon?: string;
-  /** Where to surface — multiple allowed. Per-id capabilities gate each surface. */
-  surfaces: Array<'harness-sidebar' | 'harness-toolbar' | 'feature-row'>;
-  /** Capabilities required (must be a subset of plugin's manifest capabilities). */
-  capabilities: Capability[];
-  /** JSON schema for parameters; UI auto-generates a form (see §14.3.5). */
-  paramsSchema?: JsonSchema;
-  /** Maximum execution time. Defaults to 30s. */
-  defaultTimeoutSec?: number;
+  /** Human-readable button label for harness-toolbar etc. */
+  label?: string;
+  /** Where this action surfaces in the host UI / lifecycle. */
+  surfaces?: ('mission-done' | 'harness-toolbar' | 'feature-row' | 'plugin-detail' | string)[];
+  /** Capabilities this action additionally requires beyond the plugin's own. */
+  capabilities?: Capability[];
+  /** JSON-Schema for the params object the handler receives (see §14.3.5). */
+  paramsSchema?: Record<string, unknown>;
 
   /**
-   * Server-side declaration. Presence (alone or alongside `clientHandler`)
-   * determines that this action has a server runtime. The actual handler is
-   * registered imperatively from the plugin's `init()` via
-   * `plugin.actions.register(name, handler)`. The manifest carries no
-   * function references — they don't survive serialization or postMessage.
+   * Server-side handler hints. The actual handler is registered imperatively
+   * from the plugin's `init()` via `ctx.actions.register(name, handler)`. The
+   * manifest carries no function references — they don't survive serialization.
    */
-  serverHandler?: { timeoutSec?: number };
-
-  /**
-   * Client-side declaration. Presence determines that this action has a
-   * client runtime. The component is mounted in the iframe's plugin-bridge
-   * and the click is dispatched to it.
-   */
-  clientHandler?: { component: string };
+  serverHandler?: {
+    /** Per-invocation timeout in seconds (host enforces via AbortSignal). */
+    timeoutSec?: number;
+  };
 
   // Note: actions are strictly USER-CLICKED. There is no `autoOn` field.
   // To auto-fire an action on a substrate event (e.g. `mission.done`), the
@@ -162,12 +186,24 @@ export interface ActionDefinition {
 }
 ```
 
-**Runtime is presence-determined**:
-- `serverHandler` only → server runtime (Node-only, full DI, capability-checked)
-- `clientHandler` only → client runtime (iframe, postMessage RPC, network-bound capabilities)
-- Both present → **hybrid** (substrate routes preview to client, commit to server)
-  - **v1 rejects manifests with both** at load time, with a clear `not-yet-implemented: hybrid actions` error
-  - **v1.5 lifts the rejection** — no manifest schema change at any point
+**Actions are server-runtime only.** The proposal originally sketched a
+presence-determined dispatch (`serverHandler` → server, `clientHandler` →
+iframe, both → hybrid, with a load-time rejection of hybrid manifests). The
+shipped `ActionDefinition` has **no `clientHandler` field** — there is no client
+or hybrid runtime, no presence-determined dispatch, and no hybrid-rejection code
+in the loader or SDK. Every action handler runs in the server runtime (Node, full
+DI, capability-checked), registered imperatively from `init()` and dispatched by
+the host on a surface event. The forwards-compatibility hook for an iframe
+sandbox (§14.9.5) is the `serverHandler` declaration itself — when a client
+runtime lands, the manifest gains a sibling declaration without rewriting the
+existing server actions.
+
+The `surfaces` enum that shipped is `'mission-done' | 'harness-toolbar' |
+'feature-row' | 'plugin-detail'` (plus an open string for forward-compat) — note
+`harness-sidebar` from the original sketch is not a defined surface, and
+`mission-done`/`plugin-detail` are live additions. There is no `icon` field and
+no `defaultTimeoutSec` field on the action; the per-action timeout is set via
+`serverHandler.timeoutSec`.
 
 This pattern mirrors VS Code's `contributes.commands` (declarative) +
 `commands.registerCommand` (imperative). It avoids the "function in JSON
@@ -238,15 +274,25 @@ In the shipped SDK, the coarse no-id forms (`ui:dashboard-tab`, `ui:sidebar-item
 `ui:harness-route`, `ui:tui-pane`) are what landed — the per-id capability
 granularity in this section is design intent, not the current `Capability` type.
 
+The shipped UI-surface set is therefore **`react` / `iframe` / `tui-pane`**, and
+`ui:tui-pane` is a live capability in addition to the dashboard-tab / sidebar-item
+/ harness-route forms above. A `tui-pane` surface contributes a terminal pane
+hosted by the pui (`apps/tui`): the pui allocates a managed pane and runs the
+surface's declared `command` argv in it (gated by `compute:exec:<command[0]>`,
+the same exec-gate as `ctx.spawn`), and the plugin renders its own content
+(ratatui or any TUI). The desktop targets (dashboard-tab / harness-route) are
+deferred with desktop; the terminal target is what shipped first
+(`revive-plugin-system-2026-06-04` D-002).
+
 ### 14.3.6 Server-runtime resource isolation
 
 Server-runtime action handlers run as Node code inside the substrate process.
 The iframe sandbox (§10.4) does not apply. To prevent one plugin from
 degrading the whole harness:
 
-- **Per-action timeout** — `defaultTimeoutSec` on the action (default 30s);
-  substrate cancels via `AbortSignal` threaded through `ctx.signal`.
-- **No `process:spawn` capability in v1** — see §14.3.6.1 below.
+- **Per-action timeout** — `serverHandler.timeoutSec` on the action (default
+  60s); substrate cancels via `AbortSignal` threaded through `ctx.signal`.
+- **Per-binary subprocess gate** — `compute:exec:<binary>`; see §14.3.6.1 below.
 - **Soft heap budget** — substrate polls `process.memoryUsage()` per harness;
   if a plugin's RSS jumps >256 MB above its baseline during a handler call,
   the action is cancelled and the harness logs a budget violation.
@@ -254,27 +300,29 @@ degrading the whole harness:
   connection per concurrent action invocation; long-running queries get the
   same `AbortSignal` as the action.
 
-#### 14.3.6.1 No `process:spawn` capability in v1
+#### 14.3.6.1 Per-binary subprocess: `compute:exec:<binary>`
 
-A `process:spawn` capability — even per-binary (`process:spawn:git`) — is
-unsafe. Common binaries have config flags that spawn other binaries (`git -c
-core.fsmonitor=<attacker-binary>` is the canonical example; the same trick
-works for `ssh`, `docker`, `npm`, `node`). Per-(binary, args-pattern) capabilities
-would re-implement sudoers, which is not a thing we want to maintain.
+The original proposal argued for *no* `process:spawn` capability at all, on the
+grounds that common binaries have config flags that spawn other binaries (`git
+-c core.fsmonitor=<attacker-binary>` is the canonical example; the same trick
+works for `ssh`, `docker`, `npm`, `node`), so a generic spawn gate is unsafe and
+a per-(binary, args-pattern) gate would re-implement sudoers.
 
-Instead, follow the architecture §10 already commits to: every capability
-resolves to a method on a substrate-provided typed service. Apply the same
-posture for subprocess needs:
+What shipped is a **per-binary** subprocess capability rather than no spawn at
+all: `compute:exec:<binary>` (e.g. `compute:exec:ffmpeg`, with basename
+wildcards like `compute:exec:py-*`). A plugin invokes it via
+`ctx.spawn(bin, args, { cwd, env, stdin })` and receives `{ stdout, stderr,
+code }` after the process exits. The host enforces
+`compute:exec:<binary-basename>` against the plugin's declared capabilities
+before invoking; `bin` is resolved via PATH and absolute paths are rejected (use
+the binary name plus the capability). The named typed wrappers the proposal
+sketched (`GitService`, `DockerService`, `execTrustedCommand`, a `TrustedBinary`
+enum) do **not** exist in the SDK — the capability gate is the binary-basename
+match, and the foot-cannon flags the proposal worried about are an authoring
+concern for the plugin, not a substrate-curated allowlist.
 
-- **v1 has no `process:spawn` capability.**
-- The substrate offers typed wrappers for the common cases: `git: GitService`,
-  `docker: DockerService`, `shell: { execTrustedCommand(name: TrustedBinary, args) }`
-  where `TrustedBinary` is a substrate-curated enum.
-- Plugins that need a binary that isn't wrapped → contribute an SPI extension
-  upstream, or live without it in v1.
-
-`process:spawn` can be revisited in v1.5 if real plugins prove the
-typed-service approach insufficient. Don't lead with the foot-cannon.
+The same `compute:exec:<command[0]>` gate is what a `tui-pane` UI surface's
+`command` argv runs under (§14.3.5).
 
 ### 14.3.7 paramsSchema / configSchema dialect commitment
 
@@ -348,8 +396,7 @@ Spec it now.
     {
       "name": "publish",
       "label": "Publish to Cloudflare Pages",
-      "icon": "rocket",
-      "surfaces": ["harness-sidebar"],
+      "surfaces": ["harness-toolbar", "mission-done"],
       "capabilities": ["secrets:read:CLOUDFLARE_API_TOKEN", "http:fetch:api.cloudflare.com"],
       "serverHandler": { "timeoutSec": 120 }
     }
@@ -406,7 +453,7 @@ export default {
 User flow:
 1. `papercusp install @papercupai/cloudflare-pages` → consent screen → installed globally
 2. `papercusp plugin enable cloudflare-pages --harness sheets-clone` → form for `pages_project`, etc.
-3. User goes to `/harness/sheets-clone` → "Publish to Cloudflare Pages" button in sidebar
+3. User goes to `/harness/sheets-clone` → "Publish to Cloudflare Pages" button on the harness toolbar
 4. Click → progress modal → success URL
 
 For auto-publish on mission complete: the routine declared in the manifest

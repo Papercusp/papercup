@@ -2,6 +2,11 @@
 title: 4. The four core roles
 sidebar:
   order: 5
+plans:
+  - legacy-docs-audit-revival-2026-06-06
+  - harness-blueprint-orchestration-2026-06-03
+  - blueprint-role-bundling-2026-06-15
+  - hive-agent-tabs-psu-tui-2026-06-09
 ---
 
 <p>
@@ -33,10 +38,32 @@ sidebar:
             single "Planner" role above is realized as two roles — <strong>Scoper</strong>
             (scope + acceptance) followed by <strong>Architect</strong> (technical
             breakdown). The canonical role ids live in <code>AGENT_ROLES</code>
-            (<code>packages/agent-mcp/src/role-config.ts</code>): the pipeline is
-            scoper → architect → worker → validator → reviewer → debugger →
-            documenter → curator, plus the cross-cutting <code>orchestrator</code>,
-            <code>operator</code>, and <code>oracle</code> roles. A
+            (<code>packages/agent-mcp/src/role-config.ts</code>), where the registry
+            list order is scoper → architect → worker → validator → reviewer →
+            debugger → documenter → curator. That list order is <strong>not</strong>
+            the dispatch pipeline: the executable per-feature spine lives in the
+            <code>coding-factory</code> blueprint
+            (<code>libs/papercusp/packages/harness/blueprints/coding-factory/blueprint.yaml</code>),
+            and runs <strong>scoper → architect → worker → validator → reviewer →
+            documenter → curator</strong> — with <code>debugger</code> excluded from
+            the spine. (The <code>coding</code> id was reused by the 2026-06-18 rename
+            for the Hive/Queen blueprint — <code>kind: hive</code>, only
+            <code>DONE</code>/<code>ESCALATE</code>/<code>IDLE</code> edges — so it
+            carries no scoper→…→curator spine; look at <code>coding-factory</code>,
+            not <code>coding</code>, for the pipeline.) Two refinements the registry
+            order hides: <code>reviewer</code> is not a per-feature director verb but
+            a PR-boundary <strong>approval gate</strong> (<code>gates.approvals</code>),
+            so the verbs that actually dispatch are scoper/architect/worker/validator/documenter/curator;
+            and <code>debugger</code> is a <strong>reactive overlay</strong> that fires
+            read-only before a worker retry once a feature accrues
+            <code>knobs.debuggerThreshold</code> failed attempts (alongside the opt-in
+            <code>security-reviewer</code>/<code>crosscheck</code>/<code>ui-qa</code>
+            reactive roles). The coordinator/cross-cutting role is
+            <code>orchestrator</code>; <code>operator</code> and <code>oracle</code>
+            are <strong>chat-surface</strong> roles, grouped separately in the registry.
+            On a terminal <code>DONE</code> the finalize recipe runs
+            <strong>curator → postCuratorOutputs → documenter → archive</strong> — i.e.
+            curator precedes documenter, opposite of the registry list order. A
             <code>planner</code> role id exists since 2026-06-09, but it is an
             <em>interactive plan-authoring session</em> (hive-agent-tabs), not this
             spec-level Planner pipeline role. Full current registry:
@@ -79,7 +106,9 @@ sidebar:
         configures harnesses through <strong>blueprints</strong> (see
         <code>blueprint:create</code> / <code>blueprint:catalog</code> and the
         <code>@papercusp/orchestrator/blueprint</code> package), which declare their
-        roles, tier, spine model, triggers, and dispatch policy directly. There is no
+        roles, spine model, triggers, and dispatch policy directly (per-role model
+        selection rides the role-level <code>model</code> field / <code>knobs.models</code>,
+        not a blueprint-level tier). There is no
         <code>defineManifest</code> helper and no <code>shape</code> enum
         (<code>iterative</code>/<code>scheduled</code>/<code>reactive</code>/<code>passive</code>)
         in code today; the section below is the original role-requirement design.

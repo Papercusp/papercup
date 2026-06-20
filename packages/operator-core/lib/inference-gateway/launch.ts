@@ -25,6 +25,9 @@ export interface GatewayServiceOptions {
   upstreamBase?: string;
   /** Proactively refresh the bound token on this interval (ms). 0 = on-demand only. Default 45 min. */
   refreshIntervalMs?: number;
+  /** Poll interval (ms) to HOT-RELOAD the DB account pool into the live failover pool WITHOUT a restart
+   *  (B-HOT-1). 0 = disabled. Default 60s. Tests inject a tiny value (or 0) to control it. */
+  poolReloadIntervalMs?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string) => void;
   // ── injectable for tests ──
   /** Resolve a SINGLE bound account (back-compat). When set, takes precedence over resolveAccounts
@@ -42,6 +45,11 @@ export interface RunningGatewayService {
   gateway: InferenceGateway;
   port: number;
   account: ResolvedAccount;
+  /** Current account-pool config version — bumps on each successful hot-reload (B-HOT-1). */
+  configVersion(): number;
+  /** Hot-reload the account pool from the DB source-of-truth WITHOUT a restart. No-op if unchanged or
+   *  not hot-reloadable. Returns whether it changed + the new version + the live account ids. */
+  reloadPool(): Promise<{ changed: boolean; version: number; accounts: string[] }>;
   stop(): Promise<void>;
 }
 
@@ -133,29 +141,39 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
 
   // Resolve the account pool. A legacy single `resolveAccount` injection → a one-account pool
   // (back-compat, no failover); otherwise the full pool (EI-535 failover across all accounts).
-  const accounts: ResolvedAccount[] = opts.resolveAccount
+  // Resolve + build the live failover-pool entries (and their credential resolvers) for an account set.
+  // Factored so a HOT-RELOAD (B-HOT-1) can re-resolve the DB pool + rebuild the entries from the same recipe.
+  function buildResolved(accts: ResolvedAccount[]) {
+    const rs = accts.map((a) => ({ account: a, resolver: makeResolver(a.credentialRef, a.accountId) }));
+    const entries = rs.map(({ account, resolver }) => ({
+      accountId: account.accountId,
+      token: () => resolver.current(),
+      invalidateToken: () => resolver.invalidate(),
+      // Per-account IP routing (D-003): route this account's upstream through its own egress dispatcher
+      // (proxy / bound source IP) when configured; absent ⇒ default shared egress.
+      egress: account.egress,
+    }));
+    return { resolvers: rs, entries };
+  }
+  /** Stable signature of a resolved pool — id + credentialRef + egress — so a reload only swaps on a REAL
+   *  change, not on every poll. */
+  const sigOf = (a: ResolvedAccount[]) =>
+    a.map((x) => `${x.accountId}|${x.credentialRef}|${x.egress?.proxyUrl ?? ''}|${x.egress?.localAddress ?? ''}`).join(',');
+
+  let accounts: ResolvedAccount[] = opts.resolveAccount
     ? [await opts.resolveAccount(opts.workspace)]
     : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace);
   if (accounts.length === 0) throw new Error('inference-gateway: no account resolved');
 
-  const resolvers = accounts.map((a) => ({ account: a, resolver: makeResolver(a.credentialRef, a.accountId) }));
-  const primary = accounts[0];
+  const built0 = buildResolved(accounts);
+  let resolvers = built0.resolvers;
+  let primary = accounts[0];
   log(
     'info',
     `account pool [${accounts.map((a) => a.accountId).join(', ')}]; primary '${primary.accountId}' via ${primary.source} (channel ${primary.credentialRef.split(':')[0]})`,
   );
 
-  const pool = createFailoverPool(
-    resolvers.map(({ account, resolver }) => ({
-      accountId: account.accountId,
-      token: () => resolver.current(),
-      invalidateToken: () => resolver.invalidate(),
-      // Per-account IP routing (D-003): the gateway routes this account's upstream through its own
-      // egress dispatcher (proxy / bound source IP) when configured; absent ⇒ default shared egress.
-      egress: account.egress,
-    })),
-    { log },
-  );
+  const pool = createFailoverPool(built0.entries, { log });
   const unobserve = observePool(primary.accountId, opts.workspace, log);
 
   const gateway = createInferenceGateway({
@@ -165,20 +183,53 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     fetchImpl: opts.fetchImpl,
     log,
     onResponse: makeWindowProjector(opts.workspace, log),
+    // B-HOT-2: expose the live config + on-demand hot-reload over /admin/config + /admin/reload.
+    // `reloadPool` is a hoisted function declaration; `configVersion`/`accounts` are read lazily at
+    // request time (after their initialisers run), so referencing them here is safe.
+    onAdminReload: () => reloadPool(),
+    adminConfig: () => ({ version: configVersion, accounts: accounts.map((a) => a.accountId) }),
   });
 
   const port = await gateway.listen(opts.port ?? DEFAULT_GATEWAY_PORT);
 
-  // Warm the primary's token now (fail fast on a bad primary credential) + a proactive refresh timer
-  // for every file-kind resolver, so an idle gateway never serves the first post-idle request — on
-  // ANY pool account (failover targets stay hot) — with an expired token.
+  // HOT-RELOAD (B-HOT-1): re-resolve the DB account pool (the source of truth) + atomically swap it into
+  // the LIVE failover pool WITHOUT a gateway restart. No-op when nothing changed (same signature) or the
+  // pool can't hot-reload. Returns the new config version + live account ids; called by the poll below +
+  // the /admin/reload endpoint (B-HOT-2).
+  let configVersion = 1;
+  async function reloadPool(): Promise<{ changed: boolean; version: number; accounts: string[] }> {
+    const ids = (a: ResolvedAccount[]) => a.map((x) => x.accountId);
+    const next = opts.resolveAccount
+      ? [await opts.resolveAccount(opts.workspace)]
+      : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace);
+    if (next.length === 0) {
+      log('warn', 'inference-gateway: pool reload resolved an EMPTY pool — keeping the current pool (fail-safe)');
+      return { changed: false, version: configVersion, accounts: ids(accounts) };
+    }
+    if (!pool.reload || sigOf(next) === sigOf(accounts)) {
+      return { changed: false, version: configVersion, accounts: ids(accounts) };
+    }
+    const built = buildResolved(next);
+    pool.reload(built.entries);
+    accounts = next;
+    resolvers = built.resolvers;
+    primary = next[0];
+    configVersion++;
+    log('info', `inference-gateway: account pool HOT-RELOADED to v${configVersion} [${ids(next).join(', ')}] — no restart`);
+    return { changed: true, version: configVersion, accounts: ids(next) };
+  }
+
+  // Warm the primary's token now (fail fast on a bad primary credential) + a proactive refresh timer for
+  // every file-kind resolver, so an idle gateway never serves the first post-idle request — on ANY pool
+  // account — with an expired token. The timer reads the CURRENT resolvers each tick, so a hot-reloaded
+  // account's token is proactively refreshed too.
   await resolvers[0].resolver.current().catch((e) => log('warn', `initial token resolve failed: ${(e as Error).message}`));
   const refreshMs = opts.refreshIntervalMs ?? 45 * 60 * 1000;
   let timer: ReturnType<typeof setInterval> | undefined;
-  const fileResolvers = resolvers.filter(({ resolver }) => resolver.kind === 'file');
-  if (refreshMs > 0 && fileResolvers.length > 0) {
+  if (refreshMs > 0) {
     timer = setInterval(() => {
-      for (const { resolver } of fileResolvers) {
+      for (const { resolver } of resolvers) {
+        if (resolver.kind !== 'file') continue;
         resolver.invalidate();
         void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));
       }
@@ -186,12 +237,29 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     timer.unref?.();
   }
 
+  // POLL the DB pool (B-HOT-1): periodically hot-reload so an account registered / removed / egress-changed
+  // via accounts:* applies LIVE (no restart — the friction that needed two restarts to swap one account).
+  // Default 60s; 0 disables. Skipped when the pool can't hot-reload (a single-account back-compat pool).
+  const reloadMs = opts.poolReloadIntervalMs ?? 60_000;
+  let reloadTimer: ReturnType<typeof setInterval> | undefined;
+  if (reloadMs > 0 && pool.reload) {
+    reloadTimer = setInterval(() => {
+      void reloadPool().catch((e) => log('warn', `pool reload poll failed: ${(e as Error).message}`));
+    }, reloadMs);
+    reloadTimer.unref?.();
+  }
+
   return {
     gateway,
     port,
-    account: primary,
+    get account() {
+      return primary; // the primary can change across a hot-reload
+    },
+    configVersion: () => configVersion,
+    reloadPool,
     async stop() {
       if (timer) clearInterval(timer);
+      if (reloadTimer) clearInterval(reloadTimer);
       unobserve();
       await gateway.close();
     },

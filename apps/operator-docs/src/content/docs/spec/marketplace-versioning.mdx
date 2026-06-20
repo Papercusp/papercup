@@ -3,6 +3,10 @@ title: Marketplace versioning
 description: When to bump patch / minor / major on a published template or plugin manifest.
 sidebar:
   order: 27
+plans:
+  - revive-cupboard-distribution-2026-06-04
+  - retire-snapshots-instance-spec-2026-06-09
+  - fumadocs-to-starlight-2026-05-20
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -11,12 +15,22 @@ import { Aside } from '@astrojs/starlight/components';
 This page describes the **retired** `papercusp publish` / tarball-catalog
 marketplace (see the [Distribution](/spec/distribution) banner). The live
 distribution surface is the in-app **Cupboard** (`apps/operator-public`),
-where listings are GitHub-project-backed and snapshot artifacts are
-content-addressed by tarball SHA-256 rather than carried by a
-`papercusp.json` `version` field. The semver guidance below is retained as
-design rationale for manifest/plugin versioning; the `papercusp publish`
-CLI snippet and `marketplace catalog ?version=` behavior no longer reflect
-the shipped code.
+a GitHub-project-backed listing registry: every listing is keyed on a
+GitHub project remote, not on a `papercusp.json` `version` field. The
+Cupboard distributes five listing kinds — **harness** (join), **blueprint**
+(fork), **plugin** / **tool-pack** (install), and **learning-pack** —
+where `learning-pack` and `blueprint` listings (the instruction-carrying
+kinds) land `pending` and require operator review before going public. The
+older `snapshot` kind and its tarball-SHA-256 content-addressing were
+retired (`retire-snapshots-instance-spec-2026-06-09`): the D1 `tarball_*`
+columns are now vestigial with no live writer, and there is no blob route.
+
+The `papercusp publish` / `papercusp install` CLI commands still exist in
+source (`libs/papercusp/packages/cli`) but target a marketplace server
+(`:3057` `marketplace-api`) that has been removed, so the snippet below no
+longer functions. The semver guidance below is retained as design rationale
+for manifest/plugin versioning; the `marketplace catalog ?version=`
+behavior no longer reflects the shipped code.
 </Aside>
 
 Marketplace manifests follow semver with one extra rule: **manifest changes that are additive at the same major.minor require a patch bump and a re-publish**.
@@ -61,4 +75,4 @@ The marketplace catalog returns the latest version by default. Older versions re
 
 ## Audit trail
 
-In the shipped Cupboard, publisher provenance is the GitHub repo-permission signal plus an optional **Ed25519 device-pubkey ↔ GitHub-login attestation** (a signed gist), and snapshot artifacts are content-addressed by tarball SHA-256 — not Cosign. (The original design called for Cosign signing "in v1.5+"; that was a property of the superseded Gitea/OCI marketplace.)
+In the shipped Cupboard, publisher provenance is the GitHub repo-permission signal (`publisher_permission`: `admin|maintain|write|…`) plus an optional **Ed25519 device-pubkey ↔ GitHub-login attestation** (a signed gist) — not Cosign. There are no content-addressed snapshot artifacts: the `snapshot` kind and its tarball-SHA-256 addressing were retired (`retire-snapshots-instance-spec-2026-06-09`), and Cosign never shipped. (The original design called for Cosign signing "in v1.5+"; that was a property of the superseded Gitea/OCI marketplace.)

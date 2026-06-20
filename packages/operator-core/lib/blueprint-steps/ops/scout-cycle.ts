@@ -78,7 +78,19 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
   async run(a, ctx) {
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) throw new Error('scout:cycle requires ctx.workspaceId');
-    const installSlug = ctx.harnessSlug ?? 'op';
+    const perHiveInstall = ctx.harnessSlug ?? 'op';
+    // workspace-scoped-coordination-2026-06-20 P-002 / D-006: when
+    // WORKSPACE_COORDINATION is ON, the Scout consolidates to ONE workspace cycle.
+    // Every per-hive routine tick resolves its scope to the workspace sentinel
+    // (= workspaceId), so the downstream single-flight claim (autoloop.claimFire,
+    // keyed by this slug) lets EXACTLY ONE cycle fire per cadence window across all
+    // the workspace's hives — N→1, which REDUCES the per-window LLM burst rather
+    // than multiplying it (preserves P-050's anti-burst intent). The winning cycle
+    // reads the workspace-wide corpus (already hive-agnostic) and keys its ticks +
+    // lens-weights under the sentinel. OFF ⇒ the per-hive install slug,
+    // byte-identical to today.
+    const { isWorkspaceCoordinationOn, workspaceBrainScopeKey } = await import('../../workspace-brain-scope.js');
+    const installSlug = workspaceBrainScopeKey(workspaceId, perHiveInstall, await isWorkspaceCoordinationOn());
 
     // Default to the SAME production wiring the boot path registers
     // (register-scout-action.ts): the real llmCall-backed cycle runner + the

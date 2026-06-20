@@ -101,3 +101,36 @@ describe('createFailoverPool — select() header-pinned routing (x-papercusp-acc
     expect(p.select!('b')?.accountId).toBe('b');
   });
 });
+
+describe('createFailoverPool — reload() hot-swap (B-HOT-1)', () => {
+  it('atomically swaps the live entries — active()/select() reflect the new pool, same object identity', () => {
+    const p = createFailoverPool([acct('a'), acct('b')]);
+    expect(p.active().accountId).toBe('a');
+    p.reload!([acct('x'), acct('y'), acct('z')]);
+    // Every subsequent active() comes from the NEW set; the OLD accounts are gone.
+    const seen = new Set([p.active().accountId, p.active().accountId, p.active().accountId, p.active().accountId]);
+    expect([...seen].every((id) => ['x', 'y', 'z'].includes(id))).toBe(true);
+    expect(p.select!('a')).toBeNull(); // departed account no longer selectable
+    expect(p.select!('y')?.accountId).toBe('y'); // new account present
+  });
+
+  it('throws on an empty reload — the gateway must always have ≥1 egress account', () => {
+    const p = createFailoverPool([acct('a')]);
+    expect(() => p.reload!([])).toThrow(/at least one account/);
+  });
+
+  it('a still-present paused account KEEPS its pause across the swap; a departed one is pruned', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')], { now: () => t });
+    p.onExhausted('a', t + 3_600_000); // pause 'a' for ~1h
+    p.onExhausted('b', t + 3_600_000); // pause 'b' for ~1h
+    p.reload!([acct('a'), acct('c')]); // KEEP a (paused) + c; DROP b (its pause is pruned)
+    // 'a' is still paused → active() skips it and serves 'c'.
+    const seen = new Set([p.active().accountId, p.active().accountId, p.active().accountId]);
+    expect(seen.has('a')).toBe(false);
+    expect(seen.has('c')).toBe(true);
+    // Once a's reset passes, it rejoins rotation (its pause was preserved, not reset, by the swap).
+    t += 3_600_001;
+    expect(new Set([p.active().accountId, p.active().accountId]).has('a')).toBe(true);
+  });
+});

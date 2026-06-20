@@ -3,6 +3,15 @@ title: Plan format
 description: Markdown-canonical format for SU-agent plans — frontmatter, ## Now anchor, items with computed status, decisions log. Consumed by the plans:* tool surface.
 sidebar:
   order: 3
+plans:
+  - agent-plan-tracking-2026-05-20
+  - planning-attention-importance-2026-05-31
+  - promote-policy-and-waves-2026-05-30
+  - promote-spawn-child-harness-2026-05-31
+  - plans-pg-canonical-migration-2026-06-03
+  - papercusp-systems-abstraction-2026-05-29
+  - queen-autonomy-policy-2026-06-13
+  - plans-admin-ui-2026-05-20
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -28,9 +37,11 @@ roll-out plan, see
 [`agent-plan-tracking-2026-05-20.md`](/internal/docs/plans/agent-plan-tracking-2026-05-20).
 
 <Aside type="note">
-  Plans not in this format are tagged `status: 'unknown'` by the
-  parser and `plans:lint` exempts them entirely. Conversion is
-  opt-in, per plan, when you're actively working on it.
+  Plans not in this format are **legacy** — the parser flags them
+  `isLegacy` and `plans:list` surfaces them as `status: 'draft'`
+  (the missing projected status maps to `'draft'`; the parser never
+  synthesizes a status). `plans:lint` exempts them entirely.
+  Conversion is opt-in, per plan, when you're actively working on it.
 </Aside>
 
 ## File layout
@@ -90,9 +101,11 @@ superseded-by: <other-slug>             # optional, set when status=superseded
 status (see [Status vocabulary](#status-vocabulary)).
 
 A plan with missing or malformed frontmatter is **legacy** — the
-parser surfaces it with synthesized `status: 'unknown'` and no item
-counts. Conversion happens via `plans:set-now` + frontmatter edit
-when the plan is being actively worked on.
+parser sets only the `isLegacy` flag (it never synthesizes a
+`status`), and `plans:list` reports it as `status: 'draft'` (a
+missing projected status maps to `'draft'`) with no item counts.
+Conversion happens via `plans:set-now` + frontmatter edit when the
+plan is being actively worked on.
 
 ## The `## Now` block
 
@@ -146,6 +159,16 @@ Canonical ASCII form:
   Values `urgent | high | normal | low`; omit it for the `normal`
   default. A 4th axis orthogonal to status — see
   [Importance](#importance).
+- **`risk:`** — keyword, glyph-agnostic and stripped from the visible
+  text like `importance:`. Values `trivial | low | moderate | high |
+  critical`; an unrecognised value degrades silently to *no tier*
+  (no parse warning). Feeds the autonomy-risk / needs-human
+  derivation (`queen-autonomy-policy`), not the ranker.
+- **`authority:`** — keyword, glyph-agnostic and stripped from the
+  visible text the same way. Values `system | owner`, default
+  `system`; an unknown value degrades silently to the default.
+  `owner` always gates the call to a human; it feeds the same
+  autonomy derivation, not the ranker.
 - **Separators are display-only.** Examples may use `·` or `→` for
   human readability; the parser never depends on them. If you type
   `,` / `-` / `->` instead, it still parses.
@@ -562,14 +585,28 @@ Plans are read and written through the `plans:*` MCP tools.
 - `plans:new \{ slug, title \}` — create from template, slug
   uniqueness checked inside a lock.
 - `plans:set-status \{ slug, itemId, status, note? \}` — flip one
-  item's stored token.
+  **item's** stored token.
+- `plans:set-plan-status \{ slug, status \}` — flip the **plan's**
+  lifecycle status (`draft`/`ready`/`active`/`shipped`/`superseded`)
+  — distinct from the per-item verb above.
 - `plans:set-now \{ slug, state, next \}` — replace the Now block
   atomically.
 - `plans:add-decision \{ slug, title, body, refs? \}` — append; D-NNN
   allocated inside the lock.
-- `plans:add-item \{ slug, phase, text, blockedBy? \}` — append;
-  P-NNN allocated inside the lock; creates phase section if
-  missing.
+- `plans:add-item \{ slug, phase, text, importance, blockedBy? \}` —
+  append; P-NNN allocated inside the lock; creates phase section if
+  missing. `importance` is **required by the tool** (no silent
+  default), even though the markdown form defaults to `normal` when
+  the keyword is absent.
+- `plans:set-importance \{ slug, itemId, importance \}` — set one
+  item's importance.
+- `plans:set-item-blocked-by \{ slug, itemId, blockedBy \}` — rewrite
+  an item's `blocked-by:` set.
+- `plans:set-item-phase \{ slug, itemId, phase \}` — move an item to a
+  different phase section.
+- `plans:set-frontmatter \{ slug, … \}` — edit frontmatter fields.
+- `plans:transfer-owner \{ slug, owner \}` — change the plan's human
+  owner.
 - `plans:set-content { slug, content, expectedHash }` — replace the
   whole plan body after CAS/lint checks; use only when the full body
   comfortably fits in one tool call.
@@ -601,6 +638,10 @@ frontmatter) are exempt entirely.
 - `missing_blocker` — same, from the resolver's perspective.
 - `cycle` — item is part of a `blocked-by` cycle.
 - `malformed_item_id` — item id isn't in `P-NNN` form.
+- `missing_promoted_block` — the plan promoted ≥1 feature but its
+  body has no `## Promoted` block. **Date-gated:** an *error* for
+  plans created on/after `2026-05-24`, a *warning* for older plans
+  (regenerate the block with `plans:promote apply=true`).
 
 ### Warnings
 
@@ -616,6 +657,33 @@ frontmatter) are exempt entirely.
   item. The dependent un-gates (a dropped blocker never completes),
   but the dependency should be re-evaluated.
 - `unphased_item` — an item is not under a `## Phase` heading.
+- `superseded_status_mismatch` — the plan records that it's
+  superseded (frontmatter `superseded-by:` or a `## Now` "superseded
+  by" line) but its `status` isn't `superseded`. Flip it with
+  `plans:set-plan-status`.
+- `completion_status_mismatch` — a non-terminal plan
+  (`draft`/`ready`/`active`) looks finished — all its items are
+  closed, or its `## Now` state uses strong whole-plan completion
+  language — but its status wasn't flipped to `shipped`.
+- `owner_ask_not_needs_human` — the `## Now` block phrases an
+  owner/human action-gate but the plan has no `needs-human` item, so
+  the ask never reaches the owner inbox. Encode it as a
+  `needs-human` item.
+- `checkbox_item_syntax` — checkbox-style item lines
+  (`- [ ] P-NNN — text`) parse as **zero** items (invisible to
+  `plans:items` and `plans:set-status`). Rewrite as the canonical
+  `- **P-NNN** \`status\` text` form.
+- `decision_done_items_todo` — a `done` decision still has open
+  (`todo`/`wip`) items referencing it.
+- `unknown_importance` — an item's `importance:` value isn't one of
+  `urgent | high | normal | low` (degrades to `normal`; a typo can't
+  fail CI).
+- `spawn_child_wave` — a `## Promote` wave declares `spawn_child`,
+  which creates a new child harness — confirm the cross-repo /
+  own-lifecycle justification (D-001).
+- `spawn_child_ambiguous_target` — a `spawn_child` wave gives
+  neither `repo` nor `template`, so the child's target tree is
+  ambiguous.
 
 ## Concurrency
 

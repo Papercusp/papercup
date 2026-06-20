@@ -163,8 +163,13 @@ with `dev:pipeline_position` (not a browser). But when your *next step genuinely
 requires* a code change to be **live on `:3070`** before you can proceed (you must
 exercise it through the running operator), do **not** idle waiting for the scheduled
 commit→checkpoint→deploy. **Force the deploy now:**
-`npx tsx apps/operator/lib/release/deploy-cli.ts --execute`. Blocking on git-sync /
-the green gate before continuing is the anti-pattern; force it and move on.
+`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`.
+⚠ The `PAPERCUSP_ALLOW_DEV_RESTART=1` is **required** on the dev box — without it the
+restart step is *withheld* and deploy-cli's auto-rollback leaves `papercup-release`
+inconsistent (git files vs node_modules/build), which crash-loops `:3070` on
+`MODULE_NOT_FOUND` (recover: `systemctl --user stop papercup-dev-api.service` then re-run
+the command above with `--no-drain`). Blocking on git-sync / the green gate before
+continuing is the anti-pattern; force it and move on.
 
 ## Server-side edits and the two-port model — no hot-reload
 
@@ -175,7 +180,8 @@ restart does **NOT** pick up your edits:
 - **`:3070`** = GREEN operator, runs from the **release checkout**
   (`papercup-release`, `main`). Your staging edits reach it only via the
   auto-serve pipeline (or a manual
-  `npx tsx apps/operator/lib/release/deploy-cli.ts --execute`).
+  `PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`
+  — the env flag is required for the restart; see the force-deploy note above).
 - **`:3170`** = staging operator, runs from the integration tree. To test a
   server-side edit live: `systemctl --user restart papercup-staging-api.service`,
   then probe `:3170`.

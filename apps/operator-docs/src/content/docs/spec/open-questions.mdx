@@ -2,6 +2,13 @@
 title: 15. Open questions for v1.0
 sidebar:
   order: 31
+plans:
+  - fumadocs-to-starlight-2026-05-20
+  - legacy-docs-audit-revival-2026-06-06
+  - design-spec-compliance-2026-06-18
+  - harness-blueprint-orchestration-2026-06-03
+  - deterministic-blueprints-migration-2026-06-13
+  - domain-generic-hive-architecture-2026-06-18
 ---
 
 <p>
@@ -14,12 +21,6 @@ sidebar:
       <h3>Still open</h3>
 
       <ol>
-        <li>
-          <strong>Plugin-defined decision verbs.</strong> Today the orchestrator can emit `NEXT_<plugin-role>`; should we let plugins extend the verb vocabulary further (e.g., `RETRY`, `BRANCH`)? If yes, how do we keep the orchestrator's decision space bounded enough to be auditable?
-        </li>
-        <li>
-          <strong>LLM-agnosticism in the spec.</strong> The substrate is "fresh context → role prompt → response", which is LLM-agnostic in principle. Reference runtime hardcodes Claude. Should the spec require pluggable LLM providers (adapter slot), or is reference-implementation choice fine?
-        </li>
         <li>
           <strong>UI plugin install flow when the host isn't running.</strong> If the host UI is offline, the CLI can still drive install (`papercusp install` doesn't require the GUI), but capability prompts are text-only. Is text-only consent acceptable for high-tier capabilities (§10.6.1), or should the spec require GUI confirmation for those? Affects headless deployments.
         </li>
@@ -45,8 +46,16 @@ sidebar:
         <thead><tr><th>Was open</th><th>Now answered in</th></tr></thead>
         <tbody>
           <tr>
+            <td>Plugin-defined decision verbs — should plugins extend the verb vocabulary beyond a fixed built-in set, and how is it kept bounded/auditable?</td>
+            <td>§6 (orchestrator) — verb vocabulary is <strong>per-blueprint</strong>, not fixed: each blueprint declares its own verbs in <code>spine.edges</code> (a <code>verb → action</code> map), parsed by <code>parseDecisionFor</code> and interpreted by the data-lookup engine <code>deriveNext</code> (D-002, "pipeline-as-data"). Boundedness/auditability is enforced by spine validation (<code>validateDeciderSpine</code>: terminal reachability + declared-role checks). The built-in coding pipeline still ships a <em>fixed</em> set, classified by an exhaustive switch. Note the emitter is the per-feature <code>director</code> (in the <code>coding-factory</code> blueprint), not a single "orchestrator"; the Hive (<code>coding</code>) layer has no spine and emits no <code>NEXT_*</code> verbs.</td>
+          </tr>
+          <tr>
+            <td>LLM-agnosticism — the runtime hardcodes Claude; should the spec require pluggable LLM providers (adapter slot)?</td>
+            <td>Reference runtime already ships the adapter slot. Three pluggable agent backends (<code>claude-code</code>, <code>omp</code>, <code>codex</code>) each carry their own config-driven invocation command and stream parser; the backend and command are config fields, not hardcoded. <code>claude-code</code> is the <em>default</em>, not the only option.</td>
+          </tr>
+          <tr>
             <td>Multi-tenancy in the runtime — how to scope user/install when many run side-by-side</td>
-            <td>§10.5 — per-install Postgres database; substrate explicitly does not support shared-DB multi-tenancy</td>
+            <td>§10.5 — shared-DB multi-tenancy: a single <code>harness_shared</code> schema whose tables are tenant-keyed by <code>install_slug</code> / <code>workspace_id</code> and isolated by row-level-security policies (<code>workspace_id = current_setting('app.workspace_id')</code>), not a per-install database.</td>
           </tr>
           <tr>
             <td>Marketplace governance — moderation model for malicious entries; reviewer approval at publish time?</td>
