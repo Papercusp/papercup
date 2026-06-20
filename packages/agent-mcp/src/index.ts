@@ -19,6 +19,10 @@
 import './capability-tiers-papercusp';
 
 export { defineTool } from '@papercusp/tooldef';
+// code-execution-tool-orchestration (B-CX-2A): the code-mode runtime, re-exported so the
+// operator-core `code:run` agent tool can compose it.
+export { runToolOrchestration } from '@papercusp/tooldef';
+export type { OrchestrateOptions, OrchestrateResult, PlannedMutation } from '@papercusp/tooldef';
 // Papercusp's role config (plan P-010): exporting AGENT_ROLES pulls in
 // role-config.ts, whose `declare module` augmentation registers the built-in
 // roles with tooldef's `RoleRegistry` — so the re-exported `AgentRole` below
