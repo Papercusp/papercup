@@ -57,6 +57,30 @@ cut-off steps never ran. No cut-off data.
   the run reaches federate-A→B (now 120s) → K0–K3. This is the re-key lane's to finish; I've removed the
   window/timeout false-fails so a quiet-box run should reach the actual cut-off.
 
+## 🔴 DEFINITIVE (run 4, direct PG query of the LIVE :204 instances) — THE FLAG NEVER ENGAGED VIA ENV
+Run 4 got past discovery+join (gossip landed), so I queried A's + B's PG directly mid-run:
+- **A `hive_epoch_keys` = 0; A epoch setting (hive_settings LIKE '%epoch%') = EMPTY.** If the re-key flag
+  were on, the owner would have an epoch + epoch-0 key (and `grantEpochKeysToMembers` on B's join would
+  have produced keys). A has NONE — and run-1's debug logs showed ZERO epoch/encrypt activity.
+- **⇒ `PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1` (env) does NOT turn on the re-key on the packaged binary.**
+  All 4 of my runs were FLAG-OFF — **the P-008 witness never exercised the re-key cut-off at all.**
+- **The witness recipe in findings-K.md ("flag-on via env PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1") is
+  INSUFFICIENT.** Before C-001 can be witnessed: enable the flag a way that actually takes (flags:set in
+  PG / a startup assert that an epoch exists), and make the witness FAIL-FAST if A has 0 epoch keys at K0
+  (right now a flag-off run silently fails at federate-A→B, masquerading as a federation bug). **This is
+  the real blocker to validating C-001 — not a quiet box.** (flag-bus.ts:92 claims PAPERCUSP_FLAG_* env IS
+  layered; either it needs a restart ordering the smoke doesn't do, or the sidecar doesn't inherit it —
+  re-key lane to resolve.)
+
+## 🟡 OBSERVATION (flag-off) — from-repo `federate-A→B` (member-harness feature) failed BOTH runs
+`✗ A→B: F-HIVE1 never reached B` with **`F-HIVE1 drained=true` on A** (sent) but **B never APPLIED it**
+(`harness_features_consolidated F-HIVE1 = 0` on B). B→A worked. So the from-repo JOINER does not apply the
+OWNER's member-harness *feature* writes after join — even though su-ee7e9's from-repo witness showed
+*hive-home* `hive_settings` crossing A→B. Reproducible (run 1 + run 4). NEEDS the federation team to
+confirm real-gap vs known from-repo-vs-content-matrix flow difference (content-matrix crossed features
+A→B fine). NOT confirmed as a defect by me — flagged for d2230/the federation lane. (My MERGE_PROBE_SEC=120
+was iterations not seconds → made the failing probe ~7min; default 40 is fine for a fail-fast.)
+
 ## Status of the rest (context)
 A-003 is CLOSED + live-green (su-c2a63's converged fix; my binary witness + suite 1085 green). The re-key
 is BUILT + hermetically tested. This P-008 LIVE witness is the one remaining ship-gate proof for C-001 —
