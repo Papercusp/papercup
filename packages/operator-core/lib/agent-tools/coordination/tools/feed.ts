@@ -84,18 +84,23 @@ export default defineTool({
       q: args.q,
       since_ts: args.since_ts,
       before_ts: args.before_ts,
-      limit: args.limit,
+      limit: args.limit ?? AGENT_FEED_DEFAULT,
     });
+    // EI-1597: excerpt the big per-row text fields so the firehose can't overflow the
+    // agent result cap. The q-filter already ran (over full bodies) inside readCoordFeed,
+    // so bounding here is display-only; full envelopes via the UI feed or a narrower query.
+    let boundedRows = boundRowField(rows, 'body', FEED_BODY_CAP, FEED_BODY_BUDGET);
+    boundedRows = boundRowField(boundedRows, 'summary', FEED_SUMMARY_CAP, FEED_SUMMARY_BUDGET);
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
-            count: rows.length,
+            count: boundedRows.length,
             total,
             by_kind: byKind,
             next_cursor: nextCursor,
-            rows,
+            rows: boundedRows,
           }),
         },
       ],

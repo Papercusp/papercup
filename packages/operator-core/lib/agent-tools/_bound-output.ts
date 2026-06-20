@@ -33,3 +33,42 @@ export function boundRowField<T extends object>(
     } as T;
   });
 }
+
+/**
+ * Cap a per-row ARRAY field to its first `maxItems`, adding `<field>_total` +
+ * `<field>_truncated` when cut. For list tools whose rows carry an unbounded
+ * sub-list (e.g. fleet:assignments `queued` work-lists) — keep the head + the
+ * count, drop the tail (reachable via a narrower query).
+ */
+export function boundListField<T extends object>(rows: T[], field: string, maxItems: number): T[] {
+  return rows.map((r) => {
+    const v = (r as Record<string, unknown>)[field];
+    if (!Array.isArray(v) || v.length <= maxItems) return r;
+    return {
+      ...r,
+      [field]: v.slice(0, maxItems),
+      [`${field}_total`]: v.length,
+      [`${field}_truncated`]: true,
+    } as T;
+  });
+}
+
+/**
+ * Keep rows (in order — caller sorts most-relevant first) until their serialized
+ * size would exceed `budget` chars, then stop. GUARANTEES the kept array fits the
+ * budget regardless of per-row field sizes — the backstop when a row has many
+ * variable-size fields (fleet:assignments). Always keeps at least the first row.
+ * Returns `{ kept, truncated }`; the caller sets a truncation flag + keeps the
+ * accurate total in its summary.
+ */
+export function trimToByteBudget<T>(rows: T[], budget: number): { kept: T[]; truncated: boolean } {
+  const kept: T[] = [];
+  let acc = 0;
+  for (const r of rows) {
+    const sz = JSON.stringify(r).length + 1;
+    if (kept.length > 0 && acc + sz > budget) break;
+    kept.push(r);
+    acc += sz;
+  }
+  return { kept, truncated: kept.length < rows.length };
+}

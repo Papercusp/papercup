@@ -20,6 +20,7 @@ import {
   orphanedClaims,
   summarizeOrphan,
 } from '../../fleet/assignments';
+import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 
 export default defineTool({
   name: 'fleet:assignments',
@@ -82,24 +83,44 @@ export default defineTool({
       (g) => args.include_stale || g.claims.length > 0 || g.alive,
     );
     const orphans = orphanedClaims(rows);
+    // Summary is computed over the FULL agent set so the counts stay accurate even
+    // when the returned `agents` array is bounded below.
+    const summary = {
+      agents: agents.length,
+      alive: agents.filter((a) => a.alive).length,
+      claims: rows.filter((r) => r.source !== 'presence').length,
+      orphaned_claims: orphans.length,
+      declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
+      // P-021: total work-item load across live agents (the warm-inject signal).
+      work_item_load: agents.reduce((n, a) => n + a.load, 0),
+    };
+    // EI-1597: bound the agent-facing output so a large fleet (esp. include_stale)
+    // can't overflow the agent result cap. `agents` is already sorted live-first, so
+    // the byte-budget trim drops the least-relevant tail. Excerpt the long `intent`
+    // text + cap each agent's `queued` work-list (head + `load` are what placement
+    // reads; the full tail is reachable via a narrower { agent }/{ plan } query).
+    // Internal callers + the UI read the data layer (groupByAgent) directly — unaffected.
+    let agentsOut = boundRowField(agents, 'intent', 280, 14_000);
+    agentsOut = boundListField(agentsOut, 'queued', 8);
+    const { kept: boundedAgents, truncated: agentsTruncated } = trimToByteBudget(agentsOut, 22_000);
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            summary: {
-              agents: agents.length,
-              alive: agents.filter((a) => a.alive).length,
-              claims: rows.filter((r) => r.source !== 'presence').length,
-              orphaned_claims: orphans.length,
-              declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
-              // P-021: total work-item load across live agents (the warm-inject signal).
-              work_item_load: agents.reduce((n, a) => n + a.load, 0),
-            },
+            summary,
             // Abandoned work first — the reason this view is claim-primary.
             orphaned: orphans.map(summarizeOrphan),
-            agents,
+            agents: boundedAgents,
+            ...(agentsTruncated
+              ? {
+                  agents_truncated: true,
+                  agents_returned: boundedAgents.length,
+                  agents_hint:
+                    'Agent list trimmed to fit the result cap (sorted live-first). Narrow with { agent }/{ plan }/{ harness }; summary.agents has the true total.',
+                }
+              : {}),
           }),
         },
       ],

@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781955842542-481980eb",
+  "feature_id": "F-FIX-040",
+  "field": "__created",
+  "id": 954,
+  "new_value": "{\"id\":\"F-FIX-040\",\"title\":\"Scout tests red (deploy-gate blocker): StateOfHiveReaders.observations now required but 3 test fakes lack it\",\"sourceIssueId\":\"EI-1861\"}",
+  "old_value": "null",
+  "ts": 1781956503938
+}

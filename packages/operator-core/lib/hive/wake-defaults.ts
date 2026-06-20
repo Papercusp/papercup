@@ -51,10 +51,18 @@ export function defaultHiveEventSubscriptions(): HiveEventSubscription[] {
     },
     {
       on: 'work_items:create',
-      // The handler reports failures as { ok:false } inside a successful tool
-      // result, so onlyOnSuccess alone is not enough.
-      when: { 'result.data.ok': true },
-      note: 'default demand wake: a work item was created (start-hive-wake P-002)',
+      // Only UNPLACED demand needs the Queen. Gate on a successful create whose item
+      // is UNASSIGNED — a pre-placed / self-assigned create (work_items:create {assign_to};
+      // e.g. a warm /loop self-assigning its own work each wake) is already owned, so it
+      // must NOT wake her every cycle (EI-1850). `exists:false` is the engine's not-null
+      // operator → `$eq null`, matching assignee null/unset = unassigned. The handler still
+      // reports in-band failures as { ok:false } inside a successful tool result, so the ok
+      // gate stays (onlyOnSuccess alone is not enough).
+      when: {
+        'result.data.ok': true,
+        'result.data.workItem.assignee': { exists: false },
+      },
+      note: 'default demand wake: an UNPLACED (unassigned) work item was created (start-hive-wake P-002; a pre-assigned create skips — EI-1850)',
     },
     {
       on: 'coord:escalate',

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { boundRowField } from './_bound-output';
+import { boundRowField, boundListField, trimToByteBudget } from './_bound-output';
 
 describe('boundRowField (EI-1597 — shared high-fanout read-tool bound)', () => {
   it('returns a short field unchanged, no truncation flags', () => {
@@ -41,5 +41,48 @@ describe('boundRowField (EI-1597 — shared high-fanout read-tool bound)', () =>
     expect(boundRowField([], 'body', 100, 1000)).toEqual([]);
     const out = boundRowField([{ id: 'a', body: null }], 'body', 100, 1000);
     expect(out[0]).toEqual({ id: 'a', body: null }); // non-string → treated as '' → unchanged
+  });
+});
+
+describe('boundListField (EI-1597 — cap a per-row array field)', () => {
+  it('caps a long array to maxItems + stamps <field>_total/_truncated', () => {
+    const rows = [{ id: 'a', queued: [1, 2, 3, 4, 5] }];
+    const out = boundListField(rows, 'queued', 2);
+    const r = out[0] as { queued: number[]; queued_total?: number; queued_truncated?: true };
+    expect(r.queued).toEqual([1, 2]);
+    expect(r.queued_total).toBe(5);
+    expect(r.queued_truncated).toBe(true);
+  });
+
+  it('leaves a short array (and non-array values) untouched', () => {
+    expect(boundListField([{ id: 'a', queued: [1, 2] }], 'queued', 5)[0]).toEqual({ id: 'a', queued: [1, 2] });
+    expect(boundListField([{ id: 'a', queued: null }], 'queued', 5)[0]).toEqual({ id: 'a', queued: null });
+  });
+});
+
+describe('trimToByteBudget (EI-1597 — byte-budget backstop for many-field rows)', () => {
+  it('keeps rows until the serialized budget is hit, then stops', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => ({ id: i, blob: 'q'.repeat(500) }));
+    const { kept, truncated } = trimToByteBudget(rows, 6000);
+    expect(truncated).toBe(true);
+    expect(kept.length).toBeLessThan(100);
+    expect(JSON.stringify(kept).length).toBeLessThanOrEqual(6000 + 600); // ~one row of slack
+  });
+
+  it('keeps everything when it fits + flags truncated=false', () => {
+    const rows = [{ id: 1 }, { id: 2 }];
+    const { kept, truncated } = trimToByteBudget(rows, 10_000);
+    expect(kept).toEqual(rows);
+    expect(truncated).toBe(false);
+  });
+
+  it('always keeps at least the first row even if it alone exceeds the budget', () => {
+    const { kept, truncated } = trimToByteBudget([{ id: 1, blob: 'x'.repeat(5000) }, { id: 2 }], 100);
+    expect(kept.length).toBe(1);
+    expect(truncated).toBe(true);
+  });
+
+  it('handles an empty list', () => {
+    expect(trimToByteBudget([], 1000)).toEqual({ kept: [], truncated: false });
   });
 });

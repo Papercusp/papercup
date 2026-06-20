@@ -41,7 +41,7 @@ const brief = {
   queen: { lastWakeAt: '2026-06-15T09:00:00.000Z', stalled: true, cadenceOk: false, workingTracked: 2, nextFireAt: '2026-06-15T10:00:00.000Z', coordOwner: null },
   bees: { running: 3, completed: 0, churning: 1, deadClaims: 0 },
   workFeed: { frontier: 5, autoEligibleStuck: 0, deadRoutines: 1, blockedStranded: 2 },
-  tokens: { pausedBuckets: ['opus'], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0 },
+  tokens: { pausedBuckets: ['opus'], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0, gatewayWedged: false, gatewaySustainedThrottle: false },
   plans: { active: 4, stalledItems: 1, agingEscalations: 2 },
   observations: { laneCount: 7, recentByRole: { queen: 3, worker: 4 } },
   crossMonitor: { queenAlive: true, overwatchAlive: false },

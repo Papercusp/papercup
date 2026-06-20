@@ -1,32 +1,25 @@
 /**
- * rekey-grant-loud-failure.test.ts — WI-280 part B.
+ * rekey-grant-loud-failure.test.ts — WI-280 part B (+ ee7e9's emission), at the upsertHiveMember seam.
  *
- * The owner's re-key epoch-key grant to a freshly-admitted peer
- * (grantEpochKeysToMembers, fired fire-and-forget from drainAdmissionQueue) is
- * deliberately best-effort so it never blocks merge-gated admission. But a grant
- * the K0 read-cut DEPENDS ON must not fail SILENTLY — the live C-001 witness
- * K-stage failed silently for exactly this (sodium-native .node unresolved in the
- * sidecar binary → the first deriveEpochKey/wrapKeyToMember threw, swallowed by
- * the best-effort catch).
+ * The owner's re-key epoch-key grant to a member (grantEpochKeysToMembers, fired best-effort from
+ * upsertHiveMember — the single grant seam the open-mode admit AND approve paths funnel through) must
+ * not fail SILENTLY: the live C-001 witness's K-stage minted 0 keys for exactly this (sodium-native
+ * unresolved → deriveEpochKey/wrapKeyToMember threw, swallowed by the best-effort catch).
  *
- * This pins the LOUD behavior (part B): when the admit-time grant THROWS, a
- * queryable `rekey_grant_failed` boot event is recorded (the witness +
- * diagnostics can see it) AND the peer is STILL admitted (the throw must never
- * break admission — the grant is intentionally fire-and-forget).
+ * This pins the LOUD behavior at the SOURCE (upsertHiveMember), DECOUPLED from the volatile admit
+ * wiring (which has rerouted → FK-gated → hive-home-redirected across this work; its end-to-end is
+ * covered by the live two-instance witness, not this unit):
+ *   • a grant that THROWS → a queryable `rekey_grant_failed` boot event (part B), AND the membership
+ *     write still succeeds (the grant is fire-and-forget — a throw must never fail the row).
+ *   • a grant that SILENTLY returns {applied:false} → `rekey_grant_skipped` with the reason (ee7e9's
+ *     result-check — the non-throw 0-keys path part B's catch cannot see; the actual WI-280 root).
  *
- * The grant module is dynamically imported inside the catch; vi.mock intercepts
- * that import to force the throw (mirrors WI-280 candidate 1).
+ * Hermetic: the grant module + the org-PG INSERT are stubbed (no PG, no crypto).
  */
-
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-// Force the admit-time epoch-key grant to THROW (sodium-native unresolved class).
-// isHiveRekeyEnabled → true so the grant path is taken; grantEpochKeysToMembers
-// rejects, exercising the part-B loud catch.
+// Force the grant to THROW (sodium-native unresolved class). isHiveRekeyEnabled → true so the grant
+// path is taken. Test 2 overrides this once for the silent {applied:false} skip path.
 vi.mock('../hive-epoch-boundary-wiring', () => ({
   grantEpochKeysToMembers: vi.fn(async () => {
     throw new Error('sodium-native unresolved (test) — deriveEpochKey throw');
@@ -34,11 +27,8 @@ vi.mock('../hive-epoch-boundary-wiring', () => ({
   isHiveRekeyEnabled: vi.fn(async () => true),
 }));
 
-// WI-280 reroute (ee7e9): the open-mode admit now funnels through upsertHiveMember, which does a
-// real hive_members INSERT (getOrgPg) BEFORE the grant. The hermetic harness has no org PG, so the
-// INSERT would throw and the admit would never reach the grant (where the boot-events are recorded).
-// Stub getOrgPg so the INSERT echoes its params back as the RETURNING row (valid for rowToRecord),
-// letting the admit reach the grant. The original test never hit getOrgPg, so this is the only call.
+// Stub the org PG so upsertHiveMember's hive_members INSERT returns a fake row (the hermetic test has
+// no real PG). The INSERT echoes its params back as the RETURNING row (valid for rowToRecord).
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   const stubSql = {
@@ -62,213 +52,63 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
-// WI-280 FK fix (ee7e9, boot.ts:1049): the open-mode admit upsert is now self-gated on
-// loadHivePubkey(ws, slug) being non-null — only the hive HOME holds the key; member topics have no
-// hive parent row, so the unconditional upsert FK-violated there (the bare grant used to no-op via
-// the same gate). The hermetic harness has no hive key for the test slug, so the gate would
-// early-return and skip the upsert → no grant → no boot event. Mock loadHivePubkey non-null so the
-// admit reaches the grant (the path under test).
-vi.mock('../../../identity/hive-keypair', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../identity/hive-keypair')>();
-  return {
-    ...actual,
-    loadHivePubkey: vi.fn(async () => 'fake-hive-pubkey-base64') as unknown as typeof actual.loadHivePubkey,
-  };
-});
-
-import { bootHarnessSubstrate } from '../boot';
+import { upsertHiveMember } from '../../../hive-membership-store';
 import { grantEpochKeysToMembers } from '../hive-epoch-boundary-wiring';
-import { buildAnnounce, type SignedAnnounce } from '../announce';
-import { _resetCacheForTests } from '../corestore';
-import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 
-const cleanups: Array<() => void | Promise<void>> = [];
+const WS = 'ws-rekey-loud';
+const HIVE = 'rekey-loud';
 
-afterEach(async () => {
-  while (cleanups.length) {
-    try { await cleanups.pop()!(); } catch {}
-  }
-  _resetCacheForTests();
-  _clearRegistryForTests();
+afterEach(() => {
   _resetBootHistoryForTests();
   vi.clearAllMocks();
 });
 
-function tmpDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
-  return dir;
-}
+/** A member with one bound device → upsertHiveMember runs the grant (newMemberPubkeys.length > 0). */
+const member = {
+  workspaceId: WS,
+  hiveHomeSlug: HIVE,
+  githubUserId: 42,
+  githubUsername: 'alice',
+  deviceAttestations: [
+    { device_pubkey: 'pk-b', gist_id: 'g', gist_url: '', device_label: 'd', created_at: 1, signature_by_device: 's' },
+  ],
+};
 
-/** A VALID signed announce with a freshly-generated Ed25519 keypair. */
-async function validAnnounce(logCoreKey: string): Promise<SignedAnnounce> {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
-    .subarray(-32)
-    .toString('base64');
-  const body = {
-    device_pubkey: rawPub,
-    github_user_id: 4242,
-    github_login: 'alice',
-    attestation_gist_id: 'gist-test',
-    log_core_key: logCoreKey,
-  };
-  return buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
-}
+describe('WI-280 part B — re-key grant failure is LOUD, not swallowed (at the upsertHiveMember seam)', () => {
+  it('records a rekey_grant_failed boot event when the grant THROWS, and still writes the member', async () => {
+    // part B ALSO logs the throw loudly via console.error (the stack); vitest-fail-on-console would
+    // fail on it, so spy it (suppress + assert) — the loud log is the intended behavior.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-async function pollUntil<T>(
-  fn: () => T | Promise<T>,
-  opts: { timeoutMs: number; intervalMs: number },
-): Promise<T | undefined> {
-  const deadline = Date.now() + opts.timeoutMs;
-  for (;;) {
-    const v = await fn();
-    if (v) return v;
-    if (Date.now() >= deadline) return undefined;
-    await new Promise((r) => setTimeout(r, opts.intervalMs));
-  }
-}
+    const rec = await upsertHiveMember(member);
+    // The membership write succeeded despite the grant throw (best-effort: a grant throw never fails the row).
+    expect(rec.githubUserId).toBe(42);
 
-describe('WI-280 part B — re-key admit-grant failure is LOUD, not swallowed', () => {
-  it(
-    'records a rekey_grant_failed boot event when the grant throws, and still admits the peer',
-    async () => {
-      // Mirror the known-working admit path: 'pending' on first verify, 'verified'
-      // on the retry, so the pending-retry timer drains + admits the peer (which
-      // fires the fire-and-forget epoch-key grant — mocked to throw).
-      let callCount = 0;
-      const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
-        callCount++;
-        return callCount === 1 ? 'pending' : 'verified';
-      };
+    const events = listBootHistory({ workspaceId: WS, harnessSlug: HIVE, kinds: ['rekey_grant_failed'], limit: 5 });
+    expect(events.length, 'rekey_grant_failed boot event recorded (not silently swallowed)').toBeGreaterThan(0);
+    expect(events[0].message).toContain('grantEpochKeysToMembers on upsertHiveMember failed');
 
-      const handle = await bootHarnessSubstrate({
-        workspaceRoot: tmpDir('mb-rekey-loud-'),
-        workspaceId: 'ws-rekey-loud',
-        harnessSlug: 'rekey-loud',
-        mergePollMs: 0,
-        pendingRetryMs: 20,
-        loadRevokedOverride: async () => new Set(),
-        verifyBindingOverride,
-      });
-      cleanups.push(() => handle.close());
+    // The loud console.error (with the stack) also fired — the failure is no longer message-only / swallowed.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('grantEpochKeysToMembers on upsertHiveMember failed'),
+    );
+  });
 
-      // part B ALSO logs the throw loudly via console.error (the stack), in
-      // addition to the boot event. vitest-fail-on-console would fail on it, so
-      // spy it (suppress + assert) — the loud log is the intended behavior.
-      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('records a rekey_grant_skipped boot event (with the reason) when the grant SILENTLY returns {applied:false}', async () => {
+    // The NON-THROW 0-keys path — the actual WI-280 root (flag-disabled). The grant returns
+    // {applied:false, reason} WITHOUT throwing, so part B's throw catch never sees it; ee7e9's
+    // result-check in upsertHiveMember emits rekey_grant_skipped so a 0-keys run NAMES the cause.
+    vi.mocked(grantEpochKeysToMembers).mockImplementationOnce(async () => ({
+      applied: false,
+      reason: 'flag-disabled',
+    }));
 
-      const logCoreKey = 'cc'.repeat(32);
-      const frame = await validAnnounce(logCoreKey);
+    const rec = await upsertHiveMember(member);
+    expect(rec.githubUserId).toBe(42);
 
-      // First announce: 'pending' → not admitted yet.
-      const decision = await handle.onAnnounce(frame);
-      expect(decision).toEqual({ admit: false, reason: 'pending' });
-
-      // Retry flips to 'verified' → peer admitted. The grant throw must NOT break
-      // admission (it is fire-and-forget).
-      const admitted = await pollUntil(
-        () => handle.admitted.has(logCoreKey),
-        { timeoutMs: 2000, intervalMs: 30 },
-      );
-      expect(admitted, 'peer admitted despite the grant throw').toBeTruthy();
-
-      // The grant failure is LOUD — a queryable rekey_grant_failed boot event.
-      // The grant is async fire-and-forget, so poll for the event.
-      const loud = await pollUntil(
-        () =>
-          listBootHistory({
-            workspaceId: 'ws-rekey-loud',
-            harnessSlug: 'rekey-loud',
-            kinds: ['rekey_grant_failed'],
-            limit: 5,
-          }).length > 0,
-        { timeoutMs: 2000, intervalMs: 30 },
-      );
-      expect(loud, 'rekey_grant_failed boot event recorded (not silently swallowed)').toBeTruthy();
-
-      const events = listBootHistory({
-        workspaceId: 'ws-rekey-loud',
-        harnessSlug: 'rekey-loud',
-        kinds: ['rekey_grant_failed'],
-        limit: 5,
-      });
-      expect(events.length).toBeGreaterThan(0);
-      expect(events[0].message).toContain('grantEpochKeysToMembers on upsertHiveMember failed');
-
-      // The loud console.error (with the stack) also fired — the failure is no
-      // longer message-only / swallowed.
-      expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('grantEpochKeysToMembers on upsertHiveMember failed'),
-      );
-    },
-    5000,
-  );
-
-  it(
-    'records a rekey_grant_skipped boot event (with the reason) when the grant SILENTLY returns {applied:false}, and still admits the peer',
-    async () => {
-      // The NON-THROW 0-keys path — the actual WI-280 root (line 164 'flag-disabled').
-      // The grant returns {applied:false, reason} WITHOUT throwing, so part B's throw
-      // catch never sees it; the admit call-site emits rekey_grant_skipped so a 0-keys
-      // run NAMES the cause instead of silently minting nothing.
-      vi.mocked(grantEpochKeysToMembers).mockImplementationOnce(async () => ({
-        applied: false,
-        reason: 'flag-disabled',
-      }));
-
-      let callCount = 0;
-      const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
-        callCount++;
-        return callCount === 1 ? 'pending' : 'verified';
-      };
-
-      const handle = await bootHarnessSubstrate({
-        workspaceRoot: tmpDir('mb-rekey-skip-'),
-        workspaceId: 'ws-rekey-skip',
-        harnessSlug: 'rekey-skip',
-        mergePollMs: 0,
-        pendingRetryMs: 20,
-        loadRevokedOverride: async () => new Set(),
-        verifyBindingOverride,
-      });
-      cleanups.push(() => handle.close());
-
-      const logCoreKey = 'dd'.repeat(32);
-      const frame = await validAnnounce(logCoreKey);
-
-      const decision = await handle.onAnnounce(frame);
-      expect(decision).toEqual({ admit: false, reason: 'pending' });
-
-      const admitted = await pollUntil(
-        () => handle.admitted.has(logCoreKey),
-        { timeoutMs: 2000, intervalMs: 30 },
-      );
-      expect(admitted, 'peer admitted despite the silent grant skip').toBeTruthy();
-
-      // The silent skip is NAMED — a queryable rekey_grant_skipped event carrying the reason.
-      const named = await pollUntil(
-        () =>
-          listBootHistory({
-            workspaceId: 'ws-rekey-skip',
-            harnessSlug: 'rekey-skip',
-            kinds: ['rekey_grant_skipped'],
-            limit: 5,
-          }).length > 0,
-        { timeoutMs: 2000, intervalMs: 30 },
-      );
-      expect(named, 'rekey_grant_skipped boot event recorded (the silent 0-keys path is named)').toBeTruthy();
-
-      const events = listBootHistory({
-        workspaceId: 'ws-rekey-skip',
-        harnessSlug: 'rekey-skip',
-        kinds: ['rekey_grant_skipped'],
-        limit: 5,
-      });
-      expect(events.length).toBeGreaterThan(0);
-      expect(events[0].message).toContain('flag-disabled'); // the WHICH-return reason is surfaced
-    },
-    5000,
-  );
+    const events = listBootHistory({ workspaceId: WS, harnessSlug: HIVE, kinds: ['rekey_grant_skipped'], limit: 5 });
+    expect(events.length, 'rekey_grant_skipped boot event recorded (the silent 0-keys path is named)').toBeGreaterThan(0);
+    expect(events[0].message).toContain('flag-disabled'); // the WHICH-return reason is surfaced
+  });
 });

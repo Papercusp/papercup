@@ -127,8 +127,14 @@ describe('the armed defaults match the producer events (P-003 core, pre-dispatch
     expect(hiveWakeMatches(ev('plans:start', { slug: 'p', transitioned: false }))).toHaveLength(0);
   });
 
-  it('work_items:create wakes only on ok:true (in-band failure stays silent)', () => {
+  it('work_items:create wakes on an UNPLACED (unassigned) create but NOT a pre-assigned one (EI-1850)', () => {
+    // Unassigned (no assignee field, or explicit null) → needs the Queen to place it → wake.
     expect(hiveWakeMatches(ev('work_items:create', { ok: true, workItem: { id: 'WI-1' } }))).toHaveLength(1);
+    expect(hiveWakeMatches(ev('work_items:create', { ok: true, workItem: { id: 'WI-1', assignee: null } }))).toHaveLength(1);
+    // Pre-placed / self-assigned (assignee set, e.g. work_items:create {assign_to} from a warm
+    // loop) → already owned → must NOT wake the Queen every cycle (the EI-1850 fix).
+    expect(hiveWakeMatches(ev('work_items:create', { ok: true, workItem: { id: 'WI-2', assignee: 'bee-7' } }))).toHaveLength(0);
+    // In-band failure stays silent.
     expect(hiveWakeMatches(ev('work_items:create', { ok: false, error: 'dup' }))).toHaveLength(0);
   });
 
