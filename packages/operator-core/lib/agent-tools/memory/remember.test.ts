@@ -273,6 +273,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
 
   it('dedup is disabled by default (env not set)', async () => {
     delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK = 'off'; // isolate dedup; conflict-check has its own checks
     const b = fakeBackend([
       { id: 'mem-old', text: 'exact match', score: 0.99 },
     ]);
@@ -282,11 +283,33 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       { content: 'exact match', kind: 'feedback' },
       fakeCtx,
     );
-    // With flag off, the high-similarity write should still succeed
+    // With BOTH dedup and conflict-check off, the high-similarity write still succeeds
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
+    // neither gate enabled → no neighbor search at all
     expect(b.search).not.toHaveBeenCalled();
     // restore for following tests
     process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+    delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
+  });
+
+  it('conflict-check runs the neighbor search even when dedup is OFF (EI-2032 decouple)', async () => {
+    delete process.env.PAPERCUSP_MEMORY_DEDUP;          // dedup off → no similar_exists rejection
+    delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK; // conflict-check default ON
+    const b = fakeBackend([
+      { id: 'mem-rel', text: 'a related fact', score: 0.5 },
+    ]);
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'a brand new fact', kind: 'feedback' },
+      fakeCtx,
+    );
+    // The neighbor search MUST run for the conflict-check even with dedup off
+    // (the exact bug this decouple fixes — previously it was nested under dedup).
+    expect(b.search).toHaveBeenCalledTimes(1);
+    // dedup off → no rejection; the uncredentialed judge degrades → write succeeds.
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on'; // restore for following tests
   });
 });
 
