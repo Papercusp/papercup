@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { blankFrontmatter, findMdxCompileError } from './mdx';
+import { blankFrontmatter, findFrontmatterYamlError, findMdxCompileError } from './mdx';
 
 describe('blankFrontmatter', () => {
   it('returns the text unchanged when there is no leading frontmatter fence', () => {
@@ -78,5 +78,49 @@ describe('findMdxCompileError', () => {
     // proving detection is the real compiler, not a regex (zero false positive).
     const err = await findMdxCompileError('codespan.mdx', 'Use the `<date>` placeholder.\n');
     expect(err).toBeNull();
+  });
+
+  it('flags a broken YAML frontmatter (EI-1449) even though the body compiles', async () => {
+    // The body is clean; only the frontmatter is broken (an unquoted description
+    // with a `": "` substring → YAML "bad indentation of a mapping entry"). The
+    // body-only compile blanks the frontmatter and would miss it; the combined
+    // detector must catch it because `astro build` parses frontmatter first.
+    const text = '---\ntitle: Doc\ndescription: the action-layer "decision ledger": the meat\n---\n# Body\n\nclean prose\n';
+    const err = await findMdxCompileError('brokenfm.mdx', text);
+    expect(err).not.toBeNull();
+    expect(err!.reason).toContain('frontmatter YAML');
+    // Points at the offending frontmatter source line (the description, line 3).
+    expect(err!.line).toBe(3);
+  });
+});
+
+describe('findFrontmatterYamlError', () => {
+  it('returns null when there is no leading frontmatter block', async () => {
+    expect(await findFrontmatterYamlError('# Title\n\nprose\n')).toBeNull();
+  });
+
+  it('returns null for a valid frontmatter block', async () => {
+    const text = '---\ntitle: Doc\ntags: [a, b]\nstatus: active\n---\n# Body\n';
+    expect(await findFrontmatterYamlError(text)).toBeNull();
+  });
+
+  it('returns null when a `": "`-bearing value is properly single/double-quoted', async () => {
+    // The canonical FIX for the EI-1449 break: quote the value. Must NOT flag.
+    const text = '---\ntitle: Doc\ndescription: "the ledger\': the meat"\n---\n# Body\n';
+    expect(await findFrontmatterYamlError(text)).toBeNull();
+  });
+
+  it('flags an unquoted value containing `": "` (the EI-1449 fleet-wide build-breaker)', async () => {
+    const text = '---\ntitle: Doc\ndescription: the action-layer "decision ledger": the meat\n---\n# Body\n';
+    const err = await findFrontmatterYamlError(text);
+    expect(err).not.toBeNull();
+    expect(err!.reason).toContain('frontmatter YAML');
+    expect(err!.reason).not.toContain('\n'); // single-line reason
+    expect(err!.line).toBe(3); // mapped to the real source line (1-based)
+  });
+
+  it('returns null for an unterminated fence (the MDX compile path reports that)', async () => {
+    const text = '---\ntitle: Doc\nno closing fence\nstill going\n';
+    expect(await findFrontmatterYamlError(text)).toBeNull();
   });
 });

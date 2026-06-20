@@ -19,6 +19,17 @@ import { buildDigest } from '../../harness/improvements/digest';
 import { readOwnerFullAutonomyGrant } from '../../harness/improvements/full-autonomy-grant';
 import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
 
+/** EI-1715: under fleet-wide PG contention (pg 57014) this read can ride to the
+ *  ~55s MCP dispatch cap. A Queen survey turn that calls digest then times out
+ *  ABORTS before hive:declare-wake → the 30-min liveness backstop fires → watchdog
+ *  spin. Bound it well under the cap and return a fast DEGRADED-but-valid result
+ *  so the turn continues + arms its wake. Env-tunable. */
+class DigestTimeoutError extends Error {}
+function digestTimeoutMs(): number {
+  const raw = Number(process.env.PAPERCUSP_DIGEST_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
+}
+
 export default defineTool({
   name: 'improvements:digest',
   profile: 'engineer',
@@ -39,17 +50,42 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const items = await readImprovementItems({ state: args.state, limit: args.limit, harnessSlug: args.harnessSlug });
-    // The OWNER FULL-AUTONOMY grant (Phase 2): keep this review lens consistent with the
-    // live dispatch — when ON, protected-surface kind=bugs show in the auto lane.
-    const { activeWorkspaceId } = await import('../../workspace-registry');
-    const principalWs = ctx?.principal?.workspaceId;
-    const ws = principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId();
-    const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ws);
-    // Human lane ordered by the ONE ranker (frontier P-040; blocking impact is
-    // feature #1); same enrichment the Learning tab resolver applies, so the
-    // shapes can't drift.
-    const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy }), { candidates: items });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, digest }) }] };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        (async () => {
+          const items = await readImprovementItems({ state: args.state, limit: args.limit, harnessSlug: args.harnessSlug });
+          // The OWNER FULL-AUTONOMY grant (Phase 2): keep this review lens consistent with the
+          // live dispatch — when ON, protected-surface kind=bugs show in the auto lane.
+          const { activeWorkspaceId } = await import('../../workspace-registry');
+          const principalWs = ctx?.principal?.workspaceId;
+          const ws = principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId();
+          const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ws);
+          // Human lane ordered by the ONE ranker (frontier P-040; blocking impact is
+          // feature #1); same enrichment the Learning tab resolver applies, so the
+          // shapes can't drift.
+          const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy }), { candidates: items });
+          return { ok: true as const, digest };
+        })(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new DigestTimeoutError()), digestTimeoutMs());
+        }),
+      ]);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    } catch (e) {
+      // EI-1715: a contention-slow read returns a fast DEGRADED-but-valid empty
+      // digest (buildDigest([]) — pure, no DB) flagged `degraded`, so a Queen
+      // survey turn does NOT abort and still reaches hive:declare-wake. The next
+      // survey (post-contention) returns the real backlog.
+      if (e instanceof DigestTimeoutError) {
+        const digest = buildDigest([], { nowMs: Date.now(), ownerFullAutonomy: false });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, degraded: true, reason: 'digest_timeout', digest }) }],
+        };
+      }
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   },
 });

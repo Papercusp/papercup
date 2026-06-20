@@ -289,6 +289,112 @@ describe('MemberRateLimiter — snapshot (observability)', () => {
   });
 });
 
+/** Ramp `n` ops for one author across CONSECUTIVE windows by stamping each op one
+ *  window further into the future — the forged-`ts` evasion pattern (1 op/window
+ *  slips under any per-window cap while driving the author's hwm forward). Returns
+ *  the admit/drop tally (each ramp op is alone in its window ⇒ admits for cap ≥ 1). */
+function ramp(
+  lim: MemberRateLimiter,
+  authorId: number,
+  cls: RateClass,
+  cap: number | undefined,
+  n: number,
+  baseTs = 1_000_000_000_000,
+): { admit: number; drop: number } {
+  let admit = 0;
+  let drop = 0;
+  for (let i = 0; i < n; i++) {
+    const r = lim.check({ authorId, cls, opId: `${authorId}:r${i}`, tsMs: baseTs + i * RATE_WINDOW_MS[cls], cap });
+    if (r === 'admit' || r === 'unlimited') admit++;
+    else drop++;
+  }
+  return { admit, drop };
+}
+
+describe('MemberRateLimiter — forged-op-time detection (WI-268)', () => {
+  const BASE = 1_700_000_000_000;
+
+  it('flags an author whose op-ts ramp far ahead of the honest population', () => {
+    const lim = new MemberRateLimiter(); // default skewThresholdWindows = 5
+    flood(lim, 1, 'ops', 10, 3, BASE); // honest author, clustered in one window
+    const forge = ramp(lim, 2, 'ops', 10, 10, BASE); // ramps 10 windows ahead, 1/window
+    expect(forge.admit).toBe(10); // the evasion: every ramp op slips under the per-window cap
+    const snap = lim.snapshot({ opsPerMin: 10 });
+    const honest = snap.find((r) => r.authorId === 1 && r.cls === 'ops')!;
+    const forger = snap.find((r) => r.authorId === 2 && r.cls === 'ops')!;
+    expect(forger.skewWindows).toBeGreaterThan(5);
+    expect(forger.suspectedTimestampSkew).toBe(true);
+    expect(honest.suspectedTimestampSkew).toBe(false); // the honest baseline is never flagged
+    expect(honest.skewWindows).toBe(0);
+  });
+
+  it('does NOT flag a truthful clustered flood (over cap ⇒ throttled, but not skewed)', () => {
+    const lim = new MemberRateLimiter();
+    flood(lim, 1, 'ops', 5, 3, BASE); // honest baseline
+    flood(lim, 2, 'ops', 5, 40, BASE); // a real-time burst: 40 ops, all in ONE window
+    const row = lim.snapshot({ opsPerMin: 5 }).find((r) => r.authorId === 2)!;
+    expect(row.throttled).toBe(true); // it IS over cap (caught by the convergent drop)
+    expect(row.suspectedTimestampSkew).toBe(false); // …but its ts are truthful ⇒ no skew flag
+    expect(row.skewWindows).toBe(0);
+  });
+
+  it('a single stray far-future op cannot trip the flag (the ±1-window clamp)', () => {
+    const lim = new MemberRateLimiter();
+    flood(lim, 1, 'ops', 10, 3, BASE); // honest baseline
+    // Author 2: one normal op, then one op stamped 100 windows into the future.
+    lim.check({ authorId: 2, cls: 'ops', opId: '2:a', tsMs: BASE, cap: 10 });
+    lim.check({ authorId: 2, cls: 'ops', opId: '2:far', tsMs: BASE + 100 * OPS_W, cap: 10 });
+    const row = lim.snapshot({ opsPerMin: 10 }).find((r) => r.authorId === 2)!;
+    expect(row.skewWindows).toBeLessThanOrEqual(1); // clamp let hwm advance only one window
+    expect(row.suspectedTimestampSkew).toBe(false);
+  });
+
+  it('does NOT flag a lone author (no honest baseline to compare against)', () => {
+    const lim = new MemberRateLimiter();
+    ramp(lim, 7, 'ops', 10, 20, BASE); // 20 windows ahead — but the ONLY author
+    const row = lim.snapshot({ opsPerMin: 10 }).find((r) => r.authorId === 7)!;
+    expect(row.skewWindows).toBe(0);
+    expect(row.suspectedTimestampSkew).toBe(false);
+  });
+
+  it('does NOT flag honest authors clustered at the frontier (no false positive)', () => {
+    const lim = new MemberRateLimiter();
+    // Three honest authors, ts within the same window (normal inter-member jitter).
+    for (const a of [1, 2, 3]) flood(lim, a, 'ops', 10, 4, BASE + a * 1_000);
+    const snap = lim.snapshot({ opsPerMin: 10 }).filter((r) => r.cls === 'ops');
+    expect(snap.every((r) => !r.suspectedTimestampSkew)).toBe(true);
+    expect(snap.every((r) => r.skewWindows <= 1)).toBe(true);
+  });
+
+  it('skew flag is convergent: two peers, any cross-author interleave, identical snapshot', () => {
+    const mk = () => new MemberRateLimiter();
+    const peerA = mk();
+    const peerB = mk();
+    // peerA: honest author fully, then the forger's ramp.
+    flood(peerA, 1, 'ops', 10, 3, BASE);
+    ramp(peerA, 2, 'ops', 10, 9, BASE);
+    // peerB: the SAME two per-author streams, but interleaved the other way.
+    ramp(peerB, 2, 'ops', 10, 9, BASE);
+    flood(peerB, 1, 'ops', 10, 3, BASE);
+    const norm = (lim: MemberRateLimiter) =>
+      lim
+        .snapshot({ opsPerMin: 10 })
+        .map((r) => ({ a: r.authorId, c: r.cls, skew: r.skewWindows, flag: r.suspectedTimestampSkew }))
+        .sort((x, y) => x.a - y.a);
+    expect(norm(peerA)).toEqual(norm(peerB));
+    expect(norm(peerA).find((r) => r.a === 2)!.flag).toBe(true);
+  });
+
+  it('respects a custom skewThresholdWindows', () => {
+    const strict = new MemberRateLimiter({ skewThresholdWindows: 2 });
+    flood(strict, 1, 'ops', 10, 2, BASE);
+    ramp(strict, 2, 'ops', 10, 4, BASE); // 4 windows ahead > 2 ⇒ flagged under strict
+    const row = strict.snapshot({ opsPerMin: 10 }).find((r) => r.authorId === 2)!;
+    expect(row.skewWindows).toBeGreaterThan(2);
+    expect(row.suspectedTimestampSkew).toBe(true);
+  });
+});
+
 describe('MemberRateLimiter — decide (atomic multi-class)', () => {
   it('drops the op if ANY class is over cap, and spends no budget on a drop', () => {
     const lim = new MemberRateLimiter();

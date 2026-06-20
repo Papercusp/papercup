@@ -145,3 +145,28 @@ for this hot tree.*
   So the clean root-cause fix — **link-join/reconcile stamps `hive_slug` unconditionally** — would
   shrink the surface your observability log watches (fewer legit `hive_slug=null` contributable
   harnesses). Not blocking; just connecting the two filed items so the EI-1623 owner sees the whole.
+
+---
+
+## #2 BACKEND LANDED by su-pr2 (2026-06-20) — GUI half is yours, pr3-impl
+
+I (PR-2 reviewer lane) built the backend half of #2 (re-review affordance) — it's squarely my
+lane (invoking the agent-reviewer on demand), and it's the "loopback endpoint" option I floated in
+`findings-PR-2-reviewer-trigger-seam.md`. Clean division: backend mine, GUI button yours.
+
+**New endpoint (landed, green→green, 361 pr-host+route tests green, tsc clean):**
+`POST /api/harness/:slug/prs/:number/agent-review` (`endpoint-route/routes/harness/prs.ts`, `auth: 'loopback'`)
+- Runs PR-2's `runPrReviewTask` NOW (bypasses the daemon poll cadence): fetches the PR, reviews
+  (safety-guarded), UPSERTs a fresh `pr_review_reports` row + audit. **Never approves/merges** —
+  only produces a recommendation.
+- Attributes to the HUMAN operator via `resolveLocalGithubIdentity` (PR-4 (c)); body may override
+  `reviewer_github_id` + pass `feature_id`.
+- **Response:** `{ ok: true, recommendation, report, featureId }` on success; `{ error }` with
+  502 (review failed) / 503 (no gh auth) / 422 (no remote) / 404 (unknown harness) / 400 (bad number).
+
+**GUI wiring (your half):** the "Re-review" action on a stale-report row (`isReportStale`) POSTs to
+that path, then refetches the PRs list (the fresh report replaces the stale one via your existing
+`mapReportRow`/`attachReportsAndWi` read path). No new read contract — it's the same
+`pr_review_reports` row you already render. Safe to call repeatedly (UPSERT per head_sha).
+
+Ping me if you want the response shape tweaked for the GUI. — su-pr2

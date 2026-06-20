@@ -135,11 +135,12 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   const checks = buildDefaultChecks();
   const byName = new Map(checks.map((c) => [c.name, c]));
 
-  it('converts exactly the 9 high-frequency ephemeral probes', () => {
+  it('converts exactly the 10 high-frequency ephemeral probes', () => {
     expect([...byName.keys()].sort()).toEqual(
       [
         'completion-ref-verify',
         'connection-pressure',
+        'federation-drain-reconcile',
         'harness-status-sweep',
         'learning-infra-health',
         'service-health',
@@ -161,10 +162,13 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('stale-claim-sweep')!.intervalMs).toBe(60_000);
     expect(byName.get('learning-infra-health')!.intervalMs).toBe(120_000);
     expect(byName.get('steering-churn-sweep')!.intervalMs).toBe(300_000);
+    expect(byName.get('federation-drain-reconcile')!.intervalMs).toBe(300_000);
   });
 
-  it('only the two heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {
+  it('only the heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {
     const shedders = checks.filter((c) => c.shed).map((c) => c.name).sort();
-    expect(shedders).toEqual(['harness-status-sweep', 'system-health']);
+    // federation-drain-reconcile sheds: it group-scans substrate_outbox, and a real
+    // stall persists, so a shed tick is caught next interval (WI-254).
+    expect(shedders).toEqual(['federation-drain-reconcile', 'harness-status-sweep', 'system-health']);
   });
 });

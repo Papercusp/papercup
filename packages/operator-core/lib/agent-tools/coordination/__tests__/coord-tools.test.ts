@@ -71,6 +71,10 @@ describe('coord:whoami', () => {
   it('returns the server-resolved coordination identity', async () => {
     expect(parse(await run(whoamiTool))).toMatchObject({ ownerId: 'me', source: 'omp-hook-session' });
   });
+  // EI-1748 graceful-degrade path (resolveAgentIdentity throws → whoami returns
+  // {resolved:false,...} instead of a structural error) is verified by inspection;
+  // a unit test needs a throw-injecting identity mock (this suite mocks it to a
+  // fixed ME), so it's left as a follow-up rather than restructuring the shared mock.
 });
 
 describe('coord:thread', () => {

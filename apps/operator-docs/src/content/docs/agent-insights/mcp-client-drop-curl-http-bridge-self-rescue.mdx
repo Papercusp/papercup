@@ -1,0 +1,86 @@
+---
+title: "MCP client dropped after /loop? Self-rescue via the curl HTTP-bridge (EI-1740)"
+description: "The papercusp-su MCP client can silently drop right after a /loop slash-command (EI-1740 / WI-260 / WI-258) and never auto-reconnect, isolating an agent from coord/plans/work_items for hours. The operator backend stays healthy — so you can fully restore coordination by driving the same HTTP MCP endpoint directly with curl."
+discovered: 2026-06-20
+tags: [mcp, coordination, ei-1740, loop, operator, resilience, self-rescue]
+status: active
+---
+
+## Symptom
+
+Mid-session, every `mcp__papercusp-su__*` tool vanishes — the harness emits
+`480 deferred tools no longer available (MCP server disconnected): mcp__papercusp-su__*`
+— and `ToolSearch` for them returns nothing. Observed to fire **right after a
+`/loop` slash-command is processed** (EI-1740 / WI-260 / WI-258; corroborated
+across ≥2 agents). It does **not** auto-reconnect (observed dark 5h+).
+
+Key tell: the operator `:3070` stays **healthy** (`curl :3070/api/health` → 200).
+So this is a **client-side** disconnect, not a backend outage. The MCP *server*
+is still up and serving every other agent — only *your* client dropped.
+
+## Self-rescue: drive the MCP server directly over HTTP
+
+`papercusp-su` is an HTTP MCP server. Its endpoint + bearer live in your own
+`~/.claude.json` (`mcpServers."papercusp-su"`). You can issue the exact same
+`tools/call` the client would, via curl — this fully restores coord / plans /
+work_items. Drop-in helper:
+
+```bash
+cat > /tmp/psu.sh << 'SCRIPT'
+#!/bin/bash
+# psu.sh <tool> [args-json]  — call papercusp-su MCP over HTTP when the client is down
+TOOL="$1"; ARGS="${2:-{}}"
+# PIN to your SESSION su id — NOT $PAPERCUSP_SID (it drifts to a fresh per-shell id).
+# Get the right one from coord:whoami output captured while the client was alive.
+SID="su-XXXXXXXX-....."
+BEARER=$(python3 -c "import json;print(json.load(open('$HOME/.claude.json'))['mcpServers']['papercusp-su']['headers']['Authorization'])")
+URL="http://localhost:3070/api/mcp?superuser=1&client=${SID}&workspace=papercusp-workspace&profile="
+for a in 1 2 3; do
+  OUT=$(curl -s -m 45 -H "Authorization: $BEARER" -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2025-06-18' \
+    -X POST "$URL" --data "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"$TOOL\",\"arguments\":$ARGS}}" 2>/dev/null \
+    | grep '^data:' | sed 's/^data: //' | tail -1)
+  [ -n "$OUT" ] && break; sleep 2
+done
+echo "$OUT" | python3 -c "import json,sys
+raw=sys.stdin.read().strip()
+if not raw: print('EMPTY-AFTER-RETRY'); sys.exit()
+d=json.loads(raw); c=d.get('result',{}).get('content',[])
+print(c[0]['text'] if c else json.dumps(d))"
+SCRIPT
+chmod +x /tmp/psu.sh
+bash /tmp/psu.sh "coord:whoami"
+bash /tmp/psu.sh "coord:inbox" '{"limit":6}'
+bash /tmp/psu.sh "plans:set-status" '{"harness":"papercusp","slug":"<plan>","itemId":"P-001","status":"wip"}'
+```
+
+## Three gotchas that will bite you
+
+1. **Server-side tool names are COLON form** — `coord:send`, `plans:set-status`,
+   `work_items:claim` — NOT the underscore Claude-facing names (`coord_send`).
+   Wrong form → `unknown_tool`. `tools/list` returns the exact names.
+2. **PIN `client` to your SESSION su id.** `$PAPERCUSP_SID` in a Bash subprocess
+   drifts to a *fresh per-shell* id (e.g. `su-d302a10b…`) while your real session
+   identity (the `ownerId` from `coord:whoami` at session start, e.g.
+   `su-7414d69e…`) is different. `superuser=1` echoes back whatever `client` you
+   pass, so the wrong id silently fragments your presence / could impersonate a
+   live peer. Capture your real id from the first `coord:inbox`/`whoami` of the run.
+3. **`workspace=papercusp-workspace` is required** or you get
+   `request_rejected: scoped_superuser_workspace_unresolved`.
+
+## Known limitation — heavy WRITES vs the operator wedge
+
+Light reads (`coord:whoami`, `work_items:get`, `plans:get`, `coord:inbox`) return
+fast. But heavy **writes** that fan out / federate (`coord:send` to `*`,
+`coord:declare-intent`) can **time out** when the operator event-loop is
+saturated (the round-4 `:3070` single-thread wedge — heavy synchronous
+`coord_event_log` work blocks the loop). `/api/health` staying 200 does NOT mean
+the coord write-path is free. Mitigation: prefer narrow writes (single recipient,
+not `*`), retry opportunistically when the wedge clears, and don't pile retries
+onto a wedged loop (you add to the very load that's blocking you).
+
+## Don't
+
+- Don't conclude the backend is down — check `/api/health` first (it's a *client* drop).
+- Don't keep "working blind" assuming you have no coordination — the HTTP-bridge restores it.
+- Don't use `$PAPERCUSP_SID` as the client id, or the underscore tool names.

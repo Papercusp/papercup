@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveProject } from '../../../harness-core';
 import { createGitHubPrHost } from '../../../pr-host/github';
+import { runPrReviewTask } from '../../../pr-host/agent-reviewer';
 import {
   resolveMergedPrFeatureId,
   stampCompletionRefOnMerge,
@@ -553,4 +554,75 @@ const reviewPr = defineTool({
   },
 });
 
-export default [listPrs, reviewPr];
+// ─── POST /harness/:slug/prs/:number/agent-review ─────────────────
+// On-demand agent re-review (PR-system follow-up #2): run PR-2's agent-reviewer
+// for this PR NOW, instead of waiting for the daemon's next poll. Produces +
+// stores a fresh `pr_review_reports` row (which the PRs tab then re-reads); the
+// GUI's "Re-review" action on a stale-report row POSTs here. It ONLY produces a
+// recommendation — it never approves/merges (that stays in the gated review route
+// above + the daemon's auto-flow). Safe to call repeatedly: the store UPSERTs per
+// head_sha.
+
+const reReviewPr = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/prs/:number/agent-review',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const prNumber = parseInt(ctx.params.number as string, 10);
+    if (!Number.isFinite(prNumber) || prNumber <= 0) {
+      return Response.json({ error: 'invalid pr number' }, { status: 400 });
+    }
+
+    const project = await resolveProject(slug);
+    if (!project) {
+      return Response.json({ error: 'unknown project' }, { status: 404 });
+    }
+
+    const host = await createGitHubPrHost();
+    if (!host) {
+      return Response.json(
+        { error: 'GitHub not authenticated — run `gh auth login`' },
+        { status: 503 },
+      );
+    }
+
+    const remote = (project as unknown as { remote?: string }).remote ?? '';
+    if (!remote) {
+      return Response.json({ error: 'no remote configured for this harness' }, { status: 422 });
+    }
+
+    const body = (await req.json().catch(() => ({}))) as {
+      reviewer_github_id?: number;
+      feature_id?: string;
+    };
+
+    // Attribute the review to the HUMAN operator (mirror the manual review route,
+    // PR-4 (c)); the caller may override via the body for a multi-user hive.
+    let reviewerGithubId = body.reviewer_github_id ?? 0;
+    if (body.reviewer_github_id === undefined) {
+      const operator = await resolveLocalGithubIdentity();
+      if (operator.kind === 'ok') reviewerGithubId = operator.githubUserId;
+    }
+
+    const result = await runPrReviewTask({
+      payload: { remote, number: prNumber },
+      workspaceId: activeWorkspaceId(),
+      harnessSlug: slug,
+      reviewerGithubId,
+      bodyFeatureId: body.feature_id ?? null,
+      host,
+    });
+    if (!result.ok) {
+      return Response.json({ error: result.error }, { status: 502 });
+    }
+    return Response.json({
+      ok: true,
+      recommendation: result.review.recommendation,
+      report: result.review.report,
+      featureId: result.review.featureId,
+    });
+  },
+});
+
+export default [listPrs, reviewPr, reReviewPr];

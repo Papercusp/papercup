@@ -11,6 +11,40 @@ and `/adv` Tests tabs discover suites from its globs, and the repo-root
 `npm run lint:tests` (run from `apps/operator`) fails if a canonical test
 matches no glob. Don't hand-catalog suites here; register them.
 
+## Mocking `@papercusp/db-org` — spread `importOriginal` (EI-362)
+
+A test that (even transitively) imports a **tool** pulls `defineTool` from
+`@papercusp/agent-mcp`, whose `bootstrap.ts` side-effect-imports the whole
+read-tool catalog — and several of those tools read `generated.*` schema exports
+from `@papercusp/db-org` **at module load**. If such a test mocks db-org with a
+**bare factory**, it silently undefines those exports and the bootstrap crashes
+at import with an opaque `Cannot read properties of undefined` (`bootstrap.ts:12`)
+— with no hint that the test's own mock is the cause:
+
+```ts
+// ❌ clobbers generated.* → opaque agent-mcp bootstrap crash at import
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => fakePg }));
+```
+
+Spread the real module so only the part you intend to fake is replaced:
+
+```ts
+// ✅ keeps generated.* (and every other export) intact
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getOrgPg: () => fakePg,
+}));
+```
+
+When it matters: **only** when the test reaches agent-mcp's tool bootstrap
+(importing a tool / `defineTool`). A bare db-org mock is fine for a test that
+never touches that path — which is why this is a guidance note, not a lint (most
+bare mocks are legitimate, so a blanket ban would be mostly false positives).
+Exemplars: `lib/agent-tools/coordination/tools/glance.test.ts` (the
+`importOriginal` callback form, with a comment on exactly why), and
+`lib/work-item-claims-two-instance.integration.test.ts` (the equivalent
+`vi.importActual` spread form). Either spread works.
+
 ## Memory bench (memory-backend-benchmark-2026-06-05)
 
 The Papercusp-specific half of the memory-backend benchmark lives at

@@ -54,3 +54,29 @@ saves the next agent that time.
 PR-1 (poll daemon, mine) ✅ · PR-2 (agent-reviewer + report) ✅ peer · PR-3 (report GUI) ✅ peer
 (verified above) · PR-4 (WI↔PR producer + identity + trailer) ✅ peer · PR-5 (live fork→PR dogfood,
 `platform/dogfood_verify.ts`) ◐ peer-active. operator-core PR-system suite: 397 tests green.
+
+## 5. UPDATE (later loop iter, 2026-06-20) — status-drift is SYSTEMIC, both directions
+
+Strengthening §3's EI-479 proposal with more evidence gathered while looking for pickup work:
+
+- **done-but-still-`todo` (causes fleet to redo work):** `WI-218` (U2 extract UI primitives) reads
+  `state=todo, assignee=null` in the live queue, but the plan `operator-vite-ui-consolidation-2026-06-16.md`
+  D-001 shows U2-1..U2-5 were **built + tested 2026-06-18** (`apps/operator-vite/src/components/ui/`).
+  The queue item should be closed/re-scoped to "adoption." I also personally hit FOUR already-done
+  items this session (PR-2, PR-3, PR-4, WI-218) before detecting they were done — real wasted scouting.
+- **shipped-but-vaporware (causes gaps to hide):** P-042 (the whole PR-1 spine), per §3.
+
+→ This is one gap with two faces: **plan/queue status is not reconciled against ground truth.** The
+EI-479 guard should check BOTH directions: (a) an item flipped done/shipped that names a file/test path
+must have it exist; (b) periodically reconcile queue `state` vs the owning plan's checkbox/status so
+done-in-plan items don't linger `todo`. Still needs peer consensus on home (lint vs plans-preflight vs
+a reconcile routine) — NOT solo-built (would be an unrequested cross-cutting mechanism). Filed here for
+a peer with coord access; I could not reach coord/peers from this Claude Code session (papercusp-su MCP
+absent; `:3270` coord writes 403 for unverified-loopback).
+
+### Loop status (autonomous, owner asleep)
+PR-1 ✅, PR-3 E2E ✅, agent-e2e doc gap fixed, this finding filed. No safe non-colliding pickup work
+remains reachable (bounded queue work is fleet-done; the rest is high-collision/big-scope or
+coord-gated). Posture: regression-watch my domain (pr-host) per-tick via tree fingerprint, re-running
+the suite only when it moves (last: green @ tree 11fe2469a / 354 tests), and keep these findings sharp
+for when a coord-capable peer can act on them.

@@ -53,6 +53,7 @@ describe('runDrainReconcileOnce', () => {
         ['ws', 'clean'],
       ]),
       capture,
+      log: () => {},
     });
 
     expect(res.flagged.map((f) => f.harnessSlug).sort()).toEqual(['stalled', 'veryStalled']);
@@ -61,9 +62,9 @@ describe('runDrainReconcileOnce', () => {
 
     // dedup key + severity mapping are honesty-shaped
     const calls = capture.mock.calls.map((c) => c[0]);
-    const stalled = calls.find((a) => a.watchdogKey.endsWith('::stalled'));
-    const very = calls.find((a) => a.watchdogKey.endsWith('::veryStalled'));
-    expect(stalled?.watchdogKey).toBe('federation-drain-stall:ws:stalled');
+    const stalled = calls.find((a) => a.watchdogKey === 'federation-drain-stall:ws:stalled');
+    const very = calls.find((a) => a.watchdogKey === 'federation-drain-stall:ws:veryStalled');
+    expect(stalled).toBeDefined();
     expect(stalled?.severity).toBe('minor'); // 120s ≥ 60s but < 5m → degraded → minor
     expect(very?.severity).toBe('major'); // 600s ≥ 5m → unhealthy → major
     for (const a of calls) {
@@ -90,6 +91,7 @@ describe('runDrainReconcileOnce', () => {
       loadDrainStats: async () => new Map([['ws::s', { undrainedCount: 2, oldestUndrainedAgeMs: 90_000 }]]),
       getStatus: fakeGetStatus([['ws', 's']]),
       capture,
+      log: () => {},
     });
     expect(res.flagged).toHaveLength(1);
     expect(res.captured).toBe(0); // flagged but the improvement was deduped (already open)

@@ -191,7 +191,8 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     if (!uiClientId) {
       throw new Error(
         'resolveAgentIdentity: superuser context is missing uiClientId — ' +
-          're-run install-standalone-mcp.sh to mint a ?client= id',
+          'pass ?client=<your-su-id> on the MCP request URL (the curl/HTTP bridge ' +
+          'must include it), or re-run install-standalone-mcp.sh to mint a ?client= id',
       );
     }
     return {

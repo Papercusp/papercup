@@ -228,6 +228,21 @@ describe('pollHarnessPrs — S0 safety gates', () => {
     expect(merge).not.toHaveBeenCalled();
   });
 
+  it('checks-fetch ERROR → fails closed, never merges (a checks-API failure must not auto-merge)', async () => {
+    // If fetchChecks itself errors, checks_state stays 'unknown' (from getPr), so
+    // decideAutoReview yields 'approve' (not approve_and_merge) and tryAutoMerge is
+    // never reached. This is the fail-CLOSED safety leg — distinct from a reported
+    // failure/pending state — that a checks-API outage can never sneak a merge past.
+    const { host, merge } = makeHost();
+    const { store } = makeStore();
+    const out = await pollHarnessPrs(
+      ARGS,
+      baseDeps(host, store, { fetchChecks: async () => err({ kind: 'server_error', message: 'checks api down' }) }),
+    );
+    expect(out.merged).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+  });
+
   it('untrusted author → never approves or merges', async () => {
     const { host, postReview, merge } = makeHost({ open: [makePr({ author: { github_user_id: 888, github_login: 'mallory' } })] });
     const { store } = makeStore({ trust: [TRUSTED_AUTHOR] });

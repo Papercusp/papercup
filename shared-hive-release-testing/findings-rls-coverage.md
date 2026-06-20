@@ -34,13 +34,36 @@ isn't enforcing the predicate.
 
 ## What is NOT yet established (the open question)
 `relrowsecurity = false` means RLS is **not enforced** — it does **not** by itself prove an
-exploitable cross-tenant leak. Exploitability depends on the **access path**:
-1. Are these tables read/written via the non-BYPASSRLS `harness_app` role (subject to RLS), or only
-   via a BYPASSRLS admin role (RLS moot)?
-2. Do those queries already filter `workspace_id` explicitly in every read path (defense without RLS)?
+exploitable cross-tenant leak. Exploitability depends on the **access path**, and this codebase has
+a *mixed* isolation model (`packages/operator-core/lib/route-workspace.ts`):
+- **`withWorkspace()` path** — opens a txn, sets `app.workspace_id`, runs as the app role *subject to
+  RLS*. For an RLS-**enabled** table this isolates; for the 8 RLS-**disabled** tables it does **not**
+  (the session var has no policy to act on) → those reads see ALL workspaces unless the query filters
+  `workspace_id` explicitly. route-workspace's own comment notes migration to `withWorkspace()` is
+  still in progress.
+- **`harness_admin` / bare-pool path** — BYPASSRLS by design (migrations, admin) → RLS moot
+  everywhere; isolation rests entirely on explicit `workspace_id` filtering.
 
-Answering (1)+(2) per table is the decision input. The existing `rls-isolation` test proves the
-*mechanism* works but only on a synthetic `public.rls_demo` table — it never covered these.
+So the decision input per table is: **for the read paths that touch it, is `workspace_id` filtered
+explicitly in the query?** If a non-trivial read reaches one of these 8 via `withWorkspace()` (app
+role) *without* an explicit `workspace_id` predicate, that is a concrete cross-tenant read — RLS was
+the backstop and it is absent. A focused call-site audit per table answers this; it is sized as a
+tracked work-item (not done here — autonomous-loop, no consensus channel). The existing
+`rls-isolation` test proves the *mechanism* works but only on a synthetic `public.rls_demo` table.
+
+### Update — read-path evidence (this session, raises severity)
+Spot-checking the sync-resolver read path showed the house style **relies on RLS, not explicit
+filtering**: e.g. `sync-resolver/index.ts` `resolveDesignSketches` opens a txn, runs
+`set_config('app.workspace_id', …, true)`, then `SELECT … WHERE harness_slug = … AND feature_id = …`
+— **no `workspace_id` predicate**; workspace isolation is delegated entirely to RLS on the target
+table. If the 8 RLS-disabled tables are read through this same set-GUC-then-query-without-explicit-
+workspace-filter pattern, those reads are **not** workspace-isolated → real cross-tenant exposure.
+This flips the burden: given the dominant read pattern leans on RLS, these 8 are exposed *unless*
+their specific reads special-case an explicit `workspace_id` filter (against the house style).
+**Recommended: treat as a likely-real isolation gap pending per-table read confirmation**, starting
+with `harness_issues_consolidated` (its sibling `harness_features_consolidated` is protected) and the
+`coord_*` coordination tables. Not auto-fixed: adding RLS to these core tables is the consensus-needing
+change the loop instructions reserve for peers/owner.
 
 ## Decision needed (per table)
 - **If reachable via `harness_app` without guaranteed explicit workspace filtering** → real gap:

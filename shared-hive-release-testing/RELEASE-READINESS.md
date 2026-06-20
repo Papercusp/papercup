@@ -5,6 +5,33 @@ public production?
 
 # ❌ NOT YET — but as of 2026-06-19 PM the path is a known, owned BUILD list (no open S0s, no unknowns).
 
+> ## ⚡ CURRENT STATE — 2026-06-20 early AM (su-9140a, auto-mode overnight)
+> Net change since the A-003 close: the **C-001 re-key read-cut is now decoupled from the last federation
+> bug and provable on its own** — the strongest position yet. Specifics:
+> - ✅ **A-003 CLOSED** (live + suite + CI-guarded — see below).
+> - 🟢 **C-001 re-key cut — UNBLOCKED + decoupled.** The crypto cut is join-flow-agnostic; su-ee7e9 (P-008
+>   owner) is driving it on the **DISCOVERY-join rig** (two-instance-hive-directory-smoke), where owner+joiner
+>   share a slug so content crosses — proving the cut WITHOUT waiting on the from-repo bug. Witness harness is
+>   mechanically complete (su-9140a fixed WITNESS_PROBE gate, mcp_call accept-header+jsonrpc+token, runtime
+>   flag-flip via /api/flags/set, the stale-build gate, DISCOVERY_RETRIES). Implementation hermetically proven
+>   (backbone 1094 green). Remaining: the live witness on a QUIET box (the box is in an overnight infra storm,
+>   load hit 94 — runs get killed/discovery-flake above ~40).
+> - 🔧 **WI-259 (NEW, from-repo joiner federation) — root-caused 3 ways (su-9140a/c2a63/ee7e9), dc9db fixing.**
+>   The D-021 scopedApply harness_slug guard: a from-repo joiner gets a DIFFERENT member slug than the owner, so
+>   the owner's harness_features (member-harness content) ops are silently guard-dropped on the joiner (hive_settings
+>   escapes — it's hive-home-remapped). ALSO the owner never admits the from-repo joiner (gh:<repo_id> topic
+>   fallback, no hive_pubkey → rekey() can't switch topics). SHIP-RELEVANT for from-repo joiners (separate from
+>   C-001, which is decoupled). Fix = stamp hive_pubkey on the joiner binding + remap content-projection slug.
+> - ⚠ **Owner-enforcement = a CONFIRMED LAUNCH REQUIREMENT** (owner decided 2026-06-20). EN-1..EN-4 built+green
+>   (su-328af); the live AK enforcement witness rides the same rig as the C-001 cut (also slug-gated by WI-259 on
+>   from-repo; provable on the discovery rig).
+> - 🛠 **WI-261 (NEW, su-9140a): live-federation gate built** (papercusp-desktop/bin/live-federation-gate.sh) —
+>   a load-gated scheduled run of the two-instance smokes that files an EI on RED, to catch the green-rig/red-binary
+>   class automatically (A-003 + WI-259 were both green hermetically, red live). v0 built; needs a quiet-box validation
+>   + durable scheduling (su-fa300's infra lane).
+> **Net:** every blocker is found, filed, owned, and root-caused; C-001 sign-off is decoupled from the from-repo bug
+> and gated only on a quiet-box witness run. Lower section is the prior synthesis.
+
 > ## ✅ UPDATE — A-003 CLOSED (2026-06-19 PM/eve, su-c2a63 + su-ee7e9 + su-53f39 + su-690fe)
 > The A-003 line in su-9140a's block below is SUPERSEDED. A-003 (`hive_members`/`hive_settings`
 > federate to a joiner) is **CLOSED**, three independent ways:

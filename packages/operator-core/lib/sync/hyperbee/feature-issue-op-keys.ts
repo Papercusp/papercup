@@ -247,6 +247,22 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     swarm_affinity: strOrNull(row.swarm_affinity),
     redundancy: numOrNull(row.redundancy),
     payload: row.payload ?? null,
+    // WI-251 (findings-B B-002): federate content/lineage columns (were dropped
+    // → NULL on peers). verifier_*/audit_*/worked_by_history/current_wave stay
+    // LOCAL (each peer re-audits / local cursors).
+    design_spec_id: strOrNull(row.design_spec_id),
+    design_status: strOrNull(row.design_status),
+    needs_design: typeof row.needs_design === 'boolean' ? row.needs_design : null,
+    discarded_design_work:
+      typeof row.discarded_design_work === 'boolean' ? row.discarded_design_work : null,
+    source_plan_slug: strOrNull(row.source_plan_slug),
+    source_plan_item_ids: Array.isArray(row.source_plan_item_ids)
+      ? (row.source_plan_item_ids as string[])
+      : null,
+    see_also: Array.isArray(row.see_also) ? (row.see_also as string[]) : null,
+    wave: strOrNull(row.wave),
+    deprecation_reason: strOrNull(row.deprecation_reason),
+    completion_ref: row.completion_ref ?? null,
   };
 }
 

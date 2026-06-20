@@ -64,6 +64,24 @@ export interface HarnessFeatureRow {
   swarm_affinity?: string | null;
   redundancy?: number | null;
   payload?: unknown;                   // JSONB blob — opaque to projection
+  /**
+   * WI-251 (findings-B B-002): content/lineage columns now FEDERATED — were
+   * dropped by the mapper so a feature federated A→B landed with them NULL.
+   * verifier_*/audit_*/worked_by_history/current_wave stay LOCAL (each peer
+   * re-audits / local cursors). OPTIONAL on the wire (back-compat: ops before
+   * this change lack them → writeToPg maps absent → the PG default/NULL; the
+   * NOT-NULL cols see_also/needs_design/discarded_design_work default []/false).
+   */
+  design_spec_id?: string | null;
+  design_status?: string | null;
+  needs_design?: boolean | null;
+  discarded_design_work?: boolean | null;
+  source_plan_slug?: string | null;
+  source_plan_item_ids?: string[] | null;   // text[]
+  see_also?: string[] | null;               // text[] NOT NULL DEFAULT '{}'
+  wave?: string | null;
+  deprecation_reason?: string | null;
+  completion_ref?: unknown;            // JSONB blob — opaque to projection
 }
 
 function isString(v: unknown): v is string { return typeof v === 'string'; }
@@ -158,6 +176,8 @@ async function writeToPg(
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
        ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,
        item_kind, feature_order, swarm_affinity, redundancy, payload,
+       design_spec_id, design_status, needs_design, discarded_design_work,
+       source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
        author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
@@ -173,6 +193,14 @@ async function writeToPg(
        -- op that doesn't carry it (pre-2026-06-10 history) inserts the default.
        ${row.item_kind ?? 'feature'}, ${row.feature_order ?? null}, ${row.swarm_affinity ?? null}, ${row.redundancy ?? null},
        ${row.payload == null ? null : JSON.stringify(normalizeJsonbInput(row.payload))}::text::jsonb,
+       -- WI-251 (findings-B B-002): federated content/lineage columns. text[] +
+       -- jsonb bound explicitly; the NOT-NULL PG cols default ([]/false) when an
+       -- older op (no these fields) is replayed.
+       ${row.design_spec_id ?? null}, ${row.design_status ?? null},
+       ${row.needs_design ?? false}, ${row.discarded_design_work ?? false},
+       ${row.source_plan_slug ?? null}, ${row.source_plan_item_ids ?? null}::text[],
+       ${row.see_also ?? []}::text[], ${row.wave ?? null}, ${row.deprecation_reason ?? null},
+       ${row.completion_ref == null ? null : JSON.stringify(normalizeJsonbInput(row.completion_ref))}::text::jsonb,
        ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -204,6 +232,20 @@ async function writeToPg(
       swarm_affinity = EXCLUDED.swarm_affinity,
       redundancy = EXCLUDED.redundancy,
       payload = EXCLUDED.payload,
+      -- WI-251 (findings-B B-002): federated content/lineage columns. Safe to
+      -- overwrite from EXCLUDED — the fed_hlc/fed_ts WHERE guard below gates the
+      -- whole UPDATE on the op being newer, so an older op (which lacks these
+      -- fields → maps to defaults) can never win the guard and clobber them.
+      design_spec_id = EXCLUDED.design_spec_id,
+      design_status = EXCLUDED.design_status,
+      needs_design = EXCLUDED.needs_design,
+      discarded_design_work = EXCLUDED.discarded_design_work,
+      source_plan_slug = EXCLUDED.source_plan_slug,
+      source_plan_item_ids = EXCLUDED.source_plan_item_ids,
+      see_also = EXCLUDED.see_also,
+      wave = EXCLUDED.wave,
+      deprecation_reason = EXCLUDED.deprecation_reason,
+      completion_ref = EXCLUDED.completion_ref,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,

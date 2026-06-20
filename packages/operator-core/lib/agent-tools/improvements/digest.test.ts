@@ -63,4 +63,23 @@ describe('improvements:digest tool envelope', () => {
     const body = JSON.parse(res.content[0].text);
     expect(body).toEqual({ ok: true, digest: RANKED });
   });
+
+  it('EI-1715: a read that exceeds the deadline → fast DEGRADED-but-valid digest (the Queen survey turn does NOT abort)', async () => {
+    const prev = process.env.PAPERCUSP_DIGEST_TIMEOUT_MS;
+    process.env.PAPERCUSP_DIGEST_TIMEOUT_MS = '15';
+    try {
+      mockRead.mockImplementation(() => new Promise(() => {}) as ReturnType<typeof readImprovementItems>); // never resolves (PG contention)
+      const res = await callTool({});
+      const body = JSON.parse(res.content[0].text);
+      expect(body.ok).toBe(true);          // a VALID response → the turn continues to declare-wake
+      expect(body.degraded).toBe(true);
+      expect(body.reason).toBe('digest_timeout');
+      expect(body.digest).toBeDefined();
+      // the degraded shape is the pure buildDigest([]) (no DB), not the hung read
+      expect(mockBuild).toHaveBeenCalledWith([], { nowMs: expect.any(Number), ownerFullAutonomy: false });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_DIGEST_TIMEOUT_MS;
+      else process.env.PAPERCUSP_DIGEST_TIMEOUT_MS = prev;
+    }
+  });
 });
