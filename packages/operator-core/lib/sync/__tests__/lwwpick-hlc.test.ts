@@ -35,13 +35,21 @@ describe('lwwPick HLC integration (D-003)', () => {
     expect(lwwPick(p2, p1)).toBe(p2); // order-independent
   });
 
-  it('falls back to ts when either op lacks an HLC (back-compat)', () => {
+  it('derives a comparable key from ts for a no-HLC op (EI-1698 total order; back-compat)', () => {
+    // Two no-HLC ops still compare by ts (each derives key = encodeHlc(ts, 0)).
     const a = op({ ts: 100 });
     const b = op({ ts: 200 });
     expect(lwwPick(a, b)).toBe(b);
-    // Mixed: only one has hlc → ts path (additive rollout safety).
+    // Mixed: EI-1698 made the order TOTAL — every op gets ONE comparable key
+    // (`op.hlc ?? encodeHlc({ms: ts, count: 0})`), so an HLC op with a higher HLC
+    // wins even over a no-HLC op with a higher wall-clock ts. (Pre-EI-1698 this
+    // fell back to ts and returned `d`, which switched basis per pair → the
+    // NON-TRANSITIVE mixed-HLC bug.) Production-safe: a real no-HLC op is
+    // pre-P-010 = OLDEST ts, so its derived key is lowest and it loses just as the
+    // ts-fallback gave; only this adversarial synthetic case (a no-HLC ts ABOVE an
+    // HLC op's ts) flips — and it flips to the transitive answer.
     const c = op({ ts: 100, hlc: enc(9999, 0) });
     const d = op({ ts: 200 });
-    expect(lwwPick(c, d)).toBe(d); // ts 200 > 100, hlc ignored because d has none
+    expect(lwwPick(c, d)).toBe(c); // c.hlc=enc(9999) beats d's derived enc(200)
   });
 });

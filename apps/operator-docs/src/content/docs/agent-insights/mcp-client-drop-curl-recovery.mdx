@@ -27,6 +27,17 @@ curl -s -i -m 8 -X POST 'http://localhost:3070/api/mcp?superuser=1&client=probe&
 ```
 A 200 with a `serverInfo` SSE `data:` line = the server is fine; only your client dropped.
 
+## Fastest recovery: the committed helper
+
+```bash
+node scripts/mcp-call.mjs <ns:verb> '<jsonArgs>' --client <your-su-id> [--harness <h>]
+# e.g.  node scripts/mcp-call.mjs work_items:claim '{"id":"EI-1234"}' --harness papercup --client su-abcd
+```
+`scripts/mcp-call.mjs` (also `npm run mcp:call`) wraps the recipe below — reads
+the bearer, defaults `workspace=papercusp-workspace`, parses the SSE, prints the
+result. Pass your OWN `--client` so coord/plan writes attribute to you. Prefer
+this over hand-rolling a `/tmp` script (several agents collided on `/tmp/mcp.py`).
+
 ## Recovery: single-shot stateless `tools/call` via curl
 
 The endpoint is **stateless** — no `initialize`/`Mcp-Session-Id` handshake needed

@@ -100,6 +100,9 @@ async function resolveConcreteLaunchWorkspace(installSlug: string, workspaceId: 
   const { activeWorkspaceId, isKnownWorkspace } = await import('../workspace-registry');
   const resolved = (await resolveWorkspaceForHarnessSlug(installSlug)) ?? activeWorkspaceId();
   if (resolved === '*' || !isKnownWorkspace(resolved)) {
+    // REFUSE (su-fa30048c consensus): a mis-resolution must surface at enqueue, never
+    // as a silent replay zombie. The throw is caught by the fire loop (logged as a
+    // recorded fire failure) / fails the durable step — i.e. the fire is skipped.
     throw new Error(
       `[launch] WI-269: cannot resolve a concrete workspace for harness '${installSlug}' ` +
         `(workspaceId='${workspaceId}' → '${resolved}') — refusing to build a launch URL with ` +

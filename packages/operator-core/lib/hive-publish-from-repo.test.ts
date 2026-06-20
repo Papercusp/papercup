@@ -10,6 +10,10 @@ import {
   type PublishCreatedHiveDeps,
 } from './hive-publish-from-repo';
 import { parseHiveInviteLink } from './harness/hive-invite-link';
+import {
+  deriveHiveFederationTopic,
+  topicAsHex,
+} from './sync/hyperbee/derive-swarm-topic';
 import type { ProjectEntry } from './harness-registry';
 
 const HIVE_PUBKEY = Buffer.alloc(32, 7).toString('base64');
@@ -104,6 +108,15 @@ describe('publishCreatedHive (P-007)', () => {
     expect(links).toHaveLength(1);
     expect(links[0]).toContain('papercusp://harness?');
     expect(links[0]).toContain('repo_id=100');
+    // WI-259 guard (EI-1746 / green-rig coverage): the one-click link MUST carry
+    // the OWNER's HIVE-PUBKEY topic. The joiner persists this `topic=` verbatim
+    // (join-shared-harness) and federates on it (the `topic:` binding carrier). A
+    // regression that built the link from the gh-repo topic (or any other) would
+    // strand the joiner on a DIFFERENT swarm topic than the owner → the join-merge
+    // backfill lands but incremental writes NEVER cross (the from-repo A→B stall).
+    // Pin topic == deriveHiveFederationTopic(hivePubkey), not just "a topic exists".
+    const linkTopic = /[?&]topic=([0-9a-f]{64})/i.exec(links[0])?.[1];
+    expect(linkTopic).toBe(topicAsHex(deriveHiveFederationTopic(HIVE_PUBKEY)));
 
     // Cupboard: one row per id-bearing member repo, carrying the hive identity.
     expect(out.cupboard).toMatchObject({ attempted: true, rowsCreated: 1, rowsFailed: 0 });

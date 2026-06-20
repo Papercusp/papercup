@@ -24,11 +24,13 @@ import { gatherFleetSignals } from '../../curation/fleet-signals';
 import { buildFleetReaders } from '../../curation/deps';
 import {
   baseDisposition,
+  dropTriagedHandledSignals,
   SALIENCE_POLICY_VERSION,
   type Disposition,
   type FleetSignal,
   type FleetSignalKind,
 } from '../../curation/salience-policy';
+import { readTriagedHandledItemIds } from '../../attention/triage-store';
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 300;
@@ -114,7 +116,10 @@ export default defineTool({
   }),
   async handler(args) {
     const signals = await gatherFleetSignals(buildFleetReaders());
-    const rows = rankFleetFeed(signals, {
+    // EI-1687: exclude items the operator triaged to "handled" (downgrade/resolve)
+    // so a handled escalation does not re-surface as "open" every read/wake.
+    const handled = await readTriagedHandledItemIds();
+    const rows = rankFleetFeed(dropTriagedHandledSignals(signals, handled), {
       harness: args.harness,
       surfaceOnly: args.surfaceOnly,
       limit: args.limit,

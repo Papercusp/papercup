@@ -91,8 +91,11 @@ const BOOT_PREREQS_DDL = `
  */
 const RLS_EXEMPT: Record<string, string> = {
   harness_issues_consolidated:
-    'Isolated by explicit workspace_id filtering, NOT RLS (sibling harness_features_consolidated uses ' +
-    'RLS — model asymmetry, not a leak). No RLS backstop; defense-in-depth gap. See findings-rls-coverage.md.',
+    'CONFIRMED gap (pr5-impl audit + verified): the sync read issuesConsolidated.bySlug ' +
+    '(sync-resolver/index.ts) filters harness_slug ONLY, workspace_id not in PK, on the ADMIN/BYPASSRLS ' +
+    'getOrgPg() conn — so it returns all workspaces\' issues for a shared slug. FIX = explicit workspace ' +
+    'filter in that resolver (RLS would NOT help: admin conn bypasses it). Allow-listed (the fix is ' +
+    'resolver-side, not schema). See findings-rls-coverage.md.',
   coord_conversations: 'Isolated by explicit workspace_id filtering (conversations-store.ts WHERE workspace_id=ws). No RLS backstop.',
   coord_event_log: 'Isolated by explicit workspace_id filtering (coordination/messages.ts WHERE workspace_id=coordWorkspaceId). No RLS backstop.',
   coord_threads: 'Isolated by explicit workspace_id filtering (coordination store). No RLS backstop.',

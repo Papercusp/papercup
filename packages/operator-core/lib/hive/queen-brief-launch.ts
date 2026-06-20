@@ -20,6 +20,8 @@ import { getHiveCarryNote } from './wake';
 import { summarizeOpenPlacements, resolveQueenOwner } from './placement-watchdog';
 import { gatherFleetSignals } from '../curation/fleet-signals';
 import { buildFleetReaders } from '../curation/deps';
+import { dropTriagedHandledSignals } from '../curation/salience-policy';
+import { readTriagedHandledItemIds } from '../attention/triage-store';
 import { gatherCompletions } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { gatherLiveBees } from '../fleet/placement-gather';
@@ -51,7 +53,14 @@ async function gatherBees(workspaceId: string): Promise<BriefBee[]> {
 async function gatherEscalations(): Promise<BriefEscalation[]> {
   try {
     const signals = await gatherFleetSignals(buildFleetReaders());
-    return signals.map((s) => ({ id: s.id, severity: s.severity, summary: s.title }));
+    // EI-1687: drop escalations the operator triaged to "handled" so the Queen's
+    // wake brief stops re-listing them as open (the re-downgrade-thrash bug).
+    const handled = await readTriagedHandledItemIds();
+    return dropTriagedHandledSignals(signals, handled).map((s) => ({
+      id: s.id,
+      severity: s.severity,
+      summary: s.title,
+    }));
   } catch {
     return [];
   }

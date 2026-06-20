@@ -1,13 +1,20 @@
 # Findings — RLS coverage on federated tables (defense-in-depth gap)
 
-**Status: CHARACTERIZED — low-severity defense-in-depth gap, owner/peer decision optional**
-(2026-06-20). Found + investigated during an autonomous session (loop Priority-0) while hardening
-the federation substrate after EN-1. **No schema/behavior change made.**
+**Status: AUDIT COMPLETE (collaborative — pr5-impl + this session) — 1 confirmed real gap, 7 lower-risk**
+(2026-06-20). Found + investigated during an autonomous session (loop Priority-0) hardening the
+federation substrate after EN-1; per-table audit completed with peer **pr5-impl** via this shared doc
+(coord MCP was down, so we coordinated through the file). **No schema/behavior change made** — the fix
+is consensus-gated.
 
-> **Self-correction:** an interim version of this doc escalated this to a "likely-real cross-tenant
-> leak." Verifying the actual read sites **refuted** that — the tables are isolated by explicit
-> filtering (below). Recording the corrected, accurate version. The lesson (verify access paths
-> before grading an RLS-absence finding) is the durable takeaway.
+> **Bottom line (read the AUDIT SUMMARY + the connection-role note at the very bottom):** of the 8
+> RLS-less federated tables, exactly **one — `harness_issues_consolidated` — is a real cross-tenant
+> read** (its GUI sync resolver `issuesConsolidated.bySlug` filters `harness_slug` only). The other 7
+> isolate by explicit `workspace_id` filtering (defense-in-depth gap only). **Important fix correction
+> (verified this session):** that read runs on the `harness_admin` **BYPASSRLS** connection, so adding
+> RLS does NOT fix it — the fix MUST be an explicit `workspace_id` filter in the resolver. (History:
+> an interim version over-escalated to "all 8 likely-leak", then over-corrected to "all 8 safe"; the
+> peer audit + the connection-role check settled it to this precise middle. Lesson: pin the read's
+> connection role AND its filter before grading an RLS-absence finding.)
 
 ## The finding (accurate)
 A new live-schema guard (`packages/operator-core/lib/sync/hyperbee/__tests__/rls-coverage.integration.test.ts`,
@@ -129,3 +136,87 @@ add the `workspace_id = current_setting('app.workspace_id', true)` policy on
      OR filter `workspace_id` explicitly in the drizzle `.where(...)`.
 This is also why it's correctly consensus-gated (not a one-line migration). The same coordinated
 check applies to any of the 8 whose reads don't currently set the GUC. — pr5-impl
+
+### coord_* audit COMPLETE (pr5-impl, 2026-06-20) — explicit workspace_id filtering ⇒ LOWER-RISK
+
+Traced the coord substrate primary readers — they ALL filter `workspace_id` explicitly (the SAFE
+pattern), so RLS-off is NOT an active leak there (RLS would be defense-in-depth, not the gap):
+- `coord_conversations` / `coord_threads` — `conversations-store.ts`: every read is
+  `WHERE workspace_id = ${this.ws} AND …`.
+- `coord_event_log` — `coord-inbox-bus.ts` (`WHERE workspace_id = ${WS} …`) + `messages.ts`
+  (`WHERE workspace_id = ${coordWorkspaceId()}`).
+- `coord_thread_posts` — read via the same store/thread paths (workspace-scoped) + `delegated-tasks.ts`.
+
+Minor caveats (low-risk, not the standout gap): `topics-feed.ts` reads `coord_conversations WHERE id = …`
+(by primary key, no workspace_id — requires knowing the id), and `endpoint-route/routes/admin/comms.ts`
+runs on the admin/bypass path by design. Both are far lower-risk than a slug-scan with no filter.
+
+## AUDIT SUMMARY (per-table, now complete) — for the finding owner
+| Table | Verdict |
+|---|---|
+| **`harness_issues_consolidated`** | **REAL gap** — `issuesConsolidated.bySlug` reads harness_slug only, no workspace_id, no GUC; PK lacks workspace_id; RLS off. **Priority fix** (coordinated RLS+GUC, see the fix-note). |
+| `engineer_issues` | likely-filtered (issues-engineer.ts filters workspace_id); VERIFY the `workItems.byHarness` sync helper. |
+| `plan_item_assignments` | likely-LOWER (assignments.ts filters workspace_id). |
+| `contributor_usage_events` | LOWER (append-only, non-federating per the finding). |
+| `coord_conversations` / `coord_threads` / `coord_thread_posts` / `coord_event_log` | LOWER — primary reads filter workspace_id explicitly. |
+
+**Net:** of the 8, **one** (`harness_issues_consolidated`) is the standout active exposure; the rest are
+either explicitly-filtered or lower-risk. That focuses the owner's consensus-gated fix on the one table
+that actually relies on the absent RLS (+ the coordinated RLS+GUC caveat so the fix doesn't break the read).
+The CI guard's REVIEW allowlist keeps all 8 honest until each is settled. Audit done from my side. — pr5-impl
+
+### ⚠⚠ CORRECTION + sharpening (pr5-impl, 2026-06-20) — `getOrgPg` BYPASSES RLS ⇒ the fix is EXPLICIT FILTERING, not RLS
+
+Tracing the read connection changed the picture. **Authoritative:** `RETROFIT-GUIDE.md` (db-org) +
+`work-items.ts:387` ("getOrgPg bypasses RLS") — `getOrgPg().sql/.db` is the **non-`harness_app`,
+RLS-BYPASSING** connection; only the `withWorkspace()`/`harness_app` path is RLS-subject (and needs the
+`app.workspace_id` GUC or RLS returns zero rows).
+
+Implications:
+1. **`issuesConsolidated.bySlug` uses `getOrgPg().db` (bypass).** So RLS — present or absent — is
+   IRRELEVANT to that read. My earlier "add the RLS policy" recommendation would **NOT** fix the leak
+   (the read bypasses RLS). **The real fix is EXPLICIT `workspace_id` filtering** in the resolve —
+   exactly what the work-items facade already does for the protected sibling
+   (`work-items.ts:340/392/443`: `… AND workspace_id = ${ws}`). The leak is real (bypass conn +
+   harness_slug-only filter ⇒ all-workspace issues for a shared slug, in multi-tenant), but the
+   mechanism is missing-explicit-filter, not missing-RLS.
+2. **Broader class:** the exposure is "a `getOrgPg` read of a workspace-scoped table that omits an
+   explicit `workspace_id` predicate" — for THOSE reads RLS was never the backstop. The sync-resolver
+   `…Consolidated.bySlug` resolves that use `getOrgPg().db` without `workspace_id` are the concrete
+   instances (issuesConsolidated confirmed; worth grepping the other `getOrgPg`+no-workspace_id reads).
+3. **RLS still matters for the `harness_app`/`withWorkspace()` read paths** — so the RLS-policy add is
+   still correct defense-in-depth for those; it's just not sufficient/relevant for the `getOrgPg` reads.
+
+**Revised recommendation for the owner / federation lane:** fix `issuesConsolidated.bySlug` (and any
+peer `getOrgPg` resolver read lacking it) by adding an explicit `workspace_id` filter — sourced from
+the resolver's workspace context (NOT a blind `activeWorkspaceId()`; resolveDesignSketches @174 uses a
+context `workspaceId` — use that plumbing). I'm NOT making the edit: picking the correct workspace
+source in the resolver framework is the federation/sync lane's call, and a wrong source would be
+incorrect in multi-tenant. Insight + fix-direction delivered; implementation theirs. — pr5-impl
+
+### 🔑 ROOT CAUSE (pr5-impl, 2026-06-20) — it's bigger than "8 tables lack RLS"
+
+Pinned the deciding fact: **`harness_slug` is per-workspace-unique, NOT global** —
+`projects_ws_slug_idx UNIQUE (workspace_id, slug)` (000-baseline:5215); `harness_features_consolidated`
+PK is `(harness_slug, feature_id)` (no workspace_id, :3502), same for issues. So a `WHERE harness_slug = X`
+read is NOT inherently workspace-scoped — two workspaces can both own a harness "X".
+
+Combined with the connection fact (`getOrgPg` BYPASSES RLS), the real exposure is:
+**the sync-resolver's `getOrgPg`-based resolves that read by `harness_slug` only return cross-workspace
+rows in a multi-tenant deployment — regardless of the table's RLS status.** Confirmed:
+`issuesConsolidated.bySlug`; same shape at sync-resolver/index.ts lines **511, 529, 546, 564, 640, 658,
+752, 781, 799** (each `.where(eq(t.harnessSlug, harnessSlug))`, no `workspace_id`) — each needs a
+per-resolve check of (is its table workspace-scoped? does it run via getOrgPg/bypass?). The resolves
+that DO take + filter `workspaceId` (auditLog, operatorBudget, harnessLanes/status, pendingReviews,
+resolveDesignFeatures) are SAFE — proving the fix pattern is already in-house, just inconsistently applied.
+
+**Severity:** real cross-workspace READ-isolation gap, scoped to **multi-tenant deployments** (cloud /
+multiple workspaces per PG); a single-user/local operator (one workspace) is unaffected. RLS-add alone
+does NOT fix the `getOrgPg` reads (bypass) — the fix is **explicit `workspace_id` filtering on every
+`getOrgPg` resolver read of a workspace-scoped table**, sourced from the resolver's workspace context
+(mirror the resolves that already do it). This is now the headline of the RLS finding; the original
+8-RLS-disabled list is the app-role/`withWorkspace` half of the same isolation story.
+
+**Not implementing:** multi-tenant-security-critical + the correct workspace-context source is the
+federation/sync lane's call. Surfaced with full evidence + the in-house fix pattern. Recommend the
+owner treat this as a tracked security WI. — pr5-impl

@@ -125,30 +125,30 @@ describe('Y/AC6 mixed-HLC back-compat — pre-314 (no-HLC) ↔ post-314 (HLC) pe
     );
   });
 
-  // ── FINDING (see findings-Y.md): under SKEW the mix does NOT always converge.
-  // The fed_hlc LWW rule ("both-HLC → compare HLC, else → compare ts" — used
-  // IDENTICALLY by lwwPick and the PG guard) is NON-TRANSITIVE when HLC presence
-  // is mixed and clocks are skewed: a no-HLC (pre-314) op sitting between two HLC
-  // ops whose HLC order inverts their ts order forms a comparison CYCLE, so the
-  // fold winner depends on delivery ORDER → two peers in a rolling upgrade can
-  // DIVERGE on a contended key. Bounded/transient (resolves once every peer
-  // carries an HLC, or the key stops being contended), but a real cross-version
-  // divergence risk the all-HLC convergence proof does not cover.
-  it('FINDING: the fed_hlc LWW comparator is NON-TRANSITIVE under mixed HLC + skew → fold order decides the winner (minimal repro)', () => {
+  // ── EI-1698 FIXED (su-dc9db landed the synth-HLC total-order fix this lane
+  // proved + recommended, projection.ts lwwPick): every op now compares by ONE
+  // HLC-space key — its HLC when present, else a DERIVED encodeHlc({ms: ts,
+  // count: 0}) — so the comparator is a single TOTAL ORDER and is TRANSITIVE
+  // under mixed HLC. The former X/Y/Z winner CYCLE (X>Z on HLC, Z>Y on ts, Y>X on
+  // ts — the per-basis "HLC-else-ts" rule was non-transitive) is gone: X>Z>Y is
+  // now strict and the fold converges regardless of delivery order. This was the
+  // original NON-TRANSITIVITY repro; flipped to PIN the fix (it goes RED if the
+  // per-basis rule ever returns). Guard-level reachability: see the next test.
+  it('EI-1698 FIXED: lwwPick is TRANSITIVE under mixed HLC + skew — the former X/Y/Z cycle resolves consistently both orders', () => {
     const mk = (id: string, hlc: string | undefined, ts: number): OpEnvelope =>
       ({ type: 'put', table: 'features-by-id', hbKey: 'K', value: { id }, ts, hlc, schema_version: 1, author_pubkey: `pk-${id}`, sourceLogKeyHex: id } as unknown as OpEnvelope);
-    const X = mk('X', encodeHlc({ ms: 9_000_000, count: 0 }), 100); // upgraded peer: HLC high (recv-advanced), ts low
-    const Y = mk('Y', undefined, 150); // pre-314 peer: NO hlc, ts mid
+    const X = mk('X', encodeHlc({ ms: 9_000_000, count: 0 }), 100); // upgraded peer: HLC high, ts low
+    const Y = mk('Y', undefined, 150); // pre-314 peer: NO hlc → derives encodeHlc(ts=150)
     const Z = mk('Z', encodeHlc({ ms: 1_000_000, count: 0 }), 200); // upgraded peer: HLC low, ts high
-    // The pairwise cycle (X>Z on HLC, Z>Y on ts, Y>X on ts):
-    expect(lwwPick(X, Y)).toBe(Y); // mixed → ts fallback: 150 > 100
-    expect(lwwPick(Y, Z)).toBe(Z); // mixed → ts fallback: 200 > 150
-    expect(lwwPick(X, Z)).toBe(X); // both HLC → 9_000_000 > 1_000_000
-    // A non-transitive comparator ⇒ the reduce-fold winner depends on order:
+    // Post-fix every op compares by one HLC-space key (no-HLC → encode(ts)), so
+    // X > Z > Y is a strict TOTAL ORDER (no cycle):
+    expect(lwwPick(X, Y)).toBe(X); // enc(9_000_000) > Y's derived enc(150)
+    expect(lwwPick(Y, Z)).toBe(Z); // enc(1_000_000) > Y's derived enc(150)
+    expect(lwwPick(X, Z)).toBe(X); // enc(9_000_000) > enc(1_000_000)
+    // Transitive ⇒ the reduce-fold winner is ORDER-INDEPENDENT (convergence):
     const foldWinner = (ops: OpEnvelope[]) => ops.reduce((w, o) => lwwPick(w, o));
-    expect((foldWinner([X, Y, Z]).value as { id: string }).id).toBe('Z'); // X→Y→Z ⇒ Z
-    expect((foldWinner([Z, Y, X]).value as { id: string }).id).toBe('X'); // Z→X ⇒ X
-    // Same three ops, different delivery order, DIFFERENT winner = divergence.
+    expect((foldWinner([X, Y, Z]).value as { id: string }).id).toBe('X');
+    expect((foldWinner([Z, Y, X]).value as { id: string }).id).toBe('X'); // same winner both orders
   });
 
   it('CHARACTERISATION: the non-transitivity is reachable end-to-end by the REAL merge under skew+mixed (≥1 diverging seed)', async () => {

@@ -44,6 +44,33 @@ const AMBIENT_CATEGORIES = new Set(['service-health', 'agent-governor']);
 
 const DEFAULT_INBOX_LIMIT = 50;
 
+/** EI-1752: truncate an inbox entry's content-bearing string fields (`summary`,
+ *  `body`) to `maxChars` so a default read can't overflow the agent result cap (a
+ *  few long summaries/bodies = 80KB+ in one line). Truncated fields carry a
+ *  `<field>_truncated` flag; the full text stays reachable via coord:thread.
+ *  `maxChars <= 0` ⇒ no truncation. Pure. */
+export function boundInboxEntries<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  maxChars: number,
+): Array<Record<string, unknown>> {
+  if (!(maxChars > 0)) return entries as unknown as Array<Record<string, unknown>>;
+  return entries.map((e) => {
+    let out: Record<string, unknown> = e;
+    for (const field of ['summary', 'body'] as const) {
+      const v = e[field];
+      if (typeof v === 'string' && v.length > maxChars) {
+        out = {
+          ...out,
+          [field]: v.slice(0, maxChars),
+          [`${field}_truncated`]: true,
+          [`${field}_full_chars`]: v.length,
+        };
+      }
+    }
+    return out;
+  });
+}
+
 export default defineTool({
   name: 'coord:inbox',
   description:
@@ -152,11 +179,32 @@ export default defineTool({
     }
     const injection = rebootstrap ? `${rebootstrap}\n${coordInjection}` : coordInjection;
 
+    // EI-1752: bound each entry's large content fields so an inbox read can't overflow
+    // the agent result cap. The `max_body_chars` schema arg existed but was NEVER
+    // applied. Agents put the message in `summary` (optionally `body`) — both are bound;
+    // full text stays reachable via coord:thread. The compact `injection` block agents
+    // consume is left intact (coord-schema already clips it); only raw `entries` are bound.
+    // su-707ed (EI-1752 review): an EXPLICIT max_body_chars is honored exactly, but the
+    // DEFAULT scales with `limit` — a flat 600 × up-to-500 entries would still be ~300KB.
+    // min(600, floor(BUDGET/n)) keeps the entries payload ~<=BUDGET at ANY limit; at the
+    // default limit 50 it stays 600/entry (unchanged), only large limits tighten.
+    const INBOX_ENTRY_BUDGET = 30_000;
+    const effectiveCap =
+      args.max_body_chars !== undefined
+        ? args.max_body_chars
+        : entries.length > 0
+          ? Math.min(600, Math.floor(INBOX_ENTRY_BUDGET / entries.length))
+          : 600;
+    const boundEntries = boundInboxEntries(
+      entries as unknown as Array<Record<string, unknown>>,
+      effectiveCap,
+    );
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ owner_id: identity.ownerId, summary, entries, injection }),
+          text: JSON.stringify({ owner_id: identity.ownerId, summary, entries: boundEntries, injection }),
         },
       ],
     };

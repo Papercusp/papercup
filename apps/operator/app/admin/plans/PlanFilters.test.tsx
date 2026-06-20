@@ -37,13 +37,13 @@ import PlanFilters, { withinDateWindow } from './PlanFilters';
 
 interface Plan { owner?: string | null; initiative?: string | null; updated?: string | null }
 const onQueryChange = vi.fn();
-function renderFilters(opts: { plans?: Plan[]; searchParams?: string; onUrlUpdate?: (e: unknown) => void } = {}) {
-  const { plans = [], searchParams = '', onUrlUpdate } = opts;
+function renderFilters(opts: { plans?: Plan[]; searchParams?: string; query?: string; onUrlUpdate?: (e: unknown) => void } = {}) {
+  const { plans = [], searchParams = '', query = '', onUrlUpdate } = opts;
   return render(
     <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlUpdate}>
       <PlanFilters
         list={{ data: { plans } } as never}
-        query=""
+        query={query}
         onQueryChange={onQueryChange}
         searchRef={{ current: null }}
       />
@@ -55,8 +55,8 @@ beforeEach(() => { viewerEmail = null; onQueryChange.mockReset(); });
 afterEach(cleanup);
 
 describe('PlanFilters component', () => {
-  it('wires the search box to onQueryChange', () => {
-    renderFilters();
+  it('wires the search box to onQueryChange (empty → null)', () => {
+    renderFilters({ query: 'seed' });
     fireEvent.change(screen.getByLabelText('Search plans'), { target: { value: 'auth' } });
     expect(onQueryChange).toHaveBeenCalledWith('auth');
     fireEvent.change(screen.getByLabelText('Search plans'), { target: { value: '' } });

@@ -179,6 +179,19 @@ describe('outboxRowToLocalWriteOp — features', () => {
       swarm_affinity: 'swarm-b',
       redundancy: 2,
       payload: { question: 'q?' },
+      // WI-251 (findings-B B-002): content/lineage columns now federate. NULL
+      // here because this fixture's source row predates them → mapper maps absent
+      // → null (real-value federation is covered by federated-column-completeness).
+      design_spec_id: null,
+      design_status: null,
+      needs_design: null,
+      discarded_design_work: null,
+      source_plan_slug: null,
+      source_plan_item_ids: null,
+      see_also: null,
+      wave: null,
+      deprecation_reason: null,
+      completion_ref: null,
     });
   });
 

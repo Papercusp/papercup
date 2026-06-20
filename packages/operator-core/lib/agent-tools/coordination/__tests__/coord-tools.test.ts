@@ -36,6 +36,7 @@ vi.mock('../recipient-resolve', () => ({
 }));
 
 import whoamiTool from '../tools/whoami';
+import { boundInboxEntries } from '../tools/inbox';
 import ackTool from '../tools/ack';
 import threadTool from '../tools/thread';
 import watermarkTool from '../tools/watermark';
@@ -75,6 +76,24 @@ describe('coord:whoami', () => {
   // {resolved:false,...} instead of a structural error) is verified by inspection;
   // a unit test needs a throw-injecting identity mock (this suite mocks it to a
   // fixed ME), so it's left as a follow-up rather than restructuring the shared mock.
+});
+
+describe('boundInboxEntries (EI-1752)', () => {
+  it('truncates long summary/body to maxChars + flags them; leaves short fields', () => {
+    const long = 'x'.repeat(1000);
+    const [e] = boundInboxEntries([{ summary: long, body: 'short', kind: 'message' }], 600);
+    expect((e.summary as string).length).toBe(600);
+    expect(e.summary_truncated).toBe(true);
+    expect(e.summary_full_chars).toBe(1000);
+    expect(e.body).toBe('short');
+    expect(e.body_truncated).toBeUndefined();
+  });
+  it('maxChars<=0 disables truncation (full passthrough)', () => {
+    const long = 'y'.repeat(1000);
+    const [e] = boundInboxEntries([{ summary: long, kind: 'message' }], 0);
+    expect((e.summary as string).length).toBe(1000);
+    expect(e.summary_truncated).toBeUndefined();
+  });
 });
 
 describe('coord:thread', () => {
