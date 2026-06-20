@@ -639,7 +639,6 @@ action history view inside the drill-down drawer, retry-from-drawer).
   - registering an action name that wasn't declared in the manifest → reject
   - registering the same action twice → reject
   - registering after `init()` returns → reject
-  - hybrid manifest (both serverHandler + clientHandler) → reject in v1
 - Surface in harness UI via existing slots
 
 ### Phase P3 — Plugin install/enable CLI commands (~2h) ✅ shipped
@@ -671,7 +670,7 @@ action history view inside the drill-down drawer, retry-from-drawer).
 
 ### Phase P4.5 — Action handler failure semantics (~2h) ✅ shipped
 
-- Per-action timeout enforced via `AbortSignal` (default 30s, override via `defaultTimeoutSec`)
+- Per-action timeout enforced via `AbortSignal` (default 60s, override via `serverHandler.timeoutSec`)
 - Idempotency keys derived from `(harness-slug, action-name, trigger-source-id)` so substrate restarts mid-action don't double-publish
 - New table `audit.action_executions { id, harness_slug, plugin_name, action_name, started_at, completed_at, status, error_msg, trigger_source }` mirroring existing `audit.hook_executions`
 - Failure UX: persistent audit row + a banner on the action's surface
@@ -777,10 +776,11 @@ no extra capabilities. Same security model for everyone.
 
 ### 14.9.5 Forwards-compatibility with iframe sandbox v2
 
-The action handler's runtime location is **explicit in the manifest** via
-`serverHandler` / `clientHandler` presence (§14.3.3). Plugin authors don't
-rewrite anything when the iframe sandbox lands; the loader resolves to the
-right execution path based on what's in the manifest.
+The action handler's runtime is **explicit in the manifest** via the
+`serverHandler` declaration (§14.3.3). Actions are server-runtime only today;
+when an iframe-sandboxed client runtime lands, the manifest gains a sibling
+declaration and existing server actions don't get rewritten — the loader
+resolves to the right execution path based on what's in the manifest.
 
 ### 14.9.6 Lockfile retraction interaction
 

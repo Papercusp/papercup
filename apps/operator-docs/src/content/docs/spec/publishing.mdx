@@ -434,35 +434,54 @@ endpoints — there is no single `GET /admin/gc`:
 - **`POST /admin/gc/jti`** — deletes `jti_used` rows whose `exp` has
   passed.
 
-## 15.7 Eject-to-own-CF (data model v1, button v1.1)
+## 15.7 BYO-Cloudflare + eject-to-own-CF
 
-The fire exit. Designed v1 because designing it later is too late; the
-button ships v1.1.
+The fire exit. As built, the live `@papercupai/cloudflare-pages` plugin
+is **BYO-only** — it is the eject path. It always calls CF Pages directly
+with the user's own token and never contacts `publish.papercuspai.com`.
+(The hosted-default mode lives only in the `apps/papercusp-publish`
+Worker; the deleted `-hosted` plugin would have been its client.)
 
-### Plugin config schema additions
+### Plugin config schema (live manifest)
+
 ```json
 {
-  "byoCloudflareToken":     "<user's Pages:Edit token, optional>",
-  "byoCloudflareAccountId": "<user's CF account UUID, optional>"
+  "accountId":           "<user's CF account UUID, required, 32 hex>",
+  "projectName":         "<existing Pages project, required>",
+  "byoCloudflareToken":  "<user's Pages:Edit token; secret, snapshotPolicy=strip>",
+  "exportDir":           "out",
+  "branch":              "main"
 }
 ```
 
-When both are present, the plugin **bypasses** `publish.papercuspai.com`
-entirely and calls CF Pages directly with the user's own token. Same
-plugin, two configurations. Free forever for self-hosters who bring their
-own credentials.
+`accountId` and `projectName` are required; `exportDir` defaults to
+`"out"` and `branch` to `"main"`. The token is read from
+`~/.papercusp/secrets/CLOUDFLARE_API_TOKEN` (or the env var) under the
+`secrets:read:CLOUDFLARE_API_TOKEN` capability. The plugin runs the CF
+Direct Upload flow: `GET upload-token` → `POST assets/check-missing` →
+`POST assets/upload` (BLAKE3 content-addressed, with SHA-256 fallback) →
+`POST deployments`.
 
-### Eject migration script
+Beyond the explicit **`publish`** action (with a `dryRun` param that
+reports what *would* deploy without uploading), the plugin auto-publishes
+on mission completion via an `afterDone` hook — silently skipping when
+`accountId`/`projectName` aren't configured, and logging (never failing
+the mission) on a real CF error.
 
-`apps/papercusp-publish/scripts/eject.ts` — admin-runnable. For each
-tenant's projects:
+### Eject migration script *(unbuilt — design only)*
+
+The admin-runnable eject migration (`apps/papercusp-publish/scripts/eject.ts`)
+is **not yet built** — `apps/papercusp-publish/scripts/` currently holds
+only `install-secrets.sh` and `smoke-test.mjs`. The data-model
+groundwork exists (R2 archive + `deletePrefix`), but the migration
+script itself is future work. Its design, for each tenant's projects:
 
 1. Read manifest + per-file content from **R2**, not CF Pages API.
    (R2 is the fire exit's load-bearing component. CF Pages API is
    unavailable when the master account is suspended; that's the entire
    problem.)
 2. Re-upload to user's BYO CF account using their token.
-3. Rewrite plugin config: set `byoCloudflareToken` + `byoCloudflareAccountId`.
+3. Rewrite plugin config: set `accountId` + `byoCloudflareToken`.
 4. Delete the now-orphaned R2 prefix.
 
 **Tertiary fallback:** if R2 retention has expired, the substrate's
@@ -480,13 +499,15 @@ That's a tolerable degradation; permanent loss is not.
 
 ## 15.8 Plugin scoping — `requiresTemplateKinds`
 
-The hosted-publish plugin is coding-harness-only by design. Other
-templates don't show the Publish button. Three places enforce this:
+The publish plugin is coding-harness-only by design. Other templates
+don't show the Publish button. The `requiresTemplateKinds` machinery is
+built (template-kind resolver, CLI enable check, endpoint enable check,
+and the plugin-manifest schema field). Three places enforce it:
 
-### Plugin manifest gains a new field
+### Plugin manifest field
 ```json
 {
-  "name": "@papercupai/cloudflare-pages-hosted",
+  "name": "@papercupai/cloudflare-pages",
   "kind": "plugin",
   "requiresTemplateKinds": ["coding"]
 }
@@ -496,11 +517,18 @@ Plural — `["coding", "department"]` is supported; a plugin that works
 on multiple template kinds declares them all. Singular form was rejected
 because it'd need to grow to plural day two.
 
+<Aside type="caution">
+The live `@papercupai/cloudflare-pages` manifest does **not** currently
+declare `requiresTemplateKinds` — so the gate above is not yet active for
+this specific plugin even though the enforcement machinery exists. Adding
+the field to the manifest is the remaining step.
+</Aside>
+
 ### Enforcement points
 
 | Where | Behavior |
 |---|---|
-| `papercusp plugin enable <slug>` | Refuses with: `error: plugin "@papercupai/cloudflare-pages-hosted" requires templateKinds=[coding]; harness "papercup-org" is kind=org` |
+| `papercusp plugin enable <slug>` | Refuses when the harness kind isn't allowed (CLI message of the form `kind="org"` vs required template kinds). |
 | Substrate UI plugin cards | Disabled "Enable" button + tooltip: "Requires a coding harness." |
 | Marketplace listings | Constraint pill: `🪧 coding harnesses only` next to the plugin name. |
 
@@ -553,12 +581,12 @@ to the user.
 | # | Component | LOC |
 |---|---|---|
 | 1 | `apps/papercusp-publish/` Worker — D1 + KV + JCS canonicalizer + JWT + signed-URL helpers + R2 archive write | 1,000-1,400 |
-| 2 | `@papercupai/cloudflare-pages-hosted` plugin — JCS manifest, retry/resume on partial upload, BYO-CF fallback | ~500 |
-| 3 | Substrate "Publishing" settings page — mode selector, tenant info, rotate-secret button | ~250 |
-| 4 | `papercup-coding` template — adds `recommendedPlugins` | 5 lines |
+| 2 | `@papercupai/cloudflare-pages` plugin — CF Direct Upload (check-missing/resume on partial upload), BYO-CF direct publish, `afterDone` auto-publish | ~500 |
+| 3 | Substrate "Publishing" settings page — masked tenant info, **Rotate secret** + **Forget credentials** buttons, collapsible BYO-Cloudflare explainer (no mode selector) | ~250 |
+| 4 | `papercup-coding` template `recommendedPlugins` — *not built*; no such template/field found under `libs/papercusp/packages/harness/templates` | 5 lines |
 | 5 | DNS — wildcard cert + Worker route on `*.preview.papercuspai.com` + `publish.papercuspai.com` | ~3 hours |
-| 6 | Eject script reading from R2 | ~200 |
-| 7 | `requiresTemplateKinds` field — spec + CLI loader + UI gating + marketplace pill | ~300 |
+| 6 | Eject script reading from R2 — *not built* (`scripts/` has only `install-secrets.sh` + `smoke-test.mjs`) | ~200 |
+| 7 | `requiresTemplateKinds` field — schema + CLI loader + UI gating + marketplace pill (machinery built; cloudflare-pages manifest doesn't declare it yet) | ~300 |
 | 8 | R2 bucket setup + lifecycle rules + cleanup cron | ~150 |
 
 **Total: ~2.5 days.**
@@ -567,8 +595,10 @@ to the user.
 
 1. **Cloudflare master account:** scope a `Pages:Edit` token (verify no
    DNS/Workers/R2 perms). Save as `CF_MASTER_TOKEN`.
-2. **Cloudflare R2:** create bucket `papercusp-publish-archive`,
-   generate scoped R2 token. Save as `R2_ACCESS_KEY` / `R2_SECRET_KEY`.
+2. **Cloudflare R2:** bind the existing bucket
+   `papercusp-marketplace-tarballs` (binding `ARCHIVE`, prefix
+   `publish/`) — no separate publish bucket is created. Generate a
+   scoped R2 token if direct S3-API access is needed.
 3. **Generate `JWT_SECRET`** — 32 random bytes, base64.
 4. **Generate `HASH_PEPPER`** — 32 random bytes, base64. Separate from
    `JWT_SECRET`.

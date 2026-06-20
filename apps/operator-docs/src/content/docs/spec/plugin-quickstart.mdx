@@ -255,10 +255,17 @@ function `when`/`args`. Trigger vocabulary + the full capability contract:
 papercusp publish .
 ```
 
-This packs the directory, signs the tarball, and POSTs to the marketplace at `localhost:3057`. The catalog refreshes immediately; install on another harness with:
+This command, in order: auto-compiles `index.ts` → `index.js` (CommonJS, for the substrate loader); scans the tree for secrets; packs a gzip tarball; optionally generates a CycloneDX SBOM; and POSTs a multipart form (manifest + tarball + optional README) to the marketplace at `localhost:3057` with a Bearer auth header. The CLI does **not** sign the tarball — tarball integrity is a `sha256-` hash computed at *install* time, not a signature at publish.
+
+Author-facing flags:
+- `--no-compile` — skip the TS → JS compile.
+- `--acknowledge-secrets` — the secret scan **blocks publish** on any finding; pass this to substitute placeholders and proceed anyway.
+- `--no-sbom` / `--sbom <file>` — skip SBOM generation, or upload a pre-built one.
+
+The catalog refreshes immediately; install on another harness with the scoped slug:
 
 ```bash
-papercusp install my-tool
+papercusp install @local/my-tool
 ```
 
 For a hosted marketplace publish (papercuspai.com), see [Marketplace publishing](/internal/docs/implementation/marketplace).
