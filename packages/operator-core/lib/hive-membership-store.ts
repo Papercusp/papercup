@@ -262,7 +262,10 @@ export async function upsertHiveMember(
       // grantEpochKeysToMembers returns { applied:false, reason } on each early-return; surface it as a
       // queryable rekey_grant_skipped boot-event so an admit/approve that mints 0 keys is never silent
       // (the admit seam routes through here now, so this preserves part-B's skip-trace on that path too).
-      if (!grantResult.applied && grantResult.reason) {
+      // Skip reason==='no-author' (328af): the benign non-owner self-gate fires on EVERY non-owner
+      // admit (pure noise); the witness runs on the OWNER box where it won't fire. 'flag-disabled' is
+      // the real silent-0-keys signal; 'no-fresh-members' can't fire (gated on newMemberPubkeys above).
+      if (!grantResult.applied && grantResult.reason && grantResult.reason !== 'no-author') {
         try {
           const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
           recordBootEvent(
