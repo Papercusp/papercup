@@ -24,7 +24,7 @@ vi.mock('@papercusp/db-org', () => ({
   getOrgPg: vi.fn(),
 }));
 
-import remember from './remember';
+import remember, { runbookShapeHint } from './remember';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
@@ -310,6 +310,35 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     // dedup off → no rejection; the uncredentialed judge degrades → write succeeds.
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
     process.env.PAPERCUSP_MEMORY_DEDUP = 'on'; // restore for following tests
+  });
+});
+
+describe('memory:remember — runbook-shape boundary nudge (EI-2032)', () => {
+  const runbook = '# Runbook\n\n' + Array.from({ length: 18 }, (_, i) => `## Step ${i}\n- ${'do the thing '.repeat(6)}`).join('\n\n');
+
+  it('no nudge for a short fact', () => {
+    expect(runbookShapeHint('Avi prefers terse responses.')).toBeNull();
+  });
+
+  it('no nudge for a long but UNSTRUCTURED single-paragraph fact', () => {
+    expect(runbookShapeHint('x'.repeat(1500))).toBeNull();
+  });
+
+  it('nudges a large, structured, multi-section write toward agent-insights', () => {
+    expect(runbook.length).toBeGreaterThan(1200);
+    expect(runbookShapeHint(runbook)).toContain('agent-insights');
+  });
+
+  it('handler surfaces the hint on a runbook-shaped write but still stores it (ok:true, non-blocking)', async () => {
+    process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK = 'off';
+    const b = fakeBackend([], ['11111111-1111-1111-1111-111111111111']);
+    useBackend(b);
+    const res = await remember.handler({ content: runbook, kind: 'reference' }, fakeCtx);
+    const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(out.ok).toBe(true);
+    expect(b.remember).toHaveBeenCalled();
+    expect(out.hint).toContain('agent-insights');
+    delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
   });
 });
 

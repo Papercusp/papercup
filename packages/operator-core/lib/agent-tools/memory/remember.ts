@@ -61,6 +61,33 @@ function dedupThreshold(): number {
 }
 const DEDUP_TOP_K = 3;
 
+// EI-2032: memory↔agent-insights boundary nudge. Memory is for SHORT facts
+// recalled semantically EVERY turn; long-form runbooks belong in agent-insights
+// (versioned MDX, pulled on demand). A write that is large AND structured
+// (markdown headers / many bullets / many lines) reads like a runbook parked in
+// the wrong store — the exact overlap the audit found (36 memories >2KB). Return
+// a NON-BLOCKING hint steering it to agent-insights (mirrors the Claude-local
+// memory-boundary-check.mjs nudge); the write still lands. Tunable via env.
+const RUNBOOK_HINT_MIN_CHARS = (() => {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_RUNBOOK_HINT_CHARS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 1200;
+})();
+export function runbookShapeHint(content: string): string | null {
+  if (!content || content.length < RUNBOOK_HINT_MIN_CHARS) return null;
+  const lines = content.split('\n');
+  const headers = lines.filter((l) => /^\s{0,3}#{1,6}\s/.test(l)).length;
+  const bullets = lines.filter((l) => /^\s*(?:[-*]|\d+[.)])\s/.test(l)).length;
+  const structured = headers >= 1 || bullets >= 3 || lines.length >= 6;
+  if (!structured) return null;
+  return (
+    `This memory is ${content.length} chars and reads like a runbook (multi-section). ` +
+    `Memory is for SHORT facts recalled every turn; long-form runbooks belong in ` +
+    `agent-insights — author an MDX under apps/operator-docs/src/content/docs/agent-insights/ ` +
+    `(or harness:docs) and keep the memory to a one-line takeaway + a pointer. ` +
+    `(Stored anyway — this is a nudge, not a block.)`
+  );
+}
+
 export default defineTool({
   name: 'memory:remember',
   capability: 'memory:write',
@@ -317,8 +344,13 @@ export default defineTool({
       })();
     }
 
+    // EI-2032: nudge runbook-shaped writes toward agent-insights (non-blocking).
+    const runbookHint = runbookShapeHint(args.content);
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, ids }) }],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ ok: true, ids, ...(runbookHint ? { hint: runbookHint } : {}) }),
+      }],
     };
   },
 });
