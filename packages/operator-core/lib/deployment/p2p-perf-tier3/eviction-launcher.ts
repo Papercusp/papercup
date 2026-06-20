@@ -68,7 +68,9 @@ export function localEvictionLauncher(opts: {
       bindHost: '127.0.0.1',
       httpPort,
       launch(cfg: EvictionAgentConfig): AgentHandle {
-        const proc = spawn('node', ['--import', 'tsx', agentPath], {
+        // process.execPath, not bare 'node' — immune to a minimal sidecar PATH
+        // that omits node's dir (B-DEPLOY-FIX; see harness-invoke-once.ts).
+        const proc = spawn(process.execPath, ['--import', 'tsx', agentPath], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env, EVICTION_AGENT: JSON.stringify(cfg), NODE_ENV: 'test' },
         });

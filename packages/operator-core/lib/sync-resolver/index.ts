@@ -1847,6 +1847,48 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── insights.tokens — the Insights → Tokens subtab (B-TOK-UI / token-tracking-
+  // plan-and-briefs-2026-06-20) ──
+  //
+  // Cache-inclusive token + cost breakdown by model / role / day for ONE harness,
+  // over harness_shared.agent_usage_samples. The SIBLING of the SpendCard's single
+  // headline total: loadHarnessTokens reuses load-spend's 4-token sum (input +
+  // output + cache_read + cache_creation — the B-TOK-2 fix for the ~5× undercount)
+  // and groups it so the owner sees WHERE the burn is (opus = 90% of spend,
+  // cache-read = 82% of tokens). Workspace + harness scoped via routeWithWorkspace
+  // (RLS GUC) PLUS an explicit workspace predicate. Best-effort: the loader degrades
+  // a missing column/table to the empty snapshot (never a 500). NOT table-backed —
+  // refreshes on mount + the Tokens view's manual invalidate().
+  'insights.tokens': {
+    argsSchema: z.object({
+      harness: z.string().min(1).max(120),
+      windowMs: z
+        .number()
+        .int()
+        .positive()
+        .max(90 * 24 * 60 * 60 * 1000)
+        .optional(),
+    }),
+    resolve: async (args) => {
+      const a = args as { harness: string; windowMs?: number };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { loadHarnessTokens } = await import('../harness-insights/load-tokens');
+      const ws = activeWorkspaceId();
+      return await routeWithWorkspace(async (tx) => {
+        const runQuery = async <T,>(query: string, params: unknown[]): Promise<T[]> =>
+          (await tx.unsafe(query, params as never)) as unknown as T[];
+        const snapshot = await loadHarnessTokens({
+          workspace_id: ws,
+          harness_slug: a.harness,
+          windowMs: a.windowMs,
+          runQuery,
+        });
+        return [snapshot];
+      });
+    },
+  },
+
   // ── learning.observations — the Observations pane's browse feed ──
   //
   // (turn-end-reflection-observations-2026-06-14 P-044 / D-005). PRE-IDEA sensor

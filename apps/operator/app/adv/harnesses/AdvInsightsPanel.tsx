@@ -91,7 +91,7 @@ export default function AdvInsightsPanel({ params }: PanelComponentProps) {
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        <InsightsTab {...withClaim} />
+        <InsightsTab slug={slug} {...withClaim} />
       </div>
     </div>
   );

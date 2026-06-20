@@ -68,7 +68,7 @@ function AdvInsightsTab({ slug }: { slug: string }) {
   if (!insights) {
     return <div className="pc-adv-harness-panel__empty">Loading insights…</div>;
   }
-  return <InsightsTab {...insights} />;
+  return <InsightsTab slug={slug} {...insights} />;
 }
 
 /**

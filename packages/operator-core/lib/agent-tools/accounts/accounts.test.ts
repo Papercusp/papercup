@@ -32,18 +32,21 @@ vi.mock('../../deployment/account-pool', () => ({
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
-import { loadAccountPool, saveAccountPool, handleAccountExhausted } from '../../deployment/account-pool-store';
+import { loadAccountPool, saveAccountPool, handleAccountExhausted, accountStatus } from '../../deployment/account-pool-store';
 import { getAccount } from '../../deployment/account-pool';
 const loadM = vi.mocked(loadAccountPool);
 const saveM = vi.mocked(saveAccountPool);
 const exhaustM = vi.mocked(handleAccountExhausted);
 const getAcct = vi.mocked(getAccount);
+const statusM = vi.mocked(accountStatus);
 
 const mod = await import('./accounts');
 const registerTool = mod.default;
 const removeTool = mod.accountsRemoveTool;
 const resetTool = mod.accountsResetRateTool;
 const scaleTool = mod.accountsScaleOutTool;
+const statusTool = mod.accountsStatusTool;
+const listTool = mod.accountsListTool;
 
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
@@ -119,5 +122,64 @@ describe('accounts:scale_out', () => {
     const b = body(await scaleTool.handler({ id: 'A1' } as never, {} as never) as Out);
     expect(b).toMatchObject({ ok: false });
     expect(String(b.error)).toMatch(/no capacity/);
+  });
+});
+
+describe('accounts:status', () => {
+  // The DONE criterion of the accounts:* control surface (B-GW-ACCT / gateway-live-control D-004):
+  // `accounts:status` must reflect each account's EGRESS MAPPING (the per-account IP pin), so the
+  // owner can see "account X → its own outbound IP" alongside rate headroom. This pins that the tool
+  // surfaces `egress` verbatim from the read-model — a regression would hide which account egresses
+  // through which proxy IP.
+  it('surfaces each account row, INCLUDING its per-account egress mapping', async () => {
+    statusM.mockResolvedValue([
+      {
+        id: 'A1',
+        label: 'acct-1',
+        credentialRef: 'token:/p',
+        boundTo: [],
+        available: true,
+        sustainedlyLimited: false,
+        rate: {} as never,
+        egress: { proxyUrl: 'http://38.229.109.7:3128' },
+        liveBuckets: [],
+      },
+      // An account with no egress pin (shared default egress) — `egress` must be absent, not faked.
+      {
+        id: 'A2',
+        label: 'acct-2',
+        credentialRef: 'token:/q',
+        boundTo: [],
+        available: false,
+        sustainedlyLimited: true,
+        rate: {} as never,
+        liveBuckets: [],
+      },
+    ] as never);
+    const b = body(await statusTool.handler({} as never, {} as never) as Out);
+    expect(b.ok).toBe(true);
+    expect(b.accounts).toHaveLength(2);
+    expect(b.accounts[0]).toMatchObject({ id: 'A1', egress: { proxyUrl: 'http://38.229.109.7:3128' } });
+    expect(b.accounts[1].id).toBe('A2');
+    expect(b.accounts[1].egress).toBeUndefined();
+  });
+
+  it('passes the workspace arg through to the status read-model', async () => {
+    statusM.mockResolvedValue([] as never);
+    await statusTool.handler({ workspace: 'ws-7' } as never, {} as never);
+    expect(statusM).toHaveBeenCalledWith('ws-7');
+  });
+});
+
+describe('accounts:list', () => {
+  it('returns the pool accounts including their egress pins', async () => {
+    loadM.mockResolvedValue({
+      accounts: [
+        { id: 'A1', credentialRef: 'token:/p', label: 'acct-1', boundTo: [], rate: {}, egress: { localAddress: '203.0.113.7' } },
+      ],
+    } as never);
+    const b = body(await listTool.handler({} as never, {} as never) as Out);
+    expect(b.ok).toBe(true);
+    expect(b.accounts[0]).toMatchObject({ id: 'A1', egress: { localAddress: '203.0.113.7' } });
   });
 });

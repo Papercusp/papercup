@@ -209,3 +209,65 @@ export interface InsightsTabProps {
   howItWorks: HowItWorksHereCardProps;
   spend: SpendCardProps;
 }
+
+// ─── Tokens dashboard (B-TOK-UI / token-tracking-plan-and-briefs-2026-06-20) ──
+//
+// The Insights → Tokens subtab data, read CACHE-INCLUSIVELY from
+// `agent_usage_samples` (the same 4-token sum load-spend.ts fixed in B-TOK-2:
+// input + output + cache_read + cache_creation — the prior input+output-only sum
+// under-counted ~5×). Distinct from SpendCardProps (a single headline total): this
+// breaks spend DOWN by model, role, and time so the owner can see WHERE the burn is
+// (the audit found opus = 90% of spend, cache-read = 82% of all tokens).
+
+/** One grouped row of the Tokens dashboard (a model, a role, …). */
+export interface TokenGroupRow {
+  /** Group label — a model id/class, or a role, or 'unattributed'. */
+  key: string;
+  /** Cache-inclusive token total (input + output + cache_read + cache_creation). */
+  tokens: number;
+  /** Spend in USD (provider-billed + estimated) attributed to this group. */
+  costUsd: number;
+  /** Number of usage samples (≈ runs/calls) in this group. */
+  runs: number;
+}
+
+/** One time bucket (daily) of the Tokens dashboard trend. */
+export interface TokenTimeBucket {
+  /** Epoch ms of the bucket start (UTC day boundary). */
+  startMs: number;
+  /** Short display label, e.g. 'Jun 14'. */
+  label: string;
+  tokens: number;
+  costUsd: number;
+}
+
+/** Cache-inclusive token + cost rollup for one harness over a window. */
+export interface TokensDashboardSnapshot {
+  /** The window these numbers cover, ms (default 7d). */
+  windowMs: number;
+  /** Headline totals — the cache breakdown is surfaced so the ~5× is visible. */
+  totals: {
+    tokens: number;
+    costUsd: number;
+    /** Portion priced from tokens × list price (codex etc.). */
+    estimatedUsd: number;
+    runs: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  };
+  /** Spend by model (raw model id, falling back to model_class), desc by tokens. */
+  byModel: TokenGroupRow[];
+  /** Spend by agent role, desc by tokens. */
+  byRole: TokenGroupRow[];
+  /** Daily token/cost trend across the window, ascending by time. */
+  byDay: TokenTimeBucket[];
+  /**
+   * Per-ACCOUNT attribution is NOT yet captured on `agent_usage_samples`
+   * (account routing is gateway-layer state, not a sample column), so the brief's
+   * "by account" axis renders an honest "not captured yet" note rather than a
+   * fabricated breakdown. Flipped true once an account column lands.
+   */
+  accountAttributionAvailable: boolean;
+}

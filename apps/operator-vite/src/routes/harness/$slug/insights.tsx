@@ -81,5 +81,5 @@ function HarnessInsightsPage() {
     );
   }
 
-  return <InsightsTab {...insights} />;
+  return <InsightsTab slug={slug} {...insights} />;
 }

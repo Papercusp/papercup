@@ -75,6 +75,14 @@ export interface RoutedIdeaProvenance {
    * "gym:<id>", or "wi:<id>". The join key into {@link ChangeFeedEntry.ref}.
    */
   routedRef: string;
+  /**
+   * The hive the idea came FROM (workspace-scoped-coordination D-003 source-hive
+   * tag). Persisted on the ledger row (migration 333) + always populated by the
+   * write path; the workspace-scoped Scout (P-002) groups its corpus by it.
+   */
+  sourceHive?: string;
+  /** Optional best-effort hint: the hive the idea is ABOUT (a cross-hive idea, D-003). */
+  targetHive?: string;
   /** One-line idea title (for the report's drill-down). */
   title?: string;
   /** ISO timestamp the idea was routed. */

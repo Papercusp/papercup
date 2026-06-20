@@ -34,9 +34,11 @@ const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
 afterEach(() => vi.unstubAllEnvs());
 
 describe('buildInvokeOnce — command + core env', () => {
-  it('runs node with the tsx cli + invoke-once bin', () => {
+  it('runs the absolute node runtime (process.execPath) with the tsx cli + invoke-once bin', () => {
+    // process.execPath, NOT 'node' — a bare basename ENOENTs when the operator
+    // sidecar's PATH omits node's dir (froze git-sync/deploys ~10h on 2026-06-20).
     const { command, args } = buildInvokeOnce(spec());
-    expect(command).toBe('node');
+    expect(command).toBe(process.execPath);
     expect(args).toEqual(['/bin/tsx-cli', '/bin/invoke-once.ts']);
   });
 

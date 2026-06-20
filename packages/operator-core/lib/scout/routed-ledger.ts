@@ -43,6 +43,17 @@ export interface RecordRoutedIdeaInput {
   routedRef: string;
   /** Which Hive this belongs to (scope). */
   harnessSlug: string;
+  /**
+   * The hive the idea came FROM (workspace-scoped-coordination D-003 source-hive
+   * tag). AUTO-RESOLVED from harnessSlug (→ hive-home) when omitted — a harness is
+   * a MEMBER of a hive, so the source hive is the harness's hive-home, not its
+   * slug. An explicit cross-hive caller may set it. ALWAYS persisted non-null (the
+   * "required" contract is enforced here on the write path, not a DB NOT NULL —
+   * migration 333).
+   */
+  sourceHive?: string;
+  /** Optional best-effort hint: the hive the idea is ABOUT (a cross-hive idea, D-003). */
+  targetHive?: string;
   cycleId?: string;
   title?: string;
   addressesPatternRefs?: string[];
@@ -68,6 +79,8 @@ interface LedgerRow {
   cycle_id: string | null;
   rail: string;
   routed_ref: string;
+  source_hive: string | null;
+  target_hive: string | null;
   title: string | null;
   addresses_pattern_refs: string[] | null;
   routed_at: string;
@@ -101,17 +114,35 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const routedAt = input.routedAt ?? Date.now();
+  // D-003 source-hive tag — ALWAYS populated (the "required" contract lives on the
+  // write path, not a DB NOT NULL; migration 333). Resolve the hive-home from the
+  // harness when an explicit sourceHive isn't supplied (harness ≠ hive in a
+  // multi-member hive); best-effort, falling back to harnessSlug (the standalone
+  // hive-home proxy) so it is NEVER null. Mirrors getScoutLensWeights's resolution.
+  let sourceHive = input.sourceHive;
+  if (!sourceHive) {
+    try {
+      const { hiveHomeSlugForHarness } = await import('../hive-federation');
+      sourceHive = (await hiveHomeSlugForHarness(ws, input.harnessSlug)) ?? input.harnessSlug;
+    } catch {
+      // best-effort — fall back to the harness slug as the hive-home proxy.
+      sourceHive = input.harnessSlug;
+    }
+  }
   await sql`
     INSERT INTO harness_shared.scout_routed_ideas
-      (idea_id, workspace_id, harness_slug, cycle_id, lens, rail, routed_ref, title,
-       addresses_pattern_refs, routed_at)
+      (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id, lens, rail,
+       routed_ref, title, addresses_pattern_refs, routed_at)
     VALUES
-      (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${input.cycleId ?? null}, ${input.lens},
+      (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${sourceHive}, ${input.targetHive ?? null},
+       ${input.cycleId ?? null}, ${input.lens},
        ${input.rail}, ${input.routedRef}, ${input.title ?? null},
        ${input.addressesPatternRefs ? JSON.stringify(input.addressesPatternRefs) : null}::text::jsonb,
        ${routedAt})
     ON CONFLICT (idea_id) DO UPDATE SET
       harness_slug = EXCLUDED.harness_slug,
+      source_hive = EXCLUDED.source_hive,
+      target_hive = EXCLUDED.target_hive,
       cycle_id = EXCLUDED.cycle_id,
       lens = EXCLUDED.lens,
       rail = EXCLUDED.rail,
@@ -283,7 +314,8 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = opts.limit ?? 2000;
   const rows = await sql<LedgerRow[]>`
-    SELECT idea_id, lens, cycle_id, rail, routed_ref, title, addresses_pattern_refs, routed_at,
+    SELECT idea_id, lens, cycle_id, rail, routed_ref, source_hive, target_hive, title,
+           addresses_pattern_refs, routed_at,
            human_grade, human_feedback, graded_by, graded_at
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
@@ -302,6 +334,8 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       lens: r.lens as CreativeLens,
       rail: r.rail as RoutedRail,
       routedRef: r.routed_ref,
+      ...(r.source_hive ? { sourceHive: r.source_hive } : {}),
+      ...(r.target_hive ? { targetHive: r.target_hive } : {}),
       ...(r.cycle_id ? { cycleId: r.cycle_id } : {}),
       ...(r.title ? { title: r.title } : {}),
       routedAt: epochMsToIso(r.routed_at),

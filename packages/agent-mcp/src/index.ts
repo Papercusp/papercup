@@ -23,6 +23,15 @@ export { defineTool } from '@papercusp/tooldef';
 // operator-core `code:run` agent tool can compose it.
 export { runToolOrchestration } from '@papercusp/tooldef';
 export type { OrchestrateOptions, OrchestrateResult, PlannedMutation } from '@papercusp/tooldef';
+// code-execution-tool-orchestration B-CX-API: typed `tools.ns.verb(args)` signatures generated
+// from the projected registry + the on-demand namespace index — composed by the `code:tools`
+// lookup so the model loads signatures on demand instead of paying the full catalog per prompt.
+export { generateToolFacadeTypes, listFacadeNamespaces, toolArgsType } from '@papercusp/tooldef';
+export type {
+  GenerateFacadeTypesOptions,
+  FacadeNamespaceIndexEntry,
+  ToolArgsType,
+} from '@papercusp/tooldef';
 // Papercusp's role config (plan P-010): exporting AGENT_ROLES pulls in
 // role-config.ts, whose `declare module` augmentation registers the built-in
 // roles with tooldef's `RoleRegistry` — so the re-exported `AgentRole` below

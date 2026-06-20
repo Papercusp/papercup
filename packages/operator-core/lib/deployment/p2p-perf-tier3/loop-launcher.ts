@@ -65,7 +65,9 @@ export function localLoopLauncher(opts: {
       httpPort,
       root: mkdtempSync(join(tmpdir(), `loop-agent-${i}-`)),
       launch(cfg: LoopAgentConfig): ClaimAgentHandle {
-        const proc = spawn('node', ['--import', 'tsx', agentPath], {
+        // process.execPath, not bare 'node' — immune to a minimal sidecar PATH
+        // that omits node's dir (B-DEPLOY-FIX; see harness-invoke-once.ts).
+        const proc = spawn(process.execPath, ['--import', 'tsx', agentPath], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env, LOOP_AGENT: JSON.stringify(cfg), NODE_ENV: 'test' },
         });

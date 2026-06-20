@@ -261,5 +261,18 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // user project dirs). invokeOnceBin() returns the .mjs when it's bundled.
   const bin = invokeOnceBin();
   const args = bin.endsWith('.mjs') ? [bin] : [tsxBin(), bin];
-  return { command: 'node', args, env };
+  // `process.execPath`, NOT the bare `'node'` basename. The operator sidecar is
+  // launched (Tauri sidecar / systemd dev unit) with a minimal PATH that often
+  // OMITS the dir where `node` actually lives, so `spawn('node')` throws ENOENT
+  // and wedges every invoke-driven routine — git-sync + deploys froze ~10h on
+  // 2026-06-20 from exactly this (a restart does NOT fix it; the PATH gap
+  // recurs). process.execPath is the absolute path of the node runtime already
+  // running THIS process — the same runtime that must execute the .mjs/.ts
+  // child — so the spawn never depends on the supervisor's PATH and cannot
+  // ENOENT. Same absolute-runtime discipline used across the other spawn paths
+  // (orchestrator-runner-spawn, voice-mesh, plugin-cli) and the
+  // dirname(process.execPath) PATH-augmentation in plugin-spawn-impl.ts. This is
+  // Tauri (not Electron) and the packaged sidecar runs under node, so execPath
+  // is a node runtime in dev AND packaged — do not revert this to `'node'`.
+  return { command: process.execPath, args, env };
 }
