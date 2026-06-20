@@ -56,8 +56,9 @@ const cfg: ReleaseConfig = releaseConfig({
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(' ');
 
 describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
-  it('green suite + green build → green, with the stripped checkpoint env on the green command', async () => {
-    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }]);
+  it('green suite + clean tree + green build → green, with the stripped checkpoint env on the green command', async () => {
+    // suite green → EI-1836 conflict-marker grep (code 1 = clean) → SPA build (code 0).
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
     const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', 'base-sha');
 
     expect(r.green).toBe(true);
@@ -68,22 +69,43 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(calls[0].opts?.cwd).toBe('/cp');
     expect(calls[0].opts?.env?.GREEN_CHECKPOINT).toBe('1');
     expect(calls[0].opts?.env?.AFFECTED_BASE).toBe('base-sha');
-    // (2) the SPA build ran second, in the same tree (P-005 — build is part of green).
-    expect(calls).toHaveLength(2);
-    expect(calls[1].cmd).toBe('npm');
-    expect(calls[1].args).toContain('@papercusp/operator-vite');
-    expect(calls[1].args).toContain('build');
+    // (2) EI-1836: the conflict-marker grep ran second, in the same tree, before the build.
+    expect(calls).toHaveLength(3);
+    expect(calls[1].cmd).toBe('git');
+    expect(calls[1].args).toContain('grep');
     expect(calls[1].opts?.cwd).toBe('/cp');
+    // (3) the SPA build ran third, in the same tree (P-005 — build is part of green).
+    expect(calls[2].cmd).toBe('npm');
+    expect(calls[2].args).toContain('@papercusp/operator-vite');
+    expect(calls[2].args).toContain('build');
+    expect(calls[2].opts?.cwd).toBe('/cp');
   });
 
   it('P-005: green suite but FAILED SPA build → NOT green, build break in the failure signature', async () => {
-    const { exec, calls } = makeExec([{ code: 0 }, { code: 1, stdout: 'vite: bundle failed' }]);
+    // suite green → marker grep clean (code 1) → SPA build fails (code 1).
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 1, stdout: 'vite: bundle failed' }]);
     const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
 
     expect(r.green).toBe(false); // the key wiring: a passing suite does NOT make a broken build green
-    expect(calls).toHaveLength(2); // build WAS attempted (suite was green)
+    expect(calls).toHaveLength(3); // marker grep + build WAS attempted (suite was green, tree clean)
+    expect(calls[2].cmd).toBe('npm'); // the build ran (grep was clean)
     expect(r.failingTests).toContain('@papercusp/operator-vite'); // dedup signature folds the build break in
     expect(r.summary).toContain('vite: bundle failed');
+  });
+
+  it('EI-1836: green suite but COMMITTED conflict markers → NOT green, build SKIPPED, marker NAMED in the signature', async () => {
+    // suite green → marker grep FINDS one (code 0 + named stdout) → the cryptic SPA
+    // build is SKIPPED, the marker folds into the @papercusp/operator-vite signature.
+    const markerHit = `app/globals.css:26492:${'<'.repeat(7)} Updated upstream`;
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0, stdout: markerHit }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+
+    expect(r.green).toBe(false);
+    expect(calls).toHaveLength(2); // suite + grep only — the build was NOT attempted
+    expect(calls[1].cmd).toBe('git');
+    expect(calls[1].args).toContain('grep');
+    expect(r.failingTests).toContain('@papercusp/operator-vite'); // held + dedup like a build break
+    expect(r.summary).toContain('globals.css'); // the root is NAMED, not a cryptic CssSyntaxError
   });
 
   it('red suite short-circuits — no SPA build attempted, suite failures in the signature', async () => {
@@ -96,7 +118,8 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   });
 
   it('no AFFECTED_BASE when base is null (full affected run)', async () => {
-    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }]);
+    // suite green → marker grep clean (code 1) → build (code 0).
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
     await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
     expect(calls[0].opts?.env?.AFFECTED_BASE).toBeUndefined();
     expect(calls[0].opts?.env?.GREEN_CHECKPOINT).toBe('1');

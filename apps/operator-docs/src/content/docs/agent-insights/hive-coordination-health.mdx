@@ -72,7 +72,7 @@ Each criterion lists its `key` (the stable id graded against), its MODEL (how it
 to work), the METHOD (live signals to investigate — source of truth is code + DB, never
 docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 
-### 1. `loop-closure` — the full loop turns end-to-end
+### 1. `end-to-end-flow` — the full loop turns end-to-end
 
 - **Model.** The self-improving loop is a closed cycle: observe → scout-ideate → grade →
   plan-start/promote → queen-place → bee-complete → commit/git-sync → observe. Health = the
@@ -101,7 +101,7 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 - **Drift markers.** Thematic convergence (a majority of a batch on one theme; near-dup ideas);
   shallow symptom-only ideas; OR a hard 0-ideas transport-death.
 
-### 3. `queen-work-selection` — Queen picks the right work-items
+### 3. `queen-workitem-selection` — Queen picks the right work-items
 
 - **Model.** From the ready frontier the Queen places the most valuable ACTIONABLE items,
   correctly HOLDS undecided/needs-design items, leaves cursed items alone, and refuses to place
@@ -125,7 +125,7 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 - **Drift markers.** Starts unready/draft plans; ignores a high-priority ready plan; or churns
   on a dying system's plans. Low evidence is `unknown`, not `broken`.
 
-### 5. `parallel-placement-distribution` — batch placement + tight topic scope
+### 5. `parallel-distribution` — batch placement + tight topic scope
 
 - **Model.** When multiple independent items are ready, the Queen places a parallel BATCH
   (`fleet:place_batch`), distributes across bees by affinity (disjoint files/topics), and scopes
@@ -136,7 +136,7 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 - **Drift markers.** Serializes genuinely-parallel work; places overlapping bees that collide on
   locks; over-broad topic subscriptions causing chatter. Idle is `unknown`, not `broken`.
 
-### 6. `bee-execution-quality` — bees complete real, verified work
+### 6. `bee-execution` — bees complete real, verified work
 
 - **Model.** A bee boots with full MCP tools, claims its item, makes real tool calls, and
   completes a well-scoped, correct, VERIFIED change in one turn (tests run, not diagnosis-only),
@@ -184,7 +184,7 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 - **Drift markers.** Fires on stale premises that live state contradicts (alarms do not
   self-clear); excessive noise drowning real signal; or non-deterministic/missed fires.
 
-### 10. `constructive-communication` — handoffs, evidence, mutual correction
+### 10. `coordination-comms` — handoffs, evidence, mutual correction
 
 - **Model.** Agents communicate constructively: clean handoffs, evidence-citing messages,
   mutual correction — without re-litigation waste (many agents re-verifying the same thing).
@@ -205,7 +205,7 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 - **Drift markers.** High dup-verification volume; ceremonial messages a structural fix could
   eliminate; watchdog-fire spam.
 
-### 12. `coordination-surface-utilization` — built channels actually used
+### 12. `coordination-utilization` — built channels actually used
 
 - **Model.** Coordination surfaces that exist are USED: turn-end observation emission (enforced,
   not merely prompt-driven), Scout reading coord at cycle-start, the grade-to-lens-weight
@@ -231,16 +231,19 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 ## How to grade (the observation shape)
 
 An agent grading this rubric files a structured observation (via
-`improvements:capture { lane: 'observation', observation: { ... } }`) carrying:
+`improvements:capture { lane: 'observation', observation: { ... } }`). The `ratings` shape
+follows the P-001 accept schema (`rubric-driven-observations-2026-06-20` D-003) — a map keyed
+by the criterion `key`, one entry per criterion assessed, evidence MANDATORY (capture rejects
+an empty-evidence rating):
 
 ```jsonc
 {
   "rubricRef": "hive-coordination-health",
-  "ratings": [
-    { "criterion": "loop-closure",   "rating": "degraded", "evidence": "scout 0 ideas/24h (transport-death) but bees completing WI-214 03:43; closure broken at scout->plan hand-off" },
-    { "criterion": "queen-work-selection", "rating": "healthy", "evidence": "held WI-263/268 (needs-design), left WI-231 (cursed), placed the 2 actionable bugs — matches what I'd pick" }
-    // ... one entry per criterion you assess; criterion = a rubric criterion `key`; rating from the scale; evidence MANDATORY
-  ]
+  "ratings": {
+    "end-to-end-flow":          { "rating": "degraded", "evidence": "scout 0 ideas/24h (transport-death) but bees completing WI-214 03:43; closure broken at the scout->plan hand-off" },
+    "queen-workitem-selection": { "rating": "healthy",  "evidence": "held WI-263/268 (needs-design), left WI-231 (cursed), placed the 2 actionable bugs — matches what I'd pick" }
+    // ... key = a rubric criterion `key`; rating = a value from that criterion's scale
+  }
 }
 ```
 
