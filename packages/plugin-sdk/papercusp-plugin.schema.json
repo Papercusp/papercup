@@ -40,11 +40,14 @@
       "type": "string",
       "enum": [
         "plugin",
+        "pack",
         "template",
         "snapshot",
-        "pack"
+        "service",
+        "theme",
+        "harness"
       ],
-      "description": "Distribution kind. Defaults to 'plugin'. 'pack' = a runtime-less code-tool pack: tools only — no ui/roles/routines/actions, runtime must stay js (tool-distribution-granularity-2026-06-05 D-001/D-004; replaces the never-used 'subagent-pack')."
+      "description": "Distribution kind. Defaults to 'plugin'. 'pack' = a runtime-less code-tool pack: tools only — no ui/roles/routines/actions, runtime must stay js (tool-distribution-granularity-2026-06-05 D-001/D-004; replaces the never-used 'subagent-pack'). 'template' = a harness/project template (papercusp CLI). 'service'/'theme'/'harness'/'snapshot' = reserved/dormant — the loader treats every non-'pack' value as a default plugin. KEEP IN SYNC with the SDK `kind` union in packages/plugin-sdk/src/index.ts (EI-29)."
     },
     "dependencies": {
       "type": "object",

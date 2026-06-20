@@ -175,12 +175,21 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
       : opts;
   return [
     buildContributorsProjection(opts),
-    buildFeatureClaimsProjection(opts),
-    buildFeatureQueueProjection(opts),
-    buildFeatureWorkingSetProjection(opts),
-    buildHarnessFeaturesProjection(opts),
-    buildHarnessPlansProjection(opts),
-    buildIssuesProjection(opts),
+    // WI-259 (Option B): a shared-hive MEMBER's feature/plan/issue content federates
+    // under the PEER-STABLE hive-home slug (member slugs are NOT peer-stable), so a
+    // member's row written on peer A lands on peer B even though B boots a DIFFERENT
+    // member slug. These six content projections rebind to `hiveScoped` — the hive-home
+    // slug when boot supplies one (a joiner's member harness), else this harness's own
+    // slug (today's behavior for a non-hive / owned-home harness). The companion
+    // capture trigger (mig 322) stamps the outbox `harness_slug = <hive_home_slug>` so
+    // the wire op's `harness_slug` matches the hive-home-scoped projection guard, and
+    // the member-origin discriminator (author_pubkey) keeps two members' F-001 distinct.
+    buildFeatureClaimsProjection(hiveScoped),
+    buildFeatureQueueProjection(hiveScoped),
+    buildFeatureWorkingSetProjection(hiveScoped),
+    buildHarnessFeaturesProjection(hiveScoped),
+    buildHarnessPlansProjection(hiveScoped),
+    buildIssuesProjection(hiveScoped),
     buildPresenceProjection(opts),
     buildUsageProjection(opts),
     buildCoordConversationProjection(opts),

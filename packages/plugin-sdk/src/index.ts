@@ -688,10 +688,15 @@ export interface Plugin {
    * `Plugin` literals in source can match. The loader treats `'plugin'` as
    * default; `'pack'` marks a runtime-less code-tool pack (tools only — the
    * loader rejects ui/roles/routines/actions/non-js runtimes on packs;
-   * tool-distribution-granularity-2026-06-05 D-001/D-004). Other values
-   * reserve room for future package types.
+   * tool-distribution-granularity-2026-06-05 D-001/D-004). `'template'` is a
+   * harness/project template (papercusp CLI). `'snapshot'`/`'service'`/`'theme'`/
+   * `'harness'` reserve room for future package types (the loader treats every
+   * non-`'pack'` value as a default plugin). KEEP IN SYNC with the `kind` enum in
+   * papercusp-plugin.schema.json (EI-29: the two had drifted — `'template'` was
+   * live in the CLI but missing here; `'service'`/`'theme'`/`'harness'` were here
+   * but missing from the schema).
    */
-  kind?: 'plugin' | 'pack' | 'service' | 'theme' | 'harness';
+  kind?: 'plugin' | 'pack' | 'template' | 'snapshot' | 'service' | 'theme' | 'harness';
   /** Unique plugin name (filesystem dir + Postgres schema prefix). */
   name: string;
   /** Plugin semver. */

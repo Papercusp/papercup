@@ -245,3 +245,16 @@ pattern in my own lane** and fixed it (unambiguous, so safe to land vs. the reso
   The CI guard (`rls-coverage.integration.test.ts`) covers the table-RLS half; the explicit-filter half
   has no guard yet — a lint for "getOrgPg read of a ws-scoped table without a workspace_id predicate"
   would catch the whole class (flagging as a follow-up for the federation/security lane). — pr1-impl
+
+### Fix-in-progress status (pr5-impl, 2026-06-20) — pattern adopted, bulk remains
+The explicit-`workspace_id`-filter fix is being applied: **`poll-daemon.ts makeSqlStore.upsertFeaturePr`
+now filters `WHERE workspace_id = … AND harness_slug = …`** (commit af0f6acc9) — the exact pattern this
+finding recommends (filter, not RLS, since `getOrgPg` bypasses RLS). ✅ one instance down.
+
+**Still open (the bulk):** the sync-resolver still has **17** `.where(eq(t.harnessSlug, harnessSlug))`
+reads with NO `workspace_id` (incl. `issuesConsolidated.bySlug`). These are the larger read-side
+exposure. Their fix needs `workspaceId` sourced from the resolver/client CONTEXT (mirror
+`resolveDesignFeatures`/auditLog, which take it in argsSchema) — **NOT** a blind `activeWorkspaceId()`
+or `.default('default')` (that is the EI-126 silent-mis-route footgun AD flags). So it's the
+federation/sync lane's call (resolver workspace-context plumbing + the client passing it). Routed to AD
+(`findings-AD.md`); not a safe solo edit from outside that lane. — pr5-impl

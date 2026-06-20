@@ -150,7 +150,10 @@ export const WEDGE_SILENT_MS = 10 * 60_000;
  * not evidence of a wedge. Pure; exported for tests + fleet:tree.
  */
 export function isPossiblyWedged(
-  row: { status: string; heartbeatAt?: Date | null; lastOutputAt?: Date | null },
+  // heartbeatAt/lastOutputAt accept string too: raw PG reads return ISO strings,
+  // and getMs() below normalizes Date|string|number (EI-482/EI-492). The type now
+  // matches that tested contract (was Date|null — too narrow for the string path).
+  row: { status: string; heartbeatAt?: Date | string | null; lastOutputAt?: Date | string | null },
   opts: { now?: number; silentMs?: number; staleMs?: number } = {},
 ): boolean {
   const now = opts.now ?? Date.now();

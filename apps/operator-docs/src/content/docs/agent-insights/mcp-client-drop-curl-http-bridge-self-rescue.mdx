@@ -65,19 +65,51 @@ bash /tmp/psu.sh "plans:set-status" '{"harness":"papercusp","slug":"<plan>","ite
    `su-7414d69e…`) is different. `superuser=1` echoes back whatever `client` you
    pass, so the wrong id silently fragments your presence / could impersonate a
    live peer. Capture your real id from the first `coord:inbox`/`whoami` of the run.
+
+   Use your real id for BOTH reads and writes — both work. (A controlled
+   back-to-back test on 2026-06-20 refuted an earlier guess that the *dropped*
+   id's writes hang: identical writes under the dropped id AND a fresh id behaved
+   the same — both succeed in a good wedge-window, both time out in a bad one.
+   So **don't switch identities to "fix" a hanging write** — the cause is the
+   operator wedge, not your id; see the limitation below.) One real id caveat:
+   don't address a message `to:` the drifted `$PAPERCUSP_SID` value — it's not a
+   registered recipient (`unknown_recipient`).
 3. **`workspace=papercusp-workspace` is required** or you get
    `request_rejected: scoped_superuser_workspace_unresolved`.
 
 ## Known limitation — heavy WRITES vs the operator wedge
 
 Light reads (`coord:whoami`, `work_items:get`, `plans:get`, `coord:inbox`) return
-fast. But heavy **writes** that fan out / federate (`coord:send` to `*`,
-`coord:declare-intent`) can **time out** when the operator event-loop is
-saturated (the round-4 `:3070` single-thread wedge — heavy synchronous
-`coord_event_log` work blocks the loop). `/api/health` staying 200 does NOT mean
-the coord write-path is free. Mitigation: prefer narrow writes (single recipient,
-not `*`), retry opportunistically when the wedge clears, and don't pile retries
-onto a wedged loop (you add to the very load that's blocking you).
+fast and reliably. But **bridge writes are best-effort under operator load** — they
+mostly time out and only occasionally land in a good window. What's actually
+*verified* (don't over-read it): (a) live peers on the normal client path landed
+~38 coord messages / 5 min while my bridge `coord:send`s (even a 1-char body)
+mostly timed out; (b) a 1-char `coord:send` DID land in one window, so writes
+aren't categorically broken; (c) heavy writes (`plans:set-status` — plan revision
++ federation) time out across the board. The root cause is **not** isolated to the
+`superuser=1` path: the superuser auth/scoping in `_mcp-handler.ts` does no extra
+*write* work when you pass `?workspace=` (no `workspaceForCoordOwner` lookup), and
+the `coord:send` tool body is identical code for superuser and normal clients — so
+the likely cause is just the loaded write path (`coord_event_log`/federation) plus
+an intermittent fresh-curl client being disadvantaged vs persistent warm sessions,
+NOT a superuser-specific bug. (The non-superuser *instant reject*,
+`spawn_sig_missing_sig_required_mode`, only shows the early auth check differs — it
+does not prove the write path is faster there.) Practical takeaway: **reads are
+your reliable channel; for writes, send tiny single-recipient payloads, retry
+opportunistically, and put durable findings in a runbook** (git-sync, no coord
+write). `/api/health` staying 200 does NOT mean the write-path is free.
+
+Observed write throughput under a *bad* wedge (2026-06-20): it FLUCTUATES — a
+**tiny** single-recipient `coord:send` (body `"x"`) lands in `<1s` in a good
+window yet times out in a bad one minutes later, a ~1KB-body `coord:send` times
+out even in a fair window, and a heavy `plans:set-status` (plan revision +
+federation) times out across the board. (This is the wedge, not your identity.)
+So under a deep wedge you can only reliably push **trivial** writes —
+send a one-line pointer ("see runbook X / details in plan Y") rather than a long
+body, retry the substantive write opportunistically when the wedge clears, and
+**don't pile retries onto a wedged loop** (you add to the very load blocking you).
+Put durable findings in an `agent-insights` runbook (rides git-sync, needs no
+coord write) instead of fighting the write-path.
 
 ## Don't
 

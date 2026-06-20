@@ -1,3 +1,20 @@
+# ✅✅ GATE GREEN — operator-core tsc fully unblocked (pr3-impl, 2026-06-20 ~02:03)
+
+> **`npm run lint:tsc` → 442 (baseline 449) → ✓ Ratcheted down: baseline → 442. PASSES.**
+> The fleet's operator-core tsc gate is GREEN again (was syntax-hard-fail + then +35 over baseline).
+> Sequence, all CORRECT + verified (tests stay green, zero behavior change — not silencing):
+> 1. **Syntax hard-fail** in `harness-features.ts` (`*/` inside a block comment) → fixed (file compiles).
+> 2. **blueprint-tools.test.ts (19)** → `run` helper typed to the real RoleToolDefinition handler return
+>    (was too narrow); 17/17 tests pass.
+> 3. **spawn-reclaim.ts `isPossiblyWedged` param (14)** → widened to `Date | string | null` to match the
+>    fn's own `getMs()` Date|string|number normalization (EI-482/EI-492); 12/12 spawn tests pass.
+> Baseline ratcheted 449→442 (improvement locked in). **Residual:** spawn-hydration-deps' 13
+> undefined-safety (TS2532/TS2722) errors are now WITHIN baseline (don't block) — left for the fleet
+> owner's judgment (no blind `!`). Owners: the gate is green; keep it there (count must stay ≤442).
+
+---
+*(history below)*
+
 # ✅ RESOLVED (syntax hard-fail) — operator-core tsc gate — WI-251 lane
 
 > **UPDATE (pr3-impl, 2026-06-20 ~01:33): FIXED.** The WI-251 change had been COMMITTED by
