@@ -1042,12 +1042,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               // hive_members_hive_fkey (no hives parent row for a member slug) AND (b) registers B under the
               // WRONG slug, so the revoke's loadHiveMemberDevicePubkeys(HIVE_SLUG, B) returns [] →
               // revokeHiveContributor short-circuits 'no_target' → advanceEpochOnHiveBoundary never fires →
-              // the epoch never advances (the K2 cut bug; role + 328af confirmed). Use the resolved
-              // hiveHomeProjectionSlug (the SAME hive-home slug scopedApply + the Hive policy use) so B lands
-              // under the hive-home. Skip when it's undefined (a non-hive boot — no hive_members) or off the
-              // OWNER box (loadHivePubkey null — the same self-gate grantEpochKeysToMembers uses; the local
-              // upsert is the owner's, the federation projects it to the others). NEEDS a fresh-witness verify.
-              const admitHiveHome = hiveHomeProjectionSlug;
+              // the epoch never advances (the K2 cut bug; role + 328af confirmed). Resolve the hive-home via
+              // hiveHomeSlugForHarness — a fresh REGISTRY read (member → its hive_slug, hive-home → itself),
+              // NOT hiveHomeProjectionSlug: that's resolved at boot only when swarmBinding.kind==='hive' and is
+              // UNDEFINED on the owner's MEMBER boot (boots on the gh topic before the hive rebind), so the
+              // prior redirect silently skipped + B never registered (VERIFIED live: members stayed 1, K2 FAIL).
+              // Skip when null (not part of a hive — no hive_members) or off the OWNER box (loadHivePubkey
+              // null — the local upsert is the owner's; the federation projects it to the others).
+              const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+              const admitHiveHome = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
               if (!admitHiveHome) return;
               const { loadHivePubkey } = await import('../../identity/hive-keypair');
               if (!(await loadHivePubkey(opts.workspaceId, admitHiveHome))) return;
