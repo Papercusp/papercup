@@ -1,9 +1,10 @@
 # Findings — EN-2 (P-RATE) per-member rate-limit enforcement
 
 **Author:** su-09486. **Plan:** `PLAN-owner-enforcement-layer.md` (Phase EN-2).
-**Status:** 🟢 enforcement mechanism BUILT + teeth-verified (42 tests). Live boot
-wiring is owned by EN-4 (su-151ef) who nests the EN-2 wrapper inside the single
-`policy-admission` decorator; this doc is the EN-2 mechanism + trust-model record.
+**Status:** 🟢 COMPLETE — enforcement mechanism BUILT + teeth-verified, and the
+LIVE boot seam (EN-4's `policy-admission` decorator nesting the EN-2 wrapper) is
+wired and verified green (see "Live-seam verification" at the foot of this doc).
+This doc is the EN-2 mechanism + trust-model record.
 
 ## What landed
 
@@ -151,3 +152,43 @@ import-extension), none in this lane. EN-2 module + EN-1 type integration (`Rate
 HivePolicyRate`) confirmed complete. The single remaining integration is the boot.ts
 `mergeOpts.applyImpl` wiring — EN-4's lane, contended with the live A-003 boot.ts edit,
 coordinated by su-328af; ready-to-apply composition contract handed to su-328af via coord.
+
+## Live-seam verification (continuation, 2026-06-20, su-09486)
+
+EN-4 landed the single `boot.ts` wiring (the lane I was holding for). The composed
+enforcement decorator is now LIVE on every merge pass:
+
+- `boot.ts:631` — `const rateLimiter = new MemberRateLimiter()` built ONCE
+  (stateful tumbling windows persist across passes; re-snapshotted per pass).
+- `boot.ts:1146-1176` — per-pass: `getHivePolicy(workspaceId, hiveHomeProjectionSlug)`
+  read once (past the `!changed` guard, so an idle/un-policed harness pays nothing);
+  `makeRateLimitedApply` (EN-2 inner) nested inside `makePolicyEnforcedApply` (EN-4
+  outer) over the current `scopedApply`. Author attribution is the exact adapter from
+  the handoff contract: `resolveAuthorId: (k) => admittedIdentities.get(k)?.githubUserId ?? null`
+  (unforgeable, receiver-stamped); `currentCaps: () => ownerPolicy.rate ?? null`.
+  No policy ⇒ `applyImpl === scopedApply`, byte-for-byte the prior behavior.
+- `boot.ts:1194` — the C-001 re-key decrypt-gate (su-ee7e9) wraps the enforcement
+  stack OUTERMOST when armed (decrypt → EN-4 → EN-2 → scopedApply) so rate/policy
+  see plaintext; identity stub today ⇒ `applyImpl === enforcedApply` unchanged.
+
+**Verification run (this session):**
+- Composed EN-2+EN-4 suite (rate-limiter, rate-limit-admission, rate-limit-enforcement,
+  policy-admission, policy-admission.apply): **62/62 green**.
+- ALL non-integration `lib/sync/hyperbee/*.test.ts` (36 files — the merge driver
+  `read-merge`/`read-merge-incremental`, the enforcement `rekey-enforcement-compose-order`
+  test, the epoch gate, every admission/announce/epoch suite): **329/329 green** with the
+  live wiring in place — no regression to the existing merge/apply path.
+- Typecheck (`tsc --noEmit -p packages/operator-core`): ZERO errors in `boot.ts`,
+  `rate-limiter.ts`, `rate-limit-admission.ts`, `policy-admission.ts` or their tests.
+  (Repo-wide tsc errors are the pre-existing baseline in unrelated files — `test-config`
+  import-extensions, `agent-mcp`, `orchestrator` — none in this lane.)
+- The full-directory run including `*.integration.test.ts` (PG-backed) was not run to
+  completion here — those need a live Postgres and exceed the local timeout; they
+  exercise outbox/backfill/compaction, NOT the rate seam. The seam's behavior is fully
+  covered by `rate-limit-enforcement.test.ts`, which drives the REAL
+  `mergeAdmittedLogsIncremental` over in-memory logs + an in-memory canonical store.
+
+**EN-2 is fully implemented.** Mechanism, author attribution, op-admission drop,
+observability (`snapshot()`), adversarial/convergence/anti-OOM tests, EN-1 policy
+integration, the live boot seam, and the honest trust-model docs (the forged-op-time
+residual) are all done and green.
