@@ -179,8 +179,13 @@ export interface PlacementObservation {
   /** A LIVE bee currently holds/serves this non-terminal unit (re-placement took,
    *  or the original is still working). */
   hasLiveHolder: boolean;
-  /** Failed placements already recorded for this unit (0 if never placed). */
+  /** Failed (item-pathology) placements already recorded for this unit (0 if never
+   *  placed) — the 3-strike `breakerThreshold` counter. */
   failCount: number;
+  /** F-FIX-041 — INFRA-attributed losses already recorded (operator dormancy / zombie
+   *  bees) — the BOUNDED `infraBreakerThreshold` counter, kept separate from failCount so
+   *  an infra outage doesn't trip the pathology breaker (0 if never placed). */
+  infraLossCount: number;
   /** The existing placement row's status, or null if this is a new placement. */
   placementStatus: string | null;
   /** When the last recovery wake fired (debounce), ms epoch, or null. */
@@ -192,15 +197,21 @@ export interface PlacementObservation {
    *  re-places the unit but does NOT count toward the curse — only a genuine bee
    *  failure / wedge (no recent activity, or a non-zero exit) does. Default false. */
   servingBeeReclaimedWhileActive?: boolean;
+  /** F-FIX-041 — the serving bee made ZERO tool calls (agent_activity kind='tool') across
+   *  its whole life: a no-fair-attempt loss — an EI-1758 zombie (booted without MCP tools)
+   *  or a bee that died before doing any work. The work-item never got a real attempt, so
+   *  the loss is INFRA-induced, not evidence of item-pathology. Counted toward the BOUNDED
+   *  infra breaker (not unbounded-exempt): the bound is what makes this per-bee signal safe
+   *  — an item that genuinely crashes bees pre-tool-call ALSO shows 0 tool calls, so it must
+   *  still eventually curse (at infraBreakerThreshold), never retry forever. Default false. */
+  servingBeeMadeNoToolCalls?: boolean;
   /** F-FIX-041 — this sweep is a post-dormancy RECOVERY sweep: the gap since this
    *  hive's previous sweep exceeded the dormancy grace, so the operator/bg-host was
    *  down in between and a "lost" placement is INFRA-induced, not item-pathology.
    *  An ITEM-INDEPENDENT signal (computed from the watchdog's own run cadence, not
-   *  per-bee) — an item cannot fake "the operator was dormant", so unlike a per-bee
-   *  zombie signal this can't grant a doomed item an unbounded curse-exemption. On
-   *  such a sweep a loss recovers with fail_count held FLAT (no curse progress);
-   *  the NEXT (normal-cadence) sweep counts again, so a genuinely-wedging item still
-   *  curses once the operator is healthy. Default false. */
+   *  per-bee) — an item cannot fake "the operator was dormant". Counted toward the
+   *  BOUNDED infra breaker (infraBreakerThreshold), not the 3-strike pathology breaker.
+   *  Default false. */
   postDormancySweep?: boolean;
   now: number;
 }
@@ -208,9 +219,9 @@ export interface PlacementObservation {
 export type PlacementDecision =
   | { kind: 'healthy' }
   | { kind: 'completed' }
-  | { kind: 'recover'; nextFailCount: number; reason: string }
+  | { kind: 'recover'; nextFailCount: number; nextInfraLossCount: number; reason: string }
   | { kind: 'debounced' }
-  | { kind: 'breaker'; nextFailCount: number; reason: string }
+  | { kind: 'breaker'; nextFailCount: number; nextInfraLossCount: number; reason: string }
   | { kind: 'latched' }
   | { kind: 'abandon'; reason: string };
 
@@ -270,40 +281,56 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   if (obs.servingBeeReclaimedWhileActive) {
     return {
       kind: 'recover',
-      nextFailCount: obs.failCount, // FLAT — a false reclaim never progresses the breaker
-      reason: 'serving bee reaper-reclaimed while still active (slow-but-alive) — re-placing, not counting toward the curse',
+      nextFailCount: obs.failCount, // FLAT — proof-of-life: a slow-but-alive bee is genuinely working
+      nextInfraLossCount: obs.infraLossCount, // and is fully exempt — never even the bounded infra counter
+      reason: 'serving bee reaper-reclaimed while still active (slow-but-alive) — re-placing, not counting toward any breaker',
     };
   }
 
-  // F-FIX-041 — operator-dormancy grace: this is a post-dormancy RECOVERY sweep (the
-  // gap since the hive's previous sweep exceeded the dormancy grace), so the operator/
-  // bg-host was down in between and this "lost" placement is INFRA-induced, not item-
-  // pathology. Re-place it but keep fail_count FLAT (no curse progress) — exactly the
-  // WI-233 false-reclaim relaxation, for the operator-down case the Queen named.
-  // SAFE: the signal is ITEM-INDEPENDENT (the watchdog's own run cadence), so an item
-  // cannot fake it to win an unbounded exemption; and the NEXT normal-cadence sweep
-  // counts again, so a genuinely-wedging item still curses once the operator is healthy.
-  // (Ordered AFTER the cursed latch + debounce so a cursed item stays latched and a
-  // mid-recovery wake is still debounced.)
-  if (obs.postDormancySweep) {
+  // F-FIX-041 — an INFRA-induced loss with NO proof of a fair attempt: a post-dormancy
+  // recovery sweep (operator/bg-host was down — item-INDEPENDENT) OR a no-fair-attempt
+  // zombie (serving bee made 0 tool calls — EI-1758). Count it toward the BOUNDED infra
+  // breaker, NOT the 3-strike pathology breaker, so an infra outage doesn't false-curse a
+  // tractable item. The bound is the safety property: even if a genuinely-wedging item's
+  // losses were all mis-attributed to infra (e.g. it crashes bees pre-tool-call, so it too
+  // shows 0 tool calls), it STILL curses at infraBreakerThreshold — never the unbounded
+  // retry of EI-865. (Ordered AFTER the cursed latch + debounce so a cursed item stays
+  // latched and a mid-recovery wake is still debounced.)
+  if (obs.postDormancySweep || obs.servingBeeMadeNoToolCalls) {
+    const why = obs.postDormancySweep
+      ? 'post-dormancy recovery sweep (operator/bg-host was down)'
+      : 'serving bee made 0 tool calls (no-fair-attempt / zombie)';
+    const nextInfraLossCount = obs.infraLossCount + 1;
+    if (nextInfraLossCount >= cfg.infraBreakerThreshold) {
+      return {
+        kind: 'breaker',
+        nextFailCount: obs.failCount, // the pathology count is untouched
+        nextInfraLossCount,
+        reason: `${nextInfraLossCount} infra-induced losses (>= infra breaker ${cfg.infraBreakerThreshold}) — ${why}`,
+      };
+    }
     return {
       kind: 'recover',
-      nextFailCount: obs.failCount, // FLAT — an operator-dormancy loss never progresses the breaker
-      reason: 'post-dormancy recovery sweep (operator/bg-host was down) — re-placing, not counting toward the curse',
+      nextFailCount: obs.failCount, // pathology count held FLAT — infra losses don't progress it
+      nextInfraLossCount,
+      reason: `infra-induced loss (${why}) — counted toward the bounded infra breaker, not the pathology breaker`,
     };
   }
 
+  // A genuine item-pathology loss (a fair attempt that failed) → the 3-strike breaker.
   const nextFailCount = obs.failCount + 1;
   if (nextFailCount >= cfg.breakerThreshold) {
     return {
       kind: 'breaker',
       nextFailCount,
+      nextInfraLossCount: obs.infraLossCount,
       reason: `${nextFailCount} failed placements (>= breaker threshold ${cfg.breakerThreshold})`,
     };
   }
   return {
     kind: 'recover',
     nextFailCount,
+    nextInfraLossCount: obs.infraLossCount,
     reason: 'serving bee dead/stalled and the unit is not terminal',
   };
 }
@@ -369,6 +396,11 @@ interface BeeLite {
    *  read `dead` (heartbeat-stale / reaper-reclaimed) but made a governed model call
    *  within the activity window, so it was alive when reclaimed. */
   reclaimedWhileActive: boolean;
+  /** F-FIX-041 — the bee made ZERO native tool calls (agent_activity kind='tool') across
+   *  its life: a no-fair-attempt zombie (EI-1758, or died before any work). When it's the
+   *  dead serving bee on a non-terminal unit, the loss is infra (bounded infra breaker),
+   *  not item-pathology. */
+  madeNoToolCalls: boolean;
 }
 
 interface UnitRow {
@@ -382,6 +414,8 @@ interface PlacementRow {
   work_item_id: string;
   status: string;
   fail_count: number;
+  /** F-FIX-041 — the bounded infra-loss counter (operator dormancy / zombie bees). */
+  infra_loss_count: number;
   last_recovery_ms: number | null;
   escalation_msg_id: string | null;
   /** F-FIX-041 — last sweep time for this row (ms). max() over the hive ≈ the hive's
@@ -580,6 +614,22 @@ export async function reconcileOneHive(
     for (const r of activeRows) if (r.run_id) activeRunIds.add(r.run_id);
   }
 
+  // F-FIX-041 — the zombie signal: which bee OWNERS made ≥1 native tool call (agent_activity
+  // kind='tool'). A serving bee with ZERO tool calls never got a fair attempt at its item
+  // (an EI-1758 zombie booted without MCP tools, or died before any work), so its loss is
+  // infra (the BOUNDED infra breaker), not item-pathology. Keyed by owner_id == session_owner.
+  const beeActivityOwners = [...new Set(beeRows.map((b) => b.session_owner || b.spawn_id))];
+  const ownersWithToolCalls = new Set<string>();
+  if (beeActivityOwners.length > 0) {
+    const toolRows = await sql<{ owner_id: string }[]>`
+      SELECT DISTINCT owner_id
+        FROM harness_shared.agent_activity
+       WHERE workspace_id = ${workspaceId}
+         AND owner_id = ANY(${beeActivityOwners})
+         AND kind = 'tool'`;
+    for (const r of toolRows) ownersWithToolCalls.add(r.owner_id);
+  }
+
   const beeByOwner = new Map<string, BeeLite>();
   for (const b of beeRows) {
     const ownerId = b.session_owner || b.spawn_id;
@@ -621,7 +671,7 @@ export async function reconcileOneHive(
 
   // Existing placement ledger rows for this hive (the durable counters).
   const placeRows = await sql<PlacementRow[]>`
-    SELECT work_item_id, status, fail_count,
+    SELECT work_item_id, status, fail_count, infra_loss_count,
            extract(epoch from last_recovery_at) * 1000 AS last_recovery_ms,
            escalation_msg_id,
            extract(epoch from last_seen_at) * 1000 AS last_seen_ms

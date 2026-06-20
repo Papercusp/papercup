@@ -25,8 +25,12 @@ import {
   type ProjectsWorkspaceLookup,
   type RegistryWorkspaceResolver,
 } from '../source';
-import { PAPERCUP_HARNESS_SLUG } from '../../../harness/register-papercup';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
+
+/** The operator-home slug (operatorHomeHarnessSlug() — 'papercusp' default post-migration);
+ *  the scope that empty / '*' / 'all' / <home> short-circuits to (WI-148 part-B). */
+const HOME = operatorHomeHarnessSlug();
 
 /** A lookup seam that returns a fixed match list and records the slug it saw. */
 function lookupReturning(...workspaceIds: string[]): {
@@ -56,34 +60,34 @@ function registryReturning(workspaceId: string | null): {
   return { registryFallback, calls };
 }
 
-describe('resolvePlanScope — papercup-primary short-circuit (WI-148 part-B)', () => {
-  it('no harness → papercup primary in PAPERCUSP_WORKSPACE_ID', async () => {
+describe('resolvePlanScope — operator-home-primary short-circuit (WI-148 part-B)', () => {
+  it('no harness → home primary in PAPERCUSP_WORKSPACE_ID', async () => {
     const { lookup, calls } = lookupReturning('ws-should-not-be-used');
     const r = await resolvePlanScope({ lookup });
-    expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
+    expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: HOME});
     // The short-circuit never consults the projects table.
     expect(calls).toEqual([]);
   });
 
-  it.each(['*', 'all', PAPERCUP_HARNESS_SLUG])(
-    'the %s sentinel → papercup primary in PAPERCUSP_WORKSPACE_ID (no projects lookup)',
+  it.each(['*', 'all', HOME])(
+    'the %s sentinel → home primary in PAPERCUSP_WORKSPACE_ID (no projects lookup)',
     async (slug) => {
       const { lookup, calls } = lookupReturning('ws-should-not-be-used');
       const r = await resolvePlanScope({ harnessSlug: slug, lookup });
-      expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
+      expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: HOME});
       expect(calls).toEqual([]);
     },
   );
 
   it('a blank/whitespace harness is treated as "no harness"', async () => {
     const r = await resolvePlanScope({ harnessSlug: '   ' });
-    expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
+    expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: HOME});
   });
 
   it('an explicit workspaceId rides through the papercup short-circuit', async () => {
     const r = await resolvePlanScope({ harnessSlug: 'all', workspaceId: 'ws-xyz' });
     // For the all/papercup branch the supplied workspaceId is honored verbatim.
-    expect(r).toEqual({ workspaceId: 'ws-xyz', harnessSlug: PAPERCUP_HARNESS_SLUG });
+    expect(r).toEqual({ workspaceId: 'ws-xyz', harnessSlug: HOME});
   });
 });
 
@@ -147,8 +151,8 @@ describe('resolvePlanScope — registry fallback (projects miss → authoritativ
 });
 
 describe('fill_workspace_id_from_projects', () => {
-  it.each(['', '   ', '*', 'all', PAPERCUP_HARNESS_SLUG, undefined])(
-    'returns PAPERCUSP_WORKSPACE_ID for the papercup/wildcard scope %s (WI-148 part-B)',
+  it.each(['', '   ', '*', 'all', HOME, undefined])(
+    'returns PAPERCUSP_WORKSPACE_ID for the home/wildcard scope %s (WI-148 part-B)',
     async (slug) => {
       const { lookup, calls } = lookupReturning('ws-should-not-be-used');
       const ws = await fill_workspace_id_from_projects(slug, { lookup });

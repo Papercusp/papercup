@@ -554,7 +554,12 @@ export async function discoverResumeProcs(): Promise<ResumeProc[]> {
     const args = raw.split('\0').filter(Boolean);
     const i = args.indexOf('--resume');
     if (i >= 0 && args[i + 1] && RESUME_UUID_RE.test(args[i + 1])) {
-      out.push({ pid: Number(ent), sessionId: args[i + 1] });
+      const pid = Number(ent);
+      // Defense-in-depth: a FOREGROUND/TTY-attached proc is a live interactive
+      // session (a human), never a backgrounded leaked agent zombie — never a
+      // reap candidate, regardless of its adv_session rows.
+      if (await isForegroundTty(pid)) continue;
+      out.push({ pid, sessionId: args[i + 1] });
     }
   }
   return out;
@@ -591,11 +596,42 @@ export interface ZombieReapDeps {
 async function defaultEndedSessionIds(sessionIds: string[]): Promise<Set<string>> {
   if (sessionIds.length === 0) return new Set();
   const { sql } = getOrgPg();
+  // A uuid is a zombie ONLY when EVERY adv_session row for it is ended — i.e. it
+  // has NO open row. CRITICAL (the collateral that killed the operator's live
+  // session): a LIVE resumed session REUSES its session_id, so an OLD ended row can
+  // coexist with the CURRENT OPEN row for the same uuid. The earlier `AND ended_at
+  // IS NOT NULL` matched the old ended row and killed the live session in a
+  // kill→--resume→kill loop. `HAVING` no open row makes the live (open) row veto.
   const rows = await sql<Array<{ session_id: string }>>`
-    SELECT DISTINCT session_id
+    SELECT session_id
       FROM harness_shared.adv_sessions
-     WHERE session_id = ANY(${sessionIds}) AND ended_at IS NOT NULL`;
+     WHERE session_id = ANY(${sessionIds})
+     GROUP BY session_id
+    HAVING COUNT(*) FILTER (WHERE ended_at IS NULL) = 0`;
   return new Set(rows.map((r) => r.session_id));
+}
+
+/**
+ * True iff `pid` is a FOREGROUND, TTY-attached process (ps `+`) — a live
+ * interactive session (e.g. a human at a terminal), NEVER a backgrounded leaked
+ * agent proc. Defense-in-depth atop the all-ended query: even a stale-stamped row
+ * can't make us kill a live foreground session. Reads `/proc/<pid>/stat`: comm
+ * (field 2) is parenthesised + may contain spaces, so we slice after the LAST ')';
+ * the remaining 0-indexed fields are 0=state 1=ppid 2=pgrp 3=session 4=tty_nr
+ * 5=tpgid. Foreground ⇔ a controlling tty (tty_nr≠0) AND this pgrp owns it
+ * (pgrp===tpgid). Best-effort: a read/parse failure → false (never over-spare).
+ */
+async function isForegroundTty(pid: number): Promise<boolean> {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+    const after = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+    const pgrp = Number(after[2]);
+    const ttyNr = Number(after[4]);
+    const tpgid = Number(after[5]);
+    return Number.isFinite(ttyNr) && ttyNr !== 0 && Number.isFinite(pgrp) && pgrp === tpgid;
+  } catch {
+    return false;
+  }
 }
 
 async function defaultStillTheProc(pid: number, sessionId: string): Promise<boolean> {

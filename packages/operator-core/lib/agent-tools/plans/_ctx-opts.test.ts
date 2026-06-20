@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { resolveCtxHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
-import { PAPERCUP_HARNESS_SLUG } from '../../harness/register-papercup';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 describe('resolveCtxHarnessSlug', () => {
   it('returns undefined for empty / missing / whitespace / wildcard scope', () => {
@@ -30,10 +30,11 @@ describe('resolveCtxHarnessSlug', () => {
 });
 
 describe('ctxToPlanSourceOpts', () => {
-  it('defaults to the papercup harness for empty / wildcard / papercup scope', async () => {
-    expect(await ctxToPlanSourceOpts({})).toEqual({ harnessSlug: PAPERCUP_HARNESS_SLUG });
-    expect(await ctxToPlanSourceOpts({ harnessSlug: '*' })).toEqual({ harnessSlug: PAPERCUP_HARNESS_SLUG });
-    expect(await ctxToPlanSourceOpts({ harnessSlug: PAPERCUP_HARNESS_SLUG })).toEqual({ harnessSlug: PAPERCUP_HARNESS_SLUG });
+  const HOME = operatorHomeHarnessSlug(); // 'papercusp' (post-migration default)
+  it('defaults to the operator-home harness for empty / wildcard / home scope', async () => {
+    expect(await ctxToPlanSourceOpts({})).toEqual({ harnessSlug: HOME });
+    expect(await ctxToPlanSourceOpts({ harnessSlug: '*' })).toEqual({ harnessSlug: HOME });
+    expect(await ctxToPlanSourceOpts({ harnessSlug: HOME })).toEqual({ harnessSlug: HOME });
   });
 
   it('threads a real harness slug through (trimmed)', async () => {
