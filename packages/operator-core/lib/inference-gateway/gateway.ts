@@ -951,7 +951,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // is NOT deadline-bounded — a healthy long STREAM keeps its slot as long as bytes flow (progress
           // resets body-idle), so this never aborts a legitimately-streaming response.
           const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
-          armStall(Math.max(1000, Math.min(headersStallMs, retryDeadlineAt - Date.now())));
+          armStall(Math.max(1, Math.min(headersStallMs, retryDeadlineAt - Date.now())));
           up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
           armStall(upstreamBodyIdleTimeoutMs);
           // Transport succeeded for THIS account (response headers arrived) — its egress proxy works, so
@@ -995,7 +995,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // ROUTE AROUND IT: rotate to a healthy account + retry on the same admission slot (like the
             // usage-cap path). pool.onExhausted also marks this account out of the round-robin until
             // resetAt and hands back the next account with budget.
-            if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
+            // WEDGE-PREVENTION LADDER: only rotate+retry while still WITHIN the slot-hold deadline. Under an
+            // Anthropic-WIDE stall storm (every proxy account TTFB-stalls — not a dead proxy), this branch
+            // would otherwise chain INTERNAL_RETRY_MAX_ATTEMPTS × ~60s stalls and squat the slot for minutes
+            // (past the 75s self-heal / 120s watchdog → the restart storm). Past the deadline → fall through
+            // to the fast retryable 503 below, freeing the slot so the bee's CLI retries against a recovered pool.
+            if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 && Date.now() < retryDeadlineAt) {
               const next = pool.onExhausted(active.accountId, resetAt);
               if (next && next.accountId !== active.accountId) {
                 failovers++;
