@@ -4,6 +4,7 @@ import {
   createMergeCursor,
 } from '../read-merge';
 import type { OwnLog, PeerLogOp } from '../peer-log';
+import type { OpEnvelope } from '../op-envelope-types';
 
 /*
  * WI-255 UPDATE (2026-06-20, su-328af): the "self-heals via winners-dedup (no re-throw)"
@@ -83,7 +84,7 @@ function hasNul(value: unknown): boolean {
 
 /** applyImpl that throws on any put whose value carries a NUL (mimics PG's rejection). */
 function pgLikeApply(pg: Map<string, unknown>) {
-  return async (env: { table: string; hbKey: string; type: string; value?: unknown }) => {
+  return async (env: OpEnvelope) => {
     if (env.type === 'put' && hasNul(env.value)) {
       throw new Error('invalid byte sequence for encoding "UTF8": 0x00'); // PG-shaped
     }

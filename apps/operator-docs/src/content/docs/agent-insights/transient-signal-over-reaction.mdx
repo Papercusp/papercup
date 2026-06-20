@@ -31,10 +31,14 @@ pipelines. Found and fixed **five times** in one session (2026-06-19→20):
    Wrap the `inWorkspaceTxn(...)` acquire. The lock self-recovers once load eases,
    so a few retries ride out the dip instead of skipping/fail-opening on one timeout.
 
-2. **HTTP health probe (e.g. gateway `/healthz`).** Retry with an ESCALATING,
-   load-aware timeout (`[2500, 6000]ms`) before concluding "down" — a process that
-   answers in \<1ms can still miss a single 2500ms timer under contention. ANY HTTP
-   answer (incl. 503 pacing) = alive; only unreachable-on-EVERY-attempt is an outage.
+2. **HTTP health probe (e.g. gateway `/healthz`).** Use the shared
+   `lib/escalating-http-probe.ts` → `probeHttpReachable(url, {timeouts})` — it
+   retries with an ESCALATING, load-aware timeout (`[2500, 6000]ms`) before
+   concluding "down" (a process that answers in \<1ms can still miss a single
+   2500ms timer under contention). ANY HTTP answer (incl. 503 pacing) = alive;
+   only unreachable-on-EVERY-attempt is an outage. Both gateway probes
+   (learning-infra-health, system-health/compute) delegate to it — DON'T
+   hand-roll a copy; an independent copy is exactly how WI-266 drifted.
 
 3. **An alarm derived from a possibly-blinded read.** If the upstream that
    maintains the state is known-down (e.g. the bg routine engine is frozen → the

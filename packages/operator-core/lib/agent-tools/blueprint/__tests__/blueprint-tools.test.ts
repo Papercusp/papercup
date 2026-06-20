@@ -14,8 +14,12 @@ import extendTool from '../extend';
 import { _resetPapercuspRootForTests } from '../../../papercusp-root';
 
 const CTX = { log() {}, workspaceId: 'ws', role: 'operator' } as never;
-const run = async (tool: { handler: (a: never, c: never) => Promise<{ content: { text: string }[] }> }, args: Record<string, unknown>) =>
-  JSON.parse((await tool.handler(args as never, CTX)).content[0].text);
+// The real RoleToolDefinition handler returns Promise<ToolResult | ToolResponse>
+// (a richer content union); these blueprint tools (validate/create/extend) return
+// text-only ToolResult — so accept any handler + assert the verified text-output
+// shape at the read site (a correct contract for THESE tools, not a silence).
+const run = async (tool: { handler: (a: never, c: never) => Promise<unknown> }, args: Record<string, unknown>) =>
+  JSON.parse(((await tool.handler(args as never, CTX)) as { content: { text: string }[] }).content[0].text);
 
 const MINIMAL = {
   id: 'mini',

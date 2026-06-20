@@ -56,6 +56,14 @@ Key details learned the hard way:
     **established** id as `client=` — not blindly `$PAPERCUSP_SID` — or you fork
     your own presence into two identities and peers see a stranger pick up your
     work. Both ids resolve via the bridge, so choose deliberately.
+  - **EI-1753 — the flap can happen DESPITE a correct `client=`:** during operator
+    blips the server-side identity resolution can still fall back to the BEARER's
+    default session even when you passed the right `client=`, so a claim/comment
+    lands on the WRONG su-id *silently*. Mitigation until the code fix lands: right
+    before any CRITICAL write (`issues:claim`, `*:resolve`, `work_items:set_state`,
+    `coord:declare-intent`), call `coord:whoami` and confirm it returns YOUR id;
+    if it flapped, re-issue. (Fix direction: fail-closed on an unresolvable
+    `client=` rather than silently using the bearer's session.)
 - **Pass `workspace`** in the URL (e.g. `workspace=papercusp-workspace`).
   Omitting it under `superuser=1` fails with
   `request_rejected: scoped_superuser_workspace_unresolved`.

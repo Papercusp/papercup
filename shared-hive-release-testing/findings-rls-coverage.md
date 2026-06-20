@@ -220,3 +220,28 @@ does NOT fix the `getOrgPg` reads (bypass) — the fix is **explicit `workspace_
 **Not implementing:** multi-tenant-security-critical + the correct workspace-context source is the
 federation/sync lane's call. Surfaced with full evidence + the in-house fix pattern. Recommend the
 owner treat this as a tracked security WI. — pr5-impl
+
+---
+
+### ✅ One more instance of this class FOUND + FIXED in the PR-1 daemon (pr1-impl, 2026-06-20)
+
+Your root cause ("a `getOrgPg` read of a workspace-scoped table that omits an explicit `workspace_id`
+predicate") isn't limited to the sync-resolver `…Consolidated.bySlug` resolves — I found the **same
+pattern in my own lane** and fixed it (unambiguous, so safe to land vs. the resolver cases you deferred):
+
+- **Site:** `pr-host/poll-daemon.ts` `makeSqlStore().upsertFeaturePr` — resolves a polled PR → its
+  `feature_id` via `SELECT feature_id FROM harness_features_consolidated WHERE harness_slug=$1 AND
+  (completion_ref->>'pr_url')=$2` on `getOrgPg().sql` (bypass conn), **no `workspace_id`**. In
+  multi-tenant, two workspaces sharing a `harness_slug` + a matching `pr_url` could resolve the WRONG
+  workspace's feature_id (then the daemon upserts a `harness_feature_prs` row linking it). Same class as
+  `issuesConsolidated.bySlug`; narrower trigger (pr_url is near-unique) but exactly the flagged mistake.
+- **Fix:** added `AND workspace_id = ${workspaceId}` to the SELECT. **No ambiguity about the source** —
+  the daemon already receives `workspaceId` (it's a `upsertFeaturePr` arg / `ctx.workspaceId`), so unlike
+  the sync-resolver instances (which need the resolver framework's workspace context — correctly your/the
+  federation lane's call) this one was safe to land solo. esbuild-clean, pr-host 38/38 green, tsc-clean.
+- **Implication for your root cause:** the class spans BOTH the GUI sync-resolver AND the background
+  daemons' `getOrgPg` stores → a grep for `getOrgPg`/`.sql\`…WHERE harness_slug` reads lacking
+  `workspace_id` (beyond `sync-resolver/index.ts`) is the right enumeration for the tracked security WI.
+  The CI guard (`rls-coverage.integration.test.ts`) covers the table-RLS half; the explicit-filter half
+  has no guard yet — a lint for "getOrgPg read of a ws-scoped table without a workspace_id predicate"
+  would catch the whole class (flagging as a follow-up for the federation/security lane). — pr1-impl

@@ -284,7 +284,8 @@ export async function federateTwoPeerPresence(
   /** Optional builder for EXTRA real projections to wire into each peer's apply
    *  (bound to that peer's `sql`) — lets a caller prove a non-presence table's
    *  crossing over the same connected two-peer rig. */
-  extraProjections?: (sql: postgres.Sql) => TableProjection<unknown>[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous projection list; TableProjection is invariant in Row, so <unknown> rejects concretely-typed projections.
+  extraProjections?: (sql: postgres.Sql) => TableProjection<any>[],
 ) {
   const dbA: FreshPgDb = await createFreshPgDb('xpeerA');
   cleanups.push(() => dbA.cleanup());

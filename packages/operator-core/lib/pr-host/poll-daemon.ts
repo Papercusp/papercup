@@ -555,7 +555,8 @@ export function makeSqlStore(sql: Sql): PollStore {
         const feat = await sql<Array<{ feature_id: string }>>`
           SELECT feature_id
             FROM harness_shared.harness_features_consolidated
-           WHERE harness_slug = ${installSlug}
+           WHERE workspace_id = ${workspaceId}
+             AND harness_slug = ${installSlug}
              AND (completion_ref->>'pr_url') = ${pr.url}
            LIMIT 1
         `;

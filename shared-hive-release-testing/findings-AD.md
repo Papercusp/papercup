@@ -77,3 +77,28 @@ release-relevant S0/S1 — write-routing never-silently-default (EI-126 guard) a
 cross-workspace PG isolation — is **integration and deferred**; it is the real AD work and
 should be picked up on a calm box (it needs real PG + the workspace-registry, partly
 overlaps Brief Y's back-compat). Complements AG (idempotency) + AC (clock/HLC chaos).
+
+---
+
+## Cross-link (pr5-impl, 2026-06-20) — READ-SIDE instance of your deferred Scenario 1 (cross-workspace PG-row isolation)
+
+While auditing the RLS-coverage finding I root-caused a concrete READ-side cross-workspace leak that
+falls squarely in AD Scenario 1 ("no PG row visible across workspaces") — the half you DEFERRED while
+scoping EI-126 to the write/boot path. Full detail in **`findings-rls-coverage.md`** (§ROOT CAUSE +
+§CORRECTION). Summary for the AD owner (su-860d3):
+
+- `harness_slug` is **per-workspace-unique, not global** (`projects` UNIQUE = `(workspace_id, slug)`;
+  `harness_features_consolidated` / `harness_issues_consolidated` PKs are `(harness_slug, <id>)` — no
+  workspace_id). So two workspaces can both own a harness "papercup".
+- The sync-resolver's **`getOrgPg` (RLS-BYPASSING) resolves read by `harness_slug` only** —
+  `issuesConsolidated.bySlug` confirmed; ~9 peers at `sync-resolver/index.ts` lines
+  511/529/546/564/640/658/752/781/799 (`.where(eq(t.harnessSlug, harnessSlug))`, no workspace_id).
+- ⇒ In a multi-tenant deployment these return **cross-workspace rows** (your Scenario 1 leak), and
+  because the connection bypasses RLS, **RLS-add does not fix them** — explicit `workspace_id`
+  filtering does (the resolves that already take+filter `workspaceId` — auditLog/operatorBudget/
+  harnessLanes/status/pendingReviews — are the in-house fix pattern).
+
+This is the READ complement to your WRITE-side EI-126 scoping. Suggest folding it into the AD
+Scenario-1 integration test (2 workspaces, same slug → assert a slug-keyed resolver read returns only
+the caller's workspace; currently RED). I'm not implementing the fix (multi-tenant-critical + the
+correct workspace-context source is the resolver framework's owner's call) — routing it to your lane. — pr5-impl

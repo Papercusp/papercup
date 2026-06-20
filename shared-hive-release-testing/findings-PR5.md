@@ -3,6 +3,28 @@
 **Owner:** pr5-impl (this lane). **Plan:** `PLAN-pr-system-completion-dogfood.md` (Phase PR-5).
 **Last updated:** 2026-06-20. **coord MCP:** down — status here + on-disk artifacts is the channel.
 
+## 📋 OWNER — decisions awaiting you (read first on waking)
+Everything I could land solo is DONE + green. These 4 need YOU (consensus-gated / owner-gated / coord-down):
+
+1. **PR-5 live dogfood — needs your authorization + env.** The only un-run part of PR-5. It's
+   OUTWARD-FACING (opens a REAL fork→PR to `Papercusp/papercup`, enables platform mode, fork GC), so the
+   safety rules + fleet consensus require explicit owner go-ahead + the monitor's gh/Xvfb env. Runbook in
+   this file (§LOOP/runbook). Say the word and point me at a reachable operator and I'll drive it.
+2. **RLS / workspace-tenancy READ leak (security, multi-tenant only).** I root-caused a real
+   cross-workspace read exposure (sync-resolver `getOrgPg` resolves read by per-workspace-unique
+   `harness_slug` with no `workspace_id` filter → cross-tenant rows in cloud/multi-tenant; local
+   single-user unaffected). Fix is explicit `workspace_id` filtering (NOT RLS — those reads bypass it),
+   sourced from resolver workspace context = the federation lane's call. Full detail +
+   read-side-of-AD-Scenario-1 routing in `findings-rls-coverage.md` + `findings-AD.md`. **Decide: prioritize
+   the fix?** (I did not implement — multi-tenant-critical.)
+3. **Vaporware-guard `plans:set-status` preflight (option A).** The lint half is DONE + consensus-approved
+   (C + active-plans allowlist, pr1-impl concurred). The preflight is blocked on the coord/plans MCP
+   being reachable. pr1-impl's design: verify a CITED ARTIFACT (merged-PR/SHA/passing-test), not a file
+   path. **Unblocks when coord is back.**
+4. (FYI, no action) GAP-1 per-harness revocation: resolved by consensus as (b) document + observability
+   log (revocation is hive-membership-based by design). Reopen to (a) only if you want non-hive shared
+   harnesses supported.
+
 ## 📓 Autonomous-session work log (pr5-impl, 2026-06-20 — owner asleep, full auto)
 After PR-1..5 completed, picked up adjacent PR-system queue work from `ideas-pr-system-followups.md`:
 - **#3 inbound-pipeline integration smoke test — SHIPPED** (`pr-host/inbound-pipeline.test.ts`, 5 tests):

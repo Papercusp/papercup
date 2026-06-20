@@ -57,6 +57,7 @@ import { evaluateFireGate, readFireState } from '../../autoloop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listAutoloopsForWorkspace } from '../../gym/control-plane';
 import { readWatchdogKeyDups } from './watchdog';
+import { probeHttpReachable } from '../../escalating-http-probe';
 
 export type InfraLegStatus = 'ok' | 'down' | 'unknown';
 export type InfraLegName = 'llm-spine' | 'spawn-path' | 'gym-circuit';
@@ -143,56 +144,22 @@ export interface GatewayReachability {
 }
 
 /**
- * Escalating per-attempt timeouts for the gateway probe (EI-1693). A SINGLE
- * 2500ms timeout under heavy box load (loadavg 34) was misreported as the
- * gateway being unreachable → the whole learning system OFFLINE, while the
- * gateway actually answered in <1ms. So we retry with a longer, load-tolerant
- * timeout before concluding "down": a fast first probe for the common-healthy
- * case, then a generous retry that a momentarily-starved-but-alive gateway can
- * still satisfy. Only a gateway that answers NEITHER is treated as unreachable.
- */
-const GATEWAY_PROBE_TIMEOUTS_MS = [2500, 6000] as const;
-/** Brief gap between attempts so a momentary scheduling stall can clear. */
-const GATEWAY_PROBE_RETRY_GAP_MS = 250;
-
-/**
  * Probe the localhost inference-gateway's `/healthz`. ANY HTTP answer — incl. a
- * 503 rate-limit PAUSE, which is the gateway pacing by design — means the
- * gateway PROCESS is alive and the spine is reachable; only a transport-level
- * failure (connection refused / timeout) is `reachable:false`, mirroring
- * exactly what a real `llmCall` through the gateway would hit. Unlike the
- * retired :3456 probe this is FAITHFUL precisely because the gateway IS in the
- * call path when the flag is on (EI-398's lesson was about probing a router
- * the calls did NOT use).
+ * 503 rate-limit PAUSE (the gateway pacing by design) — means the gateway
+ * PROCESS is alive and the spine is reachable; only a transport-level failure on
+ * EVERY attempt is `reachable:false`, mirroring what a real `llmCall` through the
+ * gateway hits (EI-398's lesson: probe the router the calls actually use).
  *
  * EI-1693: retries with an escalating (load-aware) timeout — one transient
- * timeout under load is NOT a down gateway. Exported for the retry unit test.
+ * timeout under load is NOT a down gateway. Delegates to the shared
+ * escalating-http-probe so this stays in lock-step with system-health's gateway
+ * probe (WI-266: that copy had drifted). Exported for the retry unit test.
  */
-export async function probeGatewayHealthz(
+export function probeGatewayHealthz(
   port: number,
   opts: { timeouts?: readonly number[]; gapMs?: number } = {},
 ): Promise<GatewayReachability> {
-  const timeouts = opts.timeouts && opts.timeouts.length > 0 ? opts.timeouts : GATEWAY_PROBE_TIMEOUTS_MS;
-  const gapMs = opts.gapMs ?? GATEWAY_PROBE_RETRY_GAP_MS;
-  let last: GatewayReachability = { reachable: false, detail: 'no attempt' };
-  for (let i = 0; i < timeouts.length; i++) {
-    const timeoutMs = timeouts[i];
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(timeoutMs) });
-      const retried = i > 0 ? ` (after ${i} retr${i === 1 ? 'y' : 'ies'})` : '';
-      return { reachable: true, detail: `HTTP ${res.status}${retried}` };
-    } catch (e) {
-      const why =
-        e instanceof Error ? (e.name === 'TimeoutError' ? `timeout after ${timeoutMs}ms` : e.message) : String(e);
-      const lastAttempt = i + 1 >= timeouts.length;
-      last = {
-        reachable: false,
-        detail: lastAttempt ? `${why} (${timeouts.length} attempts, escalating to ${timeouts[timeouts.length - 1]}ms)` : why,
-      };
-      if (!lastAttempt && gapMs > 0) await new Promise((r) => setTimeout(r, gapMs));
-    }
-  }
-  return last;
+  return probeHttpReachable(`http://127.0.0.1:${port}/healthz`, opts);
 }
 
 /** Injectable seams for checkLlmSpineLeg — tests pass fakes; production uses the defaults. */

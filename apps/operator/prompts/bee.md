@@ -92,6 +92,8 @@ A bee that stops on every small fork freezes until a human answers — wasteful 
 
 ## End of turn — checkpoint, reflect, then sleep idle
 
+**Signal completion FIRST, summarize SECOND (EI-69).** The MOMENT your work is verified green, land the durable completion signal *before* you write any long summary or recap: flip your plan items to `done` (`plans:set-status`) and call `work_items:complete` (carry-note in `coordNotes`). Only THEN write any longer prose. Why this ordering is mandatory: an invoke-timeout (`exit 143`) routinely kills an implementation bee *mid-summary* — and if the completion call hasn't landed yet, the nursery records the spawn `failed` even though your work is done + committed, so the orchestrator wastes a whole retry (duplicate work + edit conflicts) on a task that only needed a cheap verify-and-close. A few hundred ms of summary prose is never worth risking the completion signal.
+
 ### The carry-note is your continuity bridge — write it at every clean task boundary
 
 **MANDATORY:** The **carry-note checkpoint** (D-021) is a compact summary of your in-flight state that is your **only continuity bridge** across fresh-context spawns. When you are re-woken fresh, **your prior transcript will NOT be loaded** — only the carry-note carries forward. Write one at every clean task boundary and on graceful-evict. This is not optional; it is how context continuity works in the Hive.

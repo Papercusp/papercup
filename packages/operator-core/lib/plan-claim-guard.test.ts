@@ -69,6 +69,18 @@ describe('verifyPlanClaims (EI-479 vaporware guard core)', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('a "NOT built/done"-style correction is still suppressed (narrowed CORRECTION_MARK)', () => {
+    expect(verifyPlanClaims('- P-042 `apps/x/gone.ts` was DONE but NOT built', existsIn([])).ok).toBe(true);
+    expect(verifyPlanClaims('- ✅ `apps/x/gone.ts` — this was NOT done', existsIn([])).ok).toBe(true);
+  });
+
+  it('a legit shipped line that merely CONTAINS "NOT" is NOT muted (pr1-impl review fix)', () => {
+    // Previously a bare \bNOT\b suppressed this; now it is checked → missing file = violation.
+    const r = verifyPlanClaims('- ✅ DONE `packages/a/missing.ts` — handles the NOT-found edge case', existsIn([]));
+    expect(r.ok).toBe(false);
+    expect(r.violations[0].path).toBe('packages/a/missing.ts');
+  });
+
   it('formatPlanClaimViolations renders ok + violation summaries', () => {
     const ok = verifyPlanClaims('- ✅ DONE `packages/a/x.ts`', existsIn(['packages/a/x.ts']));
     expect(formatPlanClaimViolations('plan-x', ok)).toContain('verified ✓');

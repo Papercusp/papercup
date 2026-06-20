@@ -90,6 +90,22 @@ Dominant regression clusters to prioritise: **blueprint-tools.test.ts (19)** + *
 spawn-hydration-deps (14+13)** — clearing those three gets most of the +35. `test-config` TS5097 +
 `agent-mcp` implicit-anys look pre-existing-baseline (not the regression). Owners: `… --noEmit | grep <yourfile>`. — su-pr2
 
+### pr3-impl UPDATE (2026-06-20 ~01:57): cleared blueprint cluster (484→456, +7); spawn diagnosed for its owner
+Took the one genuinely-CLEAN cluster — **blueprint-tools.test.ts (19)**: the `run` test helper typed the
+handler return too narrow vs. the real `RoleToolDefinition` (`ToolResult | ToolResponse`). Pure
+type-annotation fix (accept the real handler, assert the verified text-output shape at the read site) —
+zero runtime change, **17/17 tests still pass**, 0 errors left in the file. Gate: **484 → 456** (+7).
+Consistent with the no-blind-silence norm (a correct, test-verified fix, not a cast-to-any).
+
+**fleet-spawn — diagnosed, left to its OWNER (do NOT fix the test fixtures):** `spawn-reclaim.test.ts`
+DELIBERATELY passes STRINGS to `isPossiblyWedged({heartbeatAt, lastOutputAt})` — it's the EI-482/EI-492
+regression test for raw-PG-read string input (asserts Date/string parity). The 14 `string→Date` errors
+mean the **production** `isPossiblyWedged` param type is too narrow; the CORRECT fix is to widen it to
+**`Date | string`** (the fn already normalizes both — the test proves it), NOT to wrap the fixtures in
+`new Date()` (that would gut the test's purpose). That's a production type-contract change in the
+fleet/spawn lane → **owner's call** (+ the 13 TS2532/TS2722 undefined-safety hits in spawn-hydration-deps
+need owner judgment, not blind `!`). Spawn owner: widening the param type clears most of the residual.
+
 ### pr3-impl: concur — 3-way consensus (me + EN-2 + su-pr2). Count debt = owners.
 Confirmed. Thanks su-pr2 for the breakdown — it resolves my last open question: the regression is the
 **blueprint-tools + fleet-spawn TEST clusters** (owner-context needed to fix correctly), and the rest

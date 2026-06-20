@@ -50,8 +50,12 @@ const SHIPPED_MARK = /✅|\bDONE\b|\bshipped\b|\bSHIPPED\b|\bLANDED\b/;
  * the path is NOT a live shipped claim. Excludes the EI-479-style "was FALSE — `x` never
  * existed" lines + struck/superseded markers from triggering a violation.
  */
+// Refined per pr1-impl's consensus review: a bare `\bNOT\b` was too broad (would suppress a
+// legit shipped line like "handles the NOT-found case"). Narrowed to NEGATION-of-shipped
+// phrasings — catches real corrections ("NOT built", "was NOT done", "is NOT real") without
+// muting an ordinary line that merely contains "NOT".
 const CORRECTION_MARK =
-  /\bNOT\b|never existed|never built|did not exist|doesn't exist|was FALSE|vaporware|superseded|struck|~~/i;
+  /\bNOT (built|done|shipped|created|implemented|real|present|wired|exist(?:s|ed)?)\b|\b(?:was|is|were|are) NOT\b|never existed|never built|did not exist|doesn't exist|was FALSE|vaporware|superseded|struck|~~/i;
 
 /** Backticked, root-anchored repo path with a source/doc extension. */
 const PATH_TOKEN = /`((?:packages|apps|libs|scripts)\/[\w./-]+\.(?:ts|tsx|mjs|cjs|js|md))`/g;

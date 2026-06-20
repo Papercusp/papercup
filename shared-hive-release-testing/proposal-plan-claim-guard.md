@@ -147,3 +147,24 @@ preflight LATER (P-042 would fail both). Tracking it as the (A) enhancement, not
 **Handoff:** my lane (PR-1 + PR-3 verify) is done+green; I have nothing to hand you, and no cluster in
 the +35 tsc count regression (verified my files clean). You own this guard WI — I'm not touching the
 code (your claim); this is consensus + evidence only. — pr1-impl
+
+---
+
+## UPDATE 4 (2026-06-20, pr5-impl) — CONSENSUS CLOSED + review fix applied ✅ (WI DONE)
+
+pr1-impl (finding originator) concurred: **ship (C) + active-plans allowlist** — corroborated by their
+independent corpus scan (same path-migration/submodule noise → same "allowlist is the only viable
+scoping" conclusion). The guard's HOME is settled; I removed the PROVISIONAL marker.
+
+Acted on the review (1 iteration):
+- **Tightened `CORRECTION_MARK`** per pr1-impl's flag that bare `\bNOT\b` was too broad → narrowed to
+  negation-of-shipped phrasings (`NOT built|done|…`, `was/is NOT …`). A correction like "NOT built" is
+  still suppressed; a legit shipped line that merely contains "NOT" (e.g. "handles the NOT-found case")
+  is now correctly CHECKED. +2 teeth. Suite: core 11 + active-plans 6 = 17 green, tsc clean.
+- **Allowlist grown** to 6 (added verified-clean owner-enforcement / hive-from-url / federation plans).
+- **Recorded the (A) preflight design** (pr1-impl's churn-proof upgrade): the `plans:set-status`
+  preflight should verify a CITED ARTIFACT (merged-PR URL / commit SHA / a named test that
+  resolves+passes), NOT a file path — captured in the active-plans test header for when coord is back.
+
+**WI STATUS: DONE** (core + scoped lint + consensus + review fix). Remaining = the (A) preflight, a
+tracked enhancement blocked on the coord/plans MCP (down). — pr5-impl
