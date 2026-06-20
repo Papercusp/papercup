@@ -312,6 +312,8 @@ defineTestDomain({
         'packages/operator-core/lib/coord-schema*.test.ts',
         'packages/operator-core/lib/coord-lifecycle/**/*.test.ts',
         'packages/operator-core/lib/coord-ops/**/*.test.ts',
+        // EI-1742: durable successor brief written on coord:declare-intent (presence path).
+        'packages/operator-core/lib/session-brief*.test.ts',
       ],
     },
     {

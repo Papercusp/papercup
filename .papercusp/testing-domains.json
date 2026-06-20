@@ -329,7 +329,8 @@
             "packages/operator-core/lib/coord-inbox-bus*.test.ts",
             "packages/operator-core/lib/coord-schema*.test.ts",
             "packages/operator-core/lib/coord-lifecycle/**/*.test.ts",
-            "packages/operator-core/lib/coord-ops/**/*.test.ts"
+            "packages/operator-core/lib/coord-ops/**/*.test.ts",
+            "packages/operator-core/lib/session-brief*.test.ts"
           ]
         },
         {
