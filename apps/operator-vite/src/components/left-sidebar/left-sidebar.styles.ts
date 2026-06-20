@@ -315,6 +315,26 @@ body.has-left-sidebar .pc-header {
   text-align: center;
   line-height: 1.6;
 }
+/* EmptyState (components/ui/EmptyState.tsx) sub-elements — the container above
+   provides the bordered, centered, muted shell; these style the optional
+   icon / title / body slots. */
+.pclsb-empty__icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 6px;
+  color: var(--fg-mute, #7f9bb4);
+  opacity: 0.7;
+}
+.pclsb-empty__title {
+  font-size: 12px;
+  font-weight: 680;
+  color: var(--fg-dim, #b9d4e8);
+}
+.pclsb-empty__body {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--fg-mute, #7f9bb4);
+}
 .pclsb-panel__error {
   padding: 10px 12px;
   border-radius: 10px;
@@ -398,6 +418,12 @@ body.has-left-sidebar .pc-header {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.pclsb-row__meta {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--fg-mute, #7f9bb4);
+  opacity: 0.85;
+}
 .pclsb-dot {
   flex: 0 0 auto;
   width: 9px;
@@ -437,6 +463,37 @@ body.has-left-sidebar .pc-header {
 .pclsb-pill--neutral {
   background: var(--bg-3, rgba(255, 255, 255, 0.075));
   color: var(--fg-dim, #b9d4e8);
+}
+
+/* KVRow / DetailGrid (components/ui/KVRow.tsx) — a label→value detail list.
+   DetailGrid is a <dl> stacking <div.pclsb-kv-row> rows, each holding a
+   <dt> label (muted, left) and a <dd> value (mono, right). Mirrors .pcdar-kv. */
+.pclsb-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  font-size: 12px;
+}
+.pclsb-kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pclsb-kv-row__label {
+  flex: 0 0 auto;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-kv-row__value {
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
+  color: var(--fg, #e7f7ff);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Per-hive start/stop control — mirrors the in-page AdvNowRunning "Start hive"
