@@ -34,7 +34,8 @@ import {
 } from '@papercusp/papercusp-shared/agent';
 import { withOAuthBeta } from './credential-store';
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
-import type { AccountEgress } from '../deployment/account-pool';
+import { probeEgress } from './egress-probe';
+import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -60,6 +61,21 @@ const ALL_THROTTLED_RECOVERY_WAIT_CAP_MS = 20 * 1000;
  *  separate from the rotation-attempt budget) before forwarding. Bounds the wait so a fleet-wide
  *  transient burst is absorbed but a request can never hang. */
 const TRANSIENT_TOTAL_WAIT_BUDGET_MS = 30 * 1000;
+/** Hard wall-clock ceiling on how long ONE client request may keep RETRYING internally (rotating across
+ *  accounts + waiting out transient throttles) before it stops, sheds a retryable 429, and FREES its
+ *  admission slot. This is the load-bearing rung of the WEDGE-PREVENTION THRESHOLD LADDER:
+ *
+ *    INTERNAL_RETRY_DEADLINE_MS (60s)  <  self-heal freeze (DEFAULT_SELFHEAL_FREEZE_MS, 75s)  <  watchdog freeze (120s)
+ *
+ *  Without it a request under a SLOW-upstream pool-wide storm could hold its slot for (≤INTERNAL_RETRY_MAX_
+ *  ATTEMPTS upstream fetches, each seconds long under load) + the 30s transient-wait budget — exceeding
+ *  75-120s. At the AIMD FLOOR (a few slots) a handful of such squatters saturate every slot with NO natural
+ *  completion → the self-heal drain-clock ages → the valve can't keep up → the watchdog FULL-restarts the
+ *  gateway (~15-30s of fleet-wide connection-refused = the "api error" the fleet sees). Shedding at the
+ *  deadline keeps every slot cycling fast enough that the frozen-while-saturated wedge signature never forms.
+ *  TRADEOFF: a bounded retryable 429 (+retry-after) to a few no-CLI-retry callers (scout/gym) is strictly
+ *  better than a wedge that connection-refuses the WHOLE fleet. MUST stay < DEFAULT_SELFHEAL_FREEZE_MS. */
+const INTERNAL_RETRY_DEADLINE_MS = Number(process.env.PAPERCUSP_GATEWAY_INTERNAL_RETRY_DEADLINE_MS) || 60 * 1000;
 /** Inspect a NON-200 upstream body up to this many bytes for a usage/session-limit signature (the
  *  Claude-Code subscription cap — "You've hit your session limit · resets 10:50am" — a WALL the bee
  *  classifies as usage_limit + WON'T retry). Such error bodies are tiny; this just bounds the read.
@@ -89,6 +105,29 @@ const TRANSIENT_429_BACKOFF_MS = 400;
 /** Backoff before retrying a 529 (SERVER overload — not account budget, so we don't penalize/rotate the
  *  account; just wait briefly for the upstream to recover). */
 const OVERLOAD_529_BACKOFF_MS = 1000;
+/** Consecutive upstream TRANSPORT failures (a fetch stall/abort or connect error — NOT an HTTP status,
+ *  which means the proxy WORKS) on ONE account before its egress circuit OPENS (B-GW-EGRESS, the
+ *  2026-06-20 dead-proxy wedge). A transport failure never reaches Anthropic → never returns 429 → it
+ *  fed NO account-health signal, so a DEAD egress proxy scored "healthiest", drew the MOST traffic, and
+ *  overrode session pins (aviynw6/216.41.233.249, a half-dead squid CONNECT-hanging ~60s, wedged the
+ *  whole gateway into a restart storm). A lone blip just briefly paces the account; a STREAK opens a
+ *  longer circuit. Env-tunable. */
+const EGRESS_FAIL_CIRCUIT_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_FAIL_THRESHOLD) || 3;
+/** How long an OPEN egress circuit pauses the account — fed into the SAME gov.pausedUntil lever the 429
+ *  hard-cap uses, so the existing pin-yield + cross-account selector already route around it. Short
+ *  enough that the natural half-open (pause expires → the next request re-probes the account → a success
+ *  closes the circuit, a transport failure re-opens it) retests soon; long enough to route the fleet
+ *  around a dead proxy. Env-tunable. */
+const EGRESS_CIRCUIT_OPEN_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_CIRCUIT_MS) || 60_000;
+/** Delay before the half-open egress PROBE fires after a circuit opens (egress-probe.ts re-tests the
+ *  account's proxy through the same dispatcher). On success it clears the failure streak so the account
+ *  readmits CLEAN at pause-expiry; `=0` disables the active probe (the natural pause-expiry half-open
+ *  still applies). Env-tunable. */
+const EGRESS_PROBE_DELAY_MS =
+  process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS !== undefined ? Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS) : 15_000;
+/** Per-probe network timeout for the half-open egress probe — shorter than the probe default so it never
+ *  lingers on a still-dead proxy. */
+const EGRESS_PROBE_HTTP_TIMEOUT_MS = 8_000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
 /** AIMD admission-concurrency defaults (inference-gateway-robustness-audit-2026-06-20 P1 / B-GW-1). The
  *  gateway shrinks the admission queue's EFFECTIVE maxConcurrent under sustained upstream 429s (fewer
@@ -245,6 +284,9 @@ export interface GatewayDeps {
   governorFor?(model: string): RateLimitGovernor;
   /** Max admission wait before a synthetic 429+retry-after. Default 2 min. */
   maxQueueWaitMs?: number;
+  /** Wall-clock ceiling on internal retrying before a request sheds + frees its slot (wedge-prevention
+   *  ladder). Default 60s (`INTERNAL_RETRY_DEADLINE_MS`); tests inject a tiny value to exercise the shed. */
+  internalRetryDeadlineMs?: number;
   /** Concurrency authority — max requests forwarded at once (the queue cap). Default 24. */
   concurrency?: number;
   /** Max requests allowed to WAIT for a slot before the gateway sheds load (429 + retry-after) instead
@@ -322,6 +364,10 @@ export interface GatewayStats {
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;
+  /** Count of egress-circuit OPENs (B-GW-EGRESS): how many times a per-account egress proxy hit the
+   *  consecutive-transport-failure threshold and was paused out of rotation. A climbing value = a
+   *  flapping/dead proxy IP (distinct from `upstreamErrors`, which also counts Anthropic-side stalls). */
+  egressCircuitOpens: number;
   /** Count of in-process self-heal slot-reclaims (EI-2086) — how many times the release valve pre-empted
    *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
    *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
@@ -477,6 +523,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
+  const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
   const upstreamStreamHeadersTimeoutMs = deps.upstreamStreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS;
@@ -564,6 +611,46 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
+  // Egress circuit-breaker state (B-GW-EGRESS, 2026-06-20 dead-proxy wedge): per-account consecutive
+  // upstream TRANSPORT-failure streak (a stall/abort/connect-fail carries NO HTTP status, so unlike a
+  // 429 it never fed account health → a DEAD egress proxy scored "healthiest" + got flooded + overrode
+  // pins). Reset on any upstream RESPONSE (even a 429 — the proxy works). A streak ≥ threshold opens the
+  // account's circuit via gov.pausedUntil (the same lever the 429 hard-cap uses). `egressProbePending`
+  // dedupes the half-open probe.
+  const egressFailStreak = new Map<string, number>();
+  const egressProbePending = new Set<string>();
+  /** Half-open egress probe: after a circuit opens, re-test the account's proxy with the SAME dispatcher
+   *  the gateway uses (egress-probe.ts). On success it clears the failure streak so the account readmits
+   *  CLEAN when its pause expires (the natural half-open) — the pause itself is lifted by EXPIRY, since
+   *  the shared governor's pausedUntil is take-MAX (can only extend, never shorten: a 429 streak = real
+   *  exhaustion). Best-effort, unref'd, never throws into the request path. `EGRESS_PROBE_DELAY_MS=0`
+   *  disables the active probe (pause-expiry half-open still applies). */
+  function scheduleEgressProbe(account: ActiveAccount): void {
+    if (EGRESS_PROBE_DELAY_MS <= 0 || egressProbePending.has(account.accountId)) return;
+    egressProbePending.add(account.accountId);
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          const probe = await probeEgress(
+            { id: account.accountId, egress: account.egress } as ClaudeAccount,
+            { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS },
+          );
+          if (probe.exitIp) {
+            egressFailStreak.delete(account.accountId);
+            log('warn', `inference-gateway: egress half-open probe for '${account.accountId}' RECOVERED (exit ${probe.exitIp}) — readmits clean at pause-expiry`);
+          } else {
+            log('warn', `inference-gateway: egress half-open probe for '${account.accountId}' STILL DOWN (${probe.error ?? 'no exit IP'}) — stays circuit-paused`);
+          }
+        } catch (err) {
+          log('warn', `inference-gateway: egress probe error for '${account.accountId}': ${(err as Error).message}`);
+        } finally {
+          egressProbePending.delete(account.accountId);
+        }
+      })();
+    }, EGRESS_PROBE_DELAY_MS);
+    t.unref?.();
+  }
+
   let totalRequests = 0;
   let upstream429 = 0;
   let queued429 = 0;
@@ -571,6 +658,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let shedAllThrottled = 0; // fail-fast: 429s shed at admission because the whole pool was throttled (B-GW-1)
   let upstreamErrors = 0;
   let failovers = 0;
+  let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
   let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
 
   // Self-heal in-flight registry (EI-2086): every request currently holding an admission slot, keyed by
@@ -612,6 +700,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       aimd: aimd.snapshot(),
       failovers,
       upstreamErrors,
+      egressCircuitOpens,
       selfHealReclaims,
       unified: snap.unified,
       pausedUntil: snap.pausedUntil,
@@ -804,6 +893,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // the bee's CLI retries those, and the next request lands on the failover-rotated active().
       let attempt = 0;
       let transientWaitedMs = 0; // total time spent WAITING out short transient throttles (budget #2)
+      // Wedge-prevention ladder: the wall-clock instant past which this request STOPS retrying, sheds a
+      // retryable 429, and frees its admission slot — strictly before the self-heal valve (75s) / watchdog
+      // (120s) would forcibly reclaim it. Computed from the slot-acquire moment (this is the same request
+      // lifetime the inFlightReg `startedAt` tracks), so total slot-hold is bounded under any storm.
+      const retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
       for (;;) {
         // Bound the OAuth token refresh (2026-06-20 token-hang wedge). active.token() does a deadline-less
         // network refresh AND runs before the per-attempt stall-guard below, so a stalled refresh used to
@@ -852,12 +946,63 @@ export function createInferenceGateway(deps: GatewayDeps) {
           armStall(isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs);
           up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
           armStall(upstreamBodyIdleTimeoutMs);
+          // Transport succeeded for THIS account (response headers arrived) — its egress proxy works, so
+          // clear its transport-failure streak. A 429/5xx still means the proxy WORKED (just throttled —
+          // that's the 429 path's job, not the egress circuit's).
+          egressFailStreak.delete(active.accountId);
         } catch (e) {
           clearStall();
           upstreamErrors++;
           const stalled = ac.signal.aborted;
           log('error', `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} on '${active.accountId}': ${(e as Error).message}`);
-          sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream ${stalled ? 'stall timeout' : 'error'}: ${(e as Error).message}` }, gateway: true });
+          // TRANSPORT-FAILURE EGRESS CIRCUIT BREAKER (B-GW-EGRESS, 2026-06-20 dead-proxy wedge). A fetch
+          // that STALLS (a dead/half-dead proxy CONNECT-hangs → the stall-guard aborts) or fails to
+          // connect never reaches Anthropic, so — unlike a 429 — it carries NO HTTP status and never fed
+          // account health. A DEAD egress proxy therefore accrued ZERO penalty: the router kept scoring
+          // it "healthiest", routed the MOST traffic to it, AND overrode session pins onto it ("yields to
+          // liveness") — one half-dead Rayobyte squid (aviynw6/216.41.233.249, 60s CONNECT hangs) wedged
+          // the whole gateway into a restart storm. Fix: feed the transport failure into the SAME
+          // gov.pausedUntil lever the 429 hard-cap uses, so the existing pin-yield (above) + cross-account
+          // selector (above) already route around it; escalate a consecutive STREAK to a longer OPEN
+          // circuit. Then ROTATE + retry rather than 502-ing the bee — a dead proxy on ONE account must
+          // never fail a request the pool's other healthy accounts can serve.
+          const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;
+          egressFailStreak.set(active.accountId, streak);
+          const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
+          const pauseMs = circuitOpen ? EGRESS_CIRCUIT_OPEN_MS : TRANSIENT_429_BACKOFF_MS;
+          const resetAt = Date.now() + pauseMs;
+          // take-MAX (recordPenalty) → this never SHORTENS a legitimate longer 429/usage-cap pause.
+          gov.penalize({ retryAfterMs: pauseMs, resetAt });
+          if (circuitOpen) {
+            egressCircuitOpens++;
+            log('warn', `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures) — out of rotation ${Math.round(pauseMs / 1000)}s; half-open retest on pause-expiry`);
+            scheduleEgressProbe(active);
+          }
+          // ROUTE AROUND IT: rotate to a healthy account + retry this request on the same admission slot
+          // (like the usage-cap path). pool.onExhausted also marks this account out of the pool
+          // round-robin until resetAt and hands back the next account with budget.
+          if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
+            const next = pool.onExhausted(active.accountId, resetAt);
+            if (next && next.accountId !== active.accountId) {
+              failovers++;
+              active = next;
+              gov = governorForAccount(model, active.accountId);
+              attempt++;
+              log('warn', `inference-gateway: transport ${stalled ? 'stall' : 'failure'} on egress → failover to '${active.accountId}' (attempt ${attempt})`);
+              continue;
+            }
+          }
+          // No healthy account left / rotation budget spent — return a RETRYABLE 503 (the bee's CLI
+          // retries; the next request lands on the failover-rotated active()), never a terminal 502 that
+          // would $0-fail the bee while a dead proxy is the only fault.
+          if (!res.headersSent) {
+            sendJson(
+              res,
+              503,
+              { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: upstream egress ${stalled ? 'stall' : 'transport error'} on '${active.accountId}'; retry shortly` }, gateway: true },
+              { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
+            );
+          }
           return;
         }
 
@@ -1005,6 +1150,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
               proceed = true;
               log('warn', `inference-gateway: all accounts transiently throttled on ${model} → wait ${waitMs}ms + retry (wait-budget ${transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`);
             }
+          }
+          // WEDGE-PREVENTION LADDER: regardless of remaining rotation/wait budget, never keep retrying (and
+          // squatting this admission slot) past the deadline. Shed now — fall through to forward the upstream
+          // 429 (retryable) so the slot frees BEFORE the self-heal valve (75s) / watchdog (120s) would reclaim
+          // it. This caps total slot-hold time, which is what stops the frozen-while-saturated wedge from
+          // forming at the AIMD floor under a slow-upstream storm.
+          if (proceed && Date.now() >= retryDeadlineAt) {
+            proceed = false;
+            shedAllThrottled++;
+            log('warn', `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms hit on '${active.accountId}' (model ${model}) → shed 429, free slot (wedge-prevention ladder)`);
           }
           if (proceed) {
             clearStall(); // this attempt is done; the next iteration arms a fresh deadline
