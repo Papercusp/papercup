@@ -1,65 +1,131 @@
 -- ============================================================================
--- DRAFT — papercup → papercusp full data rename.
--- NOT in libs/papercusp/libs/db/sql/ ⇒ does NOT auto-apply on boot.
--- Apply ONLY in the coordinated cutover (see plan papercup-to-papercusp-migration-2026-06-20):
---   1. land the CODE cutover too (register-papercup→register-papercusp,
---      LEGACY_DEFAULT_HOME_HARNESS='papercusp', PAPERCUP_HARNESS_SLUG→PAPERCUSP_HARNESS_SLUG)
---      — else the next boot's registerPapercupHarness() re-creates 'papercup' (split-brain);
---   2. drain / quiesce the routine engine first (git-sync + green-checkpoint are live
---      install_slug='papercup' routines — don't rename them mid-fire);
---   3. restart the operator so routines re-register + fire under 'papercusp';
---   4. resolve the (now) papercusp-hive cursed placements terminal + scope the cursed
---      anti-join by install_slug so a retired install never poisons the active frontier.
+-- DRAFT — papercup → papercusp DIVERGENT-COPY RECONCILIATION (Option B, owner-directed).
+-- NOT in libs/papercusp/libs/db/sql/ ⇒ does NOT auto-apply. DRAFT for review + dry-run.
 --
--- Mapping = uniform prefix substitution (idempotent; re-runnable):
---   papercup → papercusp · papercup-hive → papercusp-hive · papercup-org → papercusp-org
---   ('papercusp-workspace' has NO 'papercup' substring — cuSp ≠ cuP — so it is never touched.)
+-- WHY a reconciliation, not a rename: 'papercusp' already holds a near-complete DIVERGENT
+-- COPY of 'papercup' (the failed 2026-06-19 migration): features 106/104, plans 504/506,
+-- plan_parts 23.3k/23.4k, work_items 259/119, + dark routine dups. A blind UPDATE would
+-- violate ~88 unique constraints. This merges the two into ONE 'papercusp':
+--   * per unique key, KEEP the winner (row_number rank 1) and DROP the losers;
+--   * WINNER ORDER = newest recency first (updated_at/created_at/ts/last_fired_at/
+--     routed_at/graded_at), then papercup*-preferred on a tie/when no recency col
+--     (papercup is the LIVE authoritative spine), then ctid for stability;
+--   * papercusp-UNIQUE rows (recent su-aede8 work) have no peer ⇒ survive untouched;
+--   * then rename surviving papercup* → papercusp everywhere.
+--
+-- ⚠ EXECUTION PROTOCOL — DO NOT shortcut:
+--   1. deploy GREEN (the cutover code lands with it; a half-state split-brains);
+--   2. su-aede8 PAUSED (I ping ~5 min before) — this holds row locks on shared rows;
+--   3. owner CONFIRMS the recency-wins reconciliation (data-loss on divergent-overlap rows);
+--   4. DRY-RUN ON A SNAPSHOT, NOT THE LIVE DB — a live BEGIN…ROLLBACK still locks every
+--      papercup*/papercusp row for the txn duration and blocks su-aede8. Restore a snapshot
+--      (backup:snapshot_create / a scratch DB), run with _apply:=false there, eyeball the
+--      NOTICE counts, THEN run with _apply:=true in the coordinated window;
+--   5. BACKUP first; this DELETEs rows.
 -- ============================================================================
+\set ON_ERROR_STOP on
+
+BEGIN;
 
 DO $$
-DECLARE r record; n bigint; total bigint := 0;
+DECLARE
+  _apply boolean := false;  -- ← flip to true ONLY for the real apply (in the window, post dry-run)
+  _recency text[] := ARRAY['updated_at','created_at','ts','last_fired_at','routed_at','graded_at'];
+  r record; slug_col text; part_cols text; order_clause text; rec_col text;
+  n bigint; del_total bigint := 0; ren_total bigint := 0;
 BEGIN
-  -- 1. Every slug column in harness_shared (install_slug / harness_slug / hive_slug /
-  --    home_slug / hive_home_slug). Prefix-replace preserves sub-harness slugs
-  --    ('papercup/libs/sync' → 'papercusp/libs/sync').
+  -- 1) Recency-dedup + rename across every slug-keyed UNIQUE/PK table.
   FOR r IN
-    SELECT table_name, column_name
-      FROM information_schema.columns
-     WHERE table_schema = 'harness_shared'
-       AND column_name ~ '(install|harness|hive|home)_slug'
-     ORDER BY table_name, column_name
+    SELECT tc.table_name, array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS cols
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+    WHERE tc.table_schema = 'harness_shared' AND tc.constraint_type IN ('UNIQUE','PRIMARY KEY')
+    GROUP BY tc.table_name, tc.constraint_name
+    HAVING bool_or(kcu.column_name ~ '(install|harness|hive|home)_slug')
   LOOP
-    EXECUTE format(
-      'UPDATE harness_shared.%I SET %I = ''papercusp'' || substring(%I from 9) '
-      || 'WHERE %I LIKE ''papercup%%''',
-      r.table_name, r.column_name, r.column_name, r.column_name);
-    GET DIAGNOSTICS n = ROW_COUNT;
-    IF n > 0 THEN
-      RAISE NOTICE '  %.% : % rows', r.table_name, r.column_name, n;
-      total := total + n;
+    SELECT c INTO slug_col FROM unnest(r.cols) c WHERE c ~ '(install|harness|hive|home)_slug' LIMIT 1;
+    SELECT string_agg(quote_ident(c), ', ') INTO part_cols
+      FROM unnest(r.cols) c WHERE c !~ '(install|harness|hive|home)_slug';
+    IF part_cols IS NULL THEN part_cols := '1'; END IF;  -- slug-only key ⇒ one partition
+
+    rec_col := (
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'harness_shared' AND table_name = r.table_name
+        AND column_name = ANY(_recency)
+      ORDER BY array_position(_recency, column_name) LIMIT 1
+    );
+    IF rec_col IS NOT NULL THEN
+      order_clause := format('%I DESC NULLS LAST, (%I <> %L) DESC, ctid', rec_col, slug_col, 'papercusp');
+    ELSE
+      order_clause := format('(%I <> %L) DESC, ctid', slug_col, 'papercusp');  -- papercup* wins
     END IF;
+
+    EXECUTE format(
+      'DELETE FROM harness_shared.%1$I WHERE ctid IN ('
+      || 'SELECT ctid FROM (SELECT ctid, row_number() OVER (PARTITION BY %2$s ORDER BY %3$s) AS rn '
+      || 'FROM harness_shared.%1$I WHERE %4$I IN (%5$L,%6$L,%7$L,%8$L)) z WHERE z.rn > 1)',
+      r.table_name, part_cols, order_clause, slug_col,
+      'papercup', 'papercup-hive', 'papercup-org', 'papercusp');
+    GET DIAGNOSTICS n = ROW_COUNT; del_total := del_total + n;
+    IF n > 0 THEN RAISE NOTICE 'dedup %  (slug=%, recency=%): dropped % loser(s)',
+      r.table_name, slug_col, COALESCE(rec_col,'<none→papercup-wins>'), n; END IF;
+
+    EXECUTE format('UPDATE harness_shared.%1$I SET %2$I = %3$L WHERE %2$I IN (%4$L,%5$L,%6$L)',
+      r.table_name, slug_col, 'papercusp', 'papercup', 'papercup-hive', 'papercup-org');
+    GET DIAGNOSTICS n = ROW_COUNT; ren_total := ren_total + n;
   END LOOP;
 
-  -- 2. operator_settings KEYS: hive_started:* / overwatch_*:* / overwatch_cadence_sec:* : papercup*.
-  --    'papercup' as a substring only appears in the install component (workspace = papercusp-*).
-  UPDATE harness_shared.operator_settings
-     SET key = replace(key, 'papercup', 'papercusp')
-   WHERE key LIKE '%papercup%';
-  GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN RAISE NOTICE '  operator_settings.key : % rows', n; total := total + n; END IF;
+  -- 2) slug columns NOT in any unique constraint (append-only logs): plain rename, no dedup.
+  FOR r IN
+    SELECT c.table_name, c.column_name FROM information_schema.columns c
+    WHERE c.table_schema = 'harness_shared' AND c.column_name ~ '(install|harness|hive|home)_slug'
+      AND NOT EXISTS (
+        SELECT 1 FROM information_schema.key_column_usage kcu
+        JOIN information_schema.table_constraints tc
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_schema = 'harness_shared' AND tc.constraint_type IN ('UNIQUE','PRIMARY KEY')
+          AND kcu.table_name = c.table_name AND kcu.column_name = c.column_name)
+  LOOP
+    EXECUTE format('UPDATE harness_shared.%1$I SET %2$I = %3$L WHERE %2$I IN (%4$L,%5$L,%6$L)',
+      r.table_name, r.column_name, 'papercusp', 'papercup', 'papercup-hive', 'papercup-org');
+    GET DIAGNOSTICS n = ROW_COUNT; ren_total := ren_total + n;
+  END LOOP;
 
-  RAISE NOTICE 'papercup→papercusp: % rows renamed across slug columns + settings keys', total;
+  -- 3) operator_settings KEYS (hive_started/overwatch :*:papercup*). 'papercusp-workspace'
+  --    has no 'papercup' substring (cuSp ≠ cuP), so this is precise.
+  UPDATE harness_shared.operator_settings SET key = replace(key, 'papercup', 'papercusp')
+   WHERE key LIKE '%papercup%';
+
+  RAISE NOTICE 'RECONCILE TOTAL: dropped % losers, renamed % rows → papercusp', del_total, ren_total;
+
+  IF NOT _apply THEN
+    RAISE EXCEPTION 'DRY-RUN (set _apply:=true to apply) — rolling back';
+  END IF;
 END $$;
 
--- 3. harness_registry JSONB (the projects[] array — slug + hive_slug). Precise substitution on
---    the JSON text: only quoted "papercup" / "papercup-..." literals; "papercusp"/"papercusp-..."
---    are left intact because they do not contain the 'papercup' substring.
-UPDATE harness_shared.harness_registry
-   SET payload = replace(replace(payload::text, '"papercup"', '"papercusp"'),
-                         '"papercup-', '"papercusp-')::jsonb
- WHERE payload::text LIKE '%papercup%';
+-- 4) harness_registry merge (run ONLY on _apply): point the papercusp hive at the repo path
+--    and drop the legacy papercup entry. (Boot also converges via ensure-papercusp-hive
+--    existingPath, but this fixes the EXISTING row in lock-step with the data.)
+UPDATE harness_shared.harness_registry r
+   SET payload = jsonb_set(
+     jsonb_build_object('projects', (
+       SELECT jsonb_agg(
+         CASE WHEN p->>'slug' = 'papercusp'
+              THEN jsonb_set(p, '{path}', to_jsonb(
+                     (SELECT p2->>'path' FROM jsonb_array_elements(r.payload->'projects') p2
+                       WHERE p2->>'slug' = 'papercup')))
+              ELSE p END)
+       FROM jsonb_array_elements(r.payload->'projects') p
+       WHERE p->>'slug' <> 'papercup'
+     )),
+     '{__merged}', 'true'::jsonb)  -- marker; harmless extra key (drop if registry schema is strict)
+ WHERE r.workspace_id = 'papercusp-workspace'
+   AND r.payload::text LIKE '%"papercup"%';
 
--- POST-CHECK (run after): expect ZERO rows.
---   SELECT table_name, column_name FROM information_schema.columns
---    WHERE table_schema='harness_shared' AND column_name ~ '(install|harness|hive|home)_slug';
---   ...then verify none still hold 'papercup%' (the surface sweep from the plan).
+COMMIT;
+
+-- 5) FOLLOW-UP (separate, post-merge): the folded papercusp-hive cursed placements now live
+--    under 'papercusp'. Resolve them terminal so they stop poisoning the active frontier, and
+--    scope the cursed anti-join (survey.ts) by install_slug so a retired install never poisons
+--    the home hive again. (Handled in code + a targeted UPDATE, not here.)
