@@ -54,7 +54,11 @@ init/hooks/registry path.
   linear-memory growth (1–4096 MiB, **default 64**). `'daemon'` loads a
   long-running stdio JSON-RPC peer (`runtime.daemonCommand` argv) via
   `@papercusp/plugin-loader/daemon`, supervised with a restart policy and
-  defaulting to `parallel` concurrency. Both run under `bwrap` sandboxing.
+  defaulting to `parallel` concurrency. Only the **daemon** path runs under
+`bwrap` sandboxing (Linux-only, runtime-probed via `bwrapWorks()`); the
+**WASM** path is isolated by the WebAssembly sandbox itself (capability-gated
+host imports + the memory budget) and the JS host denies `compute:exec:*`
+outright (that workload is deferred to the Rust runtime).
 - **Batch H — sandboxed UI surfaces.** A plugin UI surface may declare
   `iframe` (sandboxed iframe) in addition to the back-compat `react`
   in-bundle component and the `tui-pane` zellij surface.

@@ -247,4 +247,41 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       expect(rows.map((r) => r.hive_slug)).toContain(HARNESS);
     });
   });
+
+  // workspace-scoped-coordination P-002 / D-003: routing-by-hive — a routed idea
+  // derived from a rubric pattern carrying an @<hive> tag persists that hive as
+  // target_hive (the cross-hive routing signal the workspace-Queen places on).
+  // Ungated (pure provenance enrichment).
+  describe('routing-by-hive (D-003 target_hive from the addressed pattern)', () => {
+    it('a rubric pattern ref @<hive> populates target_hive on the routed idea', async () => {
+      await recordRoutedIdea({
+        ideaId: 'i-xhive',
+        lens: 'analogical',
+        rail: 'plan',
+        routedRef: 'plan:cross-hive-x',
+        harnessSlug: HARNESS,
+        workspaceId: WS,
+        addressesPatternRefs: ['rubric:hive-coordination-health#wake-latency@spreadsheet-hive'],
+      });
+      const rows = await db.adminSql<{ target_hive: string | null; source_hive: string | null }[]>`
+        SELECT target_hive, source_hive FROM harness_shared.scout_routed_ideas WHERE idea_id = 'i-xhive'`;
+      expect(rows[0]?.target_hive).toBe('spreadsheet-hive');
+      expect(rows[0]?.source_hive).toBeTruthy(); // source still always populated (D-003 required)
+    });
+
+    it('a non-rubric pattern ref leaves target_hive null', async () => {
+      await recordRoutedIdea({
+        ideaId: 'i-selfhive',
+        lens: 'reframing',
+        rail: 'gym',
+        routedRef: 'gym:sp-self',
+        harnessSlug: HARNESS,
+        workspaceId: WS,
+        addressesPatternRefs: ['wi:F-9'],
+      });
+      const rows = await db.adminSql<{ target_hive: string | null }[]>`
+        SELECT target_hive FROM harness_shared.scout_routed_ideas WHERE idea_id = 'i-selfhive'`;
+      expect(rows[0]?.target_hive).toBeNull();
+    });
+  });
 });

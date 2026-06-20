@@ -629,7 +629,7 @@ action history view inside the drill-down drawer, retry-from-drawer).
 
 ### Phase P2 — Action primitive in the plugin SDK (~3h) ✅ shipped
 
-- Add `ActionDefinition` to `@papercusp/plugin-sdk` with the presence-determined runtime shape
+- Add `ActionDefinition` to `@papercusp/plugin-sdk` (server-handler shape — `serverHandler` only; no `clientHandler`/hybrid runtime)
 - Add `actions` field to `Plugin` interface
 - Add `ctx.actions.register(name, handler)` to the `PapercuspContext`
 - Loader collects all installed plugins' actions on harness start

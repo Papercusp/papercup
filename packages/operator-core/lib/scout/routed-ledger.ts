@@ -107,6 +107,28 @@ function tsToIso(v: Date | string | null): string | undefined {
 }
 
 /**
+ * D-003 target-hive derivation (workspace-scoped-coordination P-002): a
+ * rubric-rating digest pattern encodes the hive it measured as an `@<hive>`
+ * suffix on its ref (corpus-digest.ts buildRubricRatings:
+ * `rubric:<rubricRef>#<criterion>@<sourceHive>`). When the workspace-Scout routes
+ * an idea derived from such a pattern, that hive is where the resulting work
+ * belongs — the OPTIONAL target hint the workspace-Queen (P-003) confirms + places
+ * on (D-003: "resolving the true target + routing is the workspace-brain's job").
+ * Returns the hive of the first ref that carries one, or undefined (free-text /
+ * non-rubric patterns carry no hive tag). Pure + ungated — it only enriches the
+ * routed-idea provenance; the actual placement-to-hive is the Queen's.
+ */
+export function hiveFromPatternRefs(refs?: readonly string[]): string | undefined {
+  if (!refs) return undefined;
+  for (const ref of refs) {
+    if (typeof ref !== 'string' || !ref.startsWith('rubric:')) continue;
+    const at = ref.lastIndexOf('@');
+    if (at >= 0 && at < ref.length - 1) return ref.slice(at + 1);
+  }
+  return undefined;
+}
+
+/**
  * Persist (upsert by idea_id) one routed idea's provenance. Called by P-007 once
  * it knows the created artifact's change-feed ref. Idempotent — re-routing the
  * same idea overwrites its row.
@@ -130,12 +152,16 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       sourceHive = input.harnessSlug;
     }
   }
+  // D-003 optional target hive: an explicit hint wins; else derive it from the
+  // addressed rubric pattern's `@<hive>` tag (the cross-hive routing signal the
+  // workspace-Queen places on). Null when neither is present.
+  const targetHive = input.targetHive ?? hiveFromPatternRefs(input.addressesPatternRefs) ?? null;
   await sql`
     INSERT INTO harness_shared.scout_routed_ideas
       (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id, lens, rail,
        routed_ref, title, addresses_pattern_refs, routed_at)
     VALUES
-      (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${sourceHive}, ${input.targetHive ?? null},
+      (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${sourceHive}, ${targetHive},
        ${input.cycleId ?? null}, ${input.lens},
        ${input.rail}, ${input.routedRef}, ${input.title ?? null},
        ${input.addressesPatternRefs ? JSON.stringify(input.addressesPatternRefs) : null}::text::jsonb,

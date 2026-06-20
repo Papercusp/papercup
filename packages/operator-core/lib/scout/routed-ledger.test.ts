@@ -32,7 +32,7 @@ vi.mock('@papercusp/db-org', () => ({
 
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { gradeRoutedIdea } = await import('./routed-ledger');
+const { gradeRoutedIdea, hiveFromPatternRefs } = await import('./routed-ledger');
 const sse = await import('../sync-sse');
 const invalidate = vi.mocked(sse.notifySyncInvalidate);
 
@@ -79,5 +79,26 @@ describe('gradeRoutedIdea (C-2 seam logic)', () => {
     await flush();
     await flush();
     expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe('hiveFromPatternRefs (D-003 target-hive derivation, P-002)', () => {
+  it('extracts the @<hive> suffix from a rubric pattern ref', () => {
+    expect(hiveFromPatternRefs(['rubric:hive-coordination-health#wake-latency@papercusp'])).toBe('papercusp');
+  });
+  it('returns the first ref that carries a hive tag', () => {
+    expect(
+      hiveFromPatternRefs(['wi:F-1', 'rubric:scout-quality#diversity@spreadsheet-hive', 'rubric:x#y@other']),
+    ).toBe('spreadsheet-hive');
+  });
+  it('undefined for non-rubric refs (free-text patterns carry no hive tag)', () => {
+    expect(hiveFromPatternRefs(['wi:F-1', 'sig:abc123'])).toBeUndefined();
+  });
+  it('undefined for a rubric ref with no @hive suffix', () => {
+    expect(hiveFromPatternRefs(['rubric:hive-coordination-health#wake-latency'])).toBeUndefined();
+  });
+  it('undefined / empty inputs', () => {
+    expect(hiveFromPatternRefs(undefined)).toBeUndefined();
+    expect(hiveFromPatternRefs([])).toBeUndefined();
   });
 });

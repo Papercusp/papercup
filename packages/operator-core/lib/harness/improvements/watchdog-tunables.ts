@@ -20,6 +20,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { PAYLOAD_TUNABLE_KEYS, watchdogOptionsFromPayload } from './watchdog';
+import { registerOverrideConcern } from '../../config-overrides/registry';
 
 /** The routine whose payload_template carries the watchdog tunables (see seed-improvement-routines). */
 const ROUTINE_NAME = 'improvement-watchdog';
@@ -88,3 +89,47 @@ export async function restoreWatchdogPayload(payload: Record<string, unknown> | 
            updated_at = now()
      WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${ROUTINE_NAME}`;
 }
+
+/**
+ * Baked defaults for the tunables we can name without duplicating a drift-prone literal.
+ * Just the two stable module-level caps for now; the ~30 collector-bar defaults live inline
+ * in watchdog.ts and are reported with no `default` (an entry only EXISTS when overridden, so
+ * its presence already marks the divergence). Centralizing the full default set so the
+ * collectors read it from one source is a tracked D-006 follow-up.
+ */
+const WATCHDOG_TUNABLE_DEFAULTS: Partial<Record<WatchdogTunableKey, number>> = {
+  maxPerTick: 3,
+  perSourceCap: 2,
+};
+
+/** Reset = strip the watchdog tunable keys from the payload (collector defaults reapply),
+ *  preserving any non-tunable payload keys. Returns the resulting snapshot. */
+export async function resetWatchdogTunables(): Promise<WatchdogTunablesSnapshot> {
+  const current = await readWatchdogTunables();
+  if (!current.payload) return current; // nothing overridden at the payload layer
+  const next: Record<string, unknown> = { ...current.payload };
+  for (const k of PAYLOAD_TUNABLE_KEYS) delete next[k];
+  const cleaned = Object.keys(next).length === 0 ? null : next;
+  await restoreWatchdogPayload(cleaned);
+  return { payload: cleaned, tunables: watchdogOptionsFromPayload(cleaned) as WatchdogTunablePatch };
+}
+
+// Self-register as a runtime-config override concern (P-024 registry) at module load, so
+// config:list-overrides / config:reset-overrides see the watchdog tunables. Idempotent.
+registerOverrideConcern({
+  name: 'watchdog-tunables',
+  description: 'improvement-watchdog collector bars + per-tick caps (routine payload_template)',
+  auditAction: 'improvements:set-watchdog-tunables',
+  diff: async () => {
+    const { tunables } = await readWatchdogTunables();
+    return Object.entries(tunables).map(([key, effective]) => ({
+      key,
+      effective,
+      layer: 'routine-payload',
+      default: WATCHDOG_TUNABLE_DEFAULTS[key as WatchdogTunableKey],
+    }));
+  },
+  capture: () => readWatchdogTunables(),
+  reset: () => resetWatchdogTunables(),
+  restore: (snap) => restoreWatchdogPayload((snap as WatchdogTunablesSnapshot).payload),
+});

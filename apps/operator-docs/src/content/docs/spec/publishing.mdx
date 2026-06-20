@@ -85,11 +85,11 @@ content's served on a vanity subdomain we control.
 │  canonical manifest        │ manifest│  ├─ ensure CF project (D1 cache)  │         │                 │
 │  POSTs                     │         │  └─ returns deploymentId +        │         │                 │
 │   ↓                        │         │      missing-files upload URLs    │         │                 │
-│  PUT each file             ├ stream ►│  proxy stream (no buffer)         ├ master ►│  /files         │
-│  (only the missing ones)   │         │  ┌─ verify per-file sha256        │  token  │                 │
+│  PUT file/<dep>/<sha>      ├ stream ►│  buffer body, verify sha256       ├ master ►│  /file          │
+│  (only the missing ones)   │         │  ├─ upload to CF + write R2 .bin   │  token  │                 │
 │   ↓                        │         │                                   │         │                 │
 │  POST /publish/finalize    ├────────►│  ├─ create CF deployment          ├────────►│  deployments    │
-│                            │         │  └─ archive manifest+files to R2  │         │                 │
+│                            │         │  └─ archive manifest.json to R2   │         │                 │
 │   ↓                        │         │                                   │  status │                 │
 │  poll /status/:depId       ├────────►│  ── returns CF status             │◄────────┤                 │
 │   ↓                        │         │                                   │         │                 │
@@ -608,8 +608,17 @@ to the user.
 8. `wrangler deploy` Worker.
 9. DNS: `*.preview.papercuspai.com` and `publish.papercuspai.com` → Worker
    route. Wildcard cert via CF managed cert (1-click in dashboard).
-10. Cron: daily `/admin/gc` for stale uploads + R2 archive expiry.
+10. Cron: daily (06:00 UTC) POST to `/admin/gc/abandoned-uploads`,
+    `/admin/gc/expired-archives`, and `/admin/gc/jti`.
 11. Smoke test from a clean machine.
+
+<Aside type="tip" title="Local end-to-end testing">
+The Worker has a local-dev short-circuit: when `CF_MASTER_TOKEN` is set
+to the literal value `local-stub`, `ensureProject`/`uploadFile`/
+`createDeployment`/`getDeployment` fabricate Cloudflare responses so the
+full publish flow (`/publish/start` → PUT files → `/publish/finalize` →
+status) runs under `wrangler dev` without real Cloudflare credentials.
+</Aside>
 
 ## 15.12 What's NOT in v1
 
@@ -651,20 +660,20 @@ to the user.
 ## 15.15 Implementation order
 
 **Day 1**
-- Worker scaffold + D1 schema (tenants, projects, deployments, jti_used,
-  audit_publishes) + KV bindings + R2 binding (~5h)
-- JWT (HS256+jti+sha256) + JCS canonicalizer + HMAC-pepper secret
-  hashing (~3h)
+- Worker scaffold + D1 schema (tenants, projects, deployments,
+  deployment_files, jti_used, audit_publishes) + KV bindings + R2 binding (~5h)
+- JWT (HS256+jti+sha256+aud, HKDF-derived publish subkey) + JCS
+  canonicalizer + signed-URL helpers (~3h)
 - `/register-tenant` + `/publish/start` + per-IP & per-tenant rate
   limits (~3h)
 
 **Day 2**
-- File-PUT proxy (Worker streams body to CF without buffering) (~3h)
-- `/publish/finalize` + R2 archive write + status polling endpoint (~4h)
-- `/publish/start` resume semantics + GC cron (~2h)
+- File-PUT route (buffer body, verify sha256, fan out to CF + R2 .bin) (~3h)
+- `/publish/finalize` + R2 manifest write + status polling endpoint (~4h)
+- `/publish/start` resume semantics + three-endpoint GC cron (~2h)
 
 **Day 2.5**
 - DNS + URL-rewrite Worker route on `*.preview.papercuspai.com` (~3h)
-- Plugin (JCS manifest, resume on partial upload, polling, BYO-CF
-  fallback) (~4h)
-- Settings UI + eject script + smoke test + docs (~3h)
+- `@papercupai/cloudflare-pages` plugin (CF Direct Upload, resume on
+  partial upload, `afterDone` auto-publish) (~4h)
+- Settings UI + smoke test + docs (~3h)

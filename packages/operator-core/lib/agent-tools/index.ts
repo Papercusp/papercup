@@ -442,6 +442,10 @@ import './improvements/keyless-digest';
 import './improvements/learning-loops';
 import './improvements/set-watchdog-tunables';
 
+// live-configurability-audit-2026-06-20 P-024/P-025 — the runtime-config override-registry
+// readback (config:list-overrides); the concern modules (e.g. watchdog-tunables) self-register.
+import './config/list-overrides';
+
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.
 import './issues/create';

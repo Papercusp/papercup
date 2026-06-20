@@ -1,0 +1,78 @@
+---
+title: "Inference-gateway wedge: bound EVERY admission-slot-hold path below the self-heal / watchdog ladder"
+description: "The gateway restart-storms (watchdog WEDGE every ~6min — or a multi-minute freeze when the watchdog exhausts its hourly restart budget) whenever ANY code path lets a request hold its admission slot longer than the self-heal (75s) / watchdog (120s) thresholds. There are THREE such paths and they were fixed ONE AT A TIME (2026-06-20): the 429-absorb wait, the transport-STALL retry (catch-block — it bypassed the 429 deadline), and the non-streaming 5-min headers wait. The durable principle is one threshold LADDER: internal-retry deadline (60s) < self-heal (75s) < watchdog (120s), and EVERY slot-hold path must respect it. A wedge is a BUG; forwarded 429/503s under load are CAPACITY (a different problem)."
+discovered: 2026-06-20
+tags: [inference-gateway, admission, wedge, reliability, runbook, slot-hold, stall, 429, watchdog, self-heal, capacity, hot-reload]
+status: active
+---
+
+## TL;DR
+
+A gateway WEDGE = `inFlight >= maxConcurrent` + `totalRequests` FROZEN + a growing queue, sustained ≥120s →
+`watchdog.mjs` full-restarts `:8788` (~15-30s of fleet-wide connection-refused = an "API error" across
+sessions). If the watchdog exhausts its hourly restart budget, the gateway stays frozen for many minutes
+(observed: a single 27-minute freeze).
+
+The wedge forms whenever a request HOLDS its admission slot longer than the safety thresholds. The durable
+fix is to make every slot-hold path respect ONE ladder:
+
+```
+INTERNAL_RETRY_DEADLINE_MS (60s)  <  DEFAULT_SELFHEAL_FREEZE_MS (75s)  <  watchdog FREEZE_MS (120s)
+```
+
+## The three slot-hold paths (all in `gateway.ts`; fixed 2026-06-20, one at a time)
+
+The first fix bounded ONLY path 1 — and the gateway kept wedging every ~6 min. **The lesson: enumerate
+ALL the paths that can hold a slot, not the first one you find.** A `tsc`-clean, tests-green fix that
+addresses one path is still a band-aid if another path wedges.
+
+1. **429-absorb wait.** A transient/bare upstream 429 makes the gateway rotate + WAIT (up to the 30s
+   `TRANSIENT_TOTAL_WAIT_BUDGET_MS`) while holding the slot. Bounded by `INTERNAL_RETRY_DEADLINE_MS`: the
+   `if (internalRetry)` decision sheds a retryable 429 once `Date.now() >= retryDeadlineAt`, and the
+   transient wait is `Math.min(…, retryDeadlineAt - Date.now())`.
+
+2. **Transport-STALL retry — the path the first fix MISSED.** Every account now egresses through a proxy,
+   so EVERY Anthropic-wide TTFB stall enters the egress-circuit catch-block (`hasEgressProxy`), which
+   rotated + `continue`d the loop with NO deadline check → chained up to `INTERNAL_RETRY_MAX_ATTEMPTS ×
+   ~60s` stalls = ~360s on one slot, bypassing the path-1 deadline entirely. Fixed: gate that retry with
+   `&& Date.now() < retryDeadlineAt` → past the deadline it falls through to a fast retryable 503 that frees
+   the slot.
+
+3. **Headers wait.** `armStall(isStream ? streamHeaders(60s) : headers(5min))`. The NON-streaming headers
+   timeout (5 min) alone is `>>` the 120s watchdog. Fixed: cap the HEADERS arm by `retryDeadlineAt -
+   Date.now()` — **only the headers wait, NOT the body-idle**, so a healthy long STREAM that is making
+   progress keeps its slot (body-idle resets on each byte).
+
+## Diagnose
+
+- `journalctl --user -u papercup-inference-gateway-watchdog.service | grep WEDGE` → the restart cadence +
+  the frozen signature (`totalRequests frozen @N, Q queued, inFlight/maxConcurrent for Ts`).
+- **`inFlight > maxConcurrent`** in the WEDGE line = requests admitted under a higher AIMD cap, now STUCK
+  after AIMD shrank — i.e. not completing (stall-driven, paths 2/3). **`inFlight == maxConcurrent`** at the
+  AIMD floor = the 429-squat (path 1; see [the admission-slot-squat doc](./inference-gateway-wedge-admission-slot-squat)).
+- `journalctl … -u papercup-inference-gateway.service --since '-15 min' | grep -oiE "STALLED|upstream 429|fetch failed" | sort | uniq -c` — STALLED dominating ⇒ stall paths; 429 dominating ⇒ path 1 or capacity.
+
+## Wedge vs capacity — do NOT conflate
+
+A WEDGE is a gateway BUG (a slot-hold threshold inversion) — fix it in code and verify the watchdog stops
+restarting. Forwarded 429/503s to bees under heavy opus demand are CAPACITY: the account pool can't serve
+the load; the gateway can only PACE / shed gracefully. Levers: add Max accounts, pace the fleet
+(`maxSimultaneousAgents`), or route some load to Sonnet. The wedge fix removes the catastrophic
+connection-refused blips — it cannot manufacture quota.
+
+## Verify a wedge fix for REAL (not prematurely)
+
+The gateway runs `tsx` from the working tree, so `systemctl --user restart
+papercup-inference-gateway.service` loads the edit. Then WATCH `wedges-since-deploy` over a window LONGER
+than the prior restart cadence (wedges every ~6 min → watch ≥15 min). **0 wedges across the window +
+`totalRequests` climbing = fixed.** A calm window (no stalls/429s) is NOT proof the fix works — the storm
+paths are covered by the `gateway.test.ts` chaos tests instead, so lean on those plus the watch.
+
+## Related: hot-reload the pool with NO restart (B-GW-HOT, 2026-06-20)
+
+Account/egress changes used to need a gateway restart (the pool was resolved once at boot — swapping one
+bad account took two restarts). Now the gateway hot-reloads the DB pool: a 60s poll + `POST /admin/reload`
++ the `gateway:reload` agent tool (`gateway:status` reads `/admin/config`). So `accounts:register` /
+`accounts:remove` / an egress change applies live — `accounts:register <x>` → `gateway:reload` →
+`gateway:status` (confirm the config `version` bumped). The atomic swap is `createFailoverPool(...).reload()`
+(account-failover.ts) driven by `reloadPool()` in launch.ts.
