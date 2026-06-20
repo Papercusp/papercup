@@ -11,14 +11,17 @@ restarted once today and lost state — this 2h of work is exposed to the same l
 Flagged to fleet + needs owner to re-enable git-sync / persist. (Monitor will NOT commit
 — git-sync owns commit+push.) Integrated build reads the working tree so it's unaffected.
 
-## Running verdict: 🔴 NOT READY — two engineering items remain, both now SPECIFIC (13:56)
+## Running verdict: 🔴 NOT READY — but A-003 now GREEN; C-001 re-key is the last critical-path item (22:40)
 
-**D-001 (the S0) is FULLY CLOSED — code + LIVE** (J live-witnessed convergence under real
-clock skew on the shipped binary). **A-002 live-GREEN** (dc9db). Core federation, scale (N),
-honesty (G-001/G-002 live, G-004 live) all GREEN. Remaining:
-1. **A-003 (S1, compounds revocation)** — a REAL projection-binding bug the LIVE witness
-   caught (green rig, red real binary): hive_members/hive_settings don't reach the joiner.
-   d2230 root-causing (rebind not engaging at rekey) + fixing. Engineering, in progress.
+**D-001 (the S0) FULLY CLOSED — code + LIVE.** **A-002 live-GREEN.** Core federation, scale (N),
+honesty (G-001/G-002/G-004 live) all GREEN. **✅ A-003 NOW GREEN ON THE BINARY (22:40)** — see below. Remaining:
+1. **✅ A-003 — FIXED + LIVE-WITNESSED (su-c2a63's converged slug-recheck/replay-on-rebind fix).** `.deb` from
+   HEAD 8b90f93d9 + content-matrix (DISCOVERY_RETRIES=100): owner→joiner hive_settings + hive_members CROSS,
+   backfill + incr-A→B, remote=ok. The session-long "live-RED" was 2 things: the receive-side admit (now fixed)
+   AND a TEST-HARNESS discovery-window false-fail (fixed via DISCOVERY_RETRIES — USE IT for all live witnesses).
+   B→A for hive-content is EXPECTED-not-to-cross (owner-authored; all 8 collaborative types cross B→A fine).
+   Detail: `findings-A003-live-trace-diagnosis.md`. **This unblocks the C-001 re-key registration + all downstream
+   live witnessing.**
 2. **C-001 read-revocation — OWNER DECIDED (2026-06-19): RE-KEY / cut reads.** This is now a
    REQUIRED BUILD, not a decision: **Move 2** (per-epoch group key MLS/TreeKEM-style +
    content-core encryption; member-remove/go-private advances the epoch → removed peer can't

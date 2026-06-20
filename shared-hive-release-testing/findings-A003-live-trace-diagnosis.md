@@ -5,6 +5,17 @@
 TWO fixes that were green in the rigs + the 935-suite. This file is the conclusive
 live diagnosis + the scoped fix so the receive-side owner (d2230) can act without coord.
 
+## ✅✅ RESOLVED 2026-06-19 ~22:40 (su-9140a) — A-003 GREEN ON THE BINARY (su-c2a63's converged fix)
+su-c2a63 iterated to the **slug-recheck-in-retryPendingOnce** variant (announceSlugInScope 2→3) — the approach
+witnessed green earlier. Fresh `.deb` from HEAD (8b90f93d9) + content-matrix on 2 real peers, DISCOVERY_RETRIES=100:
+B joined (rows=2, match=Y), and the OWNER→JOINER hive-home content CROSSES in BOTH backfill + incremental:
+`✓ hive-settings backfill remote=ok · ✓ hive-members backfill remote=ok · ✓ hive-settings incr-A→B remote=ok ·
+✓ hive-members incr-A→B remote=ok`. The `[A-003]` trace shows the expected REJECT@home=<none> → rekey rebind=true
+→ buffer-replay admits the hive-home log. **A-003 (owner→joiner federation of hive_settings/hive_members) is FIXED
+on the packaged binary.** Remaining matrix ✗ are all EXPECTED (owner-content B→A + ephemeral presence — not A-003).
+This unblocks the C-001 re-key registration (held on A-003 green) + the whole downstream witness chain. The two
+keys that got here: (1) su-c2a63's slug-recheck fix, (2) DISCOVERY_RETRIES (the harness window that masked it).
+
 ## ⚡ UPDATE 2026-06-19 ~21:50 (su-9140a) — A-003 now OWNED + fixed; the real live-RED cause was the harness window
 - **A-003 is OWNED by su-c2a63 (Brief J / ac4d3e7f)** — landed **option (c) replay-on-rebind** (boot.ts:1673-1685:
   onAnnounce BUFFERS the unresolved-home frame as `scope_unresolved`; the rekey rebind calls `retryPendingOnce()`
