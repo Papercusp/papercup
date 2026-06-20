@@ -168,7 +168,7 @@ export type {
 export { papercuspComputeQuotaWindow } from './quota-policy';
 // Papercusp's auth-tier → gate-bypass mapping (plan P-014) — the host impl of
 // tooldef's neutral `ctx.gateBypass`, set by the HTTP + MCP transports.
-export { papercuspGateBypass } from './gate-bypass';
+export { papercuspGateBypass, testingFullAccess, TESTING_FULL_ACCESS_ROLES } from './gate-bypass';
 export type { GateBypass } from '@papercusp/tooldef';
 
 // Resource authorization (RFC tooldef-auth). The host supplies the decision

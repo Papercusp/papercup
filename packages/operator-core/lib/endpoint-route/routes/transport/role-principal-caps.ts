@@ -102,6 +102,14 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // it here so loadRoleCapabilities unions it in at load time (no re-provision needed).
     'plans:write',
     'routines:write',
+    // EI-2048 (owner-fix 2026-06-20): grant memory caps on the synthesized-
+    // principal (loadRoleCapabilities) path too, so it stays in lockstep with
+    // OPERATOR_CAPS (provision.ts). A planner/operator psu session must be able
+    // to curate the memory store (memory:remember/forget/update/search); without
+    // this it 100%-failed with `lacks capability "memory:write"` (mirrors the
+    // earlier plans:write parity fix). The `bee` role already carries these.
+    'memory:read',
+    'memory:write',
   ],
   // The QUEEN — the hive's placement-specialist decider (local-hive D-001:
   // "the operator specialized"), so her caps mirror the operator's. They cover

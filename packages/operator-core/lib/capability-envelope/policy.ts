@@ -23,7 +23,7 @@
  * B-18 per-role tuning seam.
  */
 
-import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { AGENT_ROLES, testingFullAccess } from '@papercusp/agent-mcp';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 /**
@@ -126,6 +126,13 @@ export function evaluateCapabilityEnvelope(args: {
 
   // Exemptions (D-002): supervised humans + non-fleet roles keep full ergonomics.
   if (ctx.isSuperuser || ctx.isPowerUser) return { withinEnvelope: true, applied: false };
+  // EI-2048 (testing-phase full access): the trusted testing roles get the SAME
+  // envelope exemption as a superuser. While the system is under heavy test, an
+  // envelope deny (overwatch's capability:fs-write/bash, or the never-auto
+  // protected set) should not masquerade as a different bug. Gated by the same
+  // allowlist/flag as the role+capability bypass (gate-bypass.ts). RESTRICT
+  // LATER: trim TESTING_FULL_ACCESS_ROLES or set PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off.
+  if (testingFullAccess(ctx.role)) return { withinEnvelope: true, applied: false };
   const role = ctx.role;
   if (!role || !FLEET_ENVELOPE_ROLES.has(role)) return { withinEnvelope: true, applied: false };
 

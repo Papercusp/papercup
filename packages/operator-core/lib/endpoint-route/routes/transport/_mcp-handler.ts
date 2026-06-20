@@ -624,6 +624,10 @@ async function buildMcpToolContext(
     gateBypass: papercuspGateBypass({
       isSuperuser: spawn.isSuperuser ?? false,
       isPowerUser: spawn.isPowerUser ?? false,
+      // EI-2048: testing-phase full tool access for trusted roles (queen/bee/
+      // overwatch/sentinel/scout/operator) — they get the same role+capability
+      // bypass as superuser so a missing grant can't masquerade as another bug.
+      role: spawn.role,
     }),
     // Tool-list filtering only distinguishes power-vs-not (slashToolVisibleTo:
     // `profile === 'power'`), so the GENERIC profile (domain-generic-hive P-025) maps to

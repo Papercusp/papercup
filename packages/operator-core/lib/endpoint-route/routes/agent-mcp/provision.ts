@@ -42,6 +42,17 @@ const OPERATOR_CAPS = [
   'coord:read',
   'coord:write',
   'plans:read',
+  // EI-2048 (owner-fix 2026-06-20): the operator/psu principal had NO memory
+  // caps, so a psu-launched SU session (role=operator) hit `missing_capability:
+  // … lacks capability "memory:write"` on memory:remember/forget/update/search —
+  // the same omission class as the `plans:write` gap. The `bee` role already
+  // carries these (role-principal-caps.ts, "psu engineering parity"); the
+  // operator never did. Grant them so the role=operator MCP surface can curate
+  // memory. (NB: re-provision with force — or a deploy — is needed for the live
+  // system_principals row to pick this up; auth.ts loadCapabilities reads the DB
+  // row, and provision-without-force is a no-op for an existing row.)
+  'memory:read',
+  'memory:write',
 ];
 
 export default defineTool({
