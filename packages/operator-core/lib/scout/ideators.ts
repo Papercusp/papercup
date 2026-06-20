@@ -172,6 +172,32 @@ export interface RunIdeatorsResult {
   costUsd: number;
 }
 
+/**
+ * Raised (by the prod cycle adapter, cycle-deps.ts) when EVERY ideator failed its
+ * LLM call — a TOTAL transport death (gateway wedge / token 401 / provider stall) —
+ * AND the batch produced ZERO ideas. This is deliberately distinct from a healthy
+ * cycle that genuinely found nothing (ideators ran fine, returned 0 ideas): a total
+ * transport failure must NOT masquerade as a benign 'no-ideas' tick. Surfacing it as
+ * a thrown error lets the scheduler's catch record an `error` tick (visible in
+ * scout_ticks) AND call recordFire('error') so the autoloop fire-gate backs off,
+ * instead of hammering a dead gateway every cadence and logging it as quiet idle.
+ * Partial failures (some ideators OK) never throw — one dead ideator never kills the
+ * batch (the existing defensive contract in runIdeators).
+ */
+export class ScoutIdeatorsTransportError extends Error {
+  readonly failedCount: number;
+  readonly sample?: string;
+  constructor(failedCount: number, sample?: string) {
+    super(
+      `scout: all ${failedCount} ideator LLM call(s) failed — transport death (0 ideas, $0 spent)` +
+        (sample ? `: ${sample}` : ''),
+    );
+    this.name = 'ScoutIdeatorsTransportError';
+    this.failedCount = failedCount;
+    if (sample !== undefined) this.sample = sample;
+  }
+}
+
 interface RawIdea {
   title: string;
   body: string;

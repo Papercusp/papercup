@@ -25,7 +25,7 @@ import {
   type SynthesizeOptions,
 } from './corpus-digest';
 import { buildStateOfHiveReaders } from './corpus-digest-deps';
-import { runIdeators } from './ideators';
+import { runIdeators, ScoutIdeatorsTransportError } from './ideators';
 import { critiqueIdeas } from './critics';
 import { recombineProposals } from './recombine';
 import { routeProposals, makeWholeSystemInstanceOverride, type CapturePort, type RouterPorts } from './router';
@@ -203,16 +203,31 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
         ...(opts.graderFeedbackReader ? { readRows: opts.graderFeedbackReader } : {}),
       });
       const primingBlocks = [...(stones.length ? [priming] : []), ...(grader.priming ? [grader.priming] : [])];
-      return (
-        await runIdeators(digest, {
-          llmCall: ctx.llmCall,
-          ...roster,
-          ...weighting,
-          ...(primingBlocks.length ? { priming: primingBlocks.join('\n\n') } : {}),
-          // P-010: per-blueprint ideator mission framing (default ⇒ byte-identical).
-          mission: scoutConfig.framing.ideatorMission,
-        })
-      ).ideas;
+      const ideated = await runIdeators(digest, {
+        llmCall: ctx.llmCall,
+        ...roster,
+        ...weighting,
+        ...(primingBlocks.length ? { priming: primingBlocks.join('\n\n') } : {}),
+        // P-010: per-blueprint ideator mission framing (default ⇒ byte-identical).
+        mission: scoutConfig.framing.ideatorMission,
+      });
+      // P-002 (transport-death observability): if EVERY ideator errored AND zero ideas
+      // resulted, this is a TOTAL transport failure (gateway wedge / token 401 — $0 spent),
+      // NOT a healthy 'no-ideas' cycle. Throw so the scheduler records an error tick + backs
+      // the autoloop fire-gate off, instead of a benign 'ran/no-ideas' that hammers a dead
+      // gateway every cadence. Partial failures still return their ideas (one dead ideator
+      // never kills the batch — the existing defensive contract in runIdeators).
+      if (
+        ideated.ideas.length === 0 &&
+        ideated.ideators.length > 0 &&
+        ideated.ideators.every((i) => !i.ok)
+      ) {
+        throw new ScoutIdeatorsTransportError(
+          ideated.ideators.length,
+          ideated.ideators.find((i) => i.error)?.error,
+        );
+      }
+      return ideated.ideas;
     },
     critique: async (ideas, ctx) =>
       (

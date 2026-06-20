@@ -11,6 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
+import { ScoutIdeatorsTransportError } from './ideators';
 import { resolveScoutConfig } from './config';
 import { makeFakeScoutLlm, fixtureProposal } from './test-support';
 import { GRADER_FEEDBACK_HEADING, type GradedIdeaView } from './ideator-feedback-priming';
@@ -245,6 +246,63 @@ describe('buildScoutCycleDeps — P-010 per-blueprint scout framing', () => {
     const { systems, llmCall } = capturingSystems();
     await deps.ideate(DIGEST, { llmCall, maxIdeators: 1 });
     expect(systems[0]).toContain('multi-agent coding platform');
+  });
+});
+
+describe('buildScoutCycleDeps — transport-death observability (P-002)', () => {
+  const DIGEST: CorpusDigest = {
+    recurringFriction: [{ summary: 'lock contention on shared tree', ref: 'wi:F-1' }],
+    timeTokenSinks: [],
+    chronicDeferrals: [],
+    capabilityGaps: [],
+    headline: 'busy week',
+  };
+  const HERMETIC = {
+    archive: { listElites: () => [], seed: () => ({ admitted: false, nicheKey: '' }) } as ArchivePort,
+    graderFeedbackReader: async () => [] as GradedIdeaView[],
+  };
+
+  it('throws ScoutIdeatorsTransportError when EVERY ideator LLM call fails and 0 ideas result', async () => {
+    const { deps } = build(HERMETIC);
+    const throwingLlm: ScoutLlmCall = async () => {
+      throw new Error('gateway 401: upstream stall');
+    };
+    await expect(deps.ideate(DIGEST, { llmCall: throwingLlm, maxIdeators: 2 })).rejects.toThrow(
+      ScoutIdeatorsTransportError,
+    );
+    await expect(deps.ideate(DIGEST, { llmCall: throwingLlm, maxIdeators: 2 })).rejects.toThrow(
+      /all 2 ideator LLM call\(s\) failed/,
+    );
+  });
+
+  it('does NOT throw when ideators run fine but genuinely produce no ideas (resolves to [])', async () => {
+    const { deps } = build(HERMETIC);
+    const emptyLlm: ScoutLlmCall = async () => ({
+      text: '',
+      json: { ideas: [] },
+      costUsd: 0.01,
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+    await expect(deps.ideate(DIGEST, { llmCall: emptyLlm, maxIdeators: 2 })).resolves.toEqual([]);
+  });
+
+  it('does NOT throw on a PARTIAL failure — one dead ideator never kills the batch', async () => {
+    const { deps } = build(HERMETIC);
+    let n = 0;
+    const flakyLlm: ScoutLlmCall = async () => {
+      n += 1;
+      if (n === 1) throw new Error('one ideator 429');
+      return {
+        text: '',
+        json: { ideas: [{ title: 'T', body: 'B', mechanism: 'M', addressesPatternRefs: ['wi:F-1'] }] },
+        costUsd: 0.01,
+        inputTokens: 1,
+        outputTokens: 1,
+      };
+    };
+    const ideas = await deps.ideate(DIGEST, { llmCall: flakyLlm, maxIdeators: 2 });
+    expect(ideas.length).toBeGreaterThan(0);
   });
 });
 
