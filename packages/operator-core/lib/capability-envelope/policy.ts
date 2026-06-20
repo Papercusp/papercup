@@ -126,15 +126,16 @@ export function evaluateCapabilityEnvelope(args: {
 
   // Exemptions (D-002): supervised humans + non-fleet roles keep full ergonomics.
   if (ctx.isSuperuser || ctx.isPowerUser) return { withinEnvelope: true, applied: false };
-  // EI-2048 (testing-phase full access): the trusted testing roles get the SAME
-  // envelope exemption as a superuser. While the system is under heavy test, an
-  // envelope deny (overwatch's capability:fs-write/bash, or the never-auto
-  // protected set) should not masquerade as a different bug. Gated by the same
-  // allowlist/flag as the role+capability bypass (gate-bypass.ts). RESTRICT
-  // LATER: trim TESTING_FULL_ACCESS_ROLES or set PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off.
-  if (testingFullAccess(ctx.role)) return { withinEnvelope: true, applied: false };
   const role = ctx.role;
   if (!role || !FLEET_ENVELOPE_ROLES.has(role)) return { withinEnvelope: true, applied: false };
+
+  // EI-2048 (testing-phase): trusted roles (gate-bypass.ts TESTING_FULL_ACCESS_ROLES)
+  // bypass their per-role envelope DENIES (e.g. overwatch capability:fs-write/bash) so a
+  // missing tool can't masquerade as a bug during heavy testing — BUT the universal
+  // never-auto PROTECTED set (secrets:* / processes:kill) STILL holds even for them: the
+  // safety floor is deliberately NOT lifted (agents never need those for normal work).
+  // RESTRICT LATER: trim the set or set PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off.
+  const testingExempt = testingFullAccess(role);
 
   const env = (args.envelopes ?? ROLE_ENVELOPES)[role];
   for (const cap of capabilities) {
@@ -145,6 +146,7 @@ export function evaluateCapabilityEnvelope(args: {
         reason: `capability "${cap}" is in the never-auto protected set (tool ${toolName}, role ${role})`,
       };
     }
+    if (testingExempt) continue; // testing roles skip the per-role deny/allow gates (floor above still applies)
     if (env?.denyCapabilities && matchesAny(cap, env.denyCapabilities)) {
       return {
         withinEnvelope: false,

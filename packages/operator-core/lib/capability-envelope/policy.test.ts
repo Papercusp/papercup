@@ -1,9 +1,12 @@
 /**
  * Unit tests for the capability-envelope policy evaluator
- * (agent-capability-confinement-2026-06-13 B-06 / P-012). Pure, no PG, no flag.
+ * (agent-capability-confinement-2026-06-13 B-06 / P-012). Pure, no PG.
+ * EI-2048: the suites below verify the ENVELOPE's own deny logic, so they force
+ * the testing-phase full-access exemption OFF; the exemption is covered by its
+ * own suite at the bottom.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   evaluateCapabilityEnvelope,
   FLEET_ENVELOPE_ROLES,
@@ -11,6 +14,16 @@ import {
 } from './policy';
 
 const base = { toolName: 'plans.set-status', capabilities: ['plans:write'] as const };
+
+// EI-2048: disable the testing-phase full-access exemption for the envelope-logic
+// suites (otherwise the testing roles — operator/queen/bee/overwatch/sentinel/scout
+// — would bypass their per-role denies, masking the deny assertions).
+const prevTestingFlag = process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES;
+beforeAll(() => { process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = 'off'; });
+afterAll(() => {
+  if (prevTestingFlag === undefined) delete process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES;
+  else process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = prevTestingFlag;
+});
 
 describe('evaluateCapabilityEnvelope — exemptions (D-002)', () => {
   it('exempts a superuser caller (applied=false)', () => {
@@ -137,6 +150,29 @@ describe('evaluateCapabilityEnvelope — overwatch read+nudge confinement (overw
   it('STILL denies the universal protected set (the floor holds for the watcher too)', () => {
     expect(ow(['secrets:read:x']).withinEnvelope).toBe(false);
     expect(ow(['processes:kill']).withinEnvelope).toBe(false);
+  });
+});
+
+describe('evaluateCapabilityEnvelope — testing-phase full access (EI-2048)', () => {
+  // Flag ON (default / unset): the testing roles bypass their per-role denies, but
+  // the universal protected floor still holds.
+  let prev: string | undefined;
+  beforeEach(() => { prev = process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES; delete process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES; });
+  afterEach(() => { if (prev === undefined) delete process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES; else process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = prev; });
+
+  it('a testing role (overwatch) is now ALLOWED its per-role-denied caps (fs-write/bash)', () => {
+    expect(evaluateCapabilityEnvelope({ toolName: 'capability:write', capabilities: ['capability:fs-write'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(true);
+    expect(evaluateCapabilityEnvelope({ toolName: 'capability:bash', capabilities: ['capability:bash'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(true);
+  });
+
+  it('but the universal PROTECTED floor STILL holds for a testing role (secrets / processes:kill)', () => {
+    expect(evaluateCapabilityEnvelope({ toolName: 'secrets.read', capabilities: ['secrets:read:x'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(false);
+    expect(evaluateCapabilityEnvelope({ toolName: 'processes.kill', capabilities: ['processes:kill'], ctx: { role: 'queen' } }).withinEnvelope).toBe(false);
+  });
+
+  it('kill-switch: PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off restores the per-role deny', () => {
+    process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = 'off';
+    expect(evaluateCapabilityEnvelope({ toolName: 'capability:write', capabilities: ['capability:fs-write'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(false);
   });
 });
 
