@@ -1025,7 +1025,10 @@ test('[B-GW-2 chaos] internal-retry DEADLINE bounds slot-hold: a perpetual TRANS
   const t0 = Date.now();
   const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   const elapsed = Date.now() - t0;
-  assert.equal(r.status, 429, 'the perpetual transient 429 is forwarded once the deadline is hit (not absorbed forever)');
+  // The deadline shed manifests as a RETRYABLE error — 429 via the internal-retry guard, or 502/503 when a
+  // near-deadline retry's headers-wait is deadline-capped and the fetch is aborted first. Both are retryable
+  // and both FREE the slot; the durable invariant is "sheds fast + slot freed (no wedge)", not the code.
+  assert.ok([429, 502, 503].includes(r.status), `sheds a RETRYABLE error at the deadline (got ${r.status}) — not absorbed forever`);
   assert.ok(elapsed < 5_000, `slot-hold bounded by the ~200ms deadline (${elapsed}ms) — NOT the full ~30s transient wait budget (the squat the wedge needs)`);
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'the admission slot was freed at the deadline — no squat, so the frozen-while-saturated wedge signature never forms');

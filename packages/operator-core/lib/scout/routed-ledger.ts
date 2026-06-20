@@ -18,6 +18,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { isWorkspaceCoordinationOn, workspaceBrainScopeKey, workspaceBrainReadKeys } from '../workspace-brain-scope';
 import { gatherCompletions } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import {
@@ -480,12 +481,24 @@ export async function getScoutLensWeights(
       // best-effort: keep the harnessSlug fallback
     }
   }
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  // K1 workspace-brain scope (workspace-scoped-coordination D-006): when
+  // WORKSPACE_COORDINATION is ON, the workspace-Scout reads its lens weights from
+  // the workspace-sentinel row (hive_slug = workspaceId), falling back to the
+  // legacy per-hive row until the sentinel is first written (zero regression).
+  // OFF ⇒ the per-hive read, byte-identical to today.
+  const on = await isWorkspaceCoordinationOn();
   let persisted: Partial<Record<CreativeLens, number>> = {};
   try {
-    persisted = await readScoutLensWeights({
-      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-      ...(hiveSlug ? { hiveSlug } : {}),
-    });
+    if (hiveSlug) {
+      for (const key of workspaceBrainReadKeys(ws, hiveSlug, on)) {
+        persisted = await readScoutLensWeights({ workspaceId: ws, hiveSlug: key });
+        if (Object.keys(persisted).length > 0) break;
+      }
+    } else {
+      // No hive context → the workspace-wide read (today's behavior).
+      persisted = await readScoutLensWeights({ workspaceId: ws });
+    }
   } catch (err) {
     // Best-effort read: fall through with no persisted signal → uniform weights.
     // eslint-disable-next-line no-console
@@ -553,8 +566,16 @@ export async function refreshScoutOutcomes(
       // best-effort — keep the harnessSlug fallback
     }
   }
+  // K1 workspace-brain scope (workspace-scoped-coordination D-006): when
+  // WORKSPACE_COORDINATION is ON, the workspace-Scout persists ONE consolidated
+  // lens-weight row per workspace under the sentinel (hive_slug = workspaceId);
+  // OFF ⇒ the per-hive row, byte-identical to today.
+  const scopeSlug = workspaceBrainScopeKey(ws, hiveSlug ?? '', await isWorkspaceCoordinationOn());
   try {
-    await upsertScoutLensWeights(lensWeightRowsFromReport(report), { workspaceId: ws, hiveSlug });
+    await upsertScoutLensWeights(lensWeightRowsFromReport(report), {
+      workspaceId: ws,
+      ...(scopeSlug ? { hiveSlug: scopeSlug } : {}),
+    });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(

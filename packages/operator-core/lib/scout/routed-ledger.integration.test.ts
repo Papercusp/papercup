@@ -13,6 +13,8 @@
  * query silently returns [] — so pin it against the migrated schema).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
@@ -21,7 +23,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 // via a lazy import — mock the SSE seam so the grade tests can assert it.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes, refreshScoutOutcomes } =
+const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes, refreshScoutOutcomes, getScoutLensWeights } =
   await import('./routed-ledger');
 const invalidate = vi.mocked((await import('../sync-sse')).notifySyncInvalidate);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -207,6 +209,42 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     it('grading a nonexistent idea → not-found', async () => {
       const res = await gradeRoutedIdea({ ideaId: 'i-missing', grade: 4, gradedBy: 'owner' });
       expect(res).toEqual({ applied: false, reason: 'not-found' });
+    });
+  });
+
+  // ── workspace-scoped-coordination-2026-06-20 P-002 / D-006: K1 reversible
+  //    sentinel keying for the Scout's lens-weight state behind FLAGS.WORKSPACE_COORDINATION.
+  //    OFF = legacy per-hive (byte-identical); ON = ONE workspace-sentinel row
+  //    (hive_slug = workspaceId), with read-fallback to the per-hive row.
+  describe('K1 workspace-coordination scope (FLAGS.WORKSPACE_COORDINATION)', () => {
+    afterAll(() => setFlagOverridesForTest(null));
+
+    it('flag ON: persists lens weights under the workspace sentinel (hive_slug = workspaceId)', async () => {
+      setFlagOverridesForTest({ [FLAGS.WORKSPACE_COORDINATION]: true });
+      await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+      const rows = await db.adminSql<{ hive_slug: string }[]>`
+        SELECT DISTINCT hive_slug FROM harness_shared.scout_lens_weights
+         WHERE workspace_id = ${WS}`;
+      const hives = rows.map((r) => r.hive_slug);
+      expect(hives).toContain(WS); // the workspace-sentinel row was written
+      // the ideator read-path resolves them back via the sentinel (read-fallback)
+      const { lensWeights } = await getScoutLensWeights({ workspaceId: WS, harnessSlug: HARNESS });
+      const total = (['analogical', 'first-principles', 'reframing', 'constraint-removal'] as const).reduce(
+        (a, l) => a + lensWeights[l],
+        0,
+      );
+      expect(total).toBeCloseTo(1, 6);
+    });
+
+    it('flag OFF: persists + reads under the per-hive slug (byte-identical to today)', async () => {
+      setFlagOverridesForTest({ [FLAGS.WORKSPACE_COORDINATION]: false });
+      await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+      const rows = await db.adminSql<{ hive_slug: string }[]>`
+        SELECT DISTINCT hive_slug FROM harness_shared.scout_lens_weights
+         WHERE workspace_id = ${WS}`;
+      // the per-hive row (resolved hive-home of HARNESS, which falls back to the slug
+      // itself in this test workspace) is present — the legacy keying is untouched.
+      expect(rows.map((r) => r.hive_slug)).toContain(HARNESS);
     });
   });
 });
