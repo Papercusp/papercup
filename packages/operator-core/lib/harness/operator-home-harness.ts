@@ -22,8 +22,10 @@
  * Set `PAPERCUSP_HIVE_HOME_SLUG` to designate the home hive on any install.
  */
 
-/** The one remaining `papercup` literal — last-resort fallback when the pointer is unset. */
-export const LEGACY_DEFAULT_HOME_HARNESS = 'papercup' as const;
+/** Last-resort fallback when PAPERCUSP_HIVE_HOME_SLUG is unset. Flipped papercup→papercusp
+ *  (owner-directed full migration, 2026-06-20): papercusp is the workspace's default home, so
+ *  no env-less process falls back to the retired 'papercup' slug. */
+export const LEGACY_DEFAULT_HOME_HARNESS = 'papercusp' as const;
 
 /** The env pointer that names the workspace's operator-home hive. */
 export const HOME_HARNESS_ENV = 'PAPERCUSP_HIVE_HOME_SLUG' as const;

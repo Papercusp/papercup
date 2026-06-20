@@ -65,7 +65,12 @@ export type BootHistoryKind =
   // WI-280 (part B): the owner's re-key epoch-key grant to a freshly-admitted peer
   // failed. The grant is fire-and-forget (it must not block merge-gated admission),
   // so this is how the failure stays LOUD + queryable instead of a swallowed console.error.
-  | 'rekey_grant_failed';
+  | 'rekey_grant_failed'
+  // WI-280 (ee7e9 diagnostic): the grant SILENTLY early-returned {applied:false} WITHOUT
+  // throwing — flag off / no fresh member pubkeys / no author pubkey (owner self-gate).
+  // This is the non-throw 0-keys path part B's rekey_grant_failed cannot catch; the
+  // message carries which condition + the input values so the witness re-run is conclusive.
+  | 'rekey_grant_skipped';
 
 export interface BootHistoryEntry {
   ts: number;

@@ -115,8 +115,14 @@ describe('evaluateSetContent — CAS', () => {
 });
 
 describe('evaluateSetContent — legacy-boundary guard', () => {
-  it('rejects a write that would degrade a real plan to legacy', async () => {
-    const r = await evaluateSetContent(VALID, LEGACY, SLUG, undefined);
+  it('rejects a write that carries its OWN incomplete frontmatter (a real legacy degrade)', async () => {
+    // EI-1812: a body that simply OMITS frontmatter is now re-attached (the canonical
+    // frontmatter lives in PG columns), NOT treated as a degrade — see
+    // set-content-shrink-guard.test.ts. The legacy-boundary guard still fires when the
+    // proposed body carries its OWN partial frontmatter that drops slug:/status:, which
+    // re-attach intentionally skips (a body already starting with a `---…---` block).
+    const PARTIAL = `---\ntitle: Some old plan\n---\n\n${LEGACY}`;
+    const r = await evaluateSetContent(VALID, PARTIAL, SLUG, undefined);
     expect(r.newBody).toBeNull();
     expect(r.value).toEqual({ ok: false, code: 'would_orphan_frontmatter' });
   });

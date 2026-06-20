@@ -91,8 +91,8 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     expect(cal.daysSinceFire).toBeNull();
   });
 
-  it('matches the legacy papercup row when no @singleton row exists', () => {
-    const legacy: LearningRoutineRow = { installSlug: 'papercup', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) };
+  it('matches the legacy per-home row when no @singleton row exists', () => {
+    const legacy: LearningRoutineRow = { installSlug: 'papercusp', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) };
     const [cal] = computeLearningLoopHealth([LOOPS[0]], [legacy], { nowMs: NOW });
     expect(cal.status).toBe('firing');
     expect(cal.legacyRow).not.toBeNull();
@@ -102,7 +102,7 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
   it('flags the @singleton↔legacy double-state as a collision (prefers the @singleton row)', () => {
     const both: LearningRoutineRow[] = [
       sRow('calibration', { active: false }),
-      { installSlug: 'papercup', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) },
+      { installSlug: 'papercusp', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) },
     ];
     const [cal] = computeLearningLoopHealth([LOOPS[0]], both, { nowMs: NOW });
     expect(cal.collision).toBe(true);

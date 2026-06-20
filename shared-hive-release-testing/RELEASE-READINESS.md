@@ -35,8 +35,19 @@ public production?
 >   a load-gated scheduled run of the two-instance smokes that files an EI on RED, to catch the green-rig/red-binary
 >   class automatically (A-003 + WI-259 were both green hermetically, red live). v0 built; needs a quiet-box validation
 >   + durable scheduling (su-fa300's infra lane).
+> - 📋 **Coverage scope (su-9140a, 06-20): moderation + cross-hive federation are UNWITNESSED live.** The 5 two-instance
+>   smokes (federation/merge/directory/content-matrix/from-repo) + the WI-261 gate cover the CONTENT-federation surface
+>   only. They do NOT exercise **moderation** (takedown/report) or **cross-hive** (ask/request_work/grant). Those carry
+>   unit + PG-integration tests only (logic/schema/state-machine — 0 substrate-boot markers on the sampled
+>   moderation/policy tests), so their live 2-peer DELIVERY has the SAME green-rig/red-binary risk as A-003/C-001/WI-280.
+>   Only **AK ban = witnessed live**. ⇒ a live witness of takedown-federation + cross-hive ask/grant delivery is a
+>   release-readiness gap to close before 🟢 **iff in v1 public-release scope** (cross-hive between distinct hives may be
+>   post-v1 — scope UNCONFIRMED, pending a peer consult). Deferred until box headroom (runbook gate <~load 12; box is
+>   storm-saturated now). The takedown/report leg rides the existing 2-instance rig; cross-hive needs a NEW 2-HIVE rig.
+>   This is a coverage gap, NOT a newly-found bug.
 > **Net:** every blocker is found, filed, owned, and root-caused; C-001 sign-off is decoupled from the from-repo bug
-> and gated only on a quiet-box witness run. Lower section is the prior synthesis.
+> and gated only on a quiet-box witness run. Remaining witness scope beyond C-001 = the moderation/cross-hive coverage
+> row above (iff v1-scoped). Lower section is the prior synthesis.
 
 > ## ✅ UPDATE — A-003 CLOSED (2026-06-19 PM/eve, su-c2a63 + su-ee7e9 + su-53f39 + su-690fe)
 > The A-003 line in su-9140a's block below is SUPERSEDED. A-003 (`hive_members`/`hive_settings`

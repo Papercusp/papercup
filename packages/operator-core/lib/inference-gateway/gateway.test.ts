@@ -739,3 +739,31 @@ test('a NON-DRAINING client cannot pin a slot — the downstream-idle guard tear
   sock.destroy();
   assert.equal(inFlight, 0, 'downstream-idle guard released the slot a hung client would otherwise pin forever');
 });
+
+test('the HARD per-request ceiling force-terminates a stuck request → slot released (universal backstop)', async () => {
+  // An upstream that accepts the connection and NEVER responds. Set the activity stall-guards LONG and the
+  // ceiling SHORT so the CEILING is what fires — proving the universal backstop releases the slot no matter
+  // which await a request is stuck in (not just the specific ones the activity timers cover).
+  const hanging = http.createServer(() => { /* never responds, never closes */ });
+  await new Promise<void>((r) => hanging.listen(0, '127.0.0.1', () => r()));
+  const hangPort = (hanging.address() as { port: number }).port;
+  await boot(
+    (_req, res) => { res.writeHead(200); res.end('{}'); }, // boot's own upstream — unused (overridden below)
+    {
+      upstreamBase: `http://127.0.0.1:${hangPort}`,
+      upstreamHeadersTimeoutMs: 60_000, // long — would NOT fire inside the test window
+      upstreamStreamHeadersTimeoutMs: 60_000,
+      requestCeilingMs: 250, // the hard ceiling is what fires
+    },
+  );
+  const t0 = Date.now();
+  // The ceiling destroys the socket, so the client sees a reset (fetch rejects) rather than an HTTP status —
+  // either way it must SETTLE fast, not hang for 60s.
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }).catch(() => undefined);
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 3000, `hard ceiling force-terminated in ${elapsed}ms, not a 60s hang`);
+  await new Promise((r) => setTimeout(r, 150)); // let the finally release the slot
+  const stats = (await (await ask('/stats')).json()) as { inFlight: number };
+  assert.equal(stats.inFlight, 0, 'hard ceiling released the admission slot');
+  await new Promise<void>((r) => hanging.close(() => r()));
+});

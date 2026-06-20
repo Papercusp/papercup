@@ -86,6 +86,7 @@ BEGIN
   -- 2) slug columns NOT in any unique constraint (append-only logs): plain rename, no dedup.
   FOR r IN
     SELECT c.table_name, c.column_name FROM information_schema.columns c
+    JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
     WHERE c.table_schema = 'harness_shared' AND c.column_name ~ '(install|harness|hive|home)_slug'
       AND NOT EXISTS (
         SELECT 1 FROM information_schema.key_column_usage kcu
@@ -101,6 +102,10 @@ BEGIN
 
   -- 3) operator_settings KEYS (hive_started/overwatch :*:papercup*). 'papercusp-workspace'
   --    has no 'papercup' substring (cuSp ≠ cuP), so this is precise.
+  DELETE FROM harness_shared.operator_settings a
+   WHERE a.key LIKE '%papercup%'
+     AND EXISTS (SELECT 1 FROM harness_shared.operator_settings b
+                  WHERE b.key = replace(a.key, 'papercup', 'papercusp') AND b.key <> a.key);
   UPDATE harness_shared.operator_settings SET key = replace(key, 'papercup', 'papercusp')
    WHERE key LIKE '%papercup%';
 
@@ -116,17 +121,16 @@ END $$;
 --    existingPath, but this fixes the EXISTING row in lock-step with the data.)
 UPDATE harness_shared.harness_registry r
    SET payload = jsonb_set(
-     jsonb_build_object('projects', (
-       SELECT jsonb_agg(
-         CASE WHEN p->>'slug' = 'papercusp'
-              THEN jsonb_set(p, '{path}', to_jsonb(
-                     (SELECT p2->>'path' FROM jsonb_array_elements(r.payload->'projects') p2
-                       WHERE p2->>'slug' = 'papercup')))
-              ELSE p END)
-       FROM jsonb_array_elements(r.payload->'projects') p
-       WHERE p->>'slug' <> 'papercup'
-     )),
-     '{__merged}', 'true'::jsonb)  -- marker; harmless extra key (drop if registry schema is strict)
+     r.payload,
+     '{projects}',
+     (SELECT jsonb_agg(
+        CASE WHEN p->>'slug' = 'papercusp'
+             THEN jsonb_set(p, '{path}', to_jsonb(COALESCE(
+                    (SELECT p2->>'path' FROM jsonb_array_elements(r.payload->'projects') p2 WHERE p2->>'slug'='papercup'),
+                    p->>'path')))
+             ELSE p END)
+      FROM jsonb_array_elements(r.payload->'projects') p
+      WHERE p->>'slug' <> 'papercup'))
  WHERE r.workspace_id = 'papercusp-workspace'
    AND r.payload::text LIKE '%"papercup"%';
 

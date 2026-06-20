@@ -90,7 +90,12 @@ function parseBody(v: unknown): CoordEnvelope {
  * idempotent across a schema that predates the scoping column (D-007): a
  * fresh table gets the scoped definitions outright; a table left over from
  * before the column existed is migrated in place (pre-alpha, test-only, so
- * the index rebuild is safe — no production data on this table yet).
+ * the index rebuild is safe — no production data on this table yet). Every
+ * mutating step is gated by a catalog existence check (`columnExists` /
+ * `indexNeedsRebuild`) so the already-migrated steady state issues NO
+ * lock-taking DDL — an unconditional `ALTER TABLE … ADD COLUMN IF NOT EXISTS`
+ * still grabs an ACCESS EXCLUSIVE lock and would trip `lock_timeout` against
+ * the busy live org DB (the EI-1576 family of checkpoint flakes).
  */
 export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
   await sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
@@ -105,20 +110,34 @@ export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
       ts           timestamptz NOT NULL DEFAULT now()
     )
   `;
-  // Migrate a pre-D-007 table that has no scoping column.
-  await sql`
-    ALTER TABLE harness_shared.coord_event_log
-      ADD COLUMN IF NOT EXISTS workspace_id text NOT NULL DEFAULT 'default'
-  `;
+  // Migrate a pre-D-007 table that has no scoping column. Guarded by a catalog
+  // existence check so the steady state takes NO lock: `ALTER TABLE … ADD COLUMN
+  // IF NOT EXISTS` acquires an ACCESS EXCLUSIVE lock on the table BEFORE it
+  // evaluates the `IF NOT EXISTS`, so issuing it unconditionally on every call
+  // blocks behind the live operator's concurrent writes to coord_event_log and
+  // trips `lock_timeout` ("canceling statement due to lock timeout") under load —
+  // observed as a green-checkpoint flake. The column already exists on every
+  // migrated DB, so the ALTER now only ever runs once, on a genuinely legacy
+  // table (same steady-state-skip posture as the index `indexNeedsRebuild` guards
+  // below).
+  if (!(await columnExists(sql, 'coord_event_log', 'workspace_id'))) {
+    await sql`
+      ALTER TABLE harness_shared.coord_event_log
+        ADD COLUMN IF NOT EXISTS workspace_id text NOT NULL DEFAULT 'default'
+    `;
+  }
   // harness_slug: the harness scope projected from CoordEnvelope.harness_slug.
   // NULL = operator-scope/workspace-global (local). The federation migration
   // (147) adds the same column + the capture triggers + the fed unique index;
   // keeping it here too means the runtime-bootstrapped table (conformance / fresh
-  // test rigs) has the scope column without depending on migration order.
-  await sql`
-    ALTER TABLE harness_shared.coord_event_log
-      ADD COLUMN IF NOT EXISTS harness_slug text
-  `;
+  // test rigs) has the scope column without depending on migration order. Same
+  // lock-avoiding existence guard as workspace_id above.
+  if (!(await columnExists(sql, 'coord_event_log', 'harness_slug'))) {
+    await sql`
+      ALTER TABLE harness_shared.coord_event_log
+        ADD COLUMN IF NOT EXISTS harness_slug text
+    `;
+  }
   // EVENT surfaces are keyed: exactly one immutable record per (workspace_id,
   // surface, msg_id). LINE surfaces (messages/plan-events) are pure append —
   // the partial predicate keeps them out of the uniqueness constraint so the
@@ -169,6 +188,28 @@ async function indexNeedsRebuild(sql: Sql, indexName: string): Promise<boolean> 
   `;
   if (rows.length === 0) return true; // missing → build
   return !/\bworkspace_id\b/.test(rows[0].indexdef); // legacy narrow → widen
+}
+
+/**
+ * True when `harness_shared.<table>` already has the named column. Lets
+ * `ensureCoordEventLogTable` skip the `ALTER TABLE … ADD COLUMN` in the steady
+ * state — Postgres grabs an ACCESS EXCLUSIVE lock on the table BEFORE it checks
+ * `IF NOT EXISTS`, so the otherwise no-op ALTER still blocks on a busy live
+ * `coord_event_log` and trips `lock_timeout`. The catalog read takes only
+ * ACCESS SHARE on the system catalogs (never on coord_event_log itself), so it
+ * never contends with the operator's row writes. Same steady-state-skip posture
+ * as `indexNeedsRebuild`.
+ */
+async function columnExists(sql: Sql, table: string, column: string): Promise<boolean> {
+  const rows = await sql<{ present: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'harness_shared'
+         AND table_name = ${table}
+         AND column_name = ${column}
+    ) AS present
+  `;
+  return rows[0]?.present === true;
 }
 
 export class PgCoordLog implements CoordEventLog {

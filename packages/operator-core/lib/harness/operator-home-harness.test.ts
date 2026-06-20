@@ -12,7 +12,7 @@ describe('operatorHomeHarnessSlug — single home-harness pointer (papercup→pa
   it('falls back to the legacy default when unset (behavior-preserving)', () => {
     delete process.env[HOME_HARNESS_ENV];
     expect(operatorHomeHarnessSlug()).toBe(LEGACY_DEFAULT_HOME_HARNESS);
-    expect(LEGACY_DEFAULT_HOME_HARNESS).toBe('papercup');
+    expect(LEGACY_DEFAULT_HOME_HARNESS).toBe('papercusp');
   });
   it('trims + ignores empty pointer', () => {
     process.env[HOME_HARNESS_ENV] = '   ';

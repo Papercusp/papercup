@@ -92,15 +92,20 @@ export function computeLearningLoopHealth(
     staleAfterDays?: number;
     singletonHostSlug?: string;
     alwaysOn?: ReadonlySet<string>;
+    /** Operator-home harness slug the legacy (per-home) learning row lives under. Default
+     *  'papercusp' (post papercup→papercusp migration, 2026-06-20); the live tool passes the
+     *  resolved home (operatorHomeHarnessSlug). */
+    homeSlug?: string;
   },
 ): LearningLoopHealth[] {
   const staleMs = (opts.staleAfterDays ?? DEFAULT_LOOP_STALE_AFTER_DAYS) * DAY_MS;
   const singletonHost = opts.singletonHostSlug ?? SINGLETON_HOST_SLUG;
   const alwaysOnSet = opts.alwaysOn ?? ALWAYS_ON_LEARNING_LOOPS;
+  const legacyHost = opts.homeSlug ?? 'papercusp';
   return loops.map((loop) => {
     const sName = singletonRoutineName(loop.blueprintId);
     const singletonRow = routines.find((r) => r.installSlug === singletonHost && r.name === sName) ?? null;
-    const legacyRow = routines.find((r) => r.installSlug === 'papercup' && r.name === loop.legacyRoutine) ?? null;
+    const legacyRow = routines.find((r) => r.installSlug === legacyHost && r.name === loop.legacyRoutine) ?? null;
     const row = singletonRow ?? legacyRow;
     const alwaysOn = alwaysOnSet.has(loop.blueprintId);
     const active = row?.active ?? false;

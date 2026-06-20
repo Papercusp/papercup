@@ -31,17 +31,15 @@ import { createRequire } from 'node:module';
  * Kept deliberately small — a deploy gate that false-blocks every promotion is
  * worse than none. Extend via PAPERCUSP_PREFLIGHT_ADDONS (comma-separated).
  */
-export const DEFAULT_REQUIRED_ADDONS = ['better-sqlite3', 'sodium-native'] as const;
-// `sodium-native` (EI-1814 / WI-280): the hive re-key's real epoch-key crypto
-// (hive-epoch-crypto-impl.ts) calls `sodium-native` DIRECTLY (not via
-// sodium-universal's JS fallback the base swarm uses), lazy-loaded on the first
-// grant. In the packaged sidecar its native `.node` wasn't resolvable, so the
-// owner's admit-grant threw and minted ZERO epoch keys — and because every
-// hermetic test stubs the crypto, the suite stayed green while the live binary
-// was dead (the green-rig/red-binary class, WI-261). Gating + the boot self-check
-// on it turns that silent 0-keys into a LOUD, deploy-blocking failure. NOTE: this
-// only DETECTS the load failure; the durable fix is the sidecar build shipping +
-// resolving the prebuilt binary (EI-1814 fix-1a, sidecar-packaging lane).
+export const DEFAULT_REQUIRED_ADDONS = ['better-sqlite3'] as const;
+// NOTE (EI-1814): `sodium-native` was briefly added here on the hypothesis that
+// its load-failure caused the re-key 0-keys — REVERTED: su-ee7e9's runtime test
+// proved sodium() does NOT throw in the live sidecar, so it is not the root, and
+// sodium-native is re-key-only (the base swarm uses sodium-universal's JS
+// fallback) so gating it universally would false-block re-key-OFF hosts. The real
+// 0-keys root is elsewhere in the admit-grant (328af's `rekey_grant_failed` boot
+// event names it). If a re-key-conditional native check is ever wanted, gate it
+// on the flag — do not add it to the unconditional required set.
 
 /** Resolve the required-addon set: env override (comma list) or the default. */
 export function requiredAddonsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {

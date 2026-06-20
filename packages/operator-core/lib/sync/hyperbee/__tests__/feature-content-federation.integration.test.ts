@@ -67,6 +67,18 @@ import { buildIssuesProjection } from '../projections/issues';
 // drop is exercised exactly as production applies it.
 import { buildHarnessProjectionApply } from '../projections/register-all';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+// WI-259 STEP 1 (P-001) membership-aware admission case (below) — these route the
+// PROCESS-GLOBAL getOrgPg() at a migrated throwaway DB so boot.ts's STEP 1 reads
+// (hiveHomeSlugForHarness + resolveHiveMemberDeviceSet, both hardcoded to getOrgPg()
+// with NO sql seam) resolve against a seeded hive_members/hives/harness_registry.
+// Mirrors the _baseline-coord-fixture env-routing in two-peer-convergence.integration.test.ts.
+import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
+// eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
+import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
+import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
+import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
+import { mutateHarnessRegistry } from '../../../harness-registry';
+import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../apps/operator/lib/sync/hyperbee/__tests__ → repo root is six levels up.
@@ -976,6 +988,282 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         status: 'todo',
         origin: 'remote',
       });
+    },
+    60_000,
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // WI-259 STEP 1 (P-001) — the MEMBERSHIP-AWARE admission gate (LANDED).
+  //
+  // The WI-261 Prong A case above does NOT seed hive_members, so on B
+  // `myHiveHome = hiveHomeProjectionSlug ?? hiveHomeSlugForHarness(ws, B-slug)`
+  // resolves null and STEP 1 is SKIPPED — it only exercises the APPLY-layer drop.
+  // This case SEEDS membership so STEP 1's admission path actually FIRES: B admits
+  // A's out-of-scope (different member slug) log BY IDENTITY because A's verified
+  // `device_pubkey` ∈ B's hive's federated member device-pubkey set
+  // (resolveHiveMemberDeviceSet → listHiveMembers, boot.ts onAnnounce `if (!inScope)`).
+  //
+  // HOW MEMBERSHIP IS SEEDED (the real path — NOT the hiveHomeProjectionSlug shortcut):
+  // STEP 1 calls `hiveHomeSlugForHarness(ws, B_SLUG)` and
+  // `resolveHiveMemberDeviceSet(ws, myHiveHome)` with NO `sql` seam — BOTH hardcode
+  // the PROCESS-GLOBAL `getOrgPg()`. The two booted peers, by contrast, bind their
+  // PROJECTIONS to per-peer `sql` seams (dbA/dbB) — getOrgPg() is never their DB. So
+  // to make STEP 1 read seeded membership we env-route getOrgPg() at a THIRD, MIGRATED
+  // throwaway DB (createOrgTestDb + HARNESS_ADMIN/DATABASE_URL — the established
+  // _baseline-coord-fixture pattern, see two-peer-convergence.integration.test.ts) and
+  // seed THERE:
+  //   - `hives`         — one row for HIVE_HOME (hive_members FKs it; needs a valid
+  //                       raw-32 base64 Ed25519 public_key).
+  //   - `hive_members`  — one row for A's identity (idA.userId + a device_attestations
+  //                       entry carrying idA.devicePubkey), hive_home_slug = HIVE_HOME.
+  //                       This is what resolveHiveMemberDeviceSet returns A's pubkey from.
+  //   - `harness_registry` — B's project `{ slug: B_SLUG, hive_slug: HIVE_HOME }` so
+  //                       hiveHomeSlugForHarness(ws, B_SLUG) resolves HIVE_HOME (A's
+  //                       home project + a hive entry too, for symmetry).
+  // A's announce carries A's REAL device_pubkey + github_user_id (the identity override),
+  // matched to the seeded hive_members row.
+  //
+  // ASSERTIONS:
+  //  (1) PASSES — B ADMITS A's log: `handleB.admitted.has(handleA.ownLog.keyHex)` flips
+  //      true (STEP 1's `same_hive_member` admission fired). This is the NEW value: it
+  //      validates the landed P-001 path. A miss FAILS the test (real regression signal).
+  //  (2) Current state (documented) — A's feature does NOT yet land in B's PG: apply
+  //      still drops it (P-002 not wired + the register-all member-slug guard still live).
+  //      This check FLIPS to an admission→presence assertion when WI-259 P-002 lands.
+  // ──────────────────────────────────────────────────────────────────────────
+  it(
+    'WI-259 STEP 1 (P-001): B ADMITS A’s same-hive cross-member log by membership identity (feature still apply-dropped — P-002 pending)',
+    async () => {
+      const A_SLUG = 'hive-repo'; // owner A's member harness slug
+      const B_SLUG = 'joined-hive-repo'; // joiner B's from-repo member slug
+      const HIVE_HOME = 'hive-repo-home'; // the shared hive-home both members belong to
+
+      // ── Env-route the PROCESS-GLOBAL getOrgPg() at a migrated membership DB so
+      //    boot.ts STEP 1's getOrgPg()-backed reads see seeded hive_members/hives/registry. ──
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
+      const prevAppUrl = process.env.HARNESS_DATABASE_URL;
+      const prevWs = process.env.PAPERCUSP_WORKSPACE_ID;
+      const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        // Restore env + reset the global pools/caches so the OTHER cases in this file
+        // (which never touch getOrgPg()) are unaffected.
+        if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+        else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
+        if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
+        else process.env.HARNESS_DATABASE_URL = prevAppUrl;
+        if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+        else process.env.PAPERCUSP_WORKSPACE_ID = prevWs;
+        if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+        else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      // ── Identities up front — A's seeded hive_members row MUST match A's announce. ──
+      const idA = makeIdentityOverride('alice', 42, 'kc-alice');
+      const idB = makeIdentityOverride('bob', 7, 'kc-bob');
+
+      // ── Seed membership in the env-routed (getOrgPg) DB. adminSql is harness_admin
+      //    (RLS-bypass superuser), so no app.workspace_id GUC is needed. ──
+      // A valid raw-32 base64 Ed25519 pubkey for the hives row (hive_members FKs hives).
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.hives
+          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-hive-home', 'Hive Home', null, 1, 1)
+      `;
+      // A's hive_members row — the device_attestations entry carries A's REAL announce
+      // device_pubkey, so resolveHiveMemberDeviceSet(ws, HIVE_HOME) contains it.
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.hive_members
+          (workspace_id, hive_home_slug, github_user_id, github_username,
+           device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idA.userId}, 'alice',
+                ${JSON.stringify([
+                  {
+                    device_pubkey: idA.devicePubkey,
+                    gist_id: 'gist-alice',
+                    gist_url: 'https://gist.github.com/alice',
+                    device_label: 'alice-dev',
+                    created_at: 1,
+                    signature_by_device: 'sig',
+                  },
+                ])}::text::jsonb,
+                '{}'::text[], 'verified')
+      `;
+      // Registry: B's member project points at HIVE_HOME so hiveHomeSlugForHarness(B)
+      // → HIVE_HOME. (A's home + member projects seeded too for symmetry.)
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/hive-home', harness_kind: 'hive' },
+            { slug: A_SLUG, path: '/tmp/a', hive_slug: HIVE_HOME },
+            { slug: B_SLUG, path: '/tmp/b', hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+
+      // ── Sanity: the SAME getOrgPg()-backed reads STEP 1 makes resolve as expected. ──
+      const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
+      const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
+      expect(await hiveHomeSlugForHarness(WORKSPACE_ID, B_SLUG)).toBe(HIVE_HOME);
+      const seededSet = await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME);
+      expect(seededSet.has(idA.devicePubkey)).toBe(true);
+      _clearHiveMemberDeviceSetCacheForTest(); // drop the sanity-read cache so boot re-reads fresh
+
+      // ── Two SEPARATE per-peer DBs (the projection scope) — each its OWN member slug. ──
+      const dbA: FreshPgDb = await createFreshPgDb('wi259A');
+      cleanups.push(() => dbA.cleanup());
+      const dbB: FreshPgDb = await createFreshPgDb('wi259B');
+      cleanups.push(() => dbB.cleanup());
+      await setupPeerSchema(dbA.sql, A_SLUG);
+      await setupPeerSchema(dbB.sql, B_SLUG);
+
+      // ── Local testnet DHT + two real swarms (mirror the WI-261 case). ──
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const swarmA = makeSwarm(testnet.bootstrap);
+      const swarmB = makeSwarm(testnet.bootstrap);
+      const rootA = makeWorkspaceRoot('wi259-A-');
+      const rootB = makeWorkspaceRoot('wi259-B-');
+
+      let handleA: BootedHarnessHandle | undefined;
+      let handleB: BootedHarnessHandle | undefined;
+      let applyA: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      let applyB: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+
+      // ── Boot A: member slug A_SLUG; REAL scoped apply bound to A's DB + hive-home. ──
+      handleA = await bootHarnessSubstrate({
+        workspaceRoot: rootA,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: A_SLUG,
+        swarmBinding: BINDING, // SHARED binding → SHARED topic, independent of member slug
+        swarmOverride: swarmA,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idB.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyA ??= buildHarnessProjectionApply({
+            workspaceId: WORKSPACE_ID,
+            harnessSlug: A_SLUG,
+            hiveHomeSlug: HIVE_HOME,
+            sql: dbA.sql,
+            ownLogKeyHex: handleA!.ownLog.keyHex,
+          });
+          return applyA(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idA.override,
+      });
+      cleanups.push(async () => {
+        await handleA?.close();
+        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug: A_SLUG });
+      });
+
+      // ── Boot B: DIFFERENT member slug B_SLUG. B is the receiver whose STEP 1 fires:
+      //    A's announce (origin=A_SLUG) is out of B's own/rebind scope, so B falls into
+      //    `if (!inScope)` and admits A by membership identity. ──
+      handleB = await bootHarnessSubstrate({
+        workspaceRoot: rootB,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: B_SLUG,
+        swarmBinding: BINDING,
+        swarmOverride: swarmB,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idA.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyB ??= buildHarnessProjectionApply({
+            workspaceId: WORKSPACE_ID,
+            harnessSlug: B_SLUG,
+            hiveHomeSlug: HIVE_HOME,
+            sql: dbB.sql,
+            ownLogKeyHex: handleB!.ownLog.keyHex,
+          });
+          return applyB(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idB.override,
+      });
+      cleanups.push(async () => {
+        await handleB?.close();
+        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug: B_SLUG });
+      });
+
+      // Both joined the SAME topic despite different member slugs (topic ⟵ binding).
+      expect(handleA.swarm).not.toBeNull();
+      expect(handleB.swarm).not.toBeNull();
+      expect(handleA.swarm!.topicHex).toBe(handleB.swarm!.topicHex);
+
+      // ── A writes a member-harness FEATURE under A's slug → real trigger → outbox
+      //    → drain → A's own log. ──
+      await dbA.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${A_SLUG}, 'F-wi259', 'Member feature', 'from A', 'todo', 0, 'local', 4001, 4001, 4001)
+      `;
+      expect(await countOutbox(dbA.sql, 'harness_features_consolidated', 'F-wi259')).toBe(1);
+      const drainedA = await drainOutboxOnce(handleA, dbA.sql);
+      expect(drainedA, "A's F-wi259 was not drained to its log").toBeGreaterThanOrEqual(1);
+
+      // ── (1) THE NEW VALUE: poll until B ADMITS A's remote log via STEP 1. This is the
+      //    landed P-001 path — B admits A's out-of-scope log because A's verified
+      //    device_pubkey ∈ B's hive member device set (the seeded hive_members). A miss
+      //    FAILS the test (a real STEP-1 regression). `handleB.admitted` is keyed by
+      //    log_core_key (= ownLog.keyHex), seeded with B's own log + every admitted remote. ──
+      const bAdmittedA =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleA!.mergeNow(), handleB!.mergeNow()]);
+            return handleB!.admitted.has(handleA!.ownLog.keyHex) ? true : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? false;
+      expect(
+        bAdmittedA,
+        "B did NOT admit A's same-hive cross-member log — WI-259 STEP 1 (P-001) membership-aware " +
+          'admission did not fire (check the seeded hives/hive_members/registry resolve under getOrgPg())',
+      ).toBe(true);
+
+      // ── (2) CURRENT STATE (documented, flips when WI-259 P-002 lands): A's feature is
+      //    ADMITTED+REPLICATED (above) but its content does NOT land in B's PG — every
+      //    projection's apply drops a wrong-slug op (B scoped to B_SLUG ≠ the op's A_SLUG;
+      //    features are NOT yet in the hive-home remap set). Drive a few more merge passes
+      //    to give any (non-existent today) apply a chance, then assert absence under EVERY
+      //    plausible slug-scope. When P-002 wires shared content in, replace this block with
+      //    a positive assertion that A's feature LANDS in B's PG (origin='remote'). ──
+      for (let i = 0; i < 6; i++) {
+        await Promise.all([handleA.mergeNow(), handleB.mergeNow()]);
+      }
+      expect(await readFeatureForSlug(dbB.sql, A_SLUG, 'F-wi259')).toBeUndefined();
+      expect(await readFeatureForSlug(dbB.sql, B_SLUG, 'F-wi259')).toBeUndefined();
+      expect(await readFeatureForSlug(dbB.sql, HIVE_HOME, 'F-wi259')).toBeUndefined();
     },
     60_000,
   );

@@ -42,6 +42,15 @@ export interface BoundaryRekeyResult {
   newEpoch?: number;
   /** # of remaining members the new epoch key was wrapped + persisted to (when applied). */
   distributed?: number;
+  /**
+   * When NOT applied, WHICH silent early-return fired (WI-280 diagnostic, ee7e9's gap):
+   * 'flag-disabled' (re-key resolved off in this context), 'no-fresh-members'
+   * (newMemberPubkeys empty after dedup/filter), or 'no-author' (loadHivePubkey null — not
+   * the owner box). The grant returns 0 keys with NO throw in all three, so 328af's
+   * throw-only rekey_grant_failed event never sees them; the admit call-site reads this to
+   * emit a queryable rekey_grant_skipped event so a 0-keys run NAMES the cause.
+   */
+  reason?: 'flag-disabled' | 'no-fresh-members' | 'no-author';
 }
 
 export interface BoundaryRekeySeams {
@@ -161,9 +170,9 @@ export async function grantEpochKeysToMembers(
     getCurrentEpoch?: (ws: string, slug: string, sql?: Sql) => Promise<number>;
   } = {},
 ): Promise<BoundaryRekeyResult> {
-  if (!opts.enabled) return { applied: false };
+  if (!opts.enabled) return { applied: false, reason: 'flag-disabled' };
   const fresh = [...new Set(opts.newMemberPubkeys.filter((pk) => pk))];
-  if (fresh.length === 0) return { applied: false };
+  if (fresh.length === 0) return { applied: false, reason: 'no-fresh-members' };
   const {
     resolveCrypto = resolveHiveEpochCrypto,
     resolveAuthorPubkey = loadHivePubkey,
@@ -177,7 +186,7 @@ export async function grantEpochKeysToMembers(
   // upsertHiveMember owner-side + the open-mode admittedIdentities.set, which fires on every
   // box) without the caller re-checking owner-ness.
   const author = await resolveAuthorPubkey(opts.workspaceId, opts.hiveHomeSlug);
-  if (!author) return { applied: false };
+  if (!author) return { applied: false, reason: 'no-author' };
 
   const crypto = await resolveCrypto(true);
   const current = await getCurrentEpoch(opts.workspaceId, opts.hiveHomeSlug, opts.sql);

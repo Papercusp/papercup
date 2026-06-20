@@ -12,12 +12,18 @@
  * under one slug and needed a NULL-prone author_pubkey discriminator to avoid F-001 clobber).
  * Here each member's content stays under its OWN member slug (no clobber, no discriminator),
  * and this guard decides cross-member VISIBILITY by IDENTITY: apply a cross-member op iff its
- * author device-identity pubkey ∈ the hive's current member device set (D-002 — federated
+ * VERIFIED SOURCE-LOG device pubkey ∈ the hive's CURRENT member device set (D-002 — federated
  * hive_members, not a per-workspace slug lookup; resolveHiveMemberDeviceSet, P-003).
  *
- * `author_pubkey` (PeerLogOp / provenance.authorPubkey) IS the writer's device-identity pubkey
- * (peer-log.ts:42,57) — the same base64 grain hive_members.device_attestations carries and the
- * P-003 resolver set holds, so `set.has(authorPubkey)` is a direct identity match.
+ * The identity grain is `op.sourceLogDevicePubkey` (D-005): the device pubkey that
+ * cryptographically VOUCHED for the op's SOURCE LOG at admission — P-001 sig-checks the announce
+ * against it AND verifies it ∈ members, then read-merge receiver-stamps it from the AdmittedLog.
+ * It is UNFORGEABLE (the same provenance trust as `sourceLogKeyHex`, which lwwPick already treats
+ * as peer-stable/unforgeable). It is deliberately NOT `op.author_pubkey`: that field is
+ * CALLER-SUPPLIED (peer-log.ts:19), so keying on it would be a SECURITY HOLE — a member could
+ * stamp any pubkey, and a removed member could spoof a still-member's pubkey to evade the
+ * WRITE-cut. And we re-check against the CURRENT member set at apply, NOT a stale admission-time
+ * flag — a member who LEAVES must immediately lose write access (ee7e9; ties D-004's removal cut).
  *
  * Apply order (ee7e9 review #2, ties plan D-003): a cross-member content op is ENCRYPTED under
  * the re-key, so the apply pipeline must DECRYPT (epochGate / Gate 3) BEFORE this guard runs —
@@ -42,7 +48,7 @@ export interface MemberContentGuardOpts {
  * Should this op be applied to THIS harness's content projection?
  *   - own-slug op (rowHarnessSlug === harnessSlug) → ALWAYS apply (unchanged behavior), else
  *   - cross-member op → apply iff this harness is in a hive (hiveHomeSlug set) AND the op's
- *     author device-identity pubkey ∈ the hive's current member device set; else DROP.
+ *     VERIFIED source-log device pubkey ∈ the hive's CURRENT member device set; else DROP.
  *
  * The own-slug fast path takes ZERO async work (the common case — a harness applying its own
  * ops), so the member-set resolve only runs for genuinely cross-member ops.
@@ -50,15 +56,15 @@ export interface MemberContentGuardOpts {
 export async function shouldApplyMemberContentOp(
   rowHarnessSlug: string,
   opts: MemberContentGuardOpts,
-  authorPubkey: string | null | undefined,
+  sourceLogDevicePubkey: string | null | undefined,
   deps?: MemberDeviceSetDeps,
 ): Promise<boolean> {
   // Own slug — apply (today's behavior; no membership work on the hot common path).
   if (rowHarnessSlug === opts.harnessSlug) return true;
   // Cross-slug op on a NON-hive harness — there are no members to admit from → drop.
   if (!opts.hiveHomeSlug) return false;
-  // Cross-member op with no verified author — cannot confirm membership → drop (fail-closed).
-  if (!authorPubkey) return false;
+  // Cross-member op with no VERIFIED source-log identity — cannot confirm membership → drop (fail-closed).
+  if (!sourceLogDevicePubkey) return false;
   const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.hiveHomeSlug, opts.sql, deps);
-  return memberSet.has(authorPubkey);
+  return memberSet.has(sourceLogDevicePubkey);
 }

@@ -14,6 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { LEARNING_SINGLETONS } from '../../blueprint/seed-learning-singletons';
 import {
   computeLearningLoopHealth,
@@ -72,7 +73,7 @@ export default defineTool({
       SELECT install_slug, name, active, last_fired_at, next_fire_at
         FROM harness_shared.routines
        WHERE workspace_id = ${workspaceId}
-         AND install_slug IN ${sql([SINGLETON_HOST_SLUG, 'papercup'])}
+         AND install_slug IN ${sql([SINGLETON_HOST_SLUG, operatorHomeHarnessSlug()])}
          AND name IN ${sql(names)}`) as {
       install_slug: string;
       name: string;

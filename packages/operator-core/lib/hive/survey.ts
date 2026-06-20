@@ -359,6 +359,10 @@ export async function fetchFrontierRows(
           WHERE p.workspace_id = f.workspace_id
             AND p.work_item_id = f.feature_id
             AND p.status = 'cursed'
+            -- Scope the curse to THIS hive's own installs (papercup→papercusp migration follow-up,
+            -- 2026-06-20): a curse from a RETIRED/foreign install must not hide the item from the
+            -- home hive's frontier. Unscoped only in the workspace-wide fallback (surveySlugs empty).
+            ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
        )
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
      ORDER BY created_ts ASC
@@ -403,6 +407,10 @@ export async function countPlaceableFrontier(
           WHERE p.workspace_id = f.workspace_id
             AND p.work_item_id = f.feature_id
             AND p.status = 'cursed'
+            -- Scope the curse to THIS hive's own installs (papercup→papercusp migration follow-up,
+            -- 2026-06-20): a curse from a RETIRED/foreign install must not hide the item from the
+            -- home hive's frontier. Unscoped only in the workspace-wide fallback (surveySlugs empty).
+            ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
        )
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}`;
   return Number(rows[0]?.n ?? 0);

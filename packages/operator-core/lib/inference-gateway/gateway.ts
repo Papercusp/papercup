@@ -131,6 +131,14 @@ const DEFAULT_TOKEN_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_TOKEN_MS) 
  *  fires on socket INACTIVITY, so it distinguishes a hung client (fires → destroy → 'close' → release)
  *  from a slow-but-draining one (write progress keeps resetting it). Env-tunable. */
 const DEFAULT_DOWNSTREAM_IDLE_MS = Number(process.env.PAPERCUSP_GATEWAY_DOWNSTREAM_IDLE_MS) || 2 * 60 * 1000;
+/** Hard per-request lifetime ceiling — a UNIVERSAL backstop. The activity timers (upstream headers/body,
+ *  token refresh, downstream idle) each bound a SPECIFIC hang; this bounds the WHOLE request regardless of
+ *  cause, so a future/unknown unbounded await can never silently pin an admission slot (the recurring
+ *  2026-06-20 wedge class). Generous — longer than any legitimate single turn (a long non-streaming
+ *  generation waits the 5-min headers deadline + body) — so it only fires on a genuine wedge, never on live
+ *  traffic. On fire it aborts the in-flight upstream AND destroys the client socket → every await resolves
+ *  → the finally releases the slot. Env-tunable. */
+const DEFAULT_REQUEST_CEILING_MS = Number(process.env.PAPERCUSP_GATEWAY_REQUEST_CEILING_MS) || 20 * 60 * 1000;
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
  *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
@@ -237,6 +245,10 @@ export interface GatewayDeps {
    *  after this much socket inactivity so it can't pin the proxy task's admission slot (the 2026-06-20
    *  wedge #2). Default 2 min (env PAPERCUSP_GATEWAY_DOWNSTREAM_IDLE_MS). */
   downstreamIdleMs?: number;
+  /** Hard per-request lifetime ceiling (ms) — the universal backstop: a request that somehow outlives all
+   *  activity timers is force-terminated (upstream abort + socket destroy) so it can't pin a slot from an
+   *  unknown hang. Default 20 min (env PAPERCUSP_GATEWAY_REQUEST_CEILING_MS). */
+  requestCeilingMs?: number;
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -418,6 +430,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamBodyIdleTimeoutMs = deps.upstreamBodyIdleTimeoutMs ?? DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS;
   const tokenTimeoutMs = deps.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS;
   const downstreamIdleMs = deps.downstreamIdleMs ?? DEFAULT_DOWNSTREAM_IDLE_MS;
+  const requestCeilingMs = deps.requestCeilingMs ?? DEFAULT_REQUEST_CEILING_MS;
   const log = deps.log ?? (() => {});
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
   const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs, maxQueued });
@@ -608,6 +621,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const clearStall = () => {
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = undefined; }
     };
+    // Hard per-request lifetime ceiling (universal backstop): regardless of WHICH await a request is stuck
+    // in, force it to terminate after requestCeilingMs so it can never pin its admission slot from an
+    // unknown hang. Aborts the in-flight upstream (currentAc) AND destroys the client socket → every await
+    // below (fetch / peekBody / the streaming pipe) resolves → the finally releases the slot.
+    let currentAc: AbortController | undefined;
+    const ceilingTimer = setTimeout(() => {
+      log('error', `inference-gateway: request hit the ${requestCeilingMs}ms hard ceiling on '${active.accountId}' — force-terminating (slot backstop)`);
+      try { currentAc?.abort(new Error(`request ceiling: ${requestCeilingMs}ms`)); } catch { /* already settled */ }
+      try { res.destroy(); } catch { /* already torn down */ }
+    }, requestCeilingMs);
+    ceilingTimer.unref?.();
     try {
       // Constant request headers (everything but the per-account Authorization/dispatcher, set per attempt).
       // Every account is a Claude Max subscription OAuth credential → `Authorization: Bearer` + the
@@ -662,6 +686,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // Per-attempt abort + stall deadline: aborts THIS upstream call (headers or body) if it
         // stalls, converting a permanent hang into a reject → the finally releases the admission slot.
         const ac = new AbortController();
+        currentAc = ac; // expose this attempt's controller to the hard-ceiling backstop
         const armStall = (ms: number) => {
           clearStall();
           stallTimer = setTimeout(() => ac.abort(new Error(`upstream stall: no activity for ${ms}ms`)), ms);
@@ -890,6 +915,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
     } finally {
       clearStall();
+      clearTimeout(ceilingTimer);
       release();
     }
   }

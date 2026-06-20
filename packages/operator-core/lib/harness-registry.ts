@@ -23,6 +23,13 @@ export interface ProjectEntry {
   slug: string;
   path: string;
   harness_kind?: string;
+  /**
+   * A `harness_kind:'hive'` entry that IS its OWN repo checkout, not a repo-less state dir
+   * (Option-B merge, papercup→papercusp 2026-06-20: the home hive and its dogfood repo are ONE
+   * entry). git-sync-eligibility treats such a hive as a real checkout (eligible) while a normal
+   * repo-less hive home stays `hive_home`-ineligible. Flag-based so the verdict stays IO-free.
+   */
+  self_repo?: boolean;
   /** Department slug for harness_kind='department' projects (e.g. "business"). */
   department_slug?: string;
   /**

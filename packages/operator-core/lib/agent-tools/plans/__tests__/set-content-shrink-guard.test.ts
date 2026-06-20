@@ -77,6 +77,30 @@ const HALF = CURRENT.replace(
   PADDING.slice(0, Math.floor(PADDING.length / 2)).replace(/[^\n]*$/, 'Trimmed.'),
 );
 
+/** CURRENT with its leading `---…---` frontmatter block stripped — the natural
+ *  raw-body edit for a PG-canonical plan whose frontmatter lives in PG columns. */
+const BODY_ONLY = CURRENT.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n\n?/, '');
+/** CURRENT but the frontmatter replaced by an INCOMPLETE block (title only) — a
+ *  genuine would-degrade-to-legacy payload the guard must STILL reject (the body
+ *  is intact, so it is not a shrink; it trips the legacy boundary, not the shrink one). */
+const PARTIAL_FM = CURRENT.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '---\ntitle: Shrink Guard\n---\n');
+
+describe('evaluateSetContent — legacy-boundary frontmatter re-attach (EI-1812)', () => {
+  it('accepts a frontmatter-less body by re-attaching the current frontmatter, not would_orphan_frontmatter', async () => {
+    const r = await evaluateSetContent(CURRENT, BODY_ONLY, SLUG, hashPlanContent(CURRENT), {});
+    expect(r.value.ok, JSON.stringify(r.value)).toBe(true);
+    // Non-orphaning: the stored body carries the re-attached canonical frontmatter.
+    expect(r.newBody).toMatch(/^---\r?\n[\s\S]*?\nslug: shrink-guard-2026-06-10\n[\s\S]*?\r?\n---\r?\n/);
+    expect(r.newBody).toContain('# Shrink Guard');
+  });
+
+  it('still rejects a body that carries its OWN incomplete frontmatter (a real legacy degrade)', async () => {
+    const r = await evaluateSetContent(CURRENT, PARTIAL_FM, SLUG, hashPlanContent(CURRENT), {});
+    expect(r.value.ok).toBe(false);
+    if (!r.value.ok) expect(r.value.code).toBe('would_orphan_frontmatter');
+  });
+});
+
 describe('evaluateSetContent — suspicious_shrink guard (EI-83 / audit P-040)', () => {
   it('rejects a >80% shrink without allowShrink, reporting both lengths', async () => {
     expect(TINY.length).toBeLessThan(CURRENT.length * SUSPICIOUS_SHRINK_RATIO); // test premise

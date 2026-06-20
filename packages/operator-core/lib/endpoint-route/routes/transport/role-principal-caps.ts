@@ -95,6 +95,12 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'coord:read',
     'coord:write',
     'plans:read',
+    // owner-fix 2026-06-20: a `role=planner` session ("Create → New plan", launch-su.ts:150) resolves
+    // to system:operator, yet `operator` had only plans:READ while the `bee` role carries plans:write
+    // (D-005, psu plan-authoring parity) — so a planner could NOT write the very plan it exists to
+    // author (write 100%-failed with "Principal system:operator lacks capability plans:write"). Grant
+    // it here so loadRoleCapabilities unions it in at load time (no re-provision needed).
+    'plans:write',
     'routines:write',
   ],
   // The QUEEN — the hive's placement-specialist decider (local-hive D-001:

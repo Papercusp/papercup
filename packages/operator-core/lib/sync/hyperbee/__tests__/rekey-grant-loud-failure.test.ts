@@ -35,6 +35,7 @@ vi.mock('../hive-epoch-boundary-wiring', () => ({
 }));
 
 import { bootHarnessSubstrate } from '../boot';
+import { grantEpochKeysToMembers } from '../hive-epoch-boundary-wiring';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import { _resetCacheForTests } from '../corestore';
 import { _clearRegistryForTests } from '../projection';
@@ -159,6 +160,72 @@ describe('WI-280 part B — re-key admit-grant failure is LOUD, not swallowed', 
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining('grantEpochKeysToMembers on admit failed'),
       );
+    },
+    5000,
+  );
+
+  it(
+    'records a rekey_grant_skipped boot event (with the reason) when the grant SILENTLY returns {applied:false}, and still admits the peer',
+    async () => {
+      // The NON-THROW 0-keys path — the actual WI-280 root (line 164 'flag-disabled').
+      // The grant returns {applied:false, reason} WITHOUT throwing, so part B's throw
+      // catch never sees it; the admit call-site emits rekey_grant_skipped so a 0-keys
+      // run NAMES the cause instead of silently minting nothing.
+      vi.mocked(grantEpochKeysToMembers).mockImplementationOnce(async () => ({
+        applied: false,
+        reason: 'flag-disabled',
+      }));
+
+      let callCount = 0;
+      const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
+        callCount++;
+        return callCount === 1 ? 'pending' : 'verified';
+      };
+
+      const handle = await bootHarnessSubstrate({
+        workspaceRoot: tmpDir('mb-rekey-skip-'),
+        workspaceId: 'ws-rekey-skip',
+        harnessSlug: 'rekey-skip',
+        mergePollMs: 0,
+        pendingRetryMs: 20,
+        loadRevokedOverride: async () => new Set(),
+        verifyBindingOverride,
+      });
+      cleanups.push(() => handle.close());
+
+      const logCoreKey = 'dd'.repeat(32);
+      const frame = await validAnnounce(logCoreKey);
+
+      const decision = await handle.onAnnounce(frame);
+      expect(decision).toEqual({ admit: false, reason: 'pending' });
+
+      const admitted = await pollUntil(
+        () => handle.admitted.has(logCoreKey),
+        { timeoutMs: 2000, intervalMs: 30 },
+      );
+      expect(admitted, 'peer admitted despite the silent grant skip').toBeTruthy();
+
+      // The silent skip is NAMED — a queryable rekey_grant_skipped event carrying the reason.
+      const named = await pollUntil(
+        () =>
+          listBootHistory({
+            workspaceId: 'ws-rekey-skip',
+            harnessSlug: 'rekey-skip',
+            kinds: ['rekey_grant_skipped'],
+            limit: 5,
+          }).length > 0,
+        { timeoutMs: 2000, intervalMs: 30 },
+      );
+      expect(named, 'rekey_grant_skipped boot event recorded (the silent 0-keys path is named)').toBeTruthy();
+
+      const events = listBootHistory({
+        workspaceId: 'ws-rekey-skip',
+        harnessSlug: 'rekey-skip',
+        kinds: ['rekey_grant_skipped'],
+        limit: 5,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0].message).toContain('flag-disabled'); // the WHICH-return reason is surfaced
     },
     5000,
   );

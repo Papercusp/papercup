@@ -100,7 +100,7 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
       { workspaceId: 'w', hiveHomeSlug: 'h', enabled: false, newMemberPubkeys: ['B'] },
       { persistWrappedKeys: persist },
     );
-    expect(r).toEqual({ applied: false });
+    expect(r).toEqual({ applied: false, reason: 'flag-disabled' });
     expect(persist).not.toHaveBeenCalled();
   });
 
@@ -109,7 +109,7 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
       { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: [] },
       { getCurrentEpoch: async () => 2 },
     );
-    expect(r).toEqual({ applied: false });
+    expect(r).toEqual({ applied: false, reason: 'no-fresh-members' });
   });
 
   it('flag ON, current=2 ⇒ wraps EVERY epoch [0..2] to each UNIQUE new member', async () => {
@@ -149,7 +149,7 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
         resolveCrypto: async () => ({ deriveEpochKey: derive }) as never,
       },
     );
-    expect(r).toEqual({ applied: false });
+    expect(r).toEqual({ applied: false, reason: 'no-author' });
     expect(derive).not.toHaveBeenCalled(); // owner-gate short-circuits BEFORE any derive
   });
 });

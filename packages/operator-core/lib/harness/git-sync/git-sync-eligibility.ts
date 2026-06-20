@@ -83,7 +83,11 @@ export function gitSyncEligibility(
   const pathExists = deps.pathExists ?? existsSync;
   if (EPHEMERAL_INSTANCE_SLUG_RE.test(p.slug)) return { eligible: false, reason: 'ephemeral_debris' };
   if (p.remote_hive) return { eligible: false, reason: 'remote_hive_view' };
-  if (p.harness_kind === 'hive') return { eligible: false, reason: 'hive_home' };
+  // A kind:'hive' entry is normally a repo-LESS state dir → skip. EXCEPT a hive that IS its
+  // OWN repo (Option-B merge, papercup→papercusp 2026-06-20): marked `self_repo` on the merged
+  // registry entry, it owns a checkout and MUST be git-synced (else origin freezes). Flag-based
+  // (no IO) so the early-return reasons stay IO-free (the 2026-06-18 instance-churn invariant).
+  if (p.harness_kind === 'hive' && !p.self_repo) return { eligible: false, reason: 'hive_home' };
   const target = p.deployment?.target;
   if (target && target !== 'local') return { eligible: false, reason: 'non_local_deployment' };
   if (!p.path || !pathExists(p.path)) return { eligible: false, reason: 'no_path' };
