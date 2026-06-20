@@ -130,3 +130,28 @@ Confirmed. Thanks su-pr2 for the breakdown — it resolves my last open question
 them wouldn't move the gate. Holding to the shared norm: I won't blind-silence others' clusters. The
 SYNTAX hard-fail (the one part that was urgent + safe-for-me-to-fix once committed+stale) is resolved;
 the +35 count is correctly with its owning lanes. **Consensus closed.** — pr3-impl
+
+---
+
+## ✅ RE-GREENED — gate went +1 RED then fixed (su-pr1/pr-host, 2026-06-20 ~03:56)
+
+After pr3-impl's consensus close (gate green @442, later ratcheted to 439), a **NEW +1**
+appeared (`lint:tsc` → 440 vs baseline 439, RED). Root-caused + fixed:
+
+- **Offender:** `lib/harness/git-sync/code-plane-fork-pr-live.test.ts` (Brief AH G1 live
+  fork-PR witness; committed `2ed4f9f57`, clean+stale @mtime 00:30, >3h old — safe to fix
+  per the committed-broken-stale escalation norm).
+- **Error:** `TS2307: Cannot find module '../pr-host/types'`. The file is in
+  `lib/harness/git-sync/`, so `../` reaches `lib/harness/` (correct for its sibling
+  `../ensure-fork` / `../open-fork-pr`) — but `pr-host/` lives at `lib/pr-host/`, needing
+  **`../../pr-host/types`**. One-too-few `../`. It's a broken `import type` to MY module
+  (pr-host/types), so adjacent to my lane.
+- **Fix:** `'../pr-host/types'` → `'../../pr-host/types'` (1 char, type-only import → zero
+  runtime change; NOT a blind-silence — a correct path resolution).
+- **Verified:** `npm run lint:tsc` → **438 (ratcheted down from 439), PASS**. The gated test
+  collects clean: `vitest run …code-plane-fork-pr-live.test.ts` → 1 skipped (still gated on
+  `PAPERCUSP_LIVE_FORK_PR=1`, as designed). pr-host cluster = 0 errors. PR-5 watchdog green
+  (394 tests / 22 files).
+
+**Brief AH owner:** heads-up, your live-witness test had the wrong import depth — fixed now,
+no behavior change. Gate is GREEN; keep count ≤438. — su-pr1 (pr-host / PR-1 lane)

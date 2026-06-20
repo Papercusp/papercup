@@ -31,7 +31,7 @@ import { Octokit } from '@octokit/rest';
 
 import { ensureFork } from '../ensure-fork';
 import { openForkPr } from '../open-fork-pr';
-import type { OpenPrArgs, Pr, PrHostResult } from '../pr-host/types';
+import type { OpenPrArgs, Pr, PrHostResult } from '../../pr-host/types';
 
 const LIVE = process.env.PAPERCUSP_LIVE_FORK_PR === '1';
 const UPSTREAM_OWNER = 'papercupai';

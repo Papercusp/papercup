@@ -629,12 +629,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessEscalations.byHarness — single escalation row per phase.
   //   zql.harnessEscalations.where(harnessSlug).where(phase).limit(1)
   'harnessEscalations.byHarness': {
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
     argsSchema: z.object({
       harnessSlug: z.string(),
       phase: z.string().default('staging'),
+      workspaceId: z.string().optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { harnessSlug, phase, workspaceId } = args as {
+        harnessSlug: string;
+        phase: string;
+        workspaceId?: string;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessEscalationsInHarnessShared;
@@ -642,7 +648,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase), eq(t.workspaceId, workspaceId))
+            : and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)),
+        )
         .limit(1)) as unknown[];
     },
   },
@@ -650,17 +660,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessCheckpoints.byHarness — checkpoints ordered by waiting time.
   //   zql.harnessCheckpoints.where(harnessSlug).orderBy('waitingSinceMs', 'asc')
   'harnessCheckpoints.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { asc, eq } = await import('drizzle-orm');
+      const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessCheckpointsInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(asc(t.waitingSinceMs))) as unknown[];
     },
   },
@@ -720,12 +735,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessTests.byHarness — tests filtered by harness+phase, by name.
   //   zql.harnessTests.where(harnessSlug).where(phase).orderBy('name', 'asc')
   'harnessTests.byHarness': {
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
     argsSchema: z.object({
       harnessSlug: z.string(),
       phase: z.string().default('staging'),
+      workspaceId: z.string().optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { harnessSlug, phase, workspaceId } = args as {
+        harnessSlug: string;
+        phase: string;
+        workspaceId?: string;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessTestsInHarnessShared;
@@ -733,7 +754,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase), eq(t.workspaceId, workspaceId))
+            : and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)),
+        )
         .orderBy(asc(t.name))) as unknown[];
     },
   },
@@ -741,12 +766,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessArchives.byHarness — archives by harness+phase, latest first.
   //   zql.harnessArchives.where(harnessSlug).where(phase).orderBy('ts', 'desc')
   'harnessArchives.byHarness': {
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
     argsSchema: z.object({
       harnessSlug: z.string(),
       phase: z.string().default('staging'),
+      workspaceId: z.string().optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { harnessSlug, phase, workspaceId } = args as {
+        harnessSlug: string;
+        phase: string;
+        workspaceId?: string;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessArchivesInHarnessShared;
@@ -754,7 +785,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase), eq(t.workspaceId, workspaceId))
+            : and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)),
+        )
         .orderBy(desc(t.ts))) as unknown[];
     },
   },
@@ -762,17 +797,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessHookLogs.byHarness — most-recent 50 hook events per harness.
   //   zql.harnessHookLogs.where(harnessSlug).orderBy('ts', 'desc').limit(50)
   'harnessHookLogs.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
+      const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessHookLogsInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(desc(t.ts))
         .limit(50)) as unknown[];
     },
@@ -791,17 +831,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessSmokeTest.byHarness — single smoke-test row per harness.
   //   zql.harnessSmokeTest.where(harnessSlug).limit(1)
   'harnessSmokeTest.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { eq } = await import('drizzle-orm');
+      const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessSmokeTestInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .limit(1)) as unknown[];
     },
   },
@@ -865,12 +910,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessPendingIssues.byHarness — harness+phase, newest first.
   //   zql.harnessPendingIssues.where(harnessSlug).where(phase).orderBy('ts', 'desc')
   'harnessPendingIssues.byHarness': {
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
     argsSchema: z.object({
       harnessSlug: z.string(),
       phase: z.string().default('staging'),
+      workspaceId: z.string().optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { harnessSlug, phase, workspaceId } = args as {
+        harnessSlug: string;
+        phase: string;
+        workspaceId?: string;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessPendingIssuesInHarnessShared;
@@ -878,7 +929,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase), eq(t.workspaceId, workspaceId))
+            : and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)),
+        )
         .orderBy(desc(t.ts))) as unknown[];
     },
   },
@@ -886,12 +941,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessScreenshots.byHarness — harness+phase, newest first.
   //   zql.harnessScreenshots.where(harnessSlug).where(phase).orderBy('ts', 'desc')
   'harnessScreenshots.byHarness': {
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
     argsSchema: z.object({
       harnessSlug: z.string(),
       phase: z.string().default('staging'),
+      workspaceId: z.string().optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { harnessSlug, phase, workspaceId } = args as {
+        harnessSlug: string;
+        phase: string;
+        workspaceId?: string;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessScreenshotsInHarnessShared;
@@ -899,7 +960,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase), eq(t.workspaceId, workspaceId))
+            : and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)),
+        )
         .orderBy(desc(t.ts))) as unknown[];
     },
   },
@@ -912,20 +977,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // agentChats.byHarness — chats ordered by updatedAt desc, capped.
   //   zql.agentChatsConsolidated.where(harnessSlug).orderBy('updatedAt', 'desc').limit(limit)
   'agentChats.byHarness': {
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
     argsSchema: z.object({
       harnessSlug: z.string(),
       limit: z.number().int().positive().max(500).default(50),
+      workspaceId: z.string().optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, limit } = args as { harnessSlug: string; limit: number };
+      const { harnessSlug, limit, workspaceId } = args as {
+        harnessSlug: string;
+        limit: number;
+        workspaceId?: string;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
+      const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.agentChatsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(desc(t.updatedAt))
         .limit(limit)) as unknown[];
     },
@@ -936,17 +1011,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // featureNotes.byHarness — feature notes ordered by featureId asc.
   //   zql.harnessFeatureNotes.where(harnessSlug).orderBy('featureId', 'asc')
   'featureNotes.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { asc, eq } = await import('drizzle-orm');
+      const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeatureNotesInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(asc(t.featureId))) as unknown[];
     },
   },
@@ -954,17 +1034,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // featureDebugNotes.byHarness — debug notes ordered by featureId asc.
   //   zql.harnessFeatureDebugNotes.where(harnessSlug).orderBy('featureId', 'asc')
   'featureDebugNotes.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { asc, eq } = await import('drizzle-orm');
+      const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeatureDebugNotesInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(asc(t.featureId))) as unknown[];
     },
   },
@@ -972,17 +1057,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // featureAudit.byHarness — feature audit log, newest first, cap 2000.
   //   zql.featureAuditConsolidated.where(harnessSlug).orderBy('ts', 'desc').limit(2000)
   'featureAudit.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
+      const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.featureAuditConsolidatedInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(desc(t.ts))
         .limit(2000)) as unknown[];
     },
@@ -992,17 +1082,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //   zql.harnessChunkPlans.where(harnessSlug)
   //                        .orderBy('featureId', 'asc').orderBy('chunkIndex', 'asc')
   'chunkPlans.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { asc, eq } = await import('drizzle-orm');
+      const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessChunkPlansInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(asc(t.featureId), asc(t.chunkIndex))) as unknown[];
     },
   },
@@ -1301,17 +1396,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // featuresConsolidated.bySlug — features for a harness, latest first.
   //   zql.featuresConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
   'featuresConsolidated.bySlug': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
+      const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeaturesConsolidatedInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(desc(t.updatedTs))) as unknown[];
     },
   },
@@ -1343,17 +1443,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // issuesConsolidated.bySlug — issues for a harness, latest first.
   //   zql.issuesConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
   'issuesConsolidated.bySlug': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
+    // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
+      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
+      const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessIssuesConsolidatedInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()
         .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
         .orderBy(desc(t.updatedTs))) as unknown[];
     },
   },

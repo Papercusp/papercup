@@ -72,31 +72,17 @@ const INDEX = resolve(HERE, 'index.ts');
  * stale-entry test the moment its `workspace_id` filter lands, tracking remediation to
  * zero. The guard still fails CI for any NEW unfiltered resolver beyond this baseline.
  */
-const OPEN_REASON =
-  'OPEN: getOrgPg (BYPASSRLS) read filters harness_slug only; workspace-scoped table → ' +
-  'cross-tenant read in multi-tenant. Fix = thread workspaceId from resolver context ' +
-  '(findings-rls-coverage.md / findings-AD.md, AD/federation-sync lane).';
-const OPEN_UNFILTERED: Record<string, string> = {
-  'agentChats.byHarness': OPEN_REASON,
-  'chunkPlans.byHarness': OPEN_REASON,
-  'featureAudit.byHarness': OPEN_REASON,
-  'featureDebugNotes.byHarness': OPEN_REASON,
-  'featureNotes.byHarness': OPEN_REASON,
-  'featuresConsolidated.bySlug': OPEN_REASON,
-  'harnessArchives.byHarness': OPEN_REASON,
-  'harnessCheckpoints.byHarness': OPEN_REASON,
-  'harnessEscalations.byHarness': OPEN_REASON,
-  'harnessHookLogs.byHarness': OPEN_REASON,
-  'harnessPendingIssues.byHarness': OPEN_REASON,
-  // EI-1763 remediation (su-d2230, 2026-06-20): harnessProjectFiles / harnessSkills /
-  // harnessTextArtifact now thread workspaceId (eq(t.workspaceId, workspaceId) when
-  // present) → no longer flagged → removed from the open set as the guard's stale-entry
-  // test requires. (harnessDecisions.byHarness likewise scoped, was not in this list.)
-  'harnessScreenshots.byHarness': OPEN_REASON,
-  'harnessSmokeTest.byHarness': OPEN_REASON,
-  'harnessTests.byHarness': OPEN_REASON,
-  'issuesConsolidated.bySlug': OPEN_REASON,
-};
+// EI-1763 REMEDIATED TO ZERO (su-d2230, 2026-06-20). All getOrgPg harness_slug-only
+// reads now thread `workspaceId` (eq(t.workspaceId, workspaceId) when present) per the
+// AD-owner call (su-860d3): the workspace-context source is the caller's request/sync
+// context threaded EXPLICITLY through argsSchema — NOT a global/ALS fallback (that
+// global-default is the EI-126 write-side mis-route trap). The open set is now EMPTY,
+// so the guard fails CI for ANY new unfiltered getOrgPg slug-only resolver.
+//
+// To DOCUMENT a future resolver here: for a genuinely NOT-workspace-scoped table use a
+// 'SAFE: <why the table has no workspace_id>' reason; for a still-open cross-tenant read
+// use 'OPEN: getOrgPg (BYPASSRLS) read filters harness_slug only … fix = thread workspaceId'.
+const OPEN_UNFILTERED: Record<string, string> = {};
 
 /** Split index.ts into resolver blocks keyed by their `'name.method':` registry key. */
 function resolverBlocks(src: string): Array<{ name: string; body: string }> {

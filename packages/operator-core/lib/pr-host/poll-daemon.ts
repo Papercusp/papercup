@@ -166,6 +166,21 @@ export interface PollDaemonDeps {
     harnessSlug: string;
     githubUserId: number;
   }) => Promise<boolean>;
+  /**
+   * After an AUTONOMOUS auto-merge, complete the WI→shipped + PR→merged tracking — the
+   * same post-merge stamp the manual `reviewPr` route does (resolveMergedPrFeatureId →
+   * stampCompletionRefOnMerge + markFeaturePrState('merged')). Without it a daemon-merged
+   * PR never stamps `completion_ref` (feature stays un-shipped) nor flips the WI↔PR row,
+   * so the dogfood round-trip + the "shipped ✓" stat never fire for autonomous merges.
+   * Default: defaultStampMerge. Best-effort — the merge already succeeded.
+   */
+  stampMerge?: (args: {
+    workspaceId: string;
+    installSlug: string;
+    remote: string;
+    pr: Pr;
+    mergeCommitSha: string;
+  }) => Promise<void>;
   now?: () => number;
   random?: () => number;
 }
@@ -226,6 +241,13 @@ interface ResolvedDeps {
     harnessSlug: string;
     githubUserId: number;
   }) => Promise<boolean>;
+  stampMerge: (args: {
+    workspaceId: string;
+    installSlug: string;
+    remote: string;
+    pr: Pr;
+    mergeCommitSha: string;
+  }) => Promise<void>;
   now: () => number;
   random: () => number;
 }
@@ -239,6 +261,7 @@ function resolveDeps(deps: PollDaemonDeps): ResolvedDeps {
     triggerReviewer: deps.triggerReviewer ?? defaultTriggerReviewer,
     readReport: deps.readReport ?? defaultReadReport,
     isAuthorRevoked: deps.isAuthorRevoked ?? defaultIsAuthorRevoked,
+    stampMerge: deps.stampMerge ?? defaultStampMerge,
     now: deps.now ?? Date.now,
     random: deps.random ?? Math.random,
   };
@@ -411,7 +434,20 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
       // The in-memory PR still carries its pre-approve review_decision; reflect the
       // approval we just posted so tryAutoMerge's "approved" gate sees the truth.
       const mergeRes = await tryAutoMerge(host, { ...enriched, review_decision: 'approved' }, mergeCtx);
-      if (mergeRes.action === 'merged') counts.merged.push(enriched.ref.number);
+      if (mergeRes.action === 'merged') {
+        counts.merged.push(enriched.ref.number);
+        // Complete the WI→shipped + PR→merged tracking on the AUTONOMOUS path, exactly as
+        // the manual reviewPr route does — without this an auto-merge never stamps
+        // completion_ref (feature stays un-shipped) nor flips the WI↔PR row. Best-effort:
+        // the merge already succeeded, so a stamp failure must never surface as a poll error.
+        await d.stampMerge({
+          workspaceId,
+          installSlug,
+          remote,
+          pr: enriched,
+          mergeCommitSha: mergeRes.mergeCommitSha,
+        });
+      }
     }
   }
 
@@ -763,6 +799,46 @@ async function defaultIsAuthorRevoked(args: {
     return await isPrAuthorRevoked(args);
   } catch {
     return false;
+  }
+}
+
+/** Default post-merge stamp for the AUTONOMOUS path — mirrors the manual `reviewPr` route
+ *  (resolveMergedPrFeatureId → stampCompletionRefOnMerge + markFeaturePrState('merged')) so a
+ *  daemon-merged PR completes the WI→shipped + PR→merged tracking. Best-effort: never throws
+ *  (the merge already succeeded; a tracking-stamp failure must not surface as a poll error). */
+async function defaultStampMerge(args: {
+  workspaceId: string;
+  installSlug: string;
+  remote: string;
+  pr: Pr;
+  mergeCommitSha: string;
+}): Promise<void> {
+  try {
+    const [{ resolveMergedPrFeatureId, stampCompletionRefOnMerge }, { markFeaturePrState }] =
+      await Promise.all([
+        import('../harness/completion-ref-writer'),
+        import('../harness/feature-pr-producer'),
+      ]);
+    // Fork-PR convention: the PR title IS the feature id (fork-pr-on-feature-pass sets
+    // `title: ${featureId}`); resolveMergedPrFeatureId falls back to the harness_feature_prs
+    // row by pr_url when the title isn't a feature id (a non-matching id stamps nothing).
+    const featureId = await resolveMergedPrFeatureId({
+      harnessSlug: args.installSlug,
+      prUrl: args.pr.url,
+      bodyFeatureId: args.pr.title,
+    });
+    await stampCompletionRefOnMerge({
+      harnessSlug: args.installSlug,
+      featureId,
+      remote: args.remote,
+      branch: args.pr.base_ref,
+      mergeCommitSha: args.mergeCommitSha,
+      prUrl: args.pr.url,
+      prNumber: args.pr.ref.number,
+    });
+    await markFeaturePrState({ harnessSlug: args.installSlug, prUrl: args.pr.url, prState: 'merged' });
+  } catch {
+    /* best-effort — see doc comment */
   }
 }
 

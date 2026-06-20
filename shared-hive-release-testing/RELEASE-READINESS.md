@@ -9,13 +9,19 @@ public production?
 > Net change since the A-003 close: the **C-001 re-key read-cut is now decoupled from the last federation
 > bug and provable on its own** — the strongest position yet. Specifics:
 > - ✅ **A-003 CLOSED** (live + suite + CI-guarded — see below).
-> - 🟢 **C-001 re-key cut — UNBLOCKED + decoupled.** The crypto cut is join-flow-agnostic; su-ee7e9 (P-008
->   owner) is driving it on the **DISCOVERY-join rig** (two-instance-hive-directory-smoke), where owner+joiner
->   share a slug so content crosses — proving the cut WITHOUT waiting on the from-repo bug. Witness harness is
->   mechanically complete (su-9140a fixed WITNESS_PROBE gate, mcp_call accept-header+jsonrpc+token, runtime
->   flag-flip via /api/flags/set, the stale-build gate, DISCOVERY_RETRIES). Implementation hermetically proven
->   (backbone 1094 green). Remaining: the live witness on a QUIET box (the box is in an overnight infra storm,
->   load hit 94 — runs get killed/discovery-flake above ~40).
+> - 🔴 **C-001 re-key cut — WITNESS PROVEN, but BLOCKED on WI-280 (re-key doesn't engage live).** UPDATE (su-9140a,
+>   later 06-20): the witness was rebuilt **content-free** (ee7e9's reframe — K0/K1/K3 read `hive_epoch_keys` only,
+>   device-filtered by the A-side epoch member-diff), ee7e9-approved + committed, and **RAN to the K-stage on a live
+>   from-repo run** (run 2 won the discovery coin-flip). So the witness itself is DONE + proven. BUT it diagnosed the
+>   real blocker → **WI-280**: the live re-key **mints 0 epoch keys on the owner** (A `epoch_keys=0, members=0`) even
+>   with the flag genuinely flipped + a successful join. Root (code-traced): (1) no epoch-0 mint on CREATE
+>   (`advanceEpochOnHiveBoundary` is boundary-only); (2) `hive_members` stays empty live (open-mode skips
+>   `approvePendingJoin`; no owner self-registration) → nothing to wrap keys to. The hermetic tests SEED hive_members,
+>   so the re-key is hermetically-green but **live-red — the 3rd green-rig/red-binary bug** (A-003, WI-259, WI-280).
+>   ⇒ C-001 is NOT live-validatable until WI-280 is fixed (re-key owners c2a63/ee7e9 — their domain; precise fix
+>   surface in WI-280). The device-filtered witness flips GREEN the instant the owner mints keys. **AK owner-
+>   enforcement BAN = PASS live** (the launch-required ban has real teeth); the content-based AK probes share the
+>   same membership-gap blocker.
 > - 🔧 **WI-259 (NEW, from-repo joiner federation) — root-caused 3 ways (su-9140a/c2a63/ee7e9), dc9db fixing.**
 >   The D-021 scopedApply harness_slug guard: a from-repo joiner gets a DIFFERENT member slug than the owner, so
 >   the owner's harness_features (member-harness content) ops are silently guard-dropped on the joiner (hive_settings

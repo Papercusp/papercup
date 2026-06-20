@@ -9,11 +9,12 @@ status: active
 ## What this is
 
 The inbound side of the fork→PR loop. When a contributor opens a PR on a shared
-harness, the **agent-reviewer** reads it and emits a structured report
-(`{ summary, recommendation: approve|request_changes|reject, rationale, risks[],
-checksObserved{} }`). The owner reads it (manual mode) or the poll daemon trusts
-the `recommendation` (auto mode). It is the agent half of the owner's "human OR
-agent review" model (PLAN-pr-system-completion-dogfood, Phase PR-2).
+harness, the **agent-reviewer** reads it and emits a structured report — the
+fields `summary`, `recommendation` (one of `approve` / `request_changes` /
+`reject`), `rationale`, `risks[]`, and `checksObserved`. The owner reads it
+(manual mode) or the poll daemon trusts the `recommendation` (auto mode). It is
+the agent half of the owner's "human OR agent review" model
+(PLAN-pr-system-completion-dogfood, Phase PR-2).
 
 ## The end-to-end flow (who calls what)
 

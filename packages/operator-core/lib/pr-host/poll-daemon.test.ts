@@ -155,6 +155,7 @@ function baseDeps(host: PrHost, store: PollStore, over: Partial<PollDaemonDeps> 
     triggerReviewer: vi.fn(async () => {}),
     readReport: async () => ({ recommendation: 'approve' as const }),
     isAuthorRevoked: async () => false, // PR-5: not revoked by default; revocation tests override.
+    stampMerge: vi.fn(async () => {}), // PR-5: post-merge WI→shipped stamp; spied in the stamp test.
     now: () => 1_700_000_500_000,
     random: () => 0.5,
     ...over,
@@ -208,6 +209,36 @@ describe('pollHarnessPrs — happy path (the autonomous loop)', () => {
     expect(out.merged).toEqual([]);
     expect(postReview).toHaveBeenCalledTimes(1);
     expect(merge).not.toHaveBeenCalled();
+  });
+});
+
+describe('pollHarnessPrs — autonomous merge completes WI→shipped tracking (PR-5)', () => {
+  it('TEETH: an auto-merge fires stampMerge (completion_ref + WI↔PR row) with the PR + merge sha', async () => {
+    const { host } = makeHost();
+    const { store } = makeStore();
+    const stampMerge = vi.fn(
+      async (_a: { workspaceId: string; installSlug: string; remote: string; pr: Pr; mergeCommitSha: string }) => {},
+    );
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { stampMerge }));
+    expect(out.merged).toEqual([42]);
+    expect(stampMerge).toHaveBeenCalledTimes(1);
+    expect(stampMerge.mock.calls[0]![0]).toMatchObject({
+      installSlug: 'papercup',
+      remote: 'github.com/owner/repo',
+      mergeCommitSha: 'merged-sha',
+    });
+    expect(stampMerge.mock.calls[0]![0].pr.ref.number).toBe(42);
+  });
+
+  it('does NOT stamp when no merge happens (auto_merge off → approve only)', async () => {
+    const { host } = makeHost();
+    const { store } = makeStore({
+      settings: { pr_reviewer_role_enabled: true, auto_review: true, auto_merge: false, merge_method: 'squash' },
+    });
+    const stampMerge = vi.fn(async () => {});
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { stampMerge }));
+    expect(out.merged).toEqual([]);
+    expect(stampMerge).not.toHaveBeenCalled();
   });
 });
 

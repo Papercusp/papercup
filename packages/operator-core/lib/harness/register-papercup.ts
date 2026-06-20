@@ -149,6 +149,22 @@ export async function registerPapercupHarness(opts: {
     };
   }
 
+  // B-merge (owner-directed papercup→papercusp): once 'papercusp' is the MERGED hive that
+  // IS this repo (harness_kind:'hive', path===the repo root), do NOT also register a
+  // separate legacy 'papercup' harness — that duplicate is exactly what the merge removes.
+  // Skip so a post-merge boot never re-creates 'papercup'. Pre-merge (papercusp is still a
+  // repo-less hive at a state dir) path!==root, so the legacy registration still runs.
+  const mergedHive = hReg.projects.find(
+    (p) => p.harness_kind === 'hive' && p.path === path && p.slug !== PAPERCUP_HARNESS_SLUG,
+  );
+  if (mergedHive) {
+    return {
+      state: 'skipped',
+      path: null,
+      reason: `repo owned by merged hive '${mergedHive.slug}' (papercup→papercusp merge)`,
+    };
+  }
+
   hReg.projects.push({ slug: PAPERCUP_HARNESS_SLUG, path });
   await saveHarnessRegistry(hReg, PAPERCUSP_WORKSPACE_ID);
 

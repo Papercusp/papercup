@@ -66,6 +66,9 @@ export interface EnsurePapercuspHiveDeps {
     slug: string;
     workspaceId: string;
     createdBy?: string;
+    /** B-merge (owner-directed): link the repo IN PLACE as the hive home (path=repo),
+     *  so 'papercusp' is ONE entry that is its own repo — no separate member harness. */
+    existingPath?: string;
   }) => Promise<CreateHiveLike>;
 }
 
@@ -124,6 +127,11 @@ export async function ensurePapercuspHive(
     slug: PAPERCUSP_HIVE_SLUG,
     workspaceId: PAPERCUSP_WORKSPACE_ID,
     createdBy: 'system:dogfood-bootstrap',
+    // B-merge (owner-directed papercup→papercusp): papercusp IS its own repo. Link the
+    // detected repo root in place as the hive home (createHiveHarness existingPath mode),
+    // so there is ONE 'papercusp' entry (harness_kind:'hive', path=repo) and no separate
+    // 'papercup' member harness. resolveHarnessContentPath returns this path (no member).
+    existingPath: root,
   });
   if (!res.ok) {
     // slug_exists is benign (a race, or a pre-entity hive) → treat as present.

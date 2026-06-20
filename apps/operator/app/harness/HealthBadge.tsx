@@ -130,7 +130,7 @@ function HealthBadgeInner({ slug }: Props) {
   // is non-empty when escalation.md exists.
   const escalationsQ = useSyncQuery<Escalation>({
     queryName: 'harnessEscalations.byHarness',
-    args: { harnessSlug: slug, phase: 'staging' },
+    args: { harnessSlug: slug, workspaceId, phase: 'staging' }, // EI-1763: tenant-scope
   });
 
   // Ghost rate: harnessDecisions.byHarness (already capped at 200 entries
