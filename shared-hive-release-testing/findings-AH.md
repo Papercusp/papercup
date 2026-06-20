@@ -1,12 +1,15 @@
 # Findings AH — Code plane: git-sync → `main` (E2E code federation)
 
 **Author:** su-707ed · **Date:** 2026-06-19 · **Lane:** Brief AH (S1, S0 on the no-direct-push invariant)
-**Verdict: 🟢 GREEN with one 🟡 YELLOW caveat** — the collaborator code→default-branch path is
-end-to-end correct, conflict-convergent, branch-agnostic, and plane-independent; the S0
-"a joiner can never direct-push the owner's main" invariant holds and is teeth-verified.
-The single caveat: the **non-collaborator fork→PR LIVE leg** (real GitHub fork + cross-fork
-PR) is logic-tested but has never run hermetically against GitHub — it needs a creds-gated
-live witness before a public launch where non-collaborators contribute code.
+**Verdict: 🟢 GREEN (fully).** The collaborator code→default-branch path is end-to-end correct,
+conflict-convergent, branch-agnostic, and plane-independent; the S0 "a joiner can never
+direct-push the owner's main" invariant holds and is teeth-verified — including **tree-wide**
+(submodules, AH-6) and now **LIVE against real GitHub**. The non-collaborator fork→PR path was the
+one prior YELLOW; it is **now witnessed live** (2026-06-20): a real `aviynw` joiner (no upstream
+write) forked `papercupai/shared-hive-test` under its OWN account and opened a real cross-fork PR
+(`papercupai/shared-hive-test#1`, head `aviynw:… → papercupai:main`) while the owner's `main`
+stayed byte-identical — the joiner contributed ONLY as a PR, never a direct push. No release
+blockers remain.
 
 ---
 
