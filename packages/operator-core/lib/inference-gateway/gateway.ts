@@ -23,6 +23,7 @@ import { Readable } from 'node:stream';
 import {
   governorForBackend,
   PriorityAdmissionQueue,
+  QueueFullError,
   priorityFromLabel,
   classifyHttpError,
   parseUsageResetMs,
@@ -86,6 +87,16 @@ const TRANSIENT_429_BACKOFF_MS = 400;
  *  account; just wait briefly for the upstream to recover). */
 const OVERLOAD_529_BACKOFF_MS = 1000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
+/** Max requests allowed to WAIT for an admission slot before the gateway sheds load (429 + retry-after)
+ *  instead of growing the backlog. Under a SUSTAINED pool-wide upstream throttle every in-flight request
+ *  squats its slot for the full internal wait budget, so the queue would otherwise grow without bound
+ *  until the gateway is wedged (the 2026-06-19/20 outages: queue hit 2k–3.6k deep, needing a manual
+ *  restart). A bounded queue degrades to fast retryable 429s and self-recovers when the throttle clears.
+ *  Env-tunable (PAPERCUSP_GATEWAY_MAX_QUEUED); generous by default so normal bursts still queue. */
+const DEFAULT_MAX_QUEUED = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUED) || 256;
+/** retry-after (seconds) on a load-shed 429 — short, since the backlog drains as in-flight requests
+ *  settle; the caller should retry soon (and will likely land once the burst/throttle eases). */
+const LOADSHED_RETRY_AFTER_SEC = 5;
 /** Upstream stall guard (the 2026-06-19 deadlock fix). `doFetch`/the body stream had NO deadline, so a
  *  stalled upstream (socket accepted, no response — Anthropic during an overload) hung the proxy task
  *  forever; PriorityAdmissionQueue only frees a slot when the task settles, so each hang leaked a slot
@@ -174,6 +185,9 @@ export interface GatewayDeps {
   maxQueueWaitMs?: number;
   /** Concurrency authority — max requests forwarded at once (the queue cap). Default 24. */
   concurrency?: number;
+  /** Max requests allowed to WAIT for a slot before the gateway sheds load (429 + retry-after) instead
+   *  of growing an unbounded backlog. Prevents the slot-squat-under-sustained-throttle wedge. Default 256. */
+  maxQueued?: number;
   /** Aging interval for the priority queue (ms a waiter takes to gain +1 priority). Default 1000. */
   agingIntervalMs?: number;
   /** Max wait for upstream RESPONSE HEADERS before the request is aborted as stalled. A stalled
@@ -203,6 +217,10 @@ export interface GatewayStats {
   admission: AdmissionSnapshot;
   upstream429: number;
   queued429: number;
+  /** Count of 429s returned because the admission queue hit `maxQueued` (load-shed, not a task error). */
+  shed429: number;
+  /** The admission backlog cap that triggers load-shedding (0 = unbounded). */
+  maxQueued: number;
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;
@@ -347,7 +365,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
   const upstreamBodyIdleTimeoutMs = deps.upstreamBodyIdleTimeoutMs ?? DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS;
   const log = deps.log ?? (() => {});
-  const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs });
+  const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
+  const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs, maxQueued });
 
   // A single-account deps set synthesizes a one-entry, no-failover pool; a real `pool` supersedes it.
   const pool: AccountPool =
@@ -397,6 +416,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let totalRequests = 0;
   let upstream429 = 0;
   let queued429 = 0;
+  let shed429 = 0; // load-shed: 429s returned because the admission queue was at maxQueued (backlog cap)
   let upstreamErrors = 0;
   let failovers = 0;
 
@@ -415,6 +435,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       admission,
       upstream429,
       queued429,
+      shed429,
+      maxQueued,
       failovers,
       upstreamErrors,
       unified: snap.unified,
@@ -800,6 +822,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     const pri = priorityFromLabel((req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined);
     queue.run(pri, () => proxy(req, res, url)).catch((e) => {
+      // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
+      // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
+      // instead of growing an unbounded backlog until it wedges.
+      if (e instanceof QueueFullError) {
+        shed429++;
+        if (!res.headersSent) {
+          sendJson(
+            res,
+            429,
+            { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: backlog full (${queue.snapshot().queued} waiting); shedding load, retry shortly` }, gateway: true },
+            { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC) },
+          );
+        }
+        return;
+      }
       upstreamErrors++;
       log('error', `proxy handler crashed: ${(e as Error).message}`);
       if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway internal error' }, gateway: true });

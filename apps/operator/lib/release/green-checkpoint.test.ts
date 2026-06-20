@@ -127,6 +127,47 @@ describe('runGreenCheckpoint', () => {
     // the signature flows out so the release-fixer can dedup by FAILURE, not candidate sha
     expect(r.failingTests).toEqual(['@papercusp/operator-core', 'lib/fleet/operator-spawn.test.ts']);
   });
+
+  // F2 (round-4 P-031): the perf-regression gate runs post-runGreen / pre-advance.
+  it('F2: a perf BLOCK holds the green pin even when the candidate is green', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.perfGate = async (candidate) => {
+      calls.push('perfGate');
+      return { action: 'block', summary: `perf BLOCK ${candidate.slice(0, 7)}` };
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: false, green: true, reason: 'perf-held' });
+    expect(await revParse(repo, 'ready')).toBe(c1); // pin NOT advanced
+    expect(calls).toContain('perfGate');
+    expect(calls).not.toContain('advance'); // blocked before advance
+    expect(calls).toContain('escalate'); // a perf block opens a durable escalation
+  });
+
+  it('F2: a perf WARN surfaces (broadcast) but still advances — default-warn', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.perfGate = async () => ({ action: 'warn', summary: 'perf WARN — hot but advancing' });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced' });
+    expect(await revParse(repo, 'ready')).toBe(c2); // advanced despite the warn
+    expect(calls).toContain('advance');
+  });
+
+  it('F2: a perf PASS (and the no-gate default) advances normally — back-compat', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps } = stubDeps(true);
+    deps.perfGate = async () => ({ action: 'pass', summary: 'perf ok' });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, reason: 'advanced' });
+    expect(await revParse(repo, 'ready')).toBe(c2);
+  });
 });
 
 describe('extractFailingTests (P-012 failure signature)', () => {

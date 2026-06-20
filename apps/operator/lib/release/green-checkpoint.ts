@@ -32,6 +32,7 @@ import {
   type AdvanceResult,
 } from './git-ops';
 import type { ReleaseConfig } from './release-config';
+import { runPerfGate, perfGatePolicyFromEnv } from './perf-gate';
 
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
@@ -53,6 +54,12 @@ export interface CheckpointDeps {
   escalate?(summary: string, body: string): Promise<void>;
   /** Resolve any open `release-not-green` escalation — the gate recovered. */
   clearEscalation?(): Promise<void>;
+  /** F2 (round-4 P-031): perf-regression deploy gate. Runs post-runGreen / pre-advance
+   *  on a GREEN candidate: if the operator is in a definitive per-thread wedge right now,
+   *  WARN (default — still advance) or BLOCK (only when the owner armed block-mode). Optional
+   *  + flag-gated (a no-op `pass` unless PAPERCUSP_PERF_GATE=1) so existing stubs need not
+   *  provide it and the default deploy behaviour is unchanged. */
+  perfGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
   log(s: string): void;
 }
 
@@ -61,7 +68,7 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'create-failed';
+  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'create-failed' | 'perf-held';
   summary?: string;
   /** P-012: a stable signature of what failed (test files / workspaces) on the
    *  not-green path, so the release-fixer dispatch dedups by FAILURE, not candidate sha. */
@@ -225,6 +232,23 @@ export async function runGreenCheckpoint(
     return { advanced: false, candidate, from: lastReady, green: false, reason: 'not-green', summary, failingTests };
   }
 
+  // F2 (round-4 P-031): the candidate is GREEN — but if the operator is in a definitive
+  // per-thread wedge right NOW, don't silently advance the green pin into a degraded
+  // runtime. Default-WARN (surface + still advance); BLOCK only when the owner armed
+  // block-mode. Flag-gated + fail-soft (a no-op `pass` unless enabled), so the default
+  // deploy path is unchanged until the owner opts in.
+  const perf = await deps.perfGate?.(candidate).catch(() => undefined);
+  if (perf && perf.action !== 'pass') {
+    deps.log(perf.summary);
+    await deps.broadcast(perf.summary).catch(() => {});
+    if (perf.action === 'block') {
+      await deps
+        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} perf-degraded`, perf.summary)
+        .catch(() => {});
+      return { advanced: false, candidate, from: lastReady, green: true, reason: 'perf-held', summary: perf.summary };
+    }
+  }
+
   const adv = await deps.advance(candidate);
   if (adv.advanced && !opts.noPush) {
     await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
@@ -373,6 +397,11 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
         }
       }
     },
+    // F2 (round-4 P-031): the real perf gate reads the latest perf-signals-v1 capture
+    // and evaluates it against the per-thread budgets; policy comes from the env flags
+    // (PAPERCUSP_PERF_GATE / PAPERCUSP_PERF_GATE_BLOCK). Inert (`pass`, reads nothing)
+    // until the owner enables it.
+    perfGate: (candidate) => runPerfGate(perfGatePolicyFromEnv(), candidate),
     log,
   };
 }

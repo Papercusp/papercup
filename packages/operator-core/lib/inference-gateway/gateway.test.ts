@@ -126,6 +126,31 @@ test('transparent proxy — streams an SSE body through untouched, drops content
   assert.ok(text.includes('message_start') && text.includes('"text":"hi"'));
 });
 
+test('load-shed: returns a retryable 429 when the admission backlog hits maxQueued — the wedge fix (2026-06-20)', async () => {
+  // Under a sustained throttle every in-flight request squats its slot for the internal wait budget, so
+  // the backlog would grow without bound until the gateway wedges (needing a manual restart). A bounded
+  // queue sheds excess as fast retryable 429s instead. concurrency:1 + maxQueued:1 → of 3 simultaneous
+  // requests, 1 runs, 1 queues, 1 is shed.
+  await boot(
+    (_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }, 200);
+    },
+    { concurrency: 1, maxQueued: 1 },
+  );
+  const rs = await Promise.all([
+    post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'y' }] }),
+    post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'z' }] }),
+  ]);
+  assert.deepEqual(rs.map((r) => r.status).sort(), [200, 200, 429], 'exactly one request shed with 429');
+  const shed = rs.find((r) => r.status === 429)!;
+  assert.equal((await shed.json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized load-shed 429');
+  assert.ok(shed.headers.get('retry-after'), 'retry-after set so the caller backs off + retries');
+});
+
 test('upstream HEADERS stall is aborted (502) and RELEASES the admission slot — the 2026-06-19 deadlock fix', async () => {
   // Reproduce the outage: an upstream that accepts the socket but never responds used to hang the proxy
   // task forever, leaking its admission slot until the pool deadlocked at maxConcurrent. With
