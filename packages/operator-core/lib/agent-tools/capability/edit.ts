@@ -10,6 +10,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
+import { resolveCapabilityBaseDir } from './base-dir';
 
 export default defineTool({
   name: 'capability:edit',
@@ -31,7 +32,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     if (args.old_string === args.new_string) return err('no_op', 'old_string and new_string are identical.');
-    const baseDir = ctx.projectDir ?? process.cwd();
+    const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
 
     const outcome = await guardFileLock(ctx, [args.file_path], { intent: 'capability:edit' }, async () => {

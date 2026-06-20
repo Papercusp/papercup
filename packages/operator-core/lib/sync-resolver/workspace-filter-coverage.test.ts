@@ -57,8 +57,45 @@ const INDEX = resolve(HERE, 'index.ts');
  * `workspaceId` from resolver context (findings-rls-coverage.md, findings-AD.md).
  * As each is fixed it leaves the flagged set; the stale-entry test then forces it
  * out of this list. Prefix a value with `SAFE:` if the table is NOT workspace-scoped.
+ *
+ * BASELINE POPULATED (2026-06-20): the guard was committed with this map EMPTY while
+ * 18 pre-existing `getOrgPg` slug-only reads were already flagged — i.e. it shipped
+ * RED against its own design, which is to ship GREEN with the currently-open set
+ * documented here (findings-rls-coverage.md §"Building the explicit-filter CI guard":
+ * "asserted against a documented allowlist of the currently-open set … so it's GREEN
+ * now, a NEW such read FAILS CI, and the allowlist shrinks via a stale-entry check as
+ * AD lands fixes"). Each entry below is a workspace-scoped table read on the BYPASSRLS
+ * connection by `harness_slug` only → a real cross-tenant read in multi-tenant; NONE
+ * is `SAFE:`. Remediation (thread `workspaceId` from resolver context) is the
+ * AD/federation-sync lane's tracked, consensus-gated work (findings-AD.md) — NOT a
+ * blind solo edit (the EI-126 default-mis-route footgun). Each entry drops out via the
+ * stale-entry test the moment its `workspace_id` filter lands, tracking remediation to
+ * zero. The guard still fails CI for any NEW unfiltered resolver beyond this baseline.
  */
-const OPEN_UNFILTERED: Record<string, string> = {};
+const OPEN_REASON =
+  'OPEN: getOrgPg (BYPASSRLS) read filters harness_slug only; workspace-scoped table → ' +
+  'cross-tenant read in multi-tenant. Fix = thread workspaceId from resolver context ' +
+  '(findings-rls-coverage.md / findings-AD.md, AD/federation-sync lane).';
+const OPEN_UNFILTERED: Record<string, string> = {
+  'agentChats.byHarness': OPEN_REASON,
+  'chunkPlans.byHarness': OPEN_REASON,
+  'featureAudit.byHarness': OPEN_REASON,
+  'featureDebugNotes.byHarness': OPEN_REASON,
+  'featureNotes.byHarness': OPEN_REASON,
+  'featuresConsolidated.bySlug': OPEN_REASON,
+  'harnessArchives.byHarness': OPEN_REASON,
+  'harnessCheckpoints.byHarness': OPEN_REASON,
+  'harnessEscalations.byHarness': OPEN_REASON,
+  'harnessHookLogs.byHarness': OPEN_REASON,
+  'harnessPendingIssues.byHarness': OPEN_REASON,
+  'harnessProjectFiles.byHarness': OPEN_REASON,
+  'harnessScreenshots.byHarness': OPEN_REASON,
+  'harnessSkills.byHarness': OPEN_REASON,
+  'harnessSmokeTest.byHarness': OPEN_REASON,
+  'harnessTests.byHarness': OPEN_REASON,
+  'harnessTextArtifact.byHarness': OPEN_REASON,
+  'issuesConsolidated.bySlug': OPEN_REASON,
+};
 
 /** Split index.ts into resolver blocks keyed by their `'name.method':` registry key. */
 function resolverBlocks(src: string): Array<{ name: string; body: string }> {

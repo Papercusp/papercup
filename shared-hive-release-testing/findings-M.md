@@ -11,6 +11,20 @@ remaining thread is a **live GUI render** on a binary built with this code (the
 existing fix-`.deb` predates G-004) — covered today by the component tests, exactly
 as Brief G covered its honesty render.
 
+**DEPLOY-LIVE CLOSURE (su-1c8bc, 2026-06-20 ~03:20):** the G-004 route is now
+**verified live on the deployed `:3070`** (after main advanced f9464a9fc→fbd1c134c at
+the 02:18 green-checkpoint, deploying the EI-1618 wiring). `GET /api/discovery/
+federation-status` on the running operator returns the surface with the new EI-1618
+`substrate.drain` field present + correct: `substrate` keys = `[active, bootedHarnesses,
+booting, degraded, drain, healthy]`, `drain = {stalledHarnesses:0, worstUndrainedCount:0,
+worstOldestUndrainedAgeMs:null}` (honest zero-drain — no booted harness is stalled). So
+the route half of G-004 + the EI-1618 drain-health wiring are PROVEN on the real deployed
+binary, not just in tests. The only thing still pending is the pixel-level GUI screenshot
+of `HiveFederationStatus` (a VirtualGL drive, never `:0`) — the same optional last-mile
+already accepted as covered by the component render tests. WI-254 (the proactive periodic
+drain reconcile, EI-1618 item 2) is BUILT + tested (30 tests), shipped default-OFF
+(`PAPERCUSP_FEDERATION_DRAIN_RECONCILE=1`) pending an enablement review.
+
 ---
 
 ## UPDATE (continuation, su-1c8bc) — EI-1618 drain/sync-health WIRED into G-004

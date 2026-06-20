@@ -9,6 +9,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { resolveCapabilityBaseDir } from './base-dir';
 
 const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
@@ -32,7 +33,7 @@ export default defineTool({
     limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}).`),
   }),
   async handler(args, ctx) {
-    const baseDir = ctx.projectDir ?? process.cwd();
+    const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
 
     let raw: string;

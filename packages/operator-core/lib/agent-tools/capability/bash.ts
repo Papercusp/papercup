@@ -24,6 +24,7 @@ import {
 } from './bash-jobs';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
+import { resolveCapabilityBaseDir } from './base-dir';
 
 export default defineTool({
   name: 'capability:bash',
@@ -66,7 +67,7 @@ export default defineTool({
       .describe('Working dir (absolute, or relative to the project dir). Defaults to the project dir.'),
   }),
   async handler(args, ctx) {
-    const baseDir = ctx.projectDir ?? process.cwd();
+    const baseDir = resolveCapabilityBaseDir(ctx);
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
     const timeoutMs = args.timeout ?? DEFAULT_TIMEOUT_MS;
     // P-022/D-008: re-apply the OS sandbox to this operator-side shell when the

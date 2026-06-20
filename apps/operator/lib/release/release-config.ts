@@ -9,6 +9,7 @@
 
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
 
 export interface ReleaseConfig {
   /** The churning shared working tree git-sync commits to (the integration branch). */
@@ -27,6 +28,14 @@ export interface ReleaseConfig {
   operatorHealthUrl: string;
   /** Command (run in a clean checkout) that defines "green". */
   greenCmd: string;
+  /**
+   * Dir the green-checkpoint persists per-run full suite output to. Overridable
+   * (caller > PAPERCUSP_CHECKPOINT_LOG_DIR env > homedir default) so tests +
+   * throwaway runs don't pollute the REAL ~/.papercusp/checkpoint-logs/ — fixture
+   * logs landing there masquerade as real checkpoint failures and mislead the next
+   * freeze diagnosis (found 2026-06-20, su-707ed/su-ee7e9).
+   */
+  checkpointLogDir: string;
 }
 
 const FALLBACK_INTEGRATION = '/home/marsh-office/papercupai-workspace/papercup';
@@ -77,6 +86,10 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
       process.env.PAPERCUSP_HEALTH_URL ??
       `http://127.0.0.1:${port}/api/health`,
     greenCmd: overrides.greenCmd ?? process.env.PAPERCUSP_GREEN_CMD ?? 'npm run test:affected',
+    checkpointLogDir:
+      overrides.checkpointLogDir ??
+      process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ??
+      path.join(homedir(), '.papercusp', 'checkpoint-logs'),
   };
 }
 

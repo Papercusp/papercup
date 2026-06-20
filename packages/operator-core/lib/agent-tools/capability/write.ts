@@ -12,6 +12,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
+import { resolveCapabilityBaseDir } from './base-dir';
 
 export default defineTool({
   name: 'capability:write',
@@ -30,7 +31,7 @@ export default defineTool({
     content: z.string().describe('Full file content to write (overwrites any existing file).'),
   }),
   async handler(args, ctx) {
-    const baseDir = ctx.projectDir ?? process.cwd();
+    const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
 
     const outcome = await guardFileLock(ctx, [args.file_path], { intent: 'capability:write' }, async () => {

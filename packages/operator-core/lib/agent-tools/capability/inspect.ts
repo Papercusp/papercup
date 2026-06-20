@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, runForeground, startBackground } from './bash-jobs';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
+import { resolveCapabilityBaseDir } from './base-dir';
 
 /**
  * A repo-relative path token safe to embed literally in a `bash -c` command: a
@@ -140,7 +141,7 @@ export default defineTool({
       .describe(`Wall-clock timeout in ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}).`),
   }),
   async handler(args, ctx) {
-    const baseDir = ctx.projectDir ?? process.cwd();
+    const baseDir = resolveCapabilityBaseDir(ctx);
     const resolved = resolveInspectCommand(args, baseDir);
     if (!resolved.ok) return err(resolved.reason, resolved.message);
     const { command, cwd } = resolved;

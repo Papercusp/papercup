@@ -26,6 +26,7 @@
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 import { applyHyperbeeOpToPg, lwwPick } from './projection';
+import { encodeHlc } from '@papercusp/locks-core';
 import {
   isSnapshotOp,
   SNAPSHOT_COMPACT_EVERY_OPS,
@@ -376,25 +377,33 @@ export async function seedCursorFromSnapshots(
 }
 
 /**
- * Does `env` beat the stored winner? EXACTLY mirrors `lwwPick(prev, env)`
- * (prev wins ties through the final source-key tiebreak's `>=`), so an
- * incremental fold across any pass/chunk boundaries lands on the identical
- * winner set a from-scratch `mergeAdmittedLogs` fold would — lwwPick's order
- * is total (clock → del>put → source key), hence fold-order independent.
+ * Does `env` beat the stored winner? EXACTLY mirrors `lwwPick(prev, env)` (prev wins ties
+ * through the final source-key tiebreak's `>=`), so an incremental fold across any
+ * pass/chunk boundaries lands on the identical winner set a from-scratch `mergeAdmittedLogs`
+ * fold would.
+ *
+ * EI-1698: step 1 is a SINGLE total order via a DERIVED HLC for every op (its `hlc`, else
+ * `encodeHlc({ms: ts, count: 0})`) — comparing the SAME key for every pair is transitive.
+ * The previous rule ("HLC when BOTH carry one, ELSE ts") switched basis per pair and was
+ * NON-TRANSITIVE under mixed-HLC presence: a no-HLC op whose ts sat BETWEEN two HLC ops
+ * formed a winner cycle (X>Z, Z>Y, Y>X), so two peers folding the same ops in different
+ * delivery orders diverged on a contended key. This is a HAND-MIRROR of `lwwPick`
+ * (projection.ts) and MUST stay byte-for-byte in sync with it — the durable fix is to
+ * extract one shared comparator both call (tracked EI-1698 follow-up; SQL ON CONFLICT guards
+ * are the third copy, owned separately).
  */
 function beatsStored(env: OpEnvelope, prev: WinnerMeta): boolean {
-  if (env.hlc && prev.hlc) {
-    if (env.hlc > prev.hlc) return true;
-    if (prev.hlc > env.hlc) return false;
-  } else {
-    const te = env.ts ?? 0;
-    if (te > prev.ts) return true;
-    if (prev.ts > te) return false;
-  }
+  // Step 1 — causal clock as a single total order: derive an HLC for EVERY op (mirror lwwPick).
+  const ke = env.hlc ?? encodeHlc({ ms: env.ts ?? 0, count: 0 });
+  const kp = prev.hlc ?? encodeHlc({ ms: prev.ts, count: 0 });
+  if (ke > kp) return true;
+  if (kp > ke) return false;
+  // ── clock tie ── del beats put.
   if (env.type === 'del' && prev.type !== 'del') return true;
   if (prev.type === 'del' && env.type !== 'del') return false;
+  // Same type on a tie → higher sourceLogKeyHex wins; prev wins on equality (lwwPick's `sa >= sb`).
   const se = env.sourceLogKeyHex ?? '';
-  return se > prev.src; // prev wins on equality — same as lwwPick(prev, env)
+  return se > prev.src;
 }
 
 function toMeta(env: OpEnvelope): WinnerMeta {
