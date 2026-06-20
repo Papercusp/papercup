@@ -120,6 +120,10 @@ export default defineTool({
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',
       idempotencyKey: args.idempotency_key ?? null,
+      // Coordination-token attribution (B-TOK-4): a fleet:spawn'd agent's turn runs
+      // because it was placed by a coordinating agent (the Queen / operator) — a
+      // coordination trigger. Stamps turn_trigger on the run's usage sample.
+      turnTrigger: 'coord-wake',
     });
     return {
       content: [

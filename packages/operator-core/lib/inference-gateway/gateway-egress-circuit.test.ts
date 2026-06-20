@@ -26,8 +26,18 @@ afterEach(async () => {
   gw = undefined;
 });
 
-/** A pool account whose bearer token === its id, so the mock fetch can tell which account egressed. */
-const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => id, invalidateToken: () => {} });
+/**
+ * A pool account whose bearer token === its id (so the mock fetch can tell which account egressed) and
+ * which routes through an http egress PROXY — the circuit-breaker is scoped to proxy-egress accounts
+ * (a no-proxy transport failure is an Anthropic-side stall, not a dead proxy). The proxy URL is never
+ * actually dialed: `egressFetch` is the injected upstream and ignores the dispatcher.
+ */
+const acct = (id: string): ActiveAccount => ({
+  accountId: id,
+  token: async () => id,
+  invalidateToken: () => {},
+  egress: { proxyUrl: `http://proxy-${id}.test:3128` },
+});
 
 /**
  * A mock `fetch` standing in for the per-account egress. The upstream call for an account currently in

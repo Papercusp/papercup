@@ -1006,6 +1006,31 @@ test('[B-GW-2 chaos] upstream 429 storm under high concurrency — every request
   assert.equal(again.status, 429, 'a post-storm request still sheds fast (responsive), not a wedge');
 }, 30_000);
 
+test('[B-GW-2 chaos] internal-retry DEADLINE bounds slot-hold: a perpetual TRANSIENT 429 sheds + frees its slot at the deadline, never to the self-heal/watchdog threshold (wedge-prevention ladder)', async () => {
+  // The slow-burn wedge this guards: a TRANSIENT/bare upstream 429 (x-should-retry, capacity exists) makes
+  // the gateway ABSORB it internally — rotating + waiting while HOLDING the admission slot. With an account
+  // that never recovers, the OLD code squatted the slot for the full ~30s transient wait budget (and, under
+  // a SLOW upstream, the per-attempt fetch time ON TOP — pushing total slot-hold past the 75s self-heal /
+  // 120s watchdog thresholds → a full restart = fleet-wide connection-refused). INTERNAL_RETRY_DEADLINE_MS
+  // (here injected tiny) caps total slot-hold so the request SHEDS + frees its slot well before any reclaim.
+  await boot(
+    (_req, res) => {
+      // A bare/transient 429: NO anthropic-ratelimit-* / retry-after headers → capacity-exists semantics, so
+      // the gateway tries to absorb it internally (the slot-squat path my fix bounds) rather than shed at admission.
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'transient burst' } }));
+    },
+    { concurrency: 4, internalRetryDeadlineMs: 200 },
+  );
+  const t0 = Date.now();
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  const elapsed = Date.now() - t0;
+  assert.equal(r.status, 429, 'the perpetual transient 429 is forwarded once the deadline is hit (not absorbed forever)');
+  assert.ok(elapsed < 5_000, `slot-hold bounded by the ~200ms deadline (${elapsed}ms) — NOT the full ~30s transient wait budget (the squat the wedge needs)`);
+  const inFlight = await drainToZeroInFlight();
+  assert.equal(inFlight, 0, 'the admission slot was freed at the deadline — no squat, so the frozen-while-saturated wedge signature never forms');
+}, 30_000);
+
 test('[B-GW-2 chaos] a STORM of upstream HEADER-stalls under high concurrency — all abort (502) fast, every slot drains, recovers', async () => {
   // The 2026-06-19 deadlock under LOAD: many concurrent requests to an upstream that accepts the socket
   // but never sends headers. Each must abort at the headers stall-guard (502) and RELEASE its slot — a

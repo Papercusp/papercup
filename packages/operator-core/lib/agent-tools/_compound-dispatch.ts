@@ -35,11 +35,18 @@ import { PROJECTED_DEPS } from '../projected-tool-deps';
  */
 export type InnerCall = (name: string, args: unknown) => Promise<unknown>;
 
-/** Unwrap a settled ToolResult into the plain value the composition should see. */
-function unwrap(result: { structuredContent?: unknown; content?: Array<{ text?: unknown }> } | undefined): unknown {
+/** Unwrap a settled ToolResult into the plain value the composition should see.
+ *  Mirrors tooldef's `unwrapToolResult` (cast-in-guard so the strict content union
+ *  assigns cleanly): structuredContent if present, else the JSON-parsed text payload,
+ *  else the raw text/result. */
+function unwrap(
+  result: { structuredContent?: unknown; content?: ReadonlyArray<unknown> } | undefined,
+): unknown {
   if (!result) return undefined;
   if (result.structuredContent !== undefined) return result.structuredContent;
-  const textItem = result.content?.find((c): c is { text: string } => typeof c?.text === 'string');
+  const textItem = result.content?.find(
+    (c): c is { text: string } => typeof (c as { text?: unknown }).text === 'string',
+  );
   if (!textItem) return result;
   try {
     return JSON.parse(textItem.text);

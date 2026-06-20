@@ -304,6 +304,10 @@ export async function executeBatch(opts: {
       tier,
       parentSpawnId,
       parentRole: role,
+      // Coordination-token attribution (B-TOK-4): a batch-placed bee's turn runs
+      // because the Queen placed it — a coordination trigger. Stamps turn_trigger
+      // on the run's usage sample so coord-driven spend is summable.
+      turnTrigger: 'coord-wake',
     });
     if (!res.ok && res.awaitEvent) {
       awaitEvent = res.awaitEvent;

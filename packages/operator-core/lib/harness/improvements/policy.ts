@@ -47,6 +47,12 @@ export interface ImprovementCandidate {
    *  the resolution timestamp, which the recurrence-decay matcher reads as "when
    *  this signature last recurred / was last decided" (self-learning P-003). */
   updatedAt?: string;
+  /** Who FILED this candidate (engineer_issues.created_by) — the filer's ownerId.
+   *  The "distinct authors" axis for Scout's rubric-gap detection (plan-templates-
+   *  and-rubric-v2 P-008): a recurring cluster spanning ≥N distinct authors is a
+   *  stronger gap signal than one author repeating. Absent on legacy rows that
+   *  predate created_by capture. */
+  createdBy?: string | null;
   /** Optional one-line "already decided: <reason>" recall, surfaced when a NEW
    *  capture matches the stable signature of a prior resolved/closed item — so the
    *  loop recognises an already-decided friction instead of re-proposing it

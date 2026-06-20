@@ -92,6 +92,9 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     assignedAt: issue.assignedAt,
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt,
+    // The filer's ownerId — the "distinct authors" axis for Scout's rubric-gap
+    // detection (plan-templates-and-rubric-v2 P-008). Surfaced when present.
+    ...(issue.createdBy ? { createdBy: issue.createdBy } : {}),
     ...(paths?.length ? { paths } : {}),
     ...(attempts !== undefined ? { attempts } : {}),
     ...(p.needsHuman === true ? { needsHuman: true } : {}),

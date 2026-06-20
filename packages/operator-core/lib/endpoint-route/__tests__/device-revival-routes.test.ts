@@ -79,6 +79,15 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-e4' }));
 vi.mock('../../agent-tools/plans/source', () => ({ listPlanRows: m.listPlanRows, readPlanBySlug: m.readPlanBySlug }));
 vi.mock('../../device-harnesses', () => ({ listHarnessesFor: m.listHarnessesFor }));
+// GET /device/plans now ALWAYS prepends the operator-home harness to the
+// All-Pots fan-out (deduped) — a papercup→papercusp migration fix (plans.ts:75).
+// Pin it to a slug already in the listHarnessesFor mock so the Set dedups back to
+// the 2 pots (and the dedup itself is exercised). importOriginal-spread keeps the
+// module's other exports for any sibling route in the graph.
+vi.mock('../../harness/operator-home-harness', async (orig) => ({
+  ...(await orig<typeof import('../../harness/operator-home-harness')>()),
+  operatorHomeHarnessSlug: () => 'papercup',
+}));
 vi.mock('../../work-items', () => ({ listWorkItems: m.listWorkItems }));
 // Side-effect tool-registry import in the routes — no-op for the unit test.
 vi.mock('../../agent-tools/index', () => ({}));
@@ -196,7 +205,8 @@ describe('device/plans', () => {
     const res = await def.handler(new Request('http://x.test/api/device/plans'), ctx());
     expect(res.status).toBe(200);
     const body = (await res.json()) as { plans: Array<{ slug: string; itemCounts: Record<string, number>; nowNext: string }> };
-    // listHarnessesFor returned 2 pots; listPlanRows mocked to 1 plan each → 2 plans.
+    // operatorHomeHarnessSlug ('papercup', mocked) + listHarnessesFor's 2 pots
+    // (papercup, other-pot) dedupe to 2 slugs; listPlanRows mocked to 1 plan each → 2 plans.
     expect(m.listHarnessesFor).toHaveBeenCalledWith('ws-e4');
     expect(body.plans.length).toBe(2);
     expect(body.plans[0].itemCounts).toEqual({ todo: 1, done: 1 });

@@ -133,6 +133,21 @@ export interface StructuredObservationRecord {
   lastSeenMs?: number;
 }
 
+/**
+ * The minimal view of a rubric the gap-check needs (plan-templates-and-rubric-v2
+ * P-008): its id + the text that defines what it MEASURES, so a recurring friction
+ * cluster can be tested for an existing covering rubric. The deps layer maps the full
+ * `Rubric` (lib/rubrics) → this, keeping the pure core decoupled from the DB types.
+ */
+export interface RubricSummary {
+  rubricId: string;
+  /** The umbrella domain (e.g. "hive-coordination") — the primary coverage signal. */
+  characteristic: string;
+  title: string;
+  /** Criterion titles — extra coverage tokens (a rubric covers what its criteria name). */
+  criteriaTitles?: string[];
+}
+
 /** The injectable source bag — each reader returns one corpus substrate. */
 export interface StateOfHiveReaders {
   /** The change feed: completions / proposals / plan-runs (curation/change-feed). */
@@ -153,6 +168,15 @@ export interface StateOfHiveReaders {
    * yet) just yields an empty lane.
    */
   observations(): Promise<StructuredObservationRecord[]>;
+  /**
+   * ACTIVE rubrics (plan-templates-and-rubric-v2 P-008) — used to test whether a
+   * recurring friction cluster already has a covering rubric. Only ACTIVE rubrics
+   * count as coverage (D-003: "an active rubric whose characteristic covers it").
+   * An empty list means every recurring cluster is uncovered (max gaps) — the
+   * loose, Queen-gated default. Optional so older readers (and the 4-lane fixtures)
+   * stay valid; absent ⇒ no rubrics known ⇒ the gap lane treats all as uncovered.
+   */
+  rubrics?(): Promise<RubricSummary[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -528,7 +552,7 @@ function buildRubricRatings(observations: StructuredObservationRecord[], limit: 
     for (const [criterion, r] of Object.entries(obs.ratings)) {
       const rating = r?.rating;
       if (!criterion || typeof rating !== 'string' || !rating.trim()) continue;
-      const key = `${obs.rubricRef} ${obs.sourceHive ?? ''} ${criterion}`;
+      const key = `${obs.rubricRef}\u0000${obs.sourceHive ?? ''}\u0000${criterion}`;
       const g: RatingGroup =
         groups.get(key) ??
         { rubricRef: obs.rubricRef, sourceHive: obs.sourceHive, criterion, counts: new Map<string, number>(), severity: 0, total: 0 };

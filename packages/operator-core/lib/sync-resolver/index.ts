@@ -1889,6 +1889,50 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── insights.coordTokens — the Tokens subtab's Coordination panel + price book
+  // (B-TOK-ROLL / token-tracking-plan-and-briefs-2026-06-20, B-TOK-3 + B-TOK-4) ──
+  //
+  // Three workspace-scoped sections from load-token-rollups: (1) the model_pricing
+  // RATE book (migration 334 — per-MTok rates incl. the dominant cache-read tier);
+  // (2) the COORD-COST breakdown — LLM $ by turn-trigger (deploy-gated population)
+  // and by role-class (interactive=user vs fleet=coord-driven, ~96% of spend); (3)
+  // the COORD-POLL volume (coord:* MCP-call counts — ≈0 LLM tokens; quantifies the
+  // wake-board UI poll that is ~75% of all tool_invocations rows = the "327K
+  // coord:wake-queue mystery" = cheap polling, not context-injection). Coord cost is
+  // fleet-wide, so `harness` is OPTIONAL (omit → whole workspace). Each loader is
+  // independently defensive → a missing column/table degrades that section, never a
+  // 500. NOT table-backed — refreshes on mount + manual invalidate.
+  'insights.coordTokens': {
+    argsSchema: z.object({
+      harness: z.string().min(1).max(120).optional(),
+      windowMs: z
+        .number()
+        .int()
+        .positive()
+        .max(90 * 24 * 60 * 60 * 1000)
+        .optional(),
+    }),
+    resolve: async (args) => {
+      const a = args as { harness?: string; windowMs?: number };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { loadModelPricingBook, loadCoordTokenBreakdown, loadCoordPollVolume } = await import(
+        '../harness-insights/load-token-rollups'
+      );
+      const ws = activeWorkspaceId();
+      return await routeWithWorkspace(async (tx) => {
+        const runQuery = async <T,>(query: string, params: unknown[]): Promise<T[]> =>
+          (await tx.unsafe(query, params as never)) as unknown as T[];
+        const [pricingBook, coordBreakdown, pollVolume] = await Promise.all([
+          loadModelPricingBook(runQuery),
+          loadCoordTokenBreakdown({ workspace_id: ws, harness_slug: a.harness, windowMs: a.windowMs, runQuery }),
+          loadCoordPollVolume({ workspace_id: ws, windowMs: a.windowMs, runQuery }),
+        ]);
+        return [{ pricingBook, coordBreakdown, pollVolume }];
+      });
+    },
+  },
+
   // ── learning.observations — the Observations pane's browse feed ──
   //
   // (turn-end-reflection-observations-2026-06-14 P-044 / D-005). PRE-IDEA sensor

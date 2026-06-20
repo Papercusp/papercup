@@ -62,13 +62,43 @@ not human-interactive. The lever is the queen-opus-cache path (confirms B-TOK-FI
    - `loadCoordPollVolume` — the quantified coord-poll cost (≈0 LLM tokens).
 3. **Tests:** model-pricing-sync (5) + load-token-rollups (8) = 13 green.
 
-## 4. STILL OPEN / NEXT
+## 4. turn_trigger (B-TOK-4 fine-grained) — BUILT ✅ (deploy-gated population)
 
-- **turn_trigger column** (B-TOK-4 fine-grained): add nullable `turn_trigger` to
-  agent_usage_samples + thread via `PAPERCUSP_TURN_TRIGGER` (like plan_id). Population is
-  deploy-gated (live :3070 runs old code), same as plan_id/tool_name. The role-class proxy
-  already answers coord-vs-user $ today.
-- **rollups (agent_usage_hourly/daily) + account_usage_summary + routine** — B-TOK-3 phase-3,
-  perf/history. Raw-scan loaders are fine at current volume; deferred unless prioritized.
-- **UI wiring:** hand load-token-rollups loaders to B-TOK-UI's Tokens-subtab Coordination
-  panel (su-f7cfc left an extension slot).
+Nullable `turn_trigger` column (migration 335, APPLIED live + recorded) threaded EXACTLY
+like plan_id:
+- writers: `usage-sample-pg.ts` + `agent-usage-telemetry.ts` (INSERT `turn_trigger`).
+- read: `invoke.ts` reads `PAPERCUSP_TURN_TRIGGER` → recordUsageSamplePg.
+- env stamp: `operator-spawn.ts` (`input.turnTrigger` → env).
+- callers: `fleet/place_batch.ts` + `fleet/spawn.ts` stamp `'coord-wake'` (a placed agent's
+  turn runs because it was placed = a coordination trigger).
+- Population deploy-gated (live :3070 runs old code), same as plan_id. The loader's
+  role-class proxy answers coord-vs-user $ TODAY (fleet $2,980 vs interactive $135).
+- Tests: usage-sample-pg 11/11 (positional asserts updated for the new tail) + the rest green.
+
+## 5. UI reachability — WIRED ✅
+
+`insights.coordTokens` sync-resolver entry (sibling of f7cfc's `insights.tokens`) exposes
+`{ pricingBook, coordBreakdown, pollVolume }` workspace-scoped. The B-TOK-UI Tokens subtab's
+Coordination panel renders it (su-f7cfc). sync-resolver 44/44 green.
+
+## 6. DEFERRED (deliberate — surfaced, NOT dropped)
+
+- **Hourly/daily rollup tables + routine (B-TOK-3):** PREMATURE. agent_usage_samples is ~572
+  jsonl rows/24h (~17K/30d); raw windowed GROUP BY is instant and the loaders day-bucket
+  inline. Build a rollup routine when rows hit millions, not now.
+- **account_usage_summary (B-TOK-3):** BLOCKED. No account-id signal exists on
+  agent_usage_samples (bucket_key = `provider:modelClass` only, e.g. `anthropic:opus`; the
+  routing account is gateway-internal state). Needs gateway-side per-account usage
+  attribution first (B-GW-EGRESS adjacent). Not building a hollow table with no source.
+
+## 7. FILES (all tree-local on staging; migrations applied live + recorded)
+- libs/papercusp/libs/db/sql/334-model-pricing-snapshot-table.sql
+- libs/papercusp/libs/db/sql/335-agent-usage-turn-trigger.sql
+- packages/operator-core/lib/harness-insights/model-pricing-sync.ts (+ test)
+- packages/operator-core/lib/harness-insights/load-token-rollups.ts (+ test)
+- packages/operator-core/lib/agent-usage-telemetry.ts (turn_trigger)
+- libs/papercusp/packages/orchestrator/src/usage-sample-pg.ts (+ test) + invoke.ts
+- packages/operator-core/lib/fleet/operator-spawn.ts + agent-tools/fleet/{place_batch,spawn}.ts
+- packages/operator-core/lib/sync-resolver/index.ts (insights.coordTokens)
+- apps/operator/bin/host-bootstrap.ts (boot sync wiring)
+- EI-2112 filed (palette wake-board poll → SSE/push)
