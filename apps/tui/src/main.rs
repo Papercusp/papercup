@@ -2545,21 +2545,24 @@ async fn wake_board_act(
 }
 
 /// EI-312: the wake-pane's refresh loop — re-snapshot the board every ~10s.
-/// Justified poll (matches the dock's roster cadence): the queue mutates from
-/// many writers (stagePendingWake on any wake) and the pane is the only
-/// consumer; a push rail for pending_wakes isn't built yet.
+/// Safety-net fallback (NOT a freshness poll): the pending-wakes push rail
+/// EXISTS — pushWakeBoard() (pending-wakes.ts) fires notifySyncInvalidate(
+/// 'network.hive.wakes') on every stage/clear, and the HIVE scope already
+/// consumes it over SSE (fetch_wake_board → WakeFilter::Hive → client.hive_wakes,
+/// no poll). The non-Hive scopes (fleet/queen/owner) are not yet on that SSE
+/// query, so this loop still refreshes them — but DEMOTED 10s→60s (EI-597 Step A,
+/// su-dfe5e + su-cf7b0): it is now a slow safety fallback, no longer the fleet's
+/// #1/#2 tool-call driver. The board is a human review surface for paused
+/// (manual-mode) agents, so 60s freshness is ample; user actions already refetch
+/// immediately (the keymap's `fetch_wake_board` on r/e/s/R/S).
 ///
-/// Cadence bumped 3s→10s (round-4 infra P-003, su-7b402): this always-on loop
-/// runs 1×`coord:wake-queue` + 1×`coord:wake-mode` per tick — the fleet's #1+#2
-/// tool-call volume (~30k each per 6h across the pui instances), a major demand
-/// driver of the :3070 request-worker event-loop saturation. The board is a
-/// human review surface for paused (manual-mode) agents, so 10s freshness is
-/// ample; user actions already refetch immediately (the keymap's
-/// `fetch_wake_board` on r/e/s/R/S). The real fix is an SSE push rail for
-/// pending_wakes (tracked in round-4 P-003); this is the cheap, reversible
-/// first step.
+/// EI-597 Step B (full fix, in review): generalize the `network.hive.wakes` SSE
+/// query to the non-Hive scopes + route fetch_wake_board's non-Hive branches to
+/// it (mirroring the proven Hive branch), after which this fallback can drop.
 async fn wake_board_loop(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
-    let mut ticker = tokio::time::interval(Duration::from_millis(10_000));
+    // 10s→60s safety-only fallback (EI-597 Step A): the Hive scope is SSE-driven;
+    // this backstops the non-Hive scopes until Step B puts them on the rail too.
+    let mut ticker = tokio::time::interval(Duration::from_millis(60_000));
     loop {
         ticker.tick().await;
         if tx.is_closed() {
