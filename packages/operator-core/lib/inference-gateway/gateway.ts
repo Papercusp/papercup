@@ -262,6 +262,10 @@ export interface AccountPool {
    *  caller falls back to `active()`). A bee is pinned to one account for its whole life so its
    *  conversation cache — which is per-credential — survives. Optional: a single-account pool omits it. */
   select?(accountId: string): ActiveAccount | null;
+  /** HOT-RELOAD the pool (B-HOT-1): atomically swap the live entries WITHOUT a gateway restart, keeping
+   *  this pool object's identity (the gateway holds it for life). Optional: a pool that can't hot-reload
+   *  omits it. The launch-layer reload primitive re-resolves the DB account pool then calls this. */
+  reload?(next: readonly ActiveAccount[]): void;
 }
 
 export interface GatewayDeps {
@@ -287,6 +291,12 @@ export interface GatewayDeps {
   /** Wall-clock ceiling on internal retrying before a request sheds + frees its slot (wedge-prevention
    *  ladder). Default 60s (`INTERNAL_RETRY_DEADLINE_MS`); tests inject a tiny value to exercise the shed. */
   internalRetryDeadlineMs?: number;
+  /** B-HOT-2: live pool config (version + account ids) for `GET /admin/config`. Absent ⇒ the endpoint
+   *  reports `hotReload:false`. */
+  adminConfig?: () => { version: number; accounts: string[] };
+  /** B-HOT-2: hot-reload the account pool from the DB source-of-truth for `POST /admin/reload` (the
+   *  on-demand twin of the launch-layer poll). Absent ⇒ `/admin/reload` returns 503 (not hot-reloadable). */
+  onAdminReload?: () => Promise<{ changed: boolean; version: number; accounts: string[] }>;
   /** Concurrency authority — max requests forwarded at once (the queue cap). Default 24. */
   concurrency?: number;
   /** Max requests allowed to WAIT for a slot before the gateway sheds load (429 + retry-after) instead
@@ -1275,6 +1285,32 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (req.method === 'GET' && (url === '/stats' || url === '/admin/stats')) {
       sendJson(res, 200, stats());
+      return;
+    }
+    if (req.method === 'GET' && url === '/admin/config') {
+      // B-HOT-2: the LIVE config snapshot — pool version + account ids + the admission/AIMD state — so an
+      // operator / gateway:status tool can read what the gateway is actually running, no restart.
+      const s = stats();
+      sendJson(res, 200, {
+        ...(deps.adminConfig ? deps.adminConfig() : { hotReload: false }),
+        admission: s.admission,
+        concurrencyCap: s.concurrencyCap,
+        aimd: s.aimd,
+        upstreamBase,
+      });
+      return;
+    }
+    if (req.method === 'POST' && url === '/admin/reload') {
+      // B-HOT-2: on-demand HOT-RELOAD — re-resolve the DB account pool + swap it live NOW (vs the 60s poll).
+      if (!deps.onAdminReload) {
+        sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: 'inference-gateway: hot-reload not wired on this gateway' }, gateway: true });
+        return;
+      }
+      req.resume(); // drain any request body so the socket releases cleanly
+      void deps
+        .onAdminReload()
+        .then((r) => sendJson(res, 200, { ok: true, ...r }))
+        .catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `inference-gateway: reload failed: ${(e as Error).message}` }, gateway: true }));
       return;
     }
     if (!url.startsWith('/v1/')) {
