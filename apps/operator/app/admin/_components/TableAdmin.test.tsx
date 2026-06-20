@@ -126,7 +126,9 @@ describe('TableAdmin component', () => {
   it('opens the create modal from + New row', async () => {
     render(<TableAdmin />);
     await screen.findByText('Users');
-    fireEvent.click(screen.getByRole('button', { name: '+ New row' }));
+    // '+ New row' lives in the toolbar that renders with the table detail (loads
+    // after the sidebar) — await it (findByRole) or it races the fetch under load.
+    fireEvent.click(await screen.findByRole('button', { name: '+ New row' }));
     expect(screen.getByText('+ New users')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Create' })).toBeTruthy();
   });
@@ -134,7 +136,9 @@ describe('TableAdmin component', () => {
   it('submits a create with the coerced body', async () => {
     render(<TableAdmin />);
     await screen.findByText('Users');
-    fireEvent.click(screen.getByRole('button', { name: '+ New row' }));
+    // '+ New row' lives in the toolbar that renders with the table detail (loads
+    // after the sidebar) — await it (findByRole) or it races the fetch under load.
+    fireEvent.click(await screen.findByRole('button', { name: '+ New row' }));
     const inputs = screen.getAllByRole('textbox'); // [id, name]
     fireEvent.change(inputs[1], { target: { value: 'Charlie' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
