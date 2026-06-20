@@ -100,7 +100,7 @@ describe('HLC send/recv coverage (P-010)', () => {
       type: 'put', table: 'queue', hbKey: 'F-1', value: { k: 'F-1' },
       ts: 1, hlc: remoteHlc, sourceLogKeyHex: 'REMOTE', writerPubkey: 'b',
     };
-    await applyOpVia(() => proj, remoteOp, { ownLogKeyHex: 'OWN' });
+    await applyOpVia(() => proj as TableProjection<unknown>, remoteOp, { ownLogKeyHex: 'OWN' });
     // Clock advanced past the remote frontier → next local write follows it.
     const next = stampOpHlc({ table: 'queue', hbKey: 'x', ts: 1 });
     expect(compareHlc(decodeHlc(next.hlc), decodeHlc(remoteHlc))).toBe(1);
@@ -119,7 +119,7 @@ describe('HLC send/recv coverage (P-010)', () => {
       type: 'put', table: 'queue', hbKey: 'F-1', value: { k: 'F-1' },
       ts: 1, hlc: ownHlc, sourceLogKeyHex: 'OWN', writerPubkey: 'me',
     };
-    await applyOpVia(() => proj, ownOp, { ownLogKeyHex: 'OWN' });
+    await applyOpVia(() => proj as TableProjection<unknown>, ownOp, { ownLogKeyHex: 'OWN' });
     // The own op's (huge) HLC must NOT have been merged into our clock.
     const next = stampOpHlc({ table: 'queue', hbKey: 'x', ts: Date.now() });
     expect(compareHlc(decodeHlc(next.hlc), decodeHlc(ownHlc))).toBe(-1);

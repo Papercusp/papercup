@@ -42,7 +42,7 @@ const argsSchema = z.object({
     .enum(['meta', 'sections', 'full'])
     .optional()
     .describe(
-      "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose` and per-item rawLine (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
+      "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine; long decision bodies are EXCERPTED to keep the default read bounded — each carries body_truncated + body_full_chars, and decisionBodiesTruncated flags when any were cut — use mode:'full' for complete bodies), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose`, per-item rawLine, and full decision bodies (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
     ),
   heading: z
     .string()
@@ -56,6 +56,28 @@ interface PlanSection {
   heading: string;
   level: number;
   chars: number;
+}
+
+// WI-274: bound decision bodies in plans:get `sections` mode so a decision-heavy
+// plan can't overflow the agent tool-output cap (the round-4 plan hit 56KB on one
+// line → spilled to a file). `full` mode keeps complete bodies. Per-decision cap =
+// min(CAP, floor(BUDGET / n)) — the same budget-aware bound coord:inbox uses
+// (EI-1752): total decision text stays bounded at ANY plan size, while normal plans
+// keep most decisions in full (only the few long ones are excerpted).
+export const DECISION_BODY_CAP = 1000;
+export const DECISIONS_TOTAL_BUDGET = 15_000;
+
+export function boundDecisionBodies<T extends { body: string }>(
+  decisions: T[],
+): Array<T | (T & { body_truncated: true; body_full_chars: number })> {
+  const n = decisions.length;
+  if (n === 0) return decisions;
+  const cap = Math.min(DECISION_BODY_CAP, Math.floor(DECISIONS_TOTAL_BUDGET / n));
+  return decisions.map((d) => {
+    const full = d.body ?? '';
+    if (full.length <= cap) return d;
+    return { ...d, body: full.slice(0, cap), body_truncated: true as const, body_full_chars: full.length };
+  });
 }
 
 /** Split a plan's markdown body into level-1/2 sections, tracking fenced code
@@ -274,13 +296,27 @@ export default defineTool({
     // `sections` (default): structured items/decisions + links — still WITHOUT
     // the prose blob (the 90KB overflow) and WITHOUT per-item rawLine (it
     // duplicates text/status/phase — P-008 payload diet). `full` adds both back.
+    // WI-274: in `sections` (the default) excerpt long decision bodies so a
+    // decision-heavy plan can't overflow the agent tool-output cap. `full` keeps
+    // complete bodies (alongside the prose blob).
+    const boundedDecisions =
+      mode === 'full' ? parsed.decisions : boundDecisionBodies(parsed.decisions);
+    const decisionBodiesTruncated =
+      mode !== 'full' && boundedDecisions.some((d) => 'body_truncated' in d);
     const structured = {
       ...base,
       items:
         mode === 'full'
           ? resolvedItems
           : resolvedItems.map(({ rawLine: _rawLine, ...rest }) => rest),
-      decisions: parsed.decisions,
+      decisions: boundedDecisions,
+      ...(decisionBodiesTruncated
+        ? {
+            decisionBodiesTruncated: true as const,
+            decisionBodiesHint:
+              'Some decision bodies are excerpted (see each decision\'s body_truncated/body_full_chars). Use mode:"full" for complete bodies.',
+          }
+        : {}),
       missingRefs: resolved.missingRefs,
       cycleMembers: resolved.cycleMembers,
       linkedFeatures,

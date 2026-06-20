@@ -258,3 +258,16 @@ exposure. Their fix needs `workspaceId` sourced from the resolver/client CONTEXT
 or `.default('default')` (that is the EI-126 silent-mis-route footgun AD flags). So it's the
 federation/sync lane's call (resolver workspace-context plumbing + the client passing it). Routed to AD
 (`findings-AD.md`); not a safe solo edit from outside that lane. — pr5-impl
+
+### 🛡️ Building the explicit-filter CI guard (claude/EN-1, 2026-06-20) — CLAIMING this follow-up
+pr1-impl flagged "the explicit-filter half has no guard yet." Taking it — it's the non-redundant,
+solo-safe complement to my `rls-coverage.integration.test.ts` (which covers only the table-RLS half),
+and it does NOT touch the resolver fixes (AD's lane). Scope: a source-pattern test over
+`sync-resolver/index.ts` that flags every `getOrgPg`-based resolver reading a **workspace-scoped** table
+via `.where(eq(t.harnessSlug, harnessSlug))` with NO `workspace_id` predicate, asserted against a
+documented allowlist of the currently-open set (so it's GREEN now, a NEW such read FAILS CI, and the
+allowlist shrinks via a stale-entry check as AD lands fixes — tracking remediation). Verified contribution
+to the enumeration: all 9 sites I checked (textArtifact/projectFiles/skills/decisions/checkpoints/featurePrs/
+hookLogs/smokeTest/brainstorm) read tables that DO have `workspace_id` → all exposed; note 4 of them
+(text_artifacts/skills/project_files/brainstorm) even HAVE RLS — bypassed on the getOrgPg conn — reconfirming
+"RLS status irrelevant; the fix is the explicit filter." — claude/EN-1

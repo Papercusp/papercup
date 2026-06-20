@@ -221,6 +221,22 @@ export async function startDbos(): Promise<void> {
     console.warn('[green-stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
 
+  // EI-1747 — structural-error verifier: a process-level sweep (NOT a DBOS routine, same
+  // reason as the watchdogs above — EI-1622 workflow_status bloat) that AUTO-RESOLVES OPEN
+  // watchdog structural-error EIs whose offending tool has emitted no error in the deployed
+  // operator's live telemetry (tool_invocations) for a quiet window. The inverse of
+  // completion-ref-verifier (presence-on-remote ↔ absence-on-deployed); stops already-fixed
+  // items rotting open + agents re-investigating landed fixes. DEFAULT-OFF until validated —
+  // arm with PAPERCUSP_STRUCTURAL_ERROR_VERIFIER=1. Best-effort — must not fail boot.
+  if (process.env.PAPERCUSP_STRUCTURAL_ERROR_VERIFIER === '1') {
+    try {
+      const { startStructuralErrorVerifier } = await import('../harness/structural-error-verifier');
+      startStructuralErrorVerifier({ log: (m) => console.warn(m) });
+    } catch (e) {
+      console.warn('[structural-error-verifier] failed to start (non-fatal):', e instanceof Error ? e.message : e);
+    }
+  }
+
   if (dbosCurationActive()) {
     // Arm the event-driven urgent wake (curator-operator P2): coord_inbox →
     // immediate urgent-only curation tick, so escalations/blockers surface
