@@ -61,7 +61,11 @@ export type BootHistoryKind =
   | 'announce_pending'
   | 'announce_rejected'
   | 'announce_error'
-  | 'merge_error';
+  | 'merge_error'
+  // WI-280 (part B): the owner's re-key epoch-key grant to a freshly-admitted peer
+  // failed. The grant is fire-and-forget (it must not block merge-gated admission),
+  // so this is how the failure stays LOUD + queryable instead of a swallowed console.error.
+  | 'rekey_grant_failed';
 
 export interface BootHistoryEntry {
   ts: number;

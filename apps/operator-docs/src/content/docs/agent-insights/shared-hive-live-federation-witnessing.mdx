@@ -36,6 +36,18 @@ A hive's per-table PG projections are keyed by `harness_slug`. On a JOINER, the 
 
 The cut = member-remove → epoch advance → removed member can't decrypt new content. Live legs (from-repo smoke, `WITNESS_PROBE=1`, flag on): **K0** joiner receives wrapped `hive_epoch_keys` (origin=remote) → **K1** reads pre-revoke F-CTRL (decrypts) → **K2** owner revokes (`substrate:revoke_contributor` → epoch advances) → **K3** owner writes F-CUT under the new epoch → removed member **cannot** read it. The grant that makes K0 pass fires on the **substrate auto-admit** (`boot.ts` Seam-2 `grantEpochKeysToMembers on admit`), NOT on `membership_decide` (open-mode public hives have no pending-join to approve). K0 needs the keys to *federate A→B* — so it's blocked by the same A→B path WI-259 breaks on from-repo, but not on discovery-join.
 
+### Make the cut witness CONTENT-FREE (the device-filtered reframe)
+
+The original K1/K3 read content (`F-CTRL`/`F-CUT` via `fed_hive_merge_probe` → `harness_features_consolidated`), which conflates the crypto cut with WI-259's content-federation stall → a false-RED. The cut is provable from `hive_epoch_keys` ALONE (hive-home-grained, A-003-proven to cross), so make it **device-filtered + content-free** (⇒ WI-259-orthogonal): **B_DEV** (the cut-off device) = `A's member_device_pubkey at epoch=CUR EXCEPT at epoch=NEW` (A stays a member ⇒ excluded; the diff = the removed device). Then K1 = B has a CUR-epoch row for B_DEV (origin=remote); K3 CUT = B has NO NEW-epoch row for B_DEV **while** B DID receive the remaining members' NEW-epoch rows (teeth #2 — proves "B excluded", not "NEW epoch never federated"). Capture `CUR_EPOCH` BEFORE the revoke or the EXCEPT collapses to empty.
+
+### Re-key engagement — the membership dependency (WI-280, the 3rd green-rig/red-binary bug)
+
+Before expecting ANY meaningful K-stage, confirm the owner actually minted epoch keys: `drv_psql a "SELECT count(*),max(epoch) FROM harness_shared.hive_epoch_keys WHERE harness_slug='$HIVE'"`. If A has **0 keys / epoch=-1** the re-key never engaged (WI-280) — a re-key bug, NOT a witness bug. Why it happens live:
+
+- The epoch is minted ONLY on a **boundary** — `advanceEpochOnHiveBoundary` is called only from revoke (`hive-revoke-contributor`) + go-private (`hive-set-listing`), **never on create**. A fresh hive has no epoch key (content is plaintext until the first boundary).
+- The boundary + the join-grant wrap the new key to `loadAllHiveMemberDevicePubkeys()` — the **`hive_members` device set**. In the live open-mode from-repo flow `hive_members` is EMPTY: `upsertHiveMember` fires only via `approvePendingJoin` (open-mode auto-admits at the substrate, no pending-join), and nothing self-registers the owner at create. Wrap-set = `[]` → 0 keys, and even a revoke can't advance (nobody to wrap to).
+- The hermetic re-key tests **seed `hive_members`**, so they're green while the live binary mints 0 keys — exactly A-003/WI-259's pattern. The fix is to populate `hive_members` live (owner self-row at create + open-mode joiner at the Seam-2 admit), not anything in the witness.
+
 ## Self-kill footgun (cleanup)
 
 Don't `pgrep -f '<pattern>'` for a string your own kill command contains — in a backgrounded command it matches and kills its own process tree before the work runs. Read PIDs into a var first, exclude `$$`, and prefer specific keys (an exact Xvfb display, a data-dir path) over broad name patterns. Never kill all `postgres -D /tmp/*` — peers run test PGs there too.

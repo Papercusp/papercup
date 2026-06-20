@@ -244,6 +244,9 @@ async function setupPeerSchema(sql: postgres.Sql, memberSlug: string = HARNESS_S
       source_plan_slug      TEXT,
       source_plan_item_ids  TEXT[],
       see_also              TEXT[] NOT NULL DEFAULT '{}'::text[],
+      wave                  TEXT,
+      completion_ref        JSONB,
+      deprecation_reason    TEXT,
       PRIMARY KEY (harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.harness_issues_consolidated (

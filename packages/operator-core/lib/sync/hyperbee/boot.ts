@@ -1023,14 +1023,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                 newMemberPubkeys: [frame.device_pubkey],
               });
             } catch (e) {
+              const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+              // WI-280 (part B): make this LOUD. A re-key grant K0 depends on must not
+              // vanish into a best-effort console.error (the witness K-stage failed
+              // SILENTLY for exactly this reason). Record a queryable boot event so the
+              // failure surfaces in boot-history — WITHOUT re-throwing into the
+              // merge-gated admission, which must stay non-blocking (the grant is
+              // deliberately fire-and-forget).
+              recordBootEvent(
+                opts.workspaceId,
+                opts.harnessSlug,
+                'rekey_grant_failed',
+                `grantEpochKeysToMembers on admit failed for ${peerLabel(
+                  frame.log_core_key,
+                )}: ${detail}`,
+              );
               // eslint-disable-next-line no-console
               console.error(
-                // WI-280: log the STACK (not just the message) — this grant THROWS at
-                // epoch-0 and the throw was being swallowed message-only, hiding WHICH
-                // produce call fails (deriveEpochKey / wrapKeyToMember / putWrappedKeys).
-                `[hive-rekey] grantEpochKeysToMembers on admit failed (best-effort): ${
-                  e instanceof Error ? (e.stack ?? e.message) : String(e)
-                }`,
+                // Log the STACK (not just the message) — this grant THROWS and the throw
+                // was being swallowed message-only, hiding WHICH produce call fails
+                // (deriveEpochKey / wrapKeyToMember / putWrappedKeys — e.g. sodium-native
+                // unresolved in the sidecar binary, WI-280 candidate 1).
+                `[hive-rekey] grantEpochKeysToMembers on admit failed: ${detail}`,
               );
             }
           })();

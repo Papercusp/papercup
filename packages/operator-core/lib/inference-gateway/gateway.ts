@@ -122,6 +122,15 @@ const DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEW
  *  turns the hang into a fast reject → penalize the account + the finally releases the slot. Generous by
  *  default (a refresh is normally <2s). Env-overridable. */
 const DEFAULT_TOKEN_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_TOKEN_MS) || 20 * 1000;
+/** Downstream (gateway→client) idle timeout: if the bee's socket makes NO progress for this long while
+ *  we stream a response to it, tear the socket down so a hung / half-open client (got headers, stopped
+ *  reading, never sent RST) cannot pin the proxy task — and thus its admission slot — forever. The
+ *  upstream stall-guard aborts UPSTREAM only; a completed-upstream + dead-client stream had no path to
+ *  resolve (res never 'finish' — can't flush; never 'close' — half-open; upstream never 'error' — done),
+ *  so the slot pinned with frozen counters + silent logs (the 2026-06-20 wedge #2). `res.setTimeout`
+ *  fires on socket INACTIVITY, so it distinguishes a hung client (fires → destroy → 'close' → release)
+ *  from a slow-but-draining one (write progress keeps resetting it). Env-tunable. */
+const DEFAULT_DOWNSTREAM_IDLE_MS = Number(process.env.PAPERCUSP_GATEWAY_DOWNSTREAM_IDLE_MS) || 2 * 60 * 1000;
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
  *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
@@ -224,6 +233,10 @@ export interface GatewayDeps {
    *  refresh used to pin every admission slot until a manual restart (the 2026-06-20 token-hang wedge).
    *  Default 20s (env PAPERCUSP_GATEWAY_TOKEN_MS). */
   tokenTimeoutMs?: number;
+  /** Downstream-idle timeout (ms): a hung/half-open client that stops reading mid-response is torn down
+   *  after this much socket inactivity so it can't pin the proxy task's admission slot (the 2026-06-20
+   *  wedge #2). Default 2 min (env PAPERCUSP_GATEWAY_DOWNSTREAM_IDLE_MS). */
+  downstreamIdleMs?: number;
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -404,6 +417,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamStreamHeadersTimeoutMs = deps.upstreamStreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS;
   const upstreamBodyIdleTimeoutMs = deps.upstreamBodyIdleTimeoutMs ?? DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS;
   const tokenTimeoutMs = deps.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS;
+  const downstreamIdleMs = deps.downstreamIdleMs ?? DEFAULT_DOWNSTREAM_IDLE_MS;
   const log = deps.log ?? (() => {});
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
   const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs, maxQueued });
@@ -572,6 +586,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       );
       return;
     }
+
+    // Downstream-idle guard (2026-06-20 wedge #2): a hung/half-open bee that stopped reading mid-stream
+    // had no deadline — the upstream stall-guard aborts UPSTREAM only, so a completed-upstream + dead
+    // client pinned the admission slot forever. Tear the socket down after downstreamIdleMs of NO socket
+    // progress → res emits 'close' → the streaming await below resolves → finally releases the slot.
+    res.setTimeout(downstreamIdleMs, () => res.destroy());
 
     // Opt-in per-request routing trace (PAPERCUSP_GATEWAY_ROUTE_LOG=1): logs the pinned account
     // requested via the x-papercusp-account header vs the account this request ACTUALLY egressed on
@@ -840,6 +860,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             await new Promise<void>((resolve) => {
               res.on('finish', () => resolve());
               res.on('close', () => resolve());
+              res.on('error', () => resolve());
               peekedRest!.on('error', () => { res.destroy(); resolve(); });
             });
           } else {
@@ -855,6 +876,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           await new Promise<void>((resolve) => {
             res.on('finish', () => resolve());
             res.on('close', () => resolve());
+            res.on('error', () => resolve());
             nodeStream.on('error', () => {
               res.destroy();
               resolve();

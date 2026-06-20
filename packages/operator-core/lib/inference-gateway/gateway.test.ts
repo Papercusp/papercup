@@ -2,6 +2,7 @@
 import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { createInferenceGateway, estimateTokens, parseRateReset, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercup-shared/agent';
@@ -698,4 +699,43 @@ test('a STALLED OAuth token refresh fails FAST with a retryable 503 + releases t
   assert.equal(upstreamHits, 0, 'never reached upstream — the hang was before the fetch');
   const stats = (await (await ask('/stats')).json()) as { inFlight: number };
   assert.equal(stats.inFlight, 0, 'admission slot released after the token timeout (wedge signature is inFlight stuck at max)');
+});
+
+test('a NON-DRAINING client cannot pin a slot — the downstream-idle guard tears it down (2026-06-20 wedge #2)', async () => {
+  // Reproduce the wedge: upstream COMPLETES a large streamed body, but the client never reads it.
+  // Pre-fix, res could never 'finish' (backpressured — can't flush) nor 'close' (half-open), and
+  // upstream already ended (no 'error'), so the proxy await hung forever and pinned the admission slot.
+  // The downstream-idle guard (res.setTimeout → res.destroy) must release the slot anyway.
+  const BIG = Buffer.alloc(16 * 1024 * 1024, 0x61); // 16 MB — far exceeds socket buffers → backpressure
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      res.end(BIG); // upstream completes immediately
+    },
+    { downstreamIdleMs: 300 },
+  );
+  // Raw client: send a valid /v1/messages request, then NEVER read the response (pause the socket).
+  const sock = net.connect(port, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    sock.once('connect', () => resolve());
+    sock.once('error', reject);
+  });
+  const reqBody = JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  sock.write(
+    `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n` +
+      `content-length: ${Buffer.byteLength(reqBody)}\r\nconnection: close\r\n\r\n${reqBody}`,
+  );
+  sock.pause(); // the hung client: never drains the 16 MB body
+
+  // The slot must release within a bound (downstreamIdleMs + slack), proving no wedge. Pre-fix it
+  // stays 1 forever.
+  let inFlight = 1;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+    inFlight = ((await (await ask('/stats')).json()) as { inFlight: number }).inFlight;
+    if (inFlight === 0) break;
+  }
+  sock.destroy();
+  assert.equal(inFlight, 0, 'downstream-idle guard released the slot a hung client would otherwise pin forever');
 });
