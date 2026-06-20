@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineTool, listAllProjectedTools, runToolOrchestration, SU_ROLES } from '@papercusp/agent-mcp';
+import { PROJECTED_DEPS } from '../../projected-tool-deps';
 
 /**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
@@ -65,7 +66,12 @@ export default defineTool({
 
     const result = await runToolOrchestration(args.script, {
       ctx,
-      deps: {}, // minimal: inner calls keep role-allowlist gating from ctx; envelope/telemetry threading is a follow-up
+      // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
+      // the same dispatcher pipeline as any MCP `tools/call` — so they are recordInvocation-
+      // logged (visible to spend/quota, not invisible), quota-counted, capability-envelope-
+      // gated, postInvoke/event-reaction-observed, and authz-audited — not just role-allowlisted.
+      // Same singleton the in-process re-dispatch path (events/dispatch-reaction.ts) uses.
+      deps: PROJECTED_DEPS,
       tools: all,
       allowed,
       dryRun: args.dryRun ?? false,
