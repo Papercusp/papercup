@@ -61,6 +61,7 @@ import {
   selectWedgeReapCandidates,
   WEDGE_REAP_SILENT_MS,
 } from './operator-spawn';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 // `/tmp` exists on disk, so the project-dir existence check passes without fixtures.
 const PROJECT = { slug: 'demo', path: '/tmp', hasState: true, hasSpec: false };
@@ -68,8 +69,17 @@ const PROJECT = { slug: 'demo', path: '/tmp', hasState: true, hasSpec: false };
 let runningCount = 0;
 let dupRows: Array<{ spawn_id: string }> = [];
 let errorSpy: ReturnType<typeof vi.spyOn>;
+let savedXbenchDirective: string | undefined;
 
 beforeEach(() => {
+  // Hermeticity (EI-1837): the external-bench launcher exports
+  // PAPERCUSP_XBENCH_BEE_DIRECTIVE on the shared env both the launcher and the
+  // :3170 host read; when present, operator-spawn appends it to a `bee` brief
+  // (intentional, bench-scoped). These unit tests assert the PRODUCTION contract
+  // (the brief passed through verbatim), so neutralize the var for the suite and
+  // restore it after — otherwise the suite reddens whenever it runs under the bench.
+  savedXbenchDirective = process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
+  delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
   runningCount = 0;
   dupRows = [];
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -108,6 +118,8 @@ beforeEach(() => {
 afterEach(() => {
   errorSpy.mockRestore();
   vi.clearAllMocks();
+  if (savedXbenchDirective === undefined) delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
+  else process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = savedXbenchDirective;
 });
 
 /** Let the fire-and-forget completion chain settle. */
@@ -365,11 +377,20 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
     expect(env.HARNESS_SLUG).toBe('papercup');
   });
 
-  it('aliases the legacy "papercusp-su" slug to the dogfood project "papercup"', async () => {
-    onlyResolves('papercup');
+  it('aliases the legacy "papercusp-su" slug to the operator-home project', async () => {
+    // The legacy "papercusp-su" MCP slug remaps to the operator-home project —
+    // operatorHomeHarnessSlug() (PAPERCUSP_HIVE_HOME_SLUG, else the migrated
+    // legacy default, post papercup→papercusp migration). Derive `home` from the
+    // SAME source of truth the production remap uses, so this stays hermetic under
+    // the gate's PAPERCUSP_*-stripped env (and under any host-configured pointer).
+    const home = operatorHomeHarnessSlug();
+    const HOME_PROJECT = { slug: home, path: '/tmp', hasState: true, hasSpec: false };
+    vi.mocked(resolveProject).mockImplementation(
+      (async (s: string) => (s === home ? HOME_PROJECT : null)) as never,
+    );
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'papercusp-su', role: 'scoper' });
     expect(res.ok).toBe(true);
-    expect(res.harness).toBe('papercup');
+    expect(res.harness).toBe(home);
   });
 
   it('does NOT silently normalize an arbitrary wrong slug — a non -su typo still rejects', async () => {

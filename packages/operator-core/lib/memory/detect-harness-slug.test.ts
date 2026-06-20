@@ -7,6 +7,11 @@ import {
   detectHarnessSlugSync,
   _testing,
 } from './detect-harness-slug';
+// The meta-detection fallback returns the configured operator-home pointer, or
+// LEGACY_DEFAULT_HOME_HARNESS when the pointer is unset (owner-directed
+// papercup→papercusp migration, EI-1888). Assert against the constant so the
+// env-less expectations track the source rather than baking a slug literal.
+import { LEGACY_DEFAULT_HOME_HARNESS } from '../harness/operator-home-harness';
 
 let tmpRoot: string;
 
@@ -96,7 +101,11 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     mkFile('papercup-root/package.json', JSON.stringify({ name: 'papercup' }));
     mkDir('papercup-root/libs/papercusp');
     const r = detectHarnessSlugSync({ cwd, env: {} });
-    expect(r).toEqual({ slug: 'papercup', source: 'meta-papercup' });
+    // Pointer unset → the legacy-default home slug (post owner-directed
+    // migration: papercusp). Asserted against the source-of-truth constant,
+    // not a baked literal — baking the literal here is exactly what broke the
+    // gate when the default flipped.
+    expect(r).toEqual({ slug: LEGACY_DEFAULT_HOME_HARNESS, source: 'meta-papercup' });
   });
 
   it('detects the real scoped monorepo name (@papercupai/papercup-monorepo)', () => {
@@ -107,7 +116,9 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     mkFile('mono-root/package.json', JSON.stringify({ name: '@papercupai/papercup-monorepo' }));
     mkDir('mono-root/libs/papercusp');
     const r = detectHarnessSlugSync({ cwd, env: {} });
-    expect(r).toEqual({ slug: 'papercup', source: 'meta-papercup' });
+    // The point of this case is that the scoped name is DETECTED (source:
+    // meta-papercup); the env-less slug is the legacy-default home constant.
+    expect(r).toEqual({ slug: LEGACY_DEFAULT_HOME_HARNESS, source: 'meta-papercup' });
   });
 
   it('tolerates the papercup→papercusp rename (papercusp-monorepo)', () => {
@@ -115,7 +126,9 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     mkFile('cusp-root/package.json', JSON.stringify({ name: 'papercusp-monorepo' }));
     mkDir('cusp-root/libs/papercusp');
     const r = detectHarnessSlugSync({ cwd, env: {} });
-    expect(r).toEqual({ slug: 'papercup', source: 'meta-papercup' });
+    // The renamed package name is still DETECTED; env-less slug is the
+    // legacy-default home constant.
+    expect(r).toEqual({ slug: LEGACY_DEFAULT_HOME_HARNESS, source: 'meta-papercup' });
   });
 
   it('returns the configured home pointer (PAPERCUSP_HIVE_HOME_SLUG), not a baked literal', () => {
