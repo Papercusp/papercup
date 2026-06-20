@@ -556,7 +556,9 @@ export default defineTool({
     /** Cross-wave orderings dropped because one side is a spawn_child wave. */
     const spawnEdgeWarnings: string[] = [];
     if (promoteFeatures.length === 0) {
-      const { policy, warnings } = parsePromotePolicy(planFile.parsed.raw);
+      // v2 P-001: read the structured promote-policy from the plan row (parsed once at write-time);
+      // fall back to parsing the raw for a not-yet-repopulated row (null column, pre-mig-331 plans).
+      const { policy, warnings } = planFile.row.promotePolicy ?? parsePromotePolicy(planFile.parsed.raw);
       if (!policy) {
         return fail('no_promote_policy', `plan ${args.slug} has no valid \`## Promote\` policy${warnings.length ? ': ' + warnings.join('; ') : ''}`);
       }

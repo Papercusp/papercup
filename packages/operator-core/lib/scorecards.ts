@@ -168,7 +168,13 @@ function trendSeverity(rating: string): number | null {
   return s === undefined ? null : s;
 }
 
-function computeDirection(series: readonly { at: string; rating: string }[]): TrendDirection {
+/**
+ * The net first→latest trend direction of a chronological rating series (default
+ * ordinal healthy<degraded<broken; `unknown`/custom ratings are excluded as
+ * unassessable). Exported so the (pure, DB-free) direction logic is unit-tested
+ * exhaustively; `scorecardTrend` applies it per criterion.
+ */
+export function computeTrendDirection(series: readonly { at: string; rating: string }[]): TrendDirection {
   const assessable = series.map((s) => trendSeverity(s.rating)).filter((s): s is number => s !== null);
   if (assessable.length < 2) return 'unknown';
   const first = assessable[0];
@@ -254,7 +260,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
         distribution,
         first: { rating: series[0].rating, at: series[0].at },
         latest: { rating: series[series.length - 1].rating, at: series[series.length - 1].at },
-        direction: computeDirection(series),
+        direction: computeTrendDirection(series),
         series,
       };
     });

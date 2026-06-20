@@ -90,6 +90,11 @@ async function readQuotaStateImpl(
   windowKey: string,
 ): Promise<{ count: number } | null> {
   if (!ctx.workspaceId) return null;
+  // P-003: telemetry writes are deferred (see below), so a prior call's
+  // tool_invocations row may still be queued. Drain it before counting so a
+  // quota'd tool never under-counts. Cheap — only quota'd tools reach here
+  // (capability:bash et al. have no quota and skip this gate entirely).
+  await flushPendingTelemetry();
   try {
     const { sql } = getOrgPg();
     const result = await sql.begin(async (tx) => {
@@ -113,7 +118,7 @@ async function readQuotaStateImpl(
   }
 }
 
-async function recordInvocationImpl(input: {
+interface RecordInvocationInput {
   toolName: string;
   pluginName: string;
   ctx: UnifiedToolContext;
@@ -128,88 +133,198 @@ async function recordInvocationImpl(input: {
   args?: unknown;
   eventCount?: number;
   metadataJson?: Record<string, unknown> | null;
-}): Promise<void> {
-  // Turn-level presence beat (liveness-hardening P-001): every settled
-  // dispatch keeps its owner's presence warm, throttled per owner. Before the
-  // workspace guard — a beat needs an identity, not a workspace.
-  maybeBeatPresenceOnDispatch(input.ctx);
-  if (!input.ctx.workspaceId) return;
-  try {
-    const { sql } = getOrgPg();
-    await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [input.ctx.workspaceId]);
-      // Pull Principal audit fields off ctx.principal when present.
-      // The UnifiedToolContext inline subset doesn't carry the full
-      // {kind, authMethod, trust} shape today; only the bearer/MCP path
-      // populates a real Principal. Migration 076 added these columns
-      // as nullable so legacy gaps surface as 'unknown' in /dev.
-      const p = (input.ctx.principal ?? null) as null | {
-        kind?: string;
-        authMethod?: string;
-        trust?: string;
-      };
-      await tx.unsafe(
-        `INSERT INTO harness_shared.tool_invocations
-           (workspace_id, harness_slug, plugin_name, tool_name, role,
-            feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
-            window_key, duration_ms, status, output_ref, output_size,
-            error_message, args_json, transport, event_count, metadata_json,
-            principal_kind, principal_auth_method, principal_trust, error_code)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-                 $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24)`,
-        [
-          input.ctx.workspaceId,
-          input.ctx.harnessSlug ?? '',
-          input.pluginName,
-          input.toolName,
-          input.ctx.role ?? '',
-          input.ctx.featureId ?? null,
-          input.ctx.chunkId ?? null,
-          input.ctx.runId ?? null,
-          input.ctx.spawnId ?? '',
-          input.ctx.parentSpawnId ?? null,
-          input.windowKey,
-          input.durationMs,
-          input.status,
-          input.outputRef ?? null,
-          input.outputSize ?? null,
-          input.errorMessage ?? null,
-          (() => {
-            if (input.args === undefined || input.args === null) return null;
-            try {
-              const s = jsonbSafeStringify(input.args);
-              if (s.length > 32768) {
-                return JSON.stringify({ _truncated: true, _size: s.length });
+}
+
+/* ─── P-003 deferred, batched telemetry writer ──────────────────────────────
+ * recordTelemetry() is AWAITED in the dispatcher's `finally`
+ * (runDispatchStack), so a synchronous per-call INSERT into
+ * harness_shared.tool_invocations added a full PG round-trip (~10–50ms) to the
+ * latency of EVERY tool call — the dominant per-call overhead for a tight
+ * capability:bash loop (route-everything-through-definetool P-003; the quota
+ * SELECT is already a no-op for no-quota tools like capability:bash).
+ *
+ * Telemetry is best-effort (errors already swallowed; NUL-byte rows already
+ * dropped), so the write moves OFF the response path: each settled dispatch
+ * SNAPSHOTS its row synchronously (cheap — JSON.stringify of args) and enqueues
+ * it; a debounced background flusher writes the queue in BATCHED, per-workspace
+ * transactions (one BEGIN/set_config/COMMIT amortized over many rows). The
+ * awaited recordInvocation now resolves in ~microseconds.
+ *
+ * Correctness: readQuotaState drains the queue (flushPendingTelemetry) before
+ * counting, so a quota'd tool never under-counts. Consumers needing synchronous
+ * visibility (tests, llm-testing telemetry) can await flushPendingTelemetry().
+ * The queue is hard-capped (drop-oldest) so a PG stall can never OOM the host. */
+
+interface TelemetryRow {
+  workspaceId: string;
+  params: unknown[];
+}
+
+const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
+   (workspace_id, harness_slug, plugin_name, tool_name, role,
+    feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
+    window_key, duration_ms, status, output_ref, output_size,
+    error_message, args_json, transport, event_count, metadata_json,
+    principal_kind, principal_auth_method, principal_trust, error_code)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24)`;
+
+const TELEMETRY_MAX_PENDING = 5000; // hard cap → drop-oldest on PG stall, never OOM
+const TELEMETRY_FLUSH_DEBOUNCE_MS = 10;
+const TELEMETRY_MAX_BATCH = 200;
+
+let telemetryQueue: TelemetryRow[] = [];
+let telemetryFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let telemetryFlushInFlight: Promise<void> | null = null;
+let telemetryDropped = 0;
+
+function scheduleTelemetryFlush(): void {
+  if (telemetryFlushTimer || telemetryFlushInFlight) return;
+  telemetryFlushTimer = setTimeout(() => {
+    telemetryFlushTimer = null;
+    void flushPendingTelemetry();
+  }, TELEMETRY_FLUSH_DEBOUNCE_MS);
+  // Never keep the event loop alive just for a pending telemetry flush.
+  (telemetryFlushTimer as unknown as { unref?: () => void }).unref?.();
+}
+
+/**
+ * Drain the deferred telemetry queue, writing it in batched per-workspace
+ * transactions. Best-effort: a failed batch is logged and dropped (matching the
+ * pre-defer swallow). Re-entrant-safe — a single in-flight flush; a concurrent
+ * caller awaits it. Exported so quota reads + telemetry consumers can force
+ * synchronous visibility.
+ */
+export async function flushPendingTelemetry(): Promise<void> {
+  if (telemetryFlushInFlight) return telemetryFlushInFlight;
+  if (telemetryQueue.length === 0) return;
+  const run = (async () => {
+    try {
+      const { sql } = getOrgPg();
+      while (telemetryQueue.length > 0) {
+        const batch = telemetryQueue.splice(0, TELEMETRY_MAX_BATCH);
+        // Group by workspace — RLS needs one set_config('app.workspace_id') per tx.
+        const byWorkspace = new Map<string, TelemetryRow[]>();
+        for (const row of batch) {
+          const list = byWorkspace.get(row.workspaceId);
+          if (list) list.push(row);
+          else byWorkspace.set(row.workspaceId, [row]);
+        }
+        for (const [workspaceId, rows] of byWorkspace) {
+          try {
+            await sql.begin(async (tx) => {
+              await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
+              for (const row of rows) {
+                await tx.unsafe(TELEMETRY_INSERT_SQL, row.params as unknown[]);
               }
-              return s;
-            } catch {
-              return null;
-            }
-          })(),
-          // ctx.transport set by HTTP / MCP / IPC adapters. NULL for
-          // direct-handler-call shims (the route shim path) where no
-          // transport is actually involved at dispatch time.
-          input.ctx.transport ?? null,
-          input.eventCount ?? null,
-          // Audit the reaction cause-chain (event-reaction-system D-010) into
-          // metadata_json so "why did this fire?" is answerable: a reaction row
-          // carries metadata.reaction = { depth, chain, ruleId, rootRunId }.
-          (() => {
-            const reaction = input.ctx.reactionCause;
-            const meta = reaction ? { ...(input.metadataJson ?? {}), reaction } : input.metadataJson;
-            return meta ? jsonbSafeStringify(meta) : null;
-          })(),
-          p?.kind ?? null,
-          p?.authMethod ?? null,
-          p?.trust ?? null,
-          input.errorCode ?? null,
-        ],
-      );
-    });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[projected-tool-deps] recordInvocation failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[projected-tool-deps] telemetry flush batch failed (${rows.length} rows): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
+    } finally {
+      telemetryFlushInFlight = null;
+    }
+  })();
+  telemetryFlushInFlight = run;
+  return run;
+}
+
+/**
+ * Build the tool_invocations row params snapshot for one settled dispatch.
+ * Synchronous + cheap (JSON.stringify of args); null when there is no workspace
+ * to scope to. Pulls Principal audit fields off ctx.principal when present
+ * (only the bearer/MCP path populates a real Principal; migration 076 made the
+ * columns nullable so legacy gaps surface as NULL/'unknown' in /dev).
+ */
+function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
+  if (!input.ctx.workspaceId) return null;
+  const p = (input.ctx.principal ?? null) as null | {
+    kind?: string;
+    authMethod?: string;
+    trust?: string;
+  };
+  const argsJson = (() => {
+    if (input.args === undefined || input.args === null) return null;
+    try {
+      const s = jsonbSafeStringify(input.args);
+      if (s.length > 32768) {
+        return JSON.stringify({ _truncated: true, _size: s.length });
+      }
+      return s;
+    } catch {
+      return null;
+    }
+  })();
+  // Audit the reaction cause-chain (event-reaction-system D-010) into
+  // metadata_json so "why did this fire?" is answerable: a reaction row carries
+  // metadata.reaction = { depth, chain, ruleId, rootRunId }.
+  const metadataJson = (() => {
+    const reaction = input.ctx.reactionCause;
+    const meta = reaction ? { ...(input.metadataJson ?? {}), reaction } : input.metadataJson;
+    return meta ? jsonbSafeStringify(meta) : null;
+  })();
+  return {
+    workspaceId: input.ctx.workspaceId,
+    params: [
+      input.ctx.workspaceId,
+      input.ctx.harnessSlug ?? '',
+      input.pluginName,
+      input.toolName,
+      input.ctx.role ?? '',
+      input.ctx.featureId ?? null,
+      input.ctx.chunkId ?? null,
+      input.ctx.runId ?? null,
+      input.ctx.spawnId ?? '',
+      input.ctx.parentSpawnId ?? null,
+      input.windowKey,
+      input.durationMs,
+      input.status,
+      input.outputRef ?? null,
+      input.outputSize ?? null,
+      input.errorMessage ?? null,
+      argsJson,
+      // ctx.transport set by HTTP / MCP / IPC adapters. NULL for
+      // direct-handler-call shims (the route shim path) where no transport is
+      // actually involved at dispatch time.
+      input.ctx.transport ?? null,
+      input.eventCount ?? null,
+      metadataJson,
+      p?.kind ?? null,
+      p?.authMethod ?? null,
+      p?.trust ?? null,
+      input.errorCode ?? null,
+    ],
+  };
+}
+
+async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
+  // Turn-level presence beat (liveness-hardening P-001): every settled dispatch
+  // keeps its owner's presence warm, throttled per owner. Stays SYNCHRONOUS on
+  // the hot path (cheap, throttled) — before the workspace guard, since a beat
+  // needs an identity, not a workspace.
+  maybeBeatPresenceOnDispatch(input.ctx);
+  // P-003: snapshot the row synchronously, then enqueue + return. The actual PG
+  // INSERT happens in a batched background flush, OFF the dispatcher's awaited
+  // hot path.
+  const row = buildTelemetryRow(input);
+  if (!row) return;
+  telemetryQueue.push(row);
+  if (telemetryQueue.length > TELEMETRY_MAX_PENDING) {
+    // Producer outran the PG writer (stall/backpressure) — shed oldest to keep
+    // memory bounded. Telemetry is best-effort; a dropped row is acceptable.
+    telemetryQueue.splice(0, telemetryQueue.length - TELEMETRY_MAX_PENDING);
+    telemetryDropped++;
+    if (telemetryDropped === 1 || telemetryDropped % 1000 === 0) {
+      // eslint-disable-next-line no-console
+      console.warn(`[projected-tool-deps] telemetry queue overflow — dropped ${telemetryDropped} row(s)`);
+    }
   }
+  scheduleTelemetryFlush();
 }
 
 /**

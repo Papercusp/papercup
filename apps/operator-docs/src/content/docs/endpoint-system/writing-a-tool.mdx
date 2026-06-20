@@ -3,37 +3,65 @@ title: Writing a tool
 description: Recipe for writing a tool end-to-end — picking the right shape, declaring the manifest entry, and verifying both transports.
 sidebar:
   order: 3
+plans:
+  - sse-typed-events-2026-05-12
+  - bespoke-card-improvements-2026-05-13
+  - endpoint-unification-2026-05-21
+  - phase-4-endpoint-system-2026-05-12
+  - tooldef-auth-rfc-2026-05-31
+  - token-efficient-tool-result-formats-2026-06-06
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
 
 
-## The two shapes
+## The three shapes
 
-Before writing any code, decide which shape your tool needs:
+Before writing any code, decide which shape your tool needs. The two first-party shapes (principal-gated and role-gated) share the **same** dirs and the **same** `defineTool` primitive — the discriminator is whether you pass `requirePrincipal: false`.
 
-### Built-in (`packages/operator-core/lib/agent-tools/**`)
+### Principal-gated built-in (`packages/operator-core/lib/agent-tools/**`)
 
-Use when **the tool needs a real authenticated principal**. Bearer token in the request → resolved to a principal with workspace ID and a capability set. The wrapper throws `UnauthorizedToolError` (HTTP 401) if no principal is present.
+Use when **the tool needs a real authenticated principal** — declared with a plain `defineTool` (no `requirePrincipal`). Bearer token in the request → resolved to a principal with workspace ID and a capability set. The wrapper throws `UnauthorizedToolError` (HTTP 401) if no principal is present.
 
 - Most built-ins live in `packages/operator-core/lib/agent-tools/<group>/<verb>.ts`; the smaller read-side set lives in `packages/agent-mcp/src/tools/**`.
 - Used today by: dashboard-only operations (settings reads/writes, credentials, marketplace tokens, budget, preferences)
-- **Agents cannot call built-ins** today — agents pass URL spawn context, not a bearer token. If you make a tool a built-in, the dashboard sees it; agents do not.
+- **Agents cannot call the principal-gated flavor** — agents pass URL spawn context, not a bearer token, so a plain `defineTool` is dashboard-only. (For agent-callable first-party behavior, use the role-gated shape below.)
 - Auto-projected by `defineTool({ name, capability, args, handler })`. No manifest, no plugin folder.
+
+### Role-gated first-party (`defineTool({ requirePrincipal: false, agentRoles, rolesQuota })`)
+
+The dominant first-party shape — 418 tool files use it. Same first-party dirs (`packages/operator-core/lib/agent-tools/**`, `packages/agent-mcp/src/tools/**`), same `defineTool` primitive, but **agent-callable via spawn context with no bearer**. Adding `requirePrincipal: false` skips the principal check; gating is the dispatcher's role allowlist (`agentRoles`) + per-window quota (`rolesQuota`), exactly like a plugin tool. The handler gets a `UnifiedToolContext` (no `principal`, no `tx` — open your own connection from the workspace-resolved pool if you need PG).
+
+```ts
+defineTool({
+  name: 'plans:set-priority',
+  capability: 'plans:write',
+  requirePrincipal: false,
+  agentRoles: [...SU_ROLES, 'bee'],
+  args: argsSchema,
+  async handler(args, ctx) { /* ctx has no principal/tx */ },
+});
+```
+
+- This is the shape for first-party operator behavior that spawned agents must be able to call: operator scan, `plans:*`, `coord:*`, harness phases, voice config.
+- Role-gated tools may also declare the streaming-only fields `events`, `state`, `idleTimeoutSec`, `replayBufferSize`, `modality` (see [Other `defineTool` fields](#other-definetool-fields)).
 
 ### Plugin (`libs/papercusp/plugins/<name>/`)
 
-Use when **agents must be able to call the tool** from their spawn URL. No principal required; gating is via role allowlist + per-window quota. Trust comes from the orchestrator's URL-baking guarantee.
+Use when **a removable, third-party tool** must be agent-callable from a spawn URL. No principal required; gating is via role allowlist + per-window quota — the same gate as a role-gated built-in. Trust comes from the orchestrator's URL-baking guarantee.
 
 - Used today by: every plugin in `libs/papercusp/plugins/` — repomix, fetch-plus, code2prompt, firecrawl-bridge
 - Manifest lives in `papercusp.json`; handlers in `index.ts`'s `tools` export.
+- Pick this over a role-gated built-in only for genuinely removable third-party code — first-party operator behavior stays a role-gated built-in (do **not** shape-shift it into a fake "operator-core" plugin).
 
 ### Decision rule
 
-> *Will an agent in a spawn ever call this with just URL params?*
-> If yes → plugin. If no → built-in.
+> *Will an agent in a spawn ever call this with just URL params (no bearer)?*
+> If no → principal-gated built-in.
+> If yes, and it's first-party operator behavior → role-gated built-in (`requirePrincipal: false`).
+> If yes, and it's removable third-party code → plugin.
 
-If both — agent **and** dashboard — need it, plugin is correct. The dashboard can call the same `/api/plugins/<plugin>/<tool>` URL the agent does. Loopback trust is the same boundary either way.
+If both — agent **and** dashboard — need it, a role-gated built-in (or plugin) is correct. The dashboard can call the same agent-tool / `/api/plugins/<plugin>/<tool>` URL the agent does; loopback trust is the same boundary either way.
 
 ## The 6-step recipe
 
@@ -75,13 +103,13 @@ What the `ctx` argument has:
 - `projectDir, stateDir` — resolved by the framework via `loadHarnessRegistry()`
 - `log(msg)` — appends to run.log.jsonl with plugin attribution
 - `signal` — `AbortSignal` for the dispatcher's timeout / cancellation
-- `progress(pct, msg)` — alias over the typed-event channel; emits MCP `notifications/progress` (always) AND `notifications/papercusp/event` (always) on MCP, plus `event: progress` on HTTP SSE
+- `progress(pct, msg)` — alias over the typed-event channel (`emit('progress', { progress, total, message? })`). On MCP, both notifications require the client to have supplied a `progressToken` — with **no** progressToken, `emit`/`progress` is a no-op (streaming disabled by the client). With one: `notifications/papercusp/event` fires for every emit, and `notifications/progress` *also* fires here because the event name is `progress` and its payload is a plain object (the standard-progress send is gated on `name === 'progress'` + a non-null, non-`Uint8Array` object payload). On HTTP SSE it emits `event: progress`.
 - `emit(name, payload)` — typed event channel. Declare the vocab via `defineTool({ events: { ... } })`. See [Typed event streams](./transports.mdx#typed-event-streams).
 - `askUser(spec)` — mid-run interactive prompt; blocks until the user submits/declines/cancels. Returns the validated user payload. Installed when `workspaceId + runId` are set. See [ctx.askUser](./ask-user.mdx).
 - `publishState(snapshot)` — push the current tool state to the state-channel SSE. Installed when the tool declared `state: ZodType<S>` AND ctx has `workspaceId + runId`. Validated against the declared schema. See [state-shaped tools](./state-tools.mdx).
 - `spawn?(bin, argv, opts)` — capability-gated subprocess
-- `secret?(name)` — async secret resolver (env vars, encrypted PG)
-- `principal?, tx?` — only set for built-in tools called with a bearer
+- `secret?(name)` — async secret resolver. For a **plugin** tool it is plugin-scoped: `ctx.secret(name)` reads the calling plugin's encrypted `plugin_configs` row first, then falls back to env — secrets are per-plugin-namespaced, not global. (First-party `agent-mcp` tools get a non-plugin-scoped resolver instead.)
+- `principal?, tx?` — only set for **principal-gated** built-in tools called with a bearer. Role-gated built-ins and plugin tools get neither.
 
 ### Step 2 — Write the manifest entry
 
@@ -116,20 +144,36 @@ Notes:
 - **`timeoutSec` defaults to 60** if omitted. The dispatcher aborts via `ctx.signal` when it fires.
 - **`guidance` is optional but strongly recommended.** Rendered into the [prompt-assembly tools catalog](/internal/docs/agents/prompt-assembly#section-2--tools-catalog) so every role that's allowed to call the tool gets the same `when` / `notWhen` / `chaining` framing without you having to write it in N role files. Built-in tools pass `guidance` to `defineTool({...})` as a sibling of `capability`. Omit it and the catalog falls back to description-only.
 
-### Step 2.5 — If you need a new PG schema, apply the migration manually
+#### Other `defineTool` fields
 
-The system PG (`:5432`) is **not wired into the embedded-pg migration runner**. New SQL files do not run automatically.
+The same `defineTool` primitive accepts more than `name`/`capability`/`args`/`handler`/`guidance`. The commonly-needed ones, with pointers to their dedicated pages:
+
+- **`result` (alias `output`)** — output `data` schema. Unlocks the token-efficient compact result formats and the MCP `outputSchema` / `structuredContent`. Only meaningful when the handler returns a `ToolResponse` envelope (a raw content-shaped `ToolResult` bypasses format selection). See [token-efficient result formats](/internal/docs/endpoint-system/transports).
+- **`events` + `state`** (role-gated built-ins only) — typed-event vocabulary and the state-channel snapshot schema. See [Typed event streams](./transports.mdx#typed-event-streams) and [state-shaped tools](./state-tools.mdx).
+- **`harness: 'required' | 'optional' | 'none'`** — whether the call must carry a resolved harness context.
+- **`requireRoles` / `authorize` / `public`** (RFC tooldef-auth) — RBAC role requirement (any-of over `principal.roles`), a per-resource authorization hook, and the opt-out from default-deny for a tool that intentionally needs no auth gate. See [tooldef-auth](/internal/docs/endpoint-system).
+- **`emits` / `requires`** — intrinsic lifecycle event-reaction rules (desugared to event rules at load) and declarative preconditions evaluated by the dispatcher's `preconditions` step.
+- **`crossWorkspace`** — opt a tool out of workspace-scoped RLS isolation when it legitimately spans workspaces (e.g. cross-workspace aggregation). Set this only when correct — it disables RLS for that tool.
+- **`expose`** — IPC / slash / HTTP exposure overrides; **`sampleRate`**, **`profile`** ('engineer' vs 'all' visibility); and (role-gated only) **`idleTimeoutSec`**, **`replayBufferSize`**, **`modality`** (`['text']` / `['voice']`), **`timeoutSec`**.
+
+### Step 2.5 — If you need a new PG schema, write the SQL file (it boot-applies)
+
+New `libs/papercusp/libs/db/sql/*.sql` files now run automatically. `applyPendingMigrationsAtBoot()` runs the same idempotent runner against the native `:5432` admin DB on host boot — for the release `:3070` operator **and** the Tauri dev shell's spawned operator (the shell this page's banner tells you to start). So just write the SQL and restart the operator; the migration applies before the boot-gate flips.
 
 ```bash
-# 1. Write libs/papercusp/libs/db/sql/048-my-new-table.sql
-# 2. Apply manually:
-PGPASSWORD=harness_admin_pwd psql -h localhost -p 5432 -U harness_admin -d papercusp -f libs/papercusp/libs/db/sql/048-my-new-table.sql
+# Write libs/papercusp/libs/db/sql/048-my-new-table.sql, then restart the operator.
+```
 
-# 3. Verify:
+Two caveats:
+- Boot-apply is gated on background-workers-enabled. The request-only staging secondary on `:3170` (and anything with `PAPERCUSP_BACKGROUND_WORKERS=0`) does **not** boot-apply.
+- For an in-session add (you don't want to restart), apply manually as the fallback, then verify:
+
+```bash
+PGPASSWORD=harness_admin_pwd psql -h localhost -p 5432 -U harness_admin -d papercusp -f libs/papercusp/libs/db/sql/048-my-new-table.sql
 PGPASSWORD=harness_admin_pwd psql -h localhost -p 5432 -U harness_admin -d papercusp -tAc "SELECT to_regclass('harness_shared.my_new_table')"
 ```
 
-Skip this and your tool will return 200 in dev because reads/writes silently fail.
+If the table never lands (boot-apply skipped on a secondary, or you forgot to restart), your tool will return 200 in dev because reads/writes silently fail.
 
 ### Step 3 — curl HTTP transport
 

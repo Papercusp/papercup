@@ -3,6 +3,9 @@ title: ctx.askUser — interactive prompts mid-run
 description: Mid-tool-run interactive prompts. The card lives on the state channel, not the event ring buffer; reconnect after answer does not re-prompt.
 sidebar:
   order: 6
+plans:
+  - bespoke-card-improvements-2026-05-13
+  - voice-aware-cards-2026-05-14
 ---
 
 # `ctx.askUser` — interactive prompts mid-run
@@ -12,7 +15,10 @@ A tool handler can pause and ask the user a question:
 ```ts
 const r = await ctx.askUser({
   prompt: 'Did you mean X or Y?',
-  dataSchema: z.object({ choice: z.enum(['x', 'y']) }),
+  // The radio renderer submits `{ picks: [optionId] }`, so the schema
+  // must match that shape — the server validates the inbound payload
+  // against dataSchema verbatim, with no key remapping.
+  dataSchema: z.object({ picks: z.tuple([z.enum(['x', 'y'])]) }),
   presentation: {
     kind: 'radio',
     options: [
@@ -23,7 +29,7 @@ const r = await ctx.askUser({
 });
 
 switch (r.action) {
-  case 'submit':  return doX(r.payload.choice);
+  case 'submit':  return doX(r.payload.picks[0]);
   case 'decline': return useDefault();
   case 'cancel':  throw new Error('cancelled');
 }
@@ -41,6 +47,8 @@ The endpoint system has two channels:
 | **State** | `ctx.askUser`, `ctx.publishState` | `state-snapshot` | Current snapshot only |
 
 **Cards live on the state channel.** A reconnecting client receives the latest snapshot of `openCards[]` — already-answered cards are gone, so the user is never re-prompted for something they already answered. (This is the bespoke-card-improvements H2 fix; if cards lived on the event ring buffer, the replay-on-reconnect would re-emit them.)
+
+Each entry in `state-snapshot.openCards[]` is an `OpenCardSnapshot`: it carries `correlationId`, `prompt`, `presentation`, `fallbackText`, `allowDecline`, `report`, `createdAt`, and `dataSchemaJson`. The `dataSchema` is **not** shipped as a Zod object — the server serializes it to JSON Schema (the required `dataSchemaJson` field) so the renderer can read the schema without a Zod runtime. The default adapter is Zod 4's `toJSONSchema` (`zod-to-json-schema@3` produced empty output for Zod 4 schemas), with the `$schema` key stripped.
 
 ## API
 
@@ -66,6 +74,22 @@ interface CardSpec<TSchema extends ZodTypeAny> {
 
   /** When false, the renderer hides the Skip affordance. Default true. */
   allowDecline?: boolean;
+
+  /**
+   * Optional structured body block (the shared `ReportBlock` two-tier
+   * plan→item shape from `@papercusp/chat-protocol`) rendered between the
+   * prompt and the options. Copied verbatim onto the wire snapshot.
+   */
+  report?: ReportBlock;
+
+  /**
+   * Fired synchronously once the card is registered, with the freshly-minted
+   * `correlationId` and the run/workspace it's scoped to. Lets a caller link
+   * the live card to an external durable record (e.g. an inbox / coord
+   * escalation). NOT called on an idempotency-cache hit (no card is
+   * registered), and any throw is swallowed — it never breaks the card flow.
+   */
+  onCard?: (info: { correlationId: string; runId: string; workspaceId: string }) => void;
 }
 
 type CardResponse<TSchema extends ZodTypeAny> =
@@ -91,7 +115,7 @@ Your `dataSchema` must match the payload shape. For a single-select radio with t
 
 ```ts
 type CardPresentation =
-  | { kind: 'radio';    options: CardOption[] }
+  | { kind: 'radio';    options: CardOption[]; voiceAnswerable?: boolean }
   | { kind: 'checkbox'; options: CardOption[] }
   | { kind: 'text';     placeholder?: string; multiline?: boolean }
   | { kind: 'date';     min?: string; max?: string }
@@ -105,6 +129,8 @@ interface CardOption {
 }
 ```
 
+`voiceAnswerable` on the `radio` variant is the opt-in that makes a radio card answerable **by voice**: when `true`, voice surfaces expose the option set for spoken answering. It defaults to off, and every other presentation kind stays announce-only on voice regardless.
+
 ## Response actions
 
 | `r.action` | Meaning | When |
@@ -114,6 +140,8 @@ interface CardOption {
 | `cancel` | Run cancelled, workspace switched, or `timeoutMs` fired. | Out-of-band — user did not respond. |
 
 The handler picks one branch for each. `decline` is for "this card isn't relevant, but keep running." `cancel` always means the entire run is going away.
+
+Single-select choice cards may also include **navigational** (non-terminal) options — clicking one opens a sub-surface (e.g. a chat thread or a log view) and leaves the card live instead of answering it. This is a renderer-local `navigate` action: it does **not** POST to `/card-response` and never resolves the `ctx.askUser` promise, so it has no `r.action` branch on the handler side.
 
 ## What ctx.askUser is **not**
 

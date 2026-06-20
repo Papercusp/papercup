@@ -31,7 +31,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveEffectiveStatus } from './effective-status';
 import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
-import { parsePromotePolicy } from './promote-policy';
+import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
@@ -95,8 +95,10 @@ export async function lintPlan(
 ): Promise<PlanLintReport | null> {
   const result = await readPlanBySlug(slug, opts);
   if (!result) return null;
-  const { parsed, archived } = result;
-  return lintParsed(parsed, slug, archived);
+  const { parsed, archived, row } = result;
+  // v2 P-001: pass the structured promote-policy (parsed at write-time) so lint reads it instead of
+  // re-parsing the markdown; lintParsed falls back to parsing for a not-yet-repopulated row.
+  return lintParsed(parsed, slug, archived, row.promotePolicy);
 }
 
 /**
@@ -109,6 +111,9 @@ export async function lintParsed(
   parsed: ParsedPlan,
   slug: string,
   archived: boolean,
+  // v2 P-001: the structured promote-policy from the plan row (when available); absent for a
+  // proposed-body lint (plans:set-content lints in-memory before writing) → parse parsed.raw.
+  promotePolicy?: ParsePromoteResult | null,
 ): Promise<PlanLintReport> {
   const report: PlanLintReport = {
     slug,
@@ -490,7 +495,7 @@ export async function lintParsed(
   // `template` is given (the child's target tree is ambiguous). Only spawn_child
   // findings are surfaced here — a malformed/absent `## Promote` block yields a
   // null policy and is left alone (it's not this check's remit).
-  const promote = parsePromotePolicy(parsed.raw);
+  const promote = promotePolicy ?? parsePromotePolicy(parsed.raw);
   if (promote.policy) {
     for (const w of promote.policy.waves) {
       const child = w.spawn_child;

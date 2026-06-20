@@ -17,11 +17,14 @@ const h = (msg_id: string, ts: string): HandoffRecord =>
   ({ msg_id, ts, kind: 'handoff', from: 'a', to: ['b'], plan_slug: 'p', summary: 's' }) as HandoffRecord;
 const acc = (msg_id: string, ts: string, related: string): HandoffRecord =>
   ({ msg_id, ts, kind: 'handoff_accepted', from: 'b', to: ['a'], related_msg_id: related }) as HandoffRecord;
+const exp = (msg_id: string, ts: string, related: string): HandoffRecord =>
+  ({ msg_id, ts, kind: 'handoff_expired', from: 'system:handoff-reconcile', to: ['a'], related_msg_id: related }) as HandoffRecord;
 
 describe('isHandoffRecord', () => {
-  it('accepts handoff + handoff_accepted, rejects other kinds', () => {
+  it('accepts handoff + handoff_accepted + handoff_expired, rejects other kinds', () => {
     expect(isHandoffRecord(h('h1', 't1'))).toBe(true);
     expect(isHandoffRecord(acc('a1', 't2', 'h1'))).toBe(true);
+    expect(isHandoffRecord(exp('e1', 't2', 'h1'))).toBe(true);
     expect(isHandoffRecord({ kind: 'message' } as unknown as CoordEnvelope)).toBe(false);
   });
 });
@@ -43,5 +46,22 @@ describe('foldHandoffs', () => {
   it('sorts handoffs ascending by (ts, msg_id)', () => {
     const out = foldHandoffs([h('b', '2026-01-01T00:00:02Z'), h('a', '2026-01-01T00:00:01Z')]);
     expect(out.map((x) => x.record.msg_id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('foldHandoffs — expiry (F-FIX-037)', () => {
+  it('pairs a handoff with its expiry; status:"open" excludes expired; status:"expired" returns it', () => {
+    const recs = [h('h1', 't1'), h('h2', 't2'), exp('e2', 't3', 'h2')];
+    const all = foldHandoffs(recs);
+    expect(all.find((x) => x.record.msg_id === 'h2')?.expired_by?.msg_id).toBe('e2');
+    expect(foldHandoffs(recs, { status: 'open' }).map((x) => x.record.msg_id)).toEqual(['h1']); // h2 expired → not open
+    expect(foldHandoffs(recs, { status: 'expired' }).map((x) => x.record.msg_id)).toEqual(['h2']);
+  });
+
+  it('acceptance DOMINATES expiry: an accepted+expired handoff is accepted, never open/expired', () => {
+    const recs = [h('h1', 't1'), acc('a1', 't2', 'h1'), exp('e1', 't3', 'h1')];
+    expect(foldHandoffs(recs, { status: 'open' })).toHaveLength(0);
+    expect(foldHandoffs(recs, { status: 'expired' })).toHaveLength(0);
+    expect(foldHandoffs(recs, { status: 'accepted' }).map((x) => x.record.msg_id)).toEqual(['h1']);
   });
 });

@@ -73,8 +73,8 @@ function mockRegistry(projects: Array<{ slug: string; path: string }>) {
 }
 
 function mockPapercupDetection(detected: string | null) {
-  vi.doMock('../../../harness/register-papercup', () => ({
-    PAPERCUP_HARNESS_SLUG: 'papercup',
+  vi.doMock('../../../harness/register-papercusp', () => ({
+    LEGACY_STANDALONE_HARNESS_SLUG: 'papercup',
     detectPapercupRoot: vi.fn(() => detected),
   }));
 }
@@ -93,7 +93,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.doUnmock('../../../harness-registry');
-  vi.doUnmock('../../../harness/register-papercup');
+  vi.doUnmock('../../../harness/register-papercusp');
   await cleanupPlans(admin, wsId, HARNESS);
 });
 

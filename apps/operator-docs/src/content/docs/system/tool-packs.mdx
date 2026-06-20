@@ -3,6 +3,9 @@ title: Tool distribution — packs (tool = pack[n=1], plugin = pack+runtime)
 description: The pack model — one distribution concept for tools, packs, and plugins; authoring a runtime-less code-tool pack (kind 'pack'); declaring dependencies on units; the tool→provider resolver and the live pack catalog.
 sidebar:
   order: 4
+plans:
+  - tool-distribution-granularity-2026-06-05
+  - tool-distribution-discovery-2026-06-08
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -70,7 +73,8 @@ runtime path to learn.
 declares anything runtime-bearing:
 
 - `ui[]`, `dashboardTabs`, `sidebarItems`, `roles`, `routines`, `actions`,
-  code-side `hooks`;
+  code-side `hooks`, and `reactions` (both the code-side `reactions` and the
+  manifest's `reactions`);
 - a non-`js` `runtime` (`wasm` / `daemon`);
 - `getDynamicTools` (MCP-proxy tools ride a plugin);
 - zero `tools[]` (a pack is a unit of n≥1 tools).
@@ -97,8 +101,10 @@ Who declares dependencies, in full: **blueprints** (primary —
 [Blueprint distribution](/internal/docs/system/blueprint-distribution)),
 **plugins/packs** (this block), and **the Pot operator** — whose standing
 toolbox is just its launch blueprint's `dependencies` block (the `pot`
-built-in), not a separate mechanism. **Snapshots inherit** deps via the
-blueprint they captured; they do not declare their own.
+built-in), not a separate mechanism. (There is no published-`snapshot`
+distribution unit to inherit deps: `snapshot` was retired as a listing kind —
+`retire-snapshots-instance-spec-2026-06-09` D-005 — and the lightweight
+InstanceSpec replaced it; the Cupboard distributes recipes, not tarballs.)
 
 ## The tool→provider resolver + the live pack catalog
 
@@ -136,23 +142,47 @@ carry `provides_tools` (the tool names the unit registers) so the storefront
 can render a **tools section** that resolves each tool to its providing
 listing, and the dep-validator can mark not-installed tools *installable*.
 
-### The worker wire (migration 006)
+### The worker wire (migrations 006 + 008)
 
 The Cupboard worker (`apps/operator-public`) stores listings with
-`listing_kind ∈ {harness, blueprint, snapshot, plugin, pack}` and a nullable
+`listing_kind ∈ {harness, blueprint, plugin, tool-pack, learning-pack}`
+(`LISTING_KINDS` in `apps/operator-public/src/db.ts`) and a nullable
 `provides_tools` TEXT column (JSON `string[]`; migration
 `006_pack_kind_provides_tools.sql` — a table rebuild, since SQLite can't
-ALTER the kind CHECK). On `POST /listings`, `provides_tools` is accepted only
-for kinds `plugin`/`pack` (1–200 entries, each a non-empty string ≤128 chars)
-and returned verbatim on every GET. `pack` listings follow the non-harness
-rules: `listing_ref` required, `(repo, kind, ref)` dedup, action **install**
-(`listingAction('pack')` in `operator-core/lib/cupboard/types.ts`).
+ALTER the kind CHECK). **Migration 008** (`learning-packs-2026-06-11` D-005)
+reshaped the kind set: `snapshot` was RETIRED (its rows are `DELETE`d),
+`pack` was RENAMED `tool-pack` (the runtime-less code-tool pack this page is
+about), and a sibling `learning-pack` (a distributable set of curated hive
+learnings) joined — see the `learning-pack` section below. `'pack'` survives
+only as a wire alias normalized to `'tool-pack'` (`normalizeListingKind` /
+`listingKindOf`), so older clients keep parsing. On `POST /listings`,
+`provides_tools` is accepted only for kinds `plugin`/`tool-pack` (1–200
+entries, each a non-empty string ≤128 chars) and returned verbatim on every
+GET. A `tool-pack` listing follows the non-harness rules: `listing_ref`
+required, `(repo, kind, ref)` dedup, action **install** (`listingActionFor`
+returns `'install'` for the `tool-pack` case, in
+`operator-core/lib/cupboard/types.ts`).
+
+#### The sibling `learning-pack` kind (migration 008)
+
+Migration 008 also adds a `learning-pack` listing kind that coexists with
+`tool-pack` in the same worker schema and storefront this page describes — but
+it is a different thing: a distributable set of curated hive learnings
+(installed into a hive's shared memory through conflict review), not a
+code-tool pack. The instruction-carrying kinds (`learning-pack` + `blueprint`)
+also gain a pre-publication `review_status` (`pending` / `approved` /
+`rejected`, `REVIEW_POLICY_KINDS`): they publish `pending` and surface
+publicly only on operator approval, whereas code kinds (`tool-pack` / `plugin`)
+keep install-consent + reactive moderation. The renamed `tool-pack` remains the
+runtime-less code-tool pack documented here.
 
 ### Publishing a unit
 
 `POST /api/cupboard/publish-plugin { slug }` publishes an installed unit: a
-`kind: "pack"` manifest lists as `listing_kind='pack'`, anything else as
-`plugin`. `provides_tools` defaults to the manifest's tool names (the
+`kind: "pack"` manifest lists as `listing_kind='tool-pack'` (the manifest
+format keeps its own `kind:"pack"` value; only the resulting Cupboard listing
+kind was renamed by worker migration 008), anything else as `plugin`.
+`provides_tools` defaults to the manifest's tool names (the
 loader's `<unit>.<tool>` naming convention via `manifestToolNames`); pass
 `provides_tools: [...]` in the body to override.
 
@@ -190,8 +220,10 @@ the UI can offer one-click namespace filters.
 A tool never installs in isolation (D-005): the storefront's Tools view
 (`/cupboard?kind=tools`) routes an installable tool's action to its
 **providing listing's** detail page, where the normal install-consent flow
-executes. The storefront also gains a **Packs** kind tab, and plugin/pack
-detail pages surface the listing's `provides_tools`.
+executes. The storefront also gains a **Tool packs** kind tab (keyed on the
+`tool-pack` kind value — `VIEW_FILTERS` in `CupboardClient.tsx`, alongside the
+sibling **Learning Packs** tab), and plugin/pack detail pages surface the
+listing's `provides_tools`.
 
 ### Closing the install loop (`autoInstallDeps`)
 
@@ -205,8 +237,9 @@ gap (`tool-distribution-discovery-2026-06-08` D-002):
   dependency-injected. It classifies a declared `{tools,packs,plugins}` set
   against the live catalog, installs every *installable* unit via the injected
   installer, re-derives the catalog, folds in each installed unit's own declared
-  deps, and recurses — bounded by a visited-set + a round cap so a cyclic/deep
-  dep graph terminates. A tool with **no** provider still hard-fails; an
+  deps, and recurses — bounded by a visited-set + a round cap (`maxRounds`,
+  default **8**) so a cyclic/deep dep graph terminates. A tool with **no**
+  provider still hard-fails; an
   unreachable Cupboard softens unknown packs/plugins to advisory (mirroring the
   gate).
 - **`cupboard:install-deps`** (`POST /api/cupboard/install-deps`) — the
@@ -324,7 +357,7 @@ via `ui:dispatch`.
 | End-to-end loop proof | `packages/operator-core/lib/cupboard/resolve-and-install.e2e.test.ts` |
 | Reference pack | `libs/papercusp/plugins/example-tool-pack/` |
 | Dep validator (pure) | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts` |
-| Worker schema + routes (`provides_tools`) | `apps/operator-public/migrations/006_pack_kind_provides_tools.sql` + `apps/operator-public/src/routes/listings.ts` |
+| Worker schema + routes (`provides_tools`, kind set) | `apps/operator-public/migrations/006_pack_kind_provides_tools.sql` + `apps/operator-public/migrations/008_learning_pack_kind_review_status.sql` + `apps/operator-public/src/db.ts` (`LISTING_KINDS`, `normalizeListingKind`) + `apps/operator-public/src/routes/listings.ts` |
 | Publish route (pack-aware) | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts` |
 | Tools discovery (route + projection) | `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` (`GET /cupboard/tools`) + `packages/operator-core/lib/cupboard/tools-discovery.ts` |
 | Capability search (pure scorer) | `packages/operator-core/lib/cupboard/tools-search.ts` (`searchTools`, `categoryOf`) |

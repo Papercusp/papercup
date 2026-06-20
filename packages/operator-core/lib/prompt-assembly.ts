@@ -50,6 +50,7 @@ import { renderFrictionTripwire } from './harness/improvements/friction-markers'
 import { renderYieldPolicy } from './turn-yield-policy';
 import { renderTestingStandard } from './testing-standard-policy';
 import { renderAccountRoutingNote } from './account-routing-policy';
+import { renderConcurrencyFirstNote } from './concurrency-first-policy';
 import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
@@ -135,6 +136,7 @@ export interface AssembledSection {
     | 'yield-policy'
     | 'testing-standard'
     | 'account-routing-note'
+    | 'concurrency-first-note'
     | 'deploy-pipeline-note'
     | 'reuse-first-nudge'
     | 'runtime';
@@ -443,6 +445,18 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (accountNote) {
     parts.push(accountNote);
     sections.push({ name: 'account-routing-note', chars: accountNote.length });
+  }
+
+  // Concurrency-first note — the SHARED base every operator-launched role inherits, the
+  // behavioral dual of the account-routing note. Kills the "the box is too contended, wait for a
+  // calmer window" back-off: the only legit block is TRUE verified resource exhaustion; every
+  // other block is a BUG to investigate + fix (or file), never to wait out — and the design target
+  // is hundreds-to-thousands of concurrent agents. Sourced from the one CONCURRENCY_FIRST_NOTE
+  // constant (orchestrator) so the bases + su playbooks + su instance override can't desync.
+  const concurrencyNote = renderConcurrencyFirstNote();
+  if (concurrencyNote) {
+    parts.push(concurrencyNote);
+    sections.push({ name: 'concurrency-first-note', chars: concurrencyNote.length });
   }
 
   // Testing standard (the "write tests the project way" clause) — the SHARED base

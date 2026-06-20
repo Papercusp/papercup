@@ -14,6 +14,16 @@
 export interface Watermark {
   /** Inbox messages/acks/notifies/handoffs read up to this ISO ts. */
   messages_since_ts: string;
+  /**
+   * Messages SHOWN (injected into the agent's `[coord+N]` block) up to this ISO ts —
+   * the READ-RECEIPT cursor (EI-2042). Advanced DETERMINISTICALLY at injection by the
+   * coord:inbox tool code, NOT by the LLM/turn-end hook. Distinct from
+   * `messages_since_ts` (which advances at turn-END, so an aborted turn re-delivers):
+   * `messages_shown_ts` is always ≥ `messages_since_ts`, and the gap between them =
+   * "shown but the turn hasn't completed" (read-and-still-working vs read-and-done).
+   * A sender tells "did peer X read my message" via `X.messages_shown_ts ≥ msg.ts`.
+   */
+  messages_shown_ts: string;
   /** Escalations read up to this ISO ts. */
   escalations_since_ts: string;
   /** plan-events read up to this ISO ts. */
@@ -35,6 +45,7 @@ export interface Watermark {
 export function emptyWatermark(): Watermark {
   return {
     messages_since_ts: '',
+    messages_shown_ts: '',
     escalations_since_ts: '',
     plan_events_since_ts: '',
     subscriptions_fired: [],
@@ -53,6 +64,15 @@ export function normaliseWatermark(parsed: Partial<Watermark> | null | undefined
   return {
     messages_since_ts:
       typeof parsed.messages_since_ts === 'string' ? parsed.messages_since_ts : base.messages_since_ts,
+    // Backward-compat (EI-2042): a pre-existing watermark has no messages_shown_ts → fall back to
+    // its messages_since_ts (the agent HAS read up to there), then empty. Self-corrects on the next
+    // inbox fetch, which advances shown_ts to the live tip.
+    messages_shown_ts:
+      typeof parsed.messages_shown_ts === 'string'
+        ? parsed.messages_shown_ts
+        : typeof parsed.messages_since_ts === 'string'
+          ? parsed.messages_since_ts
+          : base.messages_shown_ts,
     escalations_since_ts:
       typeof parsed.escalations_since_ts === 'string' ? parsed.escalations_since_ts : base.escalations_since_ts,
     plan_events_since_ts:
@@ -75,6 +95,7 @@ export function normaliseWatermark(parsed: Partial<Watermark> | null | undefined
 export function mergeWatermark(current: Watermark, patch: Partial<Watermark>): Watermark {
   return {
     messages_since_ts: patch.messages_since_ts ?? current.messages_since_ts,
+    messages_shown_ts: patch.messages_shown_ts ?? current.messages_shown_ts,
     escalations_since_ts: patch.escalations_since_ts ?? current.escalations_since_ts,
     plan_events_since_ts: patch.plan_events_since_ts ?? current.plan_events_since_ts,
     subscriptions_fired: patch.subscriptions_fired ?? current.subscriptions_fired,

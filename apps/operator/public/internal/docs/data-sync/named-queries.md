@@ -83,6 +83,12 @@ tables in `harness_shared`, each read by a `.bySlug` query keyed on
 | `projects.all` / `projects.byId`              | `ProjectRow[]`  | (none) / `{ id }` |
 | `messages.recent`                             | `MessageRow[]`  | `{ limit }`       |
 
+Each `*Consolidated` namespace also exposes an `.all` query that takes no
+args — the cross-harness / portfolio read over the whole consolidated
+table. `featuresConsolidated` carries two extra variants on top of `.all`
+and `.bySlug`: `bySourcePlan` (`{ planSlug }`, keyed on `sourcePlanSlug`)
+and `needsReview` (no args, the rows flagged `needsHumanReview`).
+
 Adding a new harness no longer adds a query — the slug is a regular row
 value. When you add a *new* entry, update both `queries.ts` and
 `schema.ts` together.
@@ -103,7 +109,10 @@ export const queries = defineQueries({
 });
 ```
 
-Then in your panel, read it through the `@papercusp/sync` wrapper:
+Then in your panel, read it through the `@papercusp/sync` wrapper. The
+`useSyncQuery` hook is exported from `@papercusp/sync` (the package lives
+at `libs/generic/sync`) and is transport-agnostic — it resolves
+`queryName` + `args` through whichever adapter is active:
 
 ```tsx
 const { data: rows } = useSyncQuery<MyNewThingRow>({
@@ -112,15 +121,32 @@ const { data: rows } = useSyncQuery<MyNewThingRow>({
 });
 ```
 
+The same package also exports the companion write/read hooks:
+`useSyncMutate(path, restFallback)` for namespaced Zero custom mutators
+(optimistic on the WebSocket transport, REST fallback otherwise) and
+`useSyncPrefetch()` to warm the cache so a later `useSyncQuery` for the
+same `queryName` + `args` resolves instantly.
+
 You also need:
 
-1. The table declared in `libs/zero-harness/src/schema.ts`.
-2. The schema version bumped (`schemaVersion` in same file).
-3. The table added to the `zero_harness` Postgres publication for each
+1. The table declared in `libs/zero-harness/src/schema.ts`, then added to
+   the `tables` array of the `createSchema({ tables, relationships })`
+   call in the same file (there is no separate schema-version field to
+   bump).
+2. The table added to the `zero_harness` Postgres publication for each
    harness that has it.
-4. `zero-cache-harness` restarted.
+3. `zero-cache-harness` restarted.
 
 If you forget any of these the query returns 0 rows silently.
+
+:::note
+A subtler silent-empty case: `useSyncQuery` rendered **outside** a
+`<SyncProvider>` does not throw — it returns
+`{ data: undefined, loading: false, error: null }` (with a stale flag),
+by design, so panels mounted in app chrome above `/harness/*` don't crash.
+An unwrapped panel therefore shows no data with no error. If you need live
+data outside a provider, branch on the result and supply your own fallback.
+:::
 
 ## "Query does not implement QueryInternals"
 
@@ -143,28 +169,49 @@ workspace hoisting decides not to hoist. Symlinking forces a single copy.
 
 If a fresh app you're scaffolding hits this, check whether its
 `package.json` declares `@rocicorp/zero` directly — prefer consuming it
-transitively from `@papercusp/zero-harness`. (The historical offender,
-`apps/papercusp`, no longer exists; the live `@rocicorp/zero` declarations
-are in `apps/operator`, `libs/zero-harness`, and the zero-cache-server.)
+transitively from `@papercusp/zero-harness`. (The historical offender was
+`apps/papercup` — package `@papercup/web` — which is now retired at
+`_retired/papercup`; the live `@rocicorp/zero` declarations are in
+`apps/operator`, `libs/zero-harness`, and the zero-cache-server.)
 
-## Cross-harness queries (views)
+## Cross-harness queries (consolidated tables)
 
-`harness_features_consolidated` is a trigger-maintained table in
-`harness_shared` that mirrors every per-harness `harness_features` table
-under one roof. The trigger fires on insert/update/delete in any
-per-harness `harness_features` and keeps the consolidated table in sync.
+`harness_features_consolidated` is the **canonical** base table in
+`harness_shared` — writers target it directly. The data-flow direction was
+inverted across two migrations:
 
-Why a trigger-maintained table and not a Postgres view? Because Zero
-publications can't include views — they require base tables for
-logical replication.
+* **Migration 029** made the consolidated table the source of truth. It had
+  started life as a trigger-mirrored copy of the per-harness
+  `harness_features` tables (writers pumped into per-harness, a trigger
+  fanned out into consolidated), but 029 flipped that so writes go straight
+  to the consolidated table.
+* **Migration 032** dropped the per-harness physical tables entirely and
+  replaced each with an auto-updatable `VIEW` over the consolidated table,
+  filtered by `harness_slug` (`WITH CHECK OPTION` so a write can't land
+  under the wrong slug). The fan-in trigger functions
+  (`sync_features_consolidated()`, `sync_issues_consolidated()`,
+  `sync_agent_runs_consolidated()`, `sync_snapshots_consolidated()`) were
+  dropped at the same time. The same inversion applies to the other three
+  consolidated entities (`harness_issues` / `agent_runs` /
+  `harness_snapshots`).
 
-The cross-harness `/features` page reads from this table, with no
-slug arg, via the `featuresConsolidated` named query. That replaced an
-older polling implementation; the page is now real-time.
+So a per-harness read still works (it goes through the view), but the
+canonical store everything resolves against is the single consolidated base
+table.
+
+Why a base table and not a Postgres view at the top? Because Zero
+publications can't include views — they require base tables for logical
+replication. The per-harness *views* are read conveniences over that base
+table, not replication sources.
+
+The cross-harness `/features` page reads from the consolidated table, with
+no slug arg, via the `featuresConsolidated.all` named query. That replaced
+an older polling implementation; the page is now real-time.
 
 If you need another cross-harness aggregation, the recipe is:
 
-1. Add a base table in `harness_shared`.
-2. Add triggers on every per-harness source table to maintain it.
-3. Add to the `zero_harness` publication.
-4. Register a named query with no slug arg.
+1. Add a canonical base table in `harness_shared` and have writers target
+   it directly (optionally expose per-harness views over it, filtered by
+   `harness_slug`, rather than fanning in via triggers).
+2. Add the base table to the `zero_harness` publication.
+3. Register a named query with no slug arg (an `.all`-style query).

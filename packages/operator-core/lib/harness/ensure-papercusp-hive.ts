@@ -2,7 +2,7 @@
  * Ship Papercusp itself as a shared HIVE by default
  * (domain-generic-hive-architecture-2026-06-18 P-029, D-010).
  *
- * The shared-hive dogfood counterpart of register-papercup.ts (which registers
+ * The shared-hive dogfood counterpart of register-papercusp.ts (which registers
  * the papercup REPO as a private coding HARNESS). This ensures the canonical
  * `papercusp` SHARED HIVE exists: a generic `coding` (kind:'hive') hive —
  * Papercusp's own dev orchestrator built from the SAME generic parts every coding
@@ -32,7 +32,7 @@
 
 import { loadHarnessRegistry } from '../harness-registry';
 import { PAPERCUSP_WORKSPACE_ID, ensurePapercuspWorkspace } from './papercusp-workspace';
-import { detectPapercupRoot } from './register-papercup';
+import { detectPapercupRoot } from './register-papercusp';
 
 /** Slug the Papercusp shared hive is created under. Stable; downstream may reference it. */
 export const PAPERCUSP_HIVE_SLUG = 'papercusp' as const;

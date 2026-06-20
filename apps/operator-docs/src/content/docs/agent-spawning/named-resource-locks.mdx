@@ -3,6 +3,9 @@ title: Named resource locks with drain
 description: Shared/exclusive locks on registered named resources (the dev server, the DB schema) with a writer-priority drain, broadcasts, and a defineTool-level enforcement path — for coordinating destructive shared actions across the agent fleet.
 sidebar:
   order: 8
+plans:
+  - named-resource-locks-drain-2026-06-02
+  - git-sync-auto-commit-2026-06-03
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -27,6 +30,11 @@ exclusive is granted. A crashed holder's lease TTL-expires (heartbeat keeps a
 long hold alive); `max_drain_sec` caps the wait, after which the requester gets
 `drain_timeout` and decides force-proceed or escalate.
 
+**Bounds the tools enforce:** the lease TTL defaults to **1200s** (20 min) and
+caps at **3600s**; `max_drain_sec` caps at **300s**. The blessed wrappers drain
+for their own defaults — `dev:restart` 120s, `db:migrate` 60s — both bumpable up
+to the 300s cap.
+
 ```text
 B,C hold SHARED ───────────────┐ (working)
 R: acquire EXCLUSIVE → DRAINING │  new SHARED refused; broadcast "release please" → B,C
@@ -41,7 +49,13 @@ coordinate (`dev-server` vs `devserver` → no mutual exclusion). The registry
 is the one home for each lock's **rule text** and **enforcement level**
 (the `enforcement` column: `advisory` | `checked` | `enforced`).
 `locks:list` is the authoritative discovery surface (names, rules, live
-holders, draining flag). Currently registered:
+holders, draining flag). The **one exception** to "pre-registered only" is the
+per-harness `git-sync:<slug>` name: the `system:git-sync` action self-registers
+it (idempotent `INSERT … ON CONFLICT DO NOTHING`, inside the same workspace txn
+as the acquire) on first acquire, so an un-pre-registered harness slug can never
+silently no-op its sync forever. Names listed in `trigger_config.extra_lock_resources`
+are **never** auto-registered — an unknown extra name makes the tick skip with a
+logged warning. Currently registered:
 
 | Resource | Enforcement | What it guards |
 |---|---|---|
@@ -50,7 +64,7 @@ holders, draining flag). Currently registered:
 | `shop` | `enforced` | The shop build + `:4321` preview (stale-server e2e false-positives + concurrent dist clobbers). |
 | `desktop-sidecar` | `enforced` | The papercusp-desktop sidecar / embedded-pg bundle build (the recurring 0-byte-binary clobber). |
 | `libs-papercusp-submodule` | `advisory` | The `libs/papercusp` submodule commit + superproject pointer bump (+ push). |
-| `git-sync` | `advisory` | The git-sync auto-commit/push routine. |
+| `git-sync` | `advisory` | The git-sync auto-commit/push routine. **Now per-harness:** each harness's `system:git-sync` tick holds `exclusive(git-sync:<slug>)`. The unsuffixed `git-sync` row is the legacy back-off name papercup still acquires via `trigger_config.extra_lock_resources`. |
 
 ## The enforcement dial (per resource)
 
@@ -85,6 +99,24 @@ and releases after — so a tool body cannot run without the lock.
 `withResourceLock(spec, handler)` wraps a role-gated handler. This keeps the
 borrowable, domain-free `tooldef` lib free of locks coupling (decision D-016).
 
+## Fencing: stale-lease abort (D-001)
+
+Holding the lock isn't enough if the holder *paused* — a zombie holder whose
+lease TTL-lapsed mid-hold can be re-granted to someone else while it sleeps.
+So an exclusive acquisition returns a monotonic **`fence_seq`**, and `run()`
+receives a `FenceToken`. Immediately before the irreversible step, `dev:restart`
+and `db:migrate` call `fence.assertCurrent()` — which re-verifies against PG that
+they *still* hold the effective exclusive at their fence — and **abort** with a
+`stale_fence_*` reason (no restart/apply) if their lease was superseded while
+held. Fencing is **exclusive-only**; a shared lock's `assertCurrent()` is a
+no-op (shared is efficiency-class, git-backstopped).
+
+`db:migrate` adds a second, independent guard: a resource-side **idempotency
+ledger** keyed on the migration filename (`migrate:<basename>`,
+`ON CONFLICT DO NOTHING`). A retried / zombie re-apply of the *same* file
+short-circuits as a checked `already_applied` no-op — recorded only on a
+successful apply (first-writer-wins) — even if fencing were somehow bypassed.
+
 <Aside type="note" title="Raw-Bash gating is wired (P-026)">
 `locks:check_command` + the registry `match_patterns` back a `PreToolUse`
 `Bash` hook that gates raw destructive commands (`systemctl restart …`,
@@ -101,9 +133,16 @@ advisory.
 ## Lifecycle notes
 
 - **Delivery is event-push**, never polling: drain completion wakes the
-  exclusive waiter via PG `NOTIFY`; "release please" / "back up" ride the coord
-  message surface (the same one the mid-turn injection hook reads) and
-  `fireNotifications` to `resource:<name>` watchers.
+  exclusive waiter via PG `NOTIFY` (the `resource_grant_cascade` channel + the
+  wait loop). "release please" (drain-start) and "back up" are now **plain coord
+  messages** sent via `sendMessage` to the coord inbox (the same surface the
+  mid-turn injection hook reads). There is no `fireNotifications` /
+  `resource:<name>` watcher fan-out — that path-glob surface was retired with
+  the rest of `coord:watch` (locks are control-plane: you *wait* on a lock, you
+  don't *follow* it). Note "back up" is **targeted, not a broadcast to all**:
+  `broadcastResourceBackUp` notifies only the owner ids who were refused while
+  the exclusive was held (the `waiters` list), and sends nothing when that list
+  is empty.
 - **Session-end** `locks:release { all_mine: true }` clears named-resource
   locks **and** file locks (separate tables, one call) — TTL is the backstop
   for a crashed session.

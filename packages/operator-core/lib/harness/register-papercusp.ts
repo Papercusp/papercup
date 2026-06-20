@@ -30,8 +30,15 @@ import {
 } from './papercusp-workspace';
 import { readRegistry } from '../workspace-registry';
 
-/** Slug papercup is registered under. Stable; downstream code may reference it. */
-export const PAPERCUP_HARNESS_SLUG = 'papercup' as const;
+/**
+ * Slug the repo's LEGACY standalone-flow coding harness is registered under.
+ * Value stays `'papercup'` on purpose: this is the pre-merge standalone slug,
+ * deliberately DISTINCT from the operator-home hive slug (now `'papercusp'`,
+ * via operatorHomeHarnessSlug()). The merged-hive skip below relies on the two
+ * being different (`slug !== LEGACY_STANDALONE_HARNESS_SLUG`). Stable; downstream
+ * code may reference it.
+ */
+export const LEGACY_STANDALONE_HARNESS_SLUG = 'papercup' as const;
 
 /** True iff `dir` carries both papercup repo markers. */
 function hasPapercupMarkers(dir: string): boolean {
@@ -141,7 +148,7 @@ export async function registerPapercupHarness(opts: {
   // not the active workspace. (The active workspace might still be
   // 'default'; we don't disturb it.)
   const hReg = await loadHarnessRegistry(PAPERCUSP_WORKSPACE_ID);
-  const already = hReg.projects.find((p) => p.slug === PAPERCUP_HARNESS_SLUG);
+  const already = hReg.projects.find((p) => p.slug === LEGACY_STANDALONE_HARNESS_SLUG);
   if (already) {
     return {
       state: 'already-registered',
@@ -155,7 +162,7 @@ export async function registerPapercupHarness(opts: {
   // Skip so a post-merge boot never re-creates 'papercup'. Pre-merge (papercusp is still a
   // repo-less hive at a state dir) path!==root, so the legacy registration still runs.
   const mergedHive = hReg.projects.find(
-    (p) => p.harness_kind === 'hive' && p.path === path && p.slug !== PAPERCUP_HARNESS_SLUG,
+    (p) => p.harness_kind === 'hive' && p.path === path && p.slug !== LEGACY_STANDALONE_HARNESS_SLUG,
   );
   if (mergedHive) {
     return {
@@ -165,7 +172,7 @@ export async function registerPapercupHarness(opts: {
     };
   }
 
-  hReg.projects.push({ slug: PAPERCUP_HARNESS_SLUG, path });
+  hReg.projects.push({ slug: LEGACY_STANDALONE_HARNESS_SLUG, path });
   await saveHarnessRegistry(hReg, PAPERCUSP_WORKSPACE_ID);
 
   return {

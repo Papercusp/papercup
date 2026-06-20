@@ -33,6 +33,7 @@ import {
   type AimdSnapshot,
 } from '@papercusp/papercusp-shared/agent';
 import { withOAuthBeta } from './credential-store';
+import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
 import type { AccountEgress } from '../deployment/account-pool';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
@@ -165,6 +166,21 @@ const PINNED_FAILOVER_WAIT_MS = 10_000;
  *  "accounts unused / opus hangs" bug: aviynw2/aviynw7 returned opus 200 upstream while the gateway
  *  pinned all egress to one paused account). */
 const POOL_WALK_MAX_ATTEMPTS = 16;
+/** In-process self-heal release valve (EI-2086). The external WEDGE watchdog (watchdog.mjs) recovers a
+ *  wedged gateway by FULL-RESTARTING the process — dropping every in-flight request + the listener
+ *  (~15-30s fleet-wide connection-refused) — on the `frozen 120s while saturated` signature. The
+ *  gateway's own per-request guards (5-min non-streaming headers, 20-min hard ceiling) reclaim a stuck
+ *  slot far SLOWER than 120s, so the watchdog's restart always wins → the routine recovery became an
+ *  hourly restart (5× on 2026-06-20). This sweeper PRE-EMPTS it: when saturated AND nothing has
+ *  NATURALLY drained for SELFHEAL_FREEZE_MS (< 120s), it aborts the oldest stuck slot in-process, so the
+ *  gateway drains its own wedge with the listener + healthy traffic still up. Default on; `=0` disables. */
+const DEFAULT_SELFHEAL_ENABLED = process.env.PAPERCUSP_GATEWAY_SELFHEAL !== '0';
+/** How long the gateway may be saturated with NO natural completion before the valve reclaims a slot.
+ *  Deliberately below the watchdog's 120s freeze threshold so self-heal pre-empts the full restart. */
+const DEFAULT_SELFHEAL_FREEZE_MS = Number(process.env.PAPERCUSP_GATEWAY_SELFHEAL_FREEZE_MS) || 75_000;
+/** Sweeper tick interval — also the spacing between successive reclaims while a wedge persists, so a
+ *  multi-slot wedge drains a slot every poll (several reclaims land before the watchdog's 120s). */
+const DEFAULT_SELFHEAL_POLL_MS = Number(process.env.PAPERCUSP_GATEWAY_SELFHEAL_POLL_MS) || 10_000;
 /** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
 export const PRIORITY_HEADER = 'x-papercusp-priority';
 /** Header a spawn sets to pin its requests to one pool account for cache affinity
@@ -268,6 +284,11 @@ export interface GatewayDeps {
    *  `concurrency`; these override the floor + the trip thresholds. Omit for env/defaults (floor 4,
    *  halve at net-pressure 6, +1 per 8 clean). Set `floor` ≥ cap to effectively DISABLE AIMD. */
   aimd?: { floor?: number; decreaseFactor?: number; decreaseThreshold?: number; increaseEvery?: number };
+  /** In-process self-heal release valve (EI-2086): pre-empt the external watchdog's full restart by
+   *  aborting the oldest stuck slot when saturated + nothing has naturally drained for `freezeMs`. Omit
+   *  for env/defaults (enabled, freeze 75s, poll 10s). `enabled:false` disables it (e.g. unit tests
+   *  that don't want the timer). */
+  selfHeal?: { enabled?: boolean; freezeMs?: number; pollMs?: number };
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -301,6 +322,10 @@ export interface GatewayStats {
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;
+  /** Count of in-process self-heal slot-reclaims (EI-2086) — how many times the release valve pre-empted
+   *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
+   *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
+  selfHealReclaims: number;
   /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
   unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
   pausedUntil: number;
@@ -461,6 +486,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const requestCeilingMs = deps.requestCeilingMs ?? DEFAULT_REQUEST_CEILING_MS;
   const log = deps.log ?? (() => {});
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
+  const selfHealEnabled = deps.selfHeal?.enabled ?? DEFAULT_SELFHEAL_ENABLED;
+  const selfHealFreezeMs = deps.selfHeal?.freezeMs ?? DEFAULT_SELFHEAL_FREEZE_MS;
+  const selfHealPollMs = deps.selfHeal?.pollMs ?? DEFAULT_SELFHEAL_POLL_MS;
   const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs, maxQueued });
 
   // AIMD adaptive admission concurrency (B-GW-1): the queue's maxConcurrent is the cap; this controller
@@ -543,6 +571,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let shedAllThrottled = 0; // fail-fast: 429s shed at admission because the whole pool was throttled (B-GW-1)
   let upstreamErrors = 0;
   let failovers = 0;
+  let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
+
+  // Self-heal in-flight registry (EI-2086): every request currently holding an admission slot, keyed by
+  // a per-request id, carrying its start time + stream flag + an abort hook (the same force-terminate
+  // path as the hard-ceiling backstop). The sweeper reclaims the oldest stuck slot from here.
+  interface InFlightEntry {
+    id: number;
+    startedAt: number;
+    isStream: boolean;
+    reclaimed: boolean; // set when the self-heal valve aborts it → the finally skips the drain-clock bump
+    abort: (reason: string) => void;
+  }
+  const inFlightReg = new Map<number, InFlightEntry>();
+  let reqSeq = 0;
+  // The TRUE drain signal: epoch ms of the last NATURAL completion (a real upstream settle, NOT a
+  // self-heal abort). `msSinceLastDrain` = now - lastDrainAt is what the valve keys on, so a wedge we
+  // are actively reclaiming stays "stalled" until a request genuinely completes or saturation eases.
+  let lastDrainAt = Date.now();
 
   function stats(): GatewayStats {
     // Reflect the active account's opus bucket (the fleet's class) for the headline unified window.
@@ -566,6 +612,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       aimd: aimd.snapshot(),
       failovers,
       upstreamErrors,
+      selfHealReclaims,
       unified: snap.unified,
       pausedUntil: snap.pausedUntil,
     };
@@ -718,6 +765,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
       try { res.destroy(); } catch { /* already torn down */ }
     }, requestCeilingMs);
     ceilingTimer.unref?.();
+    // Register in the self-heal in-flight registry (EI-2086) BEFORE the try so the finally ALWAYS
+    // deregisters it. abort() mirrors the hard-ceiling backstop (abort the current attempt + destroy the
+    // socket) so a reclaimed request frees its admission slot the same proven way.
+    const reqId = ++reqSeq;
+    inFlightReg.set(reqId, {
+      id: reqId,
+      startedAt: Date.now(),
+      isStream,
+      reclaimed: false,
+      abort: (reason) => {
+        try { currentAc?.abort(new Error(reason)); } catch { /* already settled */ }
+        try { res.destroy(); } catch { /* already torn down */ }
+      },
+    });
     try {
       // Constant request headers (everything but the per-account Authorization/dispatcher, set per attempt).
       // Every account is a Claude Max subscription OAuth credential → `Authorization: Bearer` + the
@@ -1013,6 +1074,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     } finally {
       clearStall();
       clearTimeout(ceilingTimer);
+      const entry = inFlightReg.get(reqId);
+      if (entry) {
+        inFlightReg.delete(reqId);
+        // A NATURAL completion (not a self-heal abort) refreshes the drain clock — proof the gateway is
+        // draining, which keeps the valve dormant. A reclaimed request deliberately does NOT, so an
+        // actively-reclaimed wedge stays "stalled" and the next tick frees another slot.
+        if (!entry.reclaimed) lastDrainAt = Date.now();
+      }
       release();
     }
   }
@@ -1060,6 +1129,41 @@ export function createInferenceGateway(deps: GatewayDeps) {
     });
   });
 
+  // Self-heal release-valve sweeper (EI-2086): tick the pure decider against live admission metrics +
+  // the in-flight registry and reclaim the oldest stuck slot to pre-empt the watchdog's full restart.
+  // unref'd so it never keeps the process alive; cleared on close().
+  let selfHealTimer: ReturnType<typeof setInterval> | undefined;
+  if (selfHealEnabled) {
+    selfHealTimer = setInterval(() => {
+      try {
+        // Read queue.snapshot() directly (NOT stats(), which advances the pool round-robin cursor).
+        const admission = queue.snapshot();
+        const decision = evaluateSelfHeal(
+          {
+            inFlight: admission.running,
+            queueDepth: admission.queued,
+            maxConcurrent: admission.maxConcurrent,
+            msSinceLastDrain: Date.now() - lastDrainAt,
+          },
+          selfHealFreezeMs,
+        );
+        if (!decision.reclaim) return;
+        const target = pickReclaimTarget([...inFlightReg.values()]);
+        if (!target) return; // saturated per the counters but the registry is momentarily empty — skip
+        target.reclaimed = true;
+        selfHealReclaims++;
+        log(
+          'error',
+          `inference-gateway: SELF-HEAL release valve — ${decision.reason} (slot #${target.id}, held ${Math.round((Date.now() - target.startedAt) / 1000)}s, stream=${target.isStream}; reclaim #${selfHealReclaims})`,
+        );
+        target.abort('inference-gateway self-heal: reclaiming wedged slot to pre-empt watchdog restart');
+      } catch (e) {
+        log('warn', `inference-gateway: self-heal sweep error: ${(e as Error).message}`);
+      }
+    }, selfHealPollMs);
+    selfHealTimer.unref?.();
+  }
+
   return {
     server,
     stats,
@@ -1079,6 +1183,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return typeof addr === 'object' && addr ? addr.port : 0;
     },
     close(): Promise<void> {
+      if (selfHealTimer) clearInterval(selfHealTimer);
       // Tear down any per-account egress dispatchers (best-effort; they hold sockets).
       for (const d of dispatcherCache.values()) void (d as { close?: () => Promise<void> }).close?.();
       dispatcherCache.clear();

@@ -12,7 +12,7 @@ import { resolveAgentIdentity } from '../identity';
 import { resolveActorIdentity, actorMailboxKeys } from '../actor-identity';
 import { readInbox, drainAndDeliverUserMailbox } from '../messages';
 import { heartbeatPresence } from '../presence';
-import { readWatermark } from '../watermarks';
+import { readWatermark, writeWatermark } from '../watermarks';
 import { emptyWatermark } from '@papercusp/coordination/core';
 import {
   resolvePresenceScope,
@@ -151,6 +151,19 @@ export default defineTool({
       oldest_returned_ts: entries.length ? entries[0]?.ts ?? null : null,
       newest_ts: entries.length ? entries[entries.length - 1]?.ts ?? null : null,
     };
+
+    // EI-2042 READ-RECEIPT: advance this agent's `messages_shown_ts` cursor to the newest
+    // entry just SHOWN to them — DETERMINISTICALLY here in tool code (the moment the
+    // `[coord+N]` block is assembled for the agent), NOT via the LLM/turn-end hook. This
+    // is the per-agent read-watermark a SENDER checks (surfaced as coord:presence
+    // `read_through_ts`) to distinguish "read it + working" from "hasn't seen it yet" —
+    // distinct from `messages_since_ts`, which advances at turn-END (so an aborted turn
+    // re-delivers). Monotonic by guard (only ever forward — you can't un-see a message;
+    // writeWatermark itself is last-write-wins, so the guard is what keeps shown_ts from
+    // moving backward) + best-effort (a write failure must never break the inbox read).
+    if (summary.newest_ts && summary.newest_ts > wm.messages_shown_ts) {
+      await writeWatermark(identity.ownerId, { messages_shown_ts: summary.newest_ts }).catch(() => {});
+    }
 
     // Server-side injection render (token-efficient-coord-injection P-005): the
     // ready-to-inject positional `[coord+N]` block, computed ONCE here from the

@@ -74,6 +74,9 @@ const COLS = [
   'rl_tokens_limit',
   'rl_tokens_remaining',
   'rl_reset_at',
+  'session_id',
+  'plan_id',
+  'tool_name',
 ] as const;
 
 type Col = (typeof COLS)[number];
@@ -222,6 +225,30 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
     expect(row.cost_usd).toBe(1.5);
     expect(row.cost_source).toBe('provider');
     expect(costFromTokens).not.toHaveBeenCalled();
+  });
+
+  it('persists session_id / plan_id / tool_name attribution (B-TOK-2), null-safe when absent', async () => {
+    await recordUsageSample({
+      bucketKey: 'b',
+      provider: 'anthropic',
+      modelClass: 'opus',
+      source: 'jsonl',
+      costUsd: 1,
+      sessionId: 'sess-1',
+      planId: 'plan-x-2026-06-20',
+      toolName: 'gateway:set-aimd',
+    });
+    const row = lastInsert();
+    expect(row.session_id).toBe('sess-1');
+    expect(row.plan_id).toBe('plan-x-2026-06-20');
+    expect(row.tool_name).toBe('gateway:set-aimd');
+
+    sqlCalls.length = 0;
+    await recordUsageSample({ bucketKey: 'b', provider: 'anthropic', modelClass: 'opus', source: 'headers', inputTokens: 5 });
+    const bare = lastInsert();
+    expect(bare.session_id).toBeNull();
+    expect(bare.plan_id).toBeNull();
+    expect(bare.tool_name).toBeNull();
   });
 
   it('keeps an explicitly-supplied costSource (does not override)', async () => {

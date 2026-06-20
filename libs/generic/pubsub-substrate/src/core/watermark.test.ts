@@ -16,6 +16,7 @@ describe('emptyWatermark', () => {
   it('is everything-unread', () => {
     expect(emptyWatermark()).toEqual({
       messages_since_ts: '',
+      messages_shown_ts: '',
       escalations_since_ts: '',
       plan_events_since_ts: '',
       subscriptions_fired: [],
@@ -34,6 +35,8 @@ describe('normaliseWatermark', () => {
   it('fills missing fields and rejects wrong-typed ones', () => {
     const out = normaliseWatermark({ messages_since_ts: '2026-01-01', escalations_since_ts: 5 as unknown as string });
     expect(out.messages_since_ts).toBe('2026-01-01');
+    // EI-2042 backward-compat: a watermark with no messages_shown_ts falls back to its messages_since_ts.
+    expect(out.messages_shown_ts).toBe('2026-01-01');
     expect(out.escalations_since_ts).toBe(''); // wrong type → fallback
     expect(out.plan_events_since_ts).toBe('');
   });
@@ -46,6 +49,7 @@ describe('normaliseWatermark', () => {
   it('preserves a well-formed watermark', () => {
     const wm = {
       messages_since_ts: 't1',
+      messages_shown_ts: 't1b',
       escalations_since_ts: 't2',
       plan_events_since_ts: 't3',
       subscriptions_fired: ['m1'],
@@ -62,6 +66,12 @@ describe('mergeWatermark', () => {
     const out = mergeWatermark(base, { messages_since_ts: 'new' });
     expect(out.messages_since_ts).toBe('new');
     expect(out.escalations_since_ts).toBe('keep'); // omitted → preserved
+  });
+
+  it('merges messages_shown_ts (EI-2042 read-receipt cursor) like the other ts fields', () => {
+    const base = { ...cur, messages_shown_ts: 'old' };
+    expect(mergeWatermark(base, { messages_shown_ts: 'new' }).messages_shown_ts).toBe('new');
+    expect(mergeWatermark(base, {}).messages_shown_ts).toBe('old'); // omitted → preserved
   });
 
   it('replaces subscriptions_fired wholesale (caller owns dedup)', () => {

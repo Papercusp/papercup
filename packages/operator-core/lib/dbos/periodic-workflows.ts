@@ -31,6 +31,7 @@ import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
+import { reconcileStalePendingHandoffsOnce } from '../reconcile-handoffs';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
@@ -192,6 +193,23 @@ const attentionReconcileWorkflow = DBOS.registerWorkflow(attentionReconcileTick,
   name: 'attentionReconcile', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile', crontab: '0 20 * * * *' });
+
+// Hourly (:26, off the :00/:20/:23 stampede): the coord-handoff invariant
+// (F-FIX-037) — auto-expire handoffs left pending past the 12h TTL. A handoff is
+// an immutable coord_event_log offer of work; an unaccepted one sits `open`
+// forever and misleads successors ("pick up the open handoff" chases a stale
+// offer). The sweep writes a sibling 'handoff_expired' record (never mutates the
+// original) so the fold drops it from `open`. Idempotent + batch-limited (500).
+async function handoffReconcileTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('handoff-reconcile')) return;
+    await reconcileStalePendingHandoffsOnce();
+  }, { name: 'handoff-reconcile' });
+}
+const handoffReconcileWorkflow = DBOS.registerWorkflow(handoffReconcileTick, {
+  name: 'handoffReconcile', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(handoffReconcileWorkflow, { name: 'handoffReconcile', crontab: '0 26 * * * *' });
 
 // Hourly (:23, off the stampede): surface silently-dead DBOS workflows
 // (MAX_RECOVERY_ATTEMPTS_EXCEEDED / ERROR) — the embedBackfill/systemHealth class the

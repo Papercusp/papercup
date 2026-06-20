@@ -18,7 +18,7 @@ const h = vi.hoisted(() => ({ sql: null as unknown }));
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 
-const { listScorecards } = await import('./scorecards');
+const { listScorecards, scorecardTrend } = await import('./scorecards');
 const { createIssue } = await import('./issues-engineer');
 const { proposeRubric } = await import('./rubrics');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
@@ -162,5 +162,43 @@ describe('listScorecards (P-013) — real PG', () => {
   it('respects the limit (newest-first)', async () => {
     const rows = await listScorecards({ limit: 2 });
     expect(rows.map((r) => r.createdAt)).toEqual(['2026-06-20T12:00:00.000Z', '2026-06-20T11:00:00.000Z']);
+  });
+
+  // ── scorecardTrend (P-010) — end-to-end aggregation over the same seeded data.
+  //    papercusp end-to-end-flow: partial(10:00, degraded) → complete(12:00, broken) = worsening.
+  it('scorecardTrend: groups per criterion, chronological series, worsening direction (P-010)', async () => {
+    const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
+    expect(trend.rubricRef).toBe(RUBRIC);
+    expect(trend.sourceHive).toBe('papercusp');
+    expect(trend.scorecardCount).toBe(2); // complete + partial (generic-test excluded by sourceHive)
+    expect(trend.window).toEqual({ from: '2026-06-20T10:00:00.000Z', to: '2026-06-20T12:00:00.000Z' });
+    // criteria sorted ASC by key.
+    expect(trend.criteria.map((c) => c.criterion)).toEqual(['end-to-end-flow', 'ideation-quality', 'watchdog-determinism']);
+
+    const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
+    expect(e2e.count).toBe(2);
+    expect(e2e.series).toEqual([
+      { at: '2026-06-20T10:00:00.000Z', rating: 'degraded' }, // oldest first
+      { at: '2026-06-20T12:00:00.000Z', rating: 'broken' },
+    ]);
+    expect(e2e.first).toEqual({ rating: 'degraded', at: '2026-06-20T10:00:00.000Z' });
+    expect(e2e.latest).toEqual({ rating: 'broken', at: '2026-06-20T12:00:00.000Z' });
+    expect(e2e.direction).toBe('worsening');
+    expect(e2e.distribution).toEqual({ degraded: 1, broken: 1 });
+
+    // Single-point criteria (only the complete scorecard rated them) → unknown direction.
+    const single = trend.criteria.find((c) => c.criterion === 'ideation-quality')!;
+    expect(single.count).toBe(1);
+    expect(single.direction).toBe('unknown');
+  });
+
+  it('scorecardTrend: cross-hive (no sourceHive) folds every source into one series', async () => {
+    const trend = await scorecardTrend({ rubricRef: RUBRIC });
+    expect(trend.scorecardCount).toBe(3); // papercusp complete + partial + generic-test
+    const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
+    // degraded(10:00, papercusp) → healthy(11:00, generic) → broken(12:00, papercusp): net first→latest = worsening.
+    expect(e2e.count).toBe(3);
+    expect(e2e.series.map((p) => p.rating)).toEqual(['degraded', 'healthy', 'broken']);
+    expect(e2e.direction).toBe('worsening');
   });
 });

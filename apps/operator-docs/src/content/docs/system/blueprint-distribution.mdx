@@ -1,8 +1,14 @@
 ---
 title: Blueprint distribution — publish, install, resolve
-description: How blueprints travel — the local→installed→built-in resolution tiers, the Cupboard publish/install routes, the dependencies model ({tools, packs, plugins}), and why the bundled built-ins are both the bootstrap floor AND ordinary published listings.
+description: How blueprints travel — the local→installed→built-in resolution tiers, the Cupboard publish/install routes, the dependencies model ({tools, packs, plugins, blueprints}), and why the bundled built-ins are both the bootstrap floor AND ordinary published listings.
 sidebar:
   order: 3
+plans:
+  - official-blueprints-cupboard-publish-2026-06-05
+  - harness-blueprint-distribution-2026-06-03
+  - tool-distribution-granularity-2026-06-05
+  - blueprint-role-bundling-2026-06-15
+  - hive-blueprint-generalization-2026-06-15
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -58,9 +64,10 @@ A blueprint declares what its roles need in a top-level `dependencies:` block
 
 ```yaml
 dependencies:
-  tools:   [work_items:claim, coord:send, plans:get]   # capability names
-  packs:   []                                          # curated tool sets (runtime-less)
-  plugins: [repomix]                                   # runtime-bearing units
+  tools:      [work_items:claim, coord:send, plans:get]   # capability names
+  packs:      []                                          # curated tool sets (runtime-less)
+  plugins:    [repomix]                                   # runtime-bearing units
+  blueprints: [coding, research]                          # work-blueprints the roles SPAWN
 ```
 
 Resolution rules (tool-distribution D-001/D-002 — a *tool* is a pack of n=1, a
@@ -74,10 +81,27 @@ Resolution rules (tool-distribution D-001/D-002 — a *tool* is a pack of n=1, a
   satisfied, Cupboard → installable, neither → hard failure);
 - a declared **plugin** must be installed (satisfied) or Cupboard-listed
   (installable — `init --from` and the install route's consent-gated step can
-  fetch it); neither → hard failure.
+  fetch it); neither → hard failure;
+- a declared **blueprint** is a work-blueprint this blueprint's roles
+  **spawn** as sub-harnesses (a hive declares the work-blueprints its bees
+  spin up — e.g. a hive depending on `coding`/`research`). Resolved like
+  plugins: a built-in or installed blueprint satisfies it; a Cupboard-listed
+  one is **installable** (the install path pulls the closure — see
+  Install/fork); neither → hard failure. This is the `memberBlueprints`
+  mechanism (blueprint-role-bundling P-007, hive-blueprint-generalization
+  D-004).
+
+Like tools/packs/plugins, the `blueprints` category splits into **missing**
+(hard, when the Cupboard is reachable) and **installable** (advisory, pulled
+by the install closure) — `validateBlueprintDependencies` returns both
+`missing.blueprints` and `installable.blueprints`.
 
 This validation runs **upfront** — at `harness:create`, `init --from`, and
-blueprint install — closing the old call-time-only `unknown_tool` gap.
+blueprint install — closing the old call-time-only `unknown_tool` gap. At
+install, only **missing tools** always hard-fail (the catalog is in-process /
+authoritative); missing **packs/plugins/blueprints** hard-fail only when the
+Cupboard was actually reachable — an offline run can't prove a unit
+unavailable, so those downgrade to a warning.
 
 Two sharp edges worth knowing when authoring a `dependencies:` block:
 
@@ -127,6 +151,12 @@ in P0 (plan D-006):
   (reports / unlist / device-pubkey ban-list). See
   [distribution trust](/internal/docs/security/distribution-trust).
 
+The publish route reads the blueprint.yaml `kind` (default `harness`; `hive`
+for a hive template like `generic-hive`) and forwards it as `blueprint_kind:
+'hive' | 'harness'`. That discriminator selects the Cupboard storefront's tab
+— a `kind: hive` blueprint becomes a **hive template** rather than an ordinary
+harness blueprint (P-018; `availableHiveBlueprintIds` reads `kind: hive`).
+
 ## Install / fork
 
 `POST /api/cupboard/install-blueprint`
@@ -143,12 +173,23 @@ The flow: shallow-clone → locate `<listing_ref>/blueprint.yaml` → schema +
 semantic validation (under the composed resolver, so `extends: base` resolves
 against the bundled floor) → **import-time dep-validation** → place under
 `~/.papercusp/blueprints/<id>/` (the installed tier, where it shadows a
-same-id built-in). The response carries `{ id, version, abstract, installedTo,
-dependencies, depCheck }`.
+same-id built-in). The route's response carries `{ ok, id, version,
+description, abstract, source, installedTo, dependencies, depCheck,
+pluginInstalls, blueprintInstalls }` — `source` is the repo URL, and
+`pluginInstalls` / `blueprintInstalls` are per-unit best-effort result arrays
+(`{ plugin | blueprint, ok, error? }`) from the two install closures below.
 
 Plugin deps are **consent-gated** (D-001): only `installPlugins: true`
 fetches the declared, Cupboard-resolvable plugins; each install goes through
-the normal plugin capability-grant path.
+the normal plugin capability-grant path. Results land in `pluginInstalls`.
+
+Blueprint deps trigger a **spawned-blueprint closure** (blueprint-role-bundling
+P-007): a blueprint declaring `dependencies.blueprints` (e.g. a hive that spins
+up `coding`) recursively installs each declared work-blueprint that is
+Cupboard-resolvable and not already present — built-ins resolve locally and are
+skipped, so only genuinely third-party deps are cloned, validated, and placed.
+Unlike plugins this needs no consent flag (a spawned work-blueprint is inert
+until a role runs it). Per-blueprint results land in `blueprintInstalls`.
 
 In the UI, a `kind=blueprint` Cupboard listing's **Fork** button
 (`apps/operator/app/cupboard/[id]/page.tsx`) executes this route directly
@@ -173,6 +214,6 @@ URL-backed via nuqs `?kind=`).
 | Install route + core | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts`, `lib/cupboard/install-blueprint-core.ts` |
 | Live pack catalog (host wiring) | `packages/operator-core/lib/cupboard/pack-catalog.ts` |
 | Static CI dep guard | `packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts` |
-| Authoring tools | `packages/operator-core/lib/agent-tools/blueprint/{catalog,validate,extend,create,_resolve}.ts` |
+| Authoring tools | `packages/operator-core/lib/agent-tools/blueprint/{catalog,validate,extend,create,publish,_resolve}.ts` |
 | Official mirror sync + batch publish | `scripts/publish-official-blueprints.mts` (`sync` regenerates [`Papercusp/blueprints`](https://github.com/Papercusp/blueprints) from the bundle; `publish [--ids a,b] [--limit N]` runs the publish route in-process, respecting the 5/hr cap) |
 | Dep derivation aid | `scripts/derive-blueprint-deps.mjs` (derives each blueprint's tool list from its role personas — a review aid, not an auto-writer) |

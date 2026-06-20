@@ -146,6 +146,24 @@ loop:end                                                          ← stop (deac
 * **Routine fire-history / `autoloop:status`** — each wake, plus the failure-streak
   state if the loop has backed off.
 
+## Adoption — the su/interactive personas
+
+The su/interactive persona sources steer recurrence onto the engine loop and away
+from the client's native `/loop` (the B-LOOP-5 / B-LOOP-FIN-1 sweep): the live
+instance override (`apps/operator/prompts/hive-instances/papercup-hive.su.md`), the
+legacy engineer + power playbooks (`papercusp-su-{engineer,power}.tools.md`), and the
+Claude client overlay (`papercusp-su.claude.md`, where `/loop` natively lives). The
+rule: *to recur on a cadence, declare an engine loop (`loop:arm`); do NOT self-pace
+with your client's native `/loop` / `ScheduleWakeup`.* The **autonomous**
+queen/bee/scout loop is deliberately **excluded** (D-007) — it is its own system
+(`hive:declare-wake` / `overwatch:declare-wake`) and keeps its own
+native-scheduler-deny rule. A content test
+(`apps/operator/lib/su-persona-loop-sweep.test.ts`) guards the sweep from regressing.
+
+> Editing `papercup-hive.su.md` requires a **re-seed** (`setHiveInstancePromptOverride`
+> via the `/settings/hive-customization` editor) for the live persona to pick it up;
+> the file-based playbooks + overlay propagate on the next su launch.
+
 ## Code map
 
 | Piece                                                                                 | File                                                                           |

@@ -3,6 +3,15 @@ title: Project lifecycle — idea to completion
 description: Authoritative walkthrough of how a project moves through the harness, traced from the live code (not stale prior docs).
 sidebar:
   order: 1
+plans:
+  - fumadocs-to-starlight-2026-05-20
+  - archive-legacy-orchestrator-deadcode-2026-06-06
+  - dbos-retire-legacy-orchestrator-2026-05-31
+  - dbos-system-completion-2026-06-01
+  - harness-state-storage-unification-2026-06-01
+  - plugin-system-hive-port-2026-06-11
+  - plans-central-harness-ux-2026-05-26
+  - un-hardcode-plan-2026-05-10
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -51,7 +60,69 @@ file no longer exists, and `bin/scaffold-harness-schema.sh` still points at it
 (stale). The cross-harness slug-keyed `harness_shared` tables
 (`harness_features_consolidated`, `harness_proposals_shared`, …) are live; the
 *per-harness physical schema* (and the `harness_features_all` UNION view
-regenerated over it) is the part that's gone.
+regenerated over it) is the part that's gone. The migration set has advanced far
+past the 116–121 consolidation cited below — it now runs to **331+** (e.g.
+`306-harness-features-consolidated-schedule-fields.sql`), and the
+`002-per-harness-template.sql` template no longer exists at all. Read the live
+`libs/papercusp/libs/db/sql/` directory rather than the per-table snapshot in the
+"State summary" section.
+</Aside>
+
+<Aside type="danger" title="What the Aside above does NOT cover (2026-06-20)">
+A later code-as-truth pass found that several specific claims on this page are
+**wrong** — not merely citing archived line numbers, but describing behavior the
+live system no longer has. Until the prose below is rewritten, trust this list:
+
+1. **`/launch` has no SPEC.md gate.** The live route
+   (`packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts`) comments
+   "No gate: a harness can always be launched. SPEC.md is deprecated
+   (`plans-central-harness-ux-2026-05-26`, D-004)". It never returns 400 for a
+   missing SPEC.md. With no started plan the orchestrator simply finds no eligible
+   features and **idles** — it does not reject the launch.
+2. **SPEC.md is deprecated — the system is plans-central.** Features come from a
+   *started plan* (the `harness_plans` tables, migration 122+ and follow-ons), not
+   from SPEC.md. The whole-page framing of SPEC.md as "the single source of intent"
+   is stale; see the new "Plans" stage below.
+3. **`launchRun` is a dead legacy stub.** `orchestratorRunBin()` resolves to the
+   archived (missing) `orchestrator/bin/run.ts`, so `launchRun` returns
+   `{ ok: false, error: 'orchestrator bin missing' }` and `/launch` returns HTTP
+   **500** without spawning anything (`packages/operator-core/lib/harness-launch.ts`;
+   bash `run.sh` was deleted 2026-05-30). The live driver is the in-process **DBOS
+   durable pipeline** (`packages/operator-core/lib/dbos/orchestrator-workflow.ts`),
+   not a spawned `run.sh` / `run.ts` whole-loop.
+4. **The per-feature decider is the `director` role, not `orchestrator`.** Each
+   director runs in a fresh context, makes exactly ONE decision for a single
+   `FEATURE_ID`, and exits; the DBOS `featurePipeline` loops the director per turn.
+   There is *also* a separate **global orchestrator** (`orchestrator-loop.ts`, "the
+   dispatcher") that scans the queue and starts per-feature pipelines — but it does
+   not emit the per-feature `NEXT_WORKER` / `NEXT_VALIDATOR` verbs this page
+   attributes to "the orchestrator".
+5. **`deriveNext` over a blueprint spine supersedes the `classifyDecision` switch.**
+   `orchestrator-workflow.ts` calls `deriveNext(spine, parsed, featureId)`; the
+   17-branch `classifyDecision` switch (`orchestrator-decide.ts`) is **retained only
+   as a golden-reference oracle** that `derive-next-equivalence.test.ts` checks the
+   coding blueprint against. The live coding blueprint is **`coding-factory`**
+   (`loadBuiltinBlueprint('coding-factory')`), and `MAX_TURNS` is now a blueprint knob
+   (`spine.maxTurns`, default 200, overridable via
+   `PAPERCUSP_DBOS_PIPELINE_MAX_TURNS`) — not `MAX_ITERATIONS` / `run.sh`. See the new
+   "Blueprints" subsection.
+6. **The default backend is `claude-code`, not `omp`.** `DEFAULT_CONFIG.backend`
+   is `'claude-code'` (`agent-config.ts`); `effectiveBackend()` returns the
+   configured backend as-is and only collapses the explicit `'auto'` setting to
+   `'omp'`. (Defaulting to `omp` was tried and **reverted** — Owner ask 2026-06-18
+   — because it silently launched omp in fresh workspaces.) The dead legacy
+   `launchRun` stub still defaults `AGENT_CMD` to `'omp -p'`. A third backend,
+   **`codex`**, also exists.
+7. **Role prompts moved.** `libs/papercusp/packages/harness/prompts/` no longer
+   exists. Prompts now live under a blueprints tree:
+   `libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md`, and there is
+   a whole **blueprints catalog** (`base`, `coding`, `coding-factory`, `research`,
+   `audit`, `review`, `gym`, `migration`, `dist-*`, … ~46 dirs). New roles also exist
+   (`director`, `queen`, `bee`, `auditor`, `planner`, `overwatch`, `sentinel`, …).
+   Every `prompts/<role>.md` path citation below is stale.
+8. **There is no `fumadocs` plugin.** The live docs-tab plugin is **`starlight`**
+   (`libs/papercusp/plugins/starlight`); the fumadocs→starlight migration replaced
+   it.
 </Aside>
 
 This document is the **authoritative walkthrough** of how a project moves through the
@@ -60,21 +131,39 @@ may be out of date; trust this one and the code references it cites.
 
 ## Mental model in one paragraph
 
-The user has an idea. They turn it into a `SPEC.md` (the single source of intent).
-A **harness** wraps that project — a per-project Postgres schema + a `.papercusp/`
-directory + a registered slug. When they hit "start", the harness driver (`run.sh` by default; the
-TS port at `libs/papercusp/packages/orchestrator/` runs instead when
-`PAPERCUSP_USE_TS_ORCHESTRATOR=1`) boots an
-**autonomous loop** of LLM agents: a **scoper** decomposes the spec into features,
-the **reviewer** runs once at pre-loop time (`MODE=plan`) to gate the scoper's
-output, then the loop alternates an **orchestrator** agent (which decides what
-should happen next) with a **worker** (writes code) and **validator** (runs
-tests). When a feature has been retried `debugger.threshold` times (default 3),
-the **NEXT_WORKER** handler invokes the **debugger** inline before re-running the worker. State lives in Postgres
-+ a few markdown files. The loop terminates when every feature is `passed` and
-a final `DONE` decision fires; plugins (`afterDone` hooks) take care of shipping.
+The user has an idea. They author a **plan** and **start** it — its items become
+the eligible feature queue (SPEC.md is deprecated; see the "Plans" stage below).
+A **harness** wraps the project — slug-keyed rows in shared Postgres tables + a
+`.papercusp/` directory + a registered slug. When they hit "start", the live driver
+is the in-process **DBOS durable pipeline** (`packages/operator-core/lib/dbos/`),
+*not* a spawned `run.sh`. The **global orchestrator** (`orchestrator-loop.ts`, "the
+dispatcher") scans the queue and starts a durable **per-feature pipeline**; inside
+each pipeline a **director** agent (one decision, one feature, fresh context, then
+exit) drives the turn loop, alternating a **worker** (writes code) and a
+**validator** (runs tests). A **scoper** decomposes intent into features and a
+**reviewer** gates the plan up front (`MODE=plan`). When a feature has been retried
+`debugger.threshold` times (default 3), the **NEXT_WORKER** handler invokes the
+**debugger** inline before re-running the worker. State lives in Postgres + a few
+markdown files. A pipeline terminates when the director emits `DONE` (or
+`ESCALATE`); `orchestrator-finalize.ts` then runs the curator/documenter and fires
+the `afterDone` plugin hook.
 
-Code reference: `libs/papercusp/packages/orchestrator/` (TS) and `libs/papercusp/packages/harness/run.sh` (bash, default).
+What roles run, which decision verbs are valid, the decider role, and the max-turns
+cap are all defined by a **blueprint spine** — coding harnesses resolve to the
+built-in **`coding-factory`** blueprint (see "Blueprints" below).
+
+Code reference: `packages/operator-core/lib/dbos/orchestrator-workflow.ts` (live
+per-feature pipeline), `orchestrator-loop.ts` (global dispatcher),
+`orchestrator-finalize.ts` (terminal curator/documenter/afterDone).
+
+<Aside type="note">
+The narrative below still describes the **archived** `run.sh` / `main-loop.ts`
+run-loop, the `orchestrator` decider, the `classifyDecision` switch, and SPEC.md as
+the source of intent. Read the conceptual flow (scoper → worker → validator →
+reviewer, the decision verbs, feature statuses, hooks) — it largely still holds in
+the DBOS pipeline — but for the live mechanism, names, and paths, trust the two
+Asides above and the "Plans" and "Blueprints" subsections.
+</Aside>
 
 ---
 
@@ -90,8 +179,10 @@ explore it before committing to a SPEC.md:
 | **Brainstorm chat** | `/harness/<slug>?panel=brainstorm` | Conversational LLM partner that explores, suggests analogues, challenges assumptions. Can emit `\`\`\`promote:spec\`\`\`` / `\`\`\`promote:feature\`\`\`` / `\`\`\`promote:issue\`\`\`` action blocks. | Brainstorm scratchpad **PG-canonical** in `harness_shared.harness_brainstorm` (Migration 033), with `.papercusp/brainstorm.{md,canvas.json,mindmap.json}` as a dual-written file mirror so the orchestrator subprocess can read it. |
 | **Architect chat** | `/harness/<slug>` — embedded inside the **Inbox panel** of the dashboard via `<ArchitectInbox><ArchitectChat>` | More structured — Socratic clarifying questions, proposes concrete `proposal:SPEC.md` or `proposal:contract` diff blocks the user can accept. | On accept: writes `harness_shared.harness_project_files` (Migration 034) for SPEC.md / validation-contract.md / config.json (PG-canonical, file-mirror) via `POST /:slug/architect/apply`. |
 
-Both are backed by `runClaudeChat` (`apps/operator/lib/claude-chat-stream.ts`),
-which spawns the configured agent CLI (`claude -p` or `omp -p` per `AGENT_BACKEND`).
+Both are backed by `runClaudeChat`, which spawns the configured agent CLI per the
+resolved backend (`claude -p` by default; `omp -p` / `codex` when selected — see
+`effectiveBackend()` in `packages/operator-core/lib/agent-config.ts`, which defaults
+`'auto'` to `omp`).
 
 The `promote:*` action-block parser lives at `apps/operator/app/api/_hono/harness.ts:5556`
 in `harness.post('/:slug/brainstorm/promote', ...)`. It routes:
@@ -100,8 +191,34 @@ in `harness.post('/:slug/brainstorm/promote', ...)`. It routes:
 - `target: 'spec'` → updates `SPEC.md` via `harness_shared.harness_project_files` (Migration 034); the file mirror is dual-written for editor convenience.
 - `target: 'issue'` → appends to `.papercusp/issues.json` (file-canonical; mirrored to per-harness `harness_issues` PG via `syncIssuesToPg`).
 
-**Output of Stage 0:** a `SPEC.md` in the project root. The operator's
-`POST /:slug/launch` route requires this — without it, the run aborts with a 400.
+**Output of Stage 0:** intent the user is ready to commit to. The modern path is to
+turn that intent into a **plan** and start it (see the "Plans" stage). SPEC.md is
+**deprecated** (`plans-central-harness-ux-2026-05-26`, D-004): the live
+`POST /:slug/launch` route carries **no SPEC.md gate** and never returns a 400 for a
+missing spec — it comments "No gate: a harness can always be launched." With no
+started plan, the orchestrator simply finds no eligible features and idles.
+
+---
+
+## Stage 0.5 — Plans are the source of intent
+
+The system is **plans-central** (`plans-central-harness-ux-2026-05-26`, D-004), not
+SPEC.md-central. The user authors a **plan** (a structured list of items / features)
+and **starts** it; its items become the eligible feature queue the global
+orchestrator dispatches. SPEC.md is deprecated and optional — a started plan, not a
+spec file, drives what gets built.
+
+- **Storage.** Plans live in the `harness_plans` family of tables, introduced at
+  `libs/papercusp/libs/db/sql/122-harness-plans.sql` with follow-on migrations
+  (128, 140–142, …). The plan-authoring and plan-status agent tools live under
+  `packages/operator-core/lib/agent-tools/plans/`.
+- **Lifecycle.** Until a plan is *started*, launching the harness is a no-op idle
+  (no eligible features). Flipping a plan item's status (`plans:set-status`) moves
+  it through the queue; a started plan's items are what the dispatcher leases and
+  hands to per-feature pipelines.
+- **Why it changed.** SPEC.md was a single opaque blob the scoper had to re-decompose
+  every run; plans make the unit of intent a first-class, individually-status-tracked
+  item that the orchestrator can pick, lease, and finalize one at a time.
 
 ---
 
@@ -128,11 +245,26 @@ The handler at `apps/operator/app/api/_hono/harness.ts:714` (`harness.post('/pro
 
 ## Stage 2 — Pre-loop bootstrap (planning)
 
-User clicks **"Start"** in the operator dashboard or runs `~/autonomous-harness/run.sh` directly.
+User clicks **"Start"** in the operator dashboard.
 
-`POST /api/harness/<slug>/launch` (`harness.ts:1978`) calls `launchRun(project)` which
-spawns `bash -c "nohup <run.sh> >> /tmp/harness-<slug>.log 2>&1 &"`. The script's
-own preflight (run.sh:start) does:
+<Aside type="caution" title="`/launch` no longer boots a run-loop">
+The live `POST /:slug/launch` route
+(`packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts`) calls
+`launchRun(project)`, but `launchRun` is now a **dead legacy stub**:
+`orchestratorRunBin()` resolves to the archived (missing)
+`orchestrator/bin/run.ts`, so it returns `{ ok: false, error: 'orchestrator bin
+missing' }` and the route returns HTTP **500** without spawning anything
+(`packages/operator-core/lib/harness-launch.ts`). It still fires the
+`beforeMissionStart` plugin lifecycle hook and emits a `launch` pipeline event. The
+**actual** orchestration is the in-process **DBOS durable pipeline**
+(`packages/operator-core/lib/dbos/orchestrator-workflow.ts`), driven by the global
+orchestrator-loop dispatcher — not the spawned `run.sh` / `run.ts` whole-loop
+described below. Bash `run.sh` was deleted 2026-05-30.
+</Aside>
+
+The legacy preflight below (`run.sh:start`) is **archived**; the live DBOS pipeline
+reuses its *concepts* (scoper/reviewer gates, feature statuses) but not its
+mechanism. It did:
 
 1. **Resolve env** — `HARNESS_DIR` / `PROJECT_DIR` / `STATE_DIR=$PROJECT_DIR/.papercusp` / `LOG_DIR=$STATE_DIR/logs`. Reads `phase` from `.papercusp/config.json` (defaults `staging`). Picks `$AGENT_CMD` (or legacy `$CLAUDE`) and `$AGENT_BACKEND` (claude-code or omp; auto-inferred from binary name).
 2. **Ensure directories** — at startup, `mkdir -p $STATE_DIR $LOG_DIR` (run.sh:138). Other subdirectories (`memory/`, `proposals/`, `experts/`, `worktrees/`, `screenshots/`, `archives/`, `debug/`, `logs/hooks/`) are created **lazily on first use**, not all up front.
@@ -164,16 +296,38 @@ parity (snapshots include it in their tarball).
 
 ---
 
-## Stage 3 — The main loop
+## Stage 3 — The pipeline loop
 
-run.sh / orchestrator-TS (selected by `PAPERCUSP_USE_TS_ORCHESTRATOR=1`) iterates up to `MAX_ITERATIONS` (default 200):
+<Aside type="caution" title="Live mechanism: DBOS per-feature pipeline, not run.sh">
+The pseudocode below describes the **archived** `run.sh` / `main-loop.ts` loop. In
+the live system (`packages/operator-core/lib/dbos/orchestrator-workflow.ts`) the
+shape is the same — a per-turn decide → dispatch loop — but the moving parts differ:
+
+- The per-turn decider is the **`director`** role (`director.md`), not
+  `orchestrator`. Each director runs in a fresh context, makes exactly ONE decision
+  for a single `FEATURE_ID`, and exits.
+- The decision is classified by **`deriveNext(spine, parsed, featureId)`** over the
+  blueprint spine, *not* by the `classifyDecision`/`main-loop.ts` switch. That switch
+  (`orchestrator-decide.ts`) survives only as a golden-reference **oracle** that
+  `derive-next-equivalence.test.ts` checks the coding blueprint against.
+- The turn cap is **`spine.maxTurns`** (default 200, overridable via
+  `PAPERCUSP_DBOS_PIPELINE_MAX_TURNS`), not `MAX_ITERATIONS`.
+- A separate **global orchestrator** (`orchestrator-loop.ts`) leases a feature and
+  *starts* this per-feature pipeline; it does not emit the per-feature verbs.
+
+See the "DBOS durable pipeline" and "Blueprints" subsections below for the live flow.
+</Aside>
+
+The archived `run.sh` / `main-loop.ts` loop iterated up to `MAX_ITERATIONS`
+(default 200):
 
 ```
 // TS: for (let iteration = 1; iteration <= maxIterations; iteration++) — main-loop.ts:162
 // bash: while [ $iteration -lt $MAX_ITERATIONS ] — semantic equivalent
 for iteration in 1..MAX_ITERATIONS:
   log("── iteration $iteration ──")
-  decision = invoke(primaryRole)   // default 'orchestrator'; configurable via config.primaryRole
+  decision = invoke(primaryRole)   // archived: default 'orchestrator'.
+                                   // LIVE: the per-feature 'director' decides
   case decision:
     DONE → handleDone(); exit 0
     IDLE → sleep 30s; continue
@@ -218,9 +372,66 @@ for iteration in 1..MAX_ITERATIONS:
 end
 ```
 
-Code: `libs/papercusp/packages/orchestrator/src/main-loop.ts` — `switch (parsed.verb)` at line 265, 17 explicit case branches.
+Code (archived): `main-loop.ts` — `switch (parsed.verb)`, 17 explicit case branches.
+In the **live** pipeline that switch is `classifyDecision` in
+`packages/operator-core/lib/dbos/orchestrator-decide.ts`, and it is **superseded** by
+`deriveNext` over the blueprint spine (P-004, D-002) — `classifyDecision` is retained
+only as the byte-equivalence oracle, not the live router.
 
-**Exit codes by branch:** `DONE`=0, `IDLE`=continues, `ESCALATE`=3, `CHECKPOINT`=8, `default`=4. Non-terminal branches (`READY_FOR_PROD`, `CONVERTED`, `FEATURE_FREEZE`, etc.) just log + continue.
+**Exit codes by branch (archived loop):** `DONE`=0, `IDLE`=continues, `ESCALATE`=3, `CHECKPOINT`=8, `default`=4. Non-terminal branches (`READY_FOR_PROD`, `CONVERTED`, `FEATURE_FREEZE`, etc.) just log + continue.
+
+### The DBOS durable pipeline (live)
+
+The live orchestration is a **DBOS durable workflow**, not a spawned run-loop. Two
+components, one named "orchestrator" each:
+
+- **Global orchestrator / dispatcher** (`orchestrator-loop.ts`, formerly "the
+  dispatcher"). The deterministic cross-feature selector: it scans the eligible
+  feature queue (from started plans), **claims** a feature via a work-item lease, and
+  **starts** a durable per-feature pipeline for it. It owns cross-feature concerns
+  (parallel lanes, `NEXT_HARNESS`, CEO mode) that are deliberately carved out of the
+  per-feature model.
+- **Per-feature pipeline** (`featurePipeline` in `orchestrator-workflow.ts`). A
+  durable, checkpointed workflow for ONE feature. Each turn:
+  1. **Decide** — run the `director` (a checkpointed DBOS step). The decide step
+     tolerates a transient 429 / overload in-process (`runWithRateLimitTolerance`)
+     so a rate-limit blip under fleet load doesn't error the whole pipeline; a
+     genuine empty/failed invoke throws so DBOS retries (3× over ~15s) and then
+     errors rather than false-succeeding.
+  2. **Classify** — `deriveNext(spine, parsed, featureId)` maps the director's verb
+     to a `dispatch` / `terminal` / `unsupported` action.
+  3. **Renew lease** — before any side-effecting dispatch, a checkpointed
+     `lease-heartbeat` step renews and verifies the work-item lease; if the lease
+     lapsed or another Swarm stole it (`renewed:false`), the pipeline self-aborts and
+     leaves the feature for the live holder.
+  4. **Dispatch** — run the chosen role (worker / validator / architect / …) as a
+     checkpointed step, then loop.
+  5. On `DONE` / `ESCALATE`, **`orchestrator-finalize.ts`** runs: the curator distils
+     run memory, the documenter writes docs, an optional archive runs, and the
+     `afterDone` plugin hook fires (a harness-scoped needs-human DONE-gate guards
+     finalization). IDLE / unsupported / max-turns stop without finalizing — the
+     dispatcher re-scans.
+
+### Blueprints
+
+What the pipeline *does* — which roles run, which decision verbs are valid, the
+decider role, and the max-turns cap — is defined by a **blueprint spine**, not
+hard-coded. A spine carries at least `decider` (the per-feature decider role),
+`edges` (the valid verb vocabulary → next-action map), and `maxTurns`.
+
+- Coding harnesses resolve to the built-in **`coding-factory`** spine
+  (`loadBuiltinBlueprint('coding-factory')`), whose `decider` is `director` and whose
+  `deriveNext` output is **byte-equivalent** to the legacy `classifyDecision` switch
+  (proven across the full verb vocabulary by `derive-next-equivalence.test.ts`).
+- A non-coding harness passes its own resolved spine via `PipelineInput.spine`
+  (e.g. `research` → a `research-director` decider) and parses the director's output
+  against that spine's own verb set.
+- There is a large **blueprints catalog** (~46 dirs under
+  `libs/papercusp/packages/harness/blueprints/`): `base`, `coding`, `coding-factory`,
+  `research`, `audit`, `review`, `gym`, `migration`, the `dist-*` distributed-agent
+  blueprints, and more. **Role prompts now live under that tree** —
+  `blueprints/base/prompts/<role>.md` — *not* the retired
+  `libs/papercusp/packages/harness/prompts/` directory cited elsewhere on this page.
 
 ### Concrete walk-through — one mission, many iterations
 
@@ -277,7 +488,8 @@ For each role invocation:
    - Runtime-context footer: extras (e.g. `FEATURE_ID=F-001`, `MODE=initial`), cwd (or worktree path), project root, state dir, run ID, and a memory-discipline reminder telling the role to append a one-line observation to `.papercusp/memory/raw.md` if it learned anything actionable. The file is dual-written from `harness_shared.harness_text_artifacts` (Migration 035) when written via the operator UI; subprocess writes (LLM Edit/Write tool) update the file directly and the fs-watcher catches up. **The memory-discipline reminder is omitted for the curator role.**
 3. **Run ID:** `<unix-ts>-<role>[-<featureId>]`
 4. **CWD:** project root, OR a per-feature git worktree if branch-isolation + worktrees are enabled (avoids workers stomping each other).
-5. **Spawn** the agent CLI with backend-specific flags:
+5. **Spawn** the agent CLI with backend-specific flags (the default backend is
+   **`omp`**, not `claude-code`; `codex` is a third option — see `effectiveBackend()`):
    - **claude:** `claude -p --output-format stream-json --verbose --include-partial-messages` ; prompt → stdin
    - **omp (in-loop, orchestrator's invoke.ts):** appends `--mode json --no-session` (`streamFormatFlags` in invoke.ts) ; prompt → tmpfile → `@<path>` positional arg ; stdin closed
    - **omp (chat surfaces, libs/papercusp-shared/src/agent/chat-stream.ts):** appends `-p --mode json` plus `--no-session` (only when no `sessionId` opt is set) plus `--no-skills --no-rules` (chat surfaces don't want plugin/skill chatter); same `@<path>` prompt-file pattern. The chat-stream's flag set differs from the orchestrator's because chat surfaces tune for a single-turn predictable response, not a tool-using agent loop.
@@ -313,9 +525,17 @@ A typical feature ships in 5–15 iterations. Total cost is tracked in `total_co
 fields across the .jsonl logs and surfaces via `cost-cap.ts` — over budget triggers
 SIGTERM on the entire process group.
 
-### Roles catalogue (live as of 2026-05-06)
+### Roles catalogue
 
-Prompt files at `libs/papercusp/packages/harness/prompts/`. The "When invoked" column is verified by grep against `main-loop.ts`, `run.sh`, and the operator API tree.
+<Aside type="note">
+Prompt-file paths in this catalogue are stale. The
+`libs/papercusp/packages/harness/prompts/` directory no longer exists — role prompts
+moved to **`libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md`** (and
+phase/department overrides under the blueprints tree). New roles also exist
+(`director`, `queen`, `bee`, `auditor`, `planner`, `overwatch`, `sentinel`, …). The
+"When invoked" descriptions referencing `main-loop.ts` / `run.sh` describe the
+archived loop; the live decider is the per-feature `director`.
+</Aside>
 
 **In-loop roles (called by main-loop.ts or run.sh during iteration):**
 
@@ -410,7 +630,7 @@ The orchestrator emits `DONE` when every feature in `harness_features` has statu
    | `@papercupai/linear-sync` | same four as jira-sync |
    | `@papercupai/notion-export` | `mission-done` (action: `exportMission`) |
    | `@papercupai/slack-notifier` | `mission-done`, `action-failed` |
-   | `@papercupai/fumadocs`, `pi-coding`, `postgres-manager`, `vscode-server` | none — UI tabs / manual actions only |
+   | `starlight`, `pi-coding`, `postgres-manager`, `vscode-server` | none — UI tabs / manual actions only (the docs-tab plugin is `starlight`, at `libs/papercusp/plugins/starlight`; there is no `fumadocs` plugin) |
 
    *briefings is not a plugin* — it's a separate app at `Restart/apps/briefings`; the `afterDone` hook can't reach it directly.
 7. **Notify** — `notify_event('done', 'Mission complete: all features passed after N iterations')`.
@@ -578,11 +798,15 @@ The split rule: **TTL when there's a clear lease and the writer can refresh on i
 | If you want to understand… | Read this |
 |---|---|
 | The orchestrator decision verbs | `libs/papercusp/packages/orchestrator/src/decision-parse.ts` |
-| The 17-branch dispatcher | `libs/papercusp/packages/orchestrator/src/main-loop.ts:265` (the `switch (parsed.verb)`; first case at 266) |
+| The live per-feature dispatch loop | `packages/operator-core/lib/dbos/orchestrator-workflow.ts` (`deriveNext` over the `coding-factory` blueprint spine) |
+| The global dispatcher (selects work) | `packages/operator-core/lib/dbos/orchestrator-loop.ts` |
+| Terminal finalization (curator/documenter/afterDone) | `packages/operator-core/lib/dbos/orchestrator-finalize.ts` |
+| The decision classifier (oracle, not live router) | `packages/operator-core/lib/dbos/orchestrator-decide.ts` (`classifyDecision` — retained for `derive-next-equivalence.test.ts`) |
 | How an agent gets spawned | `libs/papercusp/packages/orchestrator/src/invoke.ts` and `libs/papercusp/packages/harness/run.sh:invoke()` |
 | Pre-loop bootstrap | `libs/papercusp/packages/orchestrator/src/pre-loop.ts:runPreLoop` |
 | What happens on DONE | `libs/papercusp/packages/orchestrator/src/main-loop.ts:handleDone` (line 342) |
-| Role prompts | `libs/papercusp/packages/harness/prompts/<role>.md` (or `staging/<role>.md` for phase-specific overrides) |
+| Role prompts | `libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md` (the old `packages/harness/prompts/` dir is retired) |
+| Blueprints catalog | `libs/papercusp/packages/harness/blueprints/` (~46 spines: `coding-factory`, `research`, `audit`, `migration`, `dist-*`, …) |
 | Cross-mission identities | `libs/papercusp/packages/harness/identity/<role>.md` (file-canonical for orchestrator subprocess; PG-mirrored to `harness_shared.identity_files` via Migration 041 for operator UI reads) |
 | All API routes | `apps/operator/app/api/_hono/harness.ts` (mostly), `apps/operator/app/api/agent-mcp/*` (operator-scan, delegate-chat, agent-config), `apps/operator/app/api/agent-config/*` (settings) |
 | Chat-stream backend | `apps/operator/lib/claude-chat-stream.ts` (operator wrapper) → `libs/papercusp-shared/src/agent/chat-stream.ts` (shared runtime) |
@@ -606,7 +830,7 @@ These reflect known in-progress migrations as of 2026-05-06; expect them to drif
   - TS `state.ts:featuresExist` reads `features.json` on disk (legacy); bash `features_exist()` queries `harness_features` PG (canonical post-2026-05-01).
 
   For harnesses that lean on `NEXT_EXPERT` etc., TS will silently drop those decisions — backend choice matters.
-- **`AGENT_BACKEND=omp` is opt-in.** Default backend is still `claude-code`. The omp routing migration is fully shipped but unverified at scale; `/settings/agent` lets you flip per-workspace.
+- **`claude-code` is the default backend**, not `omp` (`DEFAULT_CONFIG.backend` in `packages/operator-core/lib/agent-config.ts`; defaulting to `omp` was reverted per Owner ask 2026-06-18). `effectiveBackend()` returns the configured backend as-is and only resolves the explicit `'auto'` setting to `omp`; the dead legacy `launchRun` stub still defaults `AGENT_CMD` to `'omp -p'`. A third backend, **`codex`**, also exists. `/settings/agent` lets you flip per-workspace (`claude-code` / `omp` / `codex` / `auto`).
 - **Doc files in this tree may be stale.** Several mention `features.json` as the canonical source — that's no longer true. Trust this lifecycle doc + the code over older specs.
 - **Storage policy supersedes earlier "files everywhere" wording.** As of 2026-05-07, durable mutable state defaults to Postgres; files remain only for bootstrap, code/contracts, locks/sentinels, append-only logs, and substrate-read contracts (where the orchestrator subprocess needs to read directly). See `/internal/docs/system/storage-policy` for the full rule.
 - **Voice tool aliasing.** `delegate_to_claude` and `delegate_to_agent` both map to the same handler (Wave 3 of the omp migration); EL agents may reference either name.

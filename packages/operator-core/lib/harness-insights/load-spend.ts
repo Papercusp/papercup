@@ -61,7 +61,12 @@ export async function loadHarnessSpend(
       `SELECT COUNT(*)                                                        AS runs,
               COALESCE(SUM(cost_usd), 0)                                      AS total_usd,
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_source = 'estimated'), 0) AS estimated_usd,
-              COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens
+              -- ALL four token types (B-TOK-2 / token-tracking D-003): the prior
+              -- input+output-only sum under-counted ~5x — cache-read is ~82% of all
+              -- tokens (giant contexts re-read every turn), so omitting cache made the
+              -- Spend card's token total wildly low. cache_* columns exist (mig 161/210).
+              COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                           + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) AS tokens
          FROM harness_shared.agent_usage_samples
         WHERE workspace_id = $1
           AND harness_slug = $2

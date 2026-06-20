@@ -3,6 +3,10 @@ title: Data Sync overview
 description: How harness UI panels read from Postgres in real time via Zero + RichGrid.
 sidebar:
   order: 1
+plans:
+  - finish-next-removal-2026-06-01
+  - starlight-projection-site-2026-06-18
+  - fumadocs-to-starlight-2026-05-20
 ---
 
 :::danger[Zero is being retired — historical reference]
@@ -12,6 +16,25 @@ host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
 **not run** on desktop. Treat this page as historical reference. Source of
 truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
 doc-comment) + the root `CLAUDE.md` deployment-model section.
+
+**How SSE sync works today.** The `:3070` Hono host serves
+`/api/zero-harness/sse`. `packages/operator-core/lib/sync-sse.ts` opens one
+dedicated PG `LISTEN` on the `sync_invalidate` channel (on the embedded-PG admin
+URL), fans each `pg_notify` out to subscribers, and bridges PG-trigger
+`<schema>.<table>.changed` events to the camelCase query names via
+`queryNamesForTriggerEvent` in `sync-resolver/table-to-query-names.ts`.
+
+**Freshness, restated.** It is not the old ~50ms logical-replication push.
+Each write fires an invalidate that pushes near-instantly to subscribers; the
+worst-case staleness for an **unbridged** table is the 180s drift-repair tick
+(`DEFAULT_SSE_DRIFT_REPAIR_MS` in `HarnessZeroProvider.tsx`), which is a repair
+sweep, **not** a freshness source.
+
+**Degraded fallback.** On sustained SSE failure, `SyncProvider`'s
+`useTransportFallback` drops SSE → `POLLING` as a last resort. POLLING is
+intentionally not the default: it re-fetches every subscribed query
+(~40 on the dashboard) each interval, saturating the browser's
+6-connection-per-host HTTP/1.1 cap.
 :::
 
 import { Aside } from '@astrojs/starlight/components';
@@ -33,7 +56,7 @@ or ad-hoc EventSource forks all of that and accumulates as drift.
   command-runner progress, LLM token streams. These are byte streams,
   not query data; raw `EventSource` is the right tool. See the existing
   uses in `OperatorPanel`, `BranchActionRunner`, `ProvisionStream`,
-  `HarnessDashboard`'s log stream, `PiPanel` (pty).
+  `PiPanel` (pty).
 - **Pure UI timers** — `setNow(Date.now())` for relative-time refresh,
   `setInterval` for animation steps. No fetch, not data sync.
 - **Mobile (`apps/operator-mobile/`)** — uses its own pure-HTTP +
@@ -70,8 +93,8 @@ dispatcher's per-entry recipe is in the
 ## What this section covers
 
 This is a reference for agents and humans building UI panels in the harness
-operator (`apps/operator/app/harness/`) and the Papercup demo
-(`apps/papercup/`). Read this **before** you wire a new panel to data.
+operator (`apps/operator/app/harness/`). Read this **before** you wire a new
+panel to data.
 
 The stack is two layered conventions, not a single library:
 
@@ -80,19 +103,21 @@ The stack is two layered conventions, not a single library:
    tails logical replication and broadcasts changes to every connected
    client. Clients call `useQuery(...)` and re-render when the underlying
    row changes — no polling, no manual refetch.
-2. **RichGrid** (`@restart/grid-core`, mirrored at
+2. **RichGrid** (`@papercusp/grid-core`, mirrored at
    `papercupai/papergrid`) — the column-driven grid renderer every tabular
-   panel uses. It accepts plain rows + a `ColumnDef[]`, handles sorting,
-   row click, row styling, and (optionally) virtual rendering. It does
+   panel uses. It is a DOM / CSS-grid renderer that virtualizes via
+   `@tanstack/virtual-core` (its sibling `DataGridShell` is the canvas
+   glide-data-grid one). It accepts plain rows + a `ColumnDef[]`, handles
+   sorting, row click, row styling, and (optionally) virtual rendering. It does
    **not** know about Zero — the panel passes Zero query results as the
    `rows` prop.
 
 These two are intentionally orthogonal:
 
-- A panel can use **Zero without RichGrid** (e.g. card or feed UX —
-  `ArchitectInbox`).
+- A panel can use **Zero without RichGrid** (e.g. card or feed UX).
 - A panel can use **RichGrid without Zero** (e.g. data that comes from a
-  one-shot REST call — `ProjectsList`, the harness `[slug]/projects` page).
+  one-shot REST call — `ProjectsList` at
+  `apps/operator/app/harness/[slug]/projects/`).
 - The default for a new tabular panel that displays Postgres-backed data
   is **both**.
 
@@ -108,9 +133,13 @@ const [results] = useQuery(queries.snapshots(slug));
 return <RichGrid rows={results.map(rowToSnapshot)} columns={columns} getRowId={s => s.id} inline />;
 ```
 
-Mutations write directly to Postgres (via a normal `POST /api/...` route);
-Zero notices the change and pushes it to every connected client within
-~50ms.
+Mutations write directly to Postgres (via a normal `POST /api/...` route).
+Historically Zero noticed the change via logical replication and pushed it to
+every connected client within ~50ms. Under the current SSE model freshness is
+invalidate-driven: each write fires a `sync_invalidate` notify that pushes
+near-instantly to subscribers, and an unbridged table's worst-case staleness is
+the 180s drift-repair tick (see the retirement banner above), not a ~50ms
+replication push.
 
 ## Where each piece lives
 

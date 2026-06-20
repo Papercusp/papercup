@@ -28,7 +28,7 @@ import '../../../agent-tools/index';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { listPlanRows, readPlanBySlug, type PlanRow } from '../../../agent-tools/plans/source';
 import { listHarnessesFor } from '../../../device-harnesses';
-import { PAPERCUP_HARNESS_SLUG } from '../../../harness/register-papercup';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 
 /** Compact per-status item tally for a plan card. */
 function itemCounts(row: PlanRow): Record<string, number> {
@@ -73,18 +73,21 @@ const plansList = defineTool({
       slugs = [harness];
     } else {
       // Fan out across the workspace's pots ("All Pots"). Always include the
-      // papercup primary — its plans live under the default workspace
-      // (resolvePlanScope), which the device's paired workspace may not be.
+      // operator-home primary (papercusp post-migration) — its plans live under
+      // the home workspace (resolvePlanScope), which the device's paired
+      // workspace may not be. Baking 'papercup' here returned nothing once the
+      // papercup→papercusp migration moved the home's plans, so resolve the
+      // home pointer instead of a dead literal.
       const harnesses = await listHarnessesFor(principal.workspaceId).catch(() => []);
-      slugs = [...new Set([PAPERCUP_HARNESS_SLUG, ...harnesses.map((h) => h.slug)])];
+      slugs = [...new Set([operatorHomeHarnessSlug(), ...harnesses.map((h) => h.slug)])];
     }
 
     const all: PlanRow[] = [];
     for (const slug of slugs) {
       try {
         // No workspaceId override — let resolvePlanScope resolve each pot to
-        // the workspace its plans actually live in (papercup → default), the
-        // SAME resolution the operator's plans:list uses.
+        // the workspace its plans actually live in (the home → its workspace),
+        // the SAME resolution the operator's plans:list uses.
         const rows = await listPlanRows({ harnessSlug: slug, includeArchived });
         all.push(...rows);
       } catch {

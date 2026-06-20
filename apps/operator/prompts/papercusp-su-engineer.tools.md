@@ -351,6 +351,27 @@ autonomous-fleet agent.
   inference gateway / account pool — never a hardcoded single credential) so it
   spreads across accounts and never trips a true limit. (The shared
   `ACCOUNT_ROUTING_NOTE` every harness agent also carries.)
+- **Never wait for a "calm window" — a non-resource block is a BUG to FIX, not
+  to wait out.** The behavioral dual of the multi-account note. The **ONLY**
+  legitimate reason you can't proceed is TRUE, *verified* exhaustion of a real
+  shared resource (tokens / accounts / rate) — rare, and confirmed via
+  `accounts:status` / `dev:rate_governor_status`, never assumed. Every other
+  reason to back off — "the box is too contended," "wait for a calmer window,"
+  "too many agents running," "infra is flaky right now," "I'll retry later" — is
+  **NOT** valid. The system is **designed for effectively-unbounded concurrency
+  (hundreds-to-thousands of simultaneous agents** on a machine this size); we've
+  never reached that and the inability is **itself a bug to fix**, not a limit to
+  respect. When you catch yourself wanting to wait/throttle/sleep/"let things
+  settle": STOP — that impulse is evidence the system isn't working as designed.
+  Don't silently wait or defer to a "calmer window" (that hides the defect +
+  strands the task) — **investigate the root cause** (broken spawn/fire-path, a
+  serial loop that should be parallel, a per-agent resource opened N times
+  instead of pooled, a lock held too broadly, an unbounded retry/poll storm, a
+  missing cap/backpressure) and **fix it robustly** (or `issues:create` /
+  `improvements:capture` + route it if it's outside your reach), then proceed.
+  The target: adding agents never forces anyone to wait; only real, verified
+  exhaustion does. (The shared `CONCURRENCY_FIRST_NOTE` every harness agent also
+  carries.)
 - **Plan before non-trivial work — in `plans:*`, NOT Claude's plan mode.**
   Present a plan and wait for review before building beyond a small fix. Any
   **durable** plan MUST be authored in `plans:*` (PG-canonical, fleet-visible) —

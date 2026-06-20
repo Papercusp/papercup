@@ -109,6 +109,28 @@ describe('loadHarnessSpend', () => {
     expect(calls[0].params[1]).toBe('papercup');
   });
 
+  it('sums ALL FOUR token types — input+output+cache_read+cache_creation (B-TOK-2 cache-undercount fix)', async () => {
+    // The mocked runQuery returns canned rows, so the fix is verified on the GENERATED
+    // SQL: the token total must include the cache columns (cache-read is ~82% of all
+    // tokens — the prior input+output-only sum under-counted ~5x).
+    let captured = '';
+    const runQuery = vi.fn(async (query: string) => {
+      captured = query;
+      return [{ runs: 0, total_usd: 0, estimated_usd: 0, tokens: 0 }];
+    }) as unknown as RunQuery;
+    await loadHarnessSpend({ workspace_id: 'ws', harness_slug: 'papercup', runQuery });
+    // The tokens aggregate references all four token columns.
+    expect(captured).toMatch(/input_tokens/);
+    expect(captured).toMatch(/output_tokens/);
+    expect(captured).toMatch(/cache_read_tokens/);
+    expect(captured).toMatch(/cache_creation_tokens/);
+    // …and all four are summed together into the `tokens` column (they appear, in order,
+    // within the single token aggregate ending in `AS tokens`).
+    expect(captured).toMatch(
+      /input_tokens[\s\S]*?output_tokens[\s\S]*?cache_read_tokens[\s\S]*?cache_creation_tokens[\s\S]*?AS tokens/,
+    );
+  });
+
   it('handles null aggregates (no rows in window)', async () => {
     const out = await loadHarnessSpend({
       workspace_id: 'ws-test',

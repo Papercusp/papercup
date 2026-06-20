@@ -1437,6 +1437,66 @@ So nothing proved the *live* `bootSingleHarness → wireOutboxForHarness → sta
 
 Reach for `wireOutboxForHarness` / `ensureSendSideWired` and ask: did the drain loop actually start, or did a swallowed wiring failure leave a cached-but-drainless handle? On a live joined member, `SELECT id, table_name, harness_slug, workspace_id, drained_at FROM harness_shared.substrate_outbox` + whether a drain loop is counted pins it. Cross-machine confirmation needs `deb-hetzner-federation.sh` (the hive flow + `fed_hive_merge_probe`), not a single-box run.
 
+# Bounding high-fanout read tools so they can't overflow the agent result cap
+
+> Agent-facing read tools whose output scales with workspace size (coord:inbox/feed, work_items:list, plans:get, fleet:assignments) overflow the per-result token cap and spill to a file. The fix is a budget-aware bound applied at the TOOL layer — here's the pattern, the shared util, and the per-tool shapes.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+A read tool returns one giant line and the agent gets an error instead of data:
+
+```plaintext
+Error: result (73,723 characters across 1 line) exceeds maximum allowed tokens.
+Output has been saved to .../tool-results/...txt
+- Slice by character range via Bash ... read()[A:B] ...
+```
+
+You then have to file-slice to read your own inbox / the work queue / a plan. On a busy workspace this is routine, not rare — the output scales with workspace size, so a tool that was fine at week 1 overflows at week 6.
+
+## The class (recurring)
+
+[Section titled “The class (recurring)”](#the-class-recurring)
+
+Any agent-facing read tool whose result grows with the workspace is at risk. Seen + fixed across: `coord:inbox` (EI-1752), `coord:plan-events` (EI-1737, default bound), `plans:get` mode:sections (WI-274 — inlined every decision body), `work_items:list` (full `summary` per row → 73KB at 40 items), `coord:feed` (full envelope × 100 rows), `fleet:assignments` (per-agent intent + queued lists × N agents). Swept together as **EI-1597**.
+
+## The fix — a budget-aware bound at the TOOL layer
+
+[Section titled “The fix — a budget-aware bound at the TOOL layer”](#the-fix--a-budget-aware-bound-at-the-tool-layer)
+
+Per-item cap = `min(perItemCap, floor(totalBudget / n))`. This keeps the TOTAL bounded at **any** row count, while small results keep most rows full. A cut field gains `<field>_truncated: true` + `<field>_full_chars`; always leave a full-fetch escape hatch (a `mode:full`, a narrower `{ agent }`/`{ plan }`/`heading` query, or the pagination cursor).
+
+Shared util: `packages/operator-core/lib/agent-tools/_bound-output.ts`
+
+* `boundRowField(rows, field, perItemCap, totalBudget)` — excerpt a big TEXT field per row.
+* `boundListField(rows, field, maxItems)` — cap an unbounded ARRAY field per row (+ `<field>_total`).
+* `trimToByteBudget(rows, budget)` — keep rows (caller sorts most-relevant first) until a serialized-size budget; the backstop when a row has many variable-size fields.
+
+## Two non-negotiable disciplines
+
+[Section titled “Two non-negotiable disciplines”](#two-non-negotiable-disciplines)
+
+1. **Bound at the TOOL layer, NOT the data layer.** Internal callers + the UI read the data functions directly (`listWorkItems`, `groupByAgent`, `readCoordFeed`, the plan parser) and need the FULL bodies. Only the agent-facing tool projection is excerpted. Verify this with a quick consumer grep before you change a shape — e.g. `coord:feed` and `fleet:assignments` each have a UI/sync-resolver consumer on the data layer that must keep full data.
+2. **Compute summaries/aggregates over the FULL set, then bound the returned rows.** `fleet:assignments` summary counts and `coord:feed` `byKind`/`total` are computed before the row bound, so the counts stay accurate even when the array is trimmed.
+
+## Per-tool shapes (pick by what’s unbounded)
+
+[Section titled “Per-tool shapes (pick by what’s unbounded)”](#per-tool-shapes-pick-by-whats-unbounded)
+
+* **Big text field per row** → `boundRowField` excerpt. (plans:get decision `body`; work\_items:list `summary`; coord:feed `body` + `summary`.)
+* **Unbounded sub-list per row** → `boundListField` cap. (fleet:assignments `queued` work-list — keep the head + `load` count; the Queen reads those for placement.)
+* **Many variable-size fields per row** → `trimToByteBudget` backstop. (fleet:assignments agent groups — sorted live-first so the trim drops the least-relevant tail.)
+* **High default row count** → lower the AGENT default, keep the cursor. (coord:feed: agent default 30 vs the UI’s `DEFAULT_FEED_LIMIT` 100 — at 100 the per-row metadata floor alone threatens the cap.)
+
+## When you add a NEW read tool
+
+[Section titled “When you add a NEW read tool”](#when-you-add-a-new-read-tool)
+
+If its result scales with the workspace, bound it from day one with `_bound-output` (or lower its default + paginate). The cheapest test: imagine the workspace at 10× today — does one call still fit? If not, bound it.
+
+> Cross-refs: EI-1597 (the sweep), WI-274 (plans:get), EI-1752 (coord:inbox), EI-1737 (coord:plan-events). Sibling docs: `compact-tool-result-formats` (the ENCODING axis — TOON/CSV), `presence-token-cost-and-output-size-telemetry`.
+
 # The capability boundary of bridge-driven E2E (what synthetic events can and can't test)
 
 > tauri-agent-tools bridge eval drives navigation/render/console/DOM-state/API-mutations reliably, but CANNOT activate Radix/cmdk widgets (tabs done right, popovers, palette onSelect, certain buttons) or trigger value-tracked form autosave via synthetic events. Route those to real-input/committed Playwright. Confirmed across EI-1531, round-3, round-5 J2/J5.
@@ -3904,6 +3964,14 @@ loop:end                                                          ← stop (deac
 * **`loop:status`** — the targeted read: active, interval, **parked** (turn in flight), next/last fire, cost-cap.
 * **`fleet:assignments`** — the work the loop is producing (its self-assigned `work_items`), warm + self-owned.
 * **Routine fire-history / `autoloop:status`** — each wake, plus the failure-streak state if the loop has backed off.
+
+## Adoption — the su/interactive personas
+
+[Section titled “Adoption — the su/interactive personas”](#adoption--the-suinteractive-personas)
+
+The su/interactive persona sources steer recurrence onto the engine loop and away from the client’s native `/loop` (the B-LOOP-5 / B-LOOP-FIN-1 sweep): the live instance override (`apps/operator/prompts/hive-instances/papercup-hive.su.md`), the legacy engineer + power playbooks (`papercusp-su-{engineer,power}.tools.md`), and the Claude client overlay (`papercusp-su.claude.md`, where `/loop` natively lives). The rule: *to recur on a cadence, declare an engine loop (`loop:arm`); do NOT self-pace with your client’s native `/loop` / `ScheduleWakeup`.* The **autonomous** queen/bee/scout loop is deliberately **excluded** (D-007) — it is its own system (`hive:declare-wake` / `overwatch:declare-wake`) and keeps its own native-scheduler-deny rule. A content test (`apps/operator/lib/su-persona-loop-sweep.test.ts`) guards the sweep from regressing.
+
+> Editing `papercup-hive.su.md` requires a **re-seed** (`setHiveInstancePromptOverride` via the `/settings/hive-customization` editor) for the live persona to pick it up; the file-based playbooks + overlay propagate on the next su launch.
 
 ## Code map
 
@@ -13375,6 +13443,58 @@ The papercup Learning tab’s Scout view sat empty after the scout-cycle routine
 * The Learning tab Scout view reads `harness_shared.scout_routed_ideas` + the newest `scout_ticks` row (`learning-scout-read.ts`); ledger writes push `notifySyncInvalidate('learning.scout')` since 2026-06-11.
 * The scout-cycle routine self-gates on idle/friction; for a forced bring-up cycle set the routine’s `payload_template.cadence` to `{ idleThreshold: 0, minIntervalSec: 0 }` (restore `0.5`/`3600` after) — `seed-scout-routine.ts --active` reseeds the defaults.
 
+# Box wedge / session leak → zombie `claude --resume` procs (ended session, live process)
+
+> A climbing claude-proc count toward the ~70 bg-host wedge is usually ZOMBIE `claude --resume <uuid>` procs — adv_session ENDED but the OS process never exited. No DB-roster reaper sees them. How to diagnose + the slice-3 zombie reaper that sheds them.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The `claude` process count climbs monotonically toward \~70, the box overloads, the **papercup-bg-host DBOS ticker** starves (event-loop-lag spikes, `[routines]` drops to \~1/10min), and everything the ticker drives freezes: git-sync stops committing, the green-checkpoint stalls, agent loops skip. `dev:service_health` shows `:3070 up` (it is — the operator and the bg-host ticker are *different* services; see EI-1832).
+
+## Root cause (EI-1873)
+
+[Section titled “Root cause (EI-1873)”](#root-cause-ei-1873)
+
+The leak is **zombie processes**, not idle-but-open sessions. Each leaked proc runs `claude --resume <uuid>` whose `harness_shared.adv_sessions` row is **ENDED** (`ended_at` set, `exit_code = 0`, often 16–18h prior) — but the OS process never exited. The session officially concluded; the process lingered, holding LISTEN conns + polling on the `:3070` event loop.
+
+Why every reaper misses them:
+
+* `idle-session-reaper.ts` slices 1 (dead-ghost) and 2 (live-but-idle) scan **OPEN** adv\_sessions (`ended_at IS NULL`). A zombie is **CLOSED** in the DB → structurally invisible. Running the reaper’s own logic *out-of-band* (a fresh, non-starved process) still reaps **0** — proof it is a criteria miss, not just starvation.
+* The presence-heartbeat liveness signal is *also* unreliable here: the per-60s supervisor beat is starved by the very overload the reaper is meant to detect, so an alive proc reads as “not live.” Liveness that depends on the starved resource is a feedback loop.
+
+## Diagnose
+
+[Section titled “Diagnose”](#diagnose)
+
+The reliable proc↔DB join is **`adv_sessions.session_id` = the `claude --resume <uuid>`** on the OS proc (`adv_sessions.pid` is often null; don’t rely on it).
+
+1. Count: `ps -eo comm | grep -c '^claude$'`.
+2. For each live `claude --resume <uuid>` proc, look up `adv_sessions` by `session_id = <uuid>`. **`ended_at IS NOT NULL` ⇒ zombie** — safe to kill: the session is done (`exit_code = 0`), it holds no claim/wake/running-bee, and it is **not** any live agent’s current session (a live session has `ended_at IS NULL` — a disjoint set).
+
+## Fix / shed
+
+[Section titled “Fix / shed”](#fix--shed)
+
+`idle-session-reaper.ts` **slice 3** — `reapZombieResumeProcs()` (+ pure `planZombieReap()` / `discoverResumeProcs()`), wired into the `system:idle-session-reaper` routine to run first each tick. It enumerates live `claude --resume` procs via `/proc`, asks PG which of their sessions are ended, and `SIGTERM`→(grace)→`SIGKILL`s the zombies. **Deterministic** (ended + alive), **starvation-independent** (no heartbeat dependence), **PID-recycle-guarded** (re-verifies the cmdline before each signal), **double-gated** (`papercusp-idle-session-reaper` + `…-terminate`).
+
+**Manual out-of-band shed during a wedge** (the reaper routine is starved): run it from a fresh process with the flags forced — the flag resolves OFF in a fresh process, so inject it:
+
+```ts
+const m = await import('<repo>/packages/operator-core/lib/idle-session-reaper.ts');
+await m.reapZombieResumeProcs({ dryRun: true,  deps: { isFlagOn: async () => true } }); // confirm scope first
+await m.reapZombieResumeProcs({ dryRun: false, deps: { isFlagOn: async () => true } }); // then shed
+```
+
+## Still open (follow-ups)
+
+[Section titled “Still open (follow-ups)”](#still-open-follow-ups)
+
+* 258 no-owner **OPEN** adv\_session rows also accumulate (no `coord_owner_id` → `keptNoOwner`, never reaped) — a separate sweep should end orphaned rows with no live proc.
+* The **upstream** bug — why a `claude --resume` proc fails to exit after its session ends (exit 0) — is unfixed; slice-3 is the safety net, not the cure.
+* For full starvation-immunity, run the zombie sweep in the bg-host-watchdog (out-of-band), not only the ticker-driven routine.
+
 # Spawns silently fell to `omp -p` after a settings save — empty config used to delete the host's AGENT_CMD env
 
 > A /settings/agent save with empty cmd/models deleted the .env.local-provided AGENT_CMD/AGENT_MODELS from the live operator process until restart (EI-337, fixed). Symptom signature + the boot-env-restore rule.
@@ -13533,6 +13653,70 @@ Before expecting ANY meaningful K-stage, confirm the owner actually minted epoch
 [Section titled “Self-kill footgun (cleanup)”](#self-kill-footgun-cleanup)
 
 Don’t `pgrep -f '<pattern>'` for a string your own kill command contains — in a backgrounded command it matches and kills its own process tree before the work runs. Read PIDs into a var first, exclude `$$`, and prefer specific keys (an exact Xvfb display, a data-dir path) over broad name patterns. Never kill all `postgres -D /tmp/*` — peers run test PGs there too.
+
+# Shared-hive re-key (C-001) mints 0 keys / the revoke epoch won't advance → it's MEMBERSHIP population, not the flag or crypto
+
+> A C-001 re-key that mints 0 epoch keys (or whose revoke epoch stays stuck 0→0) with the flag ON is almost always an EMPTY hive_members under the hive-home slug — the grant wraps to nobody. The red herrings (epoch-0-init, sodium-native, the flag/env) that cost hours, the green-rig/red-binary trap that hides it in tests, the slug-redirect that lands the joiner, and the loud-signal pattern that makes the next one self-name.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The C-001 read-revocation re-key (`papercusp-hive-rekey`) is ON, but the live two-instance witness fails: `C-001-setup A members=0 epoch_keys=0`, K-stages mint **0 keys**, or — once membership is partly fixed — the **K2 revoke epoch stays stuck `0→0`** instead of advancing `0→1`. The hermetic tests are all GREEN. (WI-280 lived this for many hours across the fleet.)
+
+## Root: it’s MEMBERSHIP population, not the flag or the crypto
+
+[Section titled “Root: it’s MEMBERSHIP population, not the flag or the crypto”](#root-its-membership-population-not-the-flag-or-the-crypto)
+
+`grantEpochKeysToMembers` wraps the epoch key to **each member’s device pubkey** — `newMemberPubkeys = (input.deviceAttestations ?? []).map(d => d.device_pubkey)`. If `hive_members` has **no rows** (under the hive-home slug), there is nobody to wrap to → **0 keys**, silently. So a 0-keys re-key, or a revoke that early-returns `no_target`, is almost always a **membership-population bug**: the owner/joiner never landed in `hive_members` under the hive-home slug. It is *not* the flag, the crypto, or epoch init.
+
+Fastest confirmation (don’t infer — query the live PG mid-witness): `SELECT count(*) FROM harness_shared.hive_members WHERE hive_home_slug = '<hive>'`. If it’s 0 (or 1 = owner only, missing the joiner), that’s your root.
+
+## The red herrings (do NOT re-burn these hours)
+
+[Section titled “The red herrings (do NOT re-burn these hours)”](#the-red-herrings-do-not-re-burn-these-hours)
+
+Every one of these was hypothesised and **disproven by reading the actual code / runtime**:
+
+* **“epoch-0 needs initialising.”** No — `coerceEpoch` returns `BASELINE_EPOCH = 0`, so the grant loop already runs at epoch 0. A `CUR_EPOCH = -1` in a rig log is just `max()` over an empty `hive_epoch_keys` table — a *consequence* of 0 keys, not the cause.
+* **“sodium-native (.node) is unresolved.”** It resolves in the **local** node env; only the packaged **sidecar binary** is sodium-gated (a separate concern — c2a63’s part-A). A local build mints keys fine. So a sidecar witness can LOUDLY `rekey_grant_failed` on sodium while the membership fix is correct — verify the green path with a **local** count, not the sidecar.
+* **“the flag isn’t reaching the binary.”** The env-override path (`resolveEnvOverride`, read FIRST) is wired, and the witness rig forwards `PAPERCUSP_FLAG_*` to `serve.mjs`. Read `getFlag` + the rig’s `sc_launch` before blaming flag plumbing.
+
+## The green-rig / red-binary trap (why the tests stay green)
+
+[Section titled “The green-rig / red-binary trap (why the tests stay green)”](#the-green-rig--red-binary-trap-why-the-tests-stay-green)
+
+The hermetic integration tests **SEED `hive_members`** directly, so the grant wraps to the seeded rows → green. The **live binary does not seed** — membership is populated by the admit/approve paths. If those paths don’t register the member, the binary mints 0 while the tests stay green. **This pattern bit three times in WI-280.** Rule of thumb: a re-key feature green in tests but 0-keys live ⇒ suspect the membership-population path the tests bypass by seeding (the admit → `upsertHiveMember` chain), not the grant/crypto the tests exercise.
+
+## The slug-mismatch: land the joiner under the HIVE-HOME slug
+
+[Section titled “The slug-mismatch: land the joiner under the HIVE-HOME slug”](#the-slug-mismatch-land-the-joiner-under-the-hive-home-slug)
+
+The open-mode admit must upsert the joiner under the **hive-home** slug, resolved by a fresh registry read (`hiveHomeSlugForHarness`) — **not** `opts.harnessSlug` (the member topic the member boots on) and **not** the boot-time `hiveHomeProjectionSlug` (undefined at admit time, because the owner’s member boots on the gh topic *before* the hive rebind). Otherwise the joiner lands under the wrong slug, and `revokeHiveContributor`’s `loadHiveMemberDevicePubkeys(HIVE_SLUG, B)` returns `[]` → `no_target` → `advanceEpochOnHiveBoundary` never fires → epoch stuck `0→0`. The owner self-row is upserted at `createHiveHarness` step-6b (and FK-fails harmlessly in a fresh create because the `hives` parent is written by a later keypair/federation step — suppress that one warn, re-assert at first membership touch).
+
+## The loud-signal pattern: make silent skips NAME themselves
+
+[Section titled “The loud-signal pattern: make silent skips NAME themselves”](#the-loud-signal-pattern-make-silent-skips-name-themselves)
+
+The grant + boundary paths are **best-effort** (a failure must never break merge-gated admission or the revoke), so failures get swallowed → a silent 0-keys / `0→0`. The fix is to record a queryable `boot-history` event naming the reason, so the next failure self-names in `listBootHistory` instead of costing a manual trace:
+
+* `rekey_grant_failed` — the grant **threw** (caught in `upsertHiveMember`’s grant catch).
+* `rekey_grant_skipped` — the grant **silently returned `{applied:false, reason}`** (flag-off / no-fresh-members / no-author). Skip `no-author` (the benign non-owner self-gate). **This is the one that named the original WI-280 root.**
+* `rekey_boundary_skipped` — `revokeHiveContributor` early-returned (no\_target / not\_owner / …) or the advance no-op’d. Named the K2 `0→0`.
+
+When you add such a signal, its very FIRST job is often catching a bug in your own fix loudly (WI-280’s FK violation surfaced as a `rekey_grant_failed`, not a silent miss) — that’s the point.
+
+## The full chain that landed (WI-280 / C-001 GREEN K-CUT)
+
+[Section titled “The full chain that landed (WI-280 / C-001 GREEN K-CUT)”](#the-full-chain-that-landed-wi-280--c-001-green-k-cut)
+
+owner self-row mints epoch-0 at create → joiner B lands under the hive-home slug via the admit redirect → `revokeHiveContributor` finds B → `advanceEpochOnHiveBoundary` fires → epoch `0→1` → B’s device has NO epoch-1 key (the **read cut**) while remaining members cross. Note two *separate* witness planes are NOT the read cut: **AK-ban** (a revoked member’s WRITE op still lands on the owner — see EI-1895) and **federate-A→B** (WI-259 content-federation).
+
+## Discipline: verify, don’t infer
+
+[Section titled “Discipline: verify, don’t infer”](#discipline-verify-dont-infer)
+
+Every wrong turn in this saga was an inference disproven by a grounded read — of `upsertHiveMember` (the grant maps `device_pubkey`), of `boot.ts`’s admit gate/redirect (`if (!admitHiveHome) return`), of `coerceEpoch`, or of A’s live PG mid-witness. The grounded read won every time. When a re-key is 0-keys, read the membership path and query the live `hive_members` count before theorising about the flag or the crypto.
 
 # Two emitters in one prompts dir — managed markers must be mutually non-containing
 
@@ -23351,6 +23535,12 @@ Zero is being retired — historical reference
 
 Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
 
+**How SSE sync works today.** The `:3070` Hono host serves `/api/zero-harness/sse`. `packages/operator-core/lib/sync-sse.ts` opens one dedicated PG `LISTEN` on the `sync_invalidate` channel (on the embedded-PG admin URL), fans each `pg_notify` out to subscribers, and bridges PG-trigger `<schema>.<table>.changed` events to the camelCase query names via `queryNamesForTriggerEvent` in `sync-resolver/table-to-query-names.ts`.
+
+**Freshness, restated.** It is not the old \~50ms logical-replication push. Each write fires an invalidate that pushes near-instantly to subscribers; the worst-case staleness for an **unbridged** table is the 180s drift-repair tick (`DEFAULT_SSE_DRIFT_REPAIR_MS` in `HarnessZeroProvider.tsx`), which is a repair sweep, **not** a freshness source.
+
+**Degraded fallback.** On sustained SSE failure, `SyncProvider`’s `useTransportFallback` drops SSE → `POLLING` as a last resort. POLLING is intentionally not the default: it re-fetches every subscribed query (\~40 on the dashboard) each interval, saturating the browser’s 6-connection-per-host HTTP/1.1 cap.
+
 Default to the data-sync library, not a fresh poll
 
 **For any new component that reads server state, default to `useSyncQuery({queryName, args})` from `@papercusp/sync`.** Don’t roll a new `fetch + setInterval` poll. Don’t open a raw `EventSource` for query data.
@@ -23359,7 +23549,7 @@ The library is the single audited path: SSE/WS push, payload-on- invalidate, RES
 
 **Genuine exceptions** (you may roll your own integration):
 
-* **Streaming-by-nature payloads** — log tails, terminal output, command-runner progress, LLM token streams. These are byte streams, not query data; raw `EventSource` is the right tool. See the existing uses in `OperatorPanel`, `BranchActionRunner`, `ProvisionStream`, `HarnessDashboard`’s log stream, `PiPanel` (pty).
+* **Streaming-by-nature payloads** — log tails, terminal output, command-runner progress, LLM token streams. These are byte streams, not query data; raw `EventSource` is the right tool. See the existing uses in `OperatorPanel`, `BranchActionRunner`, `ProvisionStream`, `PiPanel` (pty).
 * **Pure UI timers** — `setNow(Date.now())` for relative-time refresh, `setInterval` for animation steps. No fetch, not data sync.
 * **Mobile (`apps/operator-mobile/`)** — uses its own pure-HTTP + EventSource path with `usePolledList` and `sync-stream.ts` for per-device JWT scoping and battery-aware visibility pause. New mobile consumers stay on that pattern.
 
@@ -23377,17 +23567,17 @@ Full recipe in the [Cookbook](/internal/docs/data-sync/cookbook); the Zero-free 
 
 [Section titled “What this section covers”](#what-this-section-covers)
 
-This is a reference for agents and humans building UI panels in the harness operator (`apps/operator/app/harness/`) and the Papercup demo (`apps/papercup/`). Read this **before** you wire a new panel to data.
+This is a reference for agents and humans building UI panels in the harness operator (`apps/operator/app/harness/`). Read this **before** you wire a new panel to data.
 
 The stack is two layered conventions, not a single library:
 
 1. **Zero** ([rocicorp.dev/zero](https://rocicorp.dev/zero)) — the reactive sync layer. Postgres is the source of truth. A `zero-cache` process tails logical replication and broadcasts changes to every connected client. Clients call `useQuery(...)` and re-render when the underlying row changes — no polling, no manual refetch.
-2. **RichGrid** (`@restart/grid-core`, mirrored at `papercupai/papergrid`) — the column-driven grid renderer every tabular panel uses. It accepts plain rows + a `ColumnDef[]`, handles sorting, row click, row styling, and (optionally) virtual rendering. It does **not** know about Zero — the panel passes Zero query results as the `rows` prop.
+2. **RichGrid** (`@papercusp/grid-core`, mirrored at `papercupai/papergrid`) — the column-driven grid renderer every tabular panel uses. It is a DOM / CSS-grid renderer that virtualizes via `@tanstack/virtual-core` (its sibling `DataGridShell` is the canvas glide-data-grid one). It accepts plain rows + a `ColumnDef[]`, handles sorting, row click, row styling, and (optionally) virtual rendering. It does **not** know about Zero — the panel passes Zero query results as the `rows` prop.
 
 These two are intentionally orthogonal:
 
-* A panel can use **Zero without RichGrid** (e.g. card or feed UX — `ArchitectInbox`).
-* A panel can use **RichGrid without Zero** (e.g. data that comes from a one-shot REST call — `ProjectsList`, the harness `[slug]/projects` page).
+* A panel can use **Zero without RichGrid** (e.g. card or feed UX).
+* A panel can use **RichGrid without Zero** (e.g. data that comes from a one-shot REST call — `ProjectsList` at `apps/operator/app/harness/[slug]/projects/`).
 * The default for a new tabular panel that displays Postgres-backed data is **both**.
 
 ## Why this exists
@@ -23401,7 +23591,7 @@ const [results] = useQuery(queries.snapshots(slug));
 return <RichGrid rows={results.map(rowToSnapshot)} columns={columns} getRowId={s => s.id} inline />;
 ```
 
-Mutations write directly to Postgres (via a normal `POST /api/...` route); Zero notices the change and pushes it to every connected client within \~50ms.
+Mutations write directly to Postgres (via a normal `POST /api/...` route). Historically Zero noticed the change via logical replication and pushed it to every connected client within \~50ms. Under the current SSE model freshness is invalidate-driven: each write fires a `sync_invalidate` notify that pushes near-instantly to subscribers, and an unbridged table’s worst-case staleness is the 180s drift-repair tick (see the retirement banner above), not a \~50ms replication push.
 
 ## Where each piece lives
 
@@ -23445,7 +23635,7 @@ When the docs and the code disagree, the code wins. The docs are kept in sync be
 
 Zero is being retired — historical reference
 
-Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping app uses **SSE for every runtime** — desktop Tauri shell *and* plain browser — where the operator sidecar’s `:3070` host pushes invalidate/update over Postgres `LISTEN/NOTIFY`; zero-cache is **not run** at all. `POLLING` exists only as a degraded last-resort fallback, and the WebSocket transport still lives in `@papercusp/sync` but Papercusp no longer selects it. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment, hardcoded `syncType="SSE"`) + the root `CLAUDE.md` deployment-model section.
 
 ## Recipe 1: New panel reading from an existing Zero table
 
@@ -23459,7 +23649,7 @@ The 80% case. You want to render an existing per-harness table as a new panel.
 
 import { useMemo } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
-import type { SnapshotConsolidatedRow } from '@papercusp/zero-harness';
+import type { SnapshotsConsolidatedRow } from '@papercusp/zero-harness';
 import { useSyncQuery } from '@papercusp/sync';
 
 
@@ -23471,14 +23661,16 @@ interface Props {
 
 export default function MySnapshotsPanel({ slug, onSelect }: Props) {
   // `useSyncQuery<T>` types T as the ROW element; `.data` is `T[]`.
-  // `args` is a named object, not a positional array.
-  const { data: rows } = useSyncQuery<SnapshotConsolidatedRow>({
+  // `args` is a named object, not a positional array. The `bySlug` query's
+  // Zod arg schema is `{ harnessSlug: string }` — the key must be
+  // `harnessSlug`, not `slug`, or the query receives no filter.
+  const { data: rows } = useSyncQuery<SnapshotsConsolidatedRow>({
     queryName: 'snapshotsConsolidated.bySlug',
-    args: { slug },
+    args: { harnessSlug: slug },
   });
 
 
-  const columns = useMemo<ColumnDef<SnapshotConsolidatedRow>[]>(() => [
+  const columns = useMemo<ColumnDef<SnapshotsConsolidatedRow>[]>(() => [
     {
       key: 'when', header: 'When', width: 1.3,
       sortKey: 'ts', defaultSortDir: 'desc',
@@ -23493,7 +23685,7 @@ export default function MySnapshotsPanel({ slug, onSelect }: Props) {
 
 
   return (
-    <RichGrid<SnapshotConsolidatedRow>
+    <RichGrid<SnapshotsConsolidatedRow>
       rows={rows}
       columns={columns}
       getRowId={(r) => r.snapshotId}
@@ -23503,6 +23695,10 @@ export default function MySnapshotsPanel({ slug, onSelect }: Props) {
   );
 }
 ```
+
+The consolidated row types are plural
+
+The schema exports the **plural** forms — `SnapshotsConsolidatedRow`, `FeaturesConsolidatedRow`, `IssuesConsolidatedRow`, `AgentRunsConsolidatedRow`. The singular names re-exported by the `@papercusp/zero-harness` barrel (`SnapshotConsolidatedRow`, …) do not resolve to a declared type — import the plural name from the schema.
 
 ## Recipe 2: Migrating an existing `.map()` list to RichGrid
 
@@ -23559,14 +23755,20 @@ Steps in order:
 
 [Section titled “Recipe 3: Adding a new column to an existing Zero-synced table”](#recipe-3-adding-a-new-column-to-an-existing-zero-synced-table)
 
+Per-harness tables are being retired
+
+The per-harness-table model below predates the consolidation migrations. The canonical stores are now the `harness_shared.*_consolidated` tables — writers should target those directly (see the `COMMENT ON harness_features_consolidated` in `000-baseline.sql`), and Zero exposes only the `*Consolidated.bySlug` / `*Consolidated.all` queries (the per-harness named queries — `featuresSheets`, `issuesOrg`, … — were removed; see the comment in `libs/zero-harness/src/queries.ts`). Add columns to the consolidated table (Recipe 5) rather than to per-harness tables.
+
+The per-harness table names are **not** uniformly `harness_<table>` — several (e.g. `feature_audit`, `agent_runs`) carry no `harness_` prefix. The published per-harness tables are `harness_features`, `feature_audit`, `harness_issues`, `harness_proposals`, `agent_runs`, `harness_snapshots` (plus `messages`, `supervisor_notes`); see the publication list in `bin/scaffold-harness-schema.sh` and `libs/zero-harness/src/schema.ts`.
+
 ```sql
-ALTER TABLE harness_<slug>.harness_<table>
+ALTER TABLE harness_<slug>.harness_snapshots
   ADD COLUMN new_col text;
 ```
 
 For each existing harness, repeat. Then:
 
-1. Update `bin/scaffold-harness-schema.sh` so future harnesses get it.
+1. Update the per-harness template SQL (the file `bin/scaffold-harness-schema.sh` `sed`-substitutes `{{SCHEMA}}` into and runs) so future harnesses get it — the column DDL lives in the template, not in the shell script itself.
 2. Update `libs/zero-harness/src/schema.ts` — add `new_col: string()` (or the right type — beware TIMESTAMPTZ).
 3. The publication already includes the table; the new column flows automatically.
 4. Restart `zero-cache-harness`.
@@ -23578,7 +23780,7 @@ For each existing harness, repeat. Then:
 
 Bigger lift. Steps:
 
-1. Add `CREATE TABLE` DDL to `bin/scaffold-harness-schema.sh`.
+1. Add the `CREATE TABLE` DDL to the **per-harness template SQL** (the file `bin/scaffold-harness-schema.sh` renders via `sed "s/{{SCHEMA}}/$schema/g"`), and add the table to the publication list in the scaffold script’s `add_to_zero_publication` array. The script itself contains no DDL — it only substitutes the schema name into the template and runs it.
 
 2. Run scaffold against every existing harness:
 
@@ -23886,6 +24088,8 @@ The four core per-harness entities are now slug-agnostic consolidated tables in 
 | `projects.all` / `projects.byId`              | `ProjectRow[]`  | (none) / `{ id }` |
 | `messages.recent`                             | `MessageRow[]`  | `{ limit }`       |
 
+Each `*Consolidated` namespace also exposes an `.all` query that takes no args — the cross-harness / portfolio read over the whole consolidated table. `featuresConsolidated` carries two extra variants on top of `.all` and `.bySlug`: `bySourcePlan` (`{ planSlug }`, keyed on `sourcePlanSlug`) and `needsReview` (no args, the rows flagged `needsHumanReview`).
+
 Adding a new harness no longer adds a query — the slug is a regular row value. When you add a *new* entry, update both `queries.ts` and `schema.ts` together.
 
 ## Adding a new named query
@@ -23907,7 +24111,7 @@ export const queries = defineQueries({
 });
 ```
 
-Then in your panel, read it through the `@papercusp/sync` wrapper:
+Then in your panel, read it through the `@papercusp/sync` wrapper. The `useSyncQuery` hook is exported from `@papercusp/sync` (the package lives at `libs/generic/sync`) and is transport-agnostic — it resolves `queryName` + `args` through whichever adapter is active:
 
 ```tsx
 const { data: rows } = useSyncQuery<MyNewThingRow>({
@@ -23916,14 +24120,19 @@ const { data: rows } = useSyncQuery<MyNewThingRow>({
 });
 ```
 
+The same package also exports the companion write/read hooks: `useSyncMutate(path, restFallback)` for namespaced Zero custom mutators (optimistic on the WebSocket transport, REST fallback otherwise) and `useSyncPrefetch()` to warm the cache so a later `useSyncQuery` for the same `queryName` + `args` resolves instantly.
+
 You also need:
 
-1. The table declared in `libs/zero-harness/src/schema.ts`.
-2. The schema version bumped (`schemaVersion` in same file).
-3. The table added to the `zero_harness` Postgres publication for each harness that has it.
-4. `zero-cache-harness` restarted.
+1. The table declared in `libs/zero-harness/src/schema.ts`, then added to the `tables` array of the `createSchema({ tables, relationships })` call in the same file (there is no separate schema-version field to bump).
+2. The table added to the `zero_harness` Postgres publication for each harness that has it.
+3. `zero-cache-harness` restarted.
 
 If you forget any of these the query returns 0 rows silently.
+
+Note
+
+A subtler silent-empty case: `useSyncQuery` rendered **outside** a `<SyncProvider>` does not throw — it returns `{ data: undefined, loading: false, error: null }` (with a stale flag), by design, so panels mounted in app chrome above `/harness/*` don’t crash. An unwrapped panel therefore shows no data with no error. If you need live data outside a provider, branch on the result and supply your own fallback.
 
 ## ”Query does not implement QueryInternals”
 
@@ -23941,24 +24150,28 @@ ln -s ../../node_modules/@rocicorp/zero node_modules/@rocicorp/zero
 
 Why this exists: an app’s `package.json` declaring `@rocicorp/zero` as a direct dep can make npm resolve it into a private `node_modules` copy when workspace hoisting decides not to hoist. Symlinking forces a single copy.
 
-If a fresh app you’re scaffolding hits this, check whether its `package.json` declares `@rocicorp/zero` directly — prefer consuming it transitively from `@papercusp/zero-harness`. (The historical offender, `apps/papercusp`, no longer exists; the live `@rocicorp/zero` declarations are in `apps/operator`, `libs/zero-harness`, and the zero-cache-server.)
+If a fresh app you’re scaffolding hits this, check whether its `package.json` declares `@rocicorp/zero` directly — prefer consuming it transitively from `@papercusp/zero-harness`. (The historical offender was `apps/papercup` — package `@papercup/web` — which is now retired at `_retired/papercup`; the live `@rocicorp/zero` declarations are in `apps/operator`, `libs/zero-harness`, and the zero-cache-server.)
 
-## Cross-harness queries (views)
+## Cross-harness queries (consolidated tables)
 
-[Section titled “Cross-harness queries (views)”](#cross-harness-queries-views)
+[Section titled “Cross-harness queries (consolidated tables)”](#cross-harness-queries-consolidated-tables)
 
-`harness_features_consolidated` is a trigger-maintained table in `harness_shared` that mirrors every per-harness `harness_features` table under one roof. The trigger fires on insert/update/delete in any per-harness `harness_features` and keeps the consolidated table in sync.
+`harness_features_consolidated` is the **canonical** base table in `harness_shared` — writers target it directly. The data-flow direction was inverted across two migrations:
 
-Why a trigger-maintained table and not a Postgres view? Because Zero publications can’t include views — they require base tables for logical replication.
+* **Migration 029** made the consolidated table the source of truth. It had started life as a trigger-mirrored copy of the per-harness `harness_features` tables (writers pumped into per-harness, a trigger fanned out into consolidated), but 029 flipped that so writes go straight to the consolidated table.
+* **Migration 032** dropped the per-harness physical tables entirely and replaced each with an auto-updatable `VIEW` over the consolidated table, filtered by `harness_slug` (`WITH CHECK OPTION` so a write can’t land under the wrong slug). The fan-in trigger functions (`sync_features_consolidated()`, `sync_issues_consolidated()`, `sync_agent_runs_consolidated()`, `sync_snapshots_consolidated()`) were dropped at the same time. The same inversion applies to the other three consolidated entities (`harness_issues` / `agent_runs` / `harness_snapshots`).
 
-The cross-harness `/features` page reads from this table, with no slug arg, via the `featuresConsolidated` named query. That replaced an older polling implementation; the page is now real-time.
+So a per-harness read still works (it goes through the view), but the canonical store everything resolves against is the single consolidated base table.
+
+Why a base table and not a Postgres view at the top? Because Zero publications can’t include views — they require base tables for logical replication. The per-harness *views* are read conveniences over that base table, not replication sources.
+
+The cross-harness `/features` page reads from the consolidated table, with no slug arg, via the `featuresConsolidated.all` named query. That replaced an older polling implementation; the page is now real-time.
 
 If you need another cross-harness aggregation, the recipe is:
 
-1. Add a base table in `harness_shared`.
-2. Add triggers on every per-harness source table to maintain it.
-3. Add to the `zero_harness` publication.
-4. Register a named query with no slug arg.
+1. Add a canonical base table in `harness_shared` and have writers target it directly (optionally expose per-harness views over it, filtered by `harness_slug`, rather than fanning in via triggers).
+2. Add the base table to the `zero_harness` publication.
+3. Register a named query with no slug arg (an `.all`-style query).
 
 # Pitfalls
 
@@ -24001,6 +24214,8 @@ ts: string(),   // ✗ — kills the WS for the whole schema
 ```
 
 This has bitten us at least three times. **Always check the column type before declaring a TIMESTAMPTZ field.**
+
+> **Era note.** The type rule still holds today, but it’s now enforced by the schema **generator**, not a hand-edited file: `libs/zero-harness/src/schema.ts` is auto-generated and maps `timestamp → number` in `libs/zero-harness/scripts/generate-schema.mjs`. The fix is to correct the Drizzle source type and regenerate — don’t hand-edit `schema.ts`. The `SchemaVersionNotSupported` / WS-disconnect symptom above is zero-cache–era; with SSE-primary sync a type mismatch now surfaces through the SSE/REST path, not a WebSocket drop.
 
 ## 3. Two copies of `@rocicorp/zero` in the dep tree
 
@@ -24087,13 +24302,15 @@ ALTER PUBLICATION zero_harness ADD TABLE harness_<slug>.harness_<table>;
 
 **Why**: the component is mounted above the `SyncProvider` wrapper. `useSyncQuery` is **tolerant** — outside a provider it returns `{ data: undefined, loading: false, error: null }` instead of throwing (so chrome rendered at the root layout doesn’t crash). The throwing variants are `useSyncContext` and `useSyncPrefetch`.
 
-**Fix**: ensure your panel is mounted inside the provider tree. In the operator the provider is `RootSyncProvider` (which wraps `HarnessZeroProvider`), mounted near the root layout, so most components are already inside it — see `apps/operator/app/_components/RootSyncProvider.tsx`. If a panel renders above it, hoist the provider or branch on the empty result and supply your own fallback (REST poll, prefetch cache).
+**Fix**: ensure your panel is mounted inside the provider tree. In the operator the provider is `RootSyncProvider` (which wraps `HarnessZeroProvider`), mounted near the root layout, so most components are already inside it — see `apps/operator/app/_components/RootSyncProvider.tsx`. In operator-vite it’s mounted in `apps/operator-vite/src/routes/__root.tsx` as the **outermost** data-layer provider — only the Radix `Tooltip.Provider` sits above it, so ChromeShell, the sidebars, the dev rails, etc. are all inside. That makes “above the provider” a rarely-hit safety net rather than a routine case: confirm your panel is genuinely above it before assuming the empty-result path. If a panel renders above it, hoist the provider or branch on the empty result and supply your own fallback (REST poll, prefetch cache).
+
+**Sibling gotcha**: `useSyncMutate` is provider-tolerant the same way. Outside a provider there’s no Zero client, so **every call silently takes the REST fallback** — it never goes optimistic. A write that appears to “work” may never be routed through Zero at all if the provider (or WS) is absent.
 
 ## 9. JSON ledger out of sync with PG
 
 [Section titled “9. JSON ledger out of sync with PG”](#9-json-ledger-out-of-sync-with-pg)
 
-> **Historical.** The `projects` JSON-ledger and its `loadProjects()`/`saveProjects()` accessors have been **removed** — the functions no longer exist in the tree, and the `apps/papercup` projects surface they backed was retired. Kept as a cautionary pattern.
+> **Historical.** The `apps/papercup` `projects` JSON-ledger and its file-writing accessor pair have been **removed**: `saveProjects()` no longer exists anywhere in non-retired source, and the projects surface it backed was retired. (A function literally named `loadProjects` still lives in `scripts/migrate-snapshots-to-pg.ts` — but it reads the harness registry `~/.restart-harness-projects.json`, a different artifact, not the retired ledger.) Kept as a cautionary pattern.
 
 **Symptom**: a PG-backed accessor returns rows that don’t match what the UI shows (or vice versa).
 
@@ -24131,7 +24348,7 @@ If `postgres_app` is the holder, restart it.
 
 # RichGrid
 
-> Column-driven grid renderer; the only tabular UI primitive in the harness.
+> Column-driven grid renderer; the preferred tabular UI primitive in the harness.
 
 Zero is being retired — historical reference
 
@@ -24142,6 +24359,8 @@ Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement pa
 [Section titled “When to reach for RichGrid”](#when-to-reach-for-richgrid)
 
 Use RichGrid for any panel that renders a list of rows where each row has the same columnar structure. It replaces every `<table>` and every hand-rolled `.map() => <div className="row">` in the codebase.
+
+RichGrid is the **preferred / default** tabular primitive — it’s the only grid-core grid with operator-app consumers. `grid-core` also exports `DataGridShell` (a canvas / glide-data-grid renderer for very large or edit-heavy grids) and `GridTable` / `GridSubTable` (declarative HTML tables) as sibling primitives, but neither is used in the harness. Reach for RichGrid unless you specifically need canvas-scale throughput.
 
 Do **not** use RichGrid for:
 
@@ -24201,6 +24420,7 @@ interface ColumnDef<Row> {
   align?: 'left' | 'center' | 'right';
   sortKey?: string;        // upstream sort field name; emitted via onSortChange
   defaultSortDir?: 'asc' | 'desc';
+  filter?: ColumnFilterSpec<Row>;  // opts the column into per-column filtering — see "Filtering"
   render: (ctx: CellRenderContext<Row>) => ReactNode;
   toCopyText?: (row: Row) => string;  // plain-text cell value for print/copy
   cellStyle?: CSSProperties | ((ctx: CellRenderContext<Row>) => CSSProperties);
@@ -24230,11 +24450,13 @@ render: (row) => ...       // ✗ wrong — row is actually the ctx, every cell 
 
 TypeScript accepts both forms because the ctx object structurally satisfies “the row shape plus extra fields” in many cases. The grid will silently render blank cells. **Always destructure `{ row }`.**
 
-### Width is `fr` units, not pixels
+### Width: number → `fr`, string → any CSS track
 
-[Section titled “Width is fr units, not pixels”](#width-is-fr-units-not-pixels)
+[Section titled “Width: number → fr, string → any CSS track”](#width-number--fr-string--any-css-track)
 
-`width: 1.3` means 1.3 fractions of the available width. The grid uses CSS Grid’s `grid-template-columns: repeat-fr` under the hood. Pixel widths are not supported by design — content adapts to the panel’s container.
+`width` is `number | string`. A **number** becomes an `fr` track — `width: 1.3` means 1.3 fractions of the available width — so the grid flexes to the panel’s container. A **string** is emitted verbatim as a CSS-grid track, so any of `width: '120px'`, `width: 'minmax(80px,1fr)'`, or `width: 'auto'` work for fixed/constrained columns. Internally each column’s width is appended to `grid-template-columns` (`${n}fr` for a number, the string as-is otherwise).
+
+Separately, drag-resized columns (see [Resizable columns](#resizable-columns)) override a column’s track with an explicit `px` width.
 
 ### Sort key
 
@@ -24259,22 +24481,78 @@ const sortedRows = useMemo(() => applySort(rows, sortState), [rows, sortState]);
 
 For large datasets, push the sort into the data source (SQL `ORDER BY`, Zero `.orderBy(...)`) instead of `applySort`.
 
+### Filtering
+
+[Section titled “Filtering”](#filtering)
+
+Per-column filtering is the symmetric sibling of sort. A column opts in by setting `filter`, and — exactly like sort — RichGrid renders **no** filter UI and applies **no** predicate itself. The consumer holds the `ColumnFilterState` (typically a nuqs URL param) and calls the pure `applyColumnFilters(rows, state, columns)` helper before passing rows in (mirroring the `applySort` flow above).
+
+`filter` is a discriminated union on `type`:
+
+```ts
+filter: { type: 'text',    accessor: (row) => row.name }          // case-insensitive substring
+filter: { type: 'enum',    accessor: (row) => row.status }        // membership in selected set
+filter: { type: 'number',  accessor: (row) => row.count }         // inclusive min/max range
+filter: { type: 'boolean', accessor: (row) => row.archived }      // strict equality
+```
+
+Wire the consumer-owned state and apply it before sorting:
+
+```tsx
+const [filterState, setFilterState] = useState<ColumnFilterState>({});
+const visibleRows = useMemo(
+  () => applySort(applyColumnFilters(rows, filterState, columns), sortState),
+  [rows, filterState, sortState, columns],
+);
+
+
+<RichGrid rows={visibleRows} columns={columns} ... />
+```
+
+Other exported helpers from `@papercusp/grid-core`: `deriveEnumOptions` (discover distinct enum values + live counts from the rows), `encodeColumnFilters` / `decodeColumnFilters` (serialize state for a nuqs param), and `filterChipLabel` (render an active-filter chip). As with sort, this is small-dataset oriented — push the predicate into the data source for very large sets.
+
 ## Common props
 
 [Section titled “Common props”](#common-props)
 
-| Prop                         | Type                                                 | Notes                                                                                                                  |
-| ---------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `rows`                       | `Row[]`                                              | Source data (legacy/non-virtual mode). Memoize upstream if mapping from sync results.                                  |
-| `columns`                    | `ColumnDef<Row>[]`                                   | Wrap in `useMemo` to avoid rebuilding on every render.                                                                 |
-| `getRowId`                   | `(row: Row) => string`                               | Required. Used as React key + selection set.                                                                           |
-| `onRowClick`                 | `(row: Row, index, e) => void`                       | Optional. Whole row becomes click target.                                                                              |
-| `getRowBg`                   | `(row, rowIndex, isSelected) => string \| undefined` | Per-row background override; return `undefined` to fall back to default striping.                                      |
-| `rowProps`                   | `(ctx: CellRenderContext<Row>) => HTMLAttributes`    | Per-row class/style — **receives the ctx, not the row** (use `ctx.row`). **See pitfall below.**                        |
-| `inline`                     | `boolean`                                            | Skip the outer flex + scroll wrapper; render header/body as siblings for parent-owned scroll. Almost always pass this. |
-| `virtualMode`                | `{ virtualizer, totalRows, rowAt }`                  | Opt-in virtualization. Pass instead of `rows`; flip on for >500 rows.                                                  |
-| `empty`                      | `ReactNode`                                          | Shown when rows is empty / virtual total is 0.                                                                         |
-| `sortState` / `onSortChange` | `SortState \| null` / `(next) => void`               | Controlled sort — see above.                                                                                           |
+| Prop                         | Type                                                 | Notes                                                                                                                                                           |
+| ---------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rows`                       | `Row[]`                                              | Source data (legacy/non-virtual mode). Memoize upstream if mapping from sync results.                                                                           |
+| `columns`                    | `ColumnDef<Row>[]`                                   | Wrap in `useMemo` to avoid rebuilding on every render.                                                                                                          |
+| `getRowId`                   | `(row: Row) => string`                               | Required. Used as React key + selection set.                                                                                                                    |
+| `onRowClick`                 | `(row: Row, index, e) => void`                       | Optional. Whole row becomes click target.                                                                                                                       |
+| `getRowBg`                   | `(row, rowIndex, isSelected) => string \| undefined` | Per-row background override; return `undefined` to fall back to default striping.                                                                               |
+| `rowProps`                   | `(ctx: CellRenderContext<Row>) => HTMLAttributes`    | Per-row class/style — **receives the ctx, not the row** (use `ctx.row`). **See pitfall below.**                                                                 |
+| `inline`                     | `boolean`                                            | Skip the outer flex + scroll wrapper; render header/body as siblings for parent-owned scroll. Almost always pass this — but see the caveat below.               |
+| `virtualMode`                | `{ virtualizer, totalRows, rowAt, measureAll? }`     | Opt-in virtualization. Pass instead of `rows`; flip on for >500 rows. `measureAll` measures every visible row (only needed for genuinely variable-height rows). |
+| `empty`                      | `ReactNode`                                          | Shown when rows is empty / virtual total is 0.                                                                                                                  |
+| `sortState` / `onSortChange` | `SortState \| null` / `(next) => void`               | Controlled sort — see above.                                                                                                                                    |
+
+`inline` skips copy, print, and load-more
+
+`inline` mode renders only `[topSlot, header, body, footerSlot]` as siblings, so the consumer owns the scroll element. As a consequence, inline mode **skips the Ctrl+C copy handler, the print mirror, and `onLoadMore` / scroll-edge detection.** If a panel needs copy, print, or infinite scroll, don’t use `inline` (or wrap the grid in your own outer element and handle those yourself).
+
+### Advanced props
+
+[Section titled “Advanced props”](#advanced-props)
+
+| Prop                                                      | Type                                                 | Notes                                                                                                     |
+| --------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `selectable`                                              | `boolean`                                            | Render a left checkbox column with a select-all header — see [Multi-select](#multi-select).               |
+| `selectedRowIds` / `onSelectedRowIdsChange`               | `ReadonlySet<string>` / `(next) => void`             | Controlled selection. Omit both for uncontrolled.                                                         |
+| `resizableColumns`                                        | `boolean`                                            | Enable drag-to-resize header handles — see [Resizable columns](#resizable-columns).                       |
+| `columnWidths` / `onColumnWidthsChange`                   | `Record<string, number>` / `(next) => void`          | Controlled drag-resized widths (px, keyed by column key).                                                 |
+| `onLoadMore`                                              | `() => void`                                         | Fires when scrolled near the bottom (legacy mode only; ignored when `inline`).                            |
+| `loadMoreThreshold`                                       | `number`                                             | Pixels-from-bottom that triggers `onLoadMore`. Default `1500`.                                            |
+| `isLoadingMore`                                           | `boolean`                                            | Renders a “Loading…” affordance at the bottom of the list.                                                |
+| `onRowHover`                                              | `(row \| null, index \| null) => void`               | `mouseenter` / `mouseleave` per row (both `null` on leave).                                               |
+| `topSlot` / `footerSlot`                                  | `ReactNode`                                          | Content rendered above / below the body (summary bar, footer, pagination).                                |
+| `headerStyle` / `headerHeight`                            | `CSSProperties` / `number`                           | Extra style merged onto the sticky header; header height in px (default `36`).                            |
+| `scrollContainerRef`                                      | `MutableRefObject<HTMLDivElement \| null>`           | Captures RichGrid’s internal scroll element (e.g. to tie an external virtualizer). Ignored when `inline`. |
+| `renderLoadingRow`                                        | `(rowIndex, gridTemplateColumns) => ReactNode`       | Virtual-mode placeholder for a not-yet-loaded row. Defaults to a “loading…” line.                         |
+| `getRowBg`                                                | `(row, rowIndex, isSelected) => string \| undefined` | Per-row background override; `undefined` falls back to default striping.                                  |
+| `rowMinHeight`                                            | `number`                                             | Min row height in px. Default `36`.                                                                       |
+| `printRows` / `disablePrintMirror` / `disableCopySupport` | —                                                    | Copy & print toggles — see [Copy & print](#copy--print).                                                  |
 
 ## Pitfall: `rowProps` + a CSS class with `display: grid`
 
@@ -24291,7 +24569,7 @@ rowProps={({ row }) => ({
 })}
 ```
 
-The retired `IssuesList.tsx` (`libs/papercusp/apps/web/app/harness/issues/`) is the original example of this pattern.
+The retired `IssuesList.tsx` (`libs/papercusp/_retired/apps-web/app/harness/issues/IssuesList.tsx`) is the original example of this pattern.
 
 ## Patterns: per-row action buttons
 
@@ -24321,6 +24599,8 @@ Action buttons in a column need `e.stopPropagation()` if the row also has `onRow
 
 For grids that may show >500 rows (audit logs, agent runs across years), pass `virtualMode` (a `{ virtualizer, totalRows, rowAt }` object) **instead of** `rows`. You own the TanStack virtualizer + the windowed `rowAt(index)` lookup; `rowAt` may return `undefined` for not-yet-loaded rows, in which case RichGrid renders `renderLoadingRow` (or a “loading…” line). Row sizing defaults to `rowMinHeight` (36px); override per grid if rows are taller.
 
+By default the virtualizer trusts its `estimateSize` for every row and only re-measures the expanded row (each measurement is a forced layout read in the scroll path). Pass `measureAll: true` on `virtualMode` only when rows are genuinely variable height (multi-line cards, day-grouped feeds) so the virtualizer measures each visible row and keeps offsets exact.
+
 ## Multi-expand
 
 [Section titled “Multi-expand”](#multi-expand)
@@ -24338,6 +24618,70 @@ RichGrid supports per-row expanded detail via `renderExpandedRow` plus an expans
 ```
 
 Multiple rows can be expanded simultaneously when you pass `expandedRowKeys`.
+
+## Multi-select
+
+[Section titled “Multi-select”](#multi-select)
+
+Set `selectable` to render a left checkbox column with a header “select-all” checkbox. Selection follows the same controlled/uncontrolled split as sort: pass `selectedRowIds` (a `ReadonlySet<string>`) plus `onSelectedRowIdsChange` to control it, or omit both to let RichGrid keep selection internally.
+
+```tsx
+const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+
+
+<RichGrid
+  rows={rows}
+  columns={columns}
+  getRowId={(r) => r.id}
+  selectable
+  selectedRowIds={selected}
+  onSelectedRowIdsChange={setSelected}
+/>
+```
+
+When the grid root has focus, **Ctrl+A** selects all rows (the same set the header checkbox toggles).
+
+## Resizable columns
+
+[Section titled “Resizable columns”](#resizable-columns)
+
+Set `resizableColumns` to add drag handles on the header cells. Resized widths override the column’s track with an explicit `px` width. By default those widths live in RichGrid’s internal state and **reset on remount**.
+
+To persist them, make widths controlled with `columnWidths` (a `Record<string, number>` of px keyed by column key) + `onColumnWidthsChange` — the same controlled/uncontrolled split as selection. The exported `usePersistedColumnWidths` hook wires that pair to storage so widths survive remounts:
+
+```tsx
+const [widths, setWidths] = usePersistedColumnWidths('agents-grid');
+
+
+<RichGrid
+  rows={rows}
+  columns={columns}
+  getRowId={(r) => r.id}
+  resizableColumns
+  columnWidths={widths}
+  onColumnWidthsChange={setWidths}
+/>
+```
+
+## Copy & print
+
+[Section titled “Copy & print”](#copy--print)
+
+This is the reason `toCopyText` and `headerText` exist on `ColumnDef`. In the **non-inline** grid the root is focusable and supports:
+
+* **Ctrl+A** — select all rows.
+* **Ctrl+C** — copy the current selection (or all rows if none selected) to the clipboard as both TSV (`text/plain`) and `<table>` markup (`text/html`). Excel / Sheets prefer the HTML payload and paste rows into cells correctly; plain editors get the TSV.
+* **Ctrl+P** — print the full dataset. RichGrid renders a hidden native `<table>` print mirror so printing isn’t limited to the virtual viewport; the browser handles pagination and repeating `<thead>`.
+
+`toCopyText(row)` supplies the plain-text value for each cell in both the copy payload and the print mirror; `headerText` supplies the plain-text header (default: the `header` string, but JSX headers need it for spreadsheet fidelity). Columns without `toCopyText` copy/print empty for that cell — fine for pure-affordance columns (action buttons, icons).
+
+Toggles:
+
+* `disableCopySupport` — opt out of the Ctrl+C handler (Ctrl+C falls through to native browser text selection).
+* `disablePrintMirror` — skip the hidden print mirror.
+* `printRows` — **virtual mode only**: the full dataset for the print mirror (the lazy `rowAt` API can’t supply every row up front). Without it, virtual-mode Ctrl+P prints just the viewport.
+
+Remember the [`inline` caveat](#common-props): inline mode skips all of the above (copy handler, print mirror, and the scroll-edge `onLoadMore`).
 
 ## Testing a migrated panel
 
@@ -24372,26 +24716,34 @@ The harness DB is `papercusp` on `localhost:5432`. (It was renamed from `restart
 
 [Section titled “Schema layout”](#schema-layout)
 
-The baseline (`libs/papercusp/libs/db/sql/000-baseline.sql`) creates exactly two schemas, `harness_shared` and `papercup_shared`. The four core per-harness entities are now **consolidated base tables in `harness_shared`**, keyed on a `harness_slug` column; the old physical `harness_<slug>.*` tables were dropped (archived migration `032-drop-per-harness-tables-replace-with-views`) and replaced with auto-updatable VIEWs for back-compat with writers that still pass a slug. The slug is a row value, not a schema name.
+The baseline (`libs/papercusp/libs/db/sql/000-baseline.sql`) creates two schemas, `harness_shared` and `papercup_shared`. A fully migrated DB has **more than two** global schemas, though: migration `109-global-schemas-and-grants` also (re)creates `papercusp_auth` (operator identity — `users`, `sessions`, `magic_link_requests`) and `audit` (`operator_actions`, `action_executions`), which the squashed baseline’s narrow `pg_dump` had dropped, and `papercusp_marketplace` is created at runtime by the plugin layer.
+
+The four core per-harness entities are now **consolidated base tables in `harness_shared`**, keyed on a `harness_slug` column; the old physical `harness_<slug>.*` tables were dropped (archived migration `032-drop-per-harness-tables-replace-with-views`) and replaced with auto-updatable VIEWs for back-compat with writers that still pass a slug. The slug is a row value, not a schema name.
 
 ```plaintext
 papercusp database
 ├── harness_shared
-│   ├── projects                          (cross-harness portfolio)
-│   ├── harness_features_consolidated     (PK harness_slug, feature_id)
-│   ├── harness_issues_consolidated       (PK harness_slug, issue_id)
-│   ├── agent_runs_consolidated           (PK harness_slug, run_id)
-│   ├── snapshots_consolidated            (PK harness_slug, snapshot_id)
-│   ├── agent_chats_consolidated
-│   ├── feature_audit_consolidated
-│   ├── audit_log, harness_decisions, harness_phases, …
-│   └── harness_<slug>.*                  (auto-updatable VIEWs, back-compat)
-└── papercup_shared
-    ├── messages
-    ├── message_recipients
-    ├── message_comments
-    └── directive_summaries
+│   ├── projects                            (cross-harness portfolio)
+│   ├── harness_features_consolidated       (PK harness_slug, feature_id)
+│   ├── harness_issues_consolidated         (PK harness_slug, issue_id)
+│   ├── agent_runs_consolidated             (PK harness_slug, run_id)
+│   ├── harness_snapshots_consolidated      (PK harness_slug, snapshot_id)
+│   ├── agent_chats_consolidated            (PK workspace_id, harness_slug, id)
+│   ├── feature_audit_consolidated          (PK id)
+│   └── audit_log, harness_decisions, harness_phases, …
+├── papercup_shared
+│   ├── messages
+│   ├── message_recipients
+│   ├── message_comments
+│   ├── directive_summaries
+│   └── briefings
+└── harness_<slug>                          (one schema per registered harness;
+    ├── harness_features  (VIEW)             created at install time, NOT by the
+    ├── harness_issues    (VIEW)             baseline — auto-updatable VIEWs over
+    └── …                 (VIEW)             the consolidated tables, back-compat)
 ```
+
+Note the per-harness back-compat VIEWs are **not** nested inside `harness_shared`: each registered harness gets its own `harness_<slug>` schema, created at install/scaffold time (the baseline only defines `harness_shared`). Note also that not every consolidated table is keyed `(harness_slug, <entity_id>)`: `agent_chats_consolidated` is also workspace-scoped (`(workspace_id, harness_slug, id)`) and `feature_audit_consolidated` is keyed on `id` alone.
 
 ## Consolidated tables, not schema-per-harness (Option A)
 
@@ -24436,7 +24788,7 @@ When you scaffold a new harness, `bin/scaffold-harness-schema.sh` runs the right
 
 [Section titled “Cross-harness consolidated tables”](#cross-harness-consolidated-tables)
 
-`harness_shared.harness_features_consolidated` is the canonical example. It’s a base table (not a view) maintained by triggers on every per-harness `harness_features`. Schema:
+`harness_shared.harness_features_consolidated` is the canonical example. It’s a base table — and the **only** physical store for features. Schema:
 
 ```plaintext
 harness_features_consolidated (
@@ -24447,9 +24799,11 @@ harness_features_consolidated (
 )
 ```
 
-The triggers live alongside each per-harness `harness_features` and fire on `INSERT`, `UPDATE`, `DELETE`. Adding a column means: add it to every per-harness table, add it to the consolidated table, update every trigger.
+There are no per-harness base tables and no sync triggers any more. The old design trigger-mirrored each per-harness `harness_features` table into this consolidated table, but migration `032` dropped the per-harness physical tables (and the `sync_*_consolidated()` trigger functions) and replaced them with auto-updatable `harness_<slug>.harness_features` VIEWs that are plain `SELECT *` over the consolidated table filtered by slug. (The `harness_shared.sync_features_consolidated()` function still appears in the baseline dump but is **not attached to any trigger** — it’s vestigial.) Writers now target the consolidated table directly, or write through the slug-scoped view.
 
-This is a maintenance burden but it’s the only way to get cross-harness data into Zero — views can’t be in publications.
+Adding a column means: add it to the consolidated table only. The views are `SELECT *`, so they pick it up automatically — no per-table or per-trigger edits.
+
+Getting cross-harness data into Zero is straightforward as a result: the consolidated base table is published directly (e.g. `harness_shared.harness_features_consolidated` is a member of the `zero_harness` publication), and the per-harness slug-scoped reads are just VIEWs over it. (Zero itself is on the retirement path — see the banner at the top of this page.)
 
 ## papercup\_shared schema
 
@@ -24459,12 +24813,13 @@ The Papercup app (organization layer, project tracking, messaging) has its own d
 
 * `messages` — formerly JSON, now PG-canonical
 * `message_recipients`, `message_comments`, `directive_summaries`
+* `briefings`
 
 (Note: the cross-harness `projects` table lives in **`harness_shared`**, not `papercup_shared`.)
 
-These are read by the `messages.*` / `directiveSummaries.*` named queries without a slug arg. Cross-app code reaches them via `search_path = papercup_shared, public` in the connection.
+These are read by named queries without a slug arg — `messages.*` and `directiveSummaries.*`, plus the `messageRecipients.*`, `messageComments.*`, and `briefings.*` namespaces (all in `libs/zero-harness/src/queries.ts`). Cross-app code reaches them via `search_path = papercup_shared, public` in the connection.
 
-JSON ledgers still exist on disk but are tagged `{ "derivedFromPg": true }` and rebuilt from PG — they’re a derived snapshot for tooling that wants a file. Postgres is the source of truth.
+The old `{ "derivedFromPg": true }` JSON ledgers — file snapshots rebuilt from PG for tooling that wanted a file — are gone from the live path. The only code that still emits that tag lives under `_retired/` (the messaging / briefings surface); it is not part of the live messaging path. Postgres is the source of truth.
 
 ## Slug as the stable cross-store identifier
 
@@ -24498,11 +24853,15 @@ DELETE          replication                          → React re-render
 ```
 
 1. A backend writer (an API route, a hook, an agent) writes to Postgres.
-2. `zero-cache-harness` (systemd unit) tails the `zero_harness` logical replication slot.
-3. It diffs the change against connected clients’ query results and pushes only the affected rows over WebSocket.
-4. Each browser client’s `@rocicorp/zero` materialized view updates and any `useQuery(...)` hook reading that view re-renders.
+2. A `zero-cache` process tailed the `zero_harness` logical replication slot.
+3. It diffed the change against connected clients’ query results and pushed only the affected rows over WebSocket.
+4. Each browser client’s `@rocicorp/zero` materialized view updated and any `useQuery(...)` hook reading that view re-rendered.
 
-There is no polling. There is no `refetch()` after mutate. The mutation goes to Postgres and the panel updates because of step 3.
+There was no polling. There was no `refetch()` after mutate. The mutation went to Postgres and the panel updated because of step 3.
+
+zero-cache is gone — no systemd unit
+
+There is **no** `zero-cache-harness` systemd unit in the current codebase (the only remaining occurrences of that string are in these docs). zero-cache was retired in the Level 1 + Phase 1 SSE cutover (2026-05-07); the live transport is SSE served by the operator sidecar over PG `LISTEN/NOTIFY`. The diagram above is the historical WS pipeline — see `HarnessZeroProvider.tsx` for the SSE replacement.
 
 ## Reading from Zero in a panel
 
@@ -24527,9 +24886,35 @@ export default function SnapshotsPanel({ slug }: { slug: string }) {
 
 Three things to know:
 
-* **`useSyncQuery` returns an object**, not a tuple: `{ data, loading, fetching, transport, invalidate, error }` (see `SyncQueryResult` in `libs/generic/sync/src/types.ts`). `data` is always an array (never `undefined`); for most panels you only need `data`. (Raw `@rocicorp/zero`’s `useQuery` returns a `[results, info]` 2-tuple — but in this stack you call the `@papercusp/sync` wrapper, not Zero directly.)
+* **`useSyncQuery` returns an object**, not a tuple: `{ data, loading, fetching, transport, invalidate, error }` (see `SyncQueryResult` in `libs/generic/sync/src/types.ts`). Under a mounted `SyncProvider`, `data` is **always** a `T[]` — the only case it is `undefined` is when the hook is used outside any provider (the app-chrome escape hatch described below). For most panels you only need `data`. (Raw `@rocicorp/zero`’s `useQuery` returns a `[results, info]` 2-tuple — but in this stack you call the `@papercusp/sync` wrapper, not Zero directly.)
 * **The provider must be mounted upstream**. `HarnessZeroProvider` (`apps/operator/providers/HarnessZeroProvider.tsx`) wraps every `/harness/*` route in a `<SyncProvider>`. Used outside a provider, `useSyncQuery` does **not** throw — it returns `{ data: undefined, loading: false, error: null }` so app-chrome components mounted above the provider don’t crash; branch on the result and supply your own fallback if you need live data there.
 * **Data arrives over time**. On first render `data` is empty and the query hasn’t completed. Don’t gate on `data.length === 0` to mean “empty data” — distinguish “no rows yet, sync in progress” from “actually empty” via the `loading` flag if it matters.
+
+### Query options and result fields
+
+[Section titled “Query options and result fields”](#query-options-and-result-fields)
+
+`useSyncQuery` takes a `SyncQueryOptions` and returns a `SyncQueryResult` (both in `libs/generic/sync/src/types.ts`):
+
+**`SyncQueryOptions`**
+
+* `queryName` — dot-separated name from the registry (e.g. `'snapshotsConsolidated.bySlug'`).
+* `args` — arguments passed to the parameterized query.
+* `enabled` — set `false` to pause the query (default `true`).
+* `staleTime` — cache freshness window for the polling/SSE transports. When the cached entry is younger than `staleTime`, react-query serves it without a network round-trip on remount/refocus (global default 5s). Ignored by the WS transport (Zero materialized views are always fresh).
+* `pollIntervalMs` — per-query polling cadence override (polling transport).
+* `ttl` — time-to-live for the materialized query, honored only by the WS transport; ignored by polling.
+
+**`SyncQueryResult`**
+
+* `data` — the rows (`T[]` under a provider; see the invariant above).
+* `loading` — true only on initial load when no data is available yet.
+* `fetching` — true whenever a fetch is in-flight, including background refetches and key changes.
+* `transport` — the current active transport (`SSE`, `WS`, or `POLLING`).
+* `invalidate` — force an immediate refetch (polling/SSE); a no-op under WS.
+* `error` — error from the last fetch attempt, if any.
+
+Under the shipping SSE transport, freshness is **invalidate-driven**: pushes arrive over `LISTEN/NOTIFY` and trigger refetches. SSE is **not** polled for freshness — there is only a long drift-repair tick (`DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000`, i.e. 3 min, in `HarnessZeroProvider.tsx`) that re-syncs any push lost to an SSE blip or a missing bridge entry. The `ttl`/WS-materialized-view knobs above apply only to the retired WebSocket path.
 
 ## Writing to Zero — there is no Zero write
 
@@ -24590,39 +24975,47 @@ This is the single most expensive bug in the codebase to debug because the failu
 
 [Section titled “Adding a new table to Zero”](#adding-a-new-table-to-zero)
 
-End-to-end checklist when you add a new table to a per-harness schema:
+`schema.ts` is auto-generated — never hand-edit it
 
-1. Add the column to `bin/scaffold-harness-schema.sh` (template DDL).
-2. Run scaffold against existing harnesses or rely on the auto-scaffold that fires from `POST /api/harness/projects`.
-3. `ALTER PUBLICATION zero_harness ADD TABLE harness_xxx.harness_<name>;` for each existing harness (or use the regenerate-view script).
-4. Add the table to `libs/zero-harness/src/schema.ts` with the right column types — pay attention to TIMESTAMPTZ → `number()`.
-5. Add a query factory to `libs/zero-harness/src/queries.ts`.
-6. Add a key helper (`slugToXxxKey`) if it’s per-harness.
-7. Bump the schema version in `libs/zero-harness/src/schema.ts`.
-8. Restart `zero-cache-harness` (`systemctl --user restart zero-cache-harness` or via `service` MCP).
+`libs/zero-harness/src/schema.ts` carries a `⚠ AUTO-GENERATED — DO NOT EDIT BY HAND` header. Its source of truth is `libs/papercusp/libs/db/src/schema/generated.ts` + `libs/zero-harness/zero-config.json`, and **CI verifies the file matches the generator output** — a hand edit fails CI.
 
-If you skip step 7, clients will keep their cached old schema and your new column won’t appear.
+End-to-end checklist when you add a new table to Zero:
+
+1. Add an entry to `libs/zero-harness/zero-config.json` (table name + per-column renames). This is the only file you edit by hand for the schema shape — pay attention to TIMESTAMPTZ → `number()` (see below).
+2. Regenerate the schema: `node libs/zero-harness/scripts/generate-schema.mjs --write`. This rewrites `libs/zero-harness/src/schema.ts`.
+3. Validate the generated types against live PG: `node libs/papercusp/packages/embedded-postgres-server/bin/validate-zero-schema.mjs`. It compares `schema.ts` column types against the live database and exits non-zero on a mismatch — this is what catches the TIMESTAMPTZ-vs-`string()` footgun **before** it cascades to `SchemaVersionNotSupported`. (`libs/zero-harness/scripts/drizzle-zero-cross-check.mjs` is a related cross-check.)
+4. Add a query factory to `libs/zero-harness/src/queries.ts`.
+5. Add a key helper (`slugToXxxKey`) if it’s per-harness.
+6. Commit **both** the `zero-config.json` diff and the regenerated `schema.ts`.
+
+There is **no** manually-bumped schema-version constant. `createSchema()` is called with only `{ tables, relationships }` (no `version` field) — the only `version` token in `schema.ts` is a `string()` *column* on the `pluginEnables` table. Zero derives and manages the app schema version itself from the schema shape; there is no version number to edit.
+
+### Per-harness scaffolding (views, not tables)
+
+[Section titled “Per-harness scaffolding (views, not tables)”](#per-harness-scaffolding-views-not-tables)
+
+Per-harness schemas (`harness_<slug>`) **no longer contain physical tables** — Migration 032 dropped them and replaced them with auto-updatable VIEWs over the `harness_shared.*_consolidated` tables. So there is no per-harness template DDL column to add and nothing per-harness to add to the `zero_harness` publication. The canonical scaffold is the inline TypeScript `packages/operator-core/lib/scaffold-harness-schema.ts` (“Inline TypeScript replacement for `bin/scaffold-harness-schema.sh`”), called from the add-project / onboard flows; `bin/scaffold-harness-schema.sh` is the superseded bash path.
 
 ## Replication slot recovery
 
 [Section titled “Replication slot recovery”](#replication-slot-recovery)
 
-If `zero-cache-harness` won’t start with “replication slot in use” —
+Historical: when a `zero-cache` process wouldn’t start with “replication slot in use” —
 
 1. The DB rename (April 2026) left orphaned connections on the old slot.
-2. Find the holder: `SELECT pid, application_name FROM pg_stat_replication WHERE slot_name = 'zero_harness';`
+2. Find the holder: `SELECT pid, application_name FROM pg_stat_replication WHERE slot_name = 'zero_harness';` (`pg_replication_slots` is the more idiomatic table for in-use detection.)
 3. Terminate it: `SELECT pg_terminate_backend(<pid>);`
 4. Or, if `postgres_app` is the orphan holder, restart it.
 
-Documented because it’s bitten us twice.
+Documented because it bit us twice. The SSE transport does not use a logical replication slot, so this recovery no longer applies on desktop.
 
 ## Schema-version errors
 
 [Section titled “Schema-version errors”](#schema-version-errors)
 
-`SchemaVersionNotSupported: server expected version N, got version M` → client and zero-cache disagree on schema version. Causes:
+`SchemaVersionNotSupported: server expected version N, got version M` → client and zero-cache disagree on the schema Zero derives from the schema shape. Causes:
 
-1. You changed `schema.ts` without bumping the version.
+1. `schema.ts` is out of sync with live PG — most often a TIMESTAMPTZ column declared `string()` instead of `number()`. Regenerate with `generate-schema.mjs --write` and run `validate-zero-schema.mjs` to catch it (see [Adding a new table](#adding-a-new-table-to-zero)).
 2. A second `@rocicorp/zero` package exists in the dep tree (`apps/papercusp/node_modules/@rocicorp/zero` was the historical offender — it must be symlinked to the workspace root copy or every `useQuery` call throws `Query does not implement QueryInternals`).
 3. zero-cache is running an old build.
 
@@ -39231,7 +39624,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Hive Inference Gateway — serve the headless opus fleet on the Max subscription `hive-inference-gateway-2026-06-09`                                                                                                                                                                       | blocked 3, done 15                | OWNER: (1) to go live fleet-wide, flip the INFERENCE\_GATEWAY flag ON once the bound account has the aggregate 5h budget + the systemd service is deployed; (2) run the gen-0 baseline through the gateway per D-011 (isolat…      |
 | Hive run evaluation — score the Hive on outcome quality, efficiency, and speed (not just deterministic machinery) `hive-run-evaluation-2026-06-13`                                                                                                                                       | done 19                           | P-051 (owner) — set the budget + activate: `tsx lib/hive-eval/seed-hive-eval-routine.ts --active --budget=<usd>` (migrations 264/268 boot-apply on next operator restart). The first armed run is the only place that valid…       |
 | Hive vs Workspace — keep them separate (RLS boundary), ship the UI win, table the unification `hive-vs-workspace-model-decision-2026-06-17`                                                                                                                                              | —                                 | Nothing required — Phase 2 stays tabled unless the owner explicitly reopens it. Optional near-term diligence: a live Tauri-shell pass to visually confirm the shipped P-001…P-006 UI (verified by unit tests + typecheck on…       |
-| Legacy harness cleanup — finish the FS→PG / run-loop→operator migration `legacy-harness-cleanup-2026-06-15`                                                                                                                                                                              | —                                 | None — plan complete. The only deliberately-retained items (the @papercusp/papercusp-db back-compat shim cut at v2; the features/issues→work\_items long tail; plugin-catalog FS-walk) are tracked on their own separate trac…      |
+| Legacy harness cleanup — finish the FS→PG / run-loop→operator migration `legacy-harness-cleanup-2026-06-15`                                                                                                                                                                              | —                                 | None — plan complete. The only deliberately-retained items (the @papercusp/papercusp-db back-compat shim cut at v2; the features/issues→work\_items long tail; plugin-catalog FS-walk) are tracked on their own separate trac…     |
 | Mobile apps revival + redesign (papercup-rust-mobile — Android + iOS, plans/inbox-centered) `mobile-apps-revival-redesign-2026-06-05`                                                                                                                                                    | —                                 | OWNER-GATED (flag, don’t hunt): (1) APNs .p8 + Key ID + Team ID for real iOS cloud push send (APNS\_KEY\_PATH/APNS\_KEY\_ID/APNS\_TEAM\_ID; needs Apple Developer enrollment - iOS routing + simulated deep-link already verified… |
 | Verify + test deterministic multi-account bee routing (right account, budget available, Queen-independent) `multi-account-routing-verification-2026-06-15`                                                                                                                               | done 4                            | Hand to a psu agent: build the test layers (P-001..P-004), coordinating with su-df00939e on the accurate budget signal (P-004 dependency).                                                                                         |
 | Papercusp dogfood — Phase 10 (Hyperdrive peer-mirror — optional opt-in) `papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24`                                                                                                                                                    | —                                 | —                                                                                                                                                                                                                                  |
@@ -39544,7 +39937,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 | Swarm coordination architecture — brain-as-slot-scheduler over a pull-queue, leased throughput, single-hive to multi-hive (locality) `swarm-coordination-architecture-2026-06-06`                                                         | done 12                           | Phase 0 — ratify the two open forks (soft shared throughput-pool vs hard per-hive leases; the compact budget primitive’s exact shape) and the hive boundary, then sequence the single-hive build (which is already mostly c…     |
 | System Health tab — live operational dashboard (beside Working) `system-health-tab-2026-06-15`                                                                                                                                            | done 8                            | DONE — no in-scope items remain. OPTIONAL gateway-team follow-up only: `tokens.gatewayFailovers`/`gw429s` (add when/if the inference-gateway grows failover/429 egress counters; no detector depends on them, so their abse…     |
 | Investigation: test:affected core-dumps (Node 25 + vitest worker pool) — RESOLVED `test-affected-coredump-investigation-2026-06-01`                                                                                                       | —                                 | None — resolved; the fix is live in the shared test-config.                                                                                                                                                                      |
-| Test coverage — the rest: non-desktop-critical surfaces (public marketplace, shared UI libs, web, docs sites) `test-coverage-rest-non-critical-2026-05-30`                                                                                | done 22, dropped 2, needs-human 1 | Owner only: P-025 — confirm + delete (not just test) the legacy/excluded surfaces (holepunch-spike, papercusp-db, papercusp-shared \*View\.tsx). Hard human-gated; nothing else remains.                                           |
+| Test coverage — the rest: non-desktop-critical surfaces (public marketplace, shared UI libs, web, docs sites) `test-coverage-rest-non-critical-2026-05-30`                                                                                | done 22, dropped 2, needs-human 1 | Owner only: P-025 — confirm + delete (not just test) the legacy/excluded surfaces (holepunch-spike, papercusp-db, papercusp-shared \*View\.tsx). Hard human-gated; nothing else remains.                                         |
 | Generalize the testing framework + UI into a cross-project shared lib `testing-shell-cross-project-2026-06-01`                                                                                                                            | done 20                           | Nothing required — plan shipped. Optional only: extract `@papercusp/testing-glob` (P-004/D-004) if a 2nd server-side glob consumer appears; wire a real k6/streaming domain through `DomainTestPanel` when one exists.           |
 | Platform-variant test domains: browser-equivalent chaos + live `testing-shell-platform-variants-2026-06-01`                                                                                                                               | done 12                           | Done — plan shipped. No action.                                                                                                                                                                                                  |
 | The Hive lexicon — full bee-themed user-facing rename via a flag-gated lexicon layer `the-hive-lexicon-2026-06-06`                                                                                                                        | done 9                            | Owner decision on EI-230: ratify The Swarm as the product sub-brand (then update D-005/D-007 notes) or repoint HIVE\_TITLE/OperatorWordmarkLockup to The Hive. Then this plan can flip status: shipped.                          |
@@ -52364,7 +52757,7 @@ The split rule: **TTL when there’s a clear lease and the writer can refresh on
 | Role prompts                    | `libs/papercusp/packages/harness/prompts/<role>.md` (or `staging/<role>.md` for phase-specific overrides)                                                                                                                                             |
 | Cross-mission identities        | `libs/papercusp/packages/harness/identity/<role>.md` (file-canonical for orchestrator subprocess; PG-mirrored to `harness_shared.identity_files` via Migration 041 for operator UI reads)                                                             |
 | All API routes                  | `apps/operator/app/api/_hono/harness.ts` (mostly), `apps/operator/app/api/agent-mcp/*` (operator-scan, delegate-chat, agent-config), `apps/operator/app/api/agent-config/*` (settings)                                                                |
-| Chat-stream backend             | `apps/operator/lib/claude-chat-stream.ts` (operator wrapper) → `libs/papercusp-shared/src/agent/chat-stream.ts` (shared runtime)                                                                                                                       |
+| Chat-stream backend             | `apps/operator/lib/claude-chat-stream.ts` (operator wrapper) → `libs/papercusp-shared/src/agent/chat-stream.ts` (shared runtime)                                                                                                                      |
 | Schema + Zero queries           | `libs/zero-harness/src/{schema,queries}.ts`                                                                                                                                                                                                           |
 | Per-harness PG provisioning     | `bin/scaffold-harness-schema.sh` + SQL template `libs/papercusp/libs/db/sql/002-per-harness-template.sql`                                                                                                                                             |
 | Plugin lifecycle                | `packages/operator-core/lib/plugin-host-runtime.ts` (`firePluginLifecycle` + `ServerActionRegistry` + plugin reaction-rule registration; the orchestrator-side `plugin-hooks.ts` shell-out and the `papercusp-fire-hook` CLI were retired 2026-06-12) |
@@ -52456,10 +52849,10 @@ Some code is **retired but deliberately kept** in the tree for reference — not
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `@papercup/web` — papercupai.com public site                                                                                                                                                                                                                                   | `_retired/papercup/`                                                                                                                               | Retired 2026-05-30. Dropped from the workspace glob + root scripts; `docker-compose.papercup.prod.yml` + `Dockerfile.papercup` bannered (preserved, not deployed).                                                                                                                                                                                                                                                                                                                                              | `_retired/papercup/RESTORE.md` + git tag `papercup-web-retired-2026-05-30`                                                       |
 | Standalone operator webapp (`apps/operator` opened on `:3055` in a browser)                                                                                                                                                                                                    | `apps/operator` — run **only** via the Tauri shell                                                                                                 | Retired 2026-05-14; a `PreToolUse` hook blocks browsing its ports.                                                                                                                                                                                                                                                                                                                                                                                                                                              | n/a — the operator still ships, just not as a standalone webapp                                                                  |
-| `libs/zero-harness` — Zero ZQL schema/queries                                                                                                                                                                                                                                  | `libs/zero-harness`                                                                                                                                | On the Zero-retirement path; the ZQL package has **0 live importers** (only dead surfaces reference it: `libs/papercusp-shared/**/*View.tsx` + the retired `@papercusp/web`). **Migrate off, don’t add tests.**                                                                                                                                                                                                                                                                                                  | n/a                                                                                                                              |
-| `libs/papercusp-db` — fictional-org demo schema                                                                                                                                                                                                                                 | `libs/papercusp-db`                                                                                                                                 | Demo data; only consumed by `_retired/papercup` + a vendored submodule. Deletion candidate.                                                                                                                                                                                                                                                                                                                                                                                                                     | n/a                                                                                                                              |
+| `libs/zero-harness` — Zero ZQL schema/queries                                                                                                                                                                                                                                  | `libs/zero-harness`                                                                                                                                | On the Zero-retirement path; the ZQL package has **0 live importers** (only dead surfaces reference it: `libs/papercusp-shared/**/*View.tsx` + the retired `@papercusp/web`). **Migrate off, don’t add tests.**                                                                                                                                                                                                                                                                                                 | n/a                                                                                                                              |
+| `libs/papercusp-db` — fictional-org demo schema                                                                                                                                                                                                                                | `libs/papercusp-db`                                                                                                                                | Demo data; only consumed by `_retired/papercup` + a vendored submodule. Deletion candidate.                                                                                                                                                                                                                                                                                                                                                                                                                     | n/a                                                                                                                              |
 | `libs/holepunch-spike` — P2P spike                                                                                                                                                                                                                                             | `libs/holepunch-spike`                                                                                                                             | Phase-0 spike. **NOT zero-importers** — its `holepunch.d.ts` shim surface is implemented by `apps/operator/lib/sync/hyperbee/swarm.ts` and wired into \~10 orchestrator files (feature-claim, distributed-claim, instrumentation-node, …), so it is not a safe delete as-is.                                                                                                                                                                                                                                    | n/a                                                                                                                              |
-| `libs/papercusp-shared/**/*View.tsx`                                                                                                                                                                                                                                            | `libs/papercusp-shared`                                                                                                                             | The read-only `*View.tsx` components render the retired web surface; the non-view helpers (e.g. `_admin-paths`) are still shared and live.                                                                                                                                                                                                                                                                                                                                                                      | n/a                                                                                                                              |
+| `libs/papercusp-shared/**/*View.tsx`                                                                                                                                                                                                                                           | `libs/papercusp-shared`                                                                                                                            | The read-only `*View.tsx` components render the retired web surface; the non-view helpers (e.g. `_admin-paths`) are still shared and live.                                                                                                                                                                                                                                                                                                                                                                      | n/a                                                                                                                              |
 | Legacy `@papercusp/orchestrator` run-loop (`runMainLoop` + the `pre-loop`/`synthesizer`/`actions-block`/`checkpoints(-pg)`/`snapshot-state`/`snapshots-pg`/`mission-state-pg`/`dispatches-pg`/`distributed-claim-fetch` cluster + `bin/run.ts`, plus `git.ts`/`branch-iso.ts`) | `libs/papercusp/_retired/orchestrator-run-loop/` (+ superproject `_retired/orchestrator-run-loop/apps-operator-test/` for the 4 integration tests) | Retired 2026-06-06 (`archive-legacy-orchestrator-deadcode`). 0 live importers; superseded by the DBOS pipeline. Barrel + 4 package.json subpath exports pruned; the `cost-cap.ts`→`mission-state-pg` cross-edge severed (cost-cap is now FS-only). `lint:no-retired` guards against re-imports + a reappearing `/api/plugins/orchestrator/spawn` fetch.                                                                                                                                                         | `libs/papercusp/_retired/orchestrator-run-loop/RESTORE.md` + submodule git tag `legacy-orchestrator-run-loop-retired-2026-06-06` |
 | `@papercupai/orchestrator-spawn` plugin (never installed)                                                                                                                                                                                                                      | `libs/papercusp/_retired/orchestrator-spawn-plugin/`                                                                                               | Retired 2026-06-06. Superseded by `fleet/operator-spawn.ts`; its `/api/plugins/orchestrator/spawn` path 404’d.                                                                                                                                                                                                                                                                                                                                                                                                  | `libs/papercusp/_retired/orchestrator-spawn-plugin/RESTORE.md`                                                                   |
 | The harness-snapshot system (`@papercusp/export-state` FS-tarball lib + `snapshots:*` tools + `/api/snapshots/*` routes + the Cupboard `kind=snapshot` path + worker R2 blob store + the `SNAPSHOTS` flag + `snapshot_index` PG table)                                         | `_retired/snapshot-system/`                                                                                                                        | Retired 2026-06-09 (`retire-snapshots-instance-spec`). A monolithic-era abstraction; its jobs re-homed — distribution→blueprints, backup→git+PG, reproducible clone→the lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`, capture/boot/vary). `@papercusp/export-state` dropped from the workspace glob + lockfile; migration 199 drops `snapshot_index`. NOT the legacy `harness_snapshots(_consolidated)` iteration-snapshot tables (still live). `lint:no-retired` guards re-imports. | `_retired/snapshot-system/RESTORE.md` + git tag `snapshot-system-retired-2026-06-09`                                             |

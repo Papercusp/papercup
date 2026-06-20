@@ -3,6 +3,10 @@ title: Pitfalls
 description: Specific failure modes that have silently broken every panel in a schema. Read before debugging.
 sidebar:
   order: 6
+plans:
+  - finish-next-removal-2026-06-01
+  - fumadocs-to-starlight-2026-05-20
+  - webkit-sse-connection-pool-2026-05-20
 ---
 
 These are catalogued because each one cost real time. If a panel is
@@ -55,6 +59,15 @@ ts: string(),   // ✗ — kills the WS for the whole schema
 
 This has bitten us at least three times. **Always check the column type
 before declaring a TIMESTAMPTZ field.**
+
+> **Era note.** The type rule still holds today, but it's now enforced by the
+> schema **generator**, not a hand-edited file: `libs/zero-harness/src/schema.ts`
+> is auto-generated and maps `timestamp → number` in
+> `libs/zero-harness/scripts/generate-schema.mjs`. The fix is to correct the
+> Drizzle source type and regenerate — don't hand-edit `schema.ts`. The
+> `SchemaVersionNotSupported` / WS-disconnect symptom above is zero-cache–era;
+> with SSE-primary sync a type mismatch now surfaces through the SSE/REST path,
+> not a WebSocket drop.
 
 ## 3. Two copies of `@rocicorp/zero` in the dep tree
 
@@ -164,15 +177,28 @@ chrome rendered at the root layout doesn't crash). The throwing variants are
 operator the provider is `RootSyncProvider` (which wraps
 `HarnessZeroProvider`), mounted near the root layout, so most components are
 already inside it — see `apps/operator/app/_components/RootSyncProvider.tsx`.
-If a panel renders above it, hoist the provider or branch on the empty result
-and supply your own fallback (REST poll, prefetch cache).
+In operator-vite it's mounted in `apps/operator-vite/src/routes/__root.tsx` as
+the **outermost** data-layer provider — only the Radix `Tooltip.Provider` sits
+above it, so ChromeShell, the sidebars, the dev rails, etc. are all inside.
+That makes "above the provider" a rarely-hit safety net rather than a routine
+case: confirm your panel is genuinely above it before assuming the empty-result
+path. If a panel renders above it, hoist the provider or branch on the empty
+result and supply your own fallback (REST poll, prefetch cache).
+
+**Sibling gotcha**: `useSyncMutate` is provider-tolerant the same way. Outside a
+provider there's no Zero client, so **every call silently takes the REST
+fallback** — it never goes optimistic. A write that appears to "work" may never
+be routed through Zero at all if the provider (or WS) is absent.
 
 ## 9. JSON ledger out of sync with PG
 
-> **Historical.** The `projects` JSON-ledger and its
-> `loadProjects()`/`saveProjects()` accessors have been **removed** — the
-> functions no longer exist in the tree, and the `apps/papercup` projects
-> surface they backed was retired. Kept as a cautionary pattern.
+> **Historical.** The `apps/papercup` `projects` JSON-ledger and its
+> file-writing accessor pair have been **removed**: `saveProjects()` no longer
+> exists anywhere in non-retired source, and the projects surface it backed was
+> retired. (A function literally named `loadProjects` still lives in
+> `scripts/migrate-snapshots-to-pg.ts` — but it reads the harness registry
+> `~/.restart-harness-projects.json`, a different artifact, not the retired
+> ledger.) Kept as a cautionary pattern.
 
 **Symptom**: a PG-backed accessor returns rows that don't match what the UI
 shows (or vice versa).

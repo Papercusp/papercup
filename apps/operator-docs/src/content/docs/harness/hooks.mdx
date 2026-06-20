@@ -3,11 +3,16 @@ title: Lifecycle hooks
 description: Out-of-band shell scripts in .papercusp/hooks/ that the DBOS finalizer runs at mission boundaries — plus how plugin hooks fire alongside them.
 documents:
   - libs/papercusp/packages/orchestrator/src/hooks.ts :: runHook
-  - libs/papercusp/packages/orchestrator/src/plugin-hooks.ts :: firePluginHook
+  - packages/operator-core/lib/plugin-host-runtime.ts :: firePluginLifecycle
   - packages/operator-core/lib/dbos/orchestrator-runner.ts
   - packages/operator-core/lib/dbos/orchestrator-finalize.ts :: planFinalization
   - packages/operator-core/lib/known-hooks.ts :: getKnownHooks
   - packages/operator-core/lib/endpoint-route/routes/harness/hooks.ts
+plans:
+  - legacy-docs-audit-revival-2026-06-06
+  - plugin-system-hive-port-2026-06-11
+  - dbos-retire-legacy-orchestrator-2026-05-31
+  - papercusp-full-app-audit-2026-06-09
 ---
 
 Lifecycle hooks are user-supplied shell scripts that the harness runs at fixed
@@ -16,7 +21,8 @@ pipeline boundaries. Drop an executable script at
 matching event fires. The runner is `runHook()` in
 `libs/papercusp/packages/orchestrator/src/hooks.ts`: it looks up
 `<stateDir>/hooks/<name>.sh`, skips silently if the file is missing or not
-executable (owner-execute bit), runs it with `cwd` set to the project
+executable (any execute bit set — `mode & 0o111`, so owner, group, **or**
+other counts), runs it with `cwd` set to the project
 directory, captures combined stdout+stderr to
 `<stateDir>/logs/hooks/<unix-seconds>-<name>.log`, and logs a non-zero exit as
 a warning — a failing hook never halts the mission. On Windows the script
@@ -43,11 +49,27 @@ are wired:
 
 | Hook | Fires | Event-specific env | Call site |
 |---|---|---|---|
-| `on-escalate` | Pipeline finalizes with **ESCALATE**, before the `onEscalate` recipe roles run | `REASON`, `PROJECT_DIR`, `STATE_DIR` | `orchestrator-runner.ts:641` |
-| `afterDone` | Pipeline finalizes **DONE** (and the done-gates pass), after the `onDone` recipe roles run | `TRIGGER=done`, `FEATURE_ID`, `PROJECT_DIR`, `STATE_DIR` | `orchestrator-runner.ts:657` |
+| `on-escalate` | Pipeline finalizes with **ESCALATE**, before the `onEscalate` recipe roles run | `REASON`, `PROJECT_DIR`, `STATE_DIR` | `orchestrator-runner.ts:930` |
+| `afterDone` | Pipeline finalizes **DONE** (and the done-gates pass), after the `onDone` recipe roles run | `TRIGGER=done`, `FEATURE_ID`, `PROJECT_DIR`, `STATE_DIR` | `orchestrator-runner.ts:952` |
 
-A blocked DONE (an open needs-human plan item) skips the whole finalization
-step list, hook included.
+A blocked DONE skips the whole finalization step list, hook included.
+`planFinalization()` blocks completion on **any** of three conditions: an open
+needs-human plan item, a configured smoke gate that ran and failed
+(`smokeEnabled && smokePassed === false`), or — for a `human-gate` acceptance
+blueprint — an approval that hasn't been granted yet
+(`acceptanceKind === 'human-gate' && !acceptanceApproved`). Any of these and
+the `afterDone` hook never runs.
+
+The roles that surround the hooks are **declarative**, not hardcoded:
+`planFinalization()` resolves the finalize recipe from the harness's
+`.papercusp/blueprint.yaml` `gates.finalize`, defaulting to the coding
+blueprint's recipe (`onDone`: curator → postCuratorOutputs → documenter →
+`[archive]`; `onEscalate`: curator). A non-coding HIVE blueprint can override
+`gates.finalize`, so the hooks fire around whatever finalize recipe that
+harness declares. A `judge`-acceptance blueprint additionally inserts a
+`judge`-role acceptance gate before the `onDone` recipe whose `revise` verdict
+hard-blocks the output recipe (artifacts/documenter), though the `afterDone`
+hook itself still fires per the recipe.
 
 `runHook()` itself accepts any name — the engine isn't limited to these two —
 but no other call site exists in the live tree, so no other event fires. The
@@ -59,9 +81,15 @@ bash era retired with the run-loop.
 `afterDone` has a TS builtin behind it: when **no** user hook script ran, the
 finalizer calls `notifyParentOnDone()`
 (`packages/operator-core/lib/dbos/notify-parent-done.ts`), which posts a
-`Completion` message to this harness's sealed parent once the feature queue
-drains — so a parent that spawned this harness as a child learns the sub-work
-is done. A per-harness `hooks/afterDone.sh` **overrides the builtin entirely**
+`Completion` message to this harness's parent — so a parent that spawned this
+harness as a child learns the sub-work is done. The parent slug is read from PG
+(`harness_shared.projects.parent_slug`, sealed server-side at scaffold time by
+`doScaffoldHarness`), **not** from config. The message fires **only when the
+harness's feature queue has fully drained** — every other feature is `passed`
+or `deprecated`, excluding the feature that triggered this finalize. A
+non-drained queue is a **silent no-op**: the builtin returns a typed reason
+(`no_parent` / `queue_not_drained` / `send_failed` / `lookup_failed`) and posts
+nothing. A per-harness `hooks/afterDone.sh` **overrides the builtin entirely**
 (parity with the retired bash builtin resolver). Plugin hooks fire regardless
 (below).
 
@@ -69,13 +97,15 @@ is done. A per-harness `hooks/afterDone.sh` **overrides the builtin entirely**
 
 On top of the event-specific variables in the table, `runHook()` auto-injects
 context so scripts can query the operator instead of scraping harness files
-(`hooks.ts:100–111`):
+(`hooks.ts:105–113`):
 
 - `HARNESS_SLUG` — the current harness slug (defaults to the project
   directory's basename when not passed explicitly)
 - `WORKSPACE_ID` — the active workspace, when known
 - `OPERATOR_BASE` — operator API base URL; defaults to
-  `$PAPERCUSP_OPERATOR_BASE`, then `http://localhost:3055`
+  `$PAPERCUSP_OPERATOR_BASE`, then `http://localhost:3070` (the operator API
+  port — `:3055` is the Vite content port with no `/api` routes, the EI-113
+  wrong-stack default that audit P-038 fixed)
 
 The full process environment is inherited too; the caller's explicit env wins
 over the injected values on conflict.
@@ -126,15 +156,23 @@ content + executable bit), `PUT`/`DELETE /api/harness/:slug/hooks/:name`
 `GET /api/harness/:slug/hook-logs/:logId` to read a hook-run log. The
 `hooks:known` tool returns the same name list.
 
-**Known staleness:** that name list comes from `getKnownHooks()`
-(`packages/operator-core/lib/known-hooks.ts`), which greps
-`orchestrator/src/main-loop.ts` for `runHook(` calls — but `main-loop.ts` was
-retired with the run-loop, so the grep finds nothing and the function falls
-back to `['pre-worker']`. Today the API therefore lists only `pre-worker` (a
-hook that never fires) and rejects writes to `on-escalate`/`afterDone` (the
-two that do). `runHook()` itself never consults this list, so scripts created
-directly on disk work regardless. Treat `known-hooks.ts` as needing a re-point
-at the live call sites.
+The known-hooks list comes from `getKnownHooks()`
+(`packages/operator-core/lib/known-hooks.ts`), which returns the `live` rows of
+a static `DBOS_PIPELINE_HOOKS` registry — yielding `['afterDone',
+'on-escalate']` (sorted). So the API lists, and accepts writes to,
+`afterDone`/`on-escalate` (the two that fire) and **rejects** names that aren't
+live, such as the bash-era `pre-worker` (catalogued `status: 'lost'`, not
+returned). A drift guard (`known-hooks.test.ts`) greps the live firing sites
+under `lib/dbos/` and asserts set equality with the registry's `live` rows, so
+adding a `runHook(...)` call without a registry row fails the build.
+`runHook()` itself never consults this list, so scripts created directly on
+disk run regardless of whether the API would have allowed the name.
+
+(Earlier the registry was instead derived by grepping the now-retired
+`main-loop.ts`, which always found nothing and fell back to `['pre-worker']` —
+advertising a hook that never fires and hiding the two that do. The static
+registry replaced that grep in `papercusp-full-app-audit-2026-06-09` P-016
+(EI-94).)
 
 ## Related
 

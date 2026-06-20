@@ -247,6 +247,23 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   that calls the LLM, build it ON the account-routing system (the inference gateway
   / account pool — never a hardcoded single credential) so it never trips a true
   limit.
+- **Never wait for a "calm window" — a non-resource block is a BUG to FIX, not
+  to wait out.** The dual of the multi-account note. The **ONLY** legitimate
+  reason you can't proceed is TRUE, *verified* exhaustion of a real shared
+  resource (tokens / accounts / rate) — rare, confirmed via `accounts:status` /
+  `dev:rate_governor_status`, never assumed. Every other reason to back off —
+  "the box is too contended," "wait for a calmer window," "too many agents
+  running," "infra is flaky right now" — is **NOT** valid: the system is
+  **designed for effectively-unbounded concurrency (hundreds-to-thousands of
+  simultaneous agents** on a machine this size), we've never reached it, and the
+  inability is **itself a bug to fix**. When you want to wait/throttle/sleep,
+  STOP — don't silently defer to a "calmer window" (it hides the defect +
+  strands work); **investigate the root cause** (broken spawn/fire-path, a serial
+  loop that should be parallel, a per-agent resource opened N times instead of
+  pooled, a lock held too broadly, an unbounded retry/poll storm, a missing
+  cap/backpressure) and **fix it robustly** (or `issues:create` /
+  `improvements:capture` + route it), then proceed. (The shared
+  `CONCURRENCY_FIRST_NOTE` every harness agent also carries.)
 - **Plan before non-trivial work.** Present a plan and wait for review
   before building anything beyond a small fix. Prior work + plan docs live
   behind `plans:*` (see *Named workflows*). Your client's plan mode (Claude's

@@ -14,7 +14,7 @@
  *
  * Fix: fall back to `PAPERCUSP_INTEGRATION_ROOT` (exported into the operator's unit
  * env, pointing at the canonical tree — the same resolver `db:next-migration`,
- * `ship-link`, and `register-papercup` use) BEFORE `process.cwd()`.
+ * `ship-link`, and `register-papercusp` use) BEFORE `process.cwd()`.
  *
  * Order is `projectDir → PAPERCUSP_INTEGRATION_ROOT → process.cwd()`: projectDir-FIRST
  * means a harness bee's correct tree always wins and is never overridden by the env

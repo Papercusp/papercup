@@ -958,6 +958,10 @@ export async function spawnAgentInHarness(
   // target all line up. parentSpawnId carries lineage onto the child's MCP URL too.
   extraEnv.PAPERCUSP_SPAWN_ID = spawnId;
   if (input.parentSpawnId) extraEnv.PAPERCUSP_PARENT_SPAWN_ID = input.parentSpawnId;
+  // Per-plan token attribution (B-TOK-2): stamp the plan this run serves so the
+  // subprocess usage sample (invoke.ts → recordUsageSamplePg) records plan_id and
+  // the Tokens dashboard can sum spend per-plan. Only when the spawn is plan-driven.
+  if (input.planSlug) extraEnv.PAPERCUSP_PLAN_SLUG = input.planSlug;
   // P-050/P-060: thread the Queen brief through the invocation so the invoke-once
   // prompt path (invoke.ts → buildPrompt's `## Queen brief` section) injects it into
   // the bee's prompt. The brief rides in extraEnv as QUEEN_BRIEF; the child reads

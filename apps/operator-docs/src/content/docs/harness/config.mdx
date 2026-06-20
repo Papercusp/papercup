@@ -5,7 +5,13 @@ documents:
   - libs/papercusp/packages/orchestrator/src/effective-config.ts
   - libs/papercusp/packages/orchestrator/src/blueprint/params.ts
   - libs/papercusp/packages/orchestrator/src/blueprint/schema.ts
-  - libs/papercusp/packages/harness/blueprints/coding/blueprint.yaml
+  - libs/papercusp/packages/harness/blueprints/coding-factory/blueprint.yaml
+plans:
+  - legacy-docs-audit-revival-2026-06-06
+  - deprecate-harness-config-json-2026-06-06
+  - cloud-deployment-layer-2026-06-06
+  - blueprint-aware-harness-ui-2026-06-09
+  - psu-isolation-and-blueprint-aware-harness-ui-2026-06-09
 ---
 
 The first-generation harness was configured by one hand-edited
@@ -18,16 +24,35 @@ declared, validated surface between them — and **the config file is gone**.
 (`libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml`), which
 declares the *shape*: roles, spine, triggers, gates, dispatch policy, plus
 
-- **`knobs`** — shape-level defaults (e.g. the coding blueprint sets
+- **`knobs`** — shape-level defaults (e.g. the `coding-factory` blueprint sets
   `harnessKind: coding`, `requiresRepo: true`, `debuggerThreshold: 3`), and
 - **`params`** — the *declared tunables*: a keyed record where each key is a
   dot-path into the instance config (`debugger.threshold`,
   `parallelWorkers.useChunkLoop`, `parallelWorkers.workingStateCheck`, …)
   carrying `label` / `type` / `min`/`max` / `options` / `default` / `group` /
   `affects` / `description`. Params **union across `extends`**: `base`
-  declares the universal ones (dispatch, backend); a child blueprint adds its
-  own (the coding blueprint's worker/typecheck/debugger knobs are
-  coding-only). Schema: `libs/papercusp/packages/orchestrator/src/blueprint/schema.ts`.
+  declares the universal ones (`parallelWorkers.max`, `aiBackend.default.model`,
+  `aiBackend.default.agentCmd`); a child blueprint adds its own (`coding-factory`'s
+  worker/typecheck/debugger params — `debugger.threshold`,
+  `parallelWorkers.useChunkLoop` / `.workingStateCheck` / `.replanStrikes` /
+  `.escalateToRole` — are pipeline-only). The current `coding` (hive) blueprint
+  declares no `params:` block at all, so it inherits only base's universal set.
+  Schema: `libs/papercusp/packages/orchestrator/src/blueprint/schema.ts`.
+
+:::note[Blueprint-id rename — `coding` is the Hive, `coding-factory` is the pipeline]
+The 2026-06-18 rename
+(`domain-generic-hive-architecture-2026-06-18`,
+`libs/papercusp/packages/orchestrator/src/blueprint-aliases.ts`) reassigned three
+ids: `hive → coding`, `generic-hive → work`, and the **old** `coding → coding-factory`.
+So `coding` now names the standard coding **Hive** (Queen + bees), while the
+per-feature director pipeline (the strict
+scoper → architect → worker → validator → … → curator spine that carries the
+worker/typecheck/debugger knobs and params) is now `coding-factory`. There is
+deliberately **no `coding → coding-factory` alias** — the `coding` id was reused,
+so a bare `coding` reference resolves to the new Hive; old strict-spine instances
+must be migrated to `extends: coding-factory`. When this page says "the coding
+pipeline" it means `coding-factory`.
+:::
 
 **2. The instance config (the overrides).** Per-harness values live in the
 **workspace-PG store**, not in a file. At spawn time the operator assembles
@@ -45,6 +70,14 @@ residual knob keys (`promptOverrides`, `aiBackend`, `parallelWorkers`,
 `scoper`, `snapshotRetention`); already-migrated knobs (`maxCostUsd`,
 `debuggerThreshold`, dispatch concurrency) have their own resolution paths
 and are deliberately excluded so nothing double-applies.
+
+The overlay is read **best-effort** from the harness's own local
+`<stateDir>/blueprint.yaml` (`loadHarnessKnobs`) — a missing or unparseable
+blueprint yields `null` and an **empty overlay**, never a file fallback. And a
+blueprint that declares **none** of the five residual keys (the current `coding`
+Hive, whose knobs are just `harnessKind` / `requiresRepo`) also produces an empty
+overlay: `readEffectiveConfig` short-circuits and returns the bare instance layer
+unchanged.
 
 ## Reading and writing configuration
 
@@ -67,9 +100,11 @@ now declared + validated rather than freeform.
 
 The UI for all of this is the schema-driven **harness settings panel**
 (`BlueprintSettingsPanel`, gated by the `papercusp-blueprint-aware-settings`
-[flag](/internal/docs/posthog/feature-flags)): it introspects the harness's
-blueprint `params` and renders controls per declared group — which is why a
-research or gym harness shows its own tunables instead of a hardcoded coding
+[flag](/internal/docs/posthog/feature-flags) — **default ON**): it introspects
+the harness's blueprint `params` and renders controls per declared group — which
+is why a `coding-factory` harness shows the worker/typecheck/debugger controls
+(those params are declared on `coding-factory`), while a `coding` (hive) / `work`
+/ research / gym harness shows its own tunables instead of a hardcoded coding
 form.
 
 ## Mapping from the legacy config (for old-timers)
@@ -78,12 +113,19 @@ form.
 |---|---|
 | `models.<role>` / backend choice | `aiBackend.*` (residual overlay key; per-param declared) |
 | `promptOverrides.<role>` | survives as a residual overlay key |
-| `debugger.threshold` | declared param `debugger.threshold` (blueprint knob default 3) |
-| `parallelWorkers.*` | declared params (`useChunkLoop`, `workingStateCheck`, …) |
+| `debugger.threshold` | declared param `debugger.threshold` on `coding-factory` (blueprint knob default 3) |
+| `parallelWorkers.*` | declared params on `coding-factory` (`useChunkLoop`, `workingStateCheck`, …) |
 | `snapshotRetention` | residual overlay key |
 | `smokeTest.*` | gate machinery exists, runner not yet ported — see [Smoke-test gate](/internal/docs/harness/smoke-test) |
 | `checkpoints.*` | retired — `CHECKPOINT` finalizes as escalation; milestone gates are `needs-human` plan items |
 | `branchIsolation.*` / lane worktrees | retired with the run-loop — see [Worktrees & isolation](/internal/docs/harness/worktrees) |
+
+`coding-factory` is **not** a retired spine: it is the live per-feature coding
+pipeline blueprint — the fallback resolved when a harness has no blueprint of its
+own (`blueprint-run-action.ts`'s `codingFallback()` →
+`loadBuiltinBlueprint('coding-factory')`), and the `extends:` target emitted by
+`harness:generate-from-repo` for a detected repo. Its worker/typecheck/debugger
+params above are what a real coding pipeline tunes.
 
 ## Related
 

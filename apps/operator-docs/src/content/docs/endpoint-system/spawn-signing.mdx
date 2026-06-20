@@ -3,6 +3,12 @@ title: Spawn-URL signing
 description: Per-spawn MCP URLs carry an HMAC signature over their baked params. The dispatcher refuses to honor role claims that don't match. Realistic prompt-injection defence.
 sidebar:
   order: 9
+plans:
+  - ui-control-plan-2026-05-11
+  - ui-control-audit-2026-05-11
+  - admin-testing-tab-restructure-2026-05-24
+  - unify-launch-mechanics-2026-06-09
+  - promote-policy-and-waves-2026-05-30
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -33,7 +39,12 @@ Both ends share a 32-byte signing key stored at:
 SELECT value_b64 FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key';
 ```
 
-The row is auto-minted on first use by either side. Both the operator and the orchestrator cache it in-process, invalidating the moment PG's `rotated_at` advances (a 5-minute TTL is kept only as a fallback for when `rotated_at` can't be read).
+The row is auto-minted by the **operator** on first use (`randomBytes(32)` + an `onConflictDoNothing()` insert). The orchestrator's key loader does **not** mint — if the row is missing it throws (`spawn-signing-key row missing — operator boots mint it on first verify call`), expecting the operator to have minted it already.
+
+Both sides cache the key in-process, but with **different invalidation policies**:
+
+- **Operator** (`loadOrCreateKey` in `spawn-signing.ts`) re-reads PG and compares `rotated_at` on every call, so a rotation is picked up on the very next signing/verifying call. Its 5-minute TTL is only a fallback for when `rotated_at` can't be read.
+- **Orchestrator** (`loadSigningKey` in `spawn-mcp.ts`) checks the 5-minute TTL **first** and returns the cached key without opening a PG pool while inside the window (a deliberate hot-path optimization — it skips the pool-open + `SELECT`). It only re-reads PG (where `rotated_at` then wins) after the TTL lapses. So on the orchestrator side the 5-minute window is the **primary** mechanism, not a fallback: a rotation is not picked up until the TTL expires.
 
 ### Mint side — orchestrator
 
@@ -44,6 +55,10 @@ The row is auto-minted on first use by either side. Both the operator and the or
 3. Canonicalizes by sorting + URL-encoding (only the allowlist; duplicates rejected; `sig` itself ignored).
 4. HMAC-SHA256 over the canonical string, base64url-encoded, appended as `sig=`.
 5. Writes the `.mcp.json` with mode 0600. The per-spawn worktree dir is mode 0700.
+
+The same signed, role-scoped URL is also written into a per-spawn **codex** `CODEX_HOME/config.toml` (`writeSignedSpawnCodexHome` → `[mcp_servers.papercusp] url = "<signed URL>"`, mode 0600). Codex doesn't env-expand inside `config.toml`, so the URL is fully baked including the `sig` — auth is the `sig` query param, no bearer. `invoke()` routes codex backends to `writeSignedSpawnCodexHome` and everything else to `writeSignedSpawnMcp`.
+
+Operator-initiated **superuser** spawns are a separate envelope handled *before* the signing branch: when `PAPERCUSP_SPAWN_SU_BEARER` is set, `writeSignedSpawnMcp` writes a `?superuser=1` URL plus an `Authorization: Bearer` header and returns — **no `sig` is minted** for SU spawns (the superuser door is checked before the sig path in the verifier).
 
 The orchestrator's PG DSN is inherited from the operator-set env. If signing fails (DSN missing, row missing on first boot), `writeSignedSpawnMcp` throws — the outer try/catch in `invoke()` logs `spawn-mcp write failed` and the agent boots without an MCP endpoint, making the failure visible. Callers that need the historical soft-warn fallback (emit unsigned + warn) can pass `allowUnsigned: true` AND run the operator with `PAPERCUSP_REQUIRE_SPAWN_SIG` unset.
 
@@ -62,12 +77,22 @@ Any non-`ok` result is persisted to `harness_shared.spawn_sig_verification_failu
 
 <Aside type="note" title="tools/list mirrors tools/call in strict mode">
 Both `tools/list` and `tools/call` reject when the URL claims a spawn
-context (role/workspace/spawn) without a valid sig. `tools/list` on a
-bare `/api/mcp` URL with no claims still returns the full catalog —
-that's anonymous discovery, not an escalation attempt. (Prior behavior
-returned the claimed-role catalog even for forged URLs; that leaked
-the operator-tier surface to anyone setting `?role=operator` and left
-no audit trace.)
+context (role/workspace/spawn) without a valid sig. The three
+outcomes are distinct:
+
+- **Failed spawn ctx** (forged / expired / unsigned-with-claims):
+  `tools/list` returns an **empty** list `{ tools: [] }` — no catalog
+  leak, no fall-through. (`tools/call` rejects with
+  `request_rejected: spawn_sig_<reason>`.)
+- **Bare `/api/mcp`** with no claims (`kind: 'none'`): returns the
+  **full** unfiltered catalog — that's anonymous discovery, not an
+  escalation attempt. (`tools/call` then fails on
+  `invalid_request_context` from the dispatcher.)
+- **Valid signed ctx** (`kind: 'ok'`): returns the role-scoped catalog.
+
+(Prior behavior returned the claimed-role catalog even for forged
+URLs; that leaked the operator-tier surface to anyone setting
+`?role=operator` and left no audit trace.)
 </Aside>
 
 ## Operating modes
@@ -75,6 +100,8 @@ no audit trace.)
 ### Strict (default)
 
 `PAPERCUSP_REQUIRE_SPAWN_SIG=1` in `apps/operator/.env.local`. Unsigned URLs that claim a spawn context (any of `role=`, `spawn=`, `workspace=`) hard-reject with `request_rejected: spawn_sig_missing_sig_required_mode`. Bare URLs with no claims are accepted (tools/list returns the full catalog, tools/call fails on `invalid_request_context` from the dispatcher).
+
+Two auth envelopes are checked **before** the signature path and so don't need a `sig`: `?superuser=1` + loopback + superuser bearer, and `?power_user=1` + loopback + a verified power-user HMAC access token. The power-user path clamps the workspace to the **token's** claim (any `?workspace=` in the URL is ignored), unlike the superuser path.
 
 ### Soft-warn (rollout-only)
 
@@ -95,16 +122,26 @@ curl -X POST http://localhost:3070/api/admin/spawn-signing/rotate \
 
 The endpoint rotates the PG row **and** bumps the operator's in-process cache, so revocation takes effect on the very next MCP call (not the 5-minute lazy-cache lag).
 
-Loopback + superuser-bearer gated. Off-loopback returns 403; missing/bad bearer returns 401.
+The route is gated by `auth: { trust: ['trusted'] }`, and `requirePrincipal` maps the failures as follows:
+
+- **403** when a principal resolves but its trust isn't in the `['trusted']` allowlist. A loopback request with a **missing or wrong bearer** falls back to the loopback principal (`trust: 'unverified-loopback'`), which isn't `trusted` → 403.
+- **401** only when **no principal resolves at all** — e.g. an off-loopback request with no/invalid bearer (the loopback fallback can't fire off-loopback).
+
+A valid superuser bearer over loopback yields `trust: 'trusted'` → accepted.
 
 <Aside type="note" title="Multi-instance cache coherence">
-Each process caches the key, but every cache honors PG's `rotated_at`:
-a rotate on *any* process (or a direct PG `UPDATE` that bumps
-`rotated_at`) is picked up by every other operator process and
-orchestrator subprocess on its **next** signing/verifying call — not
-after a 5-minute lag. The 5-minute TTL is only a fallback for when
-`rotated_at` can't be read, so you do **not** need to call `/rotate`
-on each port.
+**Operator processes** honor PG's `rotated_at` on every call: a rotate
+on any operator process (or a direct PG `UPDATE` that bumps
+`rotated_at`) is picked up by every other operator process on its
+**next** signing/verifying call — so you do **not** need to call
+`/rotate` on each port.
+
+**Orchestrator subprocesses** are different: their key loader serves
+the cached key for up to **5 minutes** before re-reading PG, so a
+rotation is not picked up there until the TTL lapses (then PG's
+`rotated_at` wins). In-flight spawns therefore keep signing with the
+old key for up to 5 minutes — which is fine, since the operator
+already rejects those once *it* re-reads the rotated key.
 </Aside>
 
 ### CLI wrapper
@@ -114,7 +151,7 @@ bun run rotate:spawn-key                # confirmation prompt
 bun run rotate:spawn-key -- --yes       # no prompt
 ```
 
-(`apps/operator/scripts/rotate-spawn-signing-key.mjs`. Prefers the HTTP endpoint when the operator is reachable; falls back to direct PG when not — the direct `UPDATE` bumps `rotated_at`, so every other process still picks up the new key on its next call.)
+(`apps/operator/scripts/rotate-spawn-signing-key.mjs`. Prefers the HTTP endpoint when the operator is reachable; falls back to direct PG when not — the direct `UPDATE` bumps `rotated_at`, so every operator process picks up the new key on its next call, while orchestrator caches expire within 5 minutes. The script itself prints "Operator + orchestrator caches expire within 5 minutes.")
 
 ### Direct PG (only when the operator is down)
 
@@ -163,7 +200,7 @@ A non-zero rate of `invalid_signature` outside explicit test runs is a real sign
 
 | reason | When |
 |---|---|
-| `missing_sig` | URL has `exp` but no `sig` (typically a logged-only warning unless in strict mode) |
+| `missing_sig` | URL has `exp` but no `sig`. Once a URL carries `exp` (or `sig`), `verifySpawnParams` runs and any failure is logged **and** hard-rejected, regardless of strict vs soft-warn mode. (The soft-warn logged-only-accept path only fires when *neither* `sig` nor `exp` is present, and that path emits no reason code.) |
 | `missing_exp` | URL has `sig` but no `exp` |
 | `invalid_exp` | `exp` not parseable as a positive integer |
 | `expired` | `exp < now()` |

@@ -3,13 +3,18 @@ title: Schema
 description: The two PG tables that back the spawn primitive — `spawned_agents` (the durable mirror) and `tool_invocations_spawn_tree` (the recursive lineage view).
 sidebar:
   order: 4
+plans:
+  - fumadocs-to-starlight-2026-05-20
+  - starlight-projection-site-2026-06-18
+  - fleet-as-supervised-blackboard-2026-06-04
+  - unify-agent-spawn-chokepoint-2026-06-06
 ---
 
-## `harness_shared.spawned_agents` — baseline (+ migrations 146, 174)
+## `harness_shared.spawned_agents` — baseline + supervision/durability/observability migrations
 
 One row per spawn launch — the durable nursery. Written by the spawn engine (`recordSpawn` / `finishSpawn`); read by `fleet:tree`, the concurrency-ceiling count, and the Intel panel.
 
-The table is defined in `000-baseline.sql`; the supervision columns (`session_owner` … `cancelled_at`) were added by `146-fleet-supervision.sql` and the durability columns (`heartbeat_at`) by `174-spawned-agents-heartbeat-reclaim.sql`.
+The table is defined in `000-baseline.sql`; `146-fleet-supervision.sql` added the supervision columns (`session_owner` … `cancelled_at`) and `174-spawned-agents-heartbeat-reclaim.sql` the durability `heartbeat_at`. Several **later migrations** keep extending it — `203` (`session_id`), `213` (a column-targeted change-notify trigger), `219` (`idempotency_key`), `228` (`pid` / `launcher_host`), `229` (`model_spec` / `model_tier`), `230` (`brief`), `233` (`last_output_at`) — so the live table is wider than the baseline. The full set of columns the engine reads is in `SELECT_COLS` (`pg-stores.ts`).
 
 ```sql
 CREATE TABLE harness_shared.spawned_agents (
@@ -42,7 +47,16 @@ CREATE TABLE harness_shared.spawned_agents (
   cancel_reason         TEXT NULL,
   cancelled_at          TIMESTAMPTZ NULL,
   -- 174-spawned-agents-heartbeat-reclaim: orphan reclaim
-  heartbeat_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+  heartbeat_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- later migrations (ALTER TABLE ADD COLUMN, all NULL-able)
+  session_id            TEXT NULL,          -- 203: native resume id for a CLAUDE bee (claude --resume)
+  idempotency_key       TEXT NULL,          -- 219: caller key → (workspace_id, key) dedupes retried spawns
+  pid                   INT NULL,           -- 228: child OS pid (reclaim /proc liveness)
+  launcher_host         TEXT NULL,          -- 228: host that launched it (same-host liveness gate)
+  model_spec            TEXT NULL,          -- 229: per-spawn resolved model spec, if overridden
+  model_tier            TEXT NULL,          -- 229: tier the spec resolved from
+  brief                 TEXT NULL,          -- 230: queen-authored situational brief (QUEEN_BRIEF)
+  last_output_at        TIMESTAMPTZ NULL    -- 233: last stdout/stderr the supervisor observed (wedge signal)
 );
 ```
 
@@ -60,13 +74,23 @@ spawned_agents_recent_idx           -- (workspace_id, harness_slug, started_at D
 spawned_agents_running_idx          -- (workspace_id, status) WHERE status='running'
 spawned_agents_session_owner_idx    -- (workspace_id, session_owner) — owner→spawn lookup for cancel/release (146)
 spawned_agents_active_heartbeat_idx -- (heartbeat_at) WHERE status IN ('running','restarting') — orphan-reclaim sweep (174)
+spawned_agents_session_id_idx       -- (session_id) WHERE session_id IS NOT NULL — native-resume lookup (203)
+spawned_agents_idempotency_key_uq   -- UNIQUE (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL — spawn dedupe (219)
 ```
 
 A check constraint (`spawned_agents_restart_strategy_chk`, added by migration 146) restricts `restart_strategy` to `one_for_one | one_for_all | rest_for_one`.
 
+:::note
+`spawned_agents_running_idx` is partial on `WHERE status='running'` only — it predates the `restarting` active status (added by 146). The active-count query now matches `status IN ('running','restarting')` (`countRunning` / `openChildren`), so the partial index only *partially* covers it; the `restarting` slice falls back to a wider scan.
+:::
+
+### Change-notify trigger (migration 213)
+
+`emit_change_notify_trg` fires the `sync_invalidate` NOTIFY the SSE bridge listens on, but it's **column-targeted on purpose**: `AFTER INSERT OR DELETE OR UPDATE OF status, exit_code, error_message, session_id`. A running bee takes a `heartbeat_at` write every minute; a bare row trigger would re-fire the joined sync queries on every beat. Scoping the UPDATE leg to the outcome columns the projection actually reads keeps invalidation volume at one-per-lifecycle-transition instead of one-per-heartbeat.
+
 ### RLS
 
-Same workspace-scoped policy as every other `harness_shared` table — `spawned_agents_workspace_isolation`: reads/writes require the `app.workspace_id` GUC to match the row's `workspace_id` (`USING`/`WITH CHECK (workspace_id = current_setting('app.workspace_id', true))`). The org PG client (`getOrgPg`) sets the GUC per connection on every operation.
+Same workspace-scoped policy as every other `harness_shared` table — `spawned_agents_workspace_isolation`: reads/writes require the `app.workspace_id` GUC to match the row's `workspace_id` (`USING`/`WITH CHECK (workspace_id = current_setting('app.workspace_id', true))`). The GUC is set **per transaction** by the dispatch/route layer (`set_config('app.workspace_id', $1, true)` — the `true` makes it transaction-local), not by the pooled client. `getOrgPg`'s connection only sets `search_path`, `idle_in_transaction_session_timeout`, and `application_name` at connect time.
 
 ### Lifecycle hooks on the row
 
@@ -81,13 +105,28 @@ Same workspace-scoped policy as every other `harness_shared` table — `spawned_
 
 ### `heartbeat_at` + reclaim — the durability mechanism
 
-A `running`/`restarting` row whose launching operator host dies would otherwise count against the concurrency ceiling forever (the old `cancel_requested` "v2 watcher" idea — a `pid` column + a SIGTERM-by-pid watcher — was never built and is superseded by this). Instead:
+A `running`/`restarting` row whose launching operator host dies would otherwise count against the concurrency ceiling forever. The reclaim sweep un-wedges it:
 
 1. The live host bumps `heartbeat_at` every `SPAWN_HEARTBEAT_INTERVAL_MS` (60s) for its in-flight spawns.
-2. A row un-heartbeated past `RECLAIM_STALE_MS` (5 min) is presumed orphaned (host dead).
-3. The reclaim sweep — opportunistic on each spawn + periodic — flips it to `status='failed'` with a reason and frees the ceiling slot (and wakes the dead child's parent).
+2. A row un-heartbeated past `RECLAIM_STALE_MS` (5 min) is a reclaim *candidate* (launching host presumed dead).
+3. The reclaim sweep — opportunistic on each spawn + periodic — flips qualifying candidates to `status='failed'` with a reason and frees the ceiling slot (and wakes the dead child's parent).
 
-`cancel_requested` survives in the schema but is informational; the reclaim path, not a pid watcher, is what un-wedges the ceiling cross-restart.
+The sweep is **not** purely heartbeat-driven. Migrations 228 + the `pid` / `launcher_host` columns feed a liveness check (EI-85): for a **same-host** stale candidate, `reclaimOrphanedSpawns` runs `isSpawnProcessAlive(pid)` — a Linux `/proc/<pid>` probe (cmdline-hardened against PID reuse) — and **only reclaims a child it proves dead**. A child that is still alive (its host was merely paused for GC or a restart) is left alone and re-heartbeated. A different-host or pid-less candidate can't be probed, so it falls back to the heartbeat-stale reclaim. This is a liveness gate, not a SIGTERM-by-pid watcher: nothing signals the child by pid — the reclaim only edits the row.
+
+`cancel_requested` survives in the schema but is informational; it is the reclaim path (heartbeat + pid liveness), not a pid watcher, that frees the ceiling cross-restart.
+
+### Wedged vs generating — `last_output_at` (migration 233)
+
+A fresh `heartbeat_at` only proves the *supervisor* is alive, not that the bee is making progress. Migration 233 adds `last_output_at`; `heartbeatSpawns` stamps it in the same tick as `heartbeat_at` whenever the supervisor observes the child emit stdout/stderr. That distinguishes:
+
+- a **generating** bee — heartbeat fresh **and** `last_output_at` moving; and
+- a **wedged** bee — heartbeat fresh but `last_output_at` stale past `WEDGE_SILENT_MS` (10 min), i.e. alive-but-silent (hung network call, stuck rate-limit loop).
+
+`isPossiblyWedged` flags the latter for display/triage. A flag-gated **wedge-reaper** (`reapWedgedLocalSpawns`, `PAPERCUSP_WEDGE_REAP_MS`, default 30 min) cancels such a spawn — it routes through `cancelSubtree`, so the row lands at `status='cancelled'` (claims + locks released), not `'failed'`. A spawn that has emitted **no** output is never flagged — absence of signal is not evidence of a wedge.
+
+### Idempotent spawn admission — `idempotency_key` (migration 219)
+
+A fleet spawn that times out at the route layer gets retried by the caller; without a dedupe key each retry launched another agent. Migration 219 adds `idempotency_key` + the partial unique index `spawned_agents_idempotency_key_uq` on `(workspace_id, idempotency_key)`. A caller-supplied key makes the `(workspace_id, key)` pair single-spawn even if two requests race past the application-level check — admission returns a `{ kind: 'duplicate', spawnId }` verdict and reuses the existing spawn instead of launching a second one.
 
 ## `harness_shared.tool_invocations_spawn_tree` — baseline view
 
@@ -168,18 +207,18 @@ When a spawn fires, the orchestrator's `spawn-mcp.ts` writes a per-child `.mcp.j
 
 | Param | Required | Source | Purpose |
 |---|---|---|---|
-| `harness` | ✅ | `ctx.harnessSlug` | Path resolution + telemetry attribution |
 | `workspace` | ✅ | `ctx.workspaceId` | RLS scoping for everything |
 | `role` | ✅ | child role | Tool quota windows + role gating |
 | `run` | ✅ | parent's `runId` | Inherited; per-run quota windows |
 | `spawn` | ✅ | new `spawnId` | Unique per-spawn telemetry attribution |
+| `harness` | optional | `ctx.harnessSlug` | Path resolution + telemetry attribution |
 | `feature` | optional | spawn input `featureId` | Feature attribution in tool_invocations |
 | `chunk` | optional | spawn input `chunkId` (workers) | Worker chunk-window quotas |
 | `parent_spawn` | optional | parent's `spawnId` | The lineage edge — this is what makes the spawn-tree work |
 | `client` | optional | UI client id / spawn owner | Default `ui:dispatch` target when invoked from a browser tab |
 
-(The signature also covers an `exp` expiry param; required vs optional is enforced by `parseRequestContext`.)
+(The signature also covers an `exp` expiry param.) Required vs optional is enforced by `parseRequestContext`, which throws `InvalidRequestContextError` only when `workspace`, `role`, `run`, or `spawn` is missing. `harness` is **optional** on the receiver: a missing `harness` defaults to the `'*'` unscoped sentinel (a workspace-level role session — operator/planner launched without a harness). The orchestrator always sends it, but the receiver does not require it.
 
-The agent process loads this `.mcp.json` and every MCP request it makes thereafter carries those params. The framework parses them in `parseRequestContext` (exported as `buildHttpSpawnContext`, `packages/agent-mcp/src/spawn-context.ts`), populates `ctx.parentSpawnId`, and the dispatcher records it as `parent_spawn_id` on every `tool_invocations` row.
+The agent process loads this `.mcp.json` and every MCP request it makes thereafter carries those params. The framework parses them with `parseRequestContext` (`packages/agent-mcp/src/spawn-context.ts`), which takes the request `URL`, populates `ctx.parentSpawnId`, and the dispatcher records it as `parent_spawn_id` on every `tool_invocations` row. (The HTTP transport has a sibling helper, `buildHttpSpawnContext` from `@papercusp/tooldef-http`, which reads the same context from `{ headers, searchParams }` — a different function in a different package, not an alias of `parseRequestContext`.)
 
 That's the entire mechanism. No agent code needs to know about spawning; the URL params do all the work.

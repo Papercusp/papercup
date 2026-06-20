@@ -25,32 +25,51 @@ older code.) Three Postgres roles see it:
 
 ## Schema layout
 
-The baseline (`libs/papercusp/libs/db/sql/000-baseline.sql`) creates exactly
-two schemas, `harness_shared` and `papercup_shared`. The four core
-per-harness entities are now **consolidated base tables in `harness_shared`**,
-keyed on a `harness_slug` column; the old physical `harness_<slug>.*` tables
-were dropped (archived migration `032-drop-per-harness-tables-replace-with-views`)
-and replaced with auto-updatable VIEWs for back-compat with writers that
-still pass a slug. The slug is a row value, not a schema name.
+The baseline (`libs/papercusp/libs/db/sql/000-baseline.sql`) creates two
+schemas, `harness_shared` and `papercup_shared`. A fully migrated DB has
+**more than two** global schemas, though: migration `109-global-schemas-and-grants`
+also (re)creates `papercusp_auth` (operator identity — `users`, `sessions`,
+`magic_link_requests`) and `audit` (`operator_actions`, `action_executions`),
+which the squashed baseline's narrow `pg_dump` had dropped, and
+`papercusp_marketplace` is created at runtime by the plugin layer.
+
+The four core per-harness entities are now **consolidated base tables in
+`harness_shared`**, keyed on a `harness_slug` column; the old physical
+`harness_<slug>.*` tables were dropped (archived migration
+`032-drop-per-harness-tables-replace-with-views`) and replaced with
+auto-updatable VIEWs for back-compat with writers that still pass a slug.
+The slug is a row value, not a schema name.
 
 ```
 papercusp database
 ├── harness_shared
-│   ├── projects                          (cross-harness portfolio)
-│   ├── harness_features_consolidated     (PK harness_slug, feature_id)
-│   ├── harness_issues_consolidated       (PK harness_slug, issue_id)
-│   ├── agent_runs_consolidated           (PK harness_slug, run_id)
-│   ├── snapshots_consolidated            (PK harness_slug, snapshot_id)
-│   ├── agent_chats_consolidated
-│   ├── feature_audit_consolidated
-│   ├── audit_log, harness_decisions, harness_phases, …
-│   └── harness_<slug>.*                  (auto-updatable VIEWs, back-compat)
-└── papercup_shared
-    ├── messages
-    ├── message_recipients
-    ├── message_comments
-    └── directive_summaries
+│   ├── projects                            (cross-harness portfolio)
+│   ├── harness_features_consolidated       (PK harness_slug, feature_id)
+│   ├── harness_issues_consolidated         (PK harness_slug, issue_id)
+│   ├── agent_runs_consolidated             (PK harness_slug, run_id)
+│   ├── harness_snapshots_consolidated      (PK harness_slug, snapshot_id)
+│   ├── agent_chats_consolidated            (PK workspace_id, harness_slug, id)
+│   ├── feature_audit_consolidated          (PK id)
+│   └── audit_log, harness_decisions, harness_phases, …
+├── papercup_shared
+│   ├── messages
+│   ├── message_recipients
+│   ├── message_comments
+│   ├── directive_summaries
+│   └── briefings
+└── harness_<slug>                          (one schema per registered harness;
+    ├── harness_features  (VIEW)             created at install time, NOT by the
+    ├── harness_issues    (VIEW)             baseline — auto-updatable VIEWs over
+    └── …                 (VIEW)             the consolidated tables, back-compat)
 ```
+
+Note the per-harness back-compat VIEWs are **not** nested inside
+`harness_shared`: each registered harness gets its own `harness_<slug>`
+schema, created at install/scaffold time (the baseline only defines
+`harness_shared`). Note also that not every consolidated table is keyed
+`(harness_slug, <entity_id>)`: `agent_chats_consolidated` is also
+workspace-scoped (`(workspace_id, harness_slug, id)`) and
+`feature_audit_consolidated` is keyed on `id` alone.
 
 ## Consolidated tables, not schema-per-harness (Option A)
 
@@ -116,8 +135,7 @@ to add new tables.
 ## Cross-harness consolidated tables
 
 `harness_shared.harness_features_consolidated` is the canonical example.
-It's a base table (not a view) maintained by triggers on every
-per-harness `harness_features`. Schema:
+It's a base table — and the **only** physical store for features. Schema:
 
 ```
 harness_features_consolidated (
@@ -128,13 +146,27 @@ harness_features_consolidated (
 )
 ```
 
-The triggers live alongside each per-harness `harness_features` and fire
-on `INSERT`, `UPDATE`, `DELETE`. Adding a column means: add it to every
-per-harness table, add it to the consolidated table, update every
-trigger.
+There are no per-harness base tables and no sync triggers any more. The
+old design trigger-mirrored each per-harness `harness_features` table
+into this consolidated table, but migration `032` dropped the per-harness
+physical tables (and the `sync_*_consolidated()` trigger functions) and
+replaced them with auto-updatable `harness_<slug>.harness_features` VIEWs
+that are plain `SELECT *` over the consolidated table filtered by slug.
+(The `harness_shared.sync_features_consolidated()` function still appears
+in the baseline dump but is **not attached to any trigger** — it's
+vestigial.) Writers now target the consolidated table directly, or write
+through the slug-scoped view.
 
-This is a maintenance burden but it's the only way to get cross-harness
-data into Zero — views can't be in publications.
+Adding a column means: add it to the consolidated table only. The views
+are `SELECT *`, so they pick it up automatically — no per-table or
+per-trigger edits.
+
+Getting cross-harness data into Zero is straightforward as a result: the
+consolidated base table is published directly (e.g.
+`harness_shared.harness_features_consolidated` is a member of the
+`zero_harness` publication), and the per-harness slug-scoped reads are
+just VIEWs over it. (Zero itself is on the retirement path — see the
+banner at the top of this page.)
 
 ## papercup\_shared schema
 
@@ -144,17 +176,22 @@ its own data that isn't per-harness. The messaging tables live in
 
 * `messages` — formerly JSON, now PG-canonical
 * `message_recipients`, `message_comments`, `directive_summaries`
+* `briefings`
 
 (Note: the cross-harness `projects` table lives in **`harness_shared`**,
 not `papercup_shared`.)
 
-These are read by the `messages.*` / `directiveSummaries.*` named queries
-without a slug arg. Cross-app code reaches them via
-`search_path = papercup_shared, public` in the connection.
+These are read by named queries without a slug arg — `messages.*` and
+`directiveSummaries.*`, plus the `messageRecipients.*`, `messageComments.*`,
+and `briefings.*` namespaces (all in `libs/zero-harness/src/queries.ts`).
+Cross-app code reaches them via `search_path = papercup_shared, public`
+in the connection.
 
-JSON ledgers still exist on disk but are tagged
-`{ "derivedFromPg": true }` and rebuilt from PG — they're a derived
-snapshot for tooling that wants a file. Postgres is the source of truth.
+The old `{ "derivedFromPg": true }` JSON ledgers — file snapshots rebuilt
+from PG for tooling that wanted a file — are gone from the live path. The
+only code that still emits that tag lives under `_retired/` (the messaging /
+briefings surface); it is not part of the live messaging path. Postgres is
+the source of truth.
 
 ## Slug as the stable cross-store identifier
 

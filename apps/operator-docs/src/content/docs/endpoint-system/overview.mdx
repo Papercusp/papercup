@@ -3,6 +3,13 @@ title: Overview
 description: One function, three transports — what the endpoint system is and why we built it this way.
 sidebar:
   order: 1
+plans:
+  - endpoint-unification-2026-05-21
+  - papercusp-tooldef-extraction-2026-05-29
+  - bespoke-card-improvements-2026-05-13
+  - fumadocs-to-starlight-2026-05-20
+  - phase-4-endpoint-system-2026-05-12
+  - token-efficient-tool-result-formats-2026-06-06
 ---
 
 ## The one-line version
@@ -66,6 +73,13 @@ projected onto the MCP catalog. `tools/list` never sees it; an agent
 cannot call it. That guarantee is what keeps plumbing out of the agent
 surface.
 
+Two route-level knobs tune that machinery. A route defaults to a **30s
+wall-clock timeout** — a wedged handler aborts; pass `timeoutSec: null`
+to disable the watchdog for long-lived SSE/streaming routes whose
+handler legitimately outlives any fixed budget. Telemetry defaults to
+`sampleRate: 1` (record every call); lower it (`0..1`) for
+high-frequency polled routes, or set `0` to never record.
+
 Route files import `defineTool` directly — the former `defineRoute`
 alias was **removed** when the primitives were unified (Phase E6,
 `endpoint-unification-2026-05-21`). A route is *declared* with
@@ -103,7 +117,7 @@ A tool handler has two outbound channels available, projected uniformly across t
 | **Events** | `ctx.emit('name', payload)`, `ctx.progress(pct, msg)` | typed SSE events / MCP notifications | Ring buffer (T2.2), bounded by `replayBufferSize` |
 | **State** | `ctx.askUser(spec)`, `ctx.publishState(snapshot)` | `state-snapshot` SSE on `/api/operator/state-snapshot` | Current snapshot only — replay does not re-prompt |
 
-Cards (`ctx.askUser`) and tool state (`ctx.publishState`) live on the state channel because they're not append-only — a reconnecting client wants the latest answered/unanswered card state, not history of every snapshot. The framework auto-installs `askUser` / `publishState` on the ctx when the call has a `workspaceId + runId` (always present for HTTP-projected calls). See [ctx.askUser](/internal/docs/endpoint-system/ask-user) and [state-shaped tools](/internal/docs/endpoint-system/state-tools).
+Cards (`ctx.askUser`) and tool state (`ctx.publishState`) live on the state channel because they're not append-only — a reconnecting client wants the latest answered/unanswered card state, not history of every snapshot. The two installs have different conditions: `ctx.askUser` is installed whenever the call has a `workspaceId + runId` (always present for HTTP-projected calls), but `ctx.publishState` is installed only when the tool *also* declares a `state` schema. A tool with no `state` schema gets `ctx.publishState === undefined` even on an HTTP-projected call — publish snapshots from a state-shaped tool, and use `ctx.emit` otherwise. See [ctx.askUser](/internal/docs/endpoint-system/ask-user) and [state-shaped tools](/internal/docs/endpoint-system/state-tools).
 
 ## How it's packaged
 
@@ -114,10 +128,11 @@ Papercusp:
 
 | Package | Role |
 |---|---|
-| **`@papercusp/tooldef`** | The engine — `defineTool`, the registry, the dispatch pipeline, the state/card/replay channels, OpenAPI assembly, core types. **Zero** Papercusp / PG / Next / `@restart` deps. Validator-agnostic ([Standard Schema](https://standardschema.dev)); every host-specific rule is injected (table below). |
+| **`@papercusp/tooldef`** | The engine — `defineTool`, the registry, the dispatch pipeline, the state/card/replay channels, OpenAPI assembly, core types. **Zero host-coupled deps**: no PG / Next / `@restart`. Its only `@papercusp/*` deps are three host-agnostic `libs/generic/` libs (`chat-protocol`, `result-encoding`, `rules`). Validator-agnostic ([Standard Schema](https://standardschema.dev)); every host-specific rule is injected (table below). |
 | **`@papercusp/tooldef-http`** | The HTTP transport adapter (`handleHttpToolRequest` / `…Streaming`). Resolves a request → tool, builds the ctx from `X-Papercusp-*` headers, dispatches. Depends only on the engine + `@papercusp/sse`. |
-| **`@papercusp/ipc-endpoint-server`** | The IPC (unix-socket) transport adapter. |
-| **`@papercusp/agent-mcp`** | The **Papercusp host adapter** — supplies the injected deps (PG-backed quota/telemetry, the role config, quota-window policy, capability→tier table, gate-bypass mapping, HMAC spawn verification) and re-exports the engine + HTTP surface so existing import sites are untouched. The **MCP bridge** (Vercel `mcp-handler` glue + spawn-context auth) currently still lives here / in the operator route layer. |
+| **`@papercusp/ipc-endpoint-server`** | The IPC (unix-socket) transport adapter. IPC exposure is **opt-in per tool** via `expose: { ipc: true }` in `defineTool` — unlike HTTP + MCP, which project automatically. |
+| **`@papercusp/tooldef-mcp`** | The MCP transport bridge primitives — generic `mcp-handler` `extra` extractors (`bearerFromExtra` / `urlFromExtra` / `headersFromExtra`) plus a projected-dispatch→MCP-result mapper (extracted under P-031). The host-specific auth + spawn-context assembly stays in the host route layer. |
+| **`@papercusp/agent-mcp`** | The **Papercusp host adapter** — supplies the injected deps (PG-backed quota/telemetry, the role config, quota-window policy, capability→tier table, gate-bypass mapping) and re-exports the engine + HTTP surface so existing import sites are untouched. The **generic MCP-bridge glue** now lives in `@papercusp/tooldef-mcp`; only the host-specific spawn-context auth and HMAC spawn *verification* stay in the operator route layer (`packages/operator-core/lib/spawn-signing.ts`, wired in the transport `_mcp-handler`). |
 
 Everything Papercusp-specific is a **host-injected seam** with a generic engine default:
 

@@ -22,15 +22,24 @@ DELETE          replication                          → React re-render
 ```
 
 1. A backend writer (an API route, a hook, an agent) writes to Postgres.
-2. `zero-cache-harness` (systemd unit) tails the `zero_harness` logical
+2. A `zero-cache` process tailed the `zero_harness` logical
    replication slot.
-3. It diffs the change against connected clients' query results and
-   pushes only the affected rows over WebSocket.
-4. Each browser client's `@rocicorp/zero` materialized view updates and
-   any `useQuery(...)` hook reading that view re-renders.
+3. It diffed the change against connected clients' query results and
+   pushed only the affected rows over WebSocket.
+4. Each browser client's `@rocicorp/zero` materialized view updated and
+   any `useQuery(...)` hook reading that view re-rendered.
 
-There is no polling. There is no `refetch()` after mutate. The mutation
-goes to Postgres and the panel updates because of step 3.
+There was no polling. There was no `refetch()` after mutate. The mutation
+went to Postgres and the panel updated because of step 3.
+
+:::note\[zero-cache is gone — no systemd unit]
+There is **no** `zero-cache-harness` systemd unit in the current
+codebase (the only remaining occurrences of that string are in these
+docs). zero-cache was retired in the Level 1 + Phase 1 SSE cutover
+(2026-05-07); the live transport is SSE served by the operator sidecar
+over PG `LISTEN/NOTIFY`. The diagram above is the historical WS pipeline
+— see `HarnessZeroProvider.tsx` for the SSE replacement.
+:::
 
 ## Reading from Zero in a panel
 
@@ -53,11 +62,13 @@ Three things to know:
 
 * **`useSyncQuery` returns an object**, not a tuple:
   `{ data, loading, fetching, transport, invalidate, error }` (see
-  `SyncQueryResult` in `libs/generic/sync/src/types.ts`). `data` is always
-  an array (never `undefined`); for most panels you only need `data`.
-  (Raw `@rocicorp/zero`'s `useQuery` returns a `[results, info]` 2-tuple —
-  but in this stack you call the `@papercusp/sync` wrapper, not Zero
-  directly.)
+  `SyncQueryResult` in `libs/generic/sync/src/types.ts`). Under a mounted
+  `SyncProvider`, `data` is **always** a `T[]` — the only case it is
+  `undefined` is when the hook is used outside any provider (the
+  app-chrome escape hatch described below). For most panels you only need
+  `data`. (Raw `@rocicorp/zero`'s `useQuery` returns a `[results, info]`
+  2-tuple — but in this stack you call the `@papercusp/sync` wrapper, not
+  Zero directly.)
 * **The provider must be mounted upstream**. `HarnessZeroProvider`
   (`apps/operator/providers/HarnessZeroProvider.tsx`) wraps every
   `/harness/*` route in a `<SyncProvider>`. Used outside a provider,
@@ -69,6 +80,44 @@ Three things to know:
   query hasn't completed. Don't gate on `data.length === 0` to mean
   "empty data" — distinguish "no rows yet, sync in progress" from
   "actually empty" via the `loading` flag if it matters.
+
+### Query options and result fields
+
+`useSyncQuery` takes a `SyncQueryOptions` and returns a
+`SyncQueryResult` (both in `libs/generic/sync/src/types.ts`):
+
+**`SyncQueryOptions`**
+
+* `queryName` — dot-separated name from the registry
+  (e.g. `'snapshotsConsolidated.bySlug'`).
+* `args` — arguments passed to the parameterized query.
+* `enabled` — set `false` to pause the query (default `true`).
+* `staleTime` — cache freshness window for the polling/SSE transports.
+  When the cached entry is younger than `staleTime`, react-query serves
+  it without a network round-trip on remount/refocus (global default 5s).
+  Ignored by the WS transport (Zero materialized views are always fresh).
+* `pollIntervalMs` — per-query polling cadence override (polling
+  transport).
+* `ttl` — time-to-live for the materialized query, honored only by the
+  WS transport; ignored by polling.
+
+**`SyncQueryResult`**
+
+* `data` — the rows (`T[]` under a provider; see the invariant above).
+* `loading` — true only on initial load when no data is available yet.
+* `fetching` — true whenever a fetch is in-flight, including background
+  refetches and key changes.
+* `transport` — the current active transport (`SSE`, `WS`, or `POLLING`).
+* `invalidate` — force an immediate refetch (polling/SSE); a no-op under WS.
+* `error` — error from the last fetch attempt, if any.
+
+Under the shipping SSE transport, freshness is **invalidate-driven**:
+pushes arrive over `LISTEN/NOTIFY` and trigger refetches. SSE is **not**
+polled for freshness — there is only a long drift-repair tick
+(`DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000`, i.e. 3 min, in
+`HarnessZeroProvider.tsx`) that re-syncs any push lost to an SSE blip or
+a missing bridge entry. The `ttl`/WS-materialized-view knobs above apply
+only to the retired WebSocket path.
 
 ## Writing to Zero — there is no Zero write
 
@@ -140,42 +189,79 @@ column is wrong." Always check the column type when adding a new table.
 
 ## Adding a new table to Zero
 
-End-to-end checklist when you add a new table to a per-harness schema:
+:::caution\[`schema.ts` is auto-generated — never hand-edit it]
+`libs/zero-harness/src/schema.ts` carries a `⚠ AUTO-GENERATED — DO NOT
+EDIT BY HAND` header. Its source of truth is
+`libs/papercusp/libs/db/src/schema/generated.ts` +
+`libs/zero-harness/zero-config.json`, and **CI verifies the file matches
+the generator output** — a hand edit fails CI.
+:::
 
-1. Add the column to `bin/scaffold-harness-schema.sh` (template DDL).
-2. Run scaffold against existing harnesses or rely on the auto-scaffold
-   that fires from `POST /api/harness/projects`.
-3. `ALTER PUBLICATION zero_harness ADD TABLE harness_xxx.harness_<name>;`
-   for each existing harness (or use the regenerate-view script).
-4. Add the table to `libs/zero-harness/src/schema.ts` with the right
-   column types — pay attention to TIMESTAMPTZ → `number()`.
-5. Add a query factory to `libs/zero-harness/src/queries.ts`.
-6. Add a key helper (`slugToXxxKey`) if it's per-harness.
-7. Bump the schema version in `libs/zero-harness/src/schema.ts`.
-8. Restart `zero-cache-harness` (`systemctl --user restart
-   zero-cache-harness` or via `service` MCP).
+End-to-end checklist when you add a new table to Zero:
 
-If you skip step 7, clients will keep their cached old schema and your
-new column won't appear.
+1. Add an entry to `libs/zero-harness/zero-config.json` (table name +
+   per-column renames). This is the only file you edit by hand for the
+   schema shape — pay attention to TIMESTAMPTZ → `number()` (see below).
+2. Regenerate the schema:
+   `node libs/zero-harness/scripts/generate-schema.mjs --write`. This
+   rewrites `libs/zero-harness/src/schema.ts`.
+3. Validate the generated types against live PG:
+   `node libs/papercusp/packages/embedded-postgres-server/bin/validate-zero-schema.mjs`.
+   It compares `schema.ts` column types against the live database and
+   exits non-zero on a mismatch — this is what catches the
+   TIMESTAMPTZ-vs-`string()` footgun **before** it cascades to
+   `SchemaVersionNotSupported`. (`libs/zero-harness/scripts/drizzle-zero-cross-check.mjs`
+   is a related cross-check.)
+4. Add a query factory to `libs/zero-harness/src/queries.ts`.
+5. Add a key helper (`slugToXxxKey`) if it's per-harness.
+6. Commit **both** the `zero-config.json` diff and the regenerated
+   `schema.ts`.
+
+There is **no** manually-bumped schema-version constant. `createSchema()`
+is called with only `{ tables, relationships }` (no `version` field) —
+the only `version` token in `schema.ts` is a `string()` *column* on the
+`pluginEnables` table. Zero derives and manages the app schema version
+itself from the schema shape; there is no version number to edit.
+
+### Per-harness scaffolding (views, not tables)
+
+Per-harness schemas (`harness_<slug>`) **no longer contain physical
+tables** — Migration 032 dropped them and replaced them with
+auto-updatable VIEWs over the `harness_shared.*_consolidated` tables. So
+there is no per-harness template DDL column to add and nothing
+per-harness to add to the `zero_harness` publication. The canonical
+scaffold is the inline TypeScript
+`packages/operator-core/lib/scaffold-harness-schema.ts` ("Inline
+TypeScript replacement for `bin/scaffold-harness-schema.sh`"), called
+from the add-project / onboard flows; `bin/scaffold-harness-schema.sh` is
+the superseded bash path.
 
 ## Replication slot recovery
 
-If `zero-cache-harness` won't start with "replication slot in use" —
+Historical: when a `zero-cache` process wouldn't start with "replication
+slot in use" —
 
 1. The DB rename (April 2026) left orphaned connections on the old slot.
 2. Find the holder: `SELECT pid, application_name FROM
    pg_stat_replication WHERE slot_name = 'zero_harness';`
+   (`pg_replication_slots` is the more idiomatic table for in-use
+   detection.)
 3. Terminate it: `SELECT pg_terminate_backend(<pid>);`
 4. Or, if `postgres_app` is the orphan holder, restart it.
 
-Documented because it's bitten us twice.
+Documented because it bit us twice. The SSE transport does not use a
+logical replication slot, so this recovery no longer applies on desktop.
 
 ## Schema-version errors
 
 `SchemaVersionNotSupported: server expected version N, got version M` →
-client and zero-cache disagree on schema version. Causes:
+client and zero-cache disagree on the schema Zero derives from the schema
+shape. Causes:
 
-1. You changed `schema.ts` without bumping the version.
+1. `schema.ts` is out of sync with live PG — most often a TIMESTAMPTZ
+   column declared `string()` instead of `number()`. Regenerate with
+   `generate-schema.mjs --write` and run `validate-zero-schema.mjs` to
+   catch it (see [Adding a new table](#adding-a-new-table-to-zero)).
 2. A second `@rocicorp/zero` package exists in the dep tree
    (`apps/papercusp/node_modules/@rocicorp/zero` was the historical
    offender — it must be symlinked to the workspace root copy or every

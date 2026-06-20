@@ -308,6 +308,19 @@ describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibilit
   });
 });
 
+describe('assembleRolePrompt — concurrency-first note (owner directive 2026-06-20)', () => {
+  it('injects the "never wait for a calm window; a non-resource block is a BUG to fix" note into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Never wait for a "calm window"');
+    expect(out.text).toContain('TRUE, VERIFIED exhaustion');
+    expect(out.text).toContain('hundreds to thousands of agents');
+    expect(out.text).toContain('INVESTIGATE the real root cause');
+    expect(out.sections.some((s) => s.name === 'concurrency-first-note')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — reuse-first nudge (agents-reuse-first-default-2026-06-20 P-001/D-001)', () => {
   it('injects the soft "extend, don\'t fork" nudge into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

@@ -20,6 +20,9 @@ export type CoordKind =
   | 'notify'
   | 'handoff'
   | 'handoff_accepted'
+  // F-FIX-037: a sibling expiry record auto-written by the stale-handoff reconcile
+  // when a handoff sits pending past the TTL (same immutable pattern as acceptance).
+  | 'handoff_expired'
   | 'escalation'
   | 'escalation_resolved'
   | 'contract'

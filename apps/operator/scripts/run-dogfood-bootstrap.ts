@@ -17,7 +17,7 @@
  */
 
 import { ensurePapercuspWorkspace, PAPERCUSP_WORKSPACE_ID } from '@papercusp/operator-core/lib/harness/papercusp-workspace';
-import { registerPapercupHarness } from '@papercusp/operator-core/lib/harness/register-papercup';
+import { registerPapercupHarness } from '@papercusp/operator-core/lib/harness/register-papercusp';
 import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from '@papercusp/operator-core/lib/harness/ensure-papercusp-hive';
 import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
 import { readRegistry } from '@papercusp/operator-core/lib/workspace-registry';

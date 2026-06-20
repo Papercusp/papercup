@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectPapercupRoot } from './register-papercup';
+import { detectPapercupRoot } from './register-papercusp';
 
 describe('detectPapercupRoot', () => {
   let work: string;
@@ -138,10 +138,10 @@ describe('detectPapercupRoot', () => {
   });
 });
 
-describe('PAPERCUP_HARNESS_SLUG', () => {
+describe('LEGACY_STANDALONE_HARNESS_SLUG', () => {
   it('is the literal string "papercup"', async () => {
-    const { PAPERCUP_HARNESS_SLUG } = await import('./register-papercup');
-    expect(PAPERCUP_HARNESS_SLUG).toBe('papercup');
+    const { LEGACY_STANDALONE_HARNESS_SLUG } = await import('./register-papercusp');
+    expect(LEGACY_STANDALONE_HARNESS_SLUG).toBe('papercup');
   });
 });
 
@@ -163,11 +163,11 @@ describe('registerPapercupHarness — pathOverride contract', () => {
   // mocking to replicate here.
 
   it('honors pathOverride: detectPapercupRoot never short-circuits to override path validity', async () => {
-    // Implementation detail (verified by reading register-papercup.ts):
+    // Implementation detail (verified by reading register-papercusp.ts):
     // when pathOverride is provided, the function uses it directly
     // instead of walking cwd. We confirm this contract by ensuring
     // detectPapercupRoot itself only runs when pathOverride is undefined.
-    const { detectPapercupRoot } = await import('./register-papercup');
+    const { detectPapercupRoot } = await import('./register-papercusp');
     const calls: string[] = [];
     const origCwd = process.cwd;
     process.cwd = () => { calls.push('cwd-called'); return origCwd(); };

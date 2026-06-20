@@ -3,15 +3,24 @@ title: Cookbook
 description: Copy-paste recipes for the most common panel-building tasks.
 sidebar:
   order: 7
+plans:
+  - fumadocs-to-starlight-2026-05-20
+  - finish-next-removal-2026-06-01
+  - starlight-projection-site-2026-06-18
+  - operator-vite-migration-2026-05-20
 ---
 
 :::danger[Zero is being retired — historical reference]
 Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
-path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
-host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
-**not run** on desktop. Treat this page as historical reference. Source of
-truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
-doc-comment) + the root `CLAUDE.md` deployment-model section.
+path**. The shipping app uses **SSE for every runtime** — desktop Tauri shell
+*and* plain browser — where the operator sidecar's `:3070` host pushes
+invalidate/update over Postgres `LISTEN/NOTIFY`; zero-cache is **not run** at
+all. `POLLING` exists only as a degraded last-resort fallback, and the WebSocket
+transport still lives in `@papercusp/sync` but Papercusp no longer selects it.
+Treat this page as historical reference. Source of truth:
+`apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+doc-comment, hardcoded `syncType="SSE"`) + the root `CLAUDE.md` deployment-model
+section.
 :::
 
 ## Recipe 1: New panel reading from an existing Zero table
@@ -24,7 +33,7 @@ panel.
 
 import { useMemo } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
-import type { SnapshotConsolidatedRow } from '@papercusp/zero-harness';
+import type { SnapshotsConsolidatedRow } from '@papercusp/zero-harness';
 import { useSyncQuery } from '@papercusp/sync';
 
 interface Props {
@@ -34,13 +43,15 @@ interface Props {
 
 export default function MySnapshotsPanel({ slug, onSelect }: Props) {
   // `useSyncQuery<T>` types T as the ROW element; `.data` is `T[]`.
-  // `args` is a named object, not a positional array.
-  const { data: rows } = useSyncQuery<SnapshotConsolidatedRow>({
+  // `args` is a named object, not a positional array. The `bySlug` query's
+  // Zod arg schema is `{ harnessSlug: string }` — the key must be
+  // `harnessSlug`, not `slug`, or the query receives no filter.
+  const { data: rows } = useSyncQuery<SnapshotsConsolidatedRow>({
     queryName: 'snapshotsConsolidated.bySlug',
-    args: { slug },
+    args: { harnessSlug: slug },
   });
 
-  const columns = useMemo<ColumnDef<SnapshotConsolidatedRow>[]>(() => [
+  const columns = useMemo<ColumnDef<SnapshotsConsolidatedRow>[]>(() => [
     {
       key: 'when', header: 'When', width: 1.3,
       sortKey: 'ts', defaultSortDir: 'desc',
@@ -54,7 +65,7 @@ export default function MySnapshotsPanel({ slug, onSelect }: Props) {
   ], []);
 
   return (
-    <RichGrid<SnapshotConsolidatedRow>
+    <RichGrid<SnapshotsConsolidatedRow>
       rows={rows}
       columns={columns}
       getRowId={(r) => r.snapshotId}
@@ -64,6 +75,14 @@ export default function MySnapshotsPanel({ slug, onSelect }: Props) {
   );
 }
 ```
+
+:::note[The consolidated row types are plural]
+The schema exports the **plural** forms — `SnapshotsConsolidatedRow`,
+`FeaturesConsolidatedRow`, `IssuesConsolidatedRow`, `AgentRunsConsolidatedRow`.
+The singular names re-exported by the `@papercusp/zero-harness` barrel
+(`SnapshotConsolidatedRow`, …) do not resolve to a declared type — import the
+plural name from the schema.
+:::
 
 ## Recipe 2: Migrating an existing `.map()` list to RichGrid
 
@@ -117,14 +136,34 @@ Steps in order:
 
 ## Recipe 3: Adding a new column to an existing Zero-synced table
 
+:::caution[Per-harness tables are being retired]
+The per-harness-table model below predates the consolidation migrations.
+The canonical stores are now the `harness_shared.*_consolidated` tables —
+writers should target those directly (see the
+`COMMENT ON harness_features_consolidated` in `000-baseline.sql`), and Zero
+exposes only the `*Consolidated.bySlug` / `*Consolidated.all` queries
+(the per-harness named queries — `featuresSheets`, `issuesOrg`, … — were
+removed; see the comment in `libs/zero-harness/src/queries.ts`). Add columns
+to the consolidated table (Recipe 5) rather than to per-harness tables.
+:::
+
+The per-harness table names are **not** uniformly `harness_<table>` —
+several (e.g. `feature_audit`, `agent_runs`) carry no `harness_` prefix.
+The published per-harness tables are `harness_features`, `feature_audit`,
+`harness_issues`, `harness_proposals`, `agent_runs`, `harness_snapshots`
+(plus `messages`, `supervisor_notes`); see the publication list in
+`bin/scaffold-harness-schema.sh` and `libs/zero-harness/src/schema.ts`.
+
 ```sql
-ALTER TABLE harness_<slug>.harness_<table>
+ALTER TABLE harness_<slug>.harness_snapshots
   ADD COLUMN new_col text;
 ```
 
 For each existing harness, repeat. Then:
 
-1. Update `bin/scaffold-harness-schema.sh` so future harnesses get it.
+1. Update the per-harness template SQL (the file `bin/scaffold-harness-schema.sh`
+   `sed`-substitutes `{{SCHEMA}}` into and runs) so future harnesses get it —
+   the column DDL lives in the template, not in the shell script itself.
 2. Update `libs/zero-harness/src/schema.ts` — add `new_col: string()`
    (or the right type — beware TIMESTAMPTZ).
 3. The publication already includes the table; the new column flows
@@ -136,7 +175,12 @@ For each existing harness, repeat. Then:
 
 Bigger lift. Steps:
 
-1. Add `CREATE TABLE` DDL to `bin/scaffold-harness-schema.sh`.
+1. Add the `CREATE TABLE` DDL to the **per-harness template SQL** (the
+   file `bin/scaffold-harness-schema.sh` renders via `sed
+   "s/{{SCHEMA}}/$schema/g"`), and add the table to the publication list
+   in the scaffold script's `add_to_zero_publication` array. The script
+   itself contains no DDL — it only substitutes the schema name into the
+   template and runs it.
 2. Run scaffold against every existing harness:
    ```bash
    for slug in $(psql -tAc "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'harness\_%'" | sed 's/^harness_//'); do

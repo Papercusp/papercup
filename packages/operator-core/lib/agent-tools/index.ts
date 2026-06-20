@@ -456,11 +456,17 @@ import './rubrics/get';
 import './rubrics/search';
 import './rubrics/propose';
 import './rubrics/ratify';
+// rubrics:trend — the qualitative health TREND of a rubric (per-criterion rating
+// time-series + direction over the Overwatch scorecards; P-010).
+import './rubrics/trend';
 // scorecards: the READ side of the every-turn Overwatch scorecard — read
 // rubric-graded observations back (filter rubricRef/sourceHive/since), surfacing
 // nKeys/missingKeys for completeness. The linchpin for monitoring-the-monitor
 // (plan-templates-and-rubric-v2-2026-06-20 P-013).
 import './scorecards/list';
+// scorecards:freshness — the emission-freshness check (P-014b): has the Overwatch emitted a
+// COMPLETE scorecard since the last wake, or silently skipped (stale) / truncated (partial-only)?
+import './scorecards/freshness';
 
 // Work items — the UNIFIED work-item surface (unify-work-items-2026-06-04 D-007).
 // One `work_item` type discriminated by `kind` (feature|research-task|chunk|bug|change);
@@ -574,6 +580,10 @@ import './plans/get';
 import './plans/items';
 // plan-templates-and-rubric-v2-2026-06-20 P-003 — single-item structured read.
 import './plans/get-item';
+// plan-templates-and-rubric-v2-2026-06-20 P-005 — structured template_data read/write
+// (validate-on-write against the per-template registry zod schema).
+import './plans/get-template-data';
+import './plans/set-template-data';
 import './plans/attention';
 import './plans/search';
 import './plans/lint';

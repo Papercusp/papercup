@@ -257,6 +257,9 @@ export default defineTool({
       now: parsed.now,
       contentHash: hashPlanContent(parsed.raw),
       version: row.version,
+      // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
+      // agents read it here instead of parsing the `## Promote` markdown. null until mig-331 repopulate.
+      promotePolicy: row.promotePolicy,
       sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
       counts: {
         items: resolved.items.length,

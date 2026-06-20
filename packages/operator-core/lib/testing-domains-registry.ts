@@ -675,7 +675,7 @@ defineTestDomain({
         'packages/operator-core/lib/harness/__tests__/**/*.test.ts',
         'packages/operator-core/lib/harness/classify-tree.test.ts',
         'packages/operator-core/lib/harness/clone-github.test.ts',
-        'packages/operator-core/lib/harness/register-papercup.test.ts',
+        'packages/operator-core/lib/harness/register-papercusp.test.ts',
         'packages/operator-core/lib/harness/papercusp-workspace.test.ts',
         'packages/operator-core/lib/harness/contributor-row-types.test.ts',
         'packages/operator-core/lib/harness/contributor-usage-event-types.test.ts',

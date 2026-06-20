@@ -20,6 +20,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   aimd: { effective: 24, cap: 24, floor: 4, pressure: 0, cleanStreak: 0, decreases: 0, increases: 0 },
   failovers: 0,
   upstreamErrors: 0,
+  selfHealReclaims: 0,
   pausedUntil: 0,
   ...over,
 });

@@ -5,12 +5,15 @@ documents:
   - libs/papercusp/packages/orchestrator/src/prompt-build.ts :: buildPromptParts
   - libs/papercusp/packages/orchestrator/src/spawn-mcp.ts
   - packages/operator-core/lib/role-launch-spec.ts
+plans:
+  - legacy-docs-audit-revival-2026-06-06
 ---
 
 Every role invocation in the harness pipeline is a **fresh agent process** with
 no shared in-memory state. A spawn gets its prompt assembled from scratch
 (`libs/papercusp/packages/orchestrator/src/prompt-build.ts` — fed to the agent
-CLI via stdin for `claude`, via an `@file` argument for `omp`), does its job,
+CLI via stdin for `claude` and `codex` (the latter through a trailing `-`
+positional), via an `@file` argument for `omp`), does its job,
 and exits. Nothing conversational carries over to the next spawn; durable state
 lives in Postgres (work items, messages, plans, memory) and is re-read each
 time.
@@ -33,12 +36,20 @@ bad decisions because they're already in its context.
 - **No drift.** Every invocation reads canonical state from the durable
   stores — there is no stale conversational residue to argue with.
 - **Reproducibility & debuggability.** A spawn can be replayed with the exact
-  prompt it saw; `buildPromptParts` exposes the assembled halves so tests can
-  assert byte-stability (the prefix-hash assertion in
-  `prompt-build.ts`).
-- **Per-role specialization.** Each role gets a tightly-scoped persona
-  (`libs/papercusp/packages/harness/prompts/<role>.md`) without dragging in
-  another role's history.
+  prompt it saw; `buildPromptParts` exposes the assembled halves so the
+  prefix-hash assertion can verify byte-stability. This is enforced by an
+  automated regression test
+  (`prompt-build.byte-stability.test.ts`, WI-175): it hashes preambles across
+  spawns fed different volatile inputs and asserts they are byte-identical, and
+  it also guards against per-spawn data (spawn id, timestamp) leaking into the
+  cacheable preamble.
+- **Per-role specialization.** Each role gets a tightly-scoped persona without
+  dragging in another role's history. Personas resolve through the blueprint
+  extends-chain — `blueprints/<blueprintId>/prompts/<role>.md` → each `extends`
+  ancestor → `blueprints/base/prompts/<role>.md` (the shared role library,
+  always consulted). The default persona lives at
+  `libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md`; the
+  legacy flat global `prompts/<role>.md` tier was deleted (Phase 5, D-012).
 - **Crash-safety.** A dead spawn loses nothing that matters: the work item,
   its comments, and the message inbox hold the state a successor needs.
 
@@ -54,6 +65,15 @@ each fresh prompt:
 | What happened before? | Feature history + the durable message inbox (`messages:*`) |
 | Hard-won role lessons | Per-role identity files (`identity/<role>.md`) + curated memory (`memory/summary.md`), both in the prompt preamble — see [Curator](/internal/docs/harness/decisions/curator) |
 | "Try again" | A re-dispatch is simply a new fresh spawn with updated state |
+
+Re-deriving state from durable stores stays safe across federation because
+peer-authored state is treated as data, not instruction. When a feature
+originates from a remote peer (`featureOrigin === 'remote'`), the durable
+content re-injected into the fresh prompt — feature history, plan context — is
+wrapped in `<untrusted-peer-content>` delimiters (`prompt-build.ts`
+`wrapUntrusted`: a per-call nonce plus a delimiter-stripping sanitizer) so a
+fresh spawn re-reads replicated peer state as inert data rather than being
+prompt-injected by it.
 
 ## The cost question
 
@@ -82,9 +102,16 @@ of "fresh" was effectively zero. The numbers and the levers are on
 
 ## Where this stands today
 
-The DBOS pipeline (`packages/operator-core/lib/dbos/`) spawns each pipeline
-role as a one-shot agent process via the shared launch spec
-(`packages/operator-core/lib/role-launch-spec.ts`); interactive role sessions
-(`psu --role <role>`) ride the same spec. Long-lived *chat* surfaces (the
-operator, oracle) are conversations by design — the fresh-context rule is
-about the autonomous pipeline, where unattended drift is the failure mode.
+The autonomous DBOS pipeline (`packages/operator-core/lib/dbos/`) spawns each
+pipeline role as a one-shot agent process via the orchestrator's headless
+`invoke-once` bin: the runner registers `setPipelineInvokeRunner`, which
+spawns `invoke-once` (→ `invoke.ts`) as a detached child process per agent run.
+Interactive role sessions (`psu --role <role>`) and the `bootstrap-role`
+console route take a different entry point — the launch spec
+(`packages/operator-core/lib/role-launch-spec.ts`, `buildRoleLaunchSpec`), the
+primitive for sessions a human drives. The two paths converge only on the
+shared `session-launch-dirs` leaf (per-session `CLAUDE_CONFIG_DIR`, signed-MCP
+dir keying, native session id), not on the launch spec itself. Long-lived
+*chat* surfaces (the operator, oracle) are conversations by design — the
+fresh-context rule is about the autonomous pipeline, where unattended drift is
+the failure mode.

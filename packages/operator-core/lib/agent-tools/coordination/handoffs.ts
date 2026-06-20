@@ -70,6 +70,34 @@ export async function acceptHandoff(
   return env;
 }
 
+/**
+ * Auto-expire a still-pending handoff by msg_id — writes a sibling
+ * 'handoff_expired' record (the SAME immutable pattern as acceptHandoff; the
+ * original handoff is never mutated). Used by the stale-handoff reconcile when a
+ * handoff has sat pending past the TTL with no acceptance. Returns the new expiry
+ * record, or null when the target handoff is absent. `by` is the system reconcile
+ * owner; `to` notifies the handoff's opener that their offer lapsed.
+ */
+export async function expireHandoff(
+  targetMsgId: string,
+  opts: { by: string; note?: string },
+): Promise<HandoffRecord | null> {
+  const target = await getHandoff(targetMsgId);
+  if (!target) return null;
+  const env: HandoffRecord = {
+    ts: new Date().toISOString(),
+    msg_id: newMsgId(),
+    from: opts.by,
+    to: [target.from],
+    kind: 'handoff_expired',
+    related_msg_id: targetMsgId,
+    plan_slug: target.plan_slug,
+    summary: opts.note ?? 'auto-expired: handoff pending past the TTL with no acceptance',
+  };
+  await coordLog.putEvent('handoffs', env.msg_id, env);
+  return env;
+}
+
 /** Read one handoff record by msg_id. */
 export async function getHandoff(msgId: string): Promise<HandoffRecord | null> {
   const rec = await coordLog.getEvent('handoffs', msgId);
@@ -77,11 +105,11 @@ export async function getHandoff(msgId: string): Promise<HandoffRecord | null> {
 }
 
 /**
- * List handoffs (with acceptance status), optionally filtered to
- * open / accepted.
+ * List handoffs (with acceptance/expiry status), optionally filtered to
+ * open / accepted / expired.
  */
 export async function listHandoffs(
-  opts: { status?: 'open' | 'accepted' } = {},
+  opts: { status?: 'open' | 'accepted' | 'expired' } = {},
 ): Promise<HandoffWithAcceptance[]> {
   const records = (await coordLog.readEvents('handoffs')).filter(isHandoffRecord);
   return foldHandoffs(records, opts);

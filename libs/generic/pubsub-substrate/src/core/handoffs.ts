@@ -22,7 +22,7 @@ export interface OpenHandoffInput {
 }
 
 export interface HandoffRecord extends CoordEnvelope {
-  kind: 'handoff' | 'handoff_accepted';
+  kind: 'handoff' | 'handoff_accepted' | 'handoff_expired';
   next_action?: string;
   files_modified?: string[];
 }
@@ -30,28 +30,43 @@ export interface HandoffRecord extends CoordEnvelope {
 export interface HandoffWithAcceptance {
   record: HandoffRecord;
   accepted_by?: HandoffRecord;
+  /**
+   * The sibling 'handoff_expired' record, if a reconcile auto-expired this
+   * handoff after it sat pending past the TTL (no acceptance). Acceptance
+   * dominates expiry: a handoff that is both accepted and expired counts as
+   * accepted, never open/expired.
+   */
+  expired_by?: HandoffRecord;
 }
 
-/** True if an arbitrary envelope is a handoff or acceptance record. */
+/** True if an arbitrary envelope is a handoff, acceptance, or expiry record. */
 export function isHandoffRecord(rec: CoordEnvelope): rec is HandoffRecord {
-  return rec.kind === 'handoff' || rec.kind === 'handoff_accepted';
+  return rec.kind === 'handoff' || rec.kind === 'handoff_accepted' || rec.kind === 'handoff_expired';
 }
 
 /**
  * Group handoff records: each `handoff` paired with its matching
- * `handoff_accepted` (by related_msg_id). Optionally filter to
- * open (no acceptance) / accepted. Sorted ascending by (ts, msg_id).
+ * `handoff_accepted` and/or `handoff_expired` sibling (by related_msg_id). A
+ * `handoff_expired` is written by the stale-handoff reconcile when a handoff
+ * sat pending past the TTL (no acceptance). Optionally filter to:
+ *   - open     — neither accepted NOR expired (still genuinely pending)
+ *   - accepted — has an acceptance
+ *   - expired  — auto-expired and not accepted
+ * Acceptance DOMINATES expiry: an accepted handoff is never open/expired, even
+ * if a reconcile also wrote an expiry for it (a benign race). Sorted ascending
+ * by (ts, msg_id).
  */
 export function foldHandoffs(
   records: HandoffRecord[],
-  opts: { status?: 'open' | 'accepted' } = {},
+  opts: { status?: 'open' | 'accepted' | 'expired' } = {},
 ): HandoffWithAcceptance[] {
   const handoffs = records.filter((r) => r.kind === 'handoff');
   const acceptsByTarget = new Map<string, HandoffRecord>();
+  const expiresByTarget = new Map<string, HandoffRecord>();
   for (const r of records) {
-    if (r.kind === 'handoff_accepted' && r.related_msg_id) {
-      acceptsByTarget.set(r.related_msg_id, r);
-    }
+    if (!r.related_msg_id) continue;
+    if (r.kind === 'handoff_accepted') acceptsByTarget.set(r.related_msg_id, r);
+    else if (r.kind === 'handoff_expired') expiresByTarget.set(r.related_msg_id, r);
   }
   const out: HandoffWithAcceptance[] = handoffs
     .sort(compareByTsThenId)
@@ -59,9 +74,12 @@ export function foldHandoffs(
       const item: HandoffWithAcceptance = { record: h };
       const acc = acceptsByTarget.get(h.msg_id);
       if (acc) item.accepted_by = acc;
+      const exp = expiresByTarget.get(h.msg_id);
+      if (exp) item.expired_by = exp;
       return item;
     });
-  if (opts.status === 'open') return out.filter((x) => !x.accepted_by);
+  if (opts.status === 'open') return out.filter((x) => !x.accepted_by && !x.expired_by);
   if (opts.status === 'accepted') return out.filter((x) => !!x.accepted_by);
+  if (opts.status === 'expired') return out.filter((x) => !!x.expired_by && !x.accepted_by);
   return out;
 }

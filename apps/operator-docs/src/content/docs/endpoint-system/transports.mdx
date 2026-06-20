@@ -3,6 +3,14 @@ title: Transports
 description: How HTTP, MCP, and in-process callers all reach the same function. The dispatcher is one; only the framing differs.
 sidebar:
   order: 4
+plans:
+  - sse-typed-events-2026-05-12
+  - bespoke-card-improvements-2026-05-13
+  - desktop-native-transport-2026-05-12
+  - token-efficient-tool-result-formats-2026-06-06
+  - slash-exposure-tool-catalog-2026-06-12
+  - endpoint-route-migration-2026-05-20
+  - endpoint-hono-elimination-2026-05-21
 ---
 
 ## The three transports
@@ -11,10 +19,12 @@ sidebar:
 |---|---|---|
 | **HTTP** (plugin) | Dashboard fetches, agent HTTP fallback | `POST /api/plugins/<plugin>/<tool>` |
 | **HTTP** (built-in) | Dashboard fetches with bearer | `POST /api/agent-tools/<scope>/<verb>` |
-| **MCP** | Spawned agents over `mcp-handler` SSE/streamable-http | `POST /api/mcp` and `POST /api/sse` |
-| **In-process** | Direct TS imports, server actions | `import { lookupByMcpName }` then call `tool.fn(input, ctx)` |
+| **MCP** | Spawned agents over `mcp-handler` Streamable-HTTP | `POST /api/mcp` |
+| **In-process** | Direct TS imports, server actions | `dispatchProjectedTool(...)` (gated) or `tool.fn(input, ctx)` (ungated) |
 
-All four go through the same `dispatchProjectedTool` in `libs/generic/tooldef/src/dispatch-projected.ts`. The same role/capability/quota/timeout/telemetry behavior applies.
+The HTTP, MCP, and gated in-process paths all go through the same `dispatchProjectedTool` in `libs/generic/tooldef/src/dispatch-projected.ts` (`dispatchProjectedToolStream` for the in-process streaming variant). The same role/capability/quota/timeout/telemetry behavior applies. The raw `tool.fn(input, ctx)` call is the one exception — it bypasses the dispatcher entirely (see [In-process callers](#how-in-process-callers-reach-a-function) below).
+
+> **mcp-handler's SSE transport is disabled.** Only `/api/mcp` (Streamable-HTTP) is live; `mcp-handler` is configured with `disableSse: true`, so a request to `/api/sse` short-circuits to HTTP 404. SSE was turned off because mcp-handler's SSE transport requires Redis (`REDIS_URL` / `KV_URL`) for cross-process pub/sub, which the operator doesn't run. Streamable-HTTP needs no Redis. (`packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts`.)
 
 ## How HTTP requests reach a function
 
@@ -34,12 +44,16 @@ The streaming path is the same except step 7 — when `Accept: text/event-stream
 
 Slightly more involved because we use `mcp-handler` as a transport library.
 
-1. `packages/operator-core/lib/endpoint-route/routes/transport/index.ts` (Hono `/api/:transport`, migrated off the retired Next.js `app/api/[transport]/route.ts`) wires a `createMcpHandler` server with `tools/list`, `tools/call`, `resources/list`, `prompts/list` etc.
+1. `packages/operator-core/lib/endpoint-route/routes/transport/index.ts` (Hono `/api/:transport`, migrated off the retired Next.js `app/api/[transport]/route.ts`) wires a `createMcpHandler` server (Streamable-HTTP only, SSE disabled) with `tools/list`, `tools/call`, `resources/list`, `prompts/list` etc.
 2. `tools/list` iterates `listMcpProjections(role)` — projection registry filtered by the calling role from URL params. Returns `{ name, description, inputSchema }` for every visible tool.
-3. `tools/call` looks up by `lookupByMcpName(name)`, builds a `UnifiedToolContext` (similar to HTTP, but the spawn context comes from the URL on the SSE connection), and calls `dispatchProjectedTool`.
+3. `tools/call` looks up by `lookupByMcpName(name)`, builds a `UnifiedToolContext` (similar to HTTP, but the spawn context comes from the connection URL), and calls `dispatchProjectedTool`.
 4. The dispatcher returns; the MCP SDK serializes the result into the JSON-RPC envelope.
 
-Streaming on MCP works via `notifications/progress` — when the client sent a `progressToken` in `_meta`, every `ctx.progress(pct, msg)` becomes one notification. mcp-handler routes those over the open SSE connection.
+Streaming on MCP works via `notifications/progress` — when the client sent a `progressToken` in `_meta`, every `ctx.progress(pct, msg)` becomes one notification. mcp-handler routes those over the open Streamable-HTTP response stream.
+
+**Write idempotency / result replay.** Passing `_meta.idempotencyKey` on a `tools/call` persists the result under that key (`storeMcpResult`) and replays the stored outcome (`lookupStoredMcpResult`) on any retry with the same key, instead of re-firing the tool. This is recovery for a write whose response died on a dropped connection — opt-in per call.
+
+**Per-call keepalive + deadline.** A long/blocking `tools/call` holds the Streamable-HTTP event-stream open but silent, which would otherwise trip the ~60s tunnel/client idle timers. The transport emits a spec-legal SSE comment keepalive on a cadence well under that (default 20s, `PAPERCUSP_MCP_KEEPALIVE_MS`) to reset both timers, and enforces a server-side deadline (default 55s, `PAPERCUSP_MCP_DEADLINE_MS`, set under the 60s `maxDuration`) that returns a clean JSON-RPC error rather than a silent tunnel drop. Both ride the per-request stream — not the disabled Redis-backed SSE transport.
 
 ## Slash exposure — the tool catalog as slash commands
 
@@ -123,16 +137,17 @@ When a request hits an HTTP plugin route or the MCP transport, the framework rea
 |---|---|---|
 | `workspace` | Always | RLS scoping; `app.workspace_id` GUC |
 | `harness` | Path-resolving tools | Looks up `projectDir` / `stateDir` via `loadHarnessRegistry()` |
-| `role` | Plugin-tool role gate | One of: `worker, validator, scoper, architect, reviewer, debugger, operator, documenter, curator` |
+| `role` | Plugin-tool role gate | A canonical `AGENT_ROLES` id (`worker`, `validator`, `scoper`, `architect`, `reviewer`, `debugger`, `operator`, `documenter`, `curator`, `oracle`, `bee`, `queen`, `planner`, `orchestrator`, … through `judge`). The set is **open** — plugins contribute namespaced `<plugin>:<role>` ids (`role-config.ts`). |
 | `run` | All non-worker quotas | `window_key = 'run:<id>'` |
 | `chunk` | Worker quotas | `window_key = 'chunk:<id>'` |
 | `spawn` | Telemetry attribution | Unique per orchestrator spawn |
 | `feature` | Optional context | Passed to `tool_invocations.feature_id` for Intel UI |
 | `parent_spawn` | Optional Phase 9 lineage | Captured for spawn-of-spawn telemetry |
+| `client` | Optional coordination | Per-session coordination / lock owner id (the operator's stable `s-…` spawnId); part of the signed envelope |
 | `exp` | **Signature envelope** | Unix epoch seconds; URLs past `exp` are rejected |
 | `sig` | **Signature envelope** | HMAC-SHA256 over the canonical sorted other params, base64url-encoded |
 
-The orchestrator bakes all params into the per-spawn `.mcp.json` it writes before launching an agent process, **HMAC-signing the seven baked params plus `exp`** so the dispatcher refuses to honor a rewritten role. The agent's MCP client then carries them on every request without the agent ever having to know about them. See [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing) for the full scheme; the minting end lives at `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts:writeSignedSpawnMcp()`.
+The orchestrator bakes these into the per-spawn `.mcp.json` it writes before launching an agent process. The signed-param allowlist (`SIGNED_PARAM_ALLOWLIST` in `spawn-signing-core.ts`) is **nine data params plus `exp`**: `harness`, `workspace`, `role`, `run`, `spawn`, `feature`, `chunk`, `parent_spawn`, `client`. The orchestrator always bakes the five mandatory params (`harness`, `workspace`, `role`, `run`, `spawn`) and conditionally adds up to four optional ones (`feature`, `chunk`, `parent_spawn`, `client`), then **HMAC-signs whatever it baked plus `exp`** so the dispatcher refuses to honor a rewritten role. The agent's MCP client then carries them on every request without the agent ever having to know about them. See [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing) for the full scheme; the minting end lives at `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts:writeSignedSpawnMcp()`.
 
 ## Default exposure
 
@@ -250,7 +265,7 @@ The MCP transport dual-fires when `name === 'progress'`: every `ctx.emit('progre
 The framework reserves these wire-level names (`RESERVED_EVENT_NAMES` in `tool-projection.ts`); the `defineTool` `events` generic refuses them at compile time (`UserEvents<T>`) and `registerProjectedTool` re-checks at register time so JSON-manifest plugins also fail loudly:
 
 - `done` — framework auto-emits when the handler returns (payload: ToolResult content array).
-- `heartbeat` — `@papercusp/sse` emits every 15s for keepalive.
+- `heartbeat` — `@papercusp/sse` emits every 10s for keepalive (the `sseResponse` default; the tool event-stream catch-alls don't override it).
 - `result` — pre-2026-05-12 legacy terminal name; reserved for collision avoidance.
 - `chunk` — framework auto-emits when the handler returns a result carrying an `outputRef` (large-output scratch ref).
 - `card` — framework-emitted `ctx.askUser` card payloads; cards ride the state channel, so reserving the name keeps a plugin from intercepting another tool's askUser flow (see [Cards](#cards-interactive-mid-run-prompts) below).
@@ -282,13 +297,12 @@ Standard MCP clients that don't know about the `events` field simply ignore it.
 
 ### Strict-streamable
 
-The HTTP catch-all returns `406 Not Acceptable` if a client sends `Accept: text/event-stream` against a tool that has **none** of:
+The HTTP catch-all returns `406 Not Acceptable` if a client sends `Accept: text/event-stream` against a tool that doesn't stream. The exact predicate differs by catch-all:
 
-- declared `events` (typed event channel), or
-- declared `state` (state-shaped, see [`ctx.publishState`](./state-tools.mdx)), or
-- `expose.mcp.streaming === true` (explicit opt-in).
+- The **built-in `/api/agent-tools/*` catch-all** admits SSE when the tool has **any** of: declared `events` (typed event channel), declared `state` (state-shaped, see [`ctx.publishState`](./state-tools.mdx)), or `expose.mcp.streaming === true` (explicit opt-in).
+- The **`/api/plugins/*` catch-all** admits SSE only on declared `events` or `expose.mcp.streaming === true`. It does **not** check `tool.state` — plugin tools don't use the framework `state` channel, so a state-shaped plugin tool would still 406 there.
 
-Prevents clients from opening an SSE connection for a one-shot result. The `state` trigger matters because state-shaped tools need a `runId`-bearing ctx (`ctx.publishState` only installs when `workspaceId + runId` are both present), and the SSE branch is the path that injects a fresh `runId` via `searchParams.set('run', ...)`. State tools that fell through this predicate before the pass-9 fix returned 406 in spite of having a perfectly valid wire shape.
+Either way, this prevents clients from opening an SSE connection for a one-shot result. The `state` trigger (built-in path) matters because state-shaped tools need a `runId`-bearing ctx (`ctx.publishState` only installs when `workspaceId + runId` are both present), and the SSE branch is the path that injects a fresh `runId` via `searchParams.set('run', ...)`. State tools that fell through this predicate before the pass-9 fix returned 406 in spite of having a perfectly valid wire shape.
 
 ### Cards (interactive mid-run prompts)
 
@@ -370,7 +384,7 @@ So the IPC adapter synthesizes a fixed `principal: { role: 'operator', workspace
 
 What this does **not** apply to:
 
-- **MCP-spawned agents** (claude-code / omp subprocesses) — they go through `/api/mcp` and `/api/sse` over loopback HTTP with signed URLs. They're untrusted same-UID code, exactly the threat the signing scheme targets.
+- **MCP-spawned agents** (claude-code / omp subprocesses) — they go through `/api/mcp` (Streamable-HTTP; `/api/sse` is disabled) over loopback HTTP with signed URLs. They're untrusted same-UID code, exactly the threat the signing scheme targets.
 - **The non-Tauri webapp** (`:3070` test surface, mobile RN clients) — these are not in-boundary; they use HTTP+SSE.
 
 The transport column in `tool_invocations` records which path each call took (`ipc` / `http` / `mcp` / `in_process`), so post-incident review can distinguish the in-boundary fast path from the signed-URL slow path.

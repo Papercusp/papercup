@@ -3,6 +3,16 @@ title: Repo conventions — the long form
 description: The full detail behind CLAUDE.md's pointers — deployment model, retired surfaces, borrowable libs, branch/commit discipline, two-port model, database topology, test infrastructure.
 sidebar:
   order: 3
+plans:
+  - token-usage-reduction-audit-2026-06-09
+  - git-sync-dx-hardening-2026-06-17
+  - staging-branch-pipeline-2026-06-06
+  - git-sync-auto-commit-2026-06-03
+  - finish-next-removal-2026-06-01
+  - generalize-libs-to-generic-2026-06-05
+  - papercusp-systems-abstraction-2026-05-29
+  - archive-legacy-orchestrator-deadcode-2026-06-06
+  - retire-snapshots-instance-spec-2026-06-09
 ---
 
 # Repo conventions — the long form
@@ -14,8 +24,9 @@ sidebar:
 
 ## Deployment model — desktop is the product
 
-**Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 6–19**
-(the "Transport selection by deployment context" doc-comment).
+**Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 3–33**
+(the doc-comment — "Transport: SSE for every runtime (desktop Tauri shell *and*
+plain browser)").
 
 The shipping target is the **Tauri desktop app**, and it is also the only
 supported test surface. The old `next dev` / `bin/prod` standalone webapp path
@@ -44,28 +55,45 @@ Internal ports (do not open in a browser; the desktop drives them):
 
 | Concern | Desktop (production) | Browser (test/dev) |
 |---|---|---|
-| Sync transport | **SSE primary** (`/api/zero-harness/sse` pushes invalidate/update via PG LISTEN/NOTIFY) | Zero WS primary, SSE fallback, polling as floor |
+| Sync transport | **SSE** (`/api/zero-harness/sse` pushes invalidate/update via PG LISTEN/NOTIFY) | **SSE** — same transport, no runtime branch |
 | Persistence | embedded-pg (real PG 17 via libs/papercusp/packages/embedded-postgres-server) | Same — embedded-pg, NOT pglite |
-| zero-cache process | **Not run** — operator sidecar serves SSE itself | Production zero-cache service from docker-compose.papercup.prod.yml |
-| Runtime detection | `window.__TAURI_INTERNALS__` + server-side `/api/desktop/version` fingerprint | Neither present |
-| Override for tests | `localStorage.harnessSyncTransport = 'SSE'` to force desktop path in browser | `'WEBSOCKETS'` to force browser path |
+| zero-cache process | **Not run** — operator sidecar serves SSE itself | **Not run** — retired in the 2026-05-07 SSE cutover |
+| Degraded fallback | POLLING (via `useTransportFallback` after sustained SSE failure) | Same — POLLING |
+| Runtime detection | **None** — transport is not runtime-selected | **None** |
+
+`HarnessZeroProvider` passes a literal `syncType="SSE"` unconditionally — there
+is **no** Tauri-vs-browser branch and **no** runtime detection driving transport
+selection. SSE is the transport in both the desktop Tauri shell and a plain
+browser; POLLING is the degraded fallback in both (dropped to only after
+sustained SSE failure). The Zero-WebSocket branch was retired in the SSE cutover
+(zero-cache 2026-05-07), and the `/api/runtime-config` / `zeroServer` plumbing
+that fed it was removed 2026-06-03. There is **no** `localStorage` knob (no
+`harnessSyncTransport` override) to force a desktop-vs-browser path — the
+operator's transport is fixed. (The generic `@papercusp/sync` `SyncProvider`
+still *understands* a `'WEBSOCKETS'` `syncType` prop for other apps, but
+`HarnessZeroProvider` never passes it.)
 
 **Stale docs to mistrust** (cross-checked 2026-05-11):
 
 - `libs/generic/sync/PASS_2_1_DECISION.md` (2026-05-06) declared "stop SSE" —
   **SUPERSEDED 2026-05-07** by the HarnessZeroProvider decision to make SSE
   primary on desktop. The doc has a header banner now but is otherwise frozen.
-- `libs/generic/sync/src/transports/sse/SSEAdapter.tsx`'s old header claimed "no
-  current consumer, preserved-but-frozen" — corrected to reflect production use.
-- Any code comment or memory note that says "Zero WS is primary everywhere" or
-  "SSE is dead" predates 2026-05-07 and is wrong for desktop.
+- `libs/generic/sync/src/transports/sse/SSEAdapter.tsx`'s header still says
+  "Browser (test / dev) defaults to Zero WS; SSE acts as a fallback there" — that
+  is **stale** (it appears to be the source the old transport table copied). The
+  operator no longer selects Zero WS for any runtime; SSE is primary in both.
+- Any code comment or memory note that says "Zero WS is primary everywhere",
+  "Browser defaults to Zero WS", or "SSE is dead" predates 2026-05-07 and is
+  wrong — SSE is the only selected transport now.
 - Older text saying native PG was renamed `papercusp_legacy` to make standalone
   boots fail loudly is **stale** — native `papercusp` on `:5432` is alive and is
   the dev box's substrate (see Database topology below).
 
-**When designing new sync-touching features:** desktop SSE is the path that
-matters. Browser WS is a fallback that lets developers test in a normal browser.
-If a feature only works under WS, it's incomplete for production.
+**When designing new sync-touching features:** SSE is the path that matters —
+it's the transport in both desktop and browser, so a feature that works in a
+normal browser tab is on the same transport as production. POLLING is only the
+degraded fallback; if a feature only works under POLLING (or assumes the retired
+Zero WS), it's incomplete for production.
 
 ## Retired / preserved-not-active surfaces
 
@@ -81,7 +109,7 @@ write tests for it, wire new code to it, or "revive" it without an explicit ask.
 | Standalone operator webapp (`apps/operator` opened on `:3055` in a browser) | `apps/operator` — run **only** via the Tauri shell | Retired 2026-05-14; a `PreToolUse` hook blocks browsing its ports. | n/a — the operator still ships, just not as a standalone webapp |
 | `libs/zero-harness` — Zero ZQL schema/queries | `libs/zero-harness` | On the Zero-retirement path; the ZQL package has **0 live importers** (only dead surfaces reference it: `libs/papercusp-shared/**/*View.tsx` + the retired `@papercusp/web`). **Migrate off, don't add tests.** | n/a |
 | `libs/papercusp-db` — fictional-org demo schema | `libs/papercusp-db` | Demo data; only consumed by `_retired/papercup` + a vendored submodule. Deletion candidate. | n/a |
-| `libs/holepunch-spike` — P2P spike | `libs/holepunch-spike` | Phase-0 spike. **NOT zero-importers** — its `holepunch.d.ts` shim surface is implemented by `apps/operator/lib/sync/hyperbee/swarm.ts` and wired into ~10 orchestrator files (feature-claim, distributed-claim, instrumentation-node, …), so it is not a safe delete as-is. | n/a |
+| `libs/holepunch-spike` — P2P spike | `libs/holepunch-spike` | Phase-0 spike. The `@papercup/holepunch-spike` package has **no real importers** — only textual comment mentions (e.g. `packages/operator-core/lib/voice-node/manager.ts`). But its `holepunch.d.ts` shim *type* surface is mirrored by `packages/operator-core/lib/sync/hyperbee/swarm.ts` (the "Minimal Hyperswarm-like surface — matches the holepunch.d.ts shim"), whose consumers (cross-hive transport, authority RPC wiring, hive-directory-boot, feature-claim / distributed-claim, …) all live under `packages/operator-core/lib/`. Treat the *package* as a spike; don't extend it. | n/a |
 | `libs/papercusp-shared/**/*View.tsx` | `libs/papercusp-shared` | The read-only `*View.tsx` components render the retired web surface; the non-view helpers (e.g. `_admin-paths`) are still shared and live. | n/a |
 | Legacy `@papercusp/orchestrator` run-loop (`runMainLoop` + the `pre-loop`/`synthesizer`/`actions-block`/`checkpoints(-pg)`/`snapshot-state`/`snapshots-pg`/`mission-state-pg`/`dispatches-pg`/`distributed-claim-fetch` cluster + `bin/run.ts`, plus `git.ts`/`branch-iso.ts`) | `libs/papercusp/_retired/orchestrator-run-loop/` (+ superproject `_retired/orchestrator-run-loop/apps-operator-test/` for the 4 integration tests) | Retired 2026-06-06 (`archive-legacy-orchestrator-deadcode`). 0 live importers; superseded by the DBOS pipeline. Barrel + 4 package.json subpath exports pruned; the `cost-cap.ts`→`mission-state-pg` cross-edge severed (cost-cap is now FS-only). `lint:no-retired` guards against re-imports + a reappearing `/api/plugins/orchestrator/spawn` fetch. | `libs/papercusp/_retired/orchestrator-run-loop/RESTORE.md` + submodule git tag `legacy-orchestrator-run-loop-retired-2026-06-06` |
 | `@papercupai/orchestrator-spawn` plugin (never installed) | `libs/papercusp/_retired/orchestrator-spawn-plugin/` | Retired 2026-06-06. Superseded by `fleet/operator-spawn.ts`; its `/api/plugins/orchestrator/spawn` path 404'd. | `libs/papercusp/_retired/orchestrator-spawn-plugin/RESTORE.md` |
@@ -96,6 +124,13 @@ scripts and banner any deploy config — **preserve, don't delete**; (3) add a
 last-active commit, and cut a `git tag <name>-retired-<date>` restore point;
 (4) add a row to the table above. Restoration is then `git mv _retired/<x>
 <orig>` + re-apply the RESTORE.md steps.
+
+⚠ **`libs/zero-harness` and `libs/papercusp-db` have NOT had step (1) applied.**
+Unlike the `_retired/`-moved surfaces, both are still members of the root
+`package.json` `workspaces` glob verbatim — so npm, knip, nx, and the
+affected-test runner all still treat them as **live** workspaces. They are
+migrate-off targets, not yet *structurally* retired; the "drop from the workspace
+glob" step is still pending for them.
 
 ## Borrowable libraries — generic, domain-free, reusable anywhere
 
@@ -283,7 +318,10 @@ store-of-record vs sync authority).
   `@papercusp/test-config` exports `defineVitestConfig`, `getTestPg` /
   `withTestSchema` (testcontainers-node Postgres), and `setupMsw` / `msw`.
 - Integration tests get a per-file Postgres schema (`t_<hex>`) on a reused
-  `postgres:16-alpine` testcontainer. **Docker must be running locally** for
+  (`.withReuse()`) `pgvector/pgvector:pg16` testcontainer — the squashed
+  `000-baseline.sql` schema has `vector(N)` columns a plain `postgres:16-alpine`
+  can't build (`postgres:16-alpine` is the *old* image it replaced, referenced
+  now only in the explanatory comment). **Docker must be running locally** for
   integration tests. Run `npm run test:doctor` to verify your environment.
 - CI: per-PR `.github/workflows/test.yml` runs the affected unit + integration
   suites (results as a PR comment via JUnit); nightly
@@ -296,9 +334,15 @@ store-of-record vs sync authority).
   **informationally** — never gates a merge. False positives live in
   `knip.json`'s `ignoreDependencies` allow-list.
 - **Flaky-test quarantine:** `quarantine.txt` at the repo root, one entry per
-  line as `<workspace-name>::<file>`. Quarantined workspaces still run in CI but
-  their failures don't gate the merge. A PR that touches a quarantined test's
-  source must either de-quarantine it or document why it stays.
+  line as `<workspace-name>::<file>`. A `quarantine.txt` entry does **not**
+  exclude a workspace from running — the affected-test walker runs *every*
+  affected workspace including the quarantined ones (the quarantine set is never
+  merged into the `--exclude` set, despite a stale in-script comment claiming so).
+  Only the *outcome* is non-gating: a quarantined workspace's failure is logged
+  (`quarantined failure — not gating`) and does not make the run exit non-zero.
+  The per-file `::<glob>` suffix is purely informational — vitest has no per-file
+  skip flag the runner can pass from outside. A PR that touches a quarantined
+  test's source must either de-quarantine it or document why it stays.
 - **Test secrets:** `TEST_<SERVICE>_KEY` naming, stored in GH Actions repository
   secrets. Do **not** check live keys into fixtures.
 - The affected-test walker (`scripts/affected-tests.mjs`) diffs against
@@ -319,9 +363,15 @@ the text an agent receives is a rendered artifact, regenerated on the next launc
 - **Chat-surface role prompts** (operator, oracle, …) — assembled per-launch by
   `packages/operator-core/lib/prompt-assembly.ts` from three source layers in
   `apps/operator/prompts/`: `<role>.persona.md` (behavior) + the tools catalog
-  (generated from each tool's `defineTool({ guidance })`) + `<role>.tools.md`
-  (cross-tool workflows). Pick the lowest layer that fits — per-tool guidance
-  belongs on the `defineTool` call, not in prose.
+  (per-tool guidance from the **projection registry** — the single source of
+  truth, authored on each tool's `defineTool({ guidance })`) + `<role>.tools.md`
+  (cross-tool workflows). The catalog is rendered **per-call for only the tools
+  the caller passes** to the assembler — not the whole tool surface. Pick the
+  lowest layer that fits — per-tool guidance belongs on the `defineTool` call,
+  not in prose. (Prompt-assembly locates `apps/operator/prompts` by walking **up
+  from cwd** — and, failing that, up from its own module path — so the personas
+  resolve even when operator-core's own package tests run from
+  `packages/operator-core`.)
 - **psu / SU collaborator playbooks** — sources are
   `apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`, rendered
   per-launch by `renderSuPlaybook`

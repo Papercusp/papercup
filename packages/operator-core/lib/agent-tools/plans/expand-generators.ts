@@ -17,7 +17,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { shortHash, expandFanout } from '@papercusp/fanout-resolver';
 import { readPlanBySlug } from './source';
-import { parsePromotePolicy, buildWaveFeatures, type PromoteWave } from './promote-policy';
+import { parsePromotePolicy, buildWaveFeatures, type PromoteWave, type ParsePromoteResult } from './promote-policy';
 import { loopbackFetch } from '../../loopback-fetch';
 
 /** The org-PG tagged-template client type — for the optional test seam below. */
@@ -133,7 +133,9 @@ export async function expandGeneratorsForFeature(input: {
    */
   deps?: {
     sql?: OrgSql;
-    readPlan?: (slug: string) => Promise<{ parsed: { raw: string } } | null>;
+    // v2 P-001: `row.promotePolicy` carries the structured policy (parsed at write-time); `row` is
+    // OPTIONAL so existing test stubs (which omit it) still typecheck + fall back to parsing the raw.
+    readPlan?: (slug: string) => Promise<{ parsed: { raw: string }; row?: { promotePolicy: ParsePromoteResult | null } } | null>;
     fetchImport?: (
       url: string,
       init: { method: string; headers: Record<string, string>; body: string },
@@ -156,7 +158,9 @@ export async function expandGeneratorsForFeature(input: {
 
   const planFile = await readPlan(sourcePlan);
   if (!planFile) return EMPTY;
-  const { policy } = parsePromotePolicy(planFile.parsed.raw);
+  // v2 P-001: read the structured promote-policy from the row; fall back to parsing the raw when the
+  // row is absent (a minimal test stub) or its column is null (a not-yet-repopulated pre-mig-331 plan).
+  const { policy } = planFile.row?.promotePolicy ?? parsePromotePolicy(planFile.parsed.raw);
   if (!policy) return EMPTY;
 
   const waves = selectCompletionTimeWaves(policy, featureId, frows[0]?.title ?? null);

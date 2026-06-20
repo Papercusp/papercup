@@ -1,7 +1,7 @@
 # RichGrid
 URL: /internal/docs/data-sync/richgrid
 
-Column-driven grid renderer; the only tabular UI primitive in the harness.
+Column-driven grid renderer; the preferred tabular UI primitive in the harness.
 
 :::danger\[Zero is being retired — historical reference]
 Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
@@ -17,6 +17,13 @@ doc-comment) + the root `CLAUDE.md` deployment-model section.
 Use RichGrid for any panel that renders a list of rows where each row has
 the same columnar structure. It replaces every `<table>` and every
 hand-rolled `.map() => <div className="row">` in the codebase.
+
+RichGrid is the **preferred / default** tabular primitive — it's the only
+grid-core grid with operator-app consumers. `grid-core` also exports
+`DataGridShell` (a canvas / glide-data-grid renderer for very large or
+edit-heavy grids) and `GridTable` / `GridSubTable` (declarative HTML
+tables) as sibling primitives, but neither is used in the harness. Reach
+for RichGrid unless you specifically need canvas-scale throughput.
 
 Do **not** use RichGrid for:
 
@@ -75,6 +82,7 @@ interface ColumnDef<Row> {
   align?: 'left' | 'center' | 'right';
   sortKey?: string;        // upstream sort field name; emitted via onSortChange
   defaultSortDir?: 'asc' | 'desc';
+  filter?: ColumnFilterSpec<Row>;  // opts the column into per-column filtering — see "Filtering"
   render: (ctx: CellRenderContext<Row>) => ReactNode;
   toCopyText?: (row: Row) => string;  // plain-text cell value for print/copy
   cellStyle?: CSSProperties | ((ctx: CellRenderContext<Row>) => CSSProperties);
@@ -103,11 +111,18 @@ TypeScript accepts both forms because the ctx object structurally satisfies
 "the row shape plus extra fields" in many cases. The grid will silently
 render blank cells. **Always destructure `{ row }`.**
 
-### Width is `fr` units, not pixels
+### Width: number → `fr`, string → any CSS track
 
-`width: 1.3` means 1.3 fractions of the available width. The grid uses
-CSS Grid's `grid-template-columns: repeat-fr` under the hood. Pixel widths
-are not supported by design — content adapts to the panel's container.
+`width` is `number | string`. A **number** becomes an `fr` track —
+`width: 1.3` means 1.3 fractions of the available width — so the grid
+flexes to the panel's container. A **string** is emitted verbatim as a
+CSS-grid track, so any of `width: '120px'`, `width: 'minmax(80px,1fr)'`,
+or `width: 'auto'` work for fixed/constrained columns. Internally each
+column's width is appended to `grid-template-columns` (`${n}fr` for a
+number, the string as-is otherwise).
+
+Separately, drag-resized columns (see [Resizable columns](#resizable-columns))
+override a column's track with an explicit `px` width.
 
 ### Sort key
 
@@ -136,20 +151,86 @@ const sortedRows = useMemo(() => applySort(rows, sortState), [rows, sortState]);
 For large datasets, push the sort into the data source (SQL `ORDER BY`,
 Zero `.orderBy(...)`) instead of `applySort`.
 
+### Filtering
+
+Per-column filtering is the symmetric sibling of sort. A column opts in by
+setting `filter`, and — exactly like sort — RichGrid renders **no** filter
+UI and applies **no** predicate itself. The consumer holds the
+`ColumnFilterState` (typically a nuqs URL param) and calls the pure
+`applyColumnFilters(rows, state, columns)` helper before passing rows in
+(mirroring the `applySort` flow above).
+
+`filter` is a discriminated union on `type`:
+
+```ts
+filter: { type: 'text',    accessor: (row) => row.name }          // case-insensitive substring
+filter: { type: 'enum',    accessor: (row) => row.status }        // membership in selected set
+filter: { type: 'number',  accessor: (row) => row.count }         // inclusive min/max range
+filter: { type: 'boolean', accessor: (row) => row.archived }      // strict equality
+```
+
+Wire the consumer-owned state and apply it before sorting:
+
+```tsx
+const [filterState, setFilterState] = useState<ColumnFilterState>({});
+const visibleRows = useMemo(
+  () => applySort(applyColumnFilters(rows, filterState, columns), sortState),
+  [rows, filterState, sortState, columns],
+);
+
+<RichGrid rows={visibleRows} columns={columns} ... />
+```
+
+Other exported helpers from `@papercusp/grid-core`: `deriveEnumOptions`
+(discover distinct enum values + live counts from the rows),
+`encodeColumnFilters` / `decodeColumnFilters` (serialize state for a nuqs
+param), and `filterChipLabel` (render an active-filter chip). As with sort,
+this is small-dataset oriented — push the predicate into the data source
+for very large sets.
+
 ## Common props
 
-| Prop                         | Type                                                 | Notes                                                                                                                  |
-| ---------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `rows`                       | `Row[]`                                              | Source data (legacy/non-virtual mode). Memoize upstream if mapping from sync results.                                  |
-| `columns`                    | `ColumnDef<Row>[]`                                   | Wrap in `useMemo` to avoid rebuilding on every render.                                                                 |
-| `getRowId`                   | `(row: Row) => string`                               | Required. Used as React key + selection set.                                                                           |
-| `onRowClick`                 | `(row: Row, index, e) => void`                       | Optional. Whole row becomes click target.                                                                              |
-| `getRowBg`                   | `(row, rowIndex, isSelected) => string \| undefined` | Per-row background override; return `undefined` to fall back to default striping.                                      |
-| `rowProps`                   | `(ctx: CellRenderContext<Row>) => HTMLAttributes`    | Per-row class/style — **receives the ctx, not the row** (use `ctx.row`). **See pitfall below.**                        |
-| `inline`                     | `boolean`                                            | Skip the outer flex + scroll wrapper; render header/body as siblings for parent-owned scroll. Almost always pass this. |
-| `virtualMode`                | `{ virtualizer, totalRows, rowAt }`                  | Opt-in virtualization. Pass instead of `rows`; flip on for >500 rows.                                                  |
-| `empty`                      | `ReactNode`                                          | Shown when rows is empty / virtual total is 0.                                                                         |
-| `sortState` / `onSortChange` | `SortState \| null` / `(next) => void`               | Controlled sort — see above.                                                                                           |
+| Prop                         | Type                                                 | Notes                                                                                                                                                           |
+| ---------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rows`                       | `Row[]`                                              | Source data (legacy/non-virtual mode). Memoize upstream if mapping from sync results.                                                                           |
+| `columns`                    | `ColumnDef<Row>[]`                                   | Wrap in `useMemo` to avoid rebuilding on every render.                                                                                                          |
+| `getRowId`                   | `(row: Row) => string`                               | Required. Used as React key + selection set.                                                                                                                    |
+| `onRowClick`                 | `(row: Row, index, e) => void`                       | Optional. Whole row becomes click target.                                                                                                                       |
+| `getRowBg`                   | `(row, rowIndex, isSelected) => string \| undefined` | Per-row background override; return `undefined` to fall back to default striping.                                                                               |
+| `rowProps`                   | `(ctx: CellRenderContext<Row>) => HTMLAttributes`    | Per-row class/style — **receives the ctx, not the row** (use `ctx.row`). **See pitfall below.**                                                                 |
+| `inline`                     | `boolean`                                            | Skip the outer flex + scroll wrapper; render header/body as siblings for parent-owned scroll. Almost always pass this — but see the caveat below.               |
+| `virtualMode`                | `{ virtualizer, totalRows, rowAt, measureAll? }`     | Opt-in virtualization. Pass instead of `rows`; flip on for >500 rows. `measureAll` measures every visible row (only needed for genuinely variable-height rows). |
+| `empty`                      | `ReactNode`                                          | Shown when rows is empty / virtual total is 0.                                                                                                                  |
+| `sortState` / `onSortChange` | `SortState \| null` / `(next) => void`               | Controlled sort — see above.                                                                                                                                    |
+
+:::caution\[`inline` skips copy, print, and load-more]
+`inline` mode renders only `[topSlot, header, body, footerSlot]` as
+siblings, so the consumer owns the scroll element. As a consequence, inline
+mode **skips the Ctrl+C copy handler, the print mirror, and
+`onLoadMore` / scroll-edge detection.** If a panel needs copy, print, or
+infinite scroll, don't use `inline` (or wrap the grid in your own outer
+element and handle those yourself).
+:::
+
+### Advanced props
+
+| Prop                                                      | Type                                                 | Notes                                                                                                     |
+| --------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `selectable`                                              | `boolean`                                            | Render a left checkbox column with a select-all header — see [Multi-select](#multi-select).               |
+| `selectedRowIds` / `onSelectedRowIdsChange`               | `ReadonlySet<string>` / `(next) => void`             | Controlled selection. Omit both for uncontrolled.                                                         |
+| `resizableColumns`                                        | `boolean`                                            | Enable drag-to-resize header handles — see [Resizable columns](#resizable-columns).                       |
+| `columnWidths` / `onColumnWidthsChange`                   | `Record<string, number>` / `(next) => void`          | Controlled drag-resized widths (px, keyed by column key).                                                 |
+| `onLoadMore`                                              | `() => void`                                         | Fires when scrolled near the bottom (legacy mode only; ignored when `inline`).                            |
+| `loadMoreThreshold`                                       | `number`                                             | Pixels-from-bottom that triggers `onLoadMore`. Default `1500`.                                            |
+| `isLoadingMore`                                           | `boolean`                                            | Renders a "Loading…" affordance at the bottom of the list.                                                |
+| `onRowHover`                                              | `(row \| null, index \| null) => void`               | `mouseenter` / `mouseleave` per row (both `null` on leave).                                               |
+| `topSlot` / `footerSlot`                                  | `ReactNode`                                          | Content rendered above / below the body (summary bar, footer, pagination).                                |
+| `headerStyle` / `headerHeight`                            | `CSSProperties` / `number`                           | Extra style merged onto the sticky header; header height in px (default `36`).                            |
+| `scrollContainerRef`                                      | `MutableRefObject<HTMLDivElement \| null>`           | Captures RichGrid's internal scroll element (e.g. to tie an external virtualizer). Ignored when `inline`. |
+| `renderLoadingRow`                                        | `(rowIndex, gridTemplateColumns) => ReactNode`       | Virtual-mode placeholder for a not-yet-loaded row. Defaults to a "loading…" line.                         |
+| `getRowBg`                                                | `(row, rowIndex, isSelected) => string \| undefined` | Per-row background override; `undefined` falls back to default striping.                                  |
+| `rowMinHeight`                                            | `number`                                             | Min row height in px. Default `36`.                                                                       |
+| `printRows` / `disablePrintMirror` / `disableCopySupport` | —                                                    | Copy & print toggles — see [Copy & print](#copy--print).                                                  |
 
 ## Pitfall: `rowProps` + a CSS class with `display: grid`
 
@@ -167,7 +248,8 @@ rowProps={({ row }) => ({
 })}
 ```
 
-The retired `IssuesList.tsx` (`libs/papercusp/apps/web/app/harness/issues/`)
+The retired `IssuesList.tsx`
+(`libs/papercusp/_retired/apps-web/app/harness/issues/IssuesList.tsx`)
 is the original example of this pattern.
 
 ## Patterns: per-row action buttons
@@ -201,6 +283,12 @@ lookup; `rowAt` may return `undefined` for not-yet-loaded rows, in which
 case RichGrid renders `renderLoadingRow` (or a "loading…" line). Row sizing
 defaults to `rowMinHeight` (36px); override per grid if rows are taller.
 
+By default the virtualizer trusts its `estimateSize` for every row and only
+re-measures the expanded row (each measurement is a forced layout read in
+the scroll path). Pass `measureAll: true` on `virtualMode` only when rows
+are genuinely variable height (multi-line cards, day-grouped feeds) so the
+virtualizer measures each visible row and keeps offsets exact.
+
 ## Multi-expand
 
 RichGrid supports per-row expanded detail via `renderExpandedRow` plus an
@@ -219,6 +307,87 @@ not toggle on click. Use `expandedRowKey` (single id) or `expandedRowKeys`
 ```
 
 Multiple rows can be expanded simultaneously when you pass `expandedRowKeys`.
+
+## Multi-select
+
+Set `selectable` to render a left checkbox column with a header
+"select-all" checkbox. Selection follows the same controlled/uncontrolled
+split as sort: pass `selectedRowIds` (a `ReadonlySet<string>`) plus
+`onSelectedRowIdsChange` to control it, or omit both to let RichGrid keep
+selection internally.
+
+```tsx
+const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+
+<RichGrid
+  rows={rows}
+  columns={columns}
+  getRowId={(r) => r.id}
+  selectable
+  selectedRowIds={selected}
+  onSelectedRowIdsChange={setSelected}
+/>
+```
+
+When the grid root has focus, **Ctrl+A** selects all rows (the same set the
+header checkbox toggles).
+
+## Resizable columns
+
+Set `resizableColumns` to add drag handles on the header cells. Resized
+widths override the column's track with an explicit `px` width. By default
+those widths live in RichGrid's internal state and **reset on remount**.
+
+To persist them, make widths controlled with `columnWidths` (a
+`Record<string, number>` of px keyed by column key) + `onColumnWidthsChange`
+— the same controlled/uncontrolled split as selection. The exported
+`usePersistedColumnWidths` hook wires that pair to storage so widths survive
+remounts:
+
+```tsx
+const [widths, setWidths] = usePersistedColumnWidths('agents-grid');
+
+<RichGrid
+  rows={rows}
+  columns={columns}
+  getRowId={(r) => r.id}
+  resizableColumns
+  columnWidths={widths}
+  onColumnWidthsChange={setWidths}
+/>
+```
+
+## Copy & print
+
+This is the reason `toCopyText` and `headerText` exist on `ColumnDef`. In
+the **non-inline** grid the root is focusable and supports:
+
+* **Ctrl+A** — select all rows.
+* **Ctrl+C** — copy the current selection (or all rows if none selected) to
+  the clipboard as both TSV (`text/plain`) and `<table>` markup
+  (`text/html`). Excel / Sheets prefer the HTML payload and paste rows into
+  cells correctly; plain editors get the TSV.
+* **Ctrl+P** — print the full dataset. RichGrid renders a hidden native
+  `<table>` print mirror so printing isn't limited to the virtual viewport;
+  the browser handles pagination and repeating `<thead>`.
+
+`toCopyText(row)` supplies the plain-text value for each cell in both the
+copy payload and the print mirror; `headerText` supplies the plain-text
+header (default: the `header` string, but JSX headers need it for
+spreadsheet fidelity). Columns without `toCopyText` copy/print empty for
+that cell — fine for pure-affordance columns (action buttons, icons).
+
+Toggles:
+
+* `disableCopySupport` — opt out of the Ctrl+C handler (Ctrl+C falls
+  through to native browser text selection).
+* `disablePrintMirror` — skip the hidden print mirror.
+* `printRows` — **virtual mode only**: the full dataset for the print
+  mirror (the lazy `rowAt` API can't supply every row up front). Without it,
+  virtual-mode Ctrl+P prints just the viewport.
+
+Remember the [`inline` caveat](#common-props): inline mode skips all of the
+above (copy handler, print mirror, and the scroll-edge `onLoadMore`).
 
 ## Testing a migrated panel
 
