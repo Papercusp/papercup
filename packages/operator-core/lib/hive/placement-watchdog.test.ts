@@ -31,6 +31,7 @@ function obs(over: Partial<PlacementObservation>): PlacementObservation {
     unitTerminal: false,
     hasLiveHolder: false,
     failCount: 0,
+    infraLossCount: 0,
     placementStatus: null,
     lastRecoveryAtMs: null,
     now: NOW,
@@ -274,40 +275,87 @@ describe('evaluatePlacement — WI-233 a reaper-reclaim of a STILL-ALIVE bee doe
   });
 });
 
-describe('evaluatePlacement — F-FIX-041 operator-dormancy grace (infra-induced losses do NOT curse)', () => {
-  it('a post-dormancy sweep → recover with the fail count held FLAT (no progress toward the curse)', () => {
-    const d = evaluatePlacement(obs({ postDormancySweep: true, failCount: 0 }), CFG);
+describe('evaluatePlacement — F-FIX-041 bounded infra-loss breaker (infra losses do not false-curse, but still bound-curse)', () => {
+  // Two infra signals — operator dormancy (postDormancySweep, item-independent) and a
+  // no-fair-attempt zombie (servingBeeMadeNoToolCalls) — feed the BOUNDED infra_loss_count
+  // (cursing at infraBreakerThreshold), NOT the 3-strike pathology fail_count. The bound is
+  // the safety property (no unbounded retry, even if a signal mis-attributes a wedging item).
+
+  it('dormancy loss → recover: pathology fail_count held FLAT, bounded infra_loss_count++', () => {
+    const d = evaluatePlacement(obs({ postDormancySweep: true, failCount: 0, infraLossCount: 0 }), CFG);
     expect(d.kind).toBe('recover');
-    if (d.kind === 'recover') expect(d.nextFailCount).toBe(0); // FLAT — a normal failure would be 1
+    if (d.kind === 'recover') {
+      expect(d.nextFailCount).toBe(0); // pathology count untouched
+      expect(d.nextInfraLossCount).toBe(1); // infra count climbs
+    }
   });
 
-  it('a string of post-dormancy losses NEVER reaches the breaker (the false-curse the fix targets)', () => {
-    // failCount 2 + a NORMAL loss trips the breaker (== threshold 3); the SAME count under a
-    // post-dormancy sweep must recover flat instead — operator-down losses don't curse.
+  it('zombie loss (0 tool calls) → recover: pathology fail_count held FLAT, bounded infra_loss_count++', () => {
+    const d = evaluatePlacement(obs({ servingBeeMadeNoToolCalls: true, failCount: 0, infraLossCount: 0 }), CFG);
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') {
+      expect(d.nextFailCount).toBe(0);
+      expect(d.nextInfraLossCount).toBe(1);
+    }
+  });
+
+  it('an infra loss does NOT trip the 3-strike pathology breaker (the false-curse the fix targets)', () => {
+    // failCount 2 + a NORMAL loss trips the pathology breaker; the SAME count with an infra
+    // signal recovers (the loss goes to the bounded infra counter instead).
     const normal = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2 }), CFG);
     expect(normal.kind).toBe('breaker');
-    const dormancy = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2, postDormancySweep: true }), CFG);
-    expect(dormancy.kind).toBe('recover');
-    if (dormancy.kind === 'recover') expect(dormancy.nextFailCount).toBe(2); // held, never 3
+    for (const infraObs of [
+      obs({ placementStatus: 'working', failCount: 2, postDormancySweep: true }),
+      obs({ placementStatus: 'working', failCount: 2, servingBeeMadeNoToolCalls: true }),
+    ]) {
+      const d = evaluatePlacement(infraObs, CFG);
+      expect(d.kind).toBe('recover');
+      if (d.kind === 'recover') expect(d.nextFailCount).toBe(2); // pathology count held, never 3
+    }
   });
 
-  it('SAFETY: a genuinely-wedging item still curses on the next NORMAL-cadence sweep (operator healthy)', () => {
-    // The grace is per-sweep + item-independent: once the operator is back (postDormancySweep
-    // false) the SAME item at the breaker-edge count curses normally — no unbounded exemption.
-    const d = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2, postDormancySweep: false }), CFG);
+  it('BOUND: infra losses STILL curse at infraBreakerThreshold — never an unbounded exemption', () => {
+    // One below the infra threshold + another infra loss → the infra breaker trips (cursed),
+    // so even an all-infra-attributed (or mis-attributed) item eventually halts.
+    const dorm = evaluatePlacement(obs({ postDormancySweep: true, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
+    expect(dorm.kind).toBe('breaker');
+    if (dorm.kind === 'breaker') expect(dorm.nextInfraLossCount).toBe(CFG.infraBreakerThreshold);
+    const zomb = evaluatePlacement(obs({ servingBeeMadeNoToolCalls: true, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
+    expect(zomb.kind).toBe('breaker');
+  });
+
+  it('SAFETY: a genuine item-pathology loss (no infra signal) still curses at the 3-strike breaker', () => {
+    const d = evaluatePlacement(
+      obs({ placementStatus: 'working', failCount: 2, postDormancySweep: false, servingBeeMadeNoToolCalls: false }),
+      CFG,
+    );
     expect(d.kind).toBe('breaker');
     if (d.kind === 'breaker') expect(d.nextFailCount).toBe(3);
   });
 
-  it('an already-cursed item stays LATCHED even on a post-dormancy sweep (latch is checked first)', () => {
-    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, postDormancySweep: true }), CFG).kind).toBe('latched');
+  it('reclaimedWhileActive (proof-of-life) is FULLY exempt — neither counter climbs, even with the infra flags also set', () => {
+    const d = evaluatePlacement(
+      obs({ servingBeeReclaimedWhileActive: true, servingBeeMadeNoToolCalls: true, postDormancySweep: true, failCount: 2, infraLossCount: 5 }),
+      CFG,
+    );
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') {
+      expect(d.nextFailCount).toBe(2); // FLAT
+      expect(d.nextInfraLossCount).toBe(5); // FLAT — a live (reasoning) bee beats the no-fair-attempt signals
+    }
   });
 
-  it('a live holder still wins over the dormancy flag (healthy — the flag only matters with no live holder)', () => {
-    expect(evaluatePlacement(obs({ hasLiveHolder: true, postDormancySweep: true }), CFG).kind).toBe('healthy');
+  it('an already-cursed item stays LATCHED even with infra signals set (latch is checked first)', () => {
+    expect(
+      evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, postDormancySweep: true, servingBeeMadeNoToolCalls: true }), CFG).kind,
+    ).toBe('latched');
   });
 
-  it('the recovery debounce still applies on a post-dormancy sweep (no re-wake spam mid-recovery)', () => {
+  it('a live holder still wins over the infra signals (healthy — they only matter with no live holder)', () => {
+    expect(evaluatePlacement(obs({ hasLiveHolder: true, postDormancySweep: true, servingBeeMadeNoToolCalls: true }), CFG).kind).toBe('healthy');
+  });
+
+  it('the recovery debounce still applies on an infra-loss sweep (no re-wake spam mid-recovery)', () => {
     const d = evaluatePlacement(
       obs({ placementStatus: 'recovering', failCount: 0, lastRecoveryAtMs: NOW - 60_000, postDormancySweep: true }),
       CFG,

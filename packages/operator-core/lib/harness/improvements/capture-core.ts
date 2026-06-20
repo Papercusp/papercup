@@ -33,7 +33,12 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
-import { validateObservationRatings, type StructuredObservation } from './observation-types';
+import {
+  validateObservationRatings,
+  validateScorecardCompleteness,
+  type StructuredObservation,
+} from './observation-types';
+import { getRubric } from '../../rubrics';
 import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
@@ -164,9 +169,12 @@ export interface CaptureImprovementResult {
 export interface CaptureDeps {
   searchIssues: (query: string, limit?: number) => Promise<EngineerIssue[]>;
   createIssue: (input: CreateIssueInput) => Promise<EngineerIssue>;
+  /** Load a rubric's criteria for the P-014a scorecard-completeness gate. Default getRubric;
+   *  injectable so the gate is unit-testable without PG. Returns null for an unknown rubric. */
+  loadRubric: (rubricId: string) => Promise<{ criteria: { key: string }[] } | null>;
 }
 
-const defaultDeps: CaptureDeps = { searchIssues, createIssue };
+const defaultDeps: CaptureDeps = { searchIssues, createIssue, loadRubric: getRubric };
 
 /** The native column kind for a capture: feature is a payload refinement of change. */
 export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
@@ -188,7 +196,20 @@ export async function captureImprovement(
   // dedup/search work. One gate here covers BOTH capture entry points (the
   // improvements:capture tool + the watchdog). Throws ObservationEvidenceError;
   // the tool handler catches it into a clean { ok:false, error } result.
-  validateObservationRatings(input.payloadExtra?.observation as StructuredObservation | undefined);
+  const observationForGate = input.payloadExtra?.observation as StructuredObservation | undefined;
+  validateObservationRatings(observationForGate);
+  // P-014a completeness gate (D-005): a rubric-graded scorecard must rate EVERY rubric criterion —
+  // an omitted key is a silent truncation, not a pass (D-005 caught 3–4 of 13 keys live). Load the
+  // rubric's criterion keys (best-effort: a load error skips the gate, never breaks the capture) +
+  // reject on any missing key. validateObservationRatings already enforced per-rating evidence.
+  if (
+    observationForGate?.rubricRef &&
+    observationForGate.ratings &&
+    Object.keys(observationForGate.ratings).length > 0
+  ) {
+    const rubric = await deps.loadRubric(observationForGate.rubricRef).catch(() => null);
+    validateScorecardCompleteness(observationForGate, rubric ? rubric.criteria.map((c) => c.key) : null);
+  }
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
   // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
   // Scout clusters downstream, and the reflecting agent is told not to dedup — so a

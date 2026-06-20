@@ -141,6 +141,41 @@ export function validateObservationRatings(obs: StructuredObservation | undefine
 }
 
 /**
+ * Enforce the scorecard COMPLETENESS mandate (plan-templates-and-rubric-v2 P-014a / D-005):
+ * a rubric-graded observation (a scorecard) MUST rate EVERY criterion the rubric declares.
+ * An omitted criterion is a silent partial-truncation — D-005 caught a pressured Overwatch
+ * emitting 3–4 of 13 keys with no error — NOT a pass. A not-assessable criterion is rated
+ * 'unknown' (with evidence, e.g. "no signal this wake"), never dropped. The sibling of
+ * `validateObservationRatings`: together they make the every-turn "all keys present, each
+ * backed by evidence" mandate a RUNTIME gate, not prompt-only.
+ *
+ * `requiredKeys` is the rubric's criterion `key` set — the CALLER loads it (via getRubric),
+ * keeping this leaf sync + rubrics-import-free (no leaf→rubrics dependency). `null` ⇒ the
+ * rubric is unknown/unloaded, so completeness can't be enforced → skip (rubricRef *validity*
+ * is a separate concern). A free-text / no-rubric / empty-ratings observation passes
+ * unconditionally (rubrics augment, never force). Throws `ObservationEvidenceError` (the
+ * capture tool catches it into a clean `{ ok:false, error }`), naming the missing keys.
+ */
+export function validateScorecardCompleteness(
+  obs: StructuredObservation | undefined | null,
+  requiredKeys: string[] | null,
+): void {
+  if (!obs || typeof obs !== 'object' || !obs.ratings) return;
+  const ratedKeys = Object.keys(obs.ratings);
+  if (ratedKeys.length === 0) return; // empty ratings → validateObservationRatings owns that case
+  if (!requiredKeys || requiredKeys.length === 0) return; // unknown / criteria-less rubric → can't enforce
+  const rated = new Set(ratedKeys);
+  const missing = requiredKeys.filter((k) => !rated.has(k));
+  if (missing.length > 0) {
+    throw new ObservationEvidenceError(
+      `scorecard for rubric '${obs.rubricRef ?? '(unnamed)'}' is INCOMPLETE — missing required criterion ` +
+        `key(s): ${missing.join(', ')}. A rubric scorecard must rate every criterion (rate a not-assessable ` +
+        `one 'unknown' WITH evidence, never omit it) — a partial scorecard is a silent truncation, not a pass.`,
+    );
+  }
+}
+
+/**
  * Narrow an unknown `payload.observation` field to the StructuredObservation
  * shape (a cheap structural check, mirroring read-items' isIdeaLifecycle). Used
  * by the READ side to surface the structured view onto a candidate without a

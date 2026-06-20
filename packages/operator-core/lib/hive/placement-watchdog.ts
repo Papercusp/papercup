@@ -476,6 +476,9 @@ async function upsertPlacement(
     beeOwnerId: string | null;
     status: string;
     failCount: number;
+    /** F-FIX-041 — the bounded infra-loss counter. Defaults to 0 when omitted (a fresh
+     *  placement); callers that touch the failed path pass decision.nextInfraLossCount. */
+    infraLossCount?: number;
     disposition: string;
     escalationMsgId?: string | null;
     bumpRecovery?: boolean;
@@ -488,11 +491,11 @@ async function upsertPlacement(
   await sql`
     INSERT INTO harness_shared.hive_placements
       (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-       bee_spawn_id, bee_owner_id, status, fail_count, last_disposition,
+       bee_spawn_id, bee_owner_id, status, fail_count, infra_loss_count, last_disposition,
        escalation_msg_id, last_recovery_at, last_seen_at, updated_at)
     VALUES (
       ${p.workspaceId}, ${p.installSlug}, ${p.workItemId}, ${p.harnessSlug}, ${p.queenOwnerId},
-      ${p.beeSpawnId}, ${p.beeOwnerId}, ${p.status}, ${p.failCount}, ${p.disposition},
+      ${p.beeSpawnId}, ${p.beeOwnerId}, ${p.status}, ${p.failCount}, ${p.infraLossCount ?? 0}, ${p.disposition},
       ${p.escalationMsgId ?? null}, ${recoveryAt}, ${new Date(p.now).toISOString()}, ${new Date(p.now).toISOString()}
     )
     ON CONFLICT (workspace_id, install_slug, work_item_id) DO UPDATE SET
@@ -502,6 +505,7 @@ async function upsertPlacement(
       bee_owner_id      = COALESCE(EXCLUDED.bee_owner_id, harness_shared.hive_placements.bee_owner_id),
       status            = EXCLUDED.status,
       fail_count        = EXCLUDED.fail_count,
+      infra_loss_count  = EXCLUDED.infra_loss_count,
       last_disposition  = EXCLUDED.last_disposition,
       escalation_msg_id = COALESCE(EXCLUDED.escalation_msg_id, harness_shared.hive_placements.escalation_msg_id),
       last_recovery_at  = COALESCE(EXCLUDED.last_recovery_at, harness_shared.hive_placements.last_recovery_at),
@@ -752,6 +756,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'working',
             failCount: obs.failCount,
+            infraLossCount: obs.infraLossCount,
             disposition: 'working',
           });
           break;
@@ -766,6 +771,7 @@ export async function reconcileOneHive(
               ...base,
               status: 'completed',
               failCount: obs.failCount,
+              infraLossCount: obs.infraLossCount,
               disposition: 'completed',
             });
             out.push({ workspaceId, installSlug, workItemId: unitId, decision: 'completed' });
@@ -790,6 +796,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'recovering',
             failCount: decision.nextFailCount,
+            infraLossCount: decision.nextInfraLossCount,
             disposition: 'recover',
             bumpRecovery: true,
           });
@@ -808,6 +815,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'cursed',
             failCount: decision.nextFailCount,
+            infraLossCount: decision.nextInfraLossCount,
             disposition: 'breaker',
             escalationMsgId: msgId,
           });
@@ -829,6 +837,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'cursed',
             failCount: obs.failCount,
+            infraLossCount: obs.infraLossCount,
             disposition: 'breaker',
           });
           out.push({
@@ -844,6 +853,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'recovering',
             failCount: obs.failCount,
+            infraLossCount: obs.infraLossCount,
             disposition: 'recover',
           });
           break;
@@ -853,6 +863,7 @@ export async function reconcileOneHive(
               ...base,
               status: 'abandoned',
               failCount: obs.failCount,
+              infraLossCount: obs.infraLossCount,
               disposition: 'abandoned',
             });
           }
@@ -1161,6 +1172,7 @@ async function reconcileStrandedWork(
       beeOwnerId: null,
       status: 'stranded',
       failCount: existing?.fail_count ?? 0,
+      infraLossCount: existing?.infra_loss_count ?? 0, // preserve — stranded is a different concern
       disposition: 'stranded',
       escalationMsgId: msgId,
       now,

@@ -91,12 +91,23 @@ async function seedUnit(opts: {
             ${opts.takenBy ?? null}, ${WS}, 0, 0)`;
 }
 
-async function readPlacement(id: string): Promise<{ status: string; fail_count: number; escalation_msg_id: string | null } | null> {
-  const rows = await sql<{ status: string; fail_count: number; escalation_msg_id: string | null }[]>`
-    SELECT status, fail_count, escalation_msg_id
+async function readPlacement(
+  id: string,
+): Promise<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null } | null> {
+  const rows = await sql<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null }[]>`
+    SELECT status, fail_count, infra_loss_count, escalation_msg_id
       FROM harness_shared.hive_placements
      WHERE workspace_id = ${WS} AND install_slug = ${HIVE} AND work_item_id = ${id}`;
   return rows[0] ?? null;
+}
+
+/** F-FIX-041 — a native tool-call activity row for a bee (agent_activity kind='tool'),
+ *  marking it a FAIR ATTEMPT (not a zombie). A bee with NO such row reads as a
+ *  no-fair-attempt zombie, so its loss feeds the bounded infra breaker, not the pathology one. */
+async function seedToolCall(owner: string): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, kind, summary, created_at)
+    VALUES (${WS}, ${owner}, 'tool', 'capability:bash', now())`;
 }
 
 describe('hive_placements completion sweep (real PG, migration 263)', () => {
@@ -113,12 +124,14 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     mocks.resolveEscalation.mockClear();
     await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents,
                        harness_shared.harness_features_consolidated, harness_shared.coord_links,
-                       harness_shared.adv_sessions, harness_shared.agent_usage_samples`;
+                       harness_shared.adv_sessions, harness_shared.agent_usage_samples,
+                       harness_shared.agent_activity`;
     await seedQueenSession();
   });
 
   it('P-020: a dead bee on a non-terminal unit → recovering + a recovery wake to the Queen', async () => {
     await seedBee({ owner: 'bee-1', featureId: 'F-100', status: 'failed' });
+    await seedToolCall('bee-1'); // a fair attempt (made tool calls) then died → item-pathology loss
     await seedUnit({ id: 'F-100', status: 'in_progress', takenBy: 'bee-1' });
 
     const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
@@ -171,6 +184,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
       VALUES (${WS}, ${HIVE}, 'F-200', ${HIVE}, ${QUEEN},
               'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
     await seedBee({ owner: 'bee-2', featureId: 'F-200', status: 'failed' });
+    await seedToolCall('bee-2'); // fair attempt → item-pathology loss (not a zombie)
     await seedUnit({ id: 'F-200', status: 'in_progress', takenBy: 'bee-2' });
 
     const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
@@ -231,6 +245,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
       errorMessage: 'reclaimed: spawn heartbeat stale > 300s (launching operator host presumed dead)',
     });
     // NO seedUsageSample → no recent model call → genuinely gone.
+    await seedToolCall('bee-dead'); // but it DID make a fair attempt (tool calls) before wedging → item-pathology
     await seedUnit({ id: 'F-DEAD', status: 'in_progress', takenBy: 'bee-dead' });
 
     const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
@@ -254,14 +269,15 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${HIVE}, 'F-DORMANT', ${HIVE}, ${QUEEN},
               'recovering', 2, ${new Date(NOW - 30 * 60_000)}, now(), ${new Date(NOW - 30 * 60_000)}, now())`;
-    await seedBee({ owner: 'bee-dorm', featureId: 'F-DORMANT', status: 'failed' }); // genuine dead bee
+    await seedBee({ owner: 'bee-dorm', featureId: 'F-DORMANT', status: 'failed' });
     await seedUnit({ id: 'F-DORMANT', status: 'in_progress', takenBy: 'bee-dorm' });
 
     const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
 
     const p = await readPlacement('F-DORMANT');
     expect(p?.status).toBe('recovering'); // NOT cursed
-    expect(p?.fail_count).toBe(2); // HELD FLAT — the dormancy-window loss did not climb to 3
+    expect(p?.fail_count).toBe(2); // pathology count HELD — the dormancy-window loss did not climb to 3
+    expect(p?.infra_loss_count).toBe(1); // routed to the BOUNDED infra counter instead
     expect(out.find((r) => r.workItemId === 'F-DORMANT')?.decision).toBe('recover');
     expect(mocks.openEscalation).not.toHaveBeenCalled(); // no curse → no escalation
     expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1); // re-placement wake still fires
@@ -279,14 +295,62 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
       VALUES (${WS}, ${HIVE}, 'F-HEALTHY', ${HIVE}, ${QUEEN},
               'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW - 60_000)}, now())`;
     await seedBee({ owner: 'bee-h', featureId: 'F-HEALTHY', status: 'failed' });
+    await seedToolCall('bee-h'); // a fair attempt (not a zombie) → an item-pathology loss
     await seedUnit({ id: 'F-HEALTHY', status: 'in_progress', takenBy: 'bee-h' });
 
     const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
 
     const p = await readPlacement('F-HEALTHY');
-    expect(p?.status).toBe('cursed'); // operator healthy → the loss counts → breaker trips
+    expect(p?.status).toBe('cursed'); // operator healthy + fair attempt → the loss counts → breaker trips
     expect(p?.fail_count).toBe(3);
     expect(out.find((r) => r.workItemId === 'F-HEALTHY')?.decision).toBe('breaker');
+  });
+
+  it('F-FIX-041: a ZOMBIE bee (0 tool calls) on a healthy operator → bounded infra counter, NOT the pathology curse', async () => {
+    // Operator healthy (recent last_seen), but the serving bee made ZERO tool calls (an
+    // EI-1758 zombie / booted without MCP tools) — a no-fair-attempt loss. fail_count 2 would
+    // curse a pathology loss; a zombie loss routes to the bounded infra counter instead.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-ZOMBIE', ${HIVE}, ${QUEEN},
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
+    await seedBee({ owner: 'bee-z', featureId: 'F-ZOMBIE', status: 'failed' });
+    // NO seedToolCall('bee-z') → 0 tool calls → zombie / no fair attempt.
+    await seedUnit({ id: 'F-ZOMBIE', status: 'in_progress', takenBy: 'bee-z' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-ZOMBIE');
+    expect(p?.status).toBe('recovering'); // NOT cursed
+    expect(p?.fail_count).toBe(2); // pathology count held
+    expect(p?.infra_loss_count).toBe(1); // routed to the bounded infra counter
+    expect(out.find((r) => r.workItemId === 'F-ZOMBIE')?.decision).toBe('recover');
+    expect(mocks.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('F-FIX-041 BOUND: infra losses STILL curse at the infra breaker threshold (no unbounded retry)', async () => {
+    // infra_loss_count one below the threshold + another zombie loss → the BOUNDED infra
+    // breaker trips, so even an all-infra (or mis-attributed) item eventually halts — the
+    // safety property that makes the per-bee zombie signal safe.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, infra_loss_count, last_recovery_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-INFRA-MAX', ${HIVE}, ${QUEEN},
+              'recovering', 0, ${CFG.infraBreakerThreshold - 1}, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
+    await seedBee({ owner: 'bee-im', featureId: 'F-INFRA-MAX', status: 'failed' });
+    // 0 tool calls → zombie → the threshold-th infra loss.
+    await seedUnit({ id: 'F-INFRA-MAX', status: 'in_progress', takenBy: 'bee-im' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-INFRA-MAX');
+    expect(p?.status).toBe('cursed'); // bounded — infra losses DO eventually curse
+    expect(p?.infra_loss_count).toBe(CFG.infraBreakerThreshold);
+    expect(out.find((r) => r.workItemId === 'F-INFRA-MAX')?.decision).toBe('breaker');
+    expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
   });
 
   it('EI-865: an already-cursed item is LATCHED on re-sweep — failCount frozen, no re-escalation, no wake', async () => {

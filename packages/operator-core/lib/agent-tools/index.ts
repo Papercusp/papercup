@@ -456,6 +456,11 @@ import './rubrics/get';
 import './rubrics/search';
 import './rubrics/propose';
 import './rubrics/ratify';
+// scorecards: the READ side of the every-turn Overwatch scorecard — read
+// rubric-graded observations back (filter rubricRef/sourceHive/since), surfacing
+// nKeys/missingKeys for completeness. The linchpin for monitoring-the-monitor
+// (plan-templates-and-rubric-v2-2026-06-20 P-013).
+import './scorecards/list';
 
 // Work items — the UNIFIED work-item surface (unify-work-items-2026-06-04 D-007).
 // One `work_item` type discriminated by `kind` (feature|research-task|chunk|bug|change);
