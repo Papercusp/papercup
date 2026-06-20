@@ -567,6 +567,8 @@ import './generators/publish';
 import './plans/list';
 import './plans/get';
 import './plans/items';
+// plan-templates-and-rubric-v2-2026-06-20 P-003 — single-item structured read.
+import './plans/get-item';
 import './plans/attention';
 import './plans/search';
 import './plans/lint';

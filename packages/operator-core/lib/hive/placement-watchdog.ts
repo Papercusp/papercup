@@ -651,6 +651,8 @@ export async function reconcileOneHive(
       reclaimedWhileActive:
         recentlyActive &&
         (b.status === 'running' || b.status === 'restarting' || isReaperReclaim(b.status, b.error_message)),
+      // F-FIX-041 — no native tool call across this bee's life ⇒ no fair attempt (zombie).
+      madeNoToolCalls: !ownersWithToolCalls.has(ownerId),
     };
     // Index by both owner and spawn id so a unit's taken_by resolves either way.
     beeByOwner.set(ownerId, bee);
@@ -712,6 +714,10 @@ export async function reconcileOneHive(
       // serving bee a slow-but-alive false reclaim rather than a genuine failure?
       const servingBeeReclaimedWhileActive =
         !hasLiveHolder && (holder?.reclaimedWhileActive === true || anchorBee?.reclaimedWhileActive === true);
+      // F-FIX-041 — likewise only on the failed path: did the serving bee make 0 tool calls
+      // (a no-fair-attempt zombie)? Feeds the bounded infra breaker, not the pathology one.
+      const servingBeeMadeNoToolCalls =
+        !hasLiveHolder && (holder?.madeNoToolCalls === true || anchorBee?.madeNoToolCalls === true);
 
       const obs: PlacementObservation = {
         workItemId: unitId,
@@ -719,9 +725,11 @@ export async function reconcileOneHive(
         unitTerminal: isUnitTerminal(unit?.status),
         hasLiveHolder,
         failCount: existing?.fail_count ?? 0,
+        infraLossCount: existing?.infra_loss_count ?? 0,
         placementStatus: existing?.status ?? null,
         lastRecoveryAtMs: existing?.last_recovery_ms ?? null,
         servingBeeReclaimedWhileActive,
+        servingBeeMadeNoToolCalls, // F-FIX-041 — zombie (no-fair-attempt) → bounded infra breaker
         postDormancySweep, // F-FIX-041 — operator-dormancy grace (item-independent, per-sweep)
         now,
       };
