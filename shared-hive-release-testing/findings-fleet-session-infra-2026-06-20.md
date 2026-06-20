@@ -64,7 +64,11 @@ instructions (and CLAUDE.md/AGENTS.md) still describe. The docs and the
 
 ---
 
-## Gap 2 — `operator-core` `lint:tsc` gate is over baseline (was +66; I cleared the biggest cluster → +39)
+## Gap 2 — `operator-core` `lint:tsc` gate was over baseline (+66) — NOW RESOLVED / GREEN
+
+**OUTCOME:** the gate is **green** — `lint:tsc` now passes and the baseline ratcheted
+down to **439** (from 449→442→441→439 over the session, my clears + concurrent fleet
+fixes). The fleet-blocking +66 regression is gone. Detail below is the trail.
 
 **Symptom.** `npm run lint:tsc` fails: **515 errors vs 449 baseline (+66)**. The gate is
 RATCHET-ONLY-DOWN + SYNTAX-HARD-FAIL, so it blocks the whole fleet until current ≤ 449.

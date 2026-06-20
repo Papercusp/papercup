@@ -102,10 +102,16 @@ const LOADSHED_RETRY_AFTER_SEC = 5;
  *  forever; PriorityAdmissionQueue only frees a slot when the task settles, so each hang leaked a slot
  *  until the pool deadlocked at maxConcurrent (every request then queued + timed out, on every account).
  *  An AbortController turns the permanent hang into a normal reject → slot release → failover. Two
- *  activity-reset windows so a LEGITIMATELY long request is never clipped: a generous wait for response
- *  HEADERS (non-streaming headers arrive only after the full generation), and a per-chunk idle gap for
- *  the streamed BODY (reset on every byte — only a true stall trips it). Both env-overridable. */
+ *  activity-reset windows so a LEGITIMATELY long request is never clipped: a wait for response HEADERS
+ *  and a per-chunk idle gap for the streamed BODY (reset on every byte — only a true stall trips it).
+ *  The headers wait is split by mode (2026-06-20): a STREAMING request's first byte/headers arrive in
+ *  seconds (the bee `claude` CLI streams), so it gets a SHORT TTFB deadline — a stalled Anthropic socket
+ *  (healthy accounts, no throttle: an Anthropic-side flap) then aborts in ~60s instead of squatting its
+ *  admission slot for the full 5min, which presented as a silent multi-minute wedge (4th outage tonight).
+ *  A NON-streaming request's headers only arrive AFTER the full generation, so it keeps the generous
+ *  deadline (a short one would falsely abort a long completion). All env-overridable. */
 const DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_HEADERS_MS) || 5 * 60 * 1000;
+const DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_STREAM_HEADERS_MS) || 60 * 1000;
 const DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_UPSTREAM_BODY_IDLE_MS) || 90 * 1000;
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
@@ -196,6 +202,10 @@ export interface GatewayDeps {
    *  Generous by default because NON-streaming headers arrive only after the full generation; streaming
    *  headers are near-instant. Default 5 min (env PAPERCUSP_GATEWAY_UPSTREAM_HEADERS_MS). */
   upstreamHeadersTimeoutMs?: number;
+  /** Headers/TTFB deadline for STREAMING requests (`stream:true`) — their first byte arrives in seconds,
+   *  so a much shorter wait recovers from an Anthropic-side stall fast instead of squatting the slot for
+   *  the generous non-streaming deadline. Default 60s (env PAPERCUSP_GATEWAY_UPSTREAM_STREAM_HEADERS_MS). */
+  upstreamStreamHeadersTimeoutMs?: number;
   /** Max GAP between upstream BODY bytes once a response is streaming, before it is aborted as stalled.
    *  Reset on every chunk, so a legitimately long stream is never clipped — only a true mid-stream
    *  stall trips it. Default 90s (env PAPERCUSP_GATEWAY_UPSTREAM_BODY_IDLE_MS). */
@@ -363,6 +373,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
+  const upstreamStreamHeadersTimeoutMs = deps.upstreamStreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_HEADERS_TIMEOUT_MS;
   const upstreamBodyIdleTimeoutMs = deps.upstreamBodyIdleTimeoutMs ?? DEFAULT_UPSTREAM_BODY_IDLE_TIMEOUT_MS;
   const log = deps.log ?? (() => {});
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
@@ -453,10 +464,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const bodyBuf = await readBody(req);
     let model = 'claude-opus-4';
     let est = { inTok: 0, outTok: 1024 };
+    // Streaming requests get the SHORT TTFB headers deadline (first byte in seconds); non-streaming the
+    // generous one (headers only after the full generation). Default false → generous, so an unparseable
+    // body never gets the short clip.
+    let isStream = false;
     if (url.startsWith('/v1/messages') && bodyBuf.length) {
       try {
-        const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string };
+        const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string; stream?: boolean };
         if (typeof j.model === 'string') model = j.model;
+        if (j.stream === true) isStream = true;
         est = estimateTokens(j);
       } catch {
         /* non-JSON body (e.g. a count_tokens variant) — keep defaults */
@@ -590,7 +606,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (dispatcher) init.dispatcher = dispatcher;
           // Wait for response HEADERS under the (generous) headers deadline; once they arrive, switch
           // to the per-chunk body-idle deadline (reset on each streamed byte below).
-          armStall(upstreamHeadersTimeoutMs);
+          armStall(isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs);
           up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
           armStall(upstreamBodyIdleTimeoutMs);
         } catch (e) {

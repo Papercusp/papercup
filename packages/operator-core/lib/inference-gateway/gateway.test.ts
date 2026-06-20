@@ -174,6 +174,30 @@ test('upstream HEADERS stall is aborted (502) and RELEASES the admission slot �
   assert.equal((await r2.json() as { ok: boolean }).ok, true);
 });
 
+test('a STREAMING request aborts at the SHORT TTFB deadline, not the generous one — 2026-06-20 silent-wedge fix', async () => {
+  // A stalled Anthropic socket (healthy accounts, no throttle) on a STREAMING request must abort at the
+  // short stream-headers deadline, NOT squat its slot for the generous non-streaming deadline (which
+  // presented as the silent multi-minute wedge, 4th outage tonight). Generous headers=5000ms but
+  // stream=150ms → a stream:true stall must 502 in well under the generous window.
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls++;
+      if (calls === 1) return; // STALL: accept the socket, never respond
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    },
+    { concurrency: 1, upstreamHeadersTimeoutMs: 5000, upstreamStreamHeadersTimeoutMs: 150, upstreamBodyIdleTimeoutMs: 5000 },
+  );
+  const t0 = Date.now();
+  const r1 = await post({ model: 'claude-opus-4', stream: true, messages: [{ role: 'user', content: 'x' }] });
+  const elapsed = Date.now() - t0;
+  assert.equal(r1.status, 502, 'streaming stall aborted');
+  assert.ok(elapsed < 2000, `streaming aborted at the short TTFB (${elapsed}ms), not the 5000ms generous deadline`);
+  const r2 = await post({ model: 'claude-opus-4', stream: true, messages: [{ role: 'user', content: 'y' }] });
+  assert.equal(r2.status, 200, 'slot released after the fast streaming abort');
+});
+
 test('a mid-stream upstream stall is aborted (body-idle deadline) and releases the slot', async () => {
   // Headers + first chunk arrive, then the upstream stalls mid-stream. The per-chunk body-idle deadline
   // must trip (a leak here would also wedge concurrency:1).
