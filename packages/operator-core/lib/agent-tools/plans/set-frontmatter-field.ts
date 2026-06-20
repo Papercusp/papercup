@@ -66,6 +66,21 @@ export function currentFrontmatterField(body: string, key: string): string | nul
   return v && v.length > 0 ? v : null;
 }
 
+/** Validate + classify a requested frontmatter key: well-formed? reserved? The
+ *  one piece of novel logic in this tool, so it's a pure exported helper. */
+export function validateFrontmatterKey(
+  rawKey: string,
+):
+  | { ok: true; key: string }
+  | { ok: false; code: 'invalid_key' }
+  | { ok: false; code: 'reserved_key'; use: string } {
+  const key = rawKey.trim();
+  if (!KEY_RE.test(key)) return { ok: false, code: 'invalid_key' };
+  const use = RESERVED_FRONTMATTER_KEYS[key];
+  if (use) return { ok: false, code: 'reserved_key', use };
+  return { ok: true, key };
+}
+
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1).describe('Plan slug (filename stem).'),
