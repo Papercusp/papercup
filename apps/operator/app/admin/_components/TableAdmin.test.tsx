@@ -106,8 +106,19 @@ describe('TableAdmin component', () => {
   it('lists tables, auto-selects the first, and renders its header + rows', async () => {
     render(<TableAdmin />);
     expect(await screen.findByText('Users')).toBeTruthy();
-    expect(screen.getByText(/public\.users · PK: id/)).toBeTruthy();
-    expect(screen.getByText('Ada')).toBeTruthy();
+    // The header qualified-name + the grid rows load from the table-detail/rows
+    // fetches AFTER the sidebar — await them (findBy) instead of querying
+    // synchronously, or the assertions race the fetch (flaky under green-checkpoint
+    // load). The header is `{qualifiedName} · PK: {pk}` (split across text nodes),
+    // so match the element's whitespace-normalized textContent, not a single node.
+    expect(
+      await screen.findByText(
+        (_content, el) =>
+          el?.classList.contains('pc-admin-header-qualified') === true &&
+          el.textContent?.replace(/\s+/g, ' ').trim() === 'public.users · PK: id',
+      ),
+    ).toBeTruthy();
+    expect(await screen.findByText('Ada')).toBeTruthy();
     expect(screen.getByText('Bob')).toBeTruthy();
     expect(screen.getAllByText('Edit').length).toBe(2);
   });
@@ -135,7 +146,9 @@ describe('TableAdmin component', () => {
   it('deletes a row after confirmation', async () => {
     render(<TableAdmin />);
     await screen.findByText('Users');
-    fireEvent.click(screen.getAllByText('Del')[0]);
+    // Del buttons live in the grid, which loads after the sidebar — await them
+    // (findAllBy) rather than querying synchronously (raced the fetch → flaky).
+    fireEvent.click((await screen.findAllByText('Del'))[0]);
     await waitFor(() => expect(calls.some((c) => c.method === 'DELETE')).toBe(true));
   });
 
@@ -143,7 +156,7 @@ describe('TableAdmin component', () => {
     confirmResult = false;
     render(<TableAdmin />);
     await screen.findByText('Users');
-    fireEvent.click(screen.getAllByText('Del')[0]);
+    fireEvent.click((await screen.findAllByText('Del'))[0]);
     await new Promise((r) => setTimeout(r, 0));
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
   });

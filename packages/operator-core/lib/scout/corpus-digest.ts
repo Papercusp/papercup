@@ -228,6 +228,8 @@ export const DigestSchema = z.object({
     spendBuckets: z.number().int().nonnegative(),
     /** Structured observations scanned (rubric-graded scorecards, P-006). */
     observations: z.number().int().nonnegative(),
+    /** Active rubrics scanned for the gap-check (P-008). */
+    rubrics: z.number().int().nonnegative(),
   }),
   // The four meta-pattern categories (plan P-003) — the shared CorpusDigest lanes.
   recurringFriction: z.array(MetaPatternSchema),
@@ -240,6 +242,14 @@ export const DigestSchema = z.object({
    *  Scout ideates on MEASUREMENTS, not just free-text clusters (P-006). A 5th
    *  CorpusDigest lane (the ideators fold it in via flattenDigest). */
   rubricRatings: z.array(MetaPatternSchema),
+  /** RUBRIC GAPS (plan-templates-and-rubric-v2 P-008) — recurring friction clusters
+   *  (≥3 distinct authors, recurring across ≥2 day-cycles) with NO covering active
+   *  rubric: the "we keep hitting this and have no shared standard for it" signal.
+   *  NOT a flattenDigest ideator lane (its patterns carry no `category`, like reverts);
+   *  the dedicated consumer is the Scout `rubric` router rail (P-009), which authors a
+   *  rubric-template plan from the gap → the queen↔scout loop. Loose by design
+   *  (over-propose; the Queen ratification is the real filter — D-003). */
+  rubricGaps: z.array(MetaPatternSchema),
   /** One-line summary for a coord broadcast / the Scout trigger. */
   headline: z.string(),
 });
@@ -356,9 +366,14 @@ function finalize(scored: Scored[], limit: number): MetaPattern[] {
  *  second dedup — so the same underlying friction worded differently still
  *  collides (the "friction nobody named", which exact-signature-only misses on
  *  real, distinctly-worded captures). Open recurrence outweighs a quiet one. */
-function buildRecurringFriction(friction: ImprovementCandidate[], nowMs: number, limit: number): MetaPattern[] {
-  const byId = new Map(friction.map((c) => [c.id, c] as const));
-  const clusters = findLikelyDuplicates(friction).filter((c) => c.ids.length > 1);
+type DupCluster = ReturnType<typeof findLikelyDuplicates>[number];
+
+function buildRecurringFriction(
+  clusters: DupCluster[],
+  byId: Map<string, ImprovementCandidate>,
+  nowMs: number,
+  limit: number,
+): MetaPattern[] {
   const scored: Scored[] = clusters.map((cluster) => {
     const members = cluster.ids
       .map((id) => byId.get(id))
@@ -379,6 +394,113 @@ function buildRecurringFriction(friction: ImprovementCandidate[], nowMs: number,
       },
     };
   });
+  return finalize(scored, limit);
+}
+
+// ── rubricGaps (plan-templates-and-rubric-v2 P-008) ──────────────────────────
+//
+// A RUBRIC GAP = a recurring friction cluster the Hive keeps hitting but has NO
+// shared standard (active rubric) for. D-003's loose, Queen-gated trigger: a
+// recurring cluster with ≥3 DISTINCT authors AND recurrence across ≥2 cycles, with
+// no covering active rubric. All three thresholds reuse data the digest already has
+// (the same findLikelyDuplicates clusters as recurringFriction, the candidates'
+// createdBy + timestamps, the active-rubric list). Loose by design — over-propose;
+// the Queen ratification downstream (P-009) is the real quality filter.
+
+/** ≥ this many distinct filing authors → a cross-author gap, not one agent repeating. */
+const MIN_GAP_AUTHORS = 3;
+/** ≥ this many distinct UTC days of activity — a loose proxy for "recurs across ≥2
+ *  cycles" (the digest has timestamps, not cycle boundaries; tune later, D-003). */
+const MIN_GAP_CYCLES = 2;
+/** ≥ this many shared significant tokens for an active rubric to "cover" a cluster.
+ *  Higher = stricter coverage = MORE gaps flagged (the over-propose direction). */
+const MIN_RUBRIC_COVER_TOKENS = 2;
+
+/** Generic words that carry no coverage signal — dropped before token-overlap. */
+const GAP_STOPWORDS = new Set([
+  'the', 'and', 'for', 'that', 'this', 'with', 'not', 'but', 'are', 'was', 'has',
+  'have', 'via', 'per', 'when', 'then', 'than', 'into', 'from', 'does', 'did',
+  'can', 'cant', 'won', 'wont', 'you', 'your', 'all', 'any', 'out', 'get', 'got',
+  'its', 'their', 'there', 'here', 'over', 'under', 'about', 'after', 'before',
+]);
+
+/** Significant lowercase tokens (≥3 chars, non-stopword) — the coverage-match unit. */
+function gapTokens(s: string): Set<string> {
+  return new Set(
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 3 && !GAP_STOPWORDS.has(t)),
+  );
+}
+
+/** UTC calendar day of an epoch-ms — the cycle bucket. */
+function utcDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** Does an active rubric cover this cluster's theme? True when its characteristic +
+ *  title + criterion titles share ≥ MIN_RUBRIC_COVER_TOKENS significant tokens with
+ *  the cluster theme. Loose (Queen-gated downstream); the characteristic dominates. */
+function rubricCovers(rubric: RubricSummary, clusterTokens: Set<string>): boolean {
+  const rubricTokens = gapTokens(
+    `${rubric.characteristic} ${rubric.title} ${(rubric.criteriaTitles ?? []).join(' ')}`,
+  );
+  let overlap = 0;
+  for (const t of clusterTokens) {
+    if (rubricTokens.has(t) && ++overlap >= MIN_RUBRIC_COVER_TOKENS) return true;
+  }
+  return false;
+}
+
+/**
+ * rubricGaps — recurring friction clusters with NO covering active rubric, gated by
+ * the D-003 trigger (≥3 distinct authors AND ≥2 day-cycles). Shares the SAME clusters
+ * as buildRecurringFriction (passed in, computed once). Patterns carry NO `category`
+ * (like reverts) — this is the P-009 router-rail's lane, not a flattenDigest ideator
+ * lane. salience = recurrence × author-spread (the strongest "shared-standard-missing"
+ * signal). Empty when no rubrics are known is NOT special-cased — an empty rubric set
+ * just means nothing is covered (max gaps), the loose default.
+ */
+function buildRubricGaps(
+  clusters: DupCluster[],
+  byId: Map<string, ImprovementCandidate>,
+  rubrics: RubricSummary[],
+  limit: number,
+): MetaPattern[] {
+  const scored: Scored[] = [];
+  for (const cluster of clusters) {
+    const members = cluster.ids
+      .map((id) => byId.get(id))
+      .filter((c): c is ImprovementCandidate => Boolean(c));
+    if (members.length < 2) continue; // not recurring
+
+    // ≥3 DISTINCT authors (the filer's ownerId; unknown author contributes nothing).
+    const authors = new Set(members.map((m) => m.createdBy).filter((a): a is string => Boolean(a)));
+    if (authors.size < MIN_GAP_AUTHORS) continue;
+
+    // ≥2 distinct day-cycles (loose proxy for "recurs across ≥2 cycles").
+    const days = new Set(
+      members.map((m) => lastSeenMsOf(m)).filter((ms) => ms > 0).map(utcDay),
+    );
+    if (days.size < MIN_GAP_CYCLES) continue;
+
+    // No covering ACTIVE rubric (D-003: "an active rubric whose characteristic covers it").
+    const newest = [...members].sort((a, b) => lastSeenMsOf(b) - lastSeenMsOf(a))[0];
+    const clusterTokens = gapTokens(`${newest?.title ?? ''} ${cluster.signature}`);
+    if (rubrics.some((r) => rubricCovers(r, clusterTokens))) continue;
+
+    scored.push({
+      // recurrence × author-spread — a cross-author chronic gap ranks highest.
+      salience: members.length * authors.size,
+      pattern: {
+        // No category — the gap is the P-009 rail's lane, not a flattenDigest ideator lane.
+        summary: newest ? truncate(newest.title) : cluster.signature,
+        detail: `recurring (${members.length}× · ${authors.size} authors · ${days.size} cycles), no covering rubric`,
+        ref: newest ? `wi:${newest.id}` : `rubric-gap:${cluster.signature.slice(0, 40)}`,
+      },
+    });
+  }
   return finalize(scored, limit);
 }
 
@@ -602,21 +724,31 @@ export async function synthesizeStateOfHive(
   const nowMs = opts.nowMs ?? Date.now();
   const limit = opts.perCategory ?? 20;
 
-  const [completions, reverts, friction, spend, deferrals, observations] = await Promise.all([
+  const [completions, reverts, friction, spend, deferrals, observations, rubrics] = await Promise.all([
     safe(() => readers.completions(), 'completions'),
     safe(() => readers.reverts(), 'reverts'),
     safe(() => readers.friction(), 'friction'),
     safe(() => readers.spend(), 'spend'),
     safe(() => readers.deferrals(), 'deferrals'),
     safe(() => readers.observations(), 'observations'),
+    // rubrics() is optional (P-008) — absent ⇒ no rubrics known ⇒ every recurring
+    // cluster reads as uncovered (the loose default).
+    safe(() => (readers.rubrics ? readers.rubrics() : Promise.resolve([])), 'rubrics'),
   ]);
 
-  const recurringFriction = buildRecurringFriction(friction, nowMs, limit);
+  // Shared friction clustering (computed ONCE): recurringFriction + rubricGaps read
+  // the SAME clusters (P-008 "reuse data the digest already has"), so the O(n²)
+  // near-dup pass in findLikelyDuplicates runs once, not twice.
+  const frictionById = new Map(friction.map((c) => [c.id, c] as const));
+  const frictionClusters = findLikelyDuplicates(friction).filter((c) => c.ids.length > 1);
+
+  const recurringFriction = buildRecurringFriction(frictionClusters, frictionById, nowMs, limit);
   const timeTokenSinks = buildTimeTokenSinks(spend, limit);
   const chronicDeferrals = buildChronicDeferrals(deferrals, limit);
   const capabilityGaps = buildCapabilityGaps(friction, nowMs, limit);
   const revertPatterns = buildReverts(reverts, limit);
   const rubricRatings = buildRubricRatings(observations, limit);
+  const rubricGaps = buildRubricGaps(frictionClusters, frictionById, rubrics, limit);
 
   const spendUsd = round(spend.reduce((acc, s) => acc + (s.costUsd || 0), 0));
   const corpus = {
@@ -627,6 +759,7 @@ export async function synthesizeStateOfHive(
     spendUsd,
     spendBuckets: spend.length,
     observations: observations.length,
+    rubrics: rubrics.length,
   };
 
   const headline =
@@ -635,7 +768,8 @@ export async function synthesizeStateOfHive(
     `${chronicDeferrals.length} chronic deferral(s), ` +
     `${capabilityGaps.length} capability gap(s), ` +
     `${revertPatterns.length} reverted item(s), ` +
-    `${rubricRatings.length} rubric measurement(s) ` +
+    `${rubricRatings.length} rubric measurement(s), ` +
+    `${rubricGaps.length} rubric gap(s) ` +
     `over ${completions.length} completions`;
 
   return {
@@ -647,6 +781,7 @@ export async function synthesizeStateOfHive(
     capabilityGaps,
     reverts: revertPatterns,
     rubricRatings,
+    rubricGaps,
     headline,
   };
 }

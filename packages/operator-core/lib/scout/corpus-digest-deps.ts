@@ -29,11 +29,13 @@ import { gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { readImprovementItems, readObservationItems } from '../harness/improvements/read-items';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
+import { listRubrics } from '../rubrics';
 import {
   revertWeight,
   type DeferralRecord,
   type ObservationRating,
   type RevertRecord,
+  type RubricSummary,
   type SpendRecord,
   type StateOfHiveReaders,
   type StructuredObservationRecord,
@@ -256,6 +258,20 @@ export function buildStateOfHiveReaders(): StateOfHiveReaders {
         if (record) out.push(record);
       }
       return out;
+    },
+    async rubrics(): Promise<RubricSummary[]> {
+      // ACTIVE rubrics only (P-008) — a proposed/retired rubric is not yet a
+      // shared standard that "covers" a friction cluster. listRubrics reads the
+      // canonical rubric source (P-006 plans∪table union; plans-only after P-007),
+      // so this survives the P-007 table drop with no change here. Map the full
+      // Rubric → the minimal coverage view the gap-check needs.
+      const rubrics = await listRubrics({ status: 'active', limit: 500 });
+      return rubrics.map((r) => ({
+        rubricId: r.rubricId,
+        characteristic: r.characteristic,
+        title: r.title,
+        criteriaTitles: r.criteria.map((c) => c.title),
+      }));
     },
   };
 }

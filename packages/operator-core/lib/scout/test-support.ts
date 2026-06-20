@@ -375,6 +375,7 @@ export function fakeStateOfHiveReaders(
     spend: async () => [],
     deferrals: async () => [],
     observations: async () => [],
+    rubrics: async () => [],
     ...over,
   };
 }
