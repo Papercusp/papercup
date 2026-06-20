@@ -72,4 +72,22 @@ describe('network.hive.* resolvers', () => {
     expect(listHiveWakes).toHaveBeenCalledWith('hive-x', { workspaceId: 'ws-7' });
     vi.doUnmock('../network-board/hive-wakes');
   });
+
+  it('network.fleet.wakes is registered + projects listAllPendingWakes flat (EI-597 Step B)', async () => {
+    expect(knownQueryNamesV2()).toContain('network.fleet.wakes');
+    const rows = [
+      { id: 1, ownerId: 'su-a' },
+      { id: 2, ownerId: 'su-b' },
+    ];
+    const listAllPendingWakes = vi.fn(async () => rows);
+    vi.doMock('../agent-tools/coordination/pending-wakes', () => ({ listAllPendingWakes }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+
+    // The fleet-wide board is the full unfiltered queue (the pui narrows it
+    // client-side); no per-scope arg, workspace is ambient (activeWorkspaceId).
+    const out = await r('network.fleet.wakes', {});
+    expect(out).toEqual(rows); // flat, not wrapped
+    expect(listAllPendingWakes).toHaveBeenCalledTimes(1);
+    vi.doUnmock('../agent-tools/coordination/pending-wakes');
+  });
 });

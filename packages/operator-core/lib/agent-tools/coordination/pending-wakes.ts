@@ -11,13 +11,18 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /**
- * Push the hive-scoped wake board (`network.hive.wakes`, hive-network-surface
- * P-014 item 3) after a queue write. Lazy fire-and-forget so this PG seam (+ its
- * tests) never statically depends on the SSE layer; a missing bus is a no-op.
+ * Push the wake board after a queue write — both the hive-scoped
+ * (`network.hive.wakes`, P-014 item 3) and fleet-wide (`network.fleet.wakes`,
+ * EI-597 Step B) sync queries, so the pui's Hive AND non-Hive scopes refetch on
+ * mutation instead of polling. Lazy fire-and-forget so this PG seam (+ its tests)
+ * never statically depends on the SSE layer; a missing bus is a no-op.
  */
 function pushWakeBoard(): void {
   void import('../../sync-sse')
-    .then((m) => m.notifySyncInvalidate('network.hive.wakes'))
+    .then((m) => {
+      m.notifySyncInvalidate('network.hive.wakes');
+      m.notifySyncInvalidate('network.fleet.wakes');
+    })
     .catch(() => {});
 }
 

@@ -3065,6 +3065,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // network.fleet.wakes — the FLEET-WIDE staged-wake board (EI-597 Step B):
+  // every owner's pending wakes in the active workspace, the same full read the
+  // pui's non-Hive scopes (fleet / queen / single-owner) used to POLL via
+  // coord:wake-queue{action:list}. Moving it onto the sync rail collapses the
+  // wake-board poll storm (the fleet's #1/#2 tool-call volume): the same
+  // pushWakeBoard() writers that fire `network.hive.wakes` also fire this key on
+  // every stage/clear, so the pui refetches on mutation (+ a 60s safety net)
+  // instead of every 10s. Payload-equivalent to the old poll (listAllPendingWakes
+  // is exactly what coord:wake-queue list returns); the pui keeps its existing
+  // client-side filter_wake_groups for the fleet/queen/owner narrowing — so this
+  // is the SAME ambient-workspace read the proven network.hive.wakes resolver
+  // already relies on (listHiveWakes → listAllPendingWakes). su-dfe5e + su-cf7b0.
+  'network.fleet.wakes': {
+    argsSchema: z.object({
+      // accepted for parity with network.hive.wakes (+ future per-scope use);
+      // listAllPendingWakes scopes to the active workspace internally (F-C3).
+      workspace: z.string().optional(),
+    }),
+    resolve: async () => {
+      const { listAllPendingWakes } = await import('../agent-tools/coordination/pending-wakes');
+      return listAllPendingWakes();
+    },
+  },
+
   // planItems.byPlan — the parsed plan items (id, text, storedStatus,
   // effectiveStatus, blockedBy, …) for one plan, for the Create-tab kanban.
   // Reads through the SAME path as `plans:get` (parses the plan's `content`

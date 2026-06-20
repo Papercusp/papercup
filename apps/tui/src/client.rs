@@ -1005,6 +1005,16 @@ impl OperatorClient {
             .await
     }
 
+    /// The FLEET-WIDE staged-wake queue (`network.fleet.wakes`, EI-597 Step B):
+    /// every owner's pending wakes in the active workspace — the SSE-rail
+    /// replacement for the non-Hive scopes' old `coord:wake-queue{action:list}`
+    /// poll. The caller's existing client-side `filter_wake_groups` narrows it to
+    /// the fleet/queen/owner scope, so this is payload-equivalent to the poll.
+    pub async fn fleet_wakes(&self) -> Result<Vec<crate::models::PendingWake>> {
+        self.rest_query_rows("network.fleet.wakes", &serde_json::json!({}))
+            .await
+    }
+
     /// Join one member harness of a discovered hive (`POST /api/harness/join-link`).
     /// The joiner's GitHub identity + device keychain are resolved server-side.
     pub async fn join_hive_link(&self, slug: &str, harness_link_url: &str) -> Result<serde_json::Value> {

@@ -2455,13 +2455,11 @@ async fn fetch_wake_board(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
                 app::WakeFilter::Hive(hive) => {
                     client.hive_wakes(hive).await.map_err(|e| e.to_string())
                 }
-                _ => client
-                    .run_tool("coord:wake-queue", serde_json::json!({ "action": "list" }))
-                    .await
-                    .map_err(|e| e.to_string())
-                    .and_then(|v| {
-                        crate::client::parse_wake_queue_list(&v).map_err(|e| e.to_string())
-                    }),
+                // EI-597 Step B: the non-Hive scopes (fleet/queen/owner) now read
+                // the `network.fleet.wakes` SSE-rail query instead of polling
+                // coord:wake-queue{action:list}. Same full-queue payload; the
+                // filter_wake_groups call below still narrows it to the scope.
+                _ => client.fleet_wakes().await.map_err(|e| e.to_string()),
             };
             match pending {
                 Ok(pending) => {
