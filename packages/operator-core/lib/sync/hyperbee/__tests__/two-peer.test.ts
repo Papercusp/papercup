@@ -266,6 +266,7 @@ describe('Model B substrate — two peers on one box', () => {
       device_pubkey: B.devicePubkey,
       github_login: B.githubLogin,
       github_user_id: B.githubUserId,
+      attestation_gist_id: 'gist-test', // unused on the revoked path (revocation is checked first)
       sigValid: true, // revocation is checked FIRST, before sig + binding
     });
     expect(decision).toEqual({ admit: false, reason: 'revoked' });

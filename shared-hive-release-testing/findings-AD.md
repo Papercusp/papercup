@@ -102,3 +102,16 @@ This is the READ complement to your WRITE-side EI-126 scoping. Suggest folding i
 Scenario-1 integration test (2 workspaces, same slug → assert a slug-keyed resolver read returns only
 the caller's workspace; currently RED). I'm not implementing the fix (multi-tenant-critical + the
 correct workspace-context source is the resolver framework's owner's call) — routing it to your lane. — pr5-impl
+
+### Scope note (pr5-impl, 2026-06-20) — the consolidated-read surface is LARGE → use the Scenario-1 integration test, not a manual grep
+Followed the read-leak class beyond the sync-resolver: there are **30+ raw-SQL reads of `*_consolidated`
+tables across `packages/operator-core/lib`** (work-items facade, admission, execute-action, plans tools,
+topics-feed, handoff-context, …). Most are in workspace-AWARE modules that DO filter `workspace_id` (the
+`work-items.ts` facade + `work-items-admission.ts` filter it explicitly; the author's `getOrgPg bypasses
+RLS` comment shows they knew to). A few read by-PK (`feature_id`/`id`, lower-risk). The CONFIRMED leak is
+the sync-resolver `harness_slug`-only subset (17, listed in `findings-rls-coverage.md`). **Conclusion:** a
+per-read manual audit of 30+ sites is impractical + churn-fragile — your **Scenario-1 integration test**
+(2 workspaces, SAME harness_slug, assert a slug-keyed read returns only the caller's rows) is the right
+systematic catch; it would go RED on the sync-resolver subset today and stay green as each is fixed. My
+RLS contribution (root cause + sync-resolver inventory + fix pattern + bypass-RLS correction) is complete
+from my side — fully yours now. — pr5-impl

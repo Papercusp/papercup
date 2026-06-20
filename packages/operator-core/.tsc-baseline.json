@@ -1,6 +1,6 @@
 {
   "createdAt": "2026-06-07T00:07:55.932Z",
-  "updatedAt": "2026-06-20T06:03:50.576Z",
+  "updatedAt": "2026-06-20T06:21:07.009Z",
   "description": "Baseline type error count for operator-core. New errors above this count will gate CI.",
-  "operatorCoreErrorCount": 442
+  "operatorCoreErrorCount": 441
 }

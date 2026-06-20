@@ -115,15 +115,25 @@ export async function evaluateForkForGc(opts: ForkGcEvalOpts): Promise<ForkGcEva
     return { forkFullName, upstreamFullName, decision: 'keep_not_a_fork', openPrCount: 0, ageMs: null };
   }
 
-  // An open PR from this fork against the upstream ⇒ live contribution, keep.
+  // An open PR from this fork against the upstream ⇒ live contribution, keep. Match by
+  // HEAD REPO OWNER in code rather than the `head=<owner>:` API filter: an empty ref after
+  // the colon is NOT a reliable "all PRs from this fork" filter, and getting it wrong would
+  // mean collecting a fork that has an active (esp. stale-but-open) PR. (per_page 100 is the
+  // bound; a fork's open PR also keeps its `pushed_at` recent, so `keep_recent` backstops the
+  // common case — the in-code owner match is what protects a long-open, un-pushed PR.)
   const { data: openPrs } = await oc.rest.pulls.list({
     owner: opts.upstreamOwner,
     repo: opts.upstreamRepo,
     state: 'open',
-    head: `${forkOwner}:`,
     per_page: 100,
   });
-  const openPrCount = Array.isArray(openPrs) ? openPrs.length : 0;
+  const openPrCount = Array.isArray(openPrs)
+    ? openPrs.filter(
+        (pr) =>
+          (pr as { head?: { repo?: { owner?: { login?: string } } | null } }).head?.repo?.owner
+            ?.login === forkOwner,
+      ).length
+    : 0;
 
   const pushedMs = repo.pushed_at ? Date.parse(repo.pushed_at) : NaN;
   const ageMs = Number.isFinite(pushedMs) ? now() - pushedMs : null;

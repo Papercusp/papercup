@@ -15,15 +15,18 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { startRun, type SpawnRequest } from '../../../testing-run-store';
 
-type TestRunner =
+export type TestRunner =
   | { kind: 'vitest'; filePath: string }
   | { kind: 'vitest-multi'; filePaths: string[]; label?: string }
   | { kind: 'playwright'; filePath: string }
-  | { kind: 'cargo'; crate: string; test?: string }
+  // `manifestPath` (EI-1610): a standalone crate with no root Cargo.toml workspace
+  // can't be reached via `-p <crate>` from the repo root; point cargo at the crate's
+  // own manifest instead. Optional → the workspace `-p` path is unchanged.
+  | { kind: 'cargo'; crate: string; test?: string; manifestPath?: string }
   | { kind: 'node'; cmd: string; args?: string[]; label?: string }
   | { kind: 'shell'; cmd: string; args?: string[]; label?: string };
 
-function toSpawn(runner: TestRunner): SpawnRequest | { error: string } {
+export function toSpawn(runner: TestRunner): SpawnRequest | { error: string } {
   switch (runner.kind) {
     case 'vitest':
       if (!runner.filePath) return { error: 'vitest requires filePath' };
@@ -65,7 +68,11 @@ function toSpawn(runner: TestRunner): SpawnRequest | { error: string } {
         command: 'cargo',
         args: [
           'test',
-          '-p', runner.crate,
+          // EI-1610: from the repo root, `-p <crate>` fails for a crate that isn't a
+          // member of a root Cargo workspace ("could not find Cargo.toml"). When the
+          // caller supplies the crate's own manifest, target it via --manifest-path;
+          // `-p` is then redundant (the manifest IS the single crate) so it's omitted.
+          ...(runner.manifestPath ? ['--manifest-path', runner.manifestPath] : ['-p', runner.crate]),
           ...(runner.test ? [runner.test] : []),
           '--message-format=json',
         ],

@@ -28,7 +28,7 @@
  * reported positions still point at source.
  */
 import { execSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // D-003 (git-sync-content-guard): the pure detector now lives in ONE importable
@@ -37,7 +37,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // truth. Re-exported below so existing importers (check-mdx-guard.test.ts) keep
 // working unchanged. This .mjs is run via `tsx` (package.json `lint:mdx`) so it
 // can import the TypeScript module.
-import { findMdxCompileError, blankFrontmatter } from '../packages/operator-core/lib/content-lint/mdx';
+import { findMdxCompileError, blankFrontmatter, autoFixMdxAngles } from '../packages/operator-core/lib/content-lint/mdx';
 
 export { findMdxCompileError, blankFrontmatter };
 
@@ -56,11 +56,16 @@ const isExcluded = (f) =>
   f.includes('/dist/');
 
 async function main() {
+  // --fix: deterministically repair the safe `<`+digit offender in place (WI-276)
+  // before reporting; anything still broken (e.g. `<word>` components) is reported
+  // for a human/LLM fixer as before.
+  const doFix = process.argv.includes('--fix');
   const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
     .split('\n')
     .filter(Boolean);
 
   const offenders = [];
+  const autofixed = [];
   for (const f of tracked) {
     if (isExcluded(f)) continue;
     if (!f.endsWith('.mdx')) continue;
@@ -71,11 +76,25 @@ async function main() {
     } catch {
       continue;
     }
-    const hit = await findMdxCompileError(f, text);
+    let hit = await findMdxCompileError(f, text);
+    if (hit && doFix) {
+      const res = autoFixMdxAngles(text);
+      if (res.changed) {
+        writeFileSync(new URL(f, `file://${ROOT}/`), res.fixed); // <+digit escape is always valid
+        autofixed.push(f);
+        text = res.fixed;
+        hit = await findMdxCompileError(f, text); // re-check; may still have a `<word>` offender
+      }
+    }
     if (hit) {
       const at = hit.line != null ? `:${hit.line}${hit.col != null ? `:${hit.col}` : ''}` : '';
       offenders.push(`${f}${at}  ${hit.reason}`);
     }
+  }
+
+  if (autofixed.length > 0) {
+    console.log(`✓ auto-fixed (escaped \`<\`+digit) in ${autofixed.length} file(s):`);
+    for (const f of autofixed) console.log('    ' + f);
   }
 
   if (offenders.length === 0) {

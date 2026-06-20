@@ -127,3 +127,12 @@ internally. Standing it up is a runtime action, not a code gap.
 - **Already wired:** PR-2's `readLatestReviewReport` → `defaultReadReviewReport` (the witness's
   optional `reviewed` leg). PR-4's producer + my `prs.ts` revocation gate coexist (the gate sits
   between PR-4's reviewer-identity resolution and its `markFeaturePrState` merge stamp).
+
+### Self-review bug fix (pr5-impl, 2026-06-20, Priority-0) — fork-gc open-PR detection
+Careful re-review of my own shipped code caught a real correctness bug in `harness/fork-gc.ts`:
+`evaluateForkForGc` detected a fork's open PRs via `pulls.list({ head: \`${forkOwner}:\` })` — an empty
+ref after the colon is NOT a reliable "all PRs from this fork" filter, so it could return 0 and a fork
+with a STALE-but-still-open PR (no recent push) would fall through to `collect` (deleted). Fixed: list the
+upstream's open PRs and match by `pr.head.repo.owner.login === forkOwner` in code (unambiguous). +2 teeth
+(a different owner's PR is excluded; mixed-owner upstream counts only ours). 21 green, tsc clean. The
+staleness window backstopped the common (recently-pushed) case, but a long-open un-pushed PR was the gap.

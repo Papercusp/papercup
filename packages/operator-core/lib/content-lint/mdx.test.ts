@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { blankFrontmatter, findFrontmatterYamlError, findMdxCompileError } from './mdx';
+import { autoFixMdxAngles, blankFrontmatter, findFrontmatterYamlError, findMdxCompileError } from './mdx';
 
 describe('blankFrontmatter', () => {
   it('returns the text unchanged when there is no leading frontmatter fence', () => {
@@ -122,5 +122,45 @@ describe('findFrontmatterYamlError', () => {
   it('returns null for an unterminated fence (the MDX compile path reports that)', async () => {
     const text = '---\ntitle: Doc\nno closing fence\nstill going\n';
     expect(await findFrontmatterYamlError(text)).toBeNull();
+  });
+});
+
+describe('autoFixMdxAngles (WI-276 — deterministic safe repair of `<`+digit)', () => {
+  it('escapes a bare `<`+digit in prose (the exact 5-tick-block offender) and the result compiles', async () => {
+    const text = '# Doc\n\nthe send lands in <1s in a good window.\n';
+    const { fixed, changed } = autoFixMdxAngles(text);
+    expect(changed).toBe(true);
+    expect(fixed).toContain('lands in \\<1s in a good');
+    expect(await findMdxCompileError('x.mdx', fixed)).toBeNull(); // round-trip: now valid
+  });
+
+  it('handles multiple + multiline `<`+digit', () => {
+    const { fixed } = autoFixMdxAngles('respond in <5ms\nor <100ms under load\n');
+    expect(fixed).toBe('respond in \\<5ms\nor \\<100ms under load\n');
+  });
+
+  it('leaves inline-code spans untouched (`<1s` is literal there)', () => {
+    const text = 'use `<1s` as the budget\n';
+    expect(autoFixMdxAngles(text)).toEqual({ fixed: text, changed: false });
+  });
+
+  it('leaves fenced code blocks untouched', () => {
+    const text = '```bash\nif [ $x -lt <1 ]; then :; fi\n```\n';
+    expect(autoFixMdxAngles(text).changed).toBe(false);
+  });
+
+  it('leaves frontmatter untouched (`<1s` there is a YAML string, not MDX)', () => {
+    const text = '---\ndescription: "responds in <1s"\n---\n# Body\n';
+    expect(autoFixMdxAngles(text).changed).toBe(false);
+  });
+
+  it('does NOT touch `<word>` (could be a real JSX component — left to the LLM fixer)', () => {
+    const text = 'a `<Card>` and a bare <Steps> stay as-is\n';
+    expect(autoFixMdxAngles(text).changed).toBe(false);
+  });
+
+  it('is idempotent — never double-escapes an already-escaped `\\<1`', () => {
+    const once = autoFixMdxAngles('lands in <1s\n').fixed;
+    expect(autoFixMdxAngles(once)).toEqual({ fixed: once, changed: false });
   });
 });

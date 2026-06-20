@@ -51,6 +51,9 @@ function makeOctokit(opts: {
 const UP = { owner: 'Papercusp', repo: 'papercup' };
 const PARENT = 'Papercusp/papercup';
 
+/** An upstream open-PR whose HEAD repo is owned by `owner` (the shape the GC filters on). */
+const prFrom = (owner: string, number = 1) => ({ number, head: { repo: { owner: { login: owner } } } });
+
 describe('evaluateForkForGc', () => {
   it('TEETH: an abandoned fork (fork of upstream, no open PR, old) → collect', async () => {
     const { octokit } = makeOctokit({
@@ -66,11 +69,34 @@ describe('evaluateForkForGc', () => {
   it('a fork with an OPEN PR against upstream is kept (live contribution)', async () => {
     const { octokit } = makeOctokit({
       repo: { fork: true, parent: { full_name: PARENT }, pushed_at: old() },
-      openPrs: [{ number: 7 }],
+      openPrs: [prFrom('alice', 7)],
     });
     const r = await evaluateForkForGc({ upstreamOwner: UP.owner, upstreamRepo: UP.repo, octokit, now: () => NOW });
     expect(r.decision).toBe('keep_active_pr');
     expect(r.openPrCount).toBe(1);
+  });
+
+  it('TEETH: an open PR from a DIFFERENT fork owner does NOT count as ours (head-owner filter, not the head= API param)', async () => {
+    // Upstream has an open PR, but from mallory's fork — alice's old fork has none → collect.
+    const { octokit } = makeOctokit({
+      login: 'alice',
+      repo: { fork: true, parent: { full_name: PARENT }, pushed_at: old() },
+      openPrs: [prFrom('mallory', 9), prFrom('bob', 3)],
+    });
+    const r = await evaluateForkForGc({ upstreamOwner: UP.owner, upstreamRepo: UP.repo, octokit, now: () => NOW });
+    expect(r.openPrCount).toBe(0); // none of the open PRs are from alice's fork
+    expect(r.decision).toBe('collect');
+  });
+
+  it('counts only OUR fork PRs when the upstream has a mix', async () => {
+    const { octokit } = makeOctokit({
+      login: 'alice',
+      repo: { fork: true, parent: { full_name: PARENT }, pushed_at: old() },
+      openPrs: [prFrom('mallory', 9), prFrom('alice', 4), prFrom('alice', 5)],
+    });
+    const r = await evaluateForkForGc({ upstreamOwner: UP.owner, upstreamRepo: UP.repo, octokit, now: () => NOW });
+    expect(r.openPrCount).toBe(2); // alice's two, not mallory's
+    expect(r.decision).toBe('keep_active_pr');
   });
 
   it('a recently-pushed fork is kept (covers a just-merged PR)', async () => {
@@ -149,7 +175,7 @@ describe('gcForksForUpstreams', () => {
   it('TEETH: an ACTIVE fork (open PR) is NOT deleted even in the destructive pass', async () => {
     const { octokit, reposDelete } = makeOctokit({
       repo: { fork: true, parent: { full_name: PARENT }, pushed_at: old() },
-      openPrs: [{ number: 1 }],
+      openPrs: [prFrom('alice', 1)],
     });
     const report = await gcForksForUpstreams({ upstreams: [UP], octokit, now: () => NOW, dryRun: false });
     expect(report.collected).toEqual([]);

@@ -92,6 +92,46 @@ export async function findFrontmatterYamlError(text: string): Promise<MdxCompile
   }
 }
 
+/**
+ * Deterministically repair the SINGLE most common MDX offender (WI-276): a bare
+ * `<` immediately followed by a DIGIT in prose — `<1s`, `<5min`, `responds in
+ * <100ms` — which MDX parses as an unclosed JSX tag and which broke the whole
+ * docs build (the 2026-06-20 5-tick quarantine). Escapes it to `\<` (which MDX
+ * renders as a literal `<`).
+ *
+ * SAFE BY CONSTRUCTION — scoped to `<`+digit ONLY: a JSX tag name can never start
+ * with a digit, so this can't mangle a real component (`<Card>`), and it skips
+ * frontmatter, fenced code blocks, and inline-code spans (where `<1` is literal
+ * and must stay). The riskier `<word>` case (could be a component) is left to the
+ * LLM content-fixer. Idempotent (won't double-escape `\<`).
+ *
+ * Shared so `check-mdx.mjs --fix` (agent-facing) and the git-sync content-fixer
+ * (the deterministic pre-pass before the LLM role) apply the IDENTICAL repair.
+ */
+export function autoFixMdxAngles(text: string): { fixed: string; changed: boolean } {
+  const lines = text.split('\n');
+  // Skip a leading YAML frontmatter block — `<1s` there is a YAML string, not MDX.
+  let fmEnd = -1;
+  if (lines[0]?.trim() === '---') {
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === '---') { fmEnd = i; break; }
+    }
+  }
+  let inFence = false;
+  let changed = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (i <= fmEnd) continue;
+    const line = lines[i];
+    if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; } // fence open/close — leave code literal
+    if (inFence) continue;
+    // Prose line: escape `<`+digit only OUTSIDE inline-code spans (odd segments).
+    const parts = line.split(/(`[^`]*`)/g);
+    const next = parts.map((p, idx) => (idx % 2 === 1 ? p : p.replace(/(?<!\\)<(?=\d)/g, '\\<'))).join('');
+    if (next !== line) { lines[i] = next; changed = true; }
+  }
+  return { fixed: changed ? lines.join('\n') : text, changed };
+}
+
 // Memoised lazy loaders for the MDX core + remark-gfm (heavy; only when needed).
 type MdxCompile = (value: string, opts?: Record<string, unknown>) => Promise<unknown>;
 let _compile: MdxCompile | null = null;
