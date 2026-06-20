@@ -477,30 +477,53 @@ export function evaluateInvariants(
   return out;
 }
 
-/** Auto-accept handoffs older than the threshold. Called before gatherSnapshot
- *  to prevent stale handoffs from triggering violations. Best-effort — failures
- *  never abort. Returns the count of auto-accepted handoffs. */
-async function autoAcceptStaleHandoffs(thresholdHours: number, workspaceId: string): Promise<number> {
+/** Coord identity for the monitor's own auto-remediation writes (mirrors the
+ *  improvement-watchdog's synthetic identity, known-open-aging.ts). A system
+ *  action runs in-process, so it attributes as a `principal` — never a real
+ *  fleet agent, and never the bogus `'system-action'` that is not an
+ *  IdentitySource (the original F-FIX-037 attempt did not type-check). */
+const MONITOR_IDENTITY: AgentIdentity = {
+  ownerId: 'system:coord-invariant-monitor',
+  ownerLabel: 'system · coord-invariant-monitor',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+/** Pure: the msg_ids of open handoffs older than the threshold — the set the
+ *  monitor auto-accepts so a handoff nobody ever picked up is reaped instead of
+ *  re-firing the stuck-handoff invariant every hour. Strict boundary, matching
+ *  evaluateInvariants (age must EXCEED the window). Exported for unit tests. */
+export function planStaleHandoffAccepts(
+  open: { msg_id: string; ts: string }[],
+  thresholdHours: number,
+  nowMs: number,
+): string[] {
+  const threshold = thresholdHours * 3_600_000;
+  return open.filter((h) => nowMs - Date.parse(h.ts) > threshold).map((h) => h.msg_id);
+}
+
+/** Auto-accept handoffs older than the threshold, BEFORE gatherSnapshot, so a
+ *  handoff nobody ever accepted is reaped (with an audited `handoff_accepted`
+ *  event that notifies the original hander) instead of persisting as a stuck
+ *  invariant violation that re-files every pass. Best-effort — a failure never
+ *  aborts the pass. Returns the count of auto-accepted handoffs. */
+async function autoAcceptStaleHandoffs(thresholdHours: number): Promise<number> {
   try {
-    const handoffs = await listHandoffs({ status: 'open' });
-    const now = Date.now();
-    const threshold = thresholdHours * 3_600_000;
+    const open = await listHandoffs({ status: 'open' });
+    const toAccept = planStaleHandoffAccepts(
+      open.map((h) => ({ msg_id: h.record.msg_id, ts: h.record.ts })),
+      thresholdHours,
+      Date.now(),
+    );
     let count = 0;
-    // Use a synthetic system identity for auto-acceptance.
-    const systemIdentity: AgentIdentity = {
-      ownerId: 'system:coord-invariant-monitor',
-      ownerLabel: 'system',
-      source: 'system-action',
-      workspaceId,
-      userId: null,
-    };
-    for (const h of handoffs) {
-      const age = now - Date.parse(h.record.ts);
-      if (age > threshold) {
-        const accepted = await acceptHandoff(systemIdentity, h.record.msg_id, 
-          `auto-accepted after ${thresholdHours}h pending (system:coord-invariant-monitor)`);
-        if (accepted) count++;
-      }
+    for (const msgId of toAccept) {
+      const accepted = await acceptHandoff(
+        MONITOR_IDENTITY,
+        msgId,
+        `auto-accepted after ${thresholdHours}h pending (system:coord-invariant-monitor)`,
+      );
+      if (accepted) count++;
     }
     return count;
   } catch {
@@ -716,7 +739,7 @@ registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => 
   // prevents them from persisting as open violations; handoffs waiting >12h for
   // acceptance are auto-accepted by the monitor before the invariant check runs.
   // Best-effort — a failure never aborts the pass.
-  await autoAcceptStaleHandoffs(t.stuckHandoffHours, ctx.workspaceId).catch(() => 0);
+  await autoAcceptStaleHandoffs(t.stuckHandoffHours).catch(() => 0);
   const snap = await gatherSnapshot(t);
   const violations = evaluateInvariants(snap, t, Date.now());
   for (const v of violations) {

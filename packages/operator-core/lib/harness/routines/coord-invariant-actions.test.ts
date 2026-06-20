@@ -14,6 +14,7 @@ import {
   breachDisposition,
   runProbeCycle,
   evaluateInvariants,
+  planStaleHandoffAccepts,
   planSharedHiveCapture,
   DEFAULT_THRESHOLDS,
   PROBE_A,
@@ -230,6 +231,31 @@ describe('evaluateInvariants', () => {
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations).toHaveLength(1);
     expect(violations[0].title).toBe('coord invariant: wake-queue depth/age growth');
+  });
+});
+
+describe('planStaleHandoffAccepts (F-FIX-037 stale-handoff auto-accept)', () => {
+  const NOW = Date.parse('2026-06-20T12:00:00Z');
+  const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
+
+  it('returns the msg_ids of only the handoffs older than the threshold', () => {
+    const open = [
+      { msg_id: 'h-stale', ts: hoursAgo(13) },
+      { msg_id: 'h-fresh', ts: hoursAgo(11) },
+      { msg_id: 'h-ancient', ts: hoursAgo(48) },
+    ];
+    expect(planStaleHandoffAccepts(open, 12, NOW)).toEqual(['h-stale', 'h-ancient']);
+  });
+
+  it('is empty when nothing crosses the threshold (and on an empty list)', () => {
+    expect(planStaleHandoffAccepts([{ msg_id: 'h1', ts: hoursAgo(1) }], 12, NOW)).toEqual([]);
+    expect(planStaleHandoffAccepts([], 12, NOW)).toEqual([]);
+  });
+
+  it('uses a strict boundary — exactly-at-threshold is not yet stale, one ms past is', () => {
+    expect(planStaleHandoffAccepts([{ msg_id: 'edge', ts: hoursAgo(12) }], 12, NOW)).toEqual([]);
+    const justOver = new Date(NOW - 12 * 3_600_000 - 1).toISOString();
+    expect(planStaleHandoffAccepts([{ msg_id: 'edge', ts: justOver }], 12, NOW)).toEqual(['edge']);
   });
 });
 
