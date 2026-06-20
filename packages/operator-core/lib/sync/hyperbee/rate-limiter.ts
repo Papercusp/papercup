@@ -47,6 +47,25 @@
  * (an attacker pacing exactly at the cap by honestly slow-ramping `ts`) is just
  * obeying the limit. See findings-EN-2.md for the honest trust-model write-up.
  *
+ * ── Forged-op-time DETECTION (WI-268) — convergent, no wall-clock ──
+ *
+ * The clamp above bounds the residual's MEMORY/OOM blast radius but cannot make a
+ * slow forged-`ts` ramp trip the per-window cap (that is the inherent limit of any
+ * convergent op-time limiter). We close it on the OBSERVABILITY plane instead of
+ * the drop plane: a client ramping forged FUTURE timestamps to pace under the cap
+ * necessarily drives its op-time high-water-mark AHEAD of the honest population's
+ * — and because the clamp lets `hwm` advance by at most one window per op, getting
+ * N windows ahead REQUIRES ≥N ramping ops (a single stray future op cannot do it).
+ * So `snapshot()` flags `suspectedTimestampSkew` when an author's hwm sits more
+ * than `skewThresholdWindows` ahead of the highest OTHER author's hwm in the same
+ * class. This is a pure function of the per-author hwm values — identical on every
+ * honest peer at the fixpoint — so it stays convergent and `Date.now`-free like the
+ * rest of the module. It is DETECTION ONLY: the owner sees the flag and manually
+ * revokes (`substrate:revoke_contributor` + the C-001 re-key); it never gates a
+ * drop, because a cross-author / wall-clock drop decision would diverge honest
+ * peers. The flag self-clears once honest real-time traffic surpasses the forged
+ * horizon. See findings-EN-2.md §forged-op-time + WI-268.
+ *
  * No `Date.now()`: the windowing + pruning clock is derived ENTIRELY from the op
  * stream's own timestamps (the high-water-mark), so this module is safe in the
  * substrate sidecar / worker paths where `Date.now` is unavailable, AND it stays
@@ -140,6 +159,19 @@ export interface RateLimiterOptions {
    *  A re-fold of ops older than this re-creates an empty bucket and re-admits
    *  them — harmless (those windows are long past the live enforcement edge). */
   retentionWindows?: number;
+  /**
+   * Forged-op-time DETECTION threshold (WI-268), in windows. An author whose
+   * current op-time high-water-mark sits MORE than this many windows ahead of the
+   * highest OTHER author's hwm (same class) is flagged `suspectedTimestampSkew` in
+   * `snapshot()` — the convergent signature of a client forging FUTURE op
+   * timestamps to ramp past the per-window cap (see the §forged-op-time DETECTION
+   * note above). Default 5. Must be ≥ 1. This is the FP/sensitivity knob: the gap
+   * is only reachable by ≥N ramping ops (the ±1-window clamp caps hwm growth at one
+   * window/op), so a single stray far-future op never trips it; the threshold's job
+   * is to stay above honest inter-member CLOCK SKEW (members stamp ops on their own
+   * wall clocks). 5 ⇒ ~5min for `ops`, ~5h for `rows` — comfortably above sane
+   * skew, well below any real ramp. Detection only — never gates a drop. */
+  skewThresholdWindows?: number;
 }
 
 /** Per-member observability row (for the owner GUI "member X at N/cap"). */
@@ -157,6 +189,21 @@ export interface RateStateRow {
   windowMs: number;
   /** The high-water-mark window's start (epoch ms), for display. */
   windowStartMs: number;
+  /** The author's current high-water-mark window INDEX for this class
+   *  (`floor(hwm / windowMs)`) — the basis for the cross-author skew comparison. */
+  hwmWindow: number;
+  /** WI-268: how many windows this author's hwm sits AHEAD of the highest OTHER
+   *  author's hwm in the same class (0 if it is not ahead, or if no other author
+   *  is tracked for the class — a lone author has no honest baseline). Convergent:
+   *  computed from the per-author hwm values, which are identical on every honest
+   *  peer at the merge fixpoint (each author's log is read in the same order). */
+  skewWindows: number;
+  /** WI-268: `skewWindows > skewThresholdWindows` — the convergent forged-op-time
+   *  signature (a client ramping forged FUTURE timestamps to pace under the
+   *  per-window cap). Surfaced for the owner to MANUALLY revoke
+   *  (`substrate:revoke_contributor` + the C-001 re-key); it never gates a drop
+   *  (a wall-clock/cross-author drop would diverge honest peers). */
+  suspectedTimestampSkew: boolean;
 }
 
 /**
@@ -166,12 +213,15 @@ export interface RateStateRow {
  */
 export class MemberRateLimiter {
   private readonly retentionWindows: number;
+  private readonly skewThresholdWindows: number;
   /** `${authorId}:${cls}` → ClassState. */
   private readonly state = new Map<string, ClassState>();
 
   constructor(opts?: RateLimiterOptions) {
     const r = opts?.retentionWindows;
     this.retentionWindows = typeof r === 'number' && Number.isFinite(r) && r >= 1 ? Math.floor(r) : 3;
+    const s = opts?.skewThresholdWindows;
+    this.skewThresholdWindows = typeof s === 'number' && Number.isFinite(s) && s >= 1 ? Math.floor(s) : 5;
   }
 
   private key(authorId: number, cls: RateClass): string {
@@ -289,7 +339,13 @@ export class MemberRateLimiter {
    * whose cap was unset reports `cap: null`. Cheap — iterates the bounded state.
    */
   snapshot(caps?: RateCaps | null): RateStateRow[] {
-    const rows: RateStateRow[] = [];
+    // Pass 1: base row per tracked (author,class), and the per-class set of author
+    // hwm-windows (the basis for the WI-268 cross-author skew). Each author's
+    // hwmWindow is a pure function of that author's own (identically-ordered) log,
+    // so this map — and therefore the skew below — is identical on every honest
+    // peer at the merge fixpoint (no Date.now, no interleaving dependence).
+    const rows: Array<RateStateRow & { _hwmWindow: number }> = [];
+    const hwmByClass = new Map<RateClass, Array<{ authorId: number; hwmWindow: number }>>();
     for (const [k, cs] of this.state) {
       if (cs.hwm === null) continue;
       const sep = k.lastIndexOf(':');
@@ -308,9 +364,33 @@ export class MemberRateLimiter {
         throttled: cap !== null && count >= cap,
         windowMs,
         windowStartMs: hwmWindow * windowMs,
+        hwmWindow,
+        skewWindows: 0,
+        suspectedTimestampSkew: false,
+        _hwmWindow: hwmWindow,
       });
+      let arr = hwmByClass.get(cls);
+      if (!arr) hwmByClass.set(cls, (arr = []));
+      arr.push({ authorId, hwmWindow });
     }
-    return rows;
+    // Pass 2: how far each author's hwm sits AHEAD of the highest OTHER author's
+    // hwm in the same class. A lone author (no other baseline) ⇒ skew 0 (we cannot
+    // distinguish a forger from the only voice; a lone over-cap flooder is still
+    // throttled per-window). The ±1-window clamp makes an N-window gap require ≥N
+    // ramping ops, so a single stray future op never trips the flag.
+    for (const r of rows) {
+      const peers = hwmByClass.get(r.cls)!;
+      let maxOther = -Infinity;
+      for (const p of peers) {
+        if (p.authorId === r.authorId) continue;
+        if (p.hwmWindow > maxOther) maxOther = p.hwmWindow;
+      }
+      if (maxOther !== -Infinity) {
+        r.skewWindows = Math.max(0, r._hwmWindow - maxOther);
+        r.suspectedTimestampSkew = r.skewWindows > this.skewThresholdWindows;
+      }
+    }
+    return rows.map(({ _hwmWindow, ...row }) => row);
   }
 
   /** Number of tracked (author,class) entries — test/observability aid. */
