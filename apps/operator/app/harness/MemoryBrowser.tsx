@@ -6,6 +6,7 @@ import Editor from '@monaco-editor/react';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { useShortcut } from '../../lib/hotkeys';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 
@@ -63,6 +64,7 @@ export function groupByTier<T extends { tier: Tier }>(files: T[]): Record<Tier, 
 }
 
 export default function MemoryBrowser({ slug, alive }: Props) {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [files, setFiles] = useState<MemFile[]>([]);
   const [active, setActive] = useQueryState('mem', parseAsString);
   const [original, setOriginal] = useState<string | null>(null);
@@ -95,7 +97,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
   // same-frame instead of after a round trip.
   const { data: textArtifactRows } = useSyncQuery<TextArtifactRow>({
     queryName: 'harnessTextArtifact.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId },
     enabled: !!slug,
   });
 

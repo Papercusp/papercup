@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import {
   resolveParamViews,
   validateParamPatch,
@@ -38,6 +39,7 @@ import HarnessPluginsSection from './HarnessPluginsSection';
  * wire-in — the legacy panel stays the default until this is Tauri-verified.
  */
 export default function BlueprintSettingsPanel({ slug, phase }: { slug: string; phase: string }) {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [params, setParams] = useState<BlueprintParams>({});
   const [blueprintId, setBlueprintId] = useState<string | null>(null);
   const [paramsLoaded, setParamsLoaded] = useState(false);
@@ -69,7 +71,7 @@ export default function BlueprintSettingsPanel({ slug, phase }: { slug: string; 
   // Current per-harness config.json via the existing sync mirror (cross-tab live).
   const { data: cfgRows } = useSyncQuery<{ harnessSlug: string; config?: string | null }>({
     queryName: 'harnessProjectFiles.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId },
     enabled: !!slug,
   });
   useEffect(() => {

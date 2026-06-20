@@ -5,6 +5,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { Checkbox } from './Checkbox';
@@ -148,6 +149,7 @@ export default function HarnessSettingsPanel({
   slug: string;
   phase: string;
 }) {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   // V1 hides the deprecated orchestrator-lane controls (worker-count
   // mode, fixed N, features cap, synthesizer, tiers, telemetry). They
   // remain wired (state/load/save) so a harness with these configs set
@@ -211,7 +213,7 @@ export default function HarnessSettingsPanel({
     config?: string | null;
   }>({
     queryName: 'harnessProjectFiles.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId },
     enabled: !!slug,
   });
   const applyLoadedConfig = useCallback((cfg: Record<string, unknown>) => {

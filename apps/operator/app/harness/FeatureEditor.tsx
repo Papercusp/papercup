@@ -7,6 +7,7 @@ import { Modal } from './Modal';
 import { Select } from './Select';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'] as const;
 type Status = (typeof VALID_STATUSES)[number];
@@ -74,6 +75,7 @@ interface Props {
 }
 
 export default function FeatureEditor({ slug, feature, onClose, onSaved, embedded = false }: Props) {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const isCreate = feature === null;
   const [id, setId] = useState(feature?.id ?? '');
   const [title, setTitle] = useState(feature?.title ?? '');
@@ -168,7 +170,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
     actor?: string | null;
   }>({
     queryName: 'featureAudit.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId },
     enabled: !isCreate && !!slug,
   });
   const historyRows: FeatureAuditEntry[] | null = useMemo(

@@ -21,6 +21,7 @@ import { Send, Archive, Loader2, AlertTriangle, Coins, RotateCcw } from 'lucide-
 import { COLORS, FONTS, RADIUS, SIZES } from './theme';
 import { Tooltip } from './Tooltip';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
@@ -72,6 +73,7 @@ type SendState =
   | { kind: 'error'; message: string };
 
 export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelProps) {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [chat, setChat] = useState<ChatRow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -104,7 +106,7 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
     archivedAt?: number | null;
   }>({
     queryName: 'agentChats.byHarness',
-    args: { harnessSlug: slug, limit: 200 },
+    args: { harnessSlug: slug, limit: 200, workspaceId },
     enabled: !!slug,
   });
 

@@ -71,6 +71,10 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             harness: installSlug,
+            // EI-1802: surface the unresolved-harness case EXPLICITLY so a consumer (Queen /
+            // overwatch) never reads the null `started` as a real paused-hive signal. true ⇒
+            // no home harness resolved (started/time/placements are unknown, not dormant).
+            harnessUnresolved,
             started,
             watchdog: {
               fires24h: watchdogFires24h,

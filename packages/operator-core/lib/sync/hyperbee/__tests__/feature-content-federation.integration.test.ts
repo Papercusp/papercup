@@ -232,6 +232,18 @@ async function setupPeerSchema(sql: postgres.Sql, memberSlug: string = HARNESS_S
       origin              TEXT NOT NULL DEFAULT 'local',
       fed_ts              BIGINT, -- EI-79 step 2 (mig 181): PG-level LWW guard column
       verified_author_github_user_id BIGINT, -- mig 273: the federated-ingest projection writes this; without it B's apply INSERT throws "column does not exist" and the feature never lands
+      -- The design/plan-link columns the harness-features projection now INSERTs/updates
+      -- (baseline DDL). Without these the apply INSERT throws "column ... does not exist",
+      -- the WI-255 quarantine drops the op, and the feature never federates (the Stage 6
+      -- red this restores). Types mirror the baseline: see_also/source_plan_item_ids text[],
+      -- needs_design/discarded_design_work boolean NOT NULL DEFAULT false, rest text.
+      needs_design          BOOLEAN NOT NULL DEFAULT FALSE,
+      design_status         TEXT,
+      design_spec_id        TEXT,
+      discarded_design_work BOOLEAN NOT NULL DEFAULT FALSE,
+      source_plan_slug      TEXT,
+      source_plan_item_ids  TEXT[],
+      see_also              TEXT[] NOT NULL DEFAULT '{}'::text[],
       PRIMARY KEY (harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.harness_issues_consolidated (

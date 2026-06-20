@@ -8,6 +8,7 @@ import { RotateCcw, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { useShortcut } from '../../lib/hotkeys';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 
@@ -42,6 +43,7 @@ export function overrideMapFromArtifacts(
 }
 
 export default function PromptsTab({ slug, alive }: Props) {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [roles, setRoles] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<string[]>([]);
   const [selected, setSelected] = useState<{ role: string; scope: Scope } | null>(null);
@@ -80,7 +82,7 @@ export default function PromptsTab({ slug, alive }: Props) {
   // harness runtime dir, not per-harness PG).
   const { data: textArtifactRows } = useSyncQuery<TextArtifactRow>({
     queryName: 'harnessTextArtifact.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, workspaceId },
     enabled: !!slug,
   });
   const overrideByRole = useMemo(() => overrideMapFromArtifacts(textArtifactRows), [textArtifactRows]);

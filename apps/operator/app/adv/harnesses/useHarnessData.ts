@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '@papercusp/operator-core/lib/harness/issue-types';
 
 export type FeatureStatus =
@@ -127,6 +128,7 @@ export function useHarnessFeatures(slug: string): {
   error: string | null;
   patchFeature: (id: string, partial: Partial<HarnessFeature>) => void;
 } {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [features, setFeatures] = useState<HarnessFeature[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -168,7 +170,7 @@ export function useHarnessFeatures(slug: string): {
   // Live Zero overlay.
   const { data: zeroRows, loading } = useSyncQuery<ZeroFeatureRow>({
     queryName: 'featuresConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug } : undefined,
+    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
   });
   useEffect(() => {
@@ -253,6 +255,7 @@ export function useHarnessIssues(slug: string): {
   error: string | null;
   patchIssue: (id: string, partial: Partial<Issue>) => void;
 } {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [restPending, setRestPending] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -285,7 +288,7 @@ export function useHarnessIssues(slug: string): {
   // Live Zero overlay for issues.
   const { data: zeroRows, loading } = useSyncQuery<ZeroIssueRow>({
     queryName: 'issuesConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug } : undefined,
+    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
   });
   useEffect(() => {
@@ -296,7 +299,7 @@ export function useHarnessIssues(slug: string): {
   // Pending validator findings stream from harness_pending_issues (Zero).
   const { data: pendingRows } = useSyncQuery<{ issueId: string }>({
     queryName: 'harnessPendingIssues.byHarness',
-    args: slug ? { harnessSlug: slug, phase: 'staging' } : undefined,
+    args: slug ? { harnessSlug: slug, phase: 'staging', workspaceId } : undefined,
     enabled: !!slug,
   });
   const pendingCount = Array.isArray(pendingRows) ? pendingRows.length : restPending;
