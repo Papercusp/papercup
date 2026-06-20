@@ -73,7 +73,14 @@ export interface PipelinePosition {
     deployed: boolean;
   };
   deployedSha: string | null;
-  gate: { stalled: boolean; consecutiveReds: number; lastGreenAtMs: number | null };
+  gate: {
+    stalled: boolean;
+    consecutiveReds: number;
+    lastGreenAtMs: number | null;
+    /** WI-282: the green-checkpoint is WEDGED / not firing (visible even at 0 reds). */
+    fireStale: boolean;
+    fireStaleReason: string | null;
+  };
   gitSyncLastStatus: string | null;
   /** One human-readable line. */
   summary: string;
@@ -110,11 +117,13 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
       p.positions.committedLocal,
     )} · pushed-to-origin ${tick(p.positions.onStaging)}${dirty} — superproject→main→deploy chain not tracked for submodule paths.`;
   }
-  const gateNote = !p.positions.inMain && p.gate.stalled
-    ? ` (green gate STALLED: ${p.gate.consecutiveReds} reds)`
-    : !p.positions.inMain && p.gate.consecutiveReds > 0
-      ? ` (gate red: ${p.gate.consecutiveReds})`
-      : '';
+  const gateNote = !p.positions.inMain && p.gate.fireStale
+    ? ` (green gate WEDGED — not firing: ${p.gate.fireStaleReason ?? 'stale'})`
+    : !p.positions.inMain && p.gate.stalled
+      ? ` (green gate STALLED: ${p.gate.consecutiveReds} reds)`
+      : !p.positions.inMain && p.gate.consecutiveReds > 0
+        ? ` (gate red: ${p.gate.consecutiveReds})`
+        : '';
   return `${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
     p.positions.onStaging,
   )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${
@@ -197,6 +206,8 @@ export async function gitPipelinePosition(
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
     lastGreenAtMs: snap.gate.lastGreenAtMs,
+    fireStale: snap.gate.fireStale,
+    fireStaleReason: snap.gate.fireStaleReason,
   };
 
   const base: Omit<PipelinePosition, 'summary'> = {

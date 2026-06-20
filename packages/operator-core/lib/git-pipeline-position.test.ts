@@ -40,7 +40,7 @@ const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
 
 const snap = (gate: Partial<GitPipelineSnapshot['gate']> = {}, lastStatus = 'synced'): GitPipelineSnapshot =>
   ({
-    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, ...gate },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, ...gate },
     gitSync: { lastStatus },
   } as GitPipelineSnapshot);
 
@@ -84,6 +84,39 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.positions.deployed).toBe(false);
     expect(res.summary).toContain('main ✗');
     expect(res.summary).toContain('STALLED');
+  });
+
+  it('WI-282: a change stuck behind a WEDGED (non-firing, 0-red) gate surfaces the wedge, not a false all-clear', async () => {
+    const git = fakeGit({
+      pathCommit: 'fed7654321',
+      contains: {
+        HEAD: ['fed7654321'],
+        'origin/staging': ['fed7654321'],
+        'origin/main': [], // not promoted — main is frozen
+        deployedsha0: [],
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/z.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        // The failure mode: the checkpoint never RAN, so 0 reds + stalled:false — yet
+        // it is wedged. fireStale must surface it even though the reds-based signal is clear.
+        loadSnapshot: async () =>
+          snap({
+            stalled: false,
+            consecutiveReds: 0,
+            fireStale: true,
+            fireStaleReason: 'the routine has not FIRED in ~3h (active, cron hourly)',
+          }),
+      },
+    );
+    expect(res.positions.inMain).toBe(false);
+    expect(res.summary).toContain('main ✗');
+    expect(res.summary).toContain('WEDGED');
+    // The reds-based STALLED label must NOT be what shows (it would mislead — 0 reds).
+    expect(res.summary).not.toContain('STALLED');
   });
 
   it('a submodule path is detected, annotated, and resolved against the submodule (not staging)', async () => {

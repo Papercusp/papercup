@@ -283,3 +283,30 @@ proof; 3rd-instance remaining-member-reads-F-CUT = non-regression follow-up.
 **Result: ⏳ pending the run.** Ship gate, NOT a correctness gate — implementation proven
 hermetically (backbone 1085 + 7dcd8 68/22 + 328af compose 6/6 + helper 8/8 + seam tests).
 Plan: `shared-hive-rekey-2026-06-19`.
+
+## P-008 live witness — the KEY-LEVEL reframe + the live diagnosis (2026-06-20, su-ee7e9 + su-9140a + 328af + c2a63)
+
+The content-based K1/K3 design above (B reads F-CTRL → can't read F-CUT) was **re-designed mid-run**: on the live binary it false-RED'd — not on the cut, but on **WI-259** (the D-021 scopedApply `harness_slug` guard silently drops a *cross-member* content op, so A's member-slug F-CTRL never crosses to B regardless of the re-key). WI-259 is an orthogonal content-federation bug; conflating it with the cut made the witness un-passable.
+
+**The reframe (the key insight):** a read-revocation cut lives in the CREDENTIAL plane, not the data plane — so prove it there. The C-001 cut = *the removed member's device gets no post-revoke epoch key*. `hive_epoch_keys` is HIVE-HOME-grained, so it federates A→B (A-003-proven) regardless of WI-259. The witness therefore probes the epoch-key plane, **content-free**:
+- **B_DEV** (the cut-off device set) = `member_device_pubkey @ epoch=CUR EXCEPT @ epoch=NEW` on A (A stays a member ⇒ in both ⇒ excluded; the diff is exactly B's device) — authoritative, no hive_members JSON parse.
+- **K0** B's device has wrapped keys origin=remote — the member-add grant federated.
+- **K1 control** B's device has the CUR-epoch key (could decrypt pre-revoke).
+- **K-revoke** A revokes B → epoch N→N+1, wrap to REMAINING members (not B).
+- **K-CUT** B's device has **0** rows at epoch N+1 — the cut — **AND** B *did* receive the remaining members' N+1 rows (so the 0 is a true exclusion, not a federation miss) **AND** A actually minted N+1. Device-filtered, content-free, **WI-259-orthogonal**.
+
+su-9140a implemented + ran it (su-ee7e9-reviewed). It **reached the K-stage** — proving the witness mechanics + the reframe both work — and **diagnosed the real live blocker, content-free**:
+
+### WI-280 — the live re-key mints 0 epoch keys (root: a native dep can't load in the sidecar)
+With the flag genuinely flipped (`/api/flags/set`) + a fresh build + a successful join, the owner minted **0** epoch keys (`A hive_epoch_keys=0`). Root, confirmed by code read (su-ee7e9) + c2a63:
+- The re-key crypto (`hive-epoch-crypto-impl.ts`) uses **`sodium-native`** (a native `.node`), lazy-loaded on the first `deriveEpochKey`/`wrapKeyToMember`.
+- In the `HIVE_SMOKE_MODE=sidecar` binary that native module isn't resolvable → the first admit-grant `await sodium()` **throws**.
+- The open-mode admit grant (`boot.ts`) wrapped it in a best-effort catch that **swallowed** the throw → 0 keys, silently.
+- Every hermetic test injects/stubs the crypto (never calls the real `sodium()`), so the suite is GREEN while the live binary is dead — the **green-rig/red-binary** class (`EI-1814`).
+- (Corrected mid-diagnosis: `getHiveEpoch` coerces unset→`BASELINE_EPOCH=0`, so the grant loop *does* run epoch 0 — the bug is the THROW, not an empty `[0..-1]` loop; the rig's `CUR_EPOCH=-1` is just `max(epoch)` over an empty table. This prevented a fix aimed at the wrong layer.)
+
+**Enforcement is live (separately):** AK owner-ban = **PASS** on the same run — the binary + the moderation path work; only the re-key key-mint is blocked.
+
+**Fixes in flight:** WI-280 part A (c2a63 — ship + resolve `sodium-native` in the sidecar, mirroring `better-sqlite3`); part B **DONE** (328af — the swallow is now a loud `rekey_grant_failed` boot event + full-stack log + test); EI-1814 (dc9db — the durable fix: a build/boot self-check for native deps + fail-loud crypto so this class never silently 0-keys again).
+
+**Result: ⏳ pending part A.** The grant logic + the device-filtered witness are both verified-correct; only the sidecar native-load gates it. The instant `sodium-native` resolves in the sidecar, the witness flips to a **green device-filtered K-CUT** in one run → findings-K green → the owner flips `papercusp-hive-rekey`. The witness is now correct, content-free, and WI-259-decoupled, so it cannot be confounded again — the cut is proven where the cut actually is.

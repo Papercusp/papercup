@@ -81,6 +81,14 @@ export interface GitPipelineSnapshot {
     lastGreenAtMs: number | null;
     firstRedAtMs: number | null;
     stalled: boolean;
+    /** WI-282: the green-checkpoint routine's last fire (epoch ms) + a freshness
+     *  verdict, so a WEDGED / non-firing ticker is VISIBLE even though it produces
+     *  0 reds — the reds-based `stalled` is structurally blind to a checkpoint that
+     *  never ran (it can't go red without running). `fireStale` reuses the
+     *  green-stall-watchdog's pure logic (last-fire / last-green age). */
+    lastFiredAtMs: number | null;
+    fireStale: boolean;
+    fireStaleReason: string | null;
     lastFixerStatus: string | null;
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
@@ -182,6 +190,32 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
   const lastFixer = (gcMeta.last_fixer ?? null) as Record<string, unknown> | null;
   const flakeHistory = (gcMeta.flake_history ?? {}) as Record<string, { flakes?: number }>;
 
+  // WI-282: a wedged / non-firing green-checkpoint produces 0 reds (it never ran to
+  // go red), so the reds-based `stalled` stays false while `main` silently freezes.
+  // Reuse the green-stall-watchdog's pure freshness verdict (last-fire / last-green
+  // age) so the gate READ surfaces a wedge too — independent of the red streak.
+  const gcRow = byName('green-checkpoint');
+  const gcLastFiredMs = dateMs(gcRow?.last_fired_at);
+  let gcFireStale = false;
+  let gcFireStaleReason: string | null = null;
+  if (gcRow?.active === true) {
+    try {
+      const { evaluateGreenStall } = await import('./release/green-stall-watchdog');
+      const v = evaluateGreenStall(
+        {
+          lastFiredMs: gcLastFiredMs,
+          lastGreenAt: num(gateHealth.lastGreenAt),
+          watchdogAlerted: gateHealth.watchdogAlerted === true,
+        },
+        Date.now(),
+      );
+      gcFireStale = v.stalled;
+      gcFireStaleReason = v.reason;
+    } catch {
+      // best-effort — a freshness probe must never break the snapshot read.
+    }
+  }
+
   // The currently-open merge conflict (git-sync-conflict escalation), if any.
   let openConflict: GitPipelineSnapshot['openConflict'] = null;
   try {
@@ -250,6 +284,9 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastGreenAtMs: num(gateHealth.lastGreenAt),
       firstRedAtMs: num(gateHealth.firstRedAt),
       stalled: gateHealth.stallAlerted === true,
+      lastFiredAtMs: gcLastFiredMs,
+      fireStale: gcFireStale,
+      fireStaleReason: gcFireStaleReason,
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,

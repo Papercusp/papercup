@@ -31,7 +31,17 @@ import { createRequire } from 'node:module';
  * Kept deliberately small — a deploy gate that false-blocks every promotion is
  * worse than none. Extend via PAPERCUSP_PREFLIGHT_ADDONS (comma-separated).
  */
-export const DEFAULT_REQUIRED_ADDONS = ['better-sqlite3'] as const;
+export const DEFAULT_REQUIRED_ADDONS = ['better-sqlite3', 'sodium-native'] as const;
+// `sodium-native` (EI-1814 / WI-280): the hive re-key's real epoch-key crypto
+// (hive-epoch-crypto-impl.ts) calls `sodium-native` DIRECTLY (not via
+// sodium-universal's JS fallback the base swarm uses), lazy-loaded on the first
+// grant. In the packaged sidecar its native `.node` wasn't resolvable, so the
+// owner's admit-grant threw and minted ZERO epoch keys — and because every
+// hermetic test stubs the crypto, the suite stayed green while the live binary
+// was dead (the green-rig/red-binary class, WI-261). Gating + the boot self-check
+// on it turns that silent 0-keys into a LOUD, deploy-blocking failure. NOTE: this
+// only DETECTS the load failure; the durable fix is the sidecar build shipping +
+// resolving the prebuilt binary (EI-1814 fix-1a, sidecar-packaging lane).
 
 /** Resolve the required-addon set: env override (comma list) or the default. */
 export function requiredAddonsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {

@@ -73,15 +73,18 @@ describe('AD workspace isolation — derive-swarm-topic cross-workspace distinct
   });
 });
 
-describe('AD workspace isolation — local:<ws>/<slug> delimiter ambiguity (CHARACTERIZATION · EI-1690)', () => {
-  it('a SLASHFUL workspace_id collides two DISTINCT tenancy pairs onto ONE topic (the latent gap)', () => {
-    // ("a/x","y") and ("a","x/y") both serialize to "local:a/x/y" → same sha256.
-    // harness_slug "x/y" is itself invalid by the slug pattern, so this is only
-    // reachable via a slashful WORKSPACE id (no enforced format guard — EI-1690).
-    // CHARACTERIZATION of the CURRENT behavior: FLIP this to .not.toBe(true) once
-    // the binding is length-prefixed/escaped or workspace_id is slash-constrained.
-    const a = deriveSwarmTopic({ kind: 'local', workspace_id: 'a/x', harness_slug: 'y' });
-    const b = deriveSwarmTopic({ kind: 'local', workspace_id: 'a', harness_slug: 'x/y' });
-    expect(a.equals(b)).toBe(true); // ⚠ EI-1690 — distinct tenancy pairs, identical topic
+describe('AD workspace isolation — local:<ws>/<slug> delimiter ambiguity CLOSED (EI-1690)', () => {
+  it('a SLASHFUL workspace_id is REJECTED, so the former cross-tenant topic collision can no longer occur', () => {
+    // Pre-fix latent gap: ("a/x","y") and ("a","x/y") BOTH serialized to "local:a/x/y"
+    // → same sha256, federating two DISTINCT tenancy pairs onto ONE swarm topic (the
+    // topic IS the tenancy boundary). EI-1690 closed it by REJECTING a slashful
+    // workspace_id at serialization (rejecting, not escaping — escaping would change the
+    // derived topic and break federation with already-connected peers). The colliding
+    // pair is only reachable via a slashful WORKSPACE id (harness_slug is slash-free by
+    // its ^[a-z0-9][a-z0-9-]*$ pattern), and that path now throws instead of silently
+    // sharing a topic. (Was a CHARACTERIZATION of the gap; flipped now the guard landed.)
+    expect(() =>
+      deriveSwarmTopic({ kind: 'local', workspace_id: 'a/x', harness_slug: 'y' }),
+    ).toThrow(/EI-1690/);
   });
 });

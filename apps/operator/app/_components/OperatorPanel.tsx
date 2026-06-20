@@ -27,7 +27,9 @@ import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { MarkdownPreview } from './MarkdownEditor';
+import { LazyDetails } from './LazyDetails';
 import { Select } from '../harness/Select';
+import { Tooltip } from '../harness/Tooltip';
 import { usePromptDialog } from '../harness/usePromptDialog';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
@@ -360,21 +362,22 @@ export function OperatorButton(): ReactElement {
 
   return (
     <span className="pc-header-cta-shell pc-header-cta-shell--operator">
-      <button
-        className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
-        aria-label={title}
-        title={title}
-        onClick={toggle}
-        aria-expanded={state.open}
-        style={{ marginLeft: 8 }}
-      >
-        <span className="pc-header-cta-orb" aria-hidden="true">
-          <DeckCardsMark className="pc-header-cta-logo pc-header-cta-logo--deck" />
-          {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
-          {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
-        </span>
-        <span className="pc-header-cta-label">DECK</span>
-      </button>
+      <Tooltip label={title}>
+        <button
+          className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
+          aria-label={title}
+          onClick={toggle}
+          aria-expanded={state.open}
+          style={{ marginLeft: 8 }}
+        >
+          <span className="pc-header-cta-orb" aria-hidden="true">
+            <DeckCardsMark className="pc-header-cta-logo pc-header-cta-logo--deck" />
+            {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
+            {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
+          </span>
+          <span className="pc-header-cta-label">DECK</span>
+        </button>
+      </Tooltip>
       <div
         role="status"
         aria-label={`Deck card counts: ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored`}
@@ -544,17 +547,18 @@ export function OperatorAutoScanToggle(): ReactElement {
   }, []);
   const title = AUTO_ACCEPT_TOOLTIP[autoAccept];
   return (
-    <button
-      type="button"
-      className={`pc-header-cta-mini pc-header-cta-mini--auto pc-header-cta-mini--auto-${autoAccept}${autoAccept !== 'off' ? ' is-on' : ''}`}
-      aria-label={title}
-      title={title}
-      onClick={cycle}
-      style={{ marginLeft: 4 }}
-    >
-      <span className="pc-header-cta-mini-dot" aria-hidden="true" />
-      <span className="pc-header-cta-mini-label">auto: {AUTO_ACCEPT_LABEL[autoAccept]}</span>
-    </button>
+    <Tooltip label={title}>
+      <button
+        type="button"
+        className={`pc-header-cta-mini pc-header-cta-mini--auto pc-header-cta-mini--auto-${autoAccept}${autoAccept !== 'off' ? ' is-on' : ''}`}
+        aria-label={title}
+        onClick={cycle}
+        style={{ marginLeft: 4 }}
+      >
+        <span className="pc-header-cta-mini-dot" aria-hidden="true" />
+        <span className="pc-header-cta-mini-label">auto: {AUTO_ACCEPT_LABEL[autoAccept]}</span>
+      </button>
+    </Tooltip>
   );
 }
 
@@ -2067,12 +2071,11 @@ export function OperatorPanel(): ReactElement | null {
                         )}
 
                         {s.action === 'send_directive' && s.directive_body && (
-                          <details className="operator-entry__details">
-                            <summary>Directive body</summary>
+                          <LazyDetails className="operator-entry__details" summary="Directive body">
                             <div>
                               <MarkdownPreview value={s.directive_body} outline="left" />
                             </div>
-                          </details>
+                          </LazyDetails>
                         )}
                         {s.action === 'inform' && s.body && (
                           <div className="operator-entry__markdown operator-entry__markdown--compact">

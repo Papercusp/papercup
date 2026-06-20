@@ -218,14 +218,35 @@ export async function evaluateSetContent(
 
   const filePath = `${slug}.md`;
   const currentParsed = parsePlan(current, { filePath });
-  const proposed = parsePlan(content, { filePath });
+  // EI-1812: a PG-canonical plan keeps its frontmatter in PG columns, so a raw-body
+  // edit legitimately omits the leading `---…---` block. parsePlan then flags the
+  // proposed body `isLegacy`, which the legacy-boundary guard below would reject as
+  // `would_orphan_frontmatter` — even though the canonical frontmatter is NOT being
+  // dropped (it survives in the columns + the current body). When the proposed body
+  // carries no frontmatter of its own, re-attach the CURRENT plan's frontmatter so the
+  // shrink/legacy/lint guards + the stored body see the real, preserved result. A body
+  // that DOES carry its own `---…---` is left untouched — an intentional frontmatter
+  // rewrite still passes through the legacy-boundary guard + lint unchanged.
+  let body = content;
+  let proposed = parsePlan(body, { filePath });
+  if (!currentParsed.isLegacy && proposed.isLegacy && !/^\s*---\r?\n/.test(body)) {
+    const fm = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/.exec(current)?.[1];
+    if (fm) {
+      const reattached = fm + body;
+      const reparsed = parsePlan(reattached, { filePath });
+      if (!reparsed.isLegacy) {
+        body = reattached;
+        proposed = reparsed;
+      }
+    }
+  }
 
   // 1b. Mass-deletion guard (EI-83 / audit P-040) — a body that shrinks the
   //     plan past the byte ratio OR drops most of its items/decisions is far
   //     more often a truncated paste or a wrong-plan write than an intentional
   //     rewrite. Require the caller to say so explicitly via allowShrink.
   if (!opts.allowShrink) {
-    const shrink = detectSuspiciousShrink(current, content, currentParsed, proposed);
+    const shrink = detectSuspiciousShrink(current, body, currentParsed, proposed);
     if (shrink) return { newBody: null, value: shrink };
   }
 
@@ -245,8 +266,8 @@ export async function evaluateSetContent(
 
   const warning = shrinkWarning(currentParsed, proposed);
   return {
-    newBody: content,
-    value: { ok: true, slug, contentHash: hashPlanContent(content), ...(warning ? { warning } : {}) },
+    newBody: body,
+    value: { ok: true, slug, contentHash: hashPlanContent(body), ...(warning ? { warning } : {}) },
   };
 }
 
