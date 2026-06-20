@@ -432,6 +432,12 @@ export default defineTool({
     if (sessionUser) {
       void (async () => {
         try {
+          // EI-2032: kill switch for per-turn conversation capture — the largest
+          // source of low-signal / zero-anchor memories (the auto-extraction path
+          // that bypasses the explicit-write conflict-check/boundary gates).
+          // Default ON (behavior unchanged); PAPERCUSP_MEM0_CONVERSATION_CAPTURE=off
+          // disables it (e.g. if conversational capture is adding recall noise).
+          if (process.env.PAPERCUSP_MEM0_CONVERSATION_CAPTURE === 'off') return;
           // Conversation-window fact extraction is an OPTIONAL backend
           // capability (generalize-memory-backend-swappable D-003) —
           // mem0 has it; plain stores skip the post-turn capture.
