@@ -55,10 +55,17 @@ BEGIN
         AND column_name = ANY(_recency)
       ORDER BY array_position(_recency, column_name) LIMIT 1
     );
-    IF rec_col IS NOT NULL THEN
-      order_clause := format('%I DESC NULLS LAST, (%I <> %L) DESC, ctid', rec_col, slug_col, 'papercusp');
+    -- WINNER RULE (owner-confirmed 2026-06-20): papercup is the live-READ authoritative copy
+    -- (operatorHomeHarnessSlug→papercup), so papercup* beats the papercusp 06-19 SHADOW on a
+    -- collision — papercusp's newer updated_at is a copy-stamp, NOT real activity. papercusp-UNIQUE
+    -- rows (no papercup* peer) are alone in their partition ⇒ rn=1 ⇒ SURVIVE (su-aede8's work).
+    -- EXCEPTION: hive_placements — keep the most-RECENT placement per key, so su-aede8's recent
+    -- papercusp re-placements beat the RETIRED papercup-hive ones.
+    IF r.table_name = 'hive_placements' AND rec_col IS NOT NULL THEN
+      order_clause := format('%I DESC NULLS LAST, ctid', rec_col);  -- recency: newest placement wins
     ELSE
-      order_clause := format('(%I <> %L) DESC, ctid', slug_col, 'papercusp');  -- papercup* wins
+      order_clause := format('array_position(ARRAY[%L,%L,%L,%L]::text[], %I::text), ctid',
+                             'papercup', 'papercup-org', 'papercup-hive', 'papercusp', slug_col);
     END IF;
 
     EXECUTE format(
