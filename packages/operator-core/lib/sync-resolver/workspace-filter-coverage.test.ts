@@ -88,12 +88,13 @@ const OPEN_UNFILTERED: Record<string, string> = {
   'harnessEscalations.byHarness': OPEN_REASON,
   'harnessHookLogs.byHarness': OPEN_REASON,
   'harnessPendingIssues.byHarness': OPEN_REASON,
-  'harnessProjectFiles.byHarness': OPEN_REASON,
+  // EI-1763 remediation (su-d2230, 2026-06-20): harnessProjectFiles / harnessSkills /
+  // harnessTextArtifact now thread workspaceId (eq(t.workspaceId, workspaceId) when
+  // present) → no longer flagged → removed from the open set as the guard's stale-entry
+  // test requires. (harnessDecisions.byHarness likewise scoped, was not in this list.)
   'harnessScreenshots.byHarness': OPEN_REASON,
-  'harnessSkills.byHarness': OPEN_REASON,
   'harnessSmokeTest.byHarness': OPEN_REASON,
   'harnessTests.byHarness': OPEN_REASON,
-  'harnessTextArtifact.byHarness': OPEN_REASON,
   'issuesConsolidated.bySlug': OPEN_REASON,
 };
 

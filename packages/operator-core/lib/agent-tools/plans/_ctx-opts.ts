@@ -23,7 +23,6 @@
  */
 
 import { type PlanSourceOpts } from './source';
-import { PAPERCUP_HARNESS_SLUG } from '../../harness/register-papercup';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 export interface CtxHarnessOpts extends PlanSourceOpts {
@@ -57,8 +56,12 @@ export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts>
   // which always operates on the operator's own plans — keeps working.
   // Under PG-canonical storage the readers resolve (workspace, harness)
   // themselves (source.ts resolvePlanScope), so this just threads the slug.
-  if (!raw || raw === '*' || raw === PAPERCUP_HARNESS_SLUG) {
-    return { harnessSlug: PAPERCUP_HARNESS_SLUG };
+  // The operator-home slug (operatorHomeHarnessSlug() — PAPERCUSP_HIVE_HOME_SLUG
+  // when set, else the legacy default) is resolved here, never a hardcoded literal,
+  // so this site auto-follows the home cutover (papercup→papercusp merge).
+  const home = operatorHomeHarnessSlug();
+  if (!raw || raw === '*' || raw === home) {
+    return { harnessSlug: home };
   }
   return { harnessSlug: raw };
 }

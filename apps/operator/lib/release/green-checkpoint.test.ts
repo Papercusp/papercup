@@ -59,7 +59,11 @@ function stubDeps(green: boolean, failingTests?: string[]): { deps: CheckpointDe
   return { deps, calls };
 }
 
-const cfg = () => releaseConfig({ integrationRoot: repo, releaseRoot: repo, checkpointRoot: repo, releaseRef: 'ready', integrationBranch: 'main' });
+// EI-1762: pin the checkpoint log dir INSIDE the per-test temp repo (auto-cleaned by
+// afterEach) so the suite never writes fixture logs into the REAL ~/.papercusp/checkpoint-logs/
+// — those fixtures ('FAIL lib/foo.test.ts', 'SPA BUILD FAILED') masquerade as real
+// checkpoint failures and mislead anyone diagnosing a deploy freeze.
+const cfg = () => releaseConfig({ integrationRoot: repo, releaseRoot: repo, checkpointRoot: repo, releaseRef: 'ready', integrationBranch: 'main', checkpointLogDir: join(repo, '.checkpoint-logs') });
 
 beforeEach(async () => {
   repo = mkdtempSync(join(tmpdir(), 'green-'));

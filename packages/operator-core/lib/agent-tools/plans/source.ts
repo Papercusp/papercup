@@ -26,7 +26,8 @@ import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { resolveProject, resolveWorkspaceForHarnessSlug } from '../../harness-core';
-import { detectPapercupRoot, PAPERCUP_HARNESS_SLUG } from '../../harness/register-papercup';
+import { detectPapercupRoot } from '../../harness/register-papercup';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
@@ -213,13 +214,13 @@ function rowFromDb(r: PlanDbRow): PlanRow {
 }
 
 /**
- * True for the harness slugs that resolve to the papercup primary harness:
+ * True for the harness slugs that resolve to the operator-home harness:
  * the empty / unset case, the SU wildcards `'*'` / `'all'`, and the literal
- * papercup slug. Shared by `fill_workspace_id_from_projects` and
- * `resolvePlanScope` so the "this is papercup" predicate is defined once.
+ * operator-home slug. Shared by `fill_workspace_id_from_projects` and
+ * `resolvePlanScope` so the "this is the operator home" predicate is defined once.
  */
-function isPapercupScope(raw: string | undefined): boolean {
-  return !raw || raw === '*' || raw === 'all' || raw === PAPERCUP_HARNESS_SLUG;
+function isOperatorHomeScope(raw: string | undefined): boolean {
+  return !raw || raw === '*' || raw === 'all' || raw === operatorHomeHarnessSlug();
 }
 
 /** Injectable seam for the projects-table lookup — overridden in unit tests
@@ -272,7 +273,7 @@ async function lookupProjectWorkspaceIds(slug: string): Promise<string[]> {
  * half).
  *
  * Rules (fail-loud, no silent cross-workspace default):
- *   - papercup / empty / '*' / 'all' / PAPERCUP_HARNESS_SLUG → PAPERCUSP_WORKSPACE_ID.
+ *   - operator-home / empty / '*' / 'all' / operatorHomeHarnessSlug() → PAPERCUSP_WORKSPACE_ID.
  *     WI-148 PART-B CUTOVER (owner GO 2026-06-16): flipped from DEFAULT_WORKSPACE_ID
  *     to PAPERCUSP_WORKSPACE_ID *in LOCKSTEP* with migration 295, which moves
  *     papercup's plan/feature/issue rows 'default' → 'papercusp-workspace' in the
@@ -292,7 +293,7 @@ export async function fill_workspace_id_from_projects(
   const raw = harnessSlug?.trim();
   // WI-148 part-B cutover (owner GO 2026-06-16): papercup → PAPERCUSP_WORKSPACE_ID,
   // in lockstep with migration 295's data move (see the doc-comment above).
-  if (isPapercupScope(raw)) return PAPERCUSP_WORKSPACE_ID;
+  if (isOperatorHomeScope(raw)) return PAPERCUSP_WORKSPACE_ID;
 
   const lookup = opts.lookup ?? lookupProjectWorkspaceIds;
   const matches = await lookup(raw!);
@@ -312,7 +313,7 @@ export async function fill_workspace_id_from_projects(
   // a hive's plans resolve the same way its work-items do. Active-workspace-first +
   // collision-aware (su-a7f66 / su-632e0166, EI-1511 / P-017). Additive: only turns
   // a former null (→ caller throw) into a resolution; never regresses papercup
-  // (isPapercupScope) or explicit-workspaceId callers (both short-circuit earlier).
+  // (isOperatorHomeScope) or explicit-workspaceId callers (both short-circuit earlier).
   const registryFallback = opts.registryFallback ?? resolveWorkspaceForHarnessSlug;
   return await registryFallback(raw!);
 }
@@ -332,13 +333,13 @@ export async function resolvePlanScope(
   } = {},
 ): Promise<{ workspaceId: string; harnessSlug: string }> {
   const raw = opts.harnessSlug?.trim();
-  if (isPapercupScope(raw)) {
-    // Papercup / wildcard branch — WI-148 part-B (owner GO 2026-06-16): honor an
+  if (isOperatorHomeScope(raw)) {
+    // Operator-home / wildcard branch — WI-148 part-B (owner GO 2026-06-16): honor an
     // explicit workspaceId, else PAPERCUSP_WORKSPACE_ID (flipped from
     // DEFAULT_WORKSPACE_ID in lockstep with migration 295's data move).
     return {
       workspaceId: opts.workspaceId ?? PAPERCUSP_WORKSPACE_ID,
-      harnessSlug: PAPERCUP_HARNESS_SLUG,
+      harnessSlug: operatorHomeHarnessSlug(),
     };
   }
   // A concrete non-papercup slug. An explicit workspaceId pins the scope.
@@ -365,7 +366,7 @@ export async function resolvePlanScope(
 
 /** Synthetic stable locator for a plan (the old `.md` path) — display + lock key. */
 export function syntheticPlanPath(harnessSlug: string, slug: string): string {
-  return harnessSlug === PAPERCUP_HARNESS_SLUG
+  return harnessSlug === operatorHomeHarnessSlug()
     ? `${PLANS_DIR_REL}/${slug}.md`
     : `${harnessSlug}/${DEFAULT_HARNESS_PLANS_REL}/${slug}.md`;
 }
@@ -450,11 +451,11 @@ export async function resolveHarnessPlansDir(
     if (detected) {
       project = reg.projects.find((p) => path.resolve(p.path) === path.resolve(detected));
     }
-    project = project ?? reg.projects.find((p) => p.slug === PAPERCUP_HARNESS_SLUG);
+    project = project ?? reg.projects.find((p) => p.slug === operatorHomeHarnessSlug());
     if (!project) {
       throw new Error(
         `resolveHarnessPlansDir: no harness in ctx and no primary harness findable ` +
-          `(no path-match for repo root '${detected}', no '${PAPERCUP_HARNESS_SLUG}' slug). ` +
+          `(no path-match for repo root '${detected}', no '${operatorHomeHarnessSlug()}' slug). ` +
           `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
       );
     }
@@ -463,14 +464,14 @@ export async function resolveHarnessPlansDir(
     resolved = raw;
     project = (await resolveProject(resolved, opts.workspaceId)) ?? undefined;
     if (!project) {
-      const didYouMean = resolved === 'papercusp' ? ` Did you mean '${PAPERCUP_HARNESS_SLUG}'?` : '';
+      const didYouMean = resolved === 'papercusp' ? ` Did you mean '${operatorHomeHarnessSlug()}'?` : '';
       throw new Error(
         `resolveHarnessPlansDir: harness '${resolved}' not registered in any workspace.${didYouMean} ` +
           `Active-workspace harnesses: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
       );
     }
   }
-  if (resolved === PAPERCUP_HARNESS_SLUG) {
+  if (resolved === operatorHomeHarnessSlug()) {
     const detected = detectPapercupRoot();
     if (detected && path.resolve(project.path) !== path.resolve(detected)) {
       throw new Error(

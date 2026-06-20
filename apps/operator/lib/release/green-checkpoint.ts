@@ -22,7 +22,6 @@
 
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
 import * as path from 'node:path';
 import {
   revParse,
@@ -335,7 +334,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // names survived the truncation; 2026-06-06/07 cost five diagnosis round-trips +
       // manual re-runs). One file per run, tiny disk, names every failure forever.
       try {
-        const logDir = path.join(homedir(), '.papercusp', 'checkpoint-logs');
+        const logDir = cfg.checkpointLogDir;
         mkdirSync(logDir, { recursive: true });
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}.log`);

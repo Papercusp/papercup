@@ -132,3 +132,21 @@ The P-008 witness had a STACK of harness/build blockers, all now fixed (committe
 A-003 is CLOSED + live-green (su-c2a63's converged fix; my binary witness + suite 1085 green). The re-key
 is BUILT + hermetically tested. This P-008 LIVE witness is the one remaining ship-gate proof for C-001 —
 **not yet green.** C-001 read-cut is therefore not yet live-validated.
+
+## 🎯 RUN 2 (2026-06-20, DEVICE-FILTERED witness — ee7e9's content-free reframe) — WITNESS PROVEN; blocker = WI-280
+The witness was rebuilt content-free (ee7e9's reframe): K0/K1/K3 now read `hive_epoch_keys` ONLY (hive-home-grained,
+A-003-proven to cross), device-filtered by B_DEV = A's `epoch=CUR` member devices EXCEPT `epoch=NEW` (the cut-off
+device). The F-CTRL/F-CUT content probes are gone ⇒ **WI-259-orthogonal**. ee7e9 reviewed + APPROVED (CUR_EPOCH-
+before-revoke ordering confirmed; `origin='remote'` on all B-side counts).
+- **Run 2 WON the discovery coin-flip** (discovered=PASS, join=PASS) → the K-stage RAN. This proves the witness
+  mechanics + the content-free reframe both work, and that the K-stage runs independent of WI-259 (federate-A→B
+  FAIL'd as expected but did NOT block it). The device-filtered witness is DONE + ee7e9-approved + committed.
+- **The K-stage found the live re-key mints 0 epoch keys** → **WI-280** (filed): A `hive_epoch_keys=0`, `members=0`
+  POST-join, even with the flag genuinely flipped (`/api/flags/set …rekey=true → ok` on both) + a fresh build.
+  CUR_EPOCH=-1 ⇒ B_DEV empty ⇒ K0/K1/K2/K3 all FAIL. Confirmed twice (run 2 + run 5). Likely: create-with-flag-on
+  doesn't init epoch-0 / mint the owner self-key, and/or the grant is gated on `hive_members`=0 (joiner→owner gap).
+  **AK-ban=PASS** (owner-enforcement ban has live teeth).
+- **Net:** the witness is no longer the gate — it's proven + ready and flips to a GREEN device-filtered K-CUT the
+  instant the owner mints epoch keys. The remaining C-001 ship blocker is **WI-280** (re-key engagement — owners'
+  domain: c2a63/ee7e9/328af), reported. Discovery is a ~50% cupboard-off coin-flip (no cupboard running; :8788 is the
+  inference gateway, not a directory) — retry until discovered=PASS.

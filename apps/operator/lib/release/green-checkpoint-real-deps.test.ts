@@ -17,7 +17,10 @@
  * The actual FF-of-main (advance → advanceReady) is the orchestration test's
  * real-git temp-repo path; here we never touch a real branch.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
 
@@ -35,12 +38,20 @@ function makeExec(responses: ExecResp[]) {
   return { exec, calls };
 }
 
+// Redirect the per-run checkpoint suite-log dir to a throwaway temp dir so this
+// real-deps test (which exercises runGreen's writeFileSync log-persist) NEVER
+// pollutes the real ~/.papercusp/checkpoint-logs/ — fixture logs landing there
+// masquerade as real checkpoint failures + mislead freeze diagnosis (2026-06-20).
+const tmpLogDir = mkdtempSync(join(tmpdir(), 'green-cp-log-'));
+afterAll(() => rmSync(tmpLogDir, { recursive: true, force: true }));
+
 const cfg: ReleaseConfig = releaseConfig({
   integrationRoot: '/int',
   releaseRoot: '/int',
   checkpointRoot: '/cp',
   releaseRef: 'ready',
   integrationBranch: 'main',
+  checkpointLogDir: tmpLogDir,
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(' ');
 
