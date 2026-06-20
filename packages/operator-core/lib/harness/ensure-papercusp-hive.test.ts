@@ -53,6 +53,9 @@ describe('ensurePapercuspHive — P-029 ship-as-shared-hive bootstrap', () => {
       slug: PAPERCUSP_HIVE_SLUG,
       workspaceId: 'papercusp-workspace',
       createdBy: 'system:dogfood-bootstrap',
+      // B-merge (owner-directed papercup→papercusp): papercusp links the detected repo
+      // root in place as its own repo (existingPath), so it is ONE entry = the hive+repo.
+      existingPath: '/repo/papercup',
     });
   });
 
