@@ -369,6 +369,9 @@ import './coordination/tools/wake-queue';
 // One cheap combined fleet glance (wake gate + staged wakes + bees + governor +
 // contextual tips) — the high-frequency statusline/TUI read.
 import './coordination/tools/glance';
+// COMPOUND agent wake-orientation read (code-execution B-CX-1B): my assignments +
+// claimable backlog + inbox summary in one round-trip (the work-centric sibling of glance).
+import './coordination/tools/orient';
 // Dispatch a slash-exposed tool command AT another agent via deliver-and-wake
 // (WI-126) — the cross-session leg of slash exposure; the wake-mode gate stages
 // dispatched commands for manual-mode targets.
@@ -486,6 +489,9 @@ import './work_items/set_state';
 // Structured completion → auto-emit (coord-lifecycle-automation-2026-06-04 D-004)
 import './work_items/complete';
 import './work_items/claim';
+// COMPOUND work-pickup (code-execution B-CX-1B): get(detail)+claim(+declare-intent) in
+// one round-trip — the #1 measured agent flow; also closes the get→claim race.
+import './work_items/pickup';
 import './work_items/release';
 // Per-assignee ordered work-list (local-hive-orchestration P-020 / D-004 / D-008):
 // reorder moves an item within its assignee's queue; writer (bee|queen) = the

@@ -52,6 +52,7 @@ import { renderTestingStandard } from './testing-standard-policy';
 import { renderAccountRoutingNote } from './account-routing-policy';
 import { renderConcurrencyFirstNote } from './concurrency-first-policy';
 import { renderDeployPipelineNote } from './deploy-pipeline-policy';
+import { renderCodeRunNudge } from './code-run-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 
@@ -139,6 +140,7 @@ export interface AssembledSection {
     | 'concurrency-first-note'
     | 'deploy-pipeline-note'
     | 'reuse-first-nudge'
+    | 'code-run-note'
     | 'runtime';
   chars: number;
 }
@@ -489,6 +491,17 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (reuseFirstNudge) {
     parts.push(reuseFirstNudge);
     sections.push({ name: 'reuse-first-nudge', chars: reuseFirstNudge.length });
+  }
+
+  // Code-run nudge (code-execution-tool-orchestration B-CX-3) — the SHARED base every
+  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). Reach for
+  // code:run to collapse a multi-step tool flow (loop/branch/filter/fan-out/retry over N) into ONE
+  // call instead of N inference round-trips; self-gated ("if code:run is in your toolset"). Sourced
+  // from the one CODE_RUN_NUDGE constant (orchestrator) so this base + the spawned-bee base can't desync.
+  const codeRunNudge = renderCodeRunNudge();
+  if (codeRunNudge) {
+    parts.push(codeRunNudge);
+    sections.push({ name: 'code-run-note', chars: codeRunNudge.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

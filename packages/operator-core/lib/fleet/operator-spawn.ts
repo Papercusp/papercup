@@ -373,6 +373,11 @@ export interface OperatorSpawnInput {
   parentRole?: string;
   planSlug?: string | null;
   itemId?: string | null;
+  /** Per-turn TRIGGER (B-TOK-4): WHY this spawn ran — 'coord-wake' | 'cron' |
+   *  'autoloop' | 'user'. Stamped as PAPERCUSP_TURN_TRIGGER so the run's usage
+   *  sample (invoke.ts → recordUsageSamplePg) records turn_trigger and
+   *  coordination-driven spend is summable. Omit → NULL ('unattributed'). */
+  turnTrigger?: string | null;
   /**
    * Caller-supplied dedupe key (audit P-017, EI-73). A retry of the SAME
    * logical spawn (e.g. after a route timeout) passes the same key and gets
@@ -962,6 +967,10 @@ export async function spawnAgentInHarness(
   // subprocess usage sample (invoke.ts → recordUsageSamplePg) records plan_id and
   // the Tokens dashboard can sum spend per-plan. Only when the spawn is plan-driven.
   if (input.planSlug) extraEnv.PAPERCUSP_PLAN_SLUG = input.planSlug;
+  // Per-turn trigger attribution (B-TOK-4): stamp WHY this run was spawned so the
+  // subprocess usage sample (invoke.ts → recordUsageSamplePg) records turn_trigger
+  // and the Tokens dashboard can sum coordination-driven spend. Only when supplied.
+  if (input.turnTrigger) extraEnv.PAPERCUSP_TURN_TRIGGER = input.turnTrigger;
   // P-050/P-060: thread the Queen brief through the invocation so the invoke-once
   // prompt path (invoke.ts → buildPrompt's `## Queen brief` section) injects it into
   // the bee's prompt. The brief rides in extraEnv as QUEEN_BRIEF; the child reads

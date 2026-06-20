@@ -44,6 +44,9 @@ export interface UsageSample {
   sessionId?: string;
   planId?: string;
   toolName?: string;
+  /** Per-turn TRIGGER (B-TOK-4, migration 335): 'coord-wake' | 'cron' | 'autoloop' |
+   *  'user'. NULL on the in-process header path (no turn-trigger context there). */
+  turnTrigger?: string;
   rlRequestsLimit?: number;
   rlRequestsRemaining?: number;
   rlTokensLimit?: number;
@@ -104,13 +107,13 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
          model, cost_source, harness_slug, run_id, role,
          rl_requests_limit, rl_requests_remaining, rl_tokens_limit, rl_tokens_remaining, rl_reset_at,
-         session_id, plan_id, tool_name)
+         session_id, plan_id, tool_name, turn_trigger)
       VALUES (
         ${ws}, ${Date.now()}, ${sample.bucketKey}, ${sample.provider}, ${sample.modelClass}, ${sample.source},
         ${n(sample.inputTokens)}, ${n(sample.outputTokens)}, ${n(sample.cacheReadTokens)}, ${n(sample.cacheCreationTokens)}, ${costUsd},
         ${sample.model ?? null}, ${costSource}, ${sample.harnessSlug ?? null}, ${sample.runId ?? null}, ${sample.role ?? null},
         ${n(sample.rlRequestsLimit)}, ${n(sample.rlRequestsRemaining)}, ${n(sample.rlTokensLimit)}, ${n(sample.rlTokensRemaining)}, ${n(sample.rlResetAt)},
-        ${sample.sessionId ?? null}, ${sample.planId ?? null}, ${sample.toolName ?? null}
+        ${sample.sessionId ?? null}, ${sample.planId ?? null}, ${sample.toolName ?? null}, ${sample.turnTrigger ?? null}
       )
     `;
   } catch {

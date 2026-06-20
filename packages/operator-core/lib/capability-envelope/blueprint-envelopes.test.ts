@@ -4,7 +4,7 @@
  * per-role capability allow-lists into the envelope map `evaluateCapabilityEnvelope`
  * consumes; a non-fleet harness ⇒ undefined (the global map, unchanged).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,17 @@ const writeBlueprint = (yaml: string) => writeFileSync(join(stateDir, 'blueprint
 
 // A fleet role to confine — pick a real fleet-envelope role so the evaluator applies.
 const ROLE = FLEET_ENVELOPE_ROLES.has('bee') ? 'bee' : [...FLEET_ENVELOPE_ROLES][0];
+
+// EI-2048: disable the testing-phase full-access exemption for the
+// envelope-CONFINEMENT suites below — otherwise the chosen fleet role (a testing
+// role: bee) bypasses its per-role denies and `fs-write` reads as within-envelope,
+// masking the confinement assertions. Mirrors the same guard policy.test.ts uses.
+const prevTestingFlag = process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES;
+beforeAll(() => { process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = 'off'; });
+afterAll(() => {
+  if (prevTestingFlag === undefined) delete process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES;
+  else process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = prevTestingFlag;
+});
 
 beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), 'bp-envelope-'));

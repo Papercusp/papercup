@@ -34,12 +34,19 @@ const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
 afterEach(() => vi.unstubAllEnvs());
 
 describe('buildInvokeOnce — command + core env', () => {
-  it('runs the absolute node runtime (process.execPath) with the tsx cli + invoke-once bin', () => {
-    // process.execPath, NOT 'node' — a bare basename ENOENTs when the operator
-    // sidecar's PATH omits node's dir (froze git-sync/deploys ~10h on 2026-06-20).
-    const { command, args } = buildInvokeOnce(spec());
-    expect(command).toBe(process.execPath);
+  it('resolves an absolute `node` runtime (not the bare basename) + augments the child PATH', () => {
+    // A bare `spawn('node')` ENOENTs when the operator sidecar's PATH omits
+    // node's dir (froze git-sync/deploys ~10h on 2026-06-20). buildInvokeOnce
+    // resolves node to an absolute path (plugin-spawn-impl augmentedSpawnPath +
+    // resolveBin) so the spawn never depends on the supervisor's PATH, and pins
+    // that augmented PATH onto the child env. NOT process.execPath directly —
+    // that can be a non-node wrapper binary in the packaged desktop.
+    const { command, args, env } = buildInvokeOnce(spec());
+    expect(command).toMatch(/(?:^|\/)node$/); // absolute `…/node`, or bare `node` fallback
     expect(args).toEqual(['/bin/tsx-cli', '/bin/invoke-once.ts']);
+    // env.PATH is augmented with the running runtime's own bin dir.
+    const nodeDir = process.execPath.replace(/[/\\][^/\\]+$/, '');
+    expect(env.PATH).toContain(nodeDir);
   });
 
   it('threads the project/state/harness dirs, role, and JSON-encoded extras', () => {

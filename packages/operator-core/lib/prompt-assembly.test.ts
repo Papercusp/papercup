@@ -321,6 +321,18 @@ describe('assembleRolePrompt — concurrency-first note (owner directive 2026-06
   });
 });
 
+describe('assembleRolePrompt — code-run note (code-execution-tool-orchestration B-CX-3)', () => {
+  it('injects the "collapse a multi-step flow into one code:run" note into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Collapse a multi-step tool flow into ONE `code:run`');
+    expect(out.text).toContain('round-trip');
+    expect(out.text).toContain('SUMMARIZE CONSERVATIVELY');
+    expect(out.sections.some((s) => s.name === 'code-run-note')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — reuse-first nudge (agents-reuse-first-default-2026-06-20 P-001/D-001)', () => {
   it('injects the soft "extend, don\'t fork" nudge into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

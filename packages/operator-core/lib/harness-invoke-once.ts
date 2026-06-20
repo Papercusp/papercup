@@ -16,6 +16,7 @@
  * sites stay in lockstep.
  */
 import { invokeOnceBin, tsxBin } from './harness-paths';
+import { augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 import { DEFAULT_BACKEND_CMDS, type AgentBackend } from './agent-config-constants';
@@ -261,18 +262,24 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // user project dirs). invokeOnceBin() returns the .mjs when it's bundled.
   const bin = invokeOnceBin();
   const args = bin.endsWith('.mjs') ? [bin] : [tsxBin(), bin];
-  // `process.execPath`, NOT the bare `'node'` basename. The operator sidecar is
-  // launched (Tauri sidecar / systemd dev unit) with a minimal PATH that often
-  // OMITS the dir where `node` actually lives, so `spawn('node')` throws ENOENT
-  // and wedges every invoke-driven routine — git-sync + deploys froze ~10h on
-  // 2026-06-20 from exactly this (a restart does NOT fix it; the PATH gap
-  // recurs). process.execPath is the absolute path of the node runtime already
-  // running THIS process — the same runtime that must execute the .mjs/.ts
-  // child — so the spawn never depends on the supervisor's PATH and cannot
-  // ENOENT. Same absolute-runtime discipline used across the other spawn paths
-  // (orchestrator-runner-spawn, voice-mesh, plugin-cli) and the
-  // dirname(process.execPath) PATH-augmentation in plugin-spawn-impl.ts. This is
-  // Tauri (not Electron) and the packaged sidecar runs under node, so execPath
-  // is a node runtime in dev AND packaged — do not revert this to `'node'`.
-  return { command: process.execPath, args, env };
+  // Resolve `node` to an ABSOLUTE path (and pin an augmented PATH onto the child
+  // env) instead of spawning the bare `'node'` basename. The operator sidecar is
+  // launched (Tauri bg-host / systemd dev unit) with a minimal PATH that often
+  // OMITS the dir where `node` lives, so `spawn('node')` throws ENOENT and wedges
+  // every invoke-driven routine — git-sync + deploys froze ~10h on 2026-06-20
+  // from exactly this (a restart does NOT fix it; the PATH gap recurs).
+  //
+  // We deliberately do NOT spawn `process.execPath` directly: on the node bg-host
+  // it equals node, but the operator also runs INSIDE the packaged desktop (the
+  // Tauri embedder boots `node serve.mjs`, and that operator spawns harness
+  // invokes too) where execPath can be a non-node wrapper binary — spawning it
+  // would mis-launch. resolveBin keeps the command a real `node` in EVERY runtime
+  // (bg-host, dev, packaged), falling back to bare `node` only when none is found
+  // (a clear ENOENT, not a silent mis-spawn). augmentedSpawnPath = the running
+  // runtime's own dir + well-known node locations; pinning it onto env.PATH also
+  // protects the child's own downstream basename spawns. Same helpers + discipline
+  // as plugin-spawn-impl.ts, the codebase's fix for this exact ENOENT class.
+  const spawnPath = augmentedSpawnPath();
+  env.PATH = spawnPath;
+  return { command: resolveBin('node', spawnPath), args, env };
 }

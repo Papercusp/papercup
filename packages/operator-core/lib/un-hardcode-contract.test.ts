@@ -137,35 +137,10 @@ describe('un-hardcode contract', () => {
     expect(other).not.toBe('# contract-test memory');
   });
 
-  it('there is no compile-time slug list anywhere in lib/zero-harness', async () => {
-    // Filesystem assertion (avoids importing across the workspace, which
-    // hits unrelated vitest/tsconfig path issues). The deleted symbols
-    // listed below were the central hardcoding root pre-Phase-1.5.
-    //
-    // Skip when running from a `.next/standalone/` build copy — Next's
-    // standalone bundler clones .test.ts files into the standalone dir
-    // and the relative path can't reach back to the workspace's
-    // libs/zero-harness/. The "real" test under apps/operator/lib/
-    // covers this case correctly.
-    if (__dirname.includes('.next/standalone')) {
-      console.warn('skipping in .next/standalone copy');
-      return;
-    }
-    const fs = await import('node:fs/promises');
-    const path = await import('node:path');
-    const schemaPath = path.join(__dirname, '../../../libs/zero-harness/src/schema.ts');
-    const queriesPath = path.join(__dirname, '../../../libs/zero-harness/src/queries.ts');
-    const schemaSrc = await fs.readFile(schemaPath, 'utf8');
-    const queriesSrc = await fs.readFile(queriesPath, 'utf8');
-
-    // No HARNESS_SLUGS const, no exported slugTo*Key helpers.
-    expect(schemaSrc).not.toMatch(/^const HARNESS_SLUGS/m);
-    expect(queriesSrc).not.toMatch(/^export function slugTo[A-Z][A-Za-z]*Key/m);
-
-    // No per-slug exports like `featuresSheets` / `issuesOrg`.
-    expect(schemaSrc).not.toMatch(/^export const features(Sheets|Org|Restart)/m);
-    expect(schemaSrc).not.toMatch(/^export const issues(Sheets|Org|Restart)/m);
-    expect(schemaSrc).not.toMatch(/^export const agentRuns(Sheets|Org|Restart)/m);
-    expect(schemaSrc).not.toMatch(/^export const snapshots(Sheets|Org|Restart)/m);
-  });
+  // NOTE: the former `it('there is no compile-time slug list anywhere in
+  // lib/zero-harness')` was DELETED — Zero is retired and the
+  // libs/zero-harness/src/{schema,queries}.ts files it read no longer exist
+  // (Zero decommission), so the assertion dangled and ENOENT-failed the green
+  // gate. Retired surfaces are not tested (CLAUDE.md); the un-hardcode promise
+  // is still covered by the live scaffold/consolidated-view tests above.
 });

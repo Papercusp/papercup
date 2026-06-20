@@ -264,6 +264,17 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   cap/backpressure) and **fix it robustly** (or `issues:create` /
   `improvements:capture` + route it), then proceed. (The shared
   `CONCURRENCY_FIRST_NOTE` every harness agent also carries.)
+- **Collapse a multi-step tool flow into ONE `code:run`.** When `code:run` is in
+  your toolset and a task needs MANY tool calls with control flow — loop / branch /
+  filter over results, fan-out reads, retry-until, "do X for each of N" —
+  orchestrate them in a SINGLE `code:run` script, not one call at a time: each call
+  is its own inference round-trip re-reading your whole context, while a script
+  runs them in the runtime and returns ONLY its final value (N round-trips → one).
+  NOT for a single call or a step needing YOUR judgment mid-flow. Flow: `code:tools
+  {}` → `code:tools { namespaces }` for typed signatures → write the script →
+  `code:run { dryRun:true }` to preview `effect:'write'` mutations → `code:run`.
+  **Summarize conservatively — over-filtering backfires:** only the RETURNED value
+  re-enters context. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
 - **Plan before non-trivial work.** Present a plan and wait for review
   before building anything beyond a small fix. Prior work + plan docs live
   behind `plans:*` (see *Named workflows*). Your client's plan mode (Claude's

@@ -3,24 +3,25 @@
  * plans leg, end-to-end against REAL Postgres (plan-templates-and-rubric-v2 P-006).
  *
  * The existing rubrics.integration.test covers the v1 TABLE leg; this covers the leg
- * that leg's seam was built for (scorecards.ts: "the backing changes"): rubrics
- * resolved from harness_plans rows with template='rubric', their template_data jsonb
- * mapped to the v1 Rubric. Proves what the pure mapper unit test can't:
+ * that seam was built for (scorecards.ts: "the backing changes"): rubrics resolved
+ * from harness_plans rows with template='rubric', their template_data jsonb mapped to
+ * the v1 Rubric. Proves what the pure mapper unit test can't:
  *   • the harness_plans column SELECT + the template / template_slug filters round-trip;
  *   • template_data jsonb (incl. a per-criterion ratingScale override) round-trips;
  *   • plan status → rubric status mapping over real rows;
  *   • the transitional UNION precedence — a PLAN wins over a same-id v1 TABLE row;
  *   • a malformed rubric-template plan degrades (skipped), never surfaced broken.
  *
+ * Uses createFreshPgDb (the same parsing connection the rubrics table suite uses) so
+ * jsonb columns deserialize to objects exactly as the production getOrgPg pool does.
  * Docker-gated (`*.integration.test.ts`).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
+import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config';
+import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -38,7 +39,7 @@ vi.mock('@papercusp/db-org', async () => {
 
 const rubrics = await import('./rubrics');
 
-let rootSql: postgres.Sql;
+let db: FreshPgDb;
 
 const rubricData = {
   characteristic: 'hive-coordination',
@@ -62,32 +63,22 @@ async function insertRubricPlan(
   slug: string,
   opts: { status?: string; data?: unknown; title?: string; templateSlug?: string | null; archived?: boolean } = {},
 ) {
-  await rootSql`
+  await db.sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, created, updated, owner, archived, template, template_data, template_slug)
     VALUES ('default', 'papercusp', ${slug}, ${opts.title ?? slug}, ${opts.status ?? 'active'},
             '2026-06-20', '2026-06-20', 'queen-1', ${opts.archived ?? false}, 'rubric',
-            ${JSON.stringify(opts.data ?? rubricData)}::jsonb, ${opts.templateSlug ?? null})`;
+            ${JSON.stringify(opts.data ?? rubricData)}::text::jsonb, ${opts.templateSlug ?? null})`;
 }
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `rpl_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  db = await createFreshPgDb('rpl');
+  h.sql = db.sql;
   // The v1 table leg (real DDL) so the UNION precedence is exercised against the real schema.
-  await rootSql.unsafe(readMigration('326-rubrics-store.sql')).simple();
+  await db.sql.unsafe(readMigration('326-rubrics-store.sql')).simple();
   // The plans leg: the FAITHFUL harness_plans columns the rubric re-point reads (a
   // rubric-template plan; mig 329 added template/template_data, 299 template_slug).
-  await rootSql.unsafe(`
+  await db.sql.unsafe(`
     CREATE TABLE harness_shared.harness_plans (
       workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
       title text, status text, created text, updated text,
@@ -96,16 +87,15 @@ beforeAll(async () => {
       template text, template_data jsonb, template_slug text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     )`);
-  h.sql = rootSql;
 }, 90_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  await db.cleanup();
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.harness_plans`;
-  await rootSql`TRUNCATE harness_shared.rubrics`;
+  await db.sql`TRUNCATE harness_shared.harness_plans`;
+  await db.sql`TRUNCATE harness_shared.rubrics`;
 });
 
 describe('plans leg — a rubric-template plan resolves as a Rubric', () => {

@@ -372,6 +372,21 @@ autonomous-fleet agent.
   The target: adding agents never forces anyone to wait; only real, verified
   exhaustion does. (The shared `CONCURRENCY_FIRST_NOTE` every harness agent also
   carries.)
+- **Collapse a multi-step tool flow into ONE `code:run` — don't pay a round-trip
+  per call.** When `code:run` is in your toolset and a task needs MANY tool calls
+  with control flow — loop / branch / filter over results, fan-out reads,
+  retry-until, "do X for each of N" — orchestrate them in a SINGLE `code:run`
+  script instead of issuing the calls one at a time. Each separate call is its own
+  inference round-trip that re-reads your whole context; a script runs them all in
+  the runtime and returns ONLY its final value, so N round-trips become one. NOT
+  for a single call, or a step that needs YOUR judgment mid-flow (read a result,
+  THEN decide) — call those directly. Flow: `code:tools {}` → `code:tools
+  { namespaces }` for the typed `tools.ns.verb(args)` signatures → write the script
+  → `code:run { dryRun:true }` to preview `effect:'write'` mutations → `code:run`
+  to commit. **Summarize conservatively — over-filtering backfires:** only the
+  RETURNED value re-enters context, so if you drop a field you need you re-pay the
+  round-trips you saved. (The shared `CODE_RUN_NUDGE` every harness agent also
+  carries.)
 - **Plan before non-trivial work — in `plans:*`, NOT Claude's plan mode.**
   Present a plan and wait for review before building beyond a small fix. Any
   **durable** plan MUST be authored in `plans:*` (PG-canonical, fleet-visible) —

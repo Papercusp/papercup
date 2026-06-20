@@ -238,16 +238,8 @@ async function listRubricPlans(): Promise<Rubric[]> {
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
        LIMIT 500`;
-    if (process.env.PAPERCUSP_DEBUG_RUBRIC_PLANLEG) {
-      // eslint-disable-next-line no-console
-      console.error('[planleg] rows=', rows.length, 'mapped=', rows.map(planRowToRubric).filter(Boolean).length, rows[0]);
-    }
     return rows.map(planRowToRubric).filter((r): r is Rubric => r !== null);
-  } catch (e) {
-    if (process.env.PAPERCUSP_DEBUG_RUBRIC_PLANLEG) {
-      // eslint-disable-next-line no-console
-      console.error('[planleg] THREW:', e);
-    }
+  } catch {
     // No harness_plans table (e.g. a rubrics-only test DB) / workspace not provisioned —
     // the rubric reads still serve the v1 table leg. Degrade, never throw.
     return [];
