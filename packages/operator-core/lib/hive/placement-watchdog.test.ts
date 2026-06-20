@@ -21,7 +21,7 @@ import {
 } from './placement-watchdog';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 
-const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000 };
+const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000, infraBreakerThreshold: 12 };
 const NOW = 1_000_000_000_000;
 
 function obs(over: Partial<PlacementObservation>): PlacementObservation {
@@ -140,15 +140,16 @@ describe('evaluatePlacement — P-021 cursed-item circuit breaker (mirrors repla
     expect([fail1.kind, fail2.kind, fail3.kind]).toEqual(['recover', 'recover', 'breaker']);
   });
   it('honors a custom (lower) breaker threshold', () => {
-    const cfg: PlacementConfig = { breakerThreshold: 1, recoveryDebounceMs: 0, dormancyGraceMs: 10 * 60_000 };
+    const cfg: PlacementConfig = { breakerThreshold: 1, recoveryDebounceMs: 0, dormancyGraceMs: 10 * 60_000, infraBreakerThreshold: 12 };
     // First failure already reaches threshold 1 → breaker, never re-placed.
     expect(evaluatePlacement(obs({ failCount: 0 }), cfg).kind).toBe('breaker');
   });
-  it('placementConfig defaults mirror replanStrikes (3), a 5-min debounce, and a 10-min dormancy grace', () => {
+  it('placementConfig defaults mirror replanStrikes (3), a 5-min debounce, a 10-min dormancy grace, and a 12 infra breaker', () => {
     const cfg = placementConfig();
     expect(cfg.breakerThreshold).toBe(3);
     expect(cfg.recoveryDebounceMs).toBe(5 * 60_000);
     expect(cfg.dormancyGraceMs).toBe(10 * 60_000); // F-FIX-041
+    expect(cfg.infraBreakerThreshold).toBe(12); // F-FIX-041 — bounded infra breaker
   });
 });
 

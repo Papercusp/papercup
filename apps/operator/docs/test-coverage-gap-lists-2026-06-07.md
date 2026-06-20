@@ -108,7 +108,7 @@ useHarnessClaimStatus, useWizardStatuses).
 | `harness/dock/**`, `HarnessDockShell.tsx`, `InsightsFirstVisitGate.tsx`, spec-redirect routes | dock/empty-state | — | — | **Briefs 9/10 own these** (sequenced hot-file pair) |
 | tui/design-adjacent UI | — | — | — | deferred per P-004 item text (churn) |
 
-## 4. `libs/papercup-shared` + `libs/flags` — DONE (Brief 60/WI-53, +71 cases, flags→100%)
+## 4. `libs/papercusp-shared` + `libs/flags` — DONE (Brief 60/WI-53, +71 cases, flags→100%)
 
 No remaining stable gaps; blueprint-engine + agent-mcp role-config lane shipped by Brief 61 (WI-52).
 

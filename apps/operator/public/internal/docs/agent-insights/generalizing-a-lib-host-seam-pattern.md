@@ -41,7 +41,7 @@ client. The lib names nothing; the host owns the wiring.
 ## The soft-coupling checklist (what to hunt for)
 
 Compile-time imports of domain packages (`@papercusp/db-org|harness|
-orchestrator|agent-mcp|zero-harness|papercup-shared`) are the obvious
+orchestrator|agent-mcp|zero-harness|papercusp-shared`) are the obvious
 coupling and usually already gone. The **soft** coupling is what hides:
 
 1. **Hardcoded PG schema / db names** in SQL — `harness_shared.*`,

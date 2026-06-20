@@ -17,7 +17,7 @@
 /**
  * Canonical subprocess-spawn backend set (operator side). Kept in sync with the
  * orchestrator's `AGENT_BACKENDS` (`@papercusp/orchestrator` types.ts) and the
- * spawn-capable subset of `@papercusp/papercup-shared` chat-stream's
+ * spawn-capable subset of `@papercusp/papercusp-shared` chat-stream's
  * `AgentBackend` (which additionally has `anthropic-direct`, a stateless brains-only
  * HTTP backend — not a subprocess). The submodule boundary rules out a single
  * literal import; `agent-backend-sync.test.ts` guards the three against drift.

@@ -19,7 +19,7 @@ import { invokeOnceBin, tsxBin } from './harness-paths';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 import { DEFAULT_BACKEND_CMDS, type AgentBackend } from './agent-config-constants';
-import type { TurnBackend } from '@papercusp/papercup-shared/agent';
+import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 
 /** Backend a command's binary drives (the same discriminator
     resolveSpawnBackendModel / effectiveBackend use). */

@@ -49,7 +49,7 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { probeStatelessTransport, type StatelessTransportProbe } from '@papercusp/papercup-shared/agent';
+import { probeStatelessTransport, type StatelessTransportProbe } from '@papercusp/papercusp-shared/agent';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { notifySyncInvalidate } from '../../sync-sse';

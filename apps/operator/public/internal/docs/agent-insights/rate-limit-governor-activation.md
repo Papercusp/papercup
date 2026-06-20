@@ -40,9 +40,9 @@ per-call: any penalty during a turn's flight marks it not-clean via a
 
 ## Where the pieces live
 
-* Taxonomy/disposition: `libs/papercup-shared/src/agent/turn-error.ts` (D-001
+* Taxonomy/disposition: `libs/papercusp-shared/src/agent/turn-error.ts` (D-001
   `usage_limit` ≠ `rate_limited`).
-* Gate + AIMD + stagger: `libs/papercup-shared/src/resilience/governor.ts` +
+* Gate + AIMD + stagger: `libs/papercusp-shared/src/resilience/governor.ts` +
   `src/agent/governor-registry.ts`.
 * Live config + bus: `packages/operator-core/lib/rate-limit-config.ts`
   (PG `operator_rate_limit_config`, no restart).

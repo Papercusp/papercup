@@ -52,7 +52,7 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 
 import { initAgentGovernorObserver, _resetAgentGovernorObserver } from './agent-governor-observer';
-import { getGovernor, resetGovernorRegistry } from '@papercusp/papercup-shared/agent';
+import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { OPEN_CHAT_EVENT, type OpenChatEventDetail } from '@papercusp/papercup-shared';
+import { OPEN_CHAT_EVENT, type OpenChatEventDetail } from '@papercusp/papercusp-shared';
 import { HarnessDock } from '../../harness/dock/HarnessDock';
 import { panelRegistry } from '../../harness/dock/panel-registry';
 import {

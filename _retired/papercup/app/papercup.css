@@ -1,2 +1,2 @@
 /* Re-export the shared papercup stylesheet so admin and public site share styles. */
-@import "@restart/papercup-shared/papercup.css";
+@import "@restart/papercusp-shared/papercup.css";

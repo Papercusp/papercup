@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { ArrowUpRight, MessageCircle } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
-import { openFeatureChat } from '@papercusp/papercup-shared';
+import { openFeatureChat } from '@papercusp/papercusp-shared';
 import type { Issue, IssueNote } from '@papercusp/operator-core/lib/harness/issue-types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { StatusPill, SeverityPill, IssueStatusPill, AgentKindPill } from '../../harness/primitives';

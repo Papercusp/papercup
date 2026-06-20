@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config';
-import { RateLimitGovernor } from '@papercusp/papercup-shared/agent';
+import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 import { PgGovernorStore } from './agent-governor-pg-store';
 
 let sql: postgres.Sql;

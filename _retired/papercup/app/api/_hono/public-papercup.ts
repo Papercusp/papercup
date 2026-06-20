@@ -11,7 +11,7 @@
 import { Hono } from 'hono';
 import { tmpdir } from 'node:os';
 import { capLog, capBody, scrub, scrubFreeText } from './public-sanitize';
-import { runAgentChat } from '@papercusp/papercup-shared/agent';
+import { runAgentChat } from '@papercusp/papercusp-shared/agent';
 
 export const publicPapercup = new Hono();
 

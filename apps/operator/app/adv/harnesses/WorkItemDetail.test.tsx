@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const openFeatureChat = vi.fn();
-vi.mock('@papercusp/papercup-shared', () => ({
+vi.mock('@papercusp/papercusp-shared', () => ({
   openFeatureChat: (...args: unknown[]) => openFeatureChat(...args),
 }));
 

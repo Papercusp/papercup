@@ -19,7 +19,7 @@ vi.mock('../wake-mode', () => ({
 vi.mock('../pending-wakes', () => ({
   countAllPendingWakes: () => countAllPendingWakes(),
 }));
-vi.mock('@papercusp/papercup-shared/agent', async (importOriginal) => ({
+vi.mock('@papercusp/papercusp-shared/agent', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   snapshotGovernors: () => snapshotGovernors(),
 }));

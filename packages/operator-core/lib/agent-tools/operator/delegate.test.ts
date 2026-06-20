@@ -17,7 +17,7 @@
  * dedup_check.test.ts / misc.test.ts convention.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatEvent } from '@papercusp/papercup-shared/agent';
+import type { ChatEvent } from '@papercusp/papercusp-shared/agent';
 
 // ── hoisted mock fns (set per-test, read inside vi.mock factories) ──────────
 const mocks = vi.hoisted(() => ({

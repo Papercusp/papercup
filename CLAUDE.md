@@ -84,8 +84,8 @@ Some code is **retired but deliberately kept** — not deleted, not deployed, no
 tested, not to be extended. Don't write tests for it, wire new code to it, or
 "revive" it without an explicit ask. Currently: `_retired/papercup/` (public
 site), the standalone operator webapp path, `libs/zero-harness` (migrate off),
-`libs/papercup-db`, `libs/holepunch-spike` (NOT zero-importers — shim implemented
-by live orchestrator files), `libs/papercup-shared/**/*View.tsx`, the legacy
+`libs/papercusp-db`, `libs/holepunch-spike` (NOT zero-importers — shim implemented
+by live orchestrator files), `libs/papercusp-shared/**/*View.tsx`, the legacy
 orchestrator run-loop + orchestrator-spawn plugin
 (`libs/papercusp/_retired/…`), and the harness-snapshot system
 (`_retired/snapshot-system/`). `lint:no-retired` guards re-imports.

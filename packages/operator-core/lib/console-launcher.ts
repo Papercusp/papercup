@@ -19,7 +19,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 
-import { resolveAgentBin, resolveBackend } from '@papercusp/papercup-shared/agent';
+import { resolveAgentBin, resolveBackend } from '@papercusp/papercusp-shared/agent';
 
 import { papercuspPathForWorkspace } from './papercusp-root';
 import {

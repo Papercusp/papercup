@@ -15,7 +15,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
-import { openFeatureChat } from '@papercusp/papercup-shared';
+import { openFeatureChat } from '@papercusp/papercusp-shared';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import ChatPanel from '../../harness/ChatPanel';

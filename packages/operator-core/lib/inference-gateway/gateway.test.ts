@@ -5,7 +5,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { createInferenceGateway, estimateTokens, parseRateReset, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
-import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercup-shared/agent';
+import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 interface Upstream {
   server: http.Server;
@@ -1110,7 +1110,7 @@ test('[B-GW-2 chaos] a hung OAuth-TOKEN endpoint under high concurrency — ever
 
 // ---------------------------------------------------------------------------------------------------
 // B-GW-1 — AIMD adaptive admission concurrency (inference-gateway-robustness-audit-2026-06-20 P1).
-// The controller's algorithm is unit-tested in libs/papercup-shared/.../aimd-concurrency.test.ts; these
+// The controller's algorithm is unit-tested in libs/papercusp-shared/.../aimd-concurrency.test.ts; these
 // assert the GATEWAY WIRING: a sustained upstream-429 storm drives the admission queue's effective
 // maxConcurrent DOWN (then a clean 200 stream recovers it), and the all-pool-throttled fail-fast shed.
 // ---------------------------------------------------------------------------------------------------

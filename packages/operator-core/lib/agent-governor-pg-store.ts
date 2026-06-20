@@ -1,7 +1,7 @@
 /**
  * PG-backed cross-process GovernorStore (RB-007).
  *
- * The domain-free `RateLimitGovernor` (libs/papercup-shared/src/resilience) exposes a
+ * The domain-free `RateLimitGovernor` (libs/papercusp-shared/src/resilience) exposes a
  * `GovernorStore` seam for its RATE + PAUSE budget — the account-wide part that causes 429s when
  * the fleet co-bursts a shared Anthropic/OpenAI account. This is the OPERATOR-side PG
  * implementation: one leased row per bucket key in `harness_shared.agent_rate_budget`, mutated
@@ -16,7 +16,7 @@
  * Lib stays domain-free; all the PG coupling is here.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { initGovernorState, type GovernorState, type GovernorLimits, type GovernorStore } from '@papercusp/papercup-shared/agent';
+import { initGovernorState, type GovernorState, type GovernorLimits, type GovernorStore } from '@papercusp/papercusp-shared/agent';
 
 /** The postgres-js client shape `getOrgPg().sql` returns (supports `sql.begin` + tagged calls). */
 type SqlClient = ReturnType<typeof getOrgPg>['sql'];

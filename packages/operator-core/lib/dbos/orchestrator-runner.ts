@@ -79,7 +79,7 @@ import {
   setGovernorStore,
   setStatelessUsageSink,
   modelClassOf,
-} from '@papercusp/papercup-shared/agent';
+} from '@papercusp/papercusp-shared/agent';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { initAgentGovernorObserver } from '../agent-governor-observer';
 import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';

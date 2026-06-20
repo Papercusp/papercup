@@ -11,7 +11,7 @@
  * receives the scripted events verbatim.
  *
  * Wire format: matches `ChatEvent` from
- * `@papercusp/papercup-shared/agent/chat-stream` — same union the real
+ * `@papercusp/papercusp-shared/agent/chat-stream` — same union the real
  * generator yields. The fixture does NOT emit raw omp JSON-line bytes
  * because the seam is post-parse.
  *
@@ -19,7 +19,7 @@
  * See `~/.claude/.../memory/project_session_2026-05-14_tier_arc.md`.
  */
 
-import type { ChatEvent } from '@papercusp/papercup-shared/agent';
+import type { ChatEvent } from '@papercusp/papercusp-shared/agent';
 import { vi } from 'vitest';
 
 export interface FakeAgentChatScript {

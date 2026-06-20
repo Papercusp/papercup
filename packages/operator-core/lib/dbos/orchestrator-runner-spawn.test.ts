@@ -43,7 +43,7 @@ vi.mock('../harness-invoke-once', () => ({
 
 import { spawnInvokeOnce } from './orchestrator-runner';
 import { _resetDisplayPoolForTests } from '../deployment/display-allocator';
-import { governorForBackend, resetGovernorRegistry } from '@papercusp/papercup-shared/agent';
+import { governorForBackend, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 const node = (script: string) => ({ command: execPath, args: ['-e', script], env: process.env });
 

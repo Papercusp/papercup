@@ -7,12 +7,12 @@
 [submodule "libs/papergrid"]
 	path = libs/generic/papergrid
 	url = https://github.com/Papercusp/papergrid.git
-[submodule "libs/papercup-db"]
-	path = libs/papercup-db
-	url = https://github.com/Papercusp/papercup-db.git
-[submodule "libs/papercup-shared"]
-	path = libs/papercup-shared
-	url = https://github.com/Papercusp/papercup-shared.git
+[submodule "libs/papercusp-db"]
+	path = libs/papercusp-db
+	url = https://github.com/Papercusp/papercusp-db.git
+[submodule "libs/papercusp-shared"]
+	path = libs/papercusp-shared
+	url = https://github.com/Papercusp/papercusp-shared.git
 [submodule "libs/ui-primitives"]
 	path = libs/generic/ui-primitives
 	url = https://github.com/Papercusp/ui-primitives.git

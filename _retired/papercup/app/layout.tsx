@@ -1,5 +1,5 @@
 export const dynamic = 'force-dynamic';
-import { PapercupTabs } from '@papercusp/papercup-shared';
+import { PapercupTabs } from '@papercusp/papercusp-shared';
 import { HarnessZeroProvider } from '../providers/HarnessZeroProvider';
 import { ChatwootWidget } from './_components/ChatwootWidget';
 import './papercup.css';

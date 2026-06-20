@@ -64,9 +64,9 @@ Authored from a full audit of the 65 unshipped plans (22 active / 22 ready / 21 
 **Do NOT:** touch P-001 (`SUBMODULES_PAT` — owner-only CI secret) or the Tauri-shell E2E (supervised).
 **Verify:** the suite runs green/red honestly; issues filed for real fails; coverage baseline recorded.
 
-## Brief 60 — Shared-libs unit coverage (papercup-shared + flags) 〔testing, M〕
+## Brief 60 — Shared-libs unit coverage (papercusp-shared + flags) 〔testing, M〕
 **Plan:** `app-wide-test-coverage-2026-06-05`, the **deferred package-audit tranche** the `## Now` names ("continue auditing remaining packages").
-**Mission:** take **`libs/papercup-shared` + `libs/flags`** — stable, low-churn, outside the UI fan-out. Test home: Vitest unit `<pkg>/lib/**/<name>.test.ts` (`.integration.test.ts` for per-file PG via `@papercusp/test-config`). Every new file must pass `npm run lint:tests` (coverage-glob guard) + `npm run gen:contract:check` from `apps/operator`.
+**Mission:** take **`libs/papercusp-shared` + `libs/flags`** — stable, low-churn, outside the UI fan-out. Test home: Vitest unit `<pkg>/lib/**/<name>.test.ts` (`.integration.test.ts` for per-file PG via `@papercusp/test-config`). Every new file must pass `npm run lint:tests` (coverage-glob guard) + `npm run gen:contract:check` from `apps/operator`.
 **Collision:** su-5cf8c owns this plan and is actively writing the 15 enumerated Phase-2 UI gaps — message them which package you take; do NOT touch those UI gaps or `libs/generic` (P-005 deferred).
 **Verify:** green in isolation from a clean checkout, not the churning tree.
 

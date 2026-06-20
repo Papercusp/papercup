@@ -169,9 +169,10 @@ export interface CaptureImprovementResult {
 export interface CaptureDeps {
   searchIssues: (query: string, limit?: number) => Promise<EngineerIssue[]>;
   createIssue: (input: CreateIssueInput) => Promise<EngineerIssue>;
-  /** Load a rubric's criteria for the P-014a scorecard-completeness gate. Default getRubric;
-   *  injectable so the gate is unit-testable without PG. Returns null for an unknown rubric. */
-  loadRubric: (rubricId: string) => Promise<{ criteria: { key: string }[] } | null>;
+  /** Load a rubric's criteria for the P-014a scorecard-completeness gate. OPTIONAL — the gate
+   *  falls back to the real getRubric; injectable so tests can stub it (or omit it → PG-free
+   *  tests skip the gate via the load-error catch). Returns null for an unknown rubric. */
+  loadRubric?: (rubricId: string) => Promise<{ criteria: { key: string }[] } | null>;
 }
 
 const defaultDeps: CaptureDeps = { searchIssues, createIssue, loadRubric: getRubric };
@@ -203,6 +204,7 @@ export async function captureImprovement(
   // rubric's criterion keys (best-effort: a load error skips the gate, never breaks the capture) +
   // reject on any missing key. validateObservationRatings already enforced per-rating evidence.
   if (
+    deps.loadRubric &&
     observationForGate?.rubricRef &&
     observationForGate.ratings &&
     Object.keys(observationForGate.ratings).length > 0

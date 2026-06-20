@@ -1,4 +1,4 @@
-import { DocumentationFrame } from '@papercusp/papercup-shared';
+import { DocumentationFrame } from '@papercusp/papercusp-shared';
 
 export const dynamic = 'force-dynamic';
 

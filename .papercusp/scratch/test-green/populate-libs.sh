@@ -5,7 +5,7 @@ echo "LIB-POPULATE START $(date)"
 DIRS=(
   apps/operator-vite libs/agent-chat libs/generic/git-graph
   libs/generic/papergrid/grid libs/generic/papergrid/grid-core libs/generic/ui-primitives
-  libs/marketplace-public-ui libs/papercup-shared libs/papercusp-export-state
+  libs/marketplace-public-ui libs/papercusp-shared libs/papercusp-export-state
   libs/papercusp/libs/db libs/papercusp/packages/blueprint-distribution
   libs/papercusp/packages/file-claim libs/papercusp/packages/harness
   libs/papercusp/packages/orchestrator libs/papercusp-publish-auth

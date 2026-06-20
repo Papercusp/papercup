@@ -33,7 +33,7 @@ import { MissingPanel } from './MissingPanel';
  * The map key is `${componentRoot}::${componentId}`.
  */
 const KNOWN_REACT_PANELS: Record<string, () => Promise<{ default: React.ComponentType<PanelComponentProps> }>> = {
-  '@papercusp/papercup-shared::PiTerminalsDock': async () => {
+  '@papercusp/papercusp-shared::PiTerminalsDock': async () => {
     const mod = await import('../PiTerminalsDock');
     const Inner = (mod as { default?: unknown }).default ?? (mod as Record<string, unknown>).PiTerminalsDock;
     if (typeof Inner !== 'function') {

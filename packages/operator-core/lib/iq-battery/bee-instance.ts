@@ -23,7 +23,7 @@
  */
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
-import { classifySubprocessResult } from '@papercusp/papercup-shared/agent';
+import { classifySubprocessResult } from '@papercusp/papercusp-shared/agent';
 import { spawnAgentInHarness } from '../fleet/operator-spawn';
 import type { BeekeeperRunInput } from './beekeeper-runner';
 import type { InstanceRunHandle } from './instance-manifest';

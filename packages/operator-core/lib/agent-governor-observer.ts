@@ -12,7 +12,7 @@
  * Lib stays domain-free; all the coord/PG coupling is here. Best-effort + throttled — a
  * surfacing failure must never affect the limiter or the spawn path.
  */
-import { onGovernorPause } from '@papercusp/papercup-shared/agent';
+import { onGovernorPause } from '@papercusp/papercusp-shared/agent';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { sendMessage } from './agent-tools/coordination/messages';

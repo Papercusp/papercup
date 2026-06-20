@@ -37,7 +37,7 @@ import { reconcileOneHive, type PlacementConfig } from './placement-watchdog';
 const WS = 'default'; // coord_links default workspace == the org workspace here
 const HIVE = 'papercup';
 const QUEEN = 'queen-owner-1';
-const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000 };
+const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000, infraBreakerThreshold: 12 };
 const NOW = 1_900_000_000_000;
 
 let db: OrgTestDb;

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TARGETS = [
-  { dir: 'libs/papercup-db',                summary: 'Drizzle schema for the papercup app DB.' },
+  { dir: 'libs/papercusp-db',                summary: 'Drizzle schema for the papercup app DB.' },
   { dir: 'libs/zero-harness',               summary: 'Zero schemas + permissions for harness sync.' },
   { dir: 'libs/agent-chat',                 summary: 'Reusable agent chat React component.' },
   { dir: 'libs/generic/git-graph',                  summary: 'Git graph rendering helpers.' },

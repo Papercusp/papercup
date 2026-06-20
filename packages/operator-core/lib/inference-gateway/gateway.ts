@@ -31,7 +31,7 @@ import {
   type RateLimitGovernor,
   type AdmissionSnapshot,
   type AimdSnapshot,
-} from '@papercusp/papercup-shared/agent';
+} from '@papercusp/papercusp-shared/agent';
 import { withOAuthBeta } from './credential-store';
 import type { AccountEgress } from '../deployment/account-pool';
 

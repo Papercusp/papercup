@@ -16,7 +16,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { snapshotGovernors } from '@papercusp/papercup-shared/agent';
+import { snapshotGovernors } from '@papercusp/papercusp-shared/agent';
 import { COORD_ROLES } from '../roles';
 import { getDefaultWakeMode } from '../wake-mode';
 import { countAllPendingWakes } from '../pending-wakes';

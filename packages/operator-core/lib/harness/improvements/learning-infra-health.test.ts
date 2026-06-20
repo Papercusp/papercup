@@ -7,7 +7,7 @@
 // and the llm-spine leg's transport-probe mapping (credential presence, NOT a
 // :3456 TCP probe — the retired meridian router not running is the healthy state on this box).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { StatelessTransportProbe } from '@papercusp/papercup-shared/agent';
+import type { StatelessTransportProbe } from '@papercusp/papercusp-shared/agent';
 import {
   checkLlmSpineLeg,
   composeLearningHealth,
@@ -214,7 +214,7 @@ describe('checkLlmSpineLeg', () => {
   });
 
   it('the real credential probe returns a well-formed leg whatever this box holds (never a :3456 read; gateway pinned off for hermeticity)', async () => {
-    // Real credential resolution via papercup-shared; the gateway dimension is
+    // Real credential resolution via papercusp-shared; the gateway dimension is
     // pinned OFF so this stays box-independent and does no network IO.
     const probed = await checkLlmSpineLeg({ gatewayEnabled: async () => false });
     expect(probed.name).toBe('llm-spine');

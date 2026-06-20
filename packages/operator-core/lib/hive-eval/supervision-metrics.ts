@@ -112,6 +112,7 @@ function needsRecoveryAt(c: SupervisionCase, now: number, cfg: PlacementConfig):
       unitTerminal: false,
       hasLiveHolder: liveness === 'live',
       failCount: 0,
+      infraLossCount: 0,
       placementStatus: null,
       lastRecoveryAtMs: null,
       now,

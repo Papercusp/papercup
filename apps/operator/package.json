@@ -108,7 +108,7 @@
     "@papercusp/memory": "file:../../libs/generic/memory",
     "@papercusp/operator-core": "file:../../packages/operator-core",
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
-    "@papercusp/papercup-shared": "file:../../libs/papercup-shared",
+    "@papercusp/papercusp-shared": "file:../../libs/papercusp-shared",
     "@papercusp/plan-parser": "file:../../libs/generic/plan-parser",
     "@papercusp/plugin-loader": "file:../../packages/plugin-loader",
     "@papercusp/plugin-sdk": "file:../../packages/plugin-sdk",

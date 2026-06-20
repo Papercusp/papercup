@@ -25,7 +25,7 @@ the actual transport instead of re-asserting the assumption.
 `llm-client.ts llmCall` → `runAgentChat({ backend: TEST_BACKEND })` where
 `TEST_BACKEND = LLM_TEST_BACKEND ?? 'anthropic-direct'` (the backend was named
 `meridian` until 2026-06-12 — EI-399). `anthropic-direct` is the **stateless
-raw-HTTP path** (`libs/papercup-shared/src/agent/chat-stream.ts`,
+raw-HTTP path** (`libs/papercusp-shared/src/agent/chat-stream.ts`,
 `resolveStatelessTransport`): `api.anthropic.com` with the Claude-Max OAuth
 token from `~/.claude/.credentials.json` and the `anthropic-beta:
 oauth-2025-04-20` header. This **is** the Max subscription — no API key

@@ -51,7 +51,7 @@ describe('resolveComponent — caching', () => {
   beforeEach(() => _resetCacheForTests());
   afterEach(() => _resetCacheForTests());
 
-  const ref = { componentRoot: '@papercusp/papercup-shared', componentId: 'DirectivesView' };
+  const ref = { componentRoot: '@papercusp/papercusp-shared', componentId: 'DirectivesView' };
 
   it('returns a (lazy) component for a ref', () => {
     const C = resolveComponent(ref);

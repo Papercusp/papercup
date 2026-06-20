@@ -58,7 +58,7 @@ describe('useRegisterPluginPanels', () => {
         fullType: 'plugin:@papercupai/pi-coding:pi',
         title: 'Pi',
         type: 'react',
-        componentRoot: '@papercusp/papercup-shared',
+        componentRoot: '@papercusp/papercusp-shared',
         componentId: 'PiTerminalsDock',
       },
     ]);

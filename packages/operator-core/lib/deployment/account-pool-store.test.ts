@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Frame } from '@papercusp/deployment-driver';
-import { getGovernor, resetGovernorRegistry } from '@papercusp/papercup-shared/agent';
+import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import {
   selectAccountForDeploy,
   handleAccountExhausted,

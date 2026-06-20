@@ -36,7 +36,7 @@ const {
 } = await import('./rate-limit-config');
 const { record503, recordSuccess } = await import('./operator-rate-limit');
 const { globalConcurrencySnapshot, effectiveConcurrencySnapshot } = await import(
-  '@papercusp/papercup-shared/agent'
+  '@papercusp/papercusp-shared/agent'
 );
 const { createOrgTestDb } = await import('../test/_org-test-db');
 

@@ -37,7 +37,7 @@ import {
   readClaudeOauthToken,
   invalidateClaudeTokenCache,
   resolveAnthropicBaseUrl,
-} from '@papercusp/papercup-shared/agent';
+} from '@papercusp/papercusp-shared/agent';
 import {
   ExtractionAuthError,
   type ExtractionLlm,

@@ -1393,7 +1393,7 @@
   {
    "id": "shared-open-feature-chat",
    "summary": "openFeatureChat helper: reuse-before-create for same (role,featureId), GET-then-POST contract, OPEN_CHAT_EVENT detail shape, error branches (WI-125)",
-   "file": "libs/papercup-shared/src/openFeatureChat.test.ts",
+   "file": "libs/papercusp-shared/src/openFeatureChat.test.ts",
    "framework": "vitest",
    "coversVALs": [
     "VAL-production-readiness-acceptance-2026-06-10-027"

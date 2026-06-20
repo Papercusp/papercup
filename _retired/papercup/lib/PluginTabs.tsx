@@ -7,7 +7,7 @@
  * dev server fail to compile.
  *
  * Long-term fix: make HarnessDashboard.tsx use a workspace-aware import
- * (e.g. via a shared @papercusp/papercup-shared export) instead of `@/`.
+ * (e.g. via a shared @papercusp/papercusp-shared export) instead of `@/`.
  */
 import PluginTabs from '../../../libs/papercusp/apps/web/lib/PluginTabs';
 export default PluginTabs;

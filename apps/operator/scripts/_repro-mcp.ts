@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { runAgentChat } from '../../../libs/papercup-shared/src/agent/chat-stream';
+import { runAgentChat } from '../../../libs/papercusp-shared/src/agent/chat-stream';
 
 const token = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
 const mcpUrl = 'http://127.0.0.1:3070/api/mcp?superuser=1&workspace=default';

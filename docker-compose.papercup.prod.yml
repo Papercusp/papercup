@@ -13,7 +13,7 @@
 # All three share the existing `restart-postgres` and the `coolify` Traefik
 # network on the same Hetzner host. Database `papercusp` (formerly
 # `restart_harness`) and schema `papercup_shared` must exist before first
-# boot — see deploy/papercup-db-init.sql.
+# boot — see deploy/papercusp-db-init.sql.
 #
 # Coolify env vars required:
 #   PAPERCUP_DOMAIN              papercupai.com

@@ -33,6 +33,11 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__rubrics:list',
   'mcp__agentmcp__rubrics:get',
   'mcp__agentmcp__rubrics:search',
+  // Scorecards — the READ side of the every-turn Overwatch scorecard
+  // (plan-templates-and-rubric-v2-2026-06-20 P-013). The brain can see emitted
+  // rubric scorecards back (completeness via nKeys/missingKeys, emission gaps via
+  // the since window) — monitoring-the-monitor.
+  'mcp__agentmcp__scorecards:list',
   // Scan findings live in the self-improvement backlog (unify-agent-launches
   // D-005) — improvements:digest is the operator's "what did the scanner
   // find?" read surface, replacing the retired scans_list/scans_get.

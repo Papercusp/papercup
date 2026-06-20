@@ -51,7 +51,7 @@ ssh -i ~/.ssh/id_ed25519 root@178.156.253.226
 
 # Bootstrap the papercusp DB and papercup_shared schema in the existing
 # restart-postgres container.
-docker exec -i restart-postgres-1 psql -U postgres < /opt/papercup/deploy/papercup-db-init.sql
+docker exec -i restart-postgres-1 psql -U postgres < /opt/papercup/deploy/papercusp-db-init.sql
 ```
 
 ### 2. Migrate Postgres data from local

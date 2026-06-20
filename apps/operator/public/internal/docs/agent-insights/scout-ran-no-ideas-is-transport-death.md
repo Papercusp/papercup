@@ -37,7 +37,7 @@ call ever succeeded.
 * **Stale in-process Claude token (EI-281, fixed 2026-06-11).** Claude OAuth
   tokens rotate \~2-hourly on disk (`~/.claude/.credentials.json`,
   `claudeAiOauth.expiresAt`), but `readClaudeOauthToken` in
-  `libs/papercup-shared/src/agent/chat-stream.ts` cached the boot-time token
+  `libs/papercusp-shared/src/agent/chat-stream.ts` cached the boot-time token
   forever. Any operator host older than the token 401'd on every
   anthropic-direct call. Fixed with an expiry-aware self-healing cache
   (re-reads disk when the cached token passes `expiresAt`) plus an

@@ -10,7 +10,7 @@
  * Degrades gracefully: usage% only appears for header-bearing paths (the subscription CLI exposes
  * no ceiling), so the surface shows real numbers where they exist and omits a fabricated percent.
  */
-import { snapshotGovernors, globalConcurrencySnapshot, effectiveConcurrencySnapshot } from '@papercusp/papercup-shared/agent';
+import { snapshotGovernors, globalConcurrencySnapshot, effectiveConcurrencySnapshot } from '@papercusp/papercusp-shared/agent';
 import { getCachedRateLimitConfig, type RateLimitConfig } from './rate-limit-config';
 import { summarizeUsage, type UsageSummary } from './agent-usage-telemetry';
 import { loadAccountPool } from './deployment/account-pool-store';

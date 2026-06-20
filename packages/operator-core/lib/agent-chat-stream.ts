@@ -1,7 +1,7 @@
 /**
  * Operator-side wrapper around the shared agent chat-stream runner.
  *
- * The runtime lives in `@papercusp/papercup-shared/agent/chat-stream` so
+ * The runtime lives in `@papercusp/papercusp-shared/agent/chat-stream` so
  * apps/papercup can call it too (visitor chatbot at /api/_hono/
  * public-papercup.ts). This file just hooks the operator's
  * /settings/agent persistence (`agent-config.ts`) into the shared
@@ -28,7 +28,7 @@ import {
   type TurnError,
   type TurnProvider,
   type TurnBackend,
-} from '@papercusp/papercup-shared/agent';
+} from '@papercusp/papercusp-shared/agent';
 import { applyToProcessEnv, readAgentConfig } from './agent-config';
 
 setAgentConfigBootstrap(async () => applyToProcessEnv(await readAgentConfig()));
@@ -78,7 +78,7 @@ export async function* runAgentChat(
 
 export type { AgentBackend, ChatEvent, RunAgentChatOptions, TurnError, TurnProvider, TurnBackend };
 // Re-export the turn-error classifiers + transport probe so operator modules import the agent
-// taxonomy through this one shim (a direct `@papercusp/papercup-shared/agent` value-import from a
+// taxonomy through this one shim (a direct `@papercusp/papercusp-shared/agent` value-import from a
 // test-loaded operator module trips vitest's `@/`-alias resolution on the transitive agent-config
 // chain).
 export { classifyHttpError, classifyTurnError, probeStatelessTransport };

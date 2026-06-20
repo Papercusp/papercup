@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { resolveAnthropicBaseUrl } from '@papercusp/papercup-shared/agent';
+import { resolveAnthropicBaseUrl } from '@papercusp/papercusp-shared/agent';
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type {
   ChatSession,

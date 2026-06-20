@@ -10,7 +10,7 @@ const nextConfig = {
   outputFileTracingRoot: path.join(__dirname, '../..'),
   typescript: { ignoreBuildErrors: true },
   images: { unoptimized: true },
-  transpilePackages: ['@papercusp/papercup-shared'],
+  transpilePackages: ['@papercusp/papercusp-shared'],
   // The Papercup admin imports `@/app/harness/HarnessDashboard` directly.
   // Rather than copy the harness UI a third time, alias it to the canonical
   // location at apps/papercusp/app/harness/.

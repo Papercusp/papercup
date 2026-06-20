@@ -28,7 +28,7 @@ import { loopPressure, type LoopPressure } from './event-loop-lag-monitor';
 import {
   recordGlobalConcurrencyPenalty,
   recordGlobalConcurrencyClean,
-} from '@papercusp/papercup-shared/agent';
+} from '@papercusp/papercusp-shared/agent';
 
 export interface LoopPressureGovernorOpts {
   /** Evaluation cadence (ms). Default 15_000 — fast enough to react within seconds

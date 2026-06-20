@@ -1,6 +1,6 @@
 /**
  * Gap 1 — buildFleetRateStatus() read-model assembly (fleet-rate-status.ts:54-94),
- * in isolation. All collaborators in `@papercusp/papercup-shared/agent` plus the config
+ * in isolation. All collaborators in `@papercusp/papercusp-shared/agent` plus the config
  * getter and `summarizeUsage` are module-mocked, so this drives the pure assembly logic:
  *   (a) pause math — pausedUntil > now → paused + msUntilReset; past → not paused, 0;
  *   (b) the 60s window gate — a stale windowStart zeroes the window.*.used counters;
@@ -22,7 +22,7 @@ const h = vi.hoisted(() => ({
   loadAccountPool: vi.fn(async () => ({ accounts: [] as unknown[] })),
 }));
 
-vi.mock('@papercusp/papercup-shared/agent', () => ({
+vi.mock('@papercusp/papercusp-shared/agent', () => ({
   snapshotGovernors: h.snapshotGovernors,
   globalConcurrencySnapshot: h.globalConcurrencySnapshot,
   effectiveConcurrencySnapshot: h.effectiveConcurrencySnapshot,

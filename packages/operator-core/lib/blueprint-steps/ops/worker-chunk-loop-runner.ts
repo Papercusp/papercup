@@ -31,7 +31,7 @@ import {
 import { harnessRoot } from '@papercusp/harness/paths';
 import type { FileClaimCoordinator } from '@papercusp/file-claim';
 import { getOrgPg } from '@papercusp/db-org';
-import { governorForBackend } from '@papercusp/papercup-shared/agent';
+import { governorForBackend } from '@papercusp/papercusp-shared/agent';
 import type { CoordOpCtx } from '../../coord-ops/types.js';
 import { resolveProject } from '../../harness-core.js';
 import { buildPipelineExtraEnv } from '../../dbos/orchestrator-spawn-env.js';

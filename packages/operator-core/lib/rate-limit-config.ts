@@ -9,14 +9,14 @@
  *   PUT → writeRateLimitConfig() → persist PG → applyCached() (push the cap into the governor's
  *   global gate immediately) → publish() (so any other in-process subscriber re-applies).
  *
- * The governor (libs/papercup-shared) reads the cap through the `setGlobalConcurrencyCap` host
+ * The governor (libs/papercusp-shared) reads the cap through the `setGlobalConcurrencyCap` host
  * seam — it never imports this module (lower lib). The orchestrator dispatch ceiling +
  * pty-bridge read `getCachedRateLimitConfig()` directly (same process). On the dev box the Hono
  * host, the DBOS orchestrator loop, and the agent spawns all live in ONE operator process, so an
  * in-process bus suffices; PG LISTEN/NOTIFY is the documented multi-process extension.
  */
 import { getChannel } from '@papercusp/sse';
-import { setGlobalConcurrencyCap, setGlobalConcurrencyFloor } from '@papercusp/papercup-shared/agent';
+import { setGlobalConcurrencyCap, setGlobalConcurrencyFloor } from '@papercusp/papercusp-shared/agent';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { getResourceProfile } from './resource-profile';
 

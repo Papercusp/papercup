@@ -12,8 +12,8 @@
 #      build Next standalone bundle for apps/papercup.
 #   2. runner: copy standalone bundle + static assets, run on PORT 3061.
 #
-# Submodules (libs/agent-chat, libs/git-graph, libs/papergrid, libs/papercup-db,
-# libs/papercup-shared, libs/ui-primitives, libs/papercusp, libs/zero-harness)
+# Submodules (libs/agent-chat, libs/git-graph, libs/papergrid, libs/papercusp-db,
+# libs/papercusp-shared, libs/ui-primitives, libs/papercusp, libs/zero-harness)
 # must be initialized in the build context. Coolify's GitHub App does this
 # automatically when the integration has access to the submodule repos.
 
@@ -34,8 +34,8 @@ COPY packages/plugin-loader/package.json ./packages/plugin-loader/
 COPY packages/plugin-sdk/package.json    ./packages/plugin-sdk/
 COPY libs/agent-chat/package.json        ./libs/agent-chat/
 COPY libs/git-graph/package.json         ./libs/git-graph/
-COPY libs/papercup-db/package.json       ./libs/papercup-db/
-COPY libs/papercup-shared/package.json   ./libs/papercup-shared/
+COPY libs/papercusp-db/package.json       ./libs/papercusp-db/
+COPY libs/papercusp-shared/package.json   ./libs/papercusp-shared/
 COPY libs/ui-primitives/package.json     ./libs/ui-primitives/
 COPY libs/zero-harness/package.json      ./libs/zero-harness/
 COPY libs/papergrid/grid-core/package.json ./libs/papergrid/grid-core/

@@ -309,8 +309,8 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
       expect(submoduleRelPaths).toEqual(
         [
           'agent-chat',
-          'papercup-db',
-          'papercup-shared',
+          'papercusp-db',
+          'papercusp-shared',
           'papercusp',
           'test-config',
           'testing-shell',

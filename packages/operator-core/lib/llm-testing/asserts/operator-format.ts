@@ -12,7 +12,7 @@
  * tested against synthetic transcripts without PG/LLM.
  */
 
-import { CLAUDE_BUILTIN_TOOLS } from '@papercusp/papercup-shared/agent';
+import { CLAUDE_BUILTIN_TOOLS } from '@papercusp/papercusp-shared/agent';
 import { clampSay } from '../../operator-converse-tags';
 import type { RunSummary, Violation, TurnResult } from '@papercusp/testing-shell/llm';
 

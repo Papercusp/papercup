@@ -14,7 +14,7 @@ proxy, v1.42.1 on this box) simply isn't running — and **that is the healthy
 state**: the omp token (`~/.omp/agent/auth.json`) expired 2026-04-11 and OMP
 is dead (npm-unpublished), so `readMeridianToken()` returns null and
 `chooseStatelessTransport` resolves **anthropic-direct** off the live Claude
-session (EI-281, both halves in `libs/papercup-shared/src/agent/chat-stream.ts`).
+session (EI-281, both halves in `libs/papercusp-shared/src/agent/chat-stream.ts`).
 Verified live 2026-06-12: `llmCall` round-trip in 1.0s. Do NOT model
 "learning-infra health" as ":3456 listening" — the correct probe is "stateless
 transport resolvable" (a live `~/.claude/.credentials.json` or a live omp

@@ -143,6 +143,7 @@ describe('P-051 Queen-loop contract — BEHAVIORAL completion guarantee (B-09 se
     unitTerminal: false,
     hasLiveHolder: false,
     failCount: 0,
+    infraLossCount: 0,
     placementStatus: null,
     lastRecoveryAtMs: null,
     now: NOW,

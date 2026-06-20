@@ -1,6 +1,6 @@
 -- One-time bootstrap on the existing restart-postgres container.
 -- Run as superuser:
---   docker exec -i restart-postgres-1 psql -U postgres < deploy/papercup-db-init.sql
+--   docker exec -i restart-postgres-1 psql -U postgres < deploy/papercusp-db-init.sql
 --
 -- Creates:
 --   1. database `papercusp` owned by postgres_app (the harness DB,

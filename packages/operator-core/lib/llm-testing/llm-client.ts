@@ -9,7 +9,7 @@
  * via the local Meridian router at :3456 was retired 2026-06-12, EI-399.)
  *
  * Pricing + retry + auth + temperature-incompat all live in
- * `libs/papercup-shared/src/agent/chat-stream.ts`'s `anthropic-direct` branch
+ * `libs/papercusp-shared/src/agent/chat-stream.ts`'s `anthropic-direct` branch
  * so every consumer of the shared lib gets the same hardened path.
  *
  * The host-agnostic pieces — `MODEL_PRICES` / `estimateCost`, `tryParseJson`,

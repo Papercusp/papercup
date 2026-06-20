@@ -117,6 +117,43 @@ describe('observation schema v2 — capture-core WRITE (P-001)', () => {
     expect(payload.observation.kind).toBe('friction');
     expect(payload.observation.ratings).toBeUndefined();
   });
+
+  it('REJECTS a PARTIAL rubric scorecard when the rubric is loaded (P-014a completeness gate)', async () => {
+    // loadRubric returns 4 criteria; SCORECARD rates only 3 → the missing one fails LOUD.
+    const d = {
+      ...deps(),
+      loadRubric: async () => ({
+        criteria: [
+          { key: 'end-to-end-flow' },
+          { key: 'watchdog-determinism' },
+          { key: 'tool-utilization' },
+          { key: 'placement-health' },
+        ],
+      }),
+    };
+    await expect(
+      captureImprovement(
+        { title: 'partial scorecard', kind: 'change', lane: 'observation', payloadExtra: { observation: SCORECARD } },
+        d,
+      ),
+    ).rejects.toThrow(/INCOMPLETE/);
+    expect(d.created).toHaveLength(0);
+  });
+
+  it('STORES a COMPLETE rubric scorecard when every loaded criterion is rated (P-014a)', async () => {
+    // loadRubric returns exactly the 3 criteria SCORECARD rates → complete → stored.
+    const d = {
+      ...deps(),
+      loadRubric: async () => ({
+        criteria: [{ key: 'end-to-end-flow' }, { key: 'watchdog-determinism' }, { key: 'tool-utilization' }],
+      }),
+    };
+    const res = await captureImprovement(
+      { title: 'complete scorecard', kind: 'change', lane: 'observation', payloadExtra: { observation: SCORECARD } },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
 });
 
 describe('observation schema v2 — read-items SURFACE (P-001 → P-006 seam)', () => {

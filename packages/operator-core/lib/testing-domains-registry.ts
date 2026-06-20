@@ -993,8 +993,8 @@ defineTestDomain({
         'libs/papercusp/libs/**/*.test.ts',
       ] },
     { id: 'operator-libs', label: 'operator libs', globs: [
-        'libs/papercup-shared/src/**/*.test.ts',
-        'libs/papercup-shared/src/**/*.test.tsx',
+        'libs/papercusp-shared/src/**/*.test.ts',
+        'libs/papercusp-shared/src/**/*.test.tsx',
         'libs/papercusp-export-state/src/**/*.test.ts',
         'libs/papercusp-publish-auth/src/**/*.test.ts',
         'libs/host-platform/src/**/*.test.ts',

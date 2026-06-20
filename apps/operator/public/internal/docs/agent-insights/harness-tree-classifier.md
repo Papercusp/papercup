@@ -71,7 +71,7 @@ papercup has (after the 2026-05-31 borrowable-submodule regroup under
 `libs/generic/` + the `test-config`/`testing-shell` promotions):
 
 * 1 tree root: the papercup repo at `/home/marsh-office/papercupai-workspace/papercup`
-* 7 direct-child submodules under `libs/`: `agent-chat`, `papercup-db`, `papercup-shared`, `papercusp`, `test-config`, `testing-shell`, `zero-harness` (the formerly-direct `git-graph`/`papergrid`/`sync`/`ui-primitives` submodules now live under `libs/generic/`)
+* 7 direct-child submodules under `libs/`: `agent-chat`, `papercusp-db`, `papercusp-shared`, `papercusp`, `test-config`, `testing-shell`, `zero-harness` (the formerly-direct `git-graph`/`papergrid`/`sync`/`ui-primitives` submodules now live under `libs/generic/`)
 * 7 plain dirs under `libs/`: `flags`, `generic`, `holepunch-spike`, `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth` (`generic/` itself is plain at depth 0 — it holds the regrouped borrowable submodules below it)
 * Many worktrees in siblings of the papercup repo (`papercup-backup`, `papercup-design-migration`, etc.) — those are detected if a future walk starts above papercup, but the classifier never confuses them for new harnesses.
 

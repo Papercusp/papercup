@@ -27,7 +27,7 @@
  * Pure + injectable (sleep/clock/run are deps) so it unit-tests with a fake clock
  * and a scripted runner — no real spawns, no real waits.
  */
-import { classifyTurnError, type TurnBackend } from '@papercusp/papercup-shared/agent';
+import { classifyTurnError, type TurnBackend } from '@papercusp/papercusp-shared/agent';
 
 /** The decide invoke's result shape (a superset of `PipelineInvokeRunner`'s return). */
 export interface DecideInvokeResult {

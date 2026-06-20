@@ -95,7 +95,7 @@ const GIT_DOCS = [
  *     gym-smoke test harnesses with no drain loop, accumulated 600+ stuck-unexported
  *     outbox rows. It's operational runtime state, not a document → DEFAULT.
  *   • `messages` / `directives` / `briefings` / `directive_summaries` — the
- *     RETIRED papercup-org demo bus (003-papercup-shared.sql, D-008 family). They
+ *     RETIRED papercup-org demo bus (003-papercusp-shared.sql, D-008 family). They
  *     live in the `papercup_shared` schema with NO workspace_id/harness_slug/origin,
  *     so they cannot fit the per-harness git-export model (keyed by harness root) —
  *     the engine only attaches to `harness_shared.*` and silently skipped them. The

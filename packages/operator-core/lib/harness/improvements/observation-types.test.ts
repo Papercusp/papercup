@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateObservationRatings,
+  validateScorecardCompleteness,
   asStructuredObservation,
   ObservationEvidenceError,
   OBSERVATION_RATING_SCALE,
@@ -79,6 +80,75 @@ describe('validateObservationRatings — the D-002 mandatory-evidence gate', () 
       },
     };
     expect(() => validateObservationRatings(obs)).not.toThrow();
+  });
+});
+
+describe('validateScorecardCompleteness — the P-014a completeness gate', () => {
+  const required = ['placement', 'wake', 'federation'];
+
+  it('passes a complete scorecard (every required criterion rated)', () => {
+    expect(() =>
+      validateScorecardCompleteness(
+        {
+          rubricRef: 'hive-coordination-health',
+          ratings: {
+            placement: { rating: 'healthy', evidence: 'e' },
+            wake: { rating: 'healthy', evidence: 'e' },
+            federation: { rating: 'degraded', evidence: 'e' },
+          },
+        },
+        required,
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects a partial scorecard, naming the missing key(s) (the D-005 silent-truncation)', () => {
+    let err: unknown;
+    try {
+      validateScorecardCompleteness(
+        { rubricRef: 'hive-coordination-health', ratings: { placement: { rating: 'healthy', evidence: 'e' } } },
+        required,
+      );
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ObservationEvidenceError);
+    const msg = String((err as Error).message);
+    expect(msg).toContain('INCOMPLETE');
+    expect(msg).toContain('wake'); // both missing keys are named (fail-loud)
+    expect(msg).toContain('federation');
+  });
+
+  it('passes a free-text / no-ratings observation (rubrics augment, never force)', () => {
+    expect(() => validateScorecardCompleteness({ kind: 'friction' }, required)).not.toThrow();
+    expect(() => validateScorecardCompleteness(undefined, required)).not.toThrow();
+    expect(() => validateScorecardCompleteness({ rubricRef: 'r', ratings: {} }, required)).not.toThrow();
+  });
+
+  it('skips when requiredKeys is null/empty (unknown or criteria-less rubric — unenforceable)', () => {
+    const partial: StructuredObservation = {
+      rubricRef: 'r',
+      ratings: { placement: { rating: 'healthy', evidence: 'e' } },
+    };
+    expect(() => validateScorecardCompleteness(partial, null)).not.toThrow();
+    expect(() => validateScorecardCompleteness(partial, [])).not.toThrow();
+  });
+
+  it('ignores EXTRA rated keys beyond the rubric (only MISSING keys fail — completeness, not exactness)', () => {
+    expect(() =>
+      validateScorecardCompleteness(
+        {
+          rubricRef: 'hive-coordination-health',
+          ratings: {
+            placement: { rating: 'healthy', evidence: 'e' },
+            wake: { rating: 'healthy', evidence: 'e' },
+            federation: { rating: 'healthy', evidence: 'e' },
+            extraKey: { rating: 'healthy', evidence: 'e' },
+          },
+        },
+        required,
+      ),
+    ).not.toThrow();
   });
 });
 

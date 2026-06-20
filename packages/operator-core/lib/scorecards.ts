@@ -139,3 +139,134 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
 
   return out;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Trend aggregation (P-010) — the qualitative health TREND over the scorecard
+// time-series. The "data already exists" quick-win: every-turn scorecards ARE a
+// per-criterion rating time-series; this rolls them up per criterion + computes
+// a direction so the Queen/owner sees "queen-placement-health: degraded, worsening
+// over 5 ratings / 3 days" instead of re-reading raw scorecards.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Trend direction over the window, from the FIRST→LATEST assessable rating:
+ *  - improving  — severity fell (e.g. broken → degraded → healthy)
+ *  - worsening  — severity rose (e.g. healthy → degraded → broken)
+ *  - stable     — first and latest assessable ratings are equal
+ *  - unknown    — fewer than 2 assessable ratings (can't tell a direction)
+ * It is the NET first→latest trend; the full `series` is returned alongside so a
+ * consumer can see within-window oscillation the single direction summarises.
+ */
+export type TrendDirection = 'improving' | 'worsening' | 'stable' | 'unknown';
+
+/** Default-scale ordinal severity (healthy < degraded < broken). `unknown` and any
+ *  custom per-criterion rating are NOT ordered (returns null → excluded from the
+ *  direction calc) — only the shared default vocabulary has a meaningful order. */
+const TREND_SEVERITY: Record<string, number> = { healthy: 0, degraded: 1, broken: 2 };
+function trendSeverity(rating: string): number | null {
+  const s = TREND_SEVERITY[rating.toLowerCase()];
+  return s === undefined ? null : s;
+}
+
+function computeDirection(series: readonly { at: string; rating: string }[]): TrendDirection {
+  const assessable = series.map((s) => trendSeverity(s.rating)).filter((s): s is number => s !== null);
+  if (assessable.length < 2) return 'unknown';
+  const first = assessable[0];
+  const last = assessable[assessable.length - 1];
+  if (last > first) return 'worsening';
+  if (last < first) return 'improving';
+  return 'stable';
+}
+
+/** One criterion's standing over the window: its rating series + trend direction. */
+export interface CriterionTrend {
+  criterion: string;
+  /** # scorecards (in-window) that rated this criterion. */
+  count: number;
+  /** rating value → how many scorecards gave it. */
+  distribution: Record<string, number>;
+  /** The earliest rating in the window (chronological). */
+  first: { rating: string; at: string };
+  /** The most-recent rating in the window. */
+  latest: { rating: string; at: string };
+  /** Net first→latest trend (see {@link TrendDirection}). */
+  direction: TrendDirection;
+  /** The full chronological series (oldest → newest). */
+  series: { at: string; rating: string }[];
+}
+
+/** A rubric's qualitative health trend — per-criterion rating time-series + direction. */
+export interface RubricTrend {
+  rubricRef: string;
+  sourceHive?: string;
+  /** # scorecards aggregated in the window. */
+  scorecardCount: number;
+  /** The observed time span (oldest..newest scorecard) + the requested `since`. */
+  window: { since?: string; from?: string; to?: string };
+  /** Per-criterion trends, criterion key ASC (stable output). */
+  criteria: CriterionTrend[];
+}
+
+export interface ScorecardTrendFilter {
+  /** The rubric to trend (required — a trend is per-rubric). */
+  rubricRef: string;
+  /** Restrict to one source-hive (trends are per-hive when set). */
+  sourceHive?: string;
+  /** Only scorecards filed at/after this ISO timestamp (the window). */
+  since?: string;
+  /** Max scorecards to aggregate (newest-first read; default 500). */
+  limit?: number;
+}
+
+/**
+ * Aggregate a rubric's scorecards into a per-criterion rating time-series + a
+ * trend direction (P-010). Reads {@link listScorecards} (P-013) — the trend is a
+ * pure roll-up of the scorecard read, so it inherits the same workspace scope +
+ * organic-only + rubric filtering, and stays correct as the storage evolves.
+ */
+export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<RubricTrend> {
+  const rows = await listScorecards({
+    rubricRef: filter.rubricRef,
+    sourceHive: filter.sourceHive,
+    since: filter.since,
+    limit: filter.limit ?? 500,
+  });
+  // listScorecards is newest-first; the series wants chronological (oldest→newest).
+  const chrono = [...rows].reverse();
+
+  const byCriterion = new Map<string, { at: string; rating: string }[]>();
+  for (const sc of chrono) {
+    for (const [criterion, entry] of Object.entries(sc.ratings)) {
+      const arr = byCriterion.get(criterion) ?? [];
+      arr.push({ at: sc.createdAt, rating: entry.rating });
+      byCriterion.set(criterion, arr);
+    }
+  }
+
+  const criteria: CriterionTrend[] = [...byCriterion.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([criterion, series]) => {
+      const distribution: Record<string, number> = {};
+      for (const s of series) distribution[s.rating] = (distribution[s.rating] ?? 0) + 1;
+      return {
+        criterion,
+        count: series.length,
+        distribution,
+        first: { rating: series[0].rating, at: series[0].at },
+        latest: { rating: series[series.length - 1].rating, at: series[series.length - 1].at },
+        direction: computeDirection(series),
+        series,
+      };
+    });
+
+  return {
+    rubricRef: filter.rubricRef,
+    ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
+    scorecardCount: rows.length,
+    window: {
+      ...(filter.since ? { since: filter.since } : {}),
+      ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),
+    },
+    criteria,
+  };
+}

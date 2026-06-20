@@ -8,7 +8,7 @@
  *
  *   - operator        `@/lib/agent-config`           AGENT_BACKENDS              (subprocess set)
  *   - orchestrator    `@papercusp/orchestrator`      AGENT_BACKENDS              (subprocess set)
- *   - shared brains   `@papercusp/papercup-shared/agent` AGENT_BACKENDS            (subprocess + anthropic-direct)
+ *   - shared brains   `@papercusp/papercusp-shared/agent` AGENT_BACKENDS            (subprocess + anthropic-direct)
  *                                                     SUBPROCESS_AGENT_BACKENDS  (subprocess set)
  *
  * The three SUBPROCESS sets must be identical; the brains' full set is
@@ -20,7 +20,7 @@ import { AGENT_BACKENDS as ORCH_BACKENDS } from '@papercusp/orchestrator';
 import {
   AGENT_BACKENDS as BRAINS_BACKENDS,
   SUBPROCESS_AGENT_BACKENDS as BRAINS_SUBPROCESS,
-} from '@papercusp/papercup-shared/agent';
+} from '@papercusp/papercusp-shared/agent';
 
 const sorted = (xs: readonly string[]) => [...xs].sort();
 

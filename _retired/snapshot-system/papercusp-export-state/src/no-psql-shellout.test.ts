@@ -21,7 +21,7 @@ const ROOTS = [
   // Snapshot subsystem
   '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp-export-state/src',
   // Other shipped libs
-  '/home/marsh-office/papercupai-workspace/papercup/libs/papercup-shared/src',
+  '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp-shared/src',
 ];
 
 // Allowed shell-outs — the system `pg_dump` invocation in pg-dump.ts and

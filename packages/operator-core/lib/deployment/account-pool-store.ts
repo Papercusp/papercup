@@ -17,7 +17,7 @@
  *     unit-testable with a mock driver (real provisioning is owner-gated).
  */
 import type { DeploymentConfig, Frame, LogLevel } from '@papercusp/deployment-driver';
-import { onGovernorPause, parseGovernorKey, snapshotGovernors } from '@papercusp/papercup-shared/agent';
+import { onGovernorPause, parseGovernorKey, snapshotGovernors } from '@papercusp/papercusp-shared/agent';
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import {

@@ -304,7 +304,7 @@ self.__SERVER_FILES_MANIFEST={
     "bundlePagesRouterDependencies": false,
     "configFileName": "next.config.js",
     "transpilePackages": [
-      "@restart/papercup-shared"
+      "@restart/papercusp-shared"
     ],
     "turbopack": {
       "resolveAlias": {

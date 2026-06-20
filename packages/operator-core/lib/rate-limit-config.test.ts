@@ -12,7 +12,7 @@ import { describe, it, expect, vi } from 'vitest';
 const { PROFILE_DEFAULT_MAX } = vi.hoisted(() => ({ PROFILE_DEFAULT_MAX: 8 }));
 
 vi.mock('@papercusp/sse', () => ({ getChannel: () => ({ onPublish: () => () => {}, publish: () => {} }) }));
-vi.mock('@papercusp/papercup-shared/agent', () => ({
+vi.mock('@papercusp/papercusp-shared/agent', () => ({
   setGlobalConcurrencyCap: () => {},
   setGlobalConcurrencyFloor: () => {},
 }));

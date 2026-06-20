@@ -4,7 +4,7 @@
 
 ## The items (verbatim, plan `app-wide-test-coverage-2026-06-05`)
 
-- **app-wide-test-coverage-2026-06-05 P-001** — Wave-1 coverage audit (read-only): map gaps across the STABLE registry domains — agent-mcp read-side tools, operator-core utility/logic clusters, papercup-shared, flags. Output per-area gap lists {file, untested-path, suggested-test, canonical-home}. Skip churned surfaces.
+- **app-wide-test-coverage-2026-06-05 P-001** — Wave-1 coverage audit (read-only): map gaps across the STABLE registry domains — agent-mcp read-side tools, operator-core utility/logic clusters, papercusp-shared, flags. Output per-area gap lists {file, untested-path, suggested-test, canonical-home}. Skip churned surfaces.
 - **app-wide-test-coverage-2026-06-05 P-002** — packages/agent-mcp/src read-side MCP tools coverage (~29% today): the tool handlers agents depend on — docs/search/harness-readers + the projection/auth-gating. Vitest unit + integration. Avoid harness readers being reshaped by work_items.
 - **app-wide-test-coverage-2026-06-05 P-003** — operator-core/lib stable utility/logic clusters coverage: untested pure-logic + error/security paths NOT in any active agent's churn path (e.g. identity/auth helpers, rate-limit, validation, encoders/decoders, state derivation). Vitest unit + integration; property tests where examples undercount.
 - **app-wide-test-coverage-2026-06-05 P-004** — apps/operator/app UI coverage (~30%): pure component/hook/state-derivation logic via Vitest + Playwright e2e (Tauri shell). Largest gap but partly churn-adjacent (tui/design) — sequence after Wave 1 + once UI churn settles.

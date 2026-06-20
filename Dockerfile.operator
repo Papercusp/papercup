@@ -26,8 +26,8 @@ COPY packages/plugin-loader/package.json ./packages/plugin-loader/
 COPY packages/plugin-sdk/package.json    ./packages/plugin-sdk/
 COPY libs/agent-chat/package.json        ./libs/agent-chat/
 COPY libs/generic/git-graph/package.json         ./libs/generic/git-graph/
-COPY libs/papercup-db/package.json       ./libs/papercup-db/
-COPY libs/papercup-shared/package.json   ./libs/papercup-shared/
+COPY libs/papercusp-db/package.json       ./libs/papercusp-db/
+COPY libs/papercusp-shared/package.json   ./libs/papercusp-shared/
 COPY libs/generic/ui-primitives/package.json     ./libs/generic/ui-primitives/
 COPY libs/zero-harness/package.json      ./libs/zero-harness/
 COPY libs/marketplace-public-ui/package.json ./libs/marketplace-public-ui/
