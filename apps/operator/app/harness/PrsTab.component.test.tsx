@@ -48,7 +48,20 @@ vi.mock('nuqs', async () => {
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
 
-import { PrsTab } from './PrsTab';
+import { PrsTab, rowBelongsToViewedHarness } from './PrsTab';
+
+describe('rowBelongsToViewedHarness — hive-scope auto-status honesty (PR-3 §4)', () => {
+  it('single-harness rows (no member_slug) always belong', () => {
+    expect(rowBelongsToViewedHarness({}, 'acme')).toBe(true);
+    expect(rowBelongsToViewedHarness({ member_slug: undefined }, 'acme')).toBe(true);
+  });
+  it("a hive-scope row of the viewed harness belongs", () => {
+    expect(rowBelongsToViewedHarness({ member_slug: 'acme' }, 'acme')).toBe(true);
+  });
+  it("a hive-scope row from a DIFFERENT member does NOT belong (suppress its auto-status)", () => {
+    expect(rowBelongsToViewedHarness({ member_slug: 'other-member' }, 'acme')).toBe(false);
+  });
+});
 
 function countPrsCalls(spy: ReturnType<typeof vi.fn>): number {
   return spy.mock.calls.filter((c) => String(c[0]).includes('/prs')).length;

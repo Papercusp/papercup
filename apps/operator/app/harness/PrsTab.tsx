@@ -100,6 +100,20 @@ interface PrsResponse {
   memberErrors?: Record<string, { pollingFailedAt?: string; noRemote?: boolean }>;
 }
 
+/**
+ * PR-3 §4 honesty: does this row belong to the VIEWED harness (so the
+ * fetched auto-mode settings actually apply to it)? In hive scope a row may
+ * come from a different member harness whose auto-mode we haven't fetched —
+ * for those we must NOT render an auto-status we can't stand behind. Pure —
+ * unit-tested. Single-harness rows (no member_slug) always belong.
+ */
+export function rowBelongsToViewedHarness(
+  row: Pick<PrRowData, 'member_slug'>,
+  viewedSlug: string,
+): boolean {
+  return !row.member_slug || row.member_slug === viewedSlug;
+}
+
 async function fetchPrs(harnessSlug: string, scope: 'harness' | 'hive'): Promise<PrsResponse> {
   const qs = scope === 'hive' ? '?scope=hive' : '';
   const r = await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/prs${qs}`);
@@ -406,11 +420,21 @@ export function PrsTab({
           </div>
         ) : (
           displayed.map((pr) => {
-            const autoStatus: PrAutoStatus = computeAutoStatus(pr, {
-              reviewerRoleEnabled: effReviewerRoleEnabled,
-              autoReview: effAutoReview,
-              autoMerge: effAutoMerge,
-            });
+            // Honesty (PR-3 §4): the auto-mode settings we hold are the VIEWED
+            // harness's. In hive scope a member row belongs to a DIFFERENT
+            // harness whose auto-mode we haven't fetched, so computing an
+            // auto-status from these settings would be misleading (e.g. claim
+            // "Will auto-merge" when that member's auto-mode is actually off).
+            // Only show auto-status for rows of the viewed harness; suppress it
+            // for other members rather than render a status we can't stand behind.
+            const isViewedHarness = rowBelongsToViewedHarness(pr, harnessSlug);
+            const autoStatus: PrAutoStatus | undefined = isViewedHarness
+              ? computeAutoStatus(pr, {
+                  reviewerRoleEnabled: effReviewerRoleEnabled,
+                  autoReview: effAutoReview,
+                  autoMerge: effAutoMerge,
+                })
+              : undefined;
             return (
               <PrRow
                 key={`${pr.member_slug ?? harnessSlug}:${pr.remote}#${pr.number}`}

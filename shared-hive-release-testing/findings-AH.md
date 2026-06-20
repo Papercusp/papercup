@@ -98,14 +98,19 @@ the origin converge.
     otherwise leak commits to a *submodule's* origin even with the superproject held back.
     Teeth-verified at the source (forcing the submodule's `doPush` makes the joiner leak → RED) and
     inline (the creator variant pushes both origins, submodule-first then the pointer).
-- **The fork→PR half — 🟢 logic-tested / 🟡 live-untested:** `handleFeaturePassed` gates fork-mode
-  on `getPermission ∈ {read,none}` (non-collaborator) → `openForkPr`; `{write,maintain,admin}` →
-  `integration_mode` (direct push, no PR). `ensureFork` short-circuits when the authed user owns
-  the upstream and is idempotent + ready-polls a created fork. All unit-tested with mocked Octokit
-  (`fork-pr-on-feature-pass.test.ts`, `open-fork-pr.test.ts`, `fork-pr-url-created-hive.test.ts`,
-  re-confirmed green). **Gap:** no test drives a REAL fork creation + cross-fork PR against GitHub
-  — the literal "a non-collaborator's code becomes a PR on the owner's repo" has never run
-  end-to-end. → **the YELLOW caveat** (see §5).
+- **The fork→PR half — 🟢 logic-tested AND now LIVE-witnessed:** `handleFeaturePassed` gates
+  fork-mode on `getPermission ∈ {read,none}` (non-collaborator) → `openForkPr`;
+  `{write,maintain,admin}` → `integration_mode` (direct push, no PR). `ensureFork` short-circuits
+  when the authed user owns the upstream and is idempotent + ready-polls a created fork. Unit-tested
+  with mocked Octokit (`fork-pr-on-feature-pass.test.ts`, `open-fork-pr.test.ts`,
+  `fork-pr-url-created-hive.test.ts`, re-confirmed green). **NEW — the LIVE leg is closed:**
+  `code-plane-fork-pr-live.test.ts` (gated on `PAPERCUSP_LIVE_FORK_PR=1`) drove the REAL
+  `ensureFork` + `openForkPr` against GitHub with two real identities — a `papercupai`-owned
+  upstream and an `aviynw` joiner with no write. Witnessed 2026-06-20: `ensureFork` created the fork
+  **under the joiner's own account** (`aviynw/shared-hive-test`, D-007), `openForkPr` opened a real
+  cross-fork PR (`papercupai/shared-hive-test#1`, head `aviynw:harness/… → papercupai:main`), and
+  the owner's `main` stayed byte-identical to the seed — **the S0 invariant held against real
+  GitHub.** PR closed + branch deleted in teardown; the fixture repos persist for reuse.
 - **Honesty (not a silent no-op):** the joiner's push:false carries an explicit, honest
   `pushReason` (`joiner_side — read-only member clone; fork-PR is the contribution path`) surfaced
   on the seed outcome — the user is not misled into thinking a push happened.
@@ -138,7 +143,7 @@ sync (as a local mirror; it never direct-pushes — consistent with the S0 invar
   the P-014 blind-spot detector, not auto-seeded. Common path: fixed. Rare seed-failure path:
   degrades to an alarm a human must action, not an auto-heal. Filed as an improvement (see §5).
 
-### Scenario 5 — credential resolution per-repo — 🟢 GREEN (decision) / 🟡 live-gated (resolution)
+### Scenario 5 — credential resolution per-repo — 🟢 GREEN
 - **Fails CLOSED, honestly:** `decideGitSyncPush` rule 3 `permissions.push===false →
   github_permissions_push_false — push:false` (unit-tested, `decide-git-sync-push.test.ts`); a member
   with no push permission gets a quiet commit-only local mirror, NOT a hang and NOT a per-tick
@@ -151,9 +156,12 @@ sync (as a local mirror; it never direct-pushes — consistent with the S0 invar
   (`getOctokit→null`), no-permissions-block, and even the client-getter itself throwing — and
   asserts it resolves the RIGHT repo (`repos.get` called with the exact `{owner,repo}`). So a
   no-permission member fails closed with an honest `null`→`push:false`, not a silent skip or a hang.
-- **Live-gated:** the actual `gh` credential-helper resolution at push time (the in-process-token-free
-  path) is creds-gated and not exercised hermetically. The DECISION layer is fully tested; the
-  resolution layer needs the live witness (same gate as §5's fork-PR leg).
+- **Live resolution now witnessed:** the live fork→PR run (`code-plane-fork-pr-live.test.ts`)
+  resolved a real per-account token via `gh auth token --user <login>` (no in-process token, no
+  active-account switch), authed a real `git push` to the joiner's fork with it, and authed the
+  GitHub PR-create API — so real per-repo credential resolution + authed write are now exercised
+  end-to-end. The collaborator direct-push to a real origin (SSH transport) is additionally proven
+  continuously in production by the live `papercup` git-sync routine.
 
 ### Scenario 6 — plane orthogonality (both directions) — 🟢 GREEN
 - **Code reaches the origin independent of the content plane:** AH-1 (and every git-sync test)
@@ -200,12 +208,12 @@ already fixed.
 
 | # | Gap | Severity | Why open / disposition |
 |---|---|---|---|
-| G1 | **Fork→PR LIVE leg** (real GitHub fork + cross-fork PR) never run hermetically | S2 (logic-tested) | Needs GitHub creds + the `shared-hive-test` repo; gate behind the live-creds flag. The non-collaborator contribution path's LOGIC is fully unit-tested with mocked Octokit; the actual GitHub round-trip is not. **Recommend a creds-gated live witness before a public launch where non-collaborators contribute.** |
-| G2 | **EI-382 reconcile residual**: a link-joined member whose best-effort join-time seed FAILS is not auto-backfilled (no `hive_slug` → reconcile skips it; only `unseeded` alarm) | S2 | Common path fixed; rare seed-failure path degrades to an alarm, not auto-heal. Filed as an improvement (link-join should either stamp `hive_slug`, or the reconcile should also backfill the `unseeded` set it already detects). |
-| G3 | **`gh` credential resolution at push time** (in-process-token-free path) not hermetically exercised | S2 | Decision layer (fail-closed, honest) fully tested; live resolution shares G1's live-creds gate. |
+| ~~G1~~ | ~~Fork→PR LIVE leg never run hermetically~~ | — | **CLOSED 2026-06-20.** Created the `papercupai/shared-hive-test` fixture + `code-plane-fork-pr-live.test.ts` (gated on `PAPERCUSP_LIVE_FORK_PR=1`); witnessed a real `aviynw`-joiner fork + cross-fork PR (`#1`) with the owner `main` unchanged. The two reusable fixture repos persist (the box's gh tokens lack `delete_repo`); PR closed + branch deleted in teardown. |
+| G2 | **EI-382 reconcile residual**: a link-joined member whose best-effort join-time seed FAILS is not auto-backfilled (no `hive_slug` → reconcile skips it; only `unseeded` alarm) | S2 | Common path fixed; rare seed-failure path degrades to an alarm, not auto-heal. Filed as an improvement **EI-1623** (link-join should either stamp `hive_slug`, or the reconcile should also backfill the `unseeded` set it already detects). |
+| ~~G3~~ | ~~`gh` credential resolution at push time not hermetically exercised~~ | — | **CLOSED 2026-06-20.** The live fork→PR run resolved a real per-account token via `gh auth token --user`, authed a real push to the fork, and authed the PR-create API. Collaborator direct-push (SSH) is proven continuously by live `papercup` git-sync. |
 
-These are all **S2 / live-gated**, not launch-blockers for the **collaborator** code plane. G1 is
-the one to close before relying on the **non-collaborator** contribution path in a public launch.
+The only item still open is **G2** (S2, filed as EI-1623) — not a launch blocker. The fork→PR live
+leg (G1) is now closed, so the non-collaborator contribution path is verified end-to-end.
 
 ## 6. Release-readiness verdict
 
@@ -216,22 +224,25 @@ content plane (and fails closed, contained), git-sync is branch-agnostic, and li
 DO sync (EI-382 fixed).
 
 **🟢 GREEN** for the **S0 safety invariant**: a joiner can never direct-push the owner's branch —
-proven with a real upstream remote present and teeth-verified.
+proven with a real upstream remote present, teeth-verified, tree-wide (submodules), AND **live
+against real GitHub**.
 
-**🟡 YELLOW caveat** for the **non-collaborator contribution path**: the fork→PR LIVE leg (G1) is
-logic-tested but never run against GitHub. Close it with a creds-gated live witness before a public
-launch where untrusted members contribute code.
+**🟢 GREEN** for the **non-collaborator contribution path**: the fork→PR leg is now witnessed live
+(`papercupai/shared-hive-test#1` — a real joiner fork + cross-fork PR, owner `main` untouched). No
+release blockers remain; the only open item is G2 (S2, filed as EI-1623).
 
 ---
 
-## 7. Evidence (all green this run, 2026-06-19)
+## 7. Evidence (all green; hermetic 2026-06-19, live leg 2026-06-20)
 
 | Suite | Result | Covers |
 |---|---|---|
 | `code-plane-federation.test.ts` (**NEW**) | 8/8 | AH-1 headline content round-trip; AH-2 S0 no-direct-push + teeth; AH-3 orthogonality; AH-4 non-main branch; AH-6 S0 holds tree-wide (joiner never leaks to a submodule origin) + teeth |
+| `code-plane-fork-pr-live.test.ts` (**NEW**, gated `PAPERCUSP_LIVE_FORK_PR=1`) | 1/1 live | G1 — real `ensureFork` + cross-fork PR vs GitHub (`papercupai/shared-hive-test#1`), owner `main` unchanged (S0 live) |
 | `two-peer-convergence.integration.test.ts` | 6/6 | scenario 2 conflict convergence (P0/C1–C4) |
 | `seed-any-hive.integration.test.ts` | 13/13 | scenarios 1/3 (push lands; push:false origin untouched; reconcile; conflict tick) |
-| `join-link.test.ts` + `fork-pr-on-feature-pass.test.ts` + `decide-git-sync-push.test.ts` | 33/33 | EI-382 fix; fork-mode gate; push decision |
+| `multi-peer-convergence.test.ts` | (prior art) | 3-peer disjoint + same-file convergence; cross-peer submodule defer; force-push rewrite safety |
+| `join-link.test.ts` + `fork-pr-on-feature-pass.test.ts` + `decide-git-sync-push.test.ts` + `github-repo-permissions.test.ts` | green | EI-382 fix; fork-mode gate; push decision; credential probe fail-closed |
 
 **Teeth-verify ledger** (neuter source invariant → confirm RED → restore → confirm GREEN; all
 confirmed): AH-1 ← neuter the push exec; AH-2 ← neuter the joiner `push:false` rule; AH-3(a) ←

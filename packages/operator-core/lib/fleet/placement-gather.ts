@@ -180,11 +180,27 @@ function briefFromPayload(payload: unknown): string | null {
   return typeof b === 'string' && b.trim() ? b : null;
 }
 
-/** Map a WorkItem to the planner's PlacementTask shape. */
-export function workItemToTask(wi: WorkItem): PlacementTask {
+/** First non-empty (trimmed) string among the candidates, else null. */
+function firstNonEmptyHarness(...vals: (string | null | undefined)[]): string | null {
+  for (const v of vals) {
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return null;
+}
+
+/**
+ * Map a WorkItem to the planner's PlacementTask shape.
+ *
+ * `fallbackHarness` (the `fleet:place_batch harness=` arg) BACKFILLS the task's
+ * home when the work-item itself carries no harness — e.g. an operator-scope EI
+ * placed by explicit id with a `harness=` target. Without it the task's harness
+ * stays null and the downstream fresh-spawn is rejected with "no harness named",
+ * silently dropping the caller's harness= (EI-969 / F-FIX-033).
+ */
+export function workItemToTask(wi: WorkItem, fallbackHarness?: string | null): PlacementTask {
   return {
     id: wi.id,
-    harness: wi.harness,
+    harness: firstNonEmptyHarness(wi.harness, fallbackHarness),
     title: wi.title,
     files: filesFromPayload(wi.payload),
     planSlug: planSlugFromPayload(wi.payload),
@@ -314,7 +330,11 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         skipped.push({ id, reason: 'remote work not yet auditor-admitted (quarantined)' });
         continue;
       }
-      candidates.push(workItemToTask(wi));
+      // Backfill the harness from the call's `harness=` when the item has none
+      // (operator-scope EI items carry a null harness) — else the fresh-spawn is
+      // rejected "no harness named" and the caller's harness= is silently dropped
+      // (EI-969 / F-FIX-033).
+      candidates.push(workItemToTask(wi, opts.harness));
     }
   } else {
     // Harness backlog: OPEN unassigned items, priority-ordered.
@@ -336,7 +356,11 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
       })
       .slice(0, opts.limit)
-      .map(workItemToTask);
+      // Arrow (not a bare `.map(workItemToTask)`): workItemToTask now takes a
+      // second `fallbackHarness` arg, so a point-free map would pass the array
+      // INDEX as the fallback. Backfill the pulled-from harness for any item that
+      // carries none (EI-969 / F-FIX-033).
+      .map((wi) => workItemToTask(wi, opts.harness));
   }
 
   // Honor blocked_by (P-030): a blocked lane (tier2 before tier1 completes) is

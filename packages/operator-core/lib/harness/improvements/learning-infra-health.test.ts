@@ -13,6 +13,7 @@ import {
   composeLearningHealth,
   diffLearningHealth,
   lastLearningInfraHealth,
+  probeGatewayHealthz,
   runLearningInfraHealthTick,
   _resetLearningInfraHealthState,
   type InfraLeg,
@@ -220,5 +221,45 @@ describe('checkLlmSpineLeg', () => {
     expect(['ok', 'down']).toContain(probed.status);
     expect(probed.detail.length).toBeGreaterThan(0);
     expect(probed.detail).not.toContain('3456');
+  });
+});
+
+describe('probeGatewayHealthz retry (EI-1693 — one transient timeout is not "down")', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  const timeoutErr = () => Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' });
+
+  it('returns reachable on the first answer, no retry', async () => {
+    const fetchMock = vi.fn(async () => ({ status: 200 }) as Response);
+    vi.stubGlobal('fetch', fetchMock);
+    const r = await probeGatewayHealthz(8788, { timeouts: [5, 5], gapMs: 0 });
+    expect(r.reachable).toBe(true);
+    expect(r.detail).toBe('HTTP 200');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a transient timeout THEN a success → reachable (the verified false-OFFLINE under load)', async () => {
+    let n = 0;
+    const fetchMock = vi.fn(async () => {
+      if (n++ === 0) throw timeoutErr();
+      return { status: 503 } as Response; // 503 = alive+pacing, still reachable
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const r = await probeGatewayHealthz(8788, { timeouts: [5, 50], gapMs: 0 });
+    expect(r.reachable).toBe(true);
+    expect(r.detail).toContain('after 1 retry');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('all escalating attempts fail → unreachable (a real outage still surfaces)', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw timeoutErr();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const r = await probeGatewayHealthz(8788, { timeouts: [5, 5], gapMs: 0 });
+    expect(r.reachable).toBe(false);
+    expect(r.detail).toMatch(/attempts, escalating/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

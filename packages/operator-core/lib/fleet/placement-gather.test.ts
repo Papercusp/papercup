@@ -61,6 +61,27 @@ describe('workItemToTask — payload → PlacementTask mapping', () => {
     expect(workItemToTask(wi({ payload: { brief: '   ' } })).brief).toBeNull();
     expect(workItemToTask(wi({ payload: null })).brief).toBeNull();
   });
+
+  describe('fallbackHarness — backfills a null-harness item from the call harness= (EI-969 / F-FIX-033)', () => {
+    it('backfills the harness when the work-item carries none (operator-scope EI)', () => {
+      expect(workItemToTask(wi({ id: 'EI-969', harness: null }), 'papercup').harness).toBe('papercup');
+    });
+
+    it("treats a whitespace-only / empty item harness as absent and backfills", () => {
+      expect(workItemToTask(wi({ harness: '   ' }), 'papercup').harness).toBe('papercup');
+      expect(workItemToTask(wi({ harness: '' }), 'papercup').harness).toBe('papercup');
+    });
+
+    it('keeps the work-item harness when it has one (the item wins over the fallback)', () => {
+      expect(workItemToTask(wi({ harness: 'restart' }), 'papercup').harness).toBe('restart');
+    });
+
+    it('stays null when neither the item nor a fallback supplies a harness', () => {
+      expect(workItemToTask(wi({ harness: null })).harness).toBeNull();
+      expect(workItemToTask(wi({ harness: null }), null).harness).toBeNull();
+      expect(workItemToTask(wi({ harness: null }), '   ').harness).toBeNull();
+    });
+  });
 });
 
 describe('pickBeeRecentActivityMs — genuine recent-activity for affinity, never the keepalive heartbeat (P-015 / presence-v2 D-003)', () => {
