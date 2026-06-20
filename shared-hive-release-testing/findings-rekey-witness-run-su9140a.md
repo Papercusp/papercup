@@ -40,6 +40,23 @@ cut-off steps never ran. No cut-off data.
 - If federate-A→B is a real from-repo owner→joiner gap (not a flake), that's a NEW finding parallel to
   A-003 — but A-003's content-matrix witness crossed features A→B, so suspect flow/timing first.
 
+## UPDATE — 3 runs total, all INCOMPLETE; the blocker is from-repo DISCOVERY under fleet load
+- **Run 1** (load 26): discovery+join PASS → `federate-A→B=FAIL` (pre-K0). 40s merge probe on a hot box.
+- **Run 2** (load 19, no window bump): `discovered=FAIL` (120s).
+- **Run 3** (load ~19, DISCOVERY_RETRIES=100→300s + MERGE_PROBE_SEC=120): **STILL `discovered=FAIL` at 300s.**
+- **ROOT CAUSE of the discovery fails:** the from-repo flow runs **cupboard-disabled** (`Cupboard at
+  127.0.0.1:9 unreachable → directory-only`), so B discovers A's hive via **directory-only DHT gossip**,
+  which is UNRELIABLE under fleet load — 300s isn't "too short," the announce often just doesn't arrive
+  (run 1 got lucky). NOTE: the CONTENT-MATRIX discovery path DID work at 300s (my A-003 witness saw
+  rows=2) — so the two flows discover differently; the from-repo/cupboard-off path is the flaky one here.
+- I extended BOTH smokes' discovery polls to honor `DISCOVERY_RETRIES` (content-matrix + from-repo) and
+  the from-repo merge probe to honor `MERGE_PROBE_SEC` — committed, backward-compatible. But the gossip
+  reliability, not the window, is the wall.
+- **⇒ The P-008 re-key cut-off witness cannot be reliably completed on THIS loaded box.** To close it:
+  run on a genuinely QUIET box (DHT gossip reliable) and/or with the **cupboard service reachable**, then
+  the run reaches federate-A→B (now 120s) → K0–K3. This is the re-key lane's to finish; I've removed the
+  window/timeout false-fails so a quiet-box run should reach the actual cut-off.
+
 ## Status of the rest (context)
 A-003 is CLOSED + live-green (su-c2a63's converged fix; my binary witness + suite 1085 green). The re-key
 is BUILT + hermetically tested. This P-008 LIVE witness is the one remaining ship-gate proof for C-001 —
