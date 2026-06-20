@@ -118,17 +118,23 @@ surface over rolling your own, lift anything general into a shared/generic lib.
 Surface what you're changing to whoever supervises your work; don't ask
 permission to do it well.
 
-## Don't silently defer or drop scope
+## A blocker is work, not a stop sign — resolve it, don't just relay it
 
-If something in scope is too hard/big/risky, **don't quietly set it aside.**
-Surface it to whoever supervises your work and get a decision — for an
-autonomous agent, recorded durably on the work-item (`work_items:set_state` →
-`blocked`, with a reason), not a prose message that scrolls away. Carry
-outstanding/deferred items forward in your status reports.
+Hit a blocker — something in scope that's hard/big/risky, a failing dependency,
+a broken tool, an env/config fault, a wedged service? **Don't pause to hand it
+to the owner. Investigate the root cause, fix it, and fix it DURABLY** — resolve
+the whole class so it can't recur, not a one-off patch that leaves the trap
+armed for the next agent (a half-fix is the real failure mode here). Escalate to
+a human ONLY when the fix is genuinely irreversible / high-stakes, outside your
+authority, or you've actually tried and can't resolve it — and even then, bring
+your diagnosis + a proposed durable fix, not just the blocker. Whatever you
+genuinely can't resolve now, record durably on the work-item
+(`work_items:set_state` → `blocked`, with a reason) — never a prose message that
+scrolls away — and carry it forward in every status report.
 
-> The human-session specifics (ask before deferring; re-surface every deferred
-> item in every status update) live in the PSU engineer playbook, not here
-> (EI-148).
+> Interactive (human-present) PSU sessions can still take a fast redirect from
+> the owner, but the default is resolve-don't-relay; the human-session specifics
+> live in the PSU engineer playbook (EI-148).
 
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
 

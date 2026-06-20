@@ -24,6 +24,9 @@
 // the read serializer + write shim + prompt legend.
 import './pre-prompt-registry-config';
 
+// code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
+import './code/run';
+
 import './operator/stats';
 import './operator/converse';
 import './operator/delegate';
