@@ -210,6 +210,11 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       slug: opts.slug,
       path,
       harness_kind: HIVE_KIND,
+      // A hive LINKED to an existing repo (existingPath) IS its own checkout → mark self_repo so
+      // git-sync commits its tree (papercup→papercusp Option-B merge, 2026-06-20). Without it a
+      // self-repo hive is git-sync-ineligible ('hive_home') and origin freezes (the 2026-06-20
+      // incident). A repo-less hive home (fresh dir, no existingPath) stays unmarked.
+      ...(linkExisting ? { self_repo: true } : {}),
       ...(opts.deployment && opts.deployment.target !== 'local' ? { deployment: opts.deployment } : {}),
     });
     await saveHarnessRegistry(fresh, ws);
@@ -411,6 +416,50 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
             /* best-effort rollback */
           }
         });
+        // WI-280: self-register the OWNER in hive_members at create. Two membership-population gaps
+        // minted 0 epoch keys live: (1) open-mode auto-admit never upserted the joiner (fixed at the
+        // boot.ts admit seam), (2) NOTHING registered the owner at create — so after a member is
+        // revoked the boundary's remaining-member wrap-set (loadAllHiveMemberDevicePubkeys) was empty
+        // and the re-key could not advance. upsertHiveMember INSERTs the row + grants [0..current] to
+        // the owner's device. device_pubkey is the RAW base64 form (resolveUsageActor.devicePubkey),
+        // wrap-consistent with the joiner's frame.device_pubkey — NOT the ed25519:-tagged contributor-
+        // file form (wrapKeyToMember asserts 32 raw bytes). Best-effort: a membership-write hiccup must
+        // NEVER fail create. Only device_pubkey is read by the live rekey/revoke paths, so the other
+        // attestation fields are create-time placeholders (the projection's LWW refines the row later
+        // when a real federated self-row with an HLC arrives).
+        try {
+          const [{ upsertHiveMember }, { resolveLocalGithubIdentity }] = await Promise.all([
+            import('../../hive-membership-store'),
+            import('../../identity/resolve-local-github-identity'),
+          ]);
+          const gh = await resolveLocalGithubIdentity();
+          if (gh.kind === 'ok') {
+            await upsertHiveMember({
+              workspaceId: ws,
+              hiveHomeSlug: opts.slug,
+              githubUserId: self.githubUserId,
+              githubUsername: gh.githubLogin,
+              deviceAttestations: [
+                {
+                  device_pubkey: self.devicePubkey,
+                  gist_id: '',
+                  gist_url: '',
+                  device_label: 'owner-home',
+                  created_at: Date.now(),
+                  signature_by_device: '',
+                },
+              ],
+              bindingStatus: 'verified',
+            });
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[hive:create] owner self-row upsert failed (${opts.slug}): ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        }
       }
     } catch (e) {
       console.warn(

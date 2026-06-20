@@ -250,20 +250,53 @@ export async function upsertHiveMember(
       const { grantEpochKeysToMembers, isHiveRekeyEnabled } = await import(
         './sync/hyperbee/hive-epoch-boundary-wiring'
       );
-      await grantEpochKeysToMembers({
+      const grantResult = await grantEpochKeysToMembers({
         workspaceId: input.workspaceId,
         hiveHomeSlug: input.hiveHomeSlug,
         enabled: await isHiveRekeyEnabled(),
         newMemberPubkeys,
         sql,
       });
+      // WI-280: a SILENT non-throw 0-keys early-return (flag-disabled / no-fresh-members / no-author)
+      // must still NAME its cause — the same loud-signal guarantee as the throw path (328af's skip-trace).
+      // grantEpochKeysToMembers returns { applied:false, reason } on each early-return; surface it as a
+      // queryable rekey_grant_skipped boot-event so an admit/approve that mints 0 keys is never silent
+      // (the admit seam routes through here now, so this preserves part-B's skip-trace on that path too).
+      if (!grantResult.applied && grantResult.reason) {
+        try {
+          const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
+          recordBootEvent(
+            input.workspaceId,
+            input.hiveHomeSlug,
+            'rekey_grant_skipped',
+            `grantEpochKeysToMembers on upsertHiveMember skipped for gh=${input.githubUserId}: ${grantResult.reason}`,
+          );
+        } catch {
+          /* boot-history unavailable */
+        }
+      }
     }
   } catch (e) {
+    // WI-280: make this LOUD on EVERY grant path. upsertHiveMember is now the single open-mode
+    // grant seam (boot.ts admit routes through it), so the queryable `rekey_grant_failed` boot-event
+    // 328af added at the admit seam (part B) must record HERE or it's silently lost when the admit
+    // grant is replaced by this upsert. boot-history is a pure in-process buffer (no heavy deps,
+    // safe to import into the store). This is a SUPERSET of part-B (admit AND approve), not a regression.
+    const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    try {
+      const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
+      recordBootEvent(
+        input.workspaceId,
+        input.hiveHomeSlug,
+        'rekey_grant_failed',
+        `grantEpochKeysToMembers on upsertHiveMember failed for gh=${input.githubUserId}: ${detail}`,
+      );
+    } catch {
+      /* boot-history unavailable — the console.error below still surfaces it */
+    }
     // eslint-disable-next-line no-console
     console.error(
-      `[hive-rekey] grantEpochKeysToMembers on upsertHiveMember failed (best-effort): ${
-        e instanceof Error ? e.message : String(e)
-      }`,
+      `[hive-rekey] grantEpochKeysToMembers on upsertHiveMember failed (best-effort): ${detail}`,
     );
   }
   return record;

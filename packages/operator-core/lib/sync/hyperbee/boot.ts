@@ -1022,47 +1022,49 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             peerLabel(frame.log_core_key),
           );
           emitAdmitted(frame.log_core_key);
-          // Re-key member-add (open-mode, shared-hive-rekey-2026-06-19): when the OWNER admits
-          // a NEW peer — including OPEN-mode auto-admit, which never goes through upsertHiveMember
-          // (the other grant seam) — grant that peer's device every epoch key [0..current] so it
-          // can decrypt EXISTING hive content. Fire-and-forget: drainAdmissionQueue runs under the
-          // merge gate, so this must NOT block it. grantEpochKeysToMembers self-gates to the owner
-          // (no-op on a joiner / without the hive key — so this is safe on every box), is flag-gated
-          // (papercusp-hive-rekey), idempotent per (epoch, member), and best-effort.
+          // Re-key member-add (open-mode, shared-hive-rekey-2026-06-19 / WI-280): when the OWNER
+          // admits a NEW peer — including OPEN-mode auto-admit — REGISTER it in hive_members AND
+          // grant its device every epoch key [0..current] so it can decrypt EXISTING hive content.
+          // ROUTED THROUGH upsertHiveMember (not the bare grant): open-mode auto-admit never
+          // otherwise populates hive_members, so the boundary/grant wrap-set (loadAllHiveMemberDevice-
+          // Pubkeys) stays empty and the live binary mints 0 keys — the WI-280 root (the green-rig/
+          // red-binary pattern the hermetic tests hid by SEEDING hive_members). upsertHiveMember
+          // INSERTs the member row THEN grants to its devices; self-gates to the owner (no-op on a
+          // joiner / without the hive key), is flag-gated (papercusp-hive-rekey), idempotent per
+          // (epoch, member), and records the `rekey_grant_failed` boot-event in ITS catch (a SUPERSET
+          // of part-B's admit-seam event). Fire-and-forget: drainAdmissionQueue runs under the merge
+          // gate, so this must NOT block it. The frame carries everything: device_pubkey +
+          // github_user_id + github_login (the attested identity, == admittedIdentities[…].githubLogin).
           void (async () => {
             try {
-              const { grantEpochKeysToMembers, isHiveRekeyEnabled } = await import(
-                './hive-epoch-boundary-wiring'
-              );
-              await grantEpochKeysToMembers({
+              const { upsertHiveMember } = await import('../../hive-membership-store');
+              await upsertHiveMember({
                 workspaceId: opts.workspaceId,
                 hiveHomeSlug: opts.harnessSlug,
-                enabled: await isHiveRekeyEnabled(),
-                newMemberPubkeys: [frame.device_pubkey],
+                githubUserId: frame.github_user_id,
+                githubUsername: frame.github_login,
+                deviceAttestations: [
+                  {
+                    device_pubkey: frame.device_pubkey,
+                    gist_id: frame.attestation_gist_id,
+                    gist_url: '',
+                    device_label: frame.github_login,
+                    created_at: Date.now(),
+                    signature_by_device: '',
+                  },
+                ],
+                bindingStatus: 'verified',
               });
             } catch (e) {
               const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
-              // WI-280 (part B): make this LOUD. A re-key grant K0 depends on must not
-              // vanish into a best-effort console.error (the witness K-stage failed
-              // SILENTLY for exactly this reason). Record a queryable boot event so the
-              // failure surfaces in boot-history — WITHOUT re-throwing into the
-              // merge-gated admission, which must stay non-blocking (the grant is
-              // deliberately fire-and-forget).
-              recordBootEvent(
-                opts.workspaceId,
-                opts.harnessSlug,
-                'rekey_grant_failed',
-                `grantEpochKeysToMembers on admit failed for ${peerLabel(
-                  frame.log_core_key,
-                )}: ${detail}`,
-              );
+              // The GRANT failure inside upsertHiveMember already records a queryable
+              // `rekey_grant_failed` boot-event (a superset of part-B); this catch only fires if the
+              // membership INSERT itself throws. Stay non-blocking (merge-gated admission), best-effort.
               // eslint-disable-next-line no-console
               console.error(
-                // Log the STACK (not just the message) — this grant THROWS and the throw
-                // was being swallowed message-only, hiding WHICH produce call fails
-                // (deriveEpochKey / wrapKeyToMember / putWrappedKeys — e.g. sodium-native
-                // unresolved in the sidecar binary, WI-280 candidate 1).
-                `[hive-rekey] grantEpochKeysToMembers on admit failed: ${detail}`,
+                `[hive-rekey] open-mode admit upsertHiveMember failed for ${peerLabel(
+                  frame.log_core_key,
+                )}: ${detail}`,
               );
             }
           })();
