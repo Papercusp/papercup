@@ -31,6 +31,7 @@ import type {
 } from './types';
 import { CREATIVE_LENSES } from './types';
 import type { CorpusEntry, CorpusKind, CorpusMatch, CritiqueVerdict } from './critique-core';
+import type { StateOfHiveReaders } from './corpus-digest';
 
 /* ────────────────────────────────────────────────────────────────────────
  * Fake ScoutLlmCall
@@ -351,6 +352,29 @@ export function fixtureProposal(over: Partial<Proposal> = {}): Proposal {
     sourceIdeaIds: ['idea-analogical-1'],
     routeHint: 'plan',
     addressesPatternRefs: ['plan:lock-contention-2026-06-01'],
+    ...over,
+  };
+}
+
+/**
+ * A fake {@link StateOfHiveReaders} deps bag — every reader defaults to an EMPTY
+ * corpus; override only the ones a test needs to populate. This is the single
+ * place a new reader gets its empty default, so adding a required reader to
+ * `StateOfHiveReaders` never silently breaks the digest fixtures again (the
+ * EI-1861 deploy-gate class, where 3 hand-rolled fakes each had to be patched).
+ * All readers stay REQUIRED on the interface (compile-enforced provision); this
+ * only removes the duplication that turned a required addition into a fixture break.
+ */
+export function fakeStateOfHiveReaders(
+  over: Partial<StateOfHiveReaders> = {},
+): StateOfHiveReaders {
+  return {
+    completions: async () => [],
+    reverts: async () => [],
+    friction: async () => [],
+    spend: async () => [],
+    deferrals: async () => [],
+    observations: async () => [],
     ...over,
   };
 }

@@ -1203,6 +1203,14 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
             hiveHomeSlug: HIVE_HOME,
             sql: dbB.sql,
             ownLogKeyHex: handleB!.ownLog.keyHex,
+            // WI-259 P-002 seam: mirror boot.ts's admit-time map. Boot stamps
+            // admittedIdentities[A's log_core_key] = A's device_pubkey (boot.ts:1009) and
+            // resolveAuthorDevice reads it back by sourceLogKeyHex (boot.ts:607). A REMOTE
+            // op's provenance.authorPubkey IS its receiver-stamped sourceLogKeyHex
+            // (projection.ts:266) = A's ownLog.keyHex here; resolving that to A's seeded
+            // member device is exactly what the live handle does once it admits A (STEP 1
+            // above proves the admit fired, so this map is populated identically in prod).
+            resolveAuthorDevice: (k) => (k === handleA!.ownLog.keyHex ? idA.devicePubkey : null),
           });
           return applyB(op);
         },
@@ -1251,17 +1259,22 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
           'admission did not fire (check the seeded hives/hive_members/registry resolve under getOrgPg())',
       ).toBe(true);
 
-      // ── (2) CURRENT STATE (documented, flips when WI-259 P-002 lands): A's feature is
-      //    ADMITTED+REPLICATED (above) but its content does NOT land in B's PG — every
-      //    projection's apply drops a wrong-slug op (B scoped to B_SLUG ≠ the op's A_SLUG;
-      //    features are NOT yet in the hive-home remap set). Drive a few more merge passes
-      //    to give any (non-existent today) apply a chance, then assert absence under EVERY
-      //    plausible slug-scope. When P-002 wires shared content in, replace this block with
-      //    a positive assertion that A's feature LANDS in B's PG (origin='remote'). ──
+      // ── (2) WI-259 P-002 CLOSE GATE: A's same-hive cross-member feature now LANDS in B's
+      //    PG. The op is admitted+replicated (STEP 1 above); B's apply then resolves the op's
+      //    unforgeable receiver-stamped sourceLogKeyHex → A's admitted device
+      //    (resolveAuthorDevice, mirroring boot.ts:607/1009) and the P-002 guard applies it
+      //    because that device ∈ B's hive member device set (resolveHiveMemberDeviceSet over
+      //    the seeded hive_members). Content stays under A's MEMBER slug — the membership-aware
+      //    design keeps cross-member content addressable by its author's slug, NOT remapped to
+      //    B_SLUG or HIVE_HOME. (Was the documented pre-P-002 absence; flipped now P-002 landed.) ──
       for (let i = 0; i < 6; i++) {
         await Promise.all([handleA.mergeNow(), handleB.mergeNow()]);
       }
-      expect(await readFeatureForSlug(dbB.sql, A_SLUG, 'F-wi259')).toBeUndefined();
+      expect(
+        await readFeatureForSlug(dbB.sql, A_SLUG, 'F-wi259'),
+        "A's F-wi259 did NOT cross to B under A's member slug — WI-259 P-002 apply guard " +
+          'dropped the admitted cross-member op (check resolveAuthorDevice → member-set membership)',
+      ).toBeDefined();
       expect(await readFeatureForSlug(dbB.sql, B_SLUG, 'F-wi259')).toBeUndefined();
       expect(await readFeatureForSlug(dbB.sql, HIVE_HOME, 'F-wi259')).toBeUndefined();
     },

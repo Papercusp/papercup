@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
 import { ScoutIdeatorsTransportError } from './ideators';
 import { resolveScoutConfig } from './config';
-import { makeFakeScoutLlm, fixtureProposal } from './test-support';
+import { makeFakeScoutLlm, fixtureProposal, fakeStateOfHiveReaders } from './test-support';
 import { GRADER_FEEDBACK_HEADING, type GradedIdeaView } from './ideator-feedback-priming';
 import type { StateOfHiveReaders } from './corpus-digest';
 import type { CorpusEntry } from './critique-core';
@@ -21,14 +21,10 @@ import type { ArchiveEliteView, ArchivePort } from './gym-bridge';
 import type { PlanDraftCreator } from './router-deps';
 import type { CorpusDigest, Idea, ScoutLlmCall } from './types';
 
-const EMPTY_READERS: StateOfHiveReaders = {
-  completions: async () => [],
-  reverts: async () => [],
-  friction: async () => [],
-  spend: async () => [],
-  deferrals: async () => [],
-  observations: async () => [], // EI-1861: now-required structured-observation reader
-};
+// All readers default to empty via the shared builder; override per-test as needed.
+// (EI-1861 / F-FIX-040: the builder is the single place a new required reader gets
+// its default, so adding one never breaks these fixtures again.)
+const EMPTY_READERS: StateOfHiveReaders = fakeStateOfHiveReaders();
 
 const NOVELTY: CorpusEntry[] = [{ ref: 'plan:prior', kind: 'plan', text: 'a prior plan' }];
 
