@@ -70,7 +70,14 @@ export type BootHistoryKind =
   // throwing — flag off / no fresh member pubkeys / no author pubkey (owner self-gate).
   // This is the non-throw 0-keys path part B's rekey_grant_failed cannot catch; the
   // message carries which condition + the input values so the witness re-run is conclusive.
-  | 'rekey_grant_skipped';
+  | 'rekey_grant_skipped'
+  // WI-280 (boundary loud-signal): the revoke / go-private boundary path SKIPPED its epoch advance
+  // without throwing — revokeHiveContributor early-returned (no_target / not_owner / no_owner_identity
+  // / no_owner_row / revoke_failed) so advanceEpochOnHiveBoundary was never reached, OR the advance
+  // itself no-op'd (flag off / no-author / no fresh members) → live:false. Mirrors rekey_grant_skipped
+  // for the grant path: names the silent boundary 0→0 so a K2 revoke that doesn't advance NAMES why
+  // (instead of a manual trace to the revoke early-return).
+  | 'rekey_boundary_skipped';
 
 export interface BootHistoryEntry {
   ts: number;

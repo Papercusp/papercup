@@ -136,16 +136,23 @@ export function sampleGateway(metrics: GatewayMetrics, now: number): GatewaySamp
 }
 
 /**
- * Detect the wedge + sustained-throttle signatures from the current metrics and an optional recent
- * prior sample. PURE — no I/O. The `prior` lets us confirm the TEMPORAL half of the wedge signature
- * (frozen `totalRequests`); without a recent prior the verdict reports only the instantaneous
- * `saturated` (a warn), never a false `wedge`.
+ * Detect the wedge + sustained-throttle signatures from the current metrics and an optional prior
+ * sample. PURE — no I/O. The `prior` lets us confirm the TEMPORAL half of the wedge signature
+ * (frozen `totalRequests`); without a prior the verdict reports only the instantaneous `saturated`
+ * (a warn), never a false `wedge`.
+ *
+ * `opts.minFreezeMs` (default 0) requires the prior to be at least that old before a frozen-while-
+ * saturated reading counts as a confirmed `wedge` — the caller passes the freeze-ANCHOR sample
+ * (held stable since the freeze began) so the wedge only fires once the freeze has PERSISTED that
+ * long (defends against a near-simultaneous double-read seeing a ~0ms "frozen" gap).
  */
 export function detectGatewayWedge(
   metrics: GatewayMetrics,
   prior: GatewaySample | undefined,
   now: number,
+  opts: { minFreezeMs?: number } = {},
 ): GatewayWedgeVerdict {
+  const minFreezeMs = opts.minFreezeMs ?? 0;
   const reasons: string[] = [];
 
   // ── Saturation (spatial half): every live slot is taken AND work is waiting. ──────────────────
@@ -154,13 +161,14 @@ export function detectGatewayWedge(
     reasons.push(`at slot ceiling: inFlight ${metrics.inFlight}/${metrics.maxConcurrent} with ${metrics.queueDepth} queued`);
   }
 
-  // ── Wedge (spatial + temporal): saturated AND totalRequests not advancing vs a RECENT prior. ──
+  // ── Wedge (spatial + temporal): saturated AND totalRequests not advancing vs a PERSISTED prior. ─
   let wedge = false;
-  const priorRecent = !!prior && now - prior.at > 0 && now - prior.at <= WEDGE_FREEZE_PRIOR_MAX_AGE_MS;
-  if (saturated && prior && priorRecent && metrics.totalRequests === prior.totalRequests) {
+  const priorAge = prior ? now - prior.at : -1;
+  const priorUsable = !!prior && priorAge >= minFreezeMs && priorAge <= WEDGE_FREEZE_PRIOR_MAX_AGE_MS;
+  if (saturated && prior && priorUsable && metrics.totalRequests === prior.totalRequests) {
     wedge = true;
     reasons.push(
-      `totalRequests frozen @${metrics.totalRequests} for ${Math.round((now - prior.at) / 1000)}s while saturated — wedge signature (watchdog will auto-restart)`,
+      `totalRequests frozen @${metrics.totalRequests} for ${Math.round(priorAge / 1000)}s while saturated — wedge signature (watchdog will auto-restart)`,
     );
   }
 

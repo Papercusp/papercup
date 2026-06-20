@@ -203,6 +203,7 @@ const recombineResponder: ScoutLlmResponder = (opts) => {
 const fakeReaders: StateOfHiveReaders = {
   completions: async () => [],
   reverts: async () => [],
+  observations: async () => [], // EI-1861: now-required structured-observation reader
   friction: async () => [
     {
       id: 'F-100',

@@ -24,6 +24,10 @@ const WORK_ITEM_ROW = z.object({
   harness: z.string().nullable(),
   title: z.string(),
   summary: z.string(),
+  /** EI-1597: in list rows the summary is EXCERPTED (budget-aware) so a large backlog
+   *  can't overflow the agent result cap; these flag a cut row. Full body via work_items:get. */
+  summary_truncated: z.literal(true).optional(),
+  summary_full_chars: z.number().optional(),
   state: z.string(),
   assignee: z.string().nullable(),
   assignedBy: z.string().nullable(),
@@ -37,10 +41,37 @@ const WORK_ITEM_ROW = z.object({
   updatedAt: z.string(),
 });
 
+// EI-1597: bound each list row's summary so a large backlog can't overflow the agent
+// result cap (work_items:list returns the full WorkItem array; a 40-item backlog hit
+// 73KB of summaries on one line). Per-row cap = min(SUMMARY_ROW_CAP, floor(BUDGET/n))
+// — the budget-aware bound coord:inbox (EI-1752) + plans:get (WI-274) use: total
+// summary text stays <= BUDGET at ANY list size, while small lists keep most rows full.
+// Full body is always available via work_items:get { id }.
+export const SUMMARY_ROW_CAP = 240;
+export const SUMMARIES_TOTAL_BUDGET = 16_000;
+
+export function boundSummaries<T extends { summary?: string | null }>(
+  rows: T[],
+): Array<T | (T & { summary: string; summary_truncated: true; summary_full_chars: number })> {
+  const n = rows.length;
+  if (n === 0) return rows;
+  const cap = Math.min(SUMMARY_ROW_CAP, Math.floor(SUMMARIES_TOTAL_BUDGET / n));
+  return rows.map((r) => {
+    const full = typeof r.summary === 'string' ? r.summary : '';
+    if (full.length <= cap) return r;
+    return {
+      ...r,
+      summary: full.slice(0, cap),
+      summary_truncated: true as const,
+      summary_full_chars: full.length,
+    };
+  });
+}
+
 export default defineTool({
   name: 'work_items:list',
   profile: 'engineer',
-  description: 'List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly.',
+  description: 'List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row\'s summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.',
   guidance: {
     when: 'You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent\'s chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog\'s order in one call before steering it with work_items:set_priority.',
     chaining: 'work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.',
@@ -66,6 +97,8 @@ export default defineTool({
       includeChildren: args.includeChildren,
       limit: args.limit,
     });
-    return { data: items };
+    // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent
+    // result cap. Full body via work_items:get { id }.
+    return { data: boundSummaries(items) };
   },
 });

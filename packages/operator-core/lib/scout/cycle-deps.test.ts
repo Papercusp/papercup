@@ -27,6 +27,7 @@ const EMPTY_READERS: StateOfHiveReaders = {
   friction: async () => [],
   spend: async () => [],
   deferrals: async () => [],
+  observations: async () => [], // EI-1861: now-required structured-observation reader
 };
 
 const NOVELTY: CorpusEntry[] = [{ ref: 'plan:prior', kind: 'plan', text: 'a prior plan' }];

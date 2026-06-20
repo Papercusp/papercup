@@ -20,9 +20,21 @@ import { COORD_ROLES } from '../roles';
 import {
   readCoordFeed,
   ALL_COORD_KINDS,
-  DEFAULT_FEED_LIMIT,
   MAX_FEED_LIMIT,
 } from '../feed';
+import { boundRowField } from '../../_bound-output';
+
+// EI-1597: the agent-facing default is lower than the UI's DEFAULT_FEED_LIMIT (100)
+// because each feed row is a full envelope (body + summary + metadata) — at 100 rows
+// the metadata floor alone threatens the agent result cap. 30 recent rows + the
+// before_ts cursor is a safe, paginatable default; per-row body/summary are excerpted
+// on top. An explicit higher `limit` still works (bodies stay excerpted) — paginate
+// with the cursor for a deep timeline.
+const AGENT_FEED_DEFAULT = 30;
+const FEED_BODY_CAP = 200;
+const FEED_BODY_BUDGET = 8_000;
+const FEED_SUMMARY_CAP = 400;
+const FEED_SUMMARY_BUDGET = 10_000;
 
 export default defineTool({
   name: 'coord:feed',
@@ -62,7 +74,7 @@ export default defineTool({
       .min(1)
       .max(MAX_FEED_LIMIT)
       .optional()
-      .describe(`Max rows (newest kept). Default ${DEFAULT_FEED_LIMIT}, max ${MAX_FEED_LIMIT}.`),
+      .describe(`Max rows (newest kept). Agent default ${AGENT_FEED_DEFAULT} (kept small because each row is a full envelope), max ${MAX_FEED_LIMIT}. Per-row body/summary are excerpted (body_truncated/_full_chars); paginate with before_ts/next_cursor for more.`),
   }),
   async handler(args) {
     const { rows, nextCursor, total, byKind } = await readCoordFeed({

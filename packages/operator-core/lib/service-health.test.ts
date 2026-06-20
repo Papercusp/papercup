@@ -2,7 +2,13 @@
  * diffHealth — pure transition detector (fleet-coordination-painpoints P-017).
  */
 import { describe, it, expect } from 'vitest';
-import { diffHealth, HEALTH_ENDPOINTS, type ProbeResult } from './service-health';
+import {
+  diffHealth,
+  HEALTH_ENDPOINTS,
+  evaluateBgHostTicker,
+  BG_HOST_STALE_MS,
+  type ProbeResult,
+} from './service-health';
 
 const r = (name: string, up: boolean): ProbeResult => ({
   name,
@@ -86,5 +92,56 @@ describe('HEALTH_ENDPOINTS', () => {
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
       ['code-server', 'operator', 'scout', 'vite'].sort(),
     );
+  });
+});
+
+describe('evaluateBgHostTicker (EI-1832 — bg-host DBOS ticker liveness)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('a recent tick → up, with the last-tick age + "ticker alive" in the note', () => {
+    const res = evaluateBgHostTicker(NOW - 30_000, NOW);
+    expect(res.name).toBe('bg-host-ticker');
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/last routine tick 30s ago/);
+    expect(res.note).toMatch(/ticker alive/);
+  });
+
+  it('a fire older than the stale window → DOWN, naming the bg-host (NOT :3070, do not restart operator)', () => {
+    const res = evaluateBgHostTicker(NOW - 45 * 60_000, NOW); // 45m — the 2026-06-20 incident
+    expect(res.up).toBe(false);
+    expect(res.note).toMatch(/no routine has fired in 45m/);
+    expect(res.note).toMatch(/FROZEN/);
+    expect(res.note).toMatch(/NOT the :3070 operator/);
+    expect(res.note).toMatch(/do NOT dev:restart/);
+  });
+
+  it('exactly at the threshold is still up; one ms past it is down (boundary)', () => {
+    expect(evaluateBgHostTicker(NOW - BG_HOST_STALE_MS, NOW).up).toBe(true);
+    expect(evaluateBgHostTicker(NOW - BG_HOST_STALE_MS - 1, NOW).up).toBe(false);
+  });
+
+  it('no fired routine (null) → present:false, liveness UNKNOWN (never alarms a fresh/idle install)', () => {
+    const res = evaluateBgHostTicker(null, NOW);
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/unknown/);
+  });
+
+  it('a future timestamp (clock skew) clamps to age 0 — up, never a negative age', () => {
+    const res = evaluateBgHostTicker(NOW + 5_000, NOW);
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/tick 0s ago/);
+  });
+
+  it('an UNKNOWN (present:false) ticker result is SKIPPED by diffHealth — no phantom transition', () => {
+    const unknown = evaluateBgHostTicker(null, NOW);
+    const { transitions, next } = diffHealth({ 'bg-host-ticker': true }, [unknown]);
+    expect(transitions).toEqual([]); // present:false → skipped (no phantom alarm)
+    expect(next['bg-host-ticker']).toBeUndefined(); // forgotten, not alerted
+  });
+
+  it('a real ticker DOWN DOES alert via diffHealth, like any service', () => {
+    const down = evaluateBgHostTicker(NOW - 60 * 60_000, NOW); // 1h frozen
+    const { transitions } = diffHealth({ 'bg-host-ticker': true }, [down]);
+    expect(transitions).toEqual([{ name: 'bg-host-ticker', to: 'down' }]);
   });
 });

@@ -64,7 +64,42 @@ export interface RevokeHiveContributorSeams {
   ) => Promise<{ live: boolean }>;
 }
 
+/**
+ * WI-280 loud-signal (mirrors rekey_grant_skipped for the grant path): a revoke whose boundary
+ * epoch-advance is SKIPPED — an early-return (no_target / not_owner / ...) so
+ * advanceEpochOnHiveBoundary is never reached, OR the advance itself no-op'd (live:false) — records
+ * a queryable `rekey_boundary_skipped` boot event naming WHY. So a K2 revoke that doesn't advance
+ * NAMES itself instead of a silent 0→0 (the witness's K2 no_target cost a manual trace to :98).
+ * Best-effort: the boot-event write must NEVER change the revoke result.
+ */
 export async function revokeHiveContributor(
+  input: RevokeHiveContributorInput,
+  seams: RevokeHiveContributorSeams = {},
+): Promise<RevokeHiveContributorResult> {
+  const result = await revokeHiveContributorInner(input, seams);
+  try {
+    const reason = !result.ok
+      ? result.code
+      : result.live
+        ? null
+        : 'advance-not-applied'; // ok, but the boundary advance no-op'd (flag off / no-author / no fresh)
+    if (reason) {
+      const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
+      recordBootEvent(
+        input.workspaceId,
+        input.hiveHomeSlug,
+        'rekey_boundary_skipped',
+        `revoke boundary advance skipped for gh=${input.githubUserId}: ${reason}` +
+          (!result.ok && result.detail ? ` (${result.detail})` : ''),
+      );
+    }
+  } catch {
+    /* boot-history unavailable — never fail the revoke on the diagnostic */
+  }
+  return result;
+}
+
+async function revokeHiveContributorInner(
   input: RevokeHiveContributorInput,
   seams: RevokeHiveContributorSeams = {},
 ): Promise<RevokeHiveContributorResult> {

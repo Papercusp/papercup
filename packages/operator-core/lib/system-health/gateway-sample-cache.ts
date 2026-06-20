@@ -1,18 +1,18 @@
 /**
- * Stateful glue around the PURE `gateway-wedge` detector (B-GW-5). The detector confirms the
- * TEMPORAL half of the wedge signature (frozen `totalRequests`) by comparing the current `/stats`
- * against a recent PRIOR sample — this module holds that prior across the periodic system-health
- * recomputes (the ~30s-2min health tick / liveness-alarm loop), so the tokens panel can surface a
- * confirmed wedge without re-implementing the watchdog's freeze logic.
+ * Stateful glue around the PURE `gateway-wedge` detector (B-GW-5). A confirmed wedge needs the
+ * TEMPORAL signature — `totalRequests` frozen WHILE saturated for a sustained interval — but the
+ * system-health aggregator is a stateless per-tick recompute. This module holds the minimal rolling
+ * state across the periodic health ticks (the ~30s-2min tick / liveness-alarm loop) so the tokens
+ * panel can surface a confirmed wedge without re-implementing the watchdog's freeze logic.
  *
- * Kept OUT of `gateway-wedge.ts` (which stays pure + trivially testable) and OUT of `compute.ts`
- * (which stays a stateless aggregator). The only mutable state is one rolling sample per operator
- * worker — a metric cache, not durable state (the gateway is a separate process; an operator
- * restart simply re-baselines, and the standalone watchdog owns the real-time freeze→restart).
+ * It tracks a freeze ANCHOR — the reading at which the current saturated-freeze BEGAN — held stable
+ * (it does NOT advance) while the freeze persists, so the detector's `minFreezeMs` gate measures the
+ * TRUE freeze duration regardless of tick cadence. The anchor clears the moment `totalRequests`
+ * advances or the gateway un-saturates (recovery). This mirrors the standalone watchdog's
+ * `frozenSince` model; the watchdog still owns the real-time freeze→restart, this owns visibility.
  *
- * The prior is refreshed at most once per `SAMPLE_MIN_INTERVAL_MS` so two near-simultaneous health
- * computes (the background tick + an on-demand UI read) can't churn it into a ~0s-old prior that
- * would false-confirm a freeze.
+ * The only mutable state is one prior + one anchor per operator worker — a metric cache, not durable
+ * state (the gateway is a separate process; an operator restart simply re-baselines).
  */
 import {
   detectGatewayWedge,
@@ -22,27 +22,41 @@ import {
   type GatewayWedgeVerdict,
 } from '../inference-gateway/gateway-wedge';
 
-/** Don't refresh the prior more often than this — keeps it a meaningful PREVIOUS tick, not a
- *  sub-second echo of the current read. Roughly one health-tick; below the watchdog's 120s freeze. */
-export const SAMPLE_MIN_INTERVAL_MS = 15_000;
+/** A saturated freeze must PERSIST at least this long to count as a wedge (the standalone watchdog
+ *  restarts at 120s; the dashboard surfaces it a touch earlier so a human/overwatch sees it before
+ *  — or as — the watchdog acts). Below this the panel still shows `saturated` (a warn). */
+export const WEDGE_MIN_FREEZE_MS = 60_000;
 
-let priorSample: GatewaySample | undefined;
+let prior: GatewaySample | undefined; // the immediately-previous reading
+let freezeAnchor: GatewaySample | undefined; // the reading at which the current freeze began
 
 /**
- * Run the wedge/throttle detector against `metrics`, using the module's rolling prior to confirm a
- * freeze, then (rate-limited) advance the prior. Pure detection + a thin stateful prior — returns the
- * full verdict for the tokens panel.
+ * Run the wedge/throttle detector against `metrics`, maintaining the rolling prior + freeze anchor,
+ * and return the verdict (with `wedge` true only once the saturated freeze has persisted
+ * `WEDGE_MIN_FREEZE_MS`). `saturated` + `sustainedThrottle` are instantaneous (no history needed).
  */
 export function readGatewayWedge(metrics: GatewayMetrics, now: number): GatewayWedgeVerdict {
-  const verdict = detectGatewayWedge(metrics, priorSample, now);
-  // Advance the rolling prior only once per interval (and always on the first reading).
-  if (priorSample === undefined || now - priorSample.at >= SAMPLE_MIN_INTERVAL_MS) {
-    priorSample = sampleGateway(metrics, now);
+  // Instantaneous saturation, from a history-free detector call.
+  const instant = detectGatewayWedge(metrics, undefined, now);
+  const frozenVsPrior = prior !== undefined && metrics.totalRequests === prior.totalRequests;
+
+  if (instant.saturated && frozenVsPrior) {
+    // A saturated freeze is in progress — anchor it at the reading the freeze began (the prior).
+    if (freezeAnchor === undefined) freezeAnchor = prior;
+  } else {
+    // Requests advanced, or the gateway un-saturated → the freeze (if any) is over.
+    freezeAnchor = undefined;
   }
+
+  // The durable verdict: pass the (stable) anchor as prior + the min-persist gate.
+  const verdict = detectGatewayWedge(metrics, freezeAnchor, now, { minFreezeMs: WEDGE_MIN_FREEZE_MS });
+
+  prior = sampleGateway(metrics, now);
   return verdict;
 }
 
-/** Test seam — reset the rolling prior so cases don't bleed across each other. */
+/** Test seam — reset the rolling state so cases don't bleed across each other. */
 export function __resetGatewaySampleCacheForTests(): void {
-  priorSample = undefined;
+  prior = undefined;
+  freezeAnchor = undefined;
 }

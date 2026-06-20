@@ -24,6 +24,7 @@
  */
 
 import { withPlanLock as realWithPlanLock } from '../agent-tools/plans/with-plan-lock';
+import { SCOUT_FEEDBACK_LOOP_GUIDANCE } from './feedback-loop-prompt';
 import type { ScoutLlmCall } from './types';
 import type { ScoutCycleLike } from './scheduler';
 import type { QueenFeedbackItem } from './scheduler';
@@ -83,14 +84,25 @@ export interface ScoutReviseDeps {
   maxTokens?: number;
 }
 
-const REVISION_SYSTEM = `You are the Scout — the autonomous idea-generation loop of a multi-agent engineering "Hive". You earlier routed a DRAFT plan; the Queen (the work-placement gate) reviewed it and sent feedback. REVISE the draft to ADDRESS her feedback so it can reach "ready".
+// The Scout-side protocol/discipline is the CANONICAL guidance authored by the
+// P-005 sibling brief (feedback-loop-prompt.ts) — B3 "carries the TEXT" into the
+// revision per that module's contract. We prepend it as the discipline, then add
+// the mechanical-output constraints for THIS deterministic single-rewrite step
+// (the Scout cycle is a deterministic pipeline, run.ts D-009 — no tool access in a
+// step; the wiring records the revision + pings the Queen, so the rewrite must
+// emit ONLY the revised plan, never a tool call / deprecation note).
+const REVISION_SYSTEM = `${SCOUT_FEEDBACK_LOOP_GUIDANCE}
 
-RULES:
-- Output ONLY the full revised plan as Markdown. No preamble, no commentary, no code fences.
+---
+
+## This step — the mechanical revision (output contract)
+
+You are running ONE targeted revision pass as a deterministic pipeline step. You have NO tools here: the wiring records your revision and pings the Queen back for you. So:
+- Output ONLY the full revised plan as Markdown. No preamble, no commentary, no code fences, no tool calls.
 - PRESERVE the YAML frontmatter block (the leading --- ... --- ), including slug, status: draft, and origin. You MAY refine the title and bump the updated date.
-- INTEGRATE the feedback — sharpen the Now/Background, and add/fix Phase items + Decisions as her feedback directs. Do not blindly append; weave it in.
-- If the feedback exposes a real flaw, fix it. Keep the plan HONEST — don't overclaim or invent results.
-- Keep it a valid plan: the same section structure (## Now / ## Background / ## Phase … / ## Decisions).`;
+- INTEGRATE the feedback — sharpen the Now/Background and add/fix Phase items + Decisions as it directs. Do not blindly append; weave it in. Keep the plan HONEST (don't overclaim or invent results).
+- Keep it a valid plan: the same section structure (## Now / ## Background / ## Phase … / ## Decisions).
+- If you conclude the PREMISE itself is flawed (not just execution), you cannot deprecate from this step — instead state plainly IN THE ## Now BLOCK that the premise looks unsound and why, so the Queen can deprecate. Never emit a deprecation note in place of the plan.`;
 
 /** Build the revision user prompt from the current plan body + the Queen's feedback. */
 export function revisionUserPrompt(currentPlan: string, feedback: string): string {

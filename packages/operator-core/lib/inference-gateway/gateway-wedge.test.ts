@@ -134,6 +134,17 @@ test('detectGatewayWedge — frozen but a STALE prior (>5min) → NOT a wedge (a
   assert.equal(v.wedge, false, 'a stale prior cannot confirm the freeze');
 });
 
+test('detectGatewayWedge — minFreezeMs gates the wedge: a freeze younger than the min is NOT yet a wedge', () => {
+  const stats = healthyStats({ totalRequests: 5000, admission: { running: 24, queued: 30, maxConcurrent: 24 } });
+  const m = summarizeGatewayMetrics(stats);
+  // Anchor only 30s old, min-freeze 60s → saturated but not yet a confirmed wedge.
+  const young = { totalRequests: 5000, shed429: 0, shedAllThrottled: 0, at: NOW - 30_000 };
+  assert.equal(detectGatewayWedge(m, young, NOW, { minFreezeMs: 60_000 }).wedge, false);
+  // Anchor 75s old, min-freeze 60s → the freeze has persisted → wedge.
+  const old = { totalRequests: 5000, shed429: 0, shedAllThrottled: 0, at: NOW - 75_000 };
+  assert.equal(detectGatewayWedge(m, old, NOW, { minFreezeMs: 60_000 }).wedge, true);
+});
+
 // ── detectGatewayWedge — sustained throttle ───────────────────────────────────────────────────
 
 test('detectGatewayWedge — AIMD effective < cap → sustainedThrottle (the B-GW-1 adaptive-throttle signal)', () => {

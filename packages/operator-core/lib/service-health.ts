@@ -73,14 +73,91 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = 3000): Promi
   }
 }
 
+/**
+ * EI-1832: liveness of the papercup-bg-host DBOS TICKER — a SEPARATE service from
+ * the :3070 operator. The ticker drives git-sync + every scheduled routine; when it
+ * freezes (event-loop starvation), :3070 stays up while the whole commit/deploy
+ * pipeline silently halts. On 2026-06-20 that froze the fleet ~48m, and the only
+ * agent-visible signal (dev:service_health → ":3070 up") MISLED the diagnosis toward
+ * a wrong `dev:restart` of the operator. The signal: the ticker fires routines, so the
+ * NEWEST `last_fired_at` across active routines IS the last-tick age — if nothing has
+ * fired in this window, the ticker is frozen. Generous so a normally-firing fleet
+ * (git-sync alone fires every few minutes) never false-alarms, while a real freeze
+ * (tens of minutes) trips it. Isolates "ticker frozen (ALL routines stop)" from "one
+ * routine stuck" — the latter is git-pipeline-stats / the green-stall-watchdog.
+ */
+export const BG_HOST_STALE_MS = 15 * 60_000;
+
+function toMs(v: Date | string | number | null | undefined): number | null {
+  if (v == null) return null;
+  if (v instanceof Date) return v.getTime();
+  const t = typeof v === 'number' ? v : new Date(v).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Pure verdict for the bg-host ticker, from the newest routine `last_fired_at`
+ * (ms, or null = no routine has fired) + `now`. Unit-tested like `diffHealth`.
+ * `lastFiredMs == null` ⇒ liveness UNKNOWN (present:false, never alarm a fresh/idle
+ * install). A fresh tick ⇒ up; an age past `staleAfterMs` ⇒ down with a note that
+ * names the bg-host (NOT :3070) so the reader doesn't restart the wrong service.
+ */
+export function evaluateBgHostTicker(
+  lastFiredMs: number | null,
+  now: number,
+  staleAfterMs: number = BG_HOST_STALE_MS,
+): ProbeResult {
+  const name = 'bg-host-ticker';
+  if (lastFiredMs == null) {
+    return { name, up: true, status: null, latencyMs: 0, present: false, note: 'no routine has fired — ticker liveness unknown' };
+  }
+  const ageMs = Math.max(0, now - lastFiredMs);
+  const up = ageMs <= staleAfterMs;
+  const ageMin = Math.round(ageMs / 60_000);
+  const ageSec = Math.round(ageMs / 1000);
+  return {
+    name,
+    up,
+    status: null,
+    latencyMs: 0,
+    note: up
+      ? `last routine tick ${ageSec}s ago — papercup-bg-host DBOS ticker alive`
+      : `⚠ no routine has fired in ${ageMin}m — the SEPARATE papercup-bg-host DBOS ticker ` +
+        `(git-sync + every scheduled routine) looks FROZEN. This is NOT the :3070 operator; ` +
+        `do NOT dev:restart the operator. Revive the bg-host ticker (service-restart lane).`,
+  };
+}
+
+/** Probe the bg-host ticker via the newest active-routine `last_fired_at`. Fail-soft:
+ *  a PG/read failure → liveness UNKNOWN (present:false), never a fabricated DOWN. */
+export async function probeBgHostTicker(now: number = Date.now()): Promise<ProbeResult> {
+  const start = Date.now();
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    // No install_slug filter — the ticker drives EVERY install's routines, so the
+    // fleet-wide newest fire is the ticker heartbeat (and it stays robust while the
+    // papercup→papercusp slug rename is in flight).
+    const rows = await sql<{ last: Date | string | null }[]>`
+      SELECT MAX(last_fired_at) AS last
+        FROM harness_shared.routines
+       WHERE active = true AND last_fired_at IS NOT NULL`;
+    return { ...evaluateBgHostTicker(toMs(rows[0]?.last), now), latencyMs: Date.now() - start };
+  } catch {
+    return { name: 'bg-host-ticker', up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'ticker liveness unknown (routines read failed)' };
+  }
+}
+
 export async function probeAll(specs: EndpointSpec[] = HEALTH_ENDPOINTS): Promise<ProbeResult[]> {
   // The Tauri desktop has no HTTP endpoint — probe it from its local signals
-  // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones.
-  const [http, desktop] = await Promise.all([
+  // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the
+  // bg-host DBOS ticker has no port either — probe it from routine fire-freshness (EI-1832).
+  const [http, desktop, bgHostTicker] = await Promise.all([
     Promise.all(specs.map((s) => probeEndpoint(s))),
     probeDesktop(),
+    probeBgHostTicker(),
   ]);
-  return [...http, desktop];
+  return [...http, desktop, bgHostTicker];
 }
 
 export interface HealthTransition {

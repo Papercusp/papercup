@@ -192,6 +192,7 @@ describe('scout grading feedback loop (real PG, migrations 194+208+234)', () => 
       friction: async () => [],
       spend: async () => [],
       deferrals: async () => [],
+      observations: async () => [], // EI-1861: now-required structured-observation reader
     };
     const DIGEST: CorpusDigest = {
       recurringFriction: [{ summary: 'lock contention on shared tree', ref: 'wi:F-1' }],
