@@ -92,11 +92,12 @@ in the *in-code* op-key registry but never checks the DDL attached it — a new 
 (local writes drop on the floor); the per-table behavioral tests only cover tables someone wrote a test for.
 The DDL-attachment check introspects `pg_proc`/`pg_trigger` for the `capture_*_outbox` family. **6 tests GREEN.**
 
-A third live-schema guard from the same reflection pass surfaced a **candidate tenancy finding** —
-8 federated workspace-scoped tables (incl. `harness_issues_consolidated`, whose sibling
-`harness_features_consolidated` IS protected) have no workspace RLS in the migrated schema. Shipped
-as `rls-coverage.integration.test.ts` (GREEN, the 8 REVIEW-tagged), flagged for owner decision in
-**`findings-rls-coverage.md`** — not auto-fixed (consensus-needing change to core multi-tenant tables).
+A third live-schema guard from the same reflection pass (`rls-coverage.integration.test.ts`, GREEN)
+found 8 federated workspace-scoped tables without RLS. Investigation showed these use the codebase's
+*explicit-`workspace_id`-filtering* isolation model (verified), not RLS — so it is a low-severity
+**defense-in-depth** gap (no RLS backstop), with one concrete unfiltered read in `topics-feed.ts`.
+Full writeup + options in **`findings-rls-coverage.md`**. (An interim escalation to "likely-real leak"
+was refuted by checking the read sites — corrected.)
 
 **Not a bug — one documented exemption.** `harness_plan_parts` carries `fed_hlc` (mig-314) + a CDC capture
 trigger (mig-271) but intentionally has no stamp trigger: plan-part federation is flag-gated/DARK and

@@ -295,8 +295,9 @@ export async function reviewPr(args: ReviewPrArgs): Promise<ReviewPrResult> {
   }
 
   // 2. Deterministic signals over the FULL diff (secret scan must not be
-  //    truncation-evadable). The prompt gets a bounded copy.
-  const signals = computeReviewSignals({ pr: args.pr, diff });
+  //    truncation-evadable). The prompt gets a bounded copy; pass maxChars so
+  //    the signals flag `diff_truncated` when the model saw only part of it.
+  const signals = computeReviewSignals({ pr: args.pr, diff, maxChars });
   const boundedDiff =
     diff.length > maxChars ? diff.slice(0, maxChars) + '\n…[diff truncated for review]…' : diff;
 

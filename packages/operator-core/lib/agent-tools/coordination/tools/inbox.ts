@@ -69,6 +69,14 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Include ambient system broadcasts (service-health, agent-governor) excluded by default.'),
+    max_body_chars: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe(
+        "Truncate each entry's body to this many chars in the result (default 600) so a default read never overflows the agent result cap; truncated entries carry body_truncated:true and the full body is reachable via coord:thread. 0 = no truncation.",
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);

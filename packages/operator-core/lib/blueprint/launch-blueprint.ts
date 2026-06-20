@@ -80,6 +80,36 @@ export interface LaunchTarget {
 }
 
 /**
+ * WI-269: resolve a launch's workspace to a CONCRETE id before it is baked into the
+ * `/invoke ?ws=` URL. A durable-spawn fire persists this URL in its DBOS workflow
+ * input; if a system / cross-workspace routine built it with `ctx.workspaceId === '*'`
+ * (e.g. `improvement-implement`), a post-bg-host-restart REPLAY re-POSTs `?ws=*` →
+ * `workspaceContextMiddleware` rejects it (`isKnownWorkspace('*')` is false) → 400
+ * `unknown_workspace` → a zombie spawn that never launches. The live fire only
+ * worked because the request ALS carried the real workspace, which the persisted URL
+ * does not. So resolve `*`/empty to the harness's own workspace (the spawn's true
+ * target), falling back to the host pin, and REFUSE to build a URL we cannot resolve
+ * — failing loud at enqueue beats a silent zombie on replay. A concrete, known
+ * workspace passes through unchanged (the normal path is untouched).
+ */
+async function resolveConcreteLaunchWorkspace(installSlug: string, workspaceId: string): Promise<string> {
+  if (workspaceId && workspaceId !== '*') return workspaceId;
+  // Dynamic import: keep harness-core / workspace-registry out of launch-blueprint's
+  // static boot graph; this path only runs for a `*`/empty workspace (rare).
+  const { resolveWorkspaceForHarnessSlug } = await import('../harness-core');
+  const { activeWorkspaceId, isKnownWorkspace } = await import('../workspace-registry');
+  const resolved = (await resolveWorkspaceForHarnessSlug(installSlug)) ?? activeWorkspaceId();
+  if (resolved === '*' || !isKnownWorkspace(resolved)) {
+    throw new Error(
+      `[launch] WI-269: cannot resolve a concrete workspace for harness '${installSlug}' ` +
+        `(workspaceId='${workspaceId}' → '${resolved}') — refusing to build a launch URL with ` +
+        `ws='${resolved}' that would 400 unknown_workspace on a durable-spawn replay.`,
+    );
+  }
+  return resolved;
+}
+
+/**
  * Resolve a launch blueprint id → its launch target (role + invoke URL). The
  * DECLARATIVE primitive: "which role does this launch fire?" comes from the
  * blueprint's `spine.decider`, not a hardcoded literal. A caller that observes the
@@ -92,7 +122,8 @@ export async function resolveLaunchTarget(
 ): Promise<LaunchTarget> {
   const bp = await _resolver(blueprintId);
   const role = bp.spine.decider;
-  return { blueprintId, role, url: invokeUrl(opts.installSlug, role, opts.workspaceId, bp.kind) };
+  const workspaceId = await resolveConcreteLaunchWorkspace(opts.installSlug, opts.workspaceId);
+  return { blueprintId, role, url: invokeUrl(opts.installSlug, role, workspaceId, bp.kind) };
 }
 
 /**

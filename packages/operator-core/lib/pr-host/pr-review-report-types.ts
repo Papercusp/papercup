@@ -91,6 +91,12 @@ export interface PrReviewChecksObserved {
   secret_suspected: boolean;
   /** Was the diff empty / unfetchable? Nothing to meaningfully review. */
   diff_empty: boolean;
+  /** Was the diff too large to send the model in full (truncated for the
+   *  prompt)? When true the LLM's judgment covers only the visible portion —
+   *  surfaced as a risk so an `approve` isn't read as a full-diff review.
+   *  NB: the deterministic scans (secrets, tests, files) still run over the
+   *  FULL diff, so the SAFETY properties hold even when this is true. */
+  diff_truncated: boolean;
   /** Count of files the diff touches (0 when empty/unfetchable). */
   files_changed: number;
 }
@@ -138,6 +144,7 @@ export interface ReviewSignals {
   tests_touched: boolean;
   secret_suspected: boolean;
   diff_empty: boolean;
+  diff_truncated: boolean;
   files_changed: number;
 }
 
@@ -241,9 +248,18 @@ export function isDiffEmpty(diff: string): boolean {
  * reviewer passes `pr` (for CI/mergeable state) and the fetched diff
  * text. `checks_state`/`mergeable_state` come from the PR (the daemon
  * refreshes them); the diff-derived signals come from scanning.
+ *
+ * `maxChars` (when given) is the prompt's diff budget: a diff longer than
+ * it is truncated for the model, so `diff_truncated` flags that the LLM's
+ * judgment covered only the visible portion. The scans here still run over
+ * the FULL `diff`, so secrets/tests/file-count are unaffected by truncation.
  */
-export function computeReviewSignals(args: { pr: Pr; diff: string }): ReviewSignals {
-  const { pr, diff } = args;
+export function computeReviewSignals(args: {
+  pr: Pr;
+  diff: string;
+  maxChars?: number;
+}): ReviewSignals {
+  const { pr, diff, maxChars } = args;
   const empty = isDiffEmpty(diff);
   return {
     checks_state: pr.checks_state,
@@ -251,6 +267,7 @@ export function computeReviewSignals(args: { pr: Pr; diff: string }): ReviewSign
     tests_touched: empty ? false : diffTouchesTests(diff),
     secret_suspected: empty ? false : scanDiffForSecrets(diff),
     diff_empty: empty,
+    diff_truncated: !empty && maxChars != null && diff.length > maxChars,
     files_changed: empty ? 0 : diffChangedPaths(diff).filter((p) => p !== '/dev/null').length,
   };
 }
@@ -264,6 +281,8 @@ export const GUARD_RISK = {
   checks_failing: 'CI checks are failing or errored on this PR.',
   empty_diff: 'The diff is empty or could not be fetched — nothing to review.',
   no_tests: 'The change touches no test files (untested change).',
+  truncated:
+    'The diff was too large to review in full — the recommendation covers only the visible portion.',
 } as const;
 
 /**
@@ -281,10 +300,12 @@ export const GUARD_RISK = {
  * what makes "a defective PR is never recommended for approval" hold
  * regardless of model behaviour (the PR-2 Done criterion).
  *
- * `no_tests` is surfaced as a RISK but is NOT a hard floor — plenty of
- * legitimate PRs (docs, config) touch no tests; forcing them off
- * approve would be dishonest in the other direction. The owner reads
- * the flag and decides.
+ * `no_tests` and `diff_truncated` are surfaced as RISKS but are NOT hard
+ * floors — plenty of legitimate PRs touch no tests, and a large diff can
+ * be a legitimate big refactor; forcing either off approve would be
+ * dishonest in the other direction. The owner reads the flag and decides.
+ * (Truncation does not weaken the SAFETY floors: secret/checks scans run
+ * over the full diff regardless.)
  */
 export function applySafetyGuard(
   llm: RawLlmReview,
@@ -307,6 +328,9 @@ export function applySafetyGuard(
   }
   if (!signals.diff_empty && !signals.tests_touched) {
     guardRisks.push(GUARD_RISK.no_tests);
+  }
+  if (signals.diff_truncated) {
+    guardRisks.push(GUARD_RISK.truncated);
   }
 
   const recommendation = recForSeverity(Math.max(severityOf(llm.recommendation), floor));
@@ -343,6 +367,7 @@ export function assembleReport(llm: RawLlmReview, signals: ReviewSignals): PrRev
       tests_touched: signals.tests_touched,
       secret_suspected: signals.secret_suspected,
       diff_empty: signals.diff_empty,
+      diff_truncated: signals.diff_truncated,
       files_changed: signals.files_changed,
     },
   };

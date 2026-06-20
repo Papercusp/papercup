@@ -68,6 +68,23 @@ export const ORPHAN_MAX_SIGNALS = 5;
 export const ORPHAN_SCAN_READ_LIMIT = 500;
 
 /**
+ * EI-1689 — host-restart re-dispatch circuit-breaker. EI-403 Option B rolls a
+ * host-restart victim back + re-dispatches it every sweep; with NO cap, a single
+ * item thrashes indefinitely while the host is unstable (EI-1405 was re-dispatched
+ * 8× — every attempt orphaned by the next restart — and NEVER reached a terminal
+ * outcome, burning a dispatch slot the whole time). After this many host-restart
+ * recoveries inside {@link ORPHAN_THRASH_WINDOW_MS}, the breaker trips: instead of
+ * re-dispatching, route the item to a human (`payload.needsHuman`, the same flag
+ * resolve-core sets for attempts-exhausted items — policy.ts honors it and drops
+ * the item from the auto-eligible pool). The source (bg-host recycle storm) is
+ * addressed separately (EI-1613/EI-1607); this is the residual backstop so a doomed
+ * item can't loop forever once the source regresses.
+ */
+export const HOST_RESTART_REDISPATCH_CAP = 3;
+/** Window over which host-restart recoveries are counted toward the cap. */
+export const ORPHAN_THRASH_WINDOW_MS = 6 * 60 * 60 * 1000; // 6h — spans a typical instability burst
+
+/**
  * Env-outage detection (D-004 @ relight-self-learning-edges-2026-06-14): when the
  * fleet's shared credential pool is exhausted (rate-limit / weekly-limit / auth),
  * EVERY dispatch dies — and the ones the back-edge couldn't tag (durable fire lost,
@@ -278,11 +295,18 @@ function isMissingLedgerTable(e: unknown): boolean {
 export interface OrphanRecoverDeps {
   releaseClaim: (id: string) => Promise<unknown>;
   rollbackAttempt: (id: string, attempts: number) => Promise<unknown>;
+  /**
+   * EI-1689: the host-restart re-dispatch breaker has tripped for this item — route
+   * it to a human instead of re-dispatching (default sets `payload.needsHuman`, which
+   * the policy honors to drop it from the auto-eligible pool).
+   */
+  escalateThrash: (id: string) => Promise<unknown>;
 }
 
 const defaultRecover: OrphanRecoverDeps = {
   releaseClaim: releaseIssue,
   rollbackAttempt: (id, attempts) => mergeIssuePayload(id, { implementAttempts: attempts }),
+  escalateThrash: (id) => mergeIssuePayload(id, { needsHuman: true }),
 };
 
 /**
@@ -319,14 +343,31 @@ export async function collectOrphanedDispatchSignals(
   const nowIso = new Date(nowMs).toISOString();
   const marked: ImprovementDispatchRow[] = [];
   let recovered = 0;
+  let thrashEscalated = 0;
   for (const row of toMark) {
     const hostRestart = isHostRestartVictim(row, bootMs);
+    // EI-1689: count this item's PRIOR host-restart recoveries in the window — each
+    // recovery cycle leaves one terminal `host-restart-recovery` row, and `rows`
+    // (≤500, ~10d) comfortably spans the 6h window. The current row is still OPEN
+    // (in toMark), so it is not yet counted; the breaker trips on the cap-th cycle.
+    const priorRestartRecoveries = hostRestart
+      ? rows.filter(
+          (r) =>
+            r.itemId === row.itemId &&
+            r.resolvedBy === 'host-restart-recovery' &&
+            r.resolvedAt != null &&
+            nowMs - Date.parse(r.resolvedAt) <= ORPHAN_THRASH_WINDOW_MS,
+        ).length
+      : 0;
+    const thrashTripped = hostRestart && priorRestartRecoveries >= HOST_RESTART_REDISPATCH_CAP;
     const ok = hostRestart
       ? await markDispatchOrphaned(
           row.id,
           'host-restart-recovery',
           `host restarted mid-dispatch (fired ${row.firedAt}, before process boot) — worker killed; ` +
-            `claim released + attempt rolled back for re-dispatch (EI-403 Option B)`,
+            (thrashTripped
+              ? `re-dispatch cap (${HOST_RESTART_REDISPATCH_CAP} in ${Math.round(ORPHAN_THRASH_WINDOW_MS / 3.6e6)}h) exceeded — routed to human, NOT re-dispatched (EI-1689 thrash breaker)`
+              : `claim released + attempt rolled back for re-dispatch (EI-403 Option B)`),
         )
       : await markDispatchOrphaned(row.id);
     if (!ok) continue;
@@ -338,9 +379,17 @@ export async function collectOrphanedDispatchSignals(
     });
     if (hostRestart) {
       try {
+        // Always release the dead worker's claim (cleanup). Then EITHER re-dispatch
+        // (roll the attempt back) OR — if the breaker tripped — route to a human so
+        // the item drops out of the auto-eligible pool instead of thrashing forever.
         await recover.releaseClaim(row.itemId);
-        await recover.rollbackAttempt(row.itemId, Math.max(0, (row.attempt ?? 1) - 1));
-        recovered += 1;
+        if (thrashTripped) {
+          await recover.escalateThrash(row.itemId);
+          thrashEscalated += 1;
+        } else {
+          await recover.rollbackAttempt(row.itemId, Math.max(0, (row.attempt ?? 1) - 1));
+          recovered += 1;
+        }
       } catch (e) {
         console.warn(
           `[orphaned-dispatch] host-restart recovery failed for ${row.itemId}:`,
@@ -356,6 +405,10 @@ export async function collectOrphanedDispatchSignals(
   const notes: string[] = [];
   if (marked.length) notes.push(`marked ${marked.length} open dispatch(es) orphaned (worker presumed dead)`);
   if (recovered) notes.push(`recovered ${recovered} host-restart victim(s) (claim released + attempt rolled back)`);
+  if (thrashEscalated)
+    notes.push(
+      `routed ${thrashEscalated} thrashing item(s) to human — host-restart re-dispatch cap (${HOST_RESTART_REDISPATCH_CAP}) exceeded (EI-1689)`,
+    );
   if (envOutage) notes.push('lane env-outage detected — cause-unknown orphans suppressed (EI-536 noise-loop guard)');
   return { signals, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }

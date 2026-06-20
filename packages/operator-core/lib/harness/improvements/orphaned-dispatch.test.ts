@@ -282,7 +282,11 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     ]);
     const releaseClaim = vi.fn(async () => null);
     const rollbackAttempt = vi.fn(async () => null);
-    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs, recover: { releaseClaim, rollbackAttempt } });
+    const escalateThrash = vi.fn(async () => null);
+    const result = await collectOrphanedDispatchSignals('ws-1', {
+      bootMs,
+      recover: { releaseClaim, rollbackAttempt, escalateThrash },
+    });
     expect(vi.mocked(markDispatchOrphaned)).toHaveBeenCalledWith(
       'd1',
       'host-restart-recovery',
@@ -290,7 +294,56 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     );
     expect(releaseClaim).toHaveBeenCalledWith('EI-1');
     expect(rollbackAttempt).toHaveBeenCalledWith('EI-1', 1); // attempt 2 → rolled back to 1
+    expect(escalateThrash).not.toHaveBeenCalled(); // only 1 victim — well under the cap
     expect(result.note).toMatch(/recovered 1 host-restart victim/);
+  });
+
+  it('EI-1689: trips the re-dispatch breaker after the cap — routes to human, does NOT re-dispatch', async () => {
+    const bootMs = NOW - 0.5 * 3_600_000; // booted 30 min ago
+    vi.mocked(markDispatchOrphaned).mockResolvedValue(true);
+    vi.mocked(readRecentDispatches).mockResolvedValue([
+      // the current OPEN victim (fired before boot) — its 4th host-restart cycle
+      row({ id: 'd4', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 4 }),
+      // 3 PRIOR host-restart recoveries for the SAME item, inside the 6h window → at the cap
+      row({ id: 'd3', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' }),
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(2), resolvedBy: 'host-restart-recovery' }),
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), resolvedBy: 'host-restart-recovery' }),
+    ]);
+    const releaseClaim = vi.fn(async () => null);
+    const rollbackAttempt = vi.fn(async () => null);
+    const escalateThrash = vi.fn(async () => null);
+    const result = await collectOrphanedDispatchSignals('ws-1', {
+      bootMs,
+      recover: { releaseClaim, rollbackAttempt, escalateThrash },
+    });
+    expect(releaseClaim).toHaveBeenCalledWith('EI-1'); // dead worker's claim still cleaned up
+    expect(escalateThrash).toHaveBeenCalledWith('EI-1'); // routed to human
+    expect(rollbackAttempt).not.toHaveBeenCalled(); // NOT re-dispatched
+    expect(result.note).toMatch(/routed 1 thrashing item/);
+    expect(vi.mocked(markDispatchOrphaned)).toHaveBeenCalledWith(
+      'd4',
+      'host-restart-recovery',
+      expect.stringMatching(/re-dispatch cap .* exceeded/),
+    );
+  });
+
+  it('EI-1689: does NOT trip the breaker below the cap — re-dispatches normally', async () => {
+    const bootMs = NOW - 0.5 * 3_600_000;
+    vi.mocked(markDispatchOrphaned).mockResolvedValue(true);
+    vi.mocked(readRecentDispatches).mockResolvedValue([
+      row({ id: 'd3', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 3 }), // current open victim (3rd cycle)
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' }),
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(2), resolvedBy: 'host-restart-recovery' }),
+    ]);
+    const releaseClaim = vi.fn(async () => null);
+    const rollbackAttempt = vi.fn(async () => null);
+    const escalateThrash = vi.fn(async () => null);
+    await collectOrphanedDispatchSignals('ws-1', {
+      bootMs,
+      recover: { releaseClaim, rollbackAttempt, escalateThrash },
+    });
+    expect(rollbackAttempt).toHaveBeenCalledWith('EI-1', 2); // attempt 3 → rolled back to 2 (re-dispatched)
+    expect(escalateThrash).not.toHaveBeenCalled(); // 2 prior recoveries < cap of 3
   });
 
   it('a host-restart victim a late resolve beat us to (mark false) is NOT recovered', async () => {
@@ -299,9 +352,11 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     vi.mocked(markDispatchOrphaned).mockResolvedValue(false);
     const releaseClaim = vi.fn(async () => null);
     const rollbackAttempt = vi.fn(async () => null);
-    await collectOrphanedDispatchSignals('ws-1', { bootMs, recover: { releaseClaim, rollbackAttempt } });
+    const escalateThrash = vi.fn(async () => null);
+    await collectOrphanedDispatchSignals('ws-1', { bootMs, recover: { releaseClaim, rollbackAttempt, escalateThrash } });
     expect(releaseClaim).not.toHaveBeenCalled();
     expect(rollbackAttempt).not.toHaveBeenCalled();
+    expect(escalateThrash).not.toHaveBeenCalled();
   });
 
   it('skips with a NOTE (not an error) while migration 238 is not applied — deploy ordering must not self-escalate', async () => {

@@ -11,15 +11,23 @@
  * did not exist. It exists now.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { getBuildInfo } from '../../../build-info';
 
 export default defineTool({
   method: 'GET',
   path: '/health',
   auth: 'public',
   handler() {
+    // WI-265: expose the running checkout's sha + version so launcher↔server
+    // deploy-skew is DIAGNOSABLE (the psu-launcher runs the staging tree but
+    // calls :3070 = the green-release checkout). Cached after the first resolve,
+    // so the zero-dependency liveness contract holds; sha is null if unresolved.
+    const { sha, version } = getBuildInfo();
     return Response.json({
       ok: true,
       service: 'papercusp-operator',
+      sha,
+      version,
       ts: new Date().toISOString(),
     });
   },

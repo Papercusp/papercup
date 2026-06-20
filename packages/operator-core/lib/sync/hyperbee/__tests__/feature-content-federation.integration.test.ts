@@ -62,6 +62,10 @@ import { drainOutboxOnce } from '../outbox-drain';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
 import { buildHarnessFeaturesProjection } from '../projections/harness-features';
 import { buildIssuesProjection } from '../projections/issues';
+// WI-261 Prong A: the REAL per-harness scoped apply (with the harness_slug guard +
+// the hive-home remap set) — NOT the simplified buildPeerApply — so the slug-mismatch
+// drop is exercised exactly as production applies it.
+import { buildHarnessProjectionApply } from '../projections/register-all';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -187,7 +191,7 @@ const FRAMEWORK_ROLES_DDL = `
  * migration-103 BEFORE-INSERT fill trigger stamps the SAME workspace_id the
  * booted harness drains on (otherwise the drain's `workspace_id` filter misses).
  */
-async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
+async function setupPeerSchema(sql: postgres.Sql, memberSlug: string = HARNESS_SLUG): Promise<void> {
   await sql.unsafe(FRAMEWORK_ROLES_DDL);
 
   // The two consolidated tables — full column set the projections write, plus
@@ -265,10 +269,14 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   `);
 
   // Map the harness slug → the workspace_id the booted handle drains on, so the
-  // migration-103 fill trigger stamps the matching value.
+  // migration-103 fill trigger (fill_workspace_id_from_projects, keyed by slug)
+  // stamps the matching value and the drain's `workspace_id` filter matches.
+  // `memberSlug` defaults to HARNESS_SLUG (the shared-slug tests); the slug-mismatch
+  // case (WI-261) passes each peer's DISTINCT member slug so its own writes resolve
+  // the workspace_id and drain onto its own log.
   await sql`
     INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id, created_ts, updated_ts)
-    VALUES ('p-fed', 'Fed', 'active', ${HARNESS_SLUG}, ${WORKSPACE_ID}, 0, 0)
+    VALUES ('p-fed', 'Fed', 'active', ${memberSlug}, ${WORKSPACE_ID}, 0, 0)
   `;
 
   // Apply the REAL send-side migrations verbatim (102 outbox+capture trigger,
@@ -355,6 +363,20 @@ async function countOutbox(sql: postgres.Sql, table: string, key: string): Promi
      WHERE table_name = ${table} AND key = ${key}
   `;
   return Number(rows[0]?.n ?? 0);
+}
+
+/** Slug-parameterized `readFeature` — the WI-261 case reads a feature row under a
+ *  GIVEN member slug (peers no longer share one slug, so the hardcoded-HARNESS_SLUG
+ *  variant above can't address B's projection scope). */
+async function readFeatureForSlug(sql: postgres.Sql, slug: string, featureId: string) {
+  const rows = await sql<
+    Array<{ feature_id: string; title: string | null; status: string | null; origin: string; workspace_id: string }>
+  >`
+    SELECT feature_id, title, status, origin, workspace_id
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${slug} AND feature_id = ${featureId}
+  `;
+  return rows[0];
 }
 
 interface BootedPeer {
@@ -719,6 +741,226 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       const drained2 = await drainOutboxOnce(handleA, dbA.sql);
       expect(drained2, 'a write after the re-key must still drain onto the kept own log').toBeGreaterThanOrEqual(1);
       expect(handleA.ownLog.length).toBeGreaterThan(lenBefore);
+    },
+    60_000,
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // WI-261 Prong A — REPRODUCES WI-259: a member-harness FEATURE written on peer
+  // A does NOT federate-and-apply to peer B when B's member harness has a
+  // DIFFERENT slug than A's. This is the from-repo join shape: the owner A boots a
+  // member harness slug `hive-repo`, the joiner B joins via from-repo and gets the
+  // slug `joined-hive-repo`, and BOTH ride the SAME shared hive topic (here a
+  // single shared `BINDING`, exactly as a `hive:<pubkey>` topic is shared
+  // independent of each peer's member slug — see derive-swarm-topic.ts).
+  //
+  // THE SLUG-MISMATCH MECHANISM (root cause CONFIRMED — do not re-investigate):
+  //   - `buildHarnessProjectionApply(opts)` (register-all.ts:236) takes a
+  //     `hiveHomeSlug`, but in `buildHarnessProjections` (register-all.ts:171-174)
+  //     ONLY the hive-home-grained projections (hive_settings, hive_members,
+  //     hive_policy, hive_reports, hive_pending_joins, hive_epoch_keys) rebind to
+  //     `hiveHomeSlug`. The ~16 OTHERS — INCLUDING harness_features — STAY scoped
+  //     to the member `harnessSlug`.
+  //   - So A's feature op carries `harness_slug = 'hive-repo'` (A's member slug);
+  //     B's features projection is scoped to `harnessSlug = 'joined-hive-repo'`;
+  //     the writeToPg slug guard (`if (row.harness_slug !== opts.harnessSlug)
+  //     return;`, harness-features.ts:154) silently drops A's op at the APPLY
+  //     layer — even though the op WAS admitted + replicated to B.
+  //
+  // We wire each peer's apply with the REAL `buildHarnessProjectionApply` (its
+  // per-peer `sql` seam + `hiveHomeSlug` = the shared hive-home), NOT the
+  // simplified `buildPeerApply`, so the real harness_slug guard + the surgical
+  // hive-home remap set are exercised exactly as production applies them.
+  //
+  // `it.fails`: today the DESIRED assertion (A's feature lands in B's PG) FAILS —
+  // documenting the broken behavior while staying CI-green. It FLIPS RED (forcing
+  // its removal) once the fix lands: features join the hive-home remap set
+  // (register-all.ts:171-174) AND the write-path stamps the hive-home scope on the
+  // feature op so the home-scoped projection accepts it.
+  // ──────────────────────────────────────────────────────────────────────────
+  it.fails(
+    'WI-261 Prong A (repro WI-259): a feature on A does NOT reach B when B has a different member slug',
+    async () => {
+      // The from-repo join shape: A's member slug ≠ B's member slug, SAME hive-home.
+      const A_SLUG = 'hive-repo'; // owner A's member harness slug
+      const B_SLUG = 'joined-hive-repo'; // joiner B's from-repo member slug
+      const HIVE_HOME = 'hive-repo-home'; // the SHARED hive-home slug both scope to
+
+      // ── Two SEPARATE databases — each seeded with ITS OWN member slug → workspace
+      //    so each peer's local write resolves workspace_id and drains onto its log. ──
+      const dbA: FreshPgDb = await createFreshPgDb('wi261A');
+      cleanups.push(() => dbA.cleanup());
+      const dbB: FreshPgDb = await createFreshPgDb('wi261B');
+      cleanups.push(() => dbB.cleanup());
+      await setupPeerSchema(dbA.sql, A_SLUG);
+      await setupPeerSchema(dbB.sql, B_SLUG);
+
+      // ── Local testnet DHT + two real swarms (mirror the acceptance test). ──
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const idA = makeIdentityOverride('alice', 42, 'kc-alice');
+      const idB = makeIdentityOverride('bob', 7, 'kc-bob');
+      const swarmA = makeSwarm(testnet.bootstrap);
+      const swarmB = makeSwarm(testnet.bootstrap);
+      const rootA = makeWorkspaceRoot('wi261-A-');
+      const rootB = makeWorkspaceRoot('wi261-B-');
+
+      let handleA: BootedHarnessHandle | undefined;
+      let handleB: BootedHarnessHandle | undefined;
+      let applyA: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      let applyB: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+
+      // ── Boot A: member slug A_SLUG; REAL scoped apply bound to A's DB + hive-home. ──
+      handleA = await bootHarnessSubstrate({
+        workspaceRoot: rootA,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: A_SLUG,
+        swarmBinding: BINDING, // SHARED binding → SHARED topic, independent of member slug
+        swarmOverride: swarmA,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idB.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          // The REAL per-harness scoped apply (harness_slug guard + hive-home remap
+          // set), threading A's per-peer `sql` seam and the shared hive-home.
+          applyA ??= buildHarnessProjectionApply({
+            workspaceId: WORKSPACE_ID,
+            harnessSlug: A_SLUG,
+            hiveHomeSlug: HIVE_HOME,
+            sql: dbA.sql,
+            ownLogKeyHex: handleA!.ownLog.keyHex,
+          });
+          return applyA(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idA.override,
+      });
+      cleanups.push(async () => {
+        await handleA?.close();
+        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug: A_SLUG });
+      });
+
+      // ── Boot B: DIFFERENT member slug B_SLUG; REAL scoped apply bound to B's DB. ──
+      handleB = await bootHarnessSubstrate({
+        workspaceRoot: rootB,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: B_SLUG,
+        swarmBinding: BINDING,
+        swarmOverride: swarmB,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idA.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyB ??= buildHarnessProjectionApply({
+            workspaceId: WORKSPACE_ID,
+            harnessSlug: B_SLUG, // B's features projection is scoped HERE…
+            hiveHomeSlug: HIVE_HOME, // …and only hive_* projections rebind to this.
+            sql: dbB.sql,
+            ownLogKeyHex: handleB!.ownLog.keyHex,
+          });
+          return applyB(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idB.override,
+      });
+      cleanups.push(async () => {
+        await handleB?.close();
+        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug: B_SLUG });
+      });
+
+      // Both joined the SAME topic despite different member slugs (topic ⟵ binding).
+      expect(handleA.swarm).not.toBeNull();
+      expect(handleB.swarm).not.toBeNull();
+      expect(handleA.swarm!.topicHex).toBe(handleB.swarm!.topicHex);
+
+      // ── A writes a member-harness FEATURE under A's slug → real trigger → outbox
+      //    → drain → A's own log. ──
+      await dbA.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${A_SLUG}, 'F-wi261', 'Mismatch-slug feature', 'from A', 'todo', 0, 'local', 3001, 3001, 3001)
+      `;
+      expect(await countOutbox(dbA.sql, 'harness_features_consolidated', 'F-wi261')).toBe(1);
+      // Sanity: not in B yet under EITHER slug (separate DBs; federation hasn't run).
+      expect(await readFeatureForSlug(dbB.sql, A_SLUG, 'F-wi261')).toBeUndefined();
+      expect(await readFeatureForSlug(dbB.sql, B_SLUG, 'F-wi261')).toBeUndefined();
+
+      const drainedA = await drainOutboxOnce(handleA, dbA.sql);
+      expect(drainedA, "A's F-wi261 was not drained to its log").toBeGreaterThanOrEqual(1);
+
+      // ── PROVE the op reaches B's APPLY layer (so the test can't pass for the wrong
+      //    reason). Drive merges until B has ADMITTED A's remote log: `handleB.admitted`
+      //    is keyed by log_core_key (= ownLog.keyHex), seeded with B's own log + every
+      //    read-admitted remote. Admission is the ADMIT layer; once it holds, A's op
+      //    IS being fed to B's apply, so any failure to land is the harness_slug guard
+      //    (the APPLY layer) dropping it — the WI-259 drop this test targets.
+      //
+      //    NB: under `it.fails`, ANY throw makes the case pass, so admission CANNOT be
+      //    a plain `expect` inside the feature poll (an admit miss would mask the apply
+      //    drop and pass for the wrong reason). We instead drive admission to a BOOLEAN
+      //    here and gate the feature poll on it — if B never admits A (an admit-layer
+      //    regression), `bAdmittedA` stays false, the feature poll is skipped, and the
+      //    final assertion below fails with the admit-specific message (still a `.fails`
+      //    pass, but the message names the wrong-reason case so a maintainer sees it).
+      const bAdmittedA =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleA!.mergeNow(), handleB!.mergeNow()]);
+            return handleB!.admitted.has(handleA!.ownLog.keyHex) ? true : undefined;
+          },
+          { timeoutMs: 15_000, intervalMs: 250 },
+        )) ?? false;
+
+      // ── Now poll for the DESIRED outcome: A's feature lands in B's PG. We look under
+      //    EVERY plausible slug-scope — A_SLUG (the slug the op physically carries),
+      //    B_SLUG, and HIVE_HOME (where a future fix would write the row) — so the
+      //    assertion flips green the moment ANY correct apply lands it. ──
+      const landedOnB = bAdmittedA
+        ? await pollUntil(
+            async () => {
+              await Promise.all([handleA!.mergeNow(), handleB!.mergeNow()]);
+              return (
+                (await readFeatureForSlug(dbB.sql, A_SLUG, 'F-wi261')) ??
+                (await readFeatureForSlug(dbB.sql, B_SLUG, 'F-wi261')) ??
+                (await readFeatureForSlug(dbB.sql, HIVE_HOME, 'F-wi261'))
+              );
+            },
+            { timeoutMs: 15_000, intervalMs: 250 },
+          )
+        : undefined;
+
+      // Surface the admit-layer precondition explicitly (the wrong-reason guard).
+      expect(
+        bAdmittedA,
+        "B never admitted A's remote log — this would be an ADMIT-layer failure, NOT the " +
+          'WI-259 APPLY-layer drop this test targets (the case is passing for the wrong reason)',
+      ).toBe(true);
+
+      // DESIRED behavior (fails TODAY — the whole point of `it.fails`): A's feature
+      // reached B's apply (admitted above) but was dropped by B's features-projection
+      // harness_slug guard (B scoped to B_SLUG ≠ the op's A_SLUG). When features join
+      // the hive-home remap set (register-all.ts:171-174) + the write-path stamps the
+      // hive-home scope on the feature op, this assertion passes and `it.fails` flips RED.
+      expect(
+        landedOnB,
+        "A's feature F-wi261 never reached B's PG — WI-259: features are NOT in the " +
+          'hive-home remap set, so B (scoped to its differing member slug) drops A’s op',
+      ).toBeTruthy();
+      expect(landedOnB).toMatchObject({
+        feature_id: 'F-wi261',
+        title: 'Mismatch-slug feature',
+        status: 'todo',
+        origin: 'remote',
+      });
     },
     60_000,
   );

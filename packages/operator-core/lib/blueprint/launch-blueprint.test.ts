@@ -42,6 +42,24 @@ vi.mock('../owner-steering', () => ({ getOwnerSteering: (...a: unknown[]) => get
 const readAgentConfig = vi.fn(async () => ({ models: {}, tiers: [] as unknown[], tierCeilings: {} as Record<string, string> }));
 vi.mock('../agent-config', () => ({ readAgentConfig: (...a: unknown[]) => readAgentConfig(...a) }));
 
+// WI-269 (durable-spawn workspace-pin): resolveLaunchTarget must resolve a `*`
+// workspace to a concrete one and never bake `ws=*` into the /invoke URL (a persisted
+// durable replay would 400 unknown_workspace → zombie). Stub the harness→workspace
+// resolver + the registry checks that resolution path uses. importActual keeps every
+// other export real (the helper dynamic-imports both modules).
+const resolveWorkspaceForHarnessSlug = vi.fn(async (_slug: string): Promise<string | null> => 'ws_resolved');
+vi.mock('../harness-core', async (orig) => ({
+  ...(await (orig as () => Promise<typeof import('../harness-core')>)()),
+  resolveWorkspaceForHarnessSlug: (...a: unknown[]) => resolveWorkspaceForHarnessSlug(...(a as [string])),
+}));
+const stubActiveWorkspaceId = vi.fn((): string => 'ws_test');
+const stubIsKnownWorkspace = vi.fn((id: string) => id === 'ws_resolved' || id === 'ws_test');
+vi.mock('../workspace-registry', async (orig) => ({
+  ...(await (orig as () => Promise<typeof import('../workspace-registry')>)()),
+  activeWorkspaceId: () => stubActiveWorkspaceId(),
+  isKnownWorkspace: (id: string) => stubIsKnownWorkspace(id),
+}));
+
 afterEach(() => {
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
@@ -50,6 +68,11 @@ afterEach(() => {
   computeQueenWakeBrief.mockResolvedValue('QUEEN-BRIEF::floor+carrynote');
   getOwnerSteering.mockClear();
   readAgentConfig.mockClear();
+  resolveWorkspaceForHarnessSlug.mockClear();
+  resolveWorkspaceForHarnessSlug.mockResolvedValue('ws_resolved');
+  stubActiveWorkspaceId.mockClear();
+  stubActiveWorkspaceId.mockReturnValue('ws_test');
+  stubIsKnownWorkspace.mockClear();
   vi.unstubAllEnvs();
 });
 
@@ -85,6 +108,31 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       expect(target.url).toContain('/api/harness/papercup/invoke');
       expect(target.url).toContain('ws=ws_test');
     }
+  });
+
+  // WI-269: a system / cross-workspace routine (e.g. improvement-implement) builds a
+  // launch with ctx.workspaceId='*'. The /invoke URL is persisted in the durable-spawn
+  // DBOS input, so `ws=*` would 400 unknown_workspace on a post-restart replay → zombie.
+  it('WI-269: resolves a `*` workspace to the harness workspace — never persists ws=*', async () => {
+    const target = await resolveLaunchTarget('coding', { installSlug: 'somehive', workspaceId: '*' });
+    expect(resolveWorkspaceForHarnessSlug).toHaveBeenCalledWith('somehive');
+    expect(target.url).toContain('ws=ws_resolved');
+    expect(target.url).not.toContain('ws=*');
+    expect(target.url).not.toContain('ws=%2A');
+  });
+
+  it('WI-269: a concrete workspace passes through unchanged (no resolver call)', async () => {
+    const target = await resolveLaunchTarget('coding', { installSlug: 'papercup', workspaceId: 'ws_test' });
+    expect(target.url).toContain('ws=ws_test');
+    expect(resolveWorkspaceForHarnessSlug).not.toHaveBeenCalled();
+  });
+
+  it('WI-269: fails loud when `*` is unresolvable (no harness ws + host pin is `*`) — beats a silent replay zombie', async () => {
+    resolveWorkspaceForHarnessSlug.mockResolvedValueOnce(null);
+    stubActiveWorkspaceId.mockReturnValueOnce('*');
+    await expect(
+      resolveLaunchTarget('coding', { installSlug: 'nope', workspaceId: '*' }),
+    ).rejects.toThrow(/WI-269/);
   });
 
   it('buildLaunchSpawnRequest opts the implement worker INTO a fleet:tree row (EI-403 round-2)', async () => {

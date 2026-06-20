@@ -177,7 +177,17 @@ describe('computeReviewSignals', () => {
     expect(s.diff_empty).toBe(true);
     expect(s.tests_touched).toBe(false);
     expect(s.secret_suspected).toBe(false);
+    expect(s.diff_truncated).toBe(false);
     expect(s.files_changed).toBe(0);
+  });
+
+  it('flags diff_truncated only when the diff exceeds maxChars', () => {
+    const pr = makePr({ checks_state: 'success' });
+    expect(computeReviewSignals({ pr, diff: CLEAN_DIFF }).diff_truncated).toBe(false); // no maxChars
+    expect(computeReviewSignals({ pr, diff: CLEAN_DIFF, maxChars: 10 }).diff_truncated).toBe(true);
+    expect(computeReviewSignals({ pr, diff: CLEAN_DIFF, maxChars: 100000 }).diff_truncated).toBe(false);
+    // An empty diff is never "truncated".
+    expect(computeReviewSignals({ pr, diff: '', maxChars: 1 }).diff_truncated).toBe(false);
   });
 });
 
@@ -223,6 +233,22 @@ describe('applySafetyGuard — the honesty rail', () => {
     const g = applySafetyGuard(cleanRaw, s);
     expect(g.recommendation).toBe('approve');
     expect(g.risks).toContain(GUARD_RISK.no_tests);
+  });
+
+  it('truncation is a soft risk: flagged but does NOT downgrade approve', () => {
+    const s = computeReviewSignals({ pr: makePr({ checks_state: 'success' }), diff: CLEAN_DIFF, maxChars: 10 });
+    const g = applySafetyGuard(cleanRaw, s);
+    expect(g.recommendation).toBe('approve');
+    expect(g.risks).toContain(GUARD_RISK.truncated);
+  });
+
+  it('truncation does NOT weaken hard floors (secret in a truncated diff still rejects)', () => {
+    const secretDiff = '+++ b/c\n@@\n+const k = "AKIAIOSFODNN7EXAMPLE";';
+    const s = computeReviewSignals({ pr: makePr({ checks_state: 'success' }), diff: secretDiff, maxChars: 5 });
+    const g = applySafetyGuard(cleanRaw, s);
+    expect(g.recommendation).toBe('reject'); // secret floor still applies
+    expect(g.risks).toContain(GUARD_RISK.secret);
+    expect(g.risks).toContain(GUARD_RISK.truncated);
   });
 
   it('de-duplicates LLM + guard risks', () => {

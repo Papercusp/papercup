@@ -67,7 +67,7 @@ export interface HarnessFeatureRow {
   /**
    * WI-251 (findings-B B-002): content/lineage columns now FEDERATED — were
    * dropped by the mapper so a feature federated A→B landed with them NULL.
-   * verifier_*/audit_*/worked_by_history/current_wave stay LOCAL (each peer
+   * verifier_*, audit_*, worked_by_history, current_wave stay LOCAL (each peer
    * re-audits / local cursors). OPTIONAL on the wire (back-compat: ops before
    * this change lack them → writeToPg maps absent → the PG default/NULL; the
    * NOT-NULL cols see_also/needs_design/discarded_design_work default []/false).

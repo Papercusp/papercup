@@ -86,7 +86,7 @@ function captureSink() {
   return {
     appliedKeys,
     applyImpl: async (op: OpEnvelope): Promise<boolean> => {
-      appliedKeys.push(op.hbKey);
+      appliedKeys.push(op.hbKey!);
       return true;
     },
   };

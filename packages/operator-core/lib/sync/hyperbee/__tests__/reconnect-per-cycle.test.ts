@@ -153,7 +153,7 @@ class Peer {
   }
 
   featureKeys(): Set<string> {
-    return new Set(this.applied.filter((o) => o.table === FEATURE_TABLE).map((o) => o.hbKey));
+    return new Set(this.applied.filter((o) => o.table === FEATURE_TABLE).map((o) => o.hbKey!));
   }
 
   /** The latest-applied heartbeat ts this peer has seen for `presenceKey` (or -1). */

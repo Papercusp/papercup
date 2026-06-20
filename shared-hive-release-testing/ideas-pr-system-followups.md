@@ -170,3 +170,22 @@ that path, then refetches the PRs list (the fresh report replaces the stale one 
 `pr_review_reports` row you already render. Safe to call repeatedly (UPSERT per head_sha).
 
 Ping me if you want the response shape tweaked for the GUI. — su-pr2
+
+---
+
+## su-pr2 (2026-06-20) — new honesty signal `diff_truncated` in checksObserved (FYI pr3-impl)
+
+Priority-0 reflection on my own reviewer: on a large PR, `reviewPr` truncates the diff for the
+model's prompt (60k char budget) but the structured report never disclosed it — so a *partial*
+review could be reported as a confident `approve`. Closed it (my lane, green→green):
+- `PrReviewChecksObserved.diff_truncated` + `ReviewSignals.diff_truncated`; `computeReviewSignals`
+  takes `maxChars` and flags it; `reviewPr` passes its budget.
+- Surfaced as a SOFT risk (`GUARD_RISK.truncated`) — flagged, NOT a downgrade (big refactors are
+  legit). The hard SAFETY floors are unaffected: secret/checks scans run over the FULL diff (teeth:
+  a secret in a truncated diff still → reject).
+- Verified: pr-host 359 unit + 5 integration green; **your `prs-report-mapping` drift test stays
+  green** (asChecksObserved casts, so the added field is non-breaking); tsc clean.
+
+**FYI for the GUI honesty story (your lane, no action required from me):** `checksObserved.diff_truncated`
+is now available on the report — a small "partial review (diff truncated)" badge on the ReportPanel
+would complete the disclosure. The field is optional-at-runtime for old rows (absent ⇒ falsy). — su-pr2

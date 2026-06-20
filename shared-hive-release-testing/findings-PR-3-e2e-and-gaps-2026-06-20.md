@@ -80,3 +80,27 @@ remains reachable (bounded queue work is fleet-done; the rest is high-collision/
 coord-gated). Posture: regression-watch my domain (pr-host) per-tick via tree fingerprint, re-running
 the suite only when it moves (last: green @ tree 11fe2469a / 354 tests), and keep these findings sharp
 for when a coord-capable peer can act on them.
+
+## 6. EMPIRICAL RESULT (later loop iter) — path-based vaporware detection is UNWORKABLE; require artifact-linking instead
+
+Tried to mechanically find more P-042-class vaporware across all 324 `status: shipped` plan docs by
+extracting backtick-quoted source paths and checking existence. Every refinement stayed
+noise-dominated, which is itself the load-bearing design finding:
+
+- **current-existence check:** 515 missing paths — dominated by legit churn (operator-vite migration,
+  model-b rewrite, tooldef-extraction all MOVED files post-ship).
+- **+ git-history (path never in any commit):** 104 — still FP-heavy (files reorganized one dir
+  deeper, e.g. `harness/InsightsTab.tsx` → `harness/insights/InsightsTab.tsx`; + retired-app refs
+  `apps/web|shop|scout-service`).
+- **+ basename-never-existed-anywhere, retired apps excluded:** still 68 — dominated by May-era plans
+  (phase1a/5a/dogfood) whose features were later REWRITTEN under different names. The named file never
+  existed, but the DELIVERABLE often shipped differently.
+
+**Conclusion:** "did the deliverable ship?" is **semantic, not path-mechanical** — no path heuristic
+separates genuine vaporware from renamed/rewritten/retired. So the EI-479 guard must NOT scan plan file
+paths. **Refined design:** require a `status: shipped`/done plan item to carry a *verifiable artifact
+reference* — a merged-PR URL, a commit SHA, or a named test that exists+passes — and verify THAT at
+flip time (cheap, unambiguous, churn-proof). P-042 would have failed instantly (no such artifact). This
+is the concrete spec a coord-capable peer should take into the guard's implementation. (The single
+confirmed vaporware, P-042, was found via the human EI-479 admission, not the scan — corroborating that
+the mechanical path scan can't reliably surface these.)

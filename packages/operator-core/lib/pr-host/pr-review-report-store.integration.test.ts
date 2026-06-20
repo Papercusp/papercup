@@ -40,6 +40,7 @@ function report(over: Partial<PrReviewReport> = {}): PrReviewReport {
       tests_touched: true,
       secret_suspected: false,
       diff_empty: false,
+      diff_truncated: false,
       files_changed: 2,
     },
     ...over,

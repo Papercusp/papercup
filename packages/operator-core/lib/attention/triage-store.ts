@@ -81,3 +81,24 @@ export async function readTriageByWorkspace(workspaceId?: string): Promise<Map<s
   }
   return map;
 }
+
+/**
+ * EI-1687 — the set of AttentionItem ids the operator triaged to the "handled"
+ * tier (action `downgrade` or `resolve`). curation:feed + the Queen wake brief
+ * exclude these so a handled escalation does not re-surface as "open" every wake
+ * (the re-downgrade-thrash bug). BEST-EFFORT: a missing table / PG offline
+ * degrades to an empty set (no suppression — fail toward showing, never hide on a
+ * read error), so the salient surfaces never break on this overlay.
+ */
+export async function readTriagedHandledItemIds(workspaceId?: string): Promise<Set<string>> {
+  const handled = new Set<string>();
+  try {
+    const map = await readTriageByWorkspace(workspaceId);
+    for (const [itemId, rec] of map) {
+      if (rec.action === 'downgrade' || rec.action === 'resolve') handled.add(itemId);
+    }
+  } catch {
+    // best-effort overlay — degrade to "no triage applied"
+  }
+  return handled;
+}

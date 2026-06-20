@@ -170,6 +170,24 @@ describe('reviewPr', () => {
     assertNeverPosted(host);
   });
 
+  it('flags diff_truncated (soft) when the diff exceeds maxDiffChars', async () => {
+    const host = makeHost(CLEAN_DIFF);
+    const res = await reviewPr({
+      host,
+      pr: makePr(),
+      runLlm: llmReturning(approveJson),
+      model: 'm',
+      maxDiffChars: 10, // force truncation
+    });
+    expect(res.ok).toBe(true);
+    expect(res.report.checksObserved.diff_truncated).toBe(true);
+    expect(res.report.recommendation).toBe('approve'); // soft risk, not a downgrade
+    expect(res.report.risks).toContain(
+      'The diff was too large to review in full — the recommendation covers only the visible portion.',
+    );
+    assertNeverPosted(host);
+  });
+
   it('uses a pre-fetched diff without calling host.getPrDiff', async () => {
     const host = makeHost(CLEAN_DIFF);
     await reviewPr({ host, pr: makePr(), diff: CLEAN_DIFF, runLlm: llmReturning(approveJson), model: 'm' });

@@ -4,7 +4,9 @@ import { loadWorkingSet } from '../load-working-set';
 // Cast to the injectable runQuery field's generic signature (the bare vi.fn is a 0-arg,
 // non-generic Mock that doesn't assign to `<T>(query, params) => Promise<T[]>`).
 function fakeRunQuery(rows: unknown[]) {
-  return vi.fn(async () => rows) as unknown as <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
+  return vi.fn(async () => rows) as unknown as (<T = unknown>(query: string, params: unknown[]) => Promise<T[]>) & {
+    mock: { calls: unknown[][] };
+  };
 }
 
 describe('loadWorkingSet', () => {

@@ -161,16 +161,16 @@ class TestPeer {
   finalState(): Map<string, { ts: number; from: string }> {
     const state = new Map<string, { ts: number; from: string }>();
     for (const op of this.applied) {
-      const cur = state.get(op.hbKey);
-      if (!cur || op.ts >= cur.ts) {
-        state.set(op.hbKey, { ts: op.ts, from: (op.value as { from: string }).from });
+      const cur = state.get(op.hbKey!);
+      if (!cur || op.ts! >= cur.ts) {
+        state.set(op.hbKey!, { ts: op.ts!, from: (op.value as { from: string }).from });
       }
     }
     return state;
   }
 
   appliedKeys(): Set<string> {
-    return new Set(this.applied.map((op) => op.hbKey));
+    return new Set(this.applied.map((op) => op.hbKey!));
   }
 }
 

@@ -75,7 +75,7 @@ async function boot(workspaceRoot: string) {
     pendingRetryMs: 0,
     reverifyIntervalMs: 0,
     applyOverride: async (op: OpEnvelope) => {
-      appliedKeys.push(op.hbKey);
+      appliedKeys.push(op.hbKey!);
       return true;
     },
     loadRevokedOverride: loadRevoked,

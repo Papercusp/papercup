@@ -72,36 +72,36 @@ const BOOT_PREREQS_DDL = `
 
 /**
  * Federated tables with a workspace_id column that DO NOT enforce workspace RLS
- * in the migrated schema, EACH with the reason / status.
+ * in the migrated schema, EACH with the reason.
  *
- * ⚠️ The entries below are NOT confirmed-safe exemptions — they are CANDIDATE
- * TENANCY GAPS this guard surfaced on first run (tagged `REVIEW(findings-rls-
- * coverage)`), allow-listed only so the guard is GREEN/CI-safe while an owner
- * decides. The discovery run found 8 federated, workspace-scoped tables with
- * `relrowsecurity = false` while ~85 sibling tables (incl.
- * harness_features_consolidated) DO carry the canonical workspace policy in
- * 000-baseline — most starkly, harness_features_consolidated HAS RLS but its
- * sibling harness_issues_consolidated does NOT. Whether each is a real
- * cross-tenant exposure depends on the access path (is it read via the
- * non-BYPASSRLS `harness_app` role, and do those queries always filter
- * workspace_id explicitly?), which is the open question for review. Resolve per
- * `shared-hive-release-testing/findings-rls-coverage.md`: federate the workspace
- * policy, or confirm intentionally-unprotected and drop the REVIEW tag. Removing
- * an entry that gains RLS is enforced by the stale-exemption test below.
+ * These 8 are NOT unprotected — investigation (findings-rls-coverage.md) found
+ * they use the codebase's OTHER isolation model: explicit `workspace_id = <active>`
+ * predicates in their application reads (verified in issues-engineer.ts,
+ * conversations-store.ts, plan-items/assignments.ts, coordination/messages.ts),
+ * rather than RLS + `withWorkspace()`. That is a deliberate, working strategy. The
+ * residual gap is DEFENSE-IN-DEPTH only: with no RLS backstop, isolation depends on
+ * every query remembering the filter — and at least one (topics-feed.ts ObjectRef
+ * label resolver) does not (reads engineer_issues / coord_conversations by ref with
+ * no workspace predicate; low severity — title+state, same-workspace refs in
+ * practice). So each entry below is "isolated by explicit filtering; no RLS
+ * backstop", a documented decision — NOT a confirmed leak. The guard's value is
+ * forward-looking: a NEW federated table with NEITHER RLS NOR a documented
+ * explicit-filtering entry fails, forcing the author to pick a model on purpose.
+ * The stale-exemption test removes an entry the moment a table gains RLS.
  */
 const RLS_EXEMPT: Record<string, string> = {
   harness_issues_consolidated:
-    'REVIEW(findings-rls-coverage): sibling harness_features_consolidated HAS the workspace policy ' +
-    '(000-baseline) — issues does not. Strongest asymmetry smell; likely a real gap.',
-  coord_conversations: 'REVIEW(findings-rls-coverage): coordination table, workspace-scoped, no RLS in migrated schema.',
-  coord_event_log: 'REVIEW(findings-rls-coverage): coordination event log, workspace-scoped, no RLS in migrated schema.',
-  coord_threads: 'REVIEW(findings-rls-coverage): coordination threads, workspace-scoped, no RLS in migrated schema.',
-  coord_thread_posts: 'REVIEW(findings-rls-coverage): coordination thread posts, workspace-scoped, no RLS in migrated schema.',
-  engineer_issues: 'REVIEW(findings-rls-coverage): engineer issue lane, workspace-scoped, no RLS in migrated schema.',
-  plan_item_assignments: 'REVIEW(findings-rls-coverage): plan-item assignment lane, workspace-scoped, no RLS in migrated schema.',
+    'Isolated by explicit workspace_id filtering, NOT RLS (sibling harness_features_consolidated uses ' +
+    'RLS — model asymmetry, not a leak). No RLS backstop; defense-in-depth gap. See findings-rls-coverage.md.',
+  coord_conversations: 'Isolated by explicit workspace_id filtering (conversations-store.ts WHERE workspace_id=ws). No RLS backstop.',
+  coord_event_log: 'Isolated by explicit workspace_id filtering (coordination/messages.ts WHERE workspace_id=coordWorkspaceId). No RLS backstop.',
+  coord_threads: 'Isolated by explicit workspace_id filtering (coordination store). No RLS backstop.',
+  coord_thread_posts: 'Isolated by explicit workspace_id filtering (coordination store). No RLS backstop.',
+  engineer_issues: 'Isolated by explicit workspace_id filtering (issues-engineer.ts WHERE workspace_id=issuesScopeWorkspace). No RLS backstop.',
+  plan_item_assignments: 'Isolated by explicit workspace_id filtering (plan-items/assignments.ts WHERE workspace_id=ws). No RLS backstop.',
   contributor_usage_events:
-    'REVIEW(findings-rls-coverage): append-only usage ledger; workspace_id added late (mig-301, which notes it ' +
-    '"does not actually federate"). Lower risk but still unprotected; confirm intentional.',
+    'Append-only usage ledger; workspace_id added late (mig-301, which notes it "does not actually federate"). ' +
+    'Lowest risk of the set; no RLS backstop.',
 };
 
 /** The workspace-isolation predicate every tenancy policy carries. */

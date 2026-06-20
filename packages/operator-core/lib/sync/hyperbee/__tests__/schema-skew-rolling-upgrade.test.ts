@@ -112,7 +112,7 @@ function put(hbKey: string, ts: number, schema_version: number): PeerLogOp {
 function captureSink() {
   const appliedKeys: string[] = [];
   const applyImpl = async (op: OpEnvelope): Promise<boolean> => {
-    appliedKeys.push(op.hbKey);
+    appliedKeys.push(op.hbKey!);
     return true;
   };
   return { appliedKeys, applyImpl };

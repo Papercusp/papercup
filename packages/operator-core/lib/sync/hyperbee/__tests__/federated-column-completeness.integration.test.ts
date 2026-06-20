@@ -127,17 +127,10 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     tzid: 'machine-local schedule timezone',
     template_slug: 'machine-local scheduled-template linkage',
     run_seq: 'machine-local scheduled-run sequence',
-    // REVIEW(findings-B B-002) — content-looking columns currently dropped; owner to confirm:
-    design_spec_id: 'REVIEW(findings-B): design linkage — a federated feature loses its design pointer on B',
-    design_status: 'REVIEW(findings-B): design-phase status not federated',
-    needs_design: 'REVIEW(findings-B): design gating flag not federated',
-    discarded_design_work: 'REVIEW(findings-B): design provenance not federated',
-    source_plan_slug: 'REVIEW(findings-B): plan→feature lineage lost on B (plans DO federate)',
-    source_plan_item_ids: 'REVIEW(findings-B): plan-item lineage lost on B',
-    see_also: 'REVIEW(findings-B): cross-feature references not federated',
-    wave: 'REVIEW(findings-B): promote-wave dispatch metadata not federated (sibling feature_order IS)',
-    deprecation_reason: 'REVIEW(findings-B): status federates but the reason for deprecation does not',
-    completion_ref: 'REVIEW(findings-B): completion artifact pointer not federated',
+    // WI-251 (findings-B B-002) RESOLVED 2026-06-20 (consensus su-328af/su-860d3):
+    // the 10 content/lineage columns formerly REVIEW-tagged here are now FEDERATED
+    // (toFeatureValue mapper + harness-features projection INSERT/UPSERT), so they
+    // are removed from NOT_FEDERATED and this test now asserts they cross A→B.
   },
   harness_issues_consolidated: {
     // Issues federate every content column — only PROVENANCE is local. (Empty.)

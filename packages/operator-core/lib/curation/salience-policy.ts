@@ -185,3 +185,37 @@ export function partition(
   surfaceNow.sort((a, b) => Number(b.verdict.urgent) - Number(a.verdict.urgent));
   return { surfaceNow, batch, hasUrgent };
 }
+
+/**
+ * EI-1687 — map a fleet signal to the AttentionItem id the operator triages it by
+ * (`inbox:triage`), so a downgrade/resolve can suppress it from the salient
+ * surfaces. Escalation-source signals (any severity/kind — `escalationKind`
+ * derives the kind, but the id is always `escalation:<msgId>`) surface on the
+ * inbox as the coord-escalation AttentionItem `coord-escalation:<msgId>`. Other
+ * signal kinds are not inbox-triageable through this mapping → `null` (untouched).
+ */
+export function attentionIdForSignal(signal: Pick<FleetSignal, 'id'>): string | null {
+  const ESC = 'escalation:';
+  if (signal.id.startsWith(ESC)) return `coord-escalation:${signal.id.slice(ESC.length)}`;
+  return null;
+}
+
+/**
+ * EI-1687 — drop signals the operator triaged to the "handled" tier (downgrade /
+ * resolve), so a handled escalation does not re-surface as "open" on curation:feed
+ * or the Queen wake brief every wake (the re-downgrade-thrash bug). PURE: the
+ * caller supplies `handled` (the triaged-handled AttentionItem ids, from
+ * `readTriagedHandledItemIds`). An empty set is a no-op. Only signals whose
+ * {@link attentionIdForSignal} is in `handled` are dropped — escalate/confirm
+ * (Decision-tier) triage rows are NOT in the set, so they still surface.
+ */
+export function dropTriagedHandledSignals(
+  signals: readonly FleetSignal[],
+  handled: ReadonlySet<string>,
+): FleetSignal[] {
+  if (handled.size === 0) return [...signals];
+  return signals.filter((s) => {
+    const attentionId = attentionIdForSignal(s);
+    return !(attentionId !== null && handled.has(attentionId));
+  });
+}
