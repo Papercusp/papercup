@@ -288,6 +288,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // every superuser session, so it ships as a reversible kill-switch the owner flips ON after
   // an attended :3170 verification (OFF = today's unscoped '*' superuser, byte-identical).
   FLAGS.SCOPED_SUPERUSER_CLAMP,
+  // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED Queen+Scout workspace-scoping
+  // gate. DARK because the per-hive→workspace re-key is a multi-part hot-path change to the live
+  // wake/learning loop (P-003 Queen A+B+C + P-002 Scout) not yet built end-to-end + canary'd.
+  // OFF ⇒ today's per-hive brains, byte-identical. Owner flips ON post-canary.
+  FLAGS.WORKSPACE_COORDINATION,
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the engine-managed-loop
   // master gate (loop:arm — the tracked replacement for Claude /loop). DEFAULT OFF because the
   // loop engine is multi-part (B-LOOP-1 schema + B-LOOP-2 completion-rebase + B-LOOP-3 warm-wake

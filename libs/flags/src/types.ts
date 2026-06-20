@@ -789,6 +789,13 @@ export const FLAGS = {
   // (loop:end/loop:status always work); inert otherwise (no loop rows exist). KNOWN_DARK_FLAGS.
   // Owner flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes.
   LOOPS: "papercusp-loops",
+  // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for moving the
+  // QUEEN + SCOUT (+ later OVERWATCH) from per-HIVE to WORKSPACE scope — ONE central brain per
+  // workspace spanning all its hives (P-003 Queen re-key + P-002 Scout re-key both gate on THIS
+  // one flag, so the two halves flip together). DEFAULT OFF (dark): the re-key touches the live
+  // wake/learning loop on a hot path, so it ships reversible behind one flag and flips ON only
+  // after the post-canary verify. OFF ⇒ today's per-hive brains, byte-identical. KNOWN_DARK_FLAGS.
+  WORKSPACE_COORDINATION: "papercusp-workspace-coordination",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -866,6 +873,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // flips ON after an attended verification. OFF = today's unscoped '*' superuser,
   // byte-identical. Listed in KNOWN_DARK_FLAGS.
   [FLAGS.SCOPED_SUPERUSER_CLAMP]: false,
+  // DEFAULT OFF (deliberate, NOT alpha default-on) — the shared workspace-scoped-coordination
+  // re-key (Queen + Scout per-hive→workspace) is a hot-path live-loop change; reversible
+  // kill-switch the owner flips ON post-canary. OFF = today's per-hive brains, byte-identical.
+  // Listed in KNOWN_DARK_FLAGS.
+  [FLAGS.WORKSPACE_COORDINATION]: false,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

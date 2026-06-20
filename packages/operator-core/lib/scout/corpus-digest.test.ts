@@ -132,6 +132,7 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       spendUsd: 15.75,
       spendBuckets: 3,
       observations: 4,
+      rubrics: 0, // fixtureReaders provides no rubrics() reader
     });
   });
 
@@ -305,8 +306,88 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
     expect(() => DigestSchema.parse(digest)).not.toThrow();
     expect(digest.recurringFriction).toEqual([]);
     expect(digest.rubricRatings).toEqual([]);
+    expect(digest.rubricGaps).toEqual([]);
     expect(digest.corpus.spendUsd).toBe(0);
     expect(digest.corpus.observations).toBe(0);
+    expect(digest.corpus.rubrics).toBe(0);
+  });
+
+  // ── rubricGaps (plan-templates-and-rubric-v2 P-008) ──────────────────────────
+  // A recurring friction cluster (≥3 distinct authors, ≥2 day-cycles) with NO
+  // covering active rubric. Uses a dedicated friction set (identical titles ⇒ one
+  // exact-signature cluster) so the assertions are independent of the shared fixture.
+  describe('rubricGaps', () => {
+    // 3 captures of the SAME friction, 3 distinct authors, across 2 distinct days.
+    const gapFriction: ImprovementCandidate[] = [
+      { id: 'EI-G1', kind: 'bug', scope: 'operator', title: 'deploy gate wedges on a stale lock', state: 'open', createdBy: 'su-a', updatedAt: daysAgo(1) },
+      { id: 'EI-G2', kind: 'bug', scope: 'operator', title: 'deploy gate wedges on a stale lock', state: 'open', createdBy: 'su-b', updatedAt: daysAgo(2) },
+      { id: 'EI-G3', kind: 'bug', scope: 'operator', title: 'deploy gate wedges on a stale lock', state: 'open', createdBy: 'su-c', updatedAt: daysAgo(2) },
+    ];
+
+    it('flags a recurring, multi-author, multi-cycle cluster with no covering rubric', async () => {
+      const digest = await synthesizeStateOfHive(
+        fixtureReaders({ friction: async () => gapFriction, rubrics: async () => [] }),
+        { nowMs: NOW },
+      );
+      expect(digest.rubricGaps).toHaveLength(1);
+      const gap = digest.rubricGaps[0];
+      expect(gap.summary).toContain('deploy gate');
+      expect(gap.ref).toBe('wi:EI-G1'); // newest member (daysAgo(1)) is the exemplar
+      expect(gap.detail).toContain('3 authors');
+      expect(gap.detail).toContain('2 cycles');
+      expect(gap.category).toBeUndefined(); // not a flattenDigest ideator lane
+      expect(digest.corpus.rubrics).toBe(0);
+    });
+
+    it('does NOT flag when an active rubric covers the cluster theme', async () => {
+      const digest = await synthesizeStateOfHive(
+        fixtureReaders({
+          friction: async () => gapFriction,
+          rubrics: async () => [
+            { rubricId: 'deploy-health', characteristic: 'deploy gate health', title: 'Deploy gate', criteriaTitles: ['lock contention'] },
+          ],
+        }),
+        { nowMs: NOW },
+      );
+      expect(digest.rubricGaps).toEqual([]);
+      expect(digest.corpus.rubrics).toBe(1);
+    });
+
+    it('does NOT flag with fewer than 3 distinct authors', async () => {
+      const twoAuthors: ImprovementCandidate[] = [
+        { ...gapFriction[0], createdBy: 'su-a' },
+        { ...gapFriction[1], createdBy: 'su-a' },
+        { ...gapFriction[2], createdBy: 'su-b' },
+      ];
+      const digest = await synthesizeStateOfHive(
+        fixtureReaders({ friction: async () => twoAuthors, rubrics: async () => [] }),
+        { nowMs: NOW },
+      );
+      expect(digest.rubricGaps).toEqual([]);
+    });
+
+    it('does NOT flag when the cluster recurs within a single day-cycle', async () => {
+      const sameDay: ImprovementCandidate[] = gapFriction.map((c) => ({ ...c, updatedAt: daysAgo(1) }));
+      const digest = await synthesizeStateOfHive(
+        fixtureReaders({ friction: async () => sameDay, rubrics: async () => [] }),
+        { nowMs: NOW },
+      );
+      expect(digest.rubricGaps).toEqual([]);
+    });
+
+    it('does NOT flag a one-off (non-recurring) capture', async () => {
+      const digest = await synthesizeStateOfHive(
+        fixtureReaders({ friction: async () => [gapFriction[0]], rubrics: async () => [] }),
+        { nowMs: NOW },
+      );
+      expect(digest.rubricGaps).toEqual([]);
+    });
+
+    it('does NOT flag a recurring cluster whose captures have no author', async () => {
+      // The shared fixture clusters (EI-1/EI-2) recur but carry no createdBy ⇒ 0 authors.
+      const digest = await synthesizeStateOfHive(fixtureReaders({ rubrics: async () => [] }), { nowMs: NOW });
+      expect(digest.rubricGaps).toEqual([]);
+    });
   });
 });
 
