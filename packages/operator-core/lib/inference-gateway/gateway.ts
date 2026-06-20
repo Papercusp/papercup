@@ -955,54 +955,65 @@ export function createInferenceGateway(deps: GatewayDeps) {
           upstreamErrors++;
           const stalled = ac.signal.aborted;
           log('error', `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} on '${active.accountId}': ${(e as Error).message}`);
-          // TRANSPORT-FAILURE EGRESS CIRCUIT BREAKER (B-GW-EGRESS, 2026-06-20 dead-proxy wedge). A fetch
-          // that STALLS (a dead/half-dead proxy CONNECT-hangs → the stall-guard aborts) or fails to
-          // connect never reaches Anthropic, so — unlike a 429 — it carries NO HTTP status and never fed
-          // account health. A DEAD egress proxy therefore accrued ZERO penalty: the router kept scoring
-          // it "healthiest", routed the MOST traffic to it, AND overrode session pins onto it ("yields to
-          // liveness") — one half-dead Rayobyte squid (aviynw6/216.41.233.249, 60s CONNECT hangs) wedged
-          // the whole gateway into a restart storm. Fix: feed the transport failure into the SAME
-          // gov.pausedUntil lever the 429 hard-cap uses, so the existing pin-yield (above) + cross-account
-          // selector (above) already route around it; escalate a consecutive STREAK to a longer OPEN
-          // circuit. Then ROTATE + retry rather than 502-ing the bee — a dead proxy on ONE account must
-          // never fail a request the pool's other healthy accounts can serve.
-          const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;
-          egressFailStreak.set(active.accountId, streak);
-          const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
-          const pauseMs = circuitOpen ? EGRESS_CIRCUIT_OPEN_MS : TRANSIENT_429_BACKOFF_MS;
-          const resetAt = Date.now() + pauseMs;
-          // take-MAX (recordPenalty) → this never SHORTENS a legitimate longer 429/usage-cap pause.
-          gov.penalize({ retryAfterMs: pauseMs, resetAt });
-          if (circuitOpen) {
-            egressCircuitOpens++;
-            log('warn', `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures) — out of rotation ${Math.round(pauseMs / 1000)}s; half-open retest on pause-expiry`);
-            scheduleEgressProbe(active);
-          }
-          // ROUTE AROUND IT: rotate to a healthy account + retry this request on the same admission slot
-          // (like the usage-cap path). pool.onExhausted also marks this account out of the pool
-          // round-robin until resetAt and hands back the next account with budget.
-          if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
-            const next = pool.onExhausted(active.accountId, resetAt);
-            if (next && next.accountId !== active.accountId) {
-              failovers++;
-              active = next;
-              gov = governorForAccount(model, active.accountId);
-              attempt++;
-              log('warn', `inference-gateway: transport ${stalled ? 'stall' : 'failure'} on egress → failover to '${active.accountId}' (attempt ${attempt})`);
-              continue;
+          // TRANSPORT-FAILURE EGRESS CIRCUIT BREAKER (B-GW-EGRESS, 2026-06-20 dead-proxy wedge) — SCOPED
+          // to accounts that egress through an HTTP PROXY. A fetch that STALLS (a dead/half-dead proxy
+          // CONNECT-hangs → the stall-guard aborts) or fails to connect never reaches Anthropic, so —
+          // unlike a 429 — it carries NO HTTP status and never fed account health. A DEAD egress proxy
+          // therefore accrued ZERO penalty: the router kept scoring it "healthiest", routed the MOST
+          // traffic to it, AND overrode session pins onto it ("yields to liveness") — one half-dead
+          // Rayobyte squid (aviynw6/216.41.233.249, 60s CONNECT hangs) wedged the whole gateway into a
+          // restart storm. Fix: feed the transport failure into the SAME gov.pausedUntil lever the 429
+          // hard-cap uses (so the existing pin-yield + cross-account selector route around it), escalate
+          // a consecutive STREAK to a longer OPEN circuit, and ROTATE + retry rather than 502-ing the bee.
+          //   SCOPING: only an account WITH an http proxy can have a DEAD proxy. An account with NO proxy
+          //   that transport-fails is an Anthropic/network-side stall (the proxy can't be the fault), so
+          //   it keeps the existing fast-502 — the bee's CLI retries, the next request lands on the
+          //   failover-rotated active(), and AIMD shrinks concurrency under a sustained Anthropic stall —
+          //   and its healthy account is NOT penalized. (Mirrors dispatcherFor's http(s)-proxy check.)
+          const hasEgressProxy = !!active.egress?.proxyUrl && /^https?:\/\//i.test(active.egress.proxyUrl);
+          if (hasEgressProxy) {
+            const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;
+            egressFailStreak.set(active.accountId, streak);
+            const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
+            const pauseMs = circuitOpen ? EGRESS_CIRCUIT_OPEN_MS : TRANSIENT_429_BACKOFF_MS;
+            const resetAt = Date.now() + pauseMs;
+            // take-MAX (recordPenalty) → this never SHORTENS a legitimate longer 429/usage-cap pause.
+            gov.penalize({ retryAfterMs: pauseMs, resetAt });
+            if (circuitOpen) {
+              egressCircuitOpens++;
+              log('warn', `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures) — out of rotation ${Math.round(pauseMs / 1000)}s; half-open retest on pause-expiry`);
+              scheduleEgressProbe(active);
             }
+            // ROUTE AROUND IT: rotate to a healthy account + retry on the same admission slot (like the
+            // usage-cap path). pool.onExhausted also marks this account out of the round-robin until
+            // resetAt and hands back the next account with budget.
+            if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
+              const next = pool.onExhausted(active.accountId, resetAt);
+              if (next && next.accountId !== active.accountId) {
+                failovers++;
+                active = next;
+                gov = governorForAccount(model, active.accountId);
+                attempt++;
+                log('warn', `inference-gateway: transport ${stalled ? 'stall' : 'failure'} on egress proxy → failover to '${active.accountId}' (attempt ${attempt})`);
+                continue;
+              }
+            }
+            // No healthy account left / rotation budget spent — return a RETRYABLE 503 (the bee's CLI
+            // retries; the next request lands on the failover-rotated active()), never a terminal 502.
+            if (!res.headersSent) {
+              sendJson(
+                res,
+                503,
+                { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: egress proxy ${stalled ? 'stall' : 'transport error'} on '${active.accountId}'; retry shortly` }, gateway: true },
+                { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
+              );
+            }
+            return;
           }
-          // No healthy account left / rotation budget spent — return a RETRYABLE 503 (the bee's CLI
-          // retries; the next request lands on the failover-rotated active()), never a terminal 502 that
-          // would $0-fail the bee while a dead proxy is the only fault.
-          if (!res.headersSent) {
-            sendJson(
-              res,
-              503,
-              { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: upstream egress ${stalled ? 'stall' : 'transport error'} on '${active.accountId}'; retry shortly` }, gateway: true },
-              { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
-            );
-          }
+          // No egress proxy → an Anthropic/network-side stall, not a dead proxy: preserve the existing
+          // fast-502 (the bee's CLI retries those; the next request lands on the failover-rotated
+          // active()). The upstream stall-guard already aborted the hang; do not penalize a healthy account.
+          sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream ${stalled ? 'stall timeout' : 'error'}: ${(e as Error).message}` }, gateway: true });
           return;
         }
 
@@ -1143,6 +1154,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const waitMs = Math.min(
               Math.max(0, internalRetry.exhaustResetAt - Date.now()),
               ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+              Math.max(0, retryDeadlineAt - Date.now()), // never wait PAST the wedge-prevention deadline
             );
             if (waitMs > 0 && transientWaitedMs + waitMs <= TRANSIENT_TOTAL_WAIT_BUDGET_MS) {
               transientWaitedMs += waitMs;
