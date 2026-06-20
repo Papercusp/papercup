@@ -27,6 +27,9 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
+import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
 const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
@@ -71,6 +74,32 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe('Optional note on why the lifecycle moved. Stored on the plan revision (D-009), not in the frontmatter.'),
+  // ── queen-scout-feedback-loop-2026-06-20 P-006 / B10: the DEPRECATE path.
+  learnings: z
+    .object({
+      tried: z.string().min(1).describe('what approach / premise was attempted on the draft'),
+      stalled: z.string().min(1).describe("why it stalled — the reason it won't reach ready"),
+      salvageable: z
+        .string()
+        .min(1)
+        .describe("what's salvageable — the reusable signal a future Scout cycle can re-ideate from"),
+    })
+    .optional()
+    .describe(
+      "ONLY honored on status='superseded' (a DEPRECATE): the free-text learnings (what was tried / why it stalled / what's salvageable). Providing it makes the deprecate ALSO emit a structured, source-tagged 'learnings' observation into the observation lane, so a dead draft still feeds Scout's corpus-digest (queen-scout-feedback-loop P-006 — 'no dead ends'). Omit on a plain reject.",
+    ),
+  sourceHive: z
+    .string()
+    .max(120)
+    .optional()
+    .describe(
+      "deprecate-learnings only: the observation's source hive (the hive the draft belonged to). Defaults to the plan's harness.",
+    ),
+  evidence: z
+    .array(z.string().max(200))
+    .max(12)
+    .optional()
+    .describe('deprecate-learnings only: refs grounding the learnings (the deprecated plan ref is always included).'),
 });
 
 type SetPlanStatusValue =
@@ -118,13 +147,13 @@ export function flipPlanFrontmatterStatus(
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
-    "Flip a plan's lifecycle status (draft→ready approve, ready→draft demote, →shipped, →superseded reject). Plan-level frontmatter, not an item's status. Auto-bumps updated:.",
+    "Flip a plan's lifecycle status (draft→ready approve, ready→draft demote, →shipped, →superseded reject). Plan-level frontmatter, not an item's status. Auto-bumps updated:. THE DEPRECATE HANDLER for the Queen↔Scout loop: pass `learnings` (what was tried / why it stalled / what's salvageable) with status='superseded' and it ALSO emits a structured, source-tagged learnings observation into the observation lane, so a dead draft still feeds Scout's digest (no dead ends).",
   guidance: {
-    when: 'Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded).',
+    when: "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded). DEPRECATING a Queen↔Scout draft that won't reach ready: status='superseded' + `learnings:{tried,stalled,salvageable}` — one atomic call deprecates AND records the salvage observation (don't file a separate improvements:capture).",
     notWhen:
-      "Flipping a P-NNN item's status — use plans:set-status. Converting a legacy plan that has no valid frontmatter — use plans:set-frontmatter first (this verb refuses it with no_status_line).",
+      "Flipping a P-NNN item's status — use plans:set-status. Converting a legacy plan that has no valid frontmatter — use plans:set-frontmatter first (this verb refuses it with no_status_line). `learnings` on a non-superseded status is ignored (it is a deprecate-only field).",
     chaining:
-      "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. Approving is optional before plans:start — starting a draft auto-approves it (draft→ready).",
+      "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. Approving is optional before plans:start — starting a draft auto-approves it (draft→ready). Deprecate: plans:set-plan-status { slug, status:'superseded', learnings:{…} } → the returned learningsObservation reports the emitted observation.",
   },
   capability: 'plans:write',
   requirePrincipal: false,
@@ -227,6 +256,49 @@ export default defineTool({
       }
     }
 
+    // queen-scout-feedback-loop-2026-06-20 P-006 / B10 — the DEPRECATE path closes
+    // the loop: a supersede that carries `learnings` ALSO emits a structured,
+    // source-tagged learnings observation, so a dead draft still feeds Scout's
+    // corpus-digest (no dead ends, D-002). Atomic with the supersede — ONE call
+    // deprecates AND records the salvage, so the observation can't be forgotten.
+    let learningsObservation:
+      | { emitted: true; created: boolean; issueId?: string }
+      | { emitted: false; error: string }
+      | undefined;
+    if (result.value.ok && status === 'superseded' && args.learnings) {
+      const id = resolveAgentIdentity(ctx);
+      // Attribution is DERIVED from the caller (never spoofable), mirroring
+      // scout:grade-idea: the Queen deprecates as 'Queen', every other surface
+      // (su / operator) as 'owner'. A Scout self-deprecate calls
+      // emitDeprecateLearnings directly with deprecatedBy:'Scout' from its cycle.
+      const deprecatedBy = (ctx as { role?: string } | undefined)?.role === 'queen' ? 'Queen' : 'owner';
+      try {
+        const obs = await emitDeprecateLearnings({
+          planSlug: args.slug,
+          deprecatedBy,
+          learnings: args.learnings as DeprecateLearnings,
+          sourceHive: args.sourceHive ?? harnessSlug ?? operatorHomeHarnessSlug(),
+          ...(args.evidence ? { evidence: args.evidence } : {}),
+          createdBy: id.ownerId,
+        });
+        learningsObservation = {
+          emitted: true,
+          created: obs.created,
+          ...(obs.issue ? { issueId: obs.issue.id } : {}),
+        };
+      } catch (err) {
+        // The supersede already committed; a failed emit is REPORTED (not fatal)
+        // so the caller can re-file rather than losing the salvage silently.
+        const error =
+          err instanceof ObservationEvidenceError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        learningsObservation = { emitted: false, error };
+      }
+    }
+
     return {
       content: [
         {
@@ -235,6 +307,7 @@ export default defineTool({
             ...result.value,
             filePath: result.filePath,
             ...(mappedFrom ? { mappedFrom } : {}),
+            ...(learningsObservation ? { learningsObservation } : {}),
             revision:
               result.value.ok && result.value.changed && rev.recorded.current
                 ? { seq: rev.recorded.current.seq }
