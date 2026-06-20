@@ -68,7 +68,12 @@ process-level loop un-wedges even a frozen routine engine. It NULLs the
 `workflow_status` activity in >5 min. Kill-switch `PAPERCUSP_DBOS_EXECUTOR_REAPER=0`.
 The deeper diagnosis + the manual-clear runbook is
 [the dead-executor dedup wedge](/internal/docs/agent-insights/deploy-pipeline-silent-stall-dead-executor-dedup);
-`dbos-workflow-gc` (default-on) prunes terminal rows so the table stays small.
+`dbos-workflow-gc` (default-on) prunes terminal rows so the table stays small. A
+sibling process-level sweep, `release/green-stall-watchdog.ts` (started right after the
+reaper in `dbos/bootstrap.ts`), closes the DETECTION half: it alarms when an `active`
+green-checkpoint routine stops firing (`last_fired_at` > 3h) or stops greening
+(`lastGreenAt` > 12h), independent of the routine itself — the in-routine `trackGateStall`
+is blind to "the routine never fired." EI-455 bug #2.
 
 ## Operational invariant
 
@@ -77,4 +82,5 @@ For any shared/repo-less hive: it must resolve its member repo for repo-backed r
 run the dead-executor reaper (#3). Miss any one and the hive looks broken — blank
 tabs, an unbounded outbox, or a silently dead scheduler — while its data is perfectly
 intact. Still open under EI-455: an optional dedup-TTL safety valve and a
-"no-green-verdict-in-N-hours" alarm independent of the red counter.
+an optional dedup-TTL safety valve for a hung-but-live executor (the
+"no-green-verdict-in-N-hours" alarm, EI-455 bug #2, is now shipped — see facet #3 above).

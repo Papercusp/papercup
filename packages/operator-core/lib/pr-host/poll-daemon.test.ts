@@ -141,7 +141,11 @@ function checksOf(state: PrChecksState): (remote: string, headSha: string) => Pr
   return async () => ok({ state, runs: [{ id: 1, name: 'ci', status: 'completed', conclusion: state === 'success' ? 'success' : 'failure', details_url: null, started_at: null, completed_at: null }] });
 }
 
-/** Base deps: trusted author, green checks, no reviewer report, fixed clock. */
+/** Base deps: trusted author, green checks, a present APPROVE report, fixed clock.
+ *  Gap 2 (su-pr2 handoff): the daemon now REQUIRES a present approve report to
+ *  auto-approve (an absent report ⇒ defer, not proceed) — so the happy-path /
+ *  idempotency tests supply an approve report by default; the deferral tests
+ *  override readReport to null. */
 function baseDeps(host: PrHost, store: PollStore, over: Partial<PollDaemonDeps> = {}): PollDaemonDeps {
   return {
     store,
@@ -149,7 +153,7 @@ function baseDeps(host: PrHost, store: PollStore, over: Partial<PollDaemonDeps> 
     fetchChecks: checksOf('success'),
     resolveViewer: async () => VIEWER,
     triggerReviewer: vi.fn(async () => {}),
-    readReport: async () => null,
+    readReport: async () => ({ recommendation: 'approve' as const }),
     isAuthorRevoked: async () => false, // PR-5: not revoked by default; revocation tests override.
     now: () => 1_700_000_500_000,
     random: () => 0.5,
@@ -299,6 +303,36 @@ describe('pollHarnessPrs — PR-5 contributor revocation (S0)', () => {
     const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { isAuthorRevoked: async () => false }));
     expect(out.revoked).toEqual([]);
     expect(out.merged).toEqual([42]);
+  });
+});
+
+describe('pollHarnessPrs — PR-2 first-sight race (Gap 2, su-pr2 handoff)', () => {
+  it('TEETH: an ABSENT report (review in flight) DEFERS — never auto-approves before the agent reviews', async () => {
+    const { host, postReview, merge } = makeHost();
+    const { store } = makeStore(); // trusted author, auto on, green checks
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { readReport: async () => null }));
+    expect(out.awaitingReview).toEqual([42]);
+    expect(out.approved).toEqual([]);
+    expect(out.merged).toEqual([]);
+    expect(postReview).not.toHaveBeenCalled();
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it('TEETH: a deferred PR is EXCLUDED from last_seen → re-processed next poll, then merges once the report lands', async () => {
+    const { host, merge } = makeHost();
+    const { store, calls } = makeStore();
+    // Poll 1: no report yet → defer (no merge), and NOT recorded in last_seen.
+    const first = await pollHarnessPrs(ARGS, baseDeps(host, store, { readReport: async () => null }));
+    expect(first.awaitingReview).toEqual([42]);
+    expect(merge).not.toHaveBeenCalled();
+    const seenAfter1 = parsePollMeta(calls.patchMeta.at(-1) as Record<string, unknown>);
+    expect(seenAfter1.last_seen['42']).toBeUndefined(); // excluded → re-checked next poll
+
+    // Poll 2: the report has landed (approve) → the SAME store re-processes (not skipped) → merges.
+    const second = await pollHarnessPrs(ARGS, baseDeps(host, store, { readReport: async () => ({ recommendation: 'approve' }) }));
+    expect(second.prsProcessed).toBe(1); // re-processed (the deferred PR was not in last_seen)
+    expect(second.merged).toEqual([42]);
+    expect(merge).toHaveBeenCalledTimes(1);
   });
 });
 

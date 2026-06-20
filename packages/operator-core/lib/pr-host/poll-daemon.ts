@@ -191,6 +191,10 @@ export interface PollOutcome {
   vetoed: number[];
   /** PR-5: PRs whose author is a revoked contributor — refused the auto-flow. */
   revoked: number[];
+  /** Gap 2 (su-pr2 handoff): PRs DEFERRED this pass — agent review in flight, no
+   *  report yet. The auto path waits (does NOT auto-approve before the agent reviews);
+   *  these are excluded from last_seen so the next poll re-checks once the report lands. */
+  awaitingReview: number[];
   error?: { kind: string; message: string };
   /** Backoff applied to next_fire_at (ms from now) when status==='error'. */
   backoffMs?: number;
@@ -235,7 +239,7 @@ function resolveDeps(deps: PollDaemonDeps): ResolvedDeps {
   };
 }
 
-const EMPTY_COUNTS = (): Pick<PollOutcome, 'prsSeen' | 'prsProcessed' | 'approved' | 'merged' | 'triggered' | 'vetoed' | 'revoked'> => ({
+const EMPTY_COUNTS = (): Pick<PollOutcome, 'prsSeen' | 'prsProcessed' | 'approved' | 'merged' | 'triggered' | 'vetoed' | 'revoked' | 'awaitingReview'> => ({
   prsSeen: 0,
   prsProcessed: 0,
   approved: [],
@@ -243,6 +247,7 @@ const EMPTY_COUNTS = (): Pick<PollOutcome, 'prsSeen' | 'prsProcessed' | 'approve
   triggered: [],
   vetoed: [],
   revoked: [],
+  awaitingReview: [],
 });
 
 // ── The testable core ─────────────────────────────────────────────────────────
@@ -311,6 +316,9 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
 
   const meta = await d.store.readMeta(installSlug);
   const lastSeen = args.ignoreLastSeen ? {} : meta.last_seen;
+  // Gap 2 (su-pr2 handoff): PRs deferred this pass (agent review in flight) — excluded
+  // from the last_seen snapshot below so the next poll re-checks once the report lands.
+  const deferred = new Set<number>();
 
   for (const pr of prs) {
     const prevSeen = lastSeen[String(pr.ref.number)];
@@ -361,10 +369,24 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
       continue;
     }
 
-    // PR-2 report veto (when present): a request_changes/reject blocks the auto path
-    // even for a trusted author with green checks. Absent report ⇒ no veto.
+    // PR-2 agent-review gate (Gap 1+2, su-pr2 handoff). Auto-review is ON here
+    // (decideAutoReview passed its role+auto_review gate), so the agent's report is PART
+    // of the gate — require a PRESENT report before auto-approving:
+    //   • present + request_changes/reject → VETO (blocks even a trusted+green PR);
+    //   • ABSENT → WAIT this pass (the review is in flight, fired by triggerReviewer above).
+    //     Do NOT auto-approve before the agent has reviewed — this closes the first-sight race
+    //     where a brand-new trusted+green PR auto-merged on poll 1 before any report existed.
+    //     The PR is added to `deferred` (excluded from last_seen) so the NEXT poll re-checks
+    //     once the report lands. (NB known follow-up: readReport returns the latest report for
+    //     ANY head_sha — a force-push could read a stale report; head_sha-scoping is the refinement
+    //     tracked in findings-PR-2-reviewer-trigger-seam.md.)
     const report = await d.readReport({ installSlug, workspaceId, prNumber: enriched.ref.number });
-    if (report && !reportGatesAutoApprove(report)) {
+    if (!report) {
+      counts.awaitingReview.push(enriched.ref.number);
+      deferred.add(enriched.ref.number);
+      continue;
+    }
+    if (!reportGatesAutoApprove(report)) {
       counts.vetoed.push(enriched.ref.number);
       continue;
     }
@@ -386,7 +408,14 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
   // last_seen = snapshot of the CURRENT open set (merged/closed PRs drop off the
   // open list and thus out of the snapshot — bounded growth). Reset the backoff.
   const nextSeen: Record<string, LastSeenEntry> = {};
-  for (const pr of prs) nextSeen[String(pr.ref.number)] = { updated_at: pr.updated_at, head_sha: pr.head_sha };
+  for (const pr of prs) {
+    // Gap 2: a DEFERRED PR (awaiting its review report) is left OUT of last_seen, so the
+    // next poll treats it as "changed" and re-processes it — picking up the report once it
+    // lands. Without this, the last_seen guard would skip it forever and it would never
+    // auto-approve (the bug a naive "wait this cycle" introduces).
+    if (deferred.has(pr.ref.number)) continue;
+    nextSeen[String(pr.ref.number)] = { updated_at: pr.updated_at, head_sha: pr.head_sha };
+  }
   await d.store.patchMeta(installSlug, {
     last_seen: nextSeen,
     consecutive_errors: 0,

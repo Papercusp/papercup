@@ -6,7 +6,7 @@
  *
  * D-006 says new tests go in Vitest / Playwright / Cargo / LLM
  * scenarios — never `.mjs` integration scripts or tsx `-smoke.ts`
- * files. This lint enforces THREE things:
+ * files. This lint enforces FOUR things:
  *
  *   1. No NEW `.mjs` under `apps/operator/__tests__/integration/`
  *      (debt counter `lint-tests-debt.json` accepts pre-existing).
@@ -17,6 +17,12 @@
  *      this is the failure the audit fixed (614 of 1168 were orphaned).
  *      Fix by widening a domain in testing-domains-registry.ts, then
  *      `npx tsx scripts/gen-testing-domains-contract.ts`.
+ *   4. No bash `*.test.sh` / `*.spec.sh` ANYWHERE (EI-1736). No CI runner
+ *      globs them (test:affected only globs Vitest `*.test.ts`), so they
+ *      masquerade as coverage while silently never running — and the
+ *      `set -e` + `((x++))` trap aborts them after Test 1. Use a Vitest
+ *      `*.test.ts` that shells out to bash (e.g.
+ *      `apps/operator/lib/release/verify-release-paths.test.ts`).
  *
  * The debt JSON only shrinks (removing a migrated entry succeeds; adding
  * one is rejected at review).

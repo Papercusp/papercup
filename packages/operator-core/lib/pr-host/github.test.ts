@@ -13,6 +13,7 @@ function mockOctokit(overrides: Partial<{
   pullsCreateReview: unknown;
   pullsMerge: unknown;
   pullsList: unknown;
+  reposGetContent: unknown;
 }>): Octokit {
   return {
     pulls: {
@@ -22,6 +23,9 @@ function mockOctokit(overrides: Partial<{
       createReview: vi.fn().mockResolvedValue(overrides.pullsCreateReview ?? { data: {} }),
       merge: vi.fn().mockResolvedValue(overrides.pullsMerge ?? { data: { sha: 'abc123' } }),
       list: vi.fn().mockResolvedValue(overrides.pullsList ?? { data: [makePrData()] }),
+    },
+    repos: {
+      getContent: vi.fn().mockResolvedValue(overrides.reposGetContent ?? { data: '' }),
     },
   } as unknown as Octokit;
 }
@@ -257,5 +261,84 @@ describe('GitHubPrHost.listOpenPrs', () => {
     const result = await host.listOpenPrs({ remote: REMOTE });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe('server_error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR-2 — getPrDiff (the reviewer's diff input)
+// ---------------------------------------------------------------------------
+
+describe('GitHubPrHost.getPrDiff', () => {
+  const DIFF = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
+
+  it('returns the raw unified diff and requests the diff media type', async () => {
+    const oc = mockOctokit({ pullsGet: { data: DIFF } });
+    const host = new GitHubPrHost(oc);
+    const result = await host.getPrDiff({ remote: REMOTE, number: 42 });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toBe(DIFF);
+    expect(vi.mocked(oc.pulls.get)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'owner',
+        repo: 'repo',
+        pull_number: 42,
+        mediaType: { format: 'diff' },
+      }),
+    );
+  });
+
+  it('maps 404 to not_found', async () => {
+    const oc = mockOctokit({});
+    vi.mocked(oc.pulls.get).mockRejectedValue({ status: 404, message: 'Not Found' });
+    const host = new GitHubPrHost(oc);
+    const result = await host.getPrDiff({ remote: REMOTE, number: 42 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('not_found');
+  });
+
+  it('rejects an unparseable remote with a validation error', async () => {
+    const host = new GitHubPrHost(mockOctokit({}));
+    const result = await host.getPrDiff({ remote: 'gitlab.com/o/r', number: 1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('validation');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR-2 — getRepoFile (repo conventions loading)
+// ---------------------------------------------------------------------------
+
+describe('GitHubPrHost.getRepoFile', () => {
+  it('returns the raw file content at the requested path + ref', async () => {
+    const oc = mockOctokit({ reposGetContent: { data: '# Conventions\nAlways add a test.' } });
+    const host = new GitHubPrHost(oc);
+    const result = await host.getRepoFile({ remote: REMOTE, path: 'CONTRIBUTING.md', ref: 'main' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toContain('Always add a test.');
+    expect(vi.mocked(oc.repos.getContent)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'owner',
+        repo: 'repo',
+        path: 'CONTRIBUTING.md',
+        ref: 'main',
+        mediaType: { format: 'raw' },
+      }),
+    );
+  });
+
+  it('maps a missing file (404) to not_found', async () => {
+    const oc = mockOctokit({});
+    vi.mocked(oc.repos.getContent).mockRejectedValue({ status: 404, message: 'Not Found' });
+    const host = new GitHubPrHost(oc);
+    const result = await host.getRepoFile({ remote: REMOTE, path: 'AGENTS.md' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('not_found');
+  });
+
+  it('rejects an unparseable remote with a validation error', async () => {
+    const host = new GitHubPrHost(mockOctokit({}));
+    const result = await host.getRepoFile({ remote: 'bad-remote', path: 'CONTRIBUTING.md' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('validation');
   });
 });

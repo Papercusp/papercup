@@ -132,14 +132,22 @@ function gatewayPort(): number {
 }
 
 /** ANY HTTP answer (incl. a 503 pacing pause) = the gateway process is alive;
- *  only a transport failure is unreachable (mirrors learning-infra-health). */
-async function probeGatewayHealthz(timeoutMs = 2500): Promise<boolean> {
-  try {
-    await fetch(`http://127.0.0.1:${gatewayPort()}/healthz`, { signal: AbortSignal.timeout(timeoutMs) });
-    return true;
-  } catch {
-    return false;
+ *  only a transport failure is unreachable (mirrors learning-infra-health).
+ *  EI-1693 (sibling fix): a SINGLE 2500ms probe FALSE-NEGATIVES under box load —
+ *  the gateway answers <1ms but the timer fires under contention, marking it
+ *  unreachable in the rollup (then driving false health-degraded / alarms). Retry
+ *  with an escalating, load-aware timeout before concluding "down"; only an
+ *  unreachable-on-EVERY-attempt is a real outage. Exported for the retry test. */
+export async function probeGatewayHealthz(timeouts: readonly number[] = [2500, 6000]): Promise<boolean> {
+  for (let i = 0; i < timeouts.length; i++) {
+    try {
+      await fetch(`http://127.0.0.1:${gatewayPort()}/healthz`, { signal: AbortSignal.timeout(timeouts[i]) });
+      return true;
+    } catch {
+      if (i + 1 < timeouts.length) await new Promise((r) => setTimeout(r, 250));
+    }
   }
+  return false;
 }
 
 interface HealthCtx {

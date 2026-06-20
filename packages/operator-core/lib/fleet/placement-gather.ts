@@ -334,7 +334,16 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
       // (operator-scope EI items carry a null harness) — else the fresh-spawn is
       // rejected "no harness named" and the caller's harness= is silently dropped
       // (EI-969 / F-FIX-033).
-      candidates.push(workItemToTask(wi, opts.harness));
+      // FIX-033: validate the backfill succeeded; fail loud if EI items can't be placed.
+      const task = workItemToTask(wi, opts.harness);
+      if (!task.harness) {
+        skipped.push({ 
+          id, 
+          reason: `operator-scope item has no harness — pass harness=<slug> to the placement call to specify where to place it` 
+        });
+        continue;
+      }
+      candidates.push(task);
     }
   } else {
     // Harness backlog: OPEN unassigned items, priority-ordered.
@@ -360,7 +369,19 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
       // second `fallbackHarness` arg, so a point-free map would pass the array
       // INDEX as the fallback. Backfill the pulled-from harness for any item that
       // carries none (EI-969 / F-FIX-033).
-      .map((wi) => workItemToTask(wi, opts.harness));
+      .map((wi) => {
+        const task = workItemToTask(wi, opts.harness);
+        // FIX-033: validate backfill; fail loud on items without harness.
+        if (!task.harness) {
+          skipped.push({
+            id: wi.id,
+            reason: `item has no harness — pass harness=<slug> to the placement call`,
+          });
+          return null;
+        }
+        return task;
+      })
+      .filter((t): t is PlacementTask => t !== null);
   }
 
   // Honor blocked_by (P-030): a blocked lane (tier2 before tier1 completes) is

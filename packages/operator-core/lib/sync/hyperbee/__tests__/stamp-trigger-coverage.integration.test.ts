@@ -212,3 +212,55 @@ describe('federated CDC tables — every fed_hlc table has the LWW stamp trigger
     ).toEqual([]);
   });
 });
+
+/**
+ * The symmetric half: the CAPTURE trigger must be PHYSICALLY attached in the
+ * migrated DB for every CDC-captured table. `checkSubstrateCaptureCoverage`
+ * (capture-coverage.test.ts) asserts a producer exists in the IN-CODE registry
+ * (`CDC_CAPTURED_TABLES` derived from the op-key map) — but nothing checks the
+ * DDL actually attached the trigger. A new table added to the op-key map whose
+ * `CREATE TRIGGER … capture_*_outbox` migration was forgotten passes the in-code
+ * guard yet NEVER federates (local writes drop on the floor). The per-table
+ * behavioral federation tests only cover the tables someone wrote a test for.
+ * This closes it at the live-schema grain, same harness as above.
+ */
+describe('federated CDC tables — capture trigger physically attached (DDL-attachment guard)', () => {
+  /** harness_shared tables with a `capture_*_outbox` AFTER trigger attached. The
+   *  trigger NAME varies per table (capture_harness_plan_parts_outbox_trg, …) but
+   *  the FUNCTION is always one of the capture-outbox family — match on proname so
+   *  the guard is robust to new per-table trigger names. */
+  async function captureTriggerTables(): Promise<Set<string>> {
+    const rows = await sql<Array<{ table_name: string }>>`
+      SELECT DISTINCT c.relname AS table_name
+        FROM pg_trigger t
+        JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_proc p ON p.oid = t.tgfoid
+       WHERE n.nspname = 'harness_shared'
+         AND p.proname LIKE 'capture\\_%\\_outbox'
+         AND NOT t.tgisinternal
+    `;
+    return new Set(rows.map((r) => r.table_name));
+  }
+
+  it('sanity: capture triggers introspect (a representative table is present)', async () => {
+    const withCapture = await captureTriggerTables();
+    expect(
+      withCapture.has('harness_features_consolidated'),
+      'capture-trigger introspection returned nothing — query/migration broken',
+    ).toBe(true);
+  });
+
+  it('every CDC-captured table has its capture_*_outbox trigger attached in the migrated DB', async () => {
+    const withCapture = await captureTriggerTables();
+    const missing = CDC_CAPTURED_TABLES.filter((t) => !withCapture.has(t)).sort();
+    expect(
+      missing,
+      `CDC-captured table(s) are in the in-code op-key map (CDC_CAPTURED_TABLES) but have NO ` +
+        `capture_*_outbox trigger in the migrated schema — their local writes are never enqueued ` +
+        `to substrate_outbox, so they SILENTLY never federate. checkSubstrateCaptureCoverage stays ` +
+        `GREEN (it only checks the in-code registry). Attach the capture trigger in your migration ` +
+        `(mirror mig-271 / mig-317), or remove the table from the op-key map. Missing: ${missing.join(', ')}`,
+    ).toEqual([]);
+  });
+});

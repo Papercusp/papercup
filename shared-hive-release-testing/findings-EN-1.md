@@ -66,3 +66,40 @@ state (forged never lands in PG). `mutateHivePolicy()` = read→mutate→re-sign
 ## Done-gate (brief EN-1)
 ✅ An owner-signed policy authored only by the claimed owner federates to members, is signature-verified,
 orders by fed_hlc, and a non-owner/forged policy cannot be written (403) or applied (dropped).
+
+## Follow-on hardening — stamp-trigger coverage guard (session reflection)
+**Gap this session exposed.** Authoring mig-317 (hive_policy), the `stamp_local_federated_write_trg`
+BEFORE trigger had to be attached *by hand* — and **nothing in CI would have failed had it been
+omitted**. A federated CDC table whose local write isn't stamped captures `op_hlc = NULL` (the AFTER
+`capture_substrate_outbox` threads `NEW.fed_hlc` onto the op), so the op federates with no LWW ordering
+key and last-writer becomes indeterminate — silently. The two existing coverage guards both stay GREEN
+through this: `checkSubstrateCaptureCoverage` proves a *producer* exists (table grain);
+`federated-column-completeness` proves every *column* survives the mapper (column grain). Neither proves
+the *stamp trigger* is attached.
+
+**Closed (no schema/behavior change).** Added `lib/sync/hyperbee/__tests__/stamp-trigger-coverage.integration.test.ts`
+— migrates 000→head on real PG (same harness as the column-completeness sibling) and introspects
+`pg_trigger` + `information_schema.columns`. Invariant, keyed on the HLC column so it can't false-positive
+on a table that doesn't order by fed_hlc: *every `CDC_CAPTURED_TABLES` table carrying a `fed_hlc` column
+must have `stamp_local_federated_write_trg`, except a documented `STAMP_EXEMPT` set.* Core check is an exact
+set-equality with teeth in three directions (new fed_hlc-table-without-trigger → RED; trigger removed → RED;
+stale exemption → RED). Teeth verified (emptying STAMP_EXEMPT turns it RED naming `harness_plan_parts`).
+
+The same file also closes the **symmetric** half: the CAPTURE trigger must be *physically* attached in the
+migrated DB for every `CDC_CAPTURED_TABLES` entry. `checkSubstrateCaptureCoverage` asserts a producer exists
+in the *in-code* op-key registry but never checks the DDL attached it — a new op-key-map entry whose
+`CREATE TRIGGER … capture_*_outbox` migration was forgotten passes the in-code guard yet never federates
+(local writes drop on the floor); the per-table behavioral tests only cover tables someone wrote a test for.
+The DDL-attachment check introspects `pg_proc`/`pg_trigger` for the `capture_*_outbox` family. **6 tests GREEN.**
+
+**Not a bug — one documented exemption.** `harness_plan_parts` carries `fed_hlc` (mig-314) + a CDC capture
+trigger (mig-271) but intentionally has no stamp trigger: plan-part federation is flag-gated/DARK and
+mig-314 (lines 160-163; findings-J) deliberately keeps the fed_ts=0/now baseline until GA, with the LWW
+guard's fed_ts fallback covering ordering meanwhile. Recorded in `STAMP_EXEMPT` with the re-arm condition
+(remove the entry + attach the trigger in the GA migration). `contributor_usage_events` is auto-exempt —
+no `fed_hlc` column, "does not actually federate" (WI-192 / mig-301).
+
+**Owner follow-up (no consensus reachable this session — coord MCP down):** when
+`papercusp-plan-part-federation` goes GA, the GA migration must attach `stamp_local_federated_write_trg` to
+`harness_plan_parts` and drop its `STAMP_EXEMPT` entry — at which point this guard flips RED until both are
+done, which is the intended forcing function.

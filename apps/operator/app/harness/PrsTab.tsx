@@ -114,6 +114,20 @@ export function rowBelongsToViewedHarness(
   return !row.member_slug || row.member_slug === viewedSlug;
 }
 
+/**
+ * Should this row show an auto-status line? Only for the viewed harness's OPEN
+ * PRs: a foreign-member row's auto-mode settings aren't held (suppress), and a
+ * merged/closed/gone PR has no meaningful auto-status — its state badge speaks
+ * for it, and "Auto-merge blocked: PR is not open" beside a "merged" badge is
+ * misleading noise (PR-3 §4 honesty). Pure — unit-tested.
+ */
+export function shouldShowAutoStatus(
+  row: Pick<PrRowData, 'member_slug' | 'state'>,
+  viewedSlug: string,
+): boolean {
+  return rowBelongsToViewedHarness(row, viewedSlug) && row.state === 'open';
+}
+
 async function fetchPrs(harnessSlug: string, scope: 'harness' | 'hive'): Promise<PrsResponse> {
   const qs = scope === 'hive' ? '?scope=hive' : '';
   const r = await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/prs${qs}`);
@@ -425,10 +439,11 @@ export function PrsTab({
             // harness whose auto-mode we haven't fetched, so computing an
             // auto-status from these settings would be misleading (e.g. claim
             // "Will auto-merge" when that member's auto-mode is actually off).
-            // Only show auto-status for rows of the viewed harness; suppress it
-            // for other members rather than render a status we can't stand behind.
-            const isViewedHarness = rowBelongsToViewedHarness(pr, harnessSlug);
-            const autoStatus: PrAutoStatus | undefined = isViewedHarness
+            // Auto-status only for the viewed harness's OPEN PRs: suppress it for
+            // other members (settings we don't hold) AND for merged/closed/gone
+            // PRs (auto-mode acts only on open PRs — a "blocked: not open" line
+            // next to a "merged" badge is noise, not honesty). PR-3 §4.
+            const autoStatus: PrAutoStatus | undefined = shouldShowAutoStatus(pr, harnessSlug)
               ? computeAutoStatus(pr, {
                   reviewerRoleEnabled: effReviewerRoleEnabled,
                   autoReview: effAutoReview,

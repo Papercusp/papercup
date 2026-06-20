@@ -167,7 +167,7 @@ export async function listHarnessPrs(
 
 // ─── PR-3: report + WI enrichment (best-effort) ───────────────────
 
-interface ReportDbRow {
+export interface ReportDbRow {
   pr_number: number | string;
   head_sha: string;
   feature_id: string | null;
@@ -180,8 +180,8 @@ interface ReportDbRow {
   reviewed_at: string | Date;
 }
 
-/** jsonb arrives parsed from postgres.js; tolerate a TEXT fallback. */
-function asStringArray(v: unknown): string[] {
+/** jsonb arrives parsed from postgres.js; tolerate a TEXT fallback. Pure — tested. */
+export function asStringArray(v: unknown): string[] {
   if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string');
   if (typeof v === 'string') {
     try {
@@ -194,7 +194,8 @@ function asStringArray(v: unknown): string[] {
   return [];
 }
 
-function asChecksObserved(v: unknown): PrRowReport['checksObserved'] {
+/** jsonb→object, tolerating a TEXT fallback + non-objects. Pure — tested. */
+export function asChecksObserved(v: unknown): PrRowReport['checksObserved'] {
   let obj: unknown = v;
   if (typeof v === 'string') {
     try {
@@ -205,6 +206,26 @@ function asChecksObserved(v: unknown): PrRowReport['checksObserved'] {
   }
   if (obj === null || typeof obj !== 'object') obj = {};
   return obj as PrRowReport['checksObserved'];
+}
+
+/**
+ * Map a stored `pr_review_reports` row → the GUI `PrRowReport`. PURE (no I/O) so
+ * it's unit-tested as the drift-sensitive seam against PR-2's stored shape: if
+ * PR-2's columns change, this test goes RED before the GUI silently renders an
+ * empty/wrong report. `currentHeadSha` is the PR's live head (for staleness).
+ */
+export function mapReportRow(r: ReportDbRow, currentHeadSha: string): PrRowReport {
+  return {
+    recommendation: r.recommendation as PrRowReport['recommendation'],
+    summary: r.summary,
+    rationale: r.rationale,
+    risks: asStringArray(r.risks),
+    checksObserved: asChecksObserved(r.checks_observed),
+    headSha: r.head_sha,
+    stale: !!r.head_sha && !!currentHeadSha && r.head_sha !== currentHeadSha,
+    model: r.model ?? '',
+    reviewedAt: r.reviewed_at instanceof Date ? r.reviewed_at.toISOString() : String(r.reviewed_at),
+  };
 }
 
 /**
@@ -237,19 +258,7 @@ export async function attachReportsAndWi(
     for (const pr of prs) {
       const r = byNumber.get(pr.number);
       if (!r) continue;
-      const currentHead = headShaByNumber.get(pr.number) ?? '';
-      pr.report = {
-        recommendation: r.recommendation as PrRowReport['recommendation'],
-        summary: r.summary,
-        rationale: r.rationale,
-        risks: asStringArray(r.risks),
-        checksObserved: asChecksObserved(r.checks_observed),
-        headSha: r.head_sha,
-        stale: !!r.head_sha && !!currentHead && r.head_sha !== currentHead,
-        model: r.model ?? '',
-        reviewedAt:
-          r.reviewed_at instanceof Date ? r.reviewed_at.toISOString() : String(r.reviewed_at),
-      };
+      pr.report = mapReportRow(r, headShaByNumber.get(pr.number) ?? '');
       if (r.feature_id) pr.featureId = r.feature_id;
     }
   } catch {

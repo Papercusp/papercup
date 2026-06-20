@@ -48,7 +48,7 @@ vi.mock('nuqs', async () => {
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
 
-import { PrsTab, rowBelongsToViewedHarness } from './PrsTab';
+import { PrsTab, rowBelongsToViewedHarness, shouldShowAutoStatus } from './PrsTab';
 
 describe('rowBelongsToViewedHarness — hive-scope auto-status honesty (PR-3 §4)', () => {
   it('single-harness rows (no member_slug) always belong', () => {
@@ -60,6 +60,21 @@ describe('rowBelongsToViewedHarness — hive-scope auto-status honesty (PR-3 §4
   });
   it("a hive-scope row from a DIFFERENT member does NOT belong (suppress its auto-status)", () => {
     expect(rowBelongsToViewedHarness({ member_slug: 'other-member' }, 'acme')).toBe(false);
+  });
+});
+
+describe('shouldShowAutoStatus — viewed harness AND open only (PR-3 §4)', () => {
+  it('shows for an open PR of the viewed harness', () => {
+    expect(shouldShowAutoStatus({ state: 'open' }, 'acme')).toBe(true);
+    expect(shouldShowAutoStatus({ member_slug: 'acme', state: 'open' }, 'acme')).toBe(true);
+  });
+  it('suppresses for non-open PRs (merged/closed/gone) — state badge speaks, no "blocked" noise', () => {
+    expect(shouldShowAutoStatus({ state: 'merged' }, 'acme')).toBe(false);
+    expect(shouldShowAutoStatus({ state: 'closed' }, 'acme')).toBe(false);
+    expect(shouldShowAutoStatus({ state: 'gone' }, 'acme')).toBe(false);
+  });
+  it('suppresses for a different member even when open (settings not held)', () => {
+    expect(shouldShowAutoStatus({ member_slug: 'other', state: 'open' }, 'acme')).toBe(false);
   });
 });
 

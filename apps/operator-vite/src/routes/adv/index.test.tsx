@@ -19,17 +19,17 @@ vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (opts: Record<string, unknown>) => ({ ...opts }),
 }));
 
-const ADV_TABS = [
-  'overview', 'conversations', 'learning', 'harnesses', 'health', 'frames',
-  'evals', 'calendar', 'plans', 'brainstorm', 'prs', 'insights', 'settings',
-  'docs', 'git', 'testing',
-].map((id) => ({ id }));
-
 vi.mock('../../components/adv/AdvShell', () => ({
   default: ({ title, children }: { title: string; children: React.ReactNode }) => (
     <div data-testid="adv-shell" data-title={title}>{children}</div>
   ),
-  ADV_TABS,
+  // Inlined (not a top-level const) — vi.mock factories are hoisted above
+  // module-scope declarations, so referencing an outer `const` throws.
+  ADV_TABS: [
+    'overview', 'conversations', 'learning', 'harnesses', 'health', 'frames',
+    'evals', 'calendar', 'plans', 'brainstorm', 'prs', 'insights', 'settings',
+    'docs', 'git', 'testing',
+  ].map((id) => ({ id })),
 }));
 vi.mock('../../components/adv/AdvOverviewTab', () => ({ default: () => <div data-testid="tab-overview" /> }));
 vi.mock('../../components/adv/AdvConversationsTab', () => ({ default: () => <div data-testid="tab-conversations" /> }));

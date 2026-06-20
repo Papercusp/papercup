@@ -5,8 +5,8 @@
  * isolation) directly — no DB. The full DB-backed `computeSystemHealth` is
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
-import { describe, it, expect } from 'vitest';
-import { panelSafe, computeEscalationsHealth, type EscalationAgingInput } from './compute';
+import { describe, it, expect, vi } from 'vitest';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, type EscalationAgingInput } from './compute';
 import { PANEL_LABELS } from './types';
 
 describe('panelSafe — per-panel fail-soft', () => {
@@ -86,5 +86,39 @@ describe('computeEscalationsHealth — operational flood excluded (EI-1490)', ()
   it('no escalations → clean zeroed panel', () => {
     const h = computeEscalationsHealth([], NOW);
     expect(h).toEqual({ open: 0, oldestAgeMs: null, bySeverity: {}, aging: 0 });
+  });
+});
+
+describe('probeGatewayHealthz retry (EI-1693 sibling — one transient timeout is not "down")', () => {
+  const timeoutErr = () => Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+
+  it('a transient timeout THEN a success → reachable (true)', async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        if (n++ === 0) throw timeoutErr();
+        return { status: 200 } as Response;
+      }));
+      const p = probeGatewayHealthz([5, 50]);
+      await vi.runAllTimersAsync(); // advance the inter-attempt backoff
+      expect(await p).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('all escalating attempts fail → unreachable (false)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => { throw timeoutErr(); }));
+      const p = probeGatewayHealthz([5, 5]);
+      await vi.runAllTimersAsync();
+      expect(await p).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });

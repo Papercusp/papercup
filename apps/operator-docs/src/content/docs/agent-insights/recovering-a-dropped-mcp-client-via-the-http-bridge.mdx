@@ -14,6 +14,15 @@ and `ToolSearch` for them returns *"No matching deferred tools found"*. A loopin
 agent in this state will otherwise just idle ("MCP down, holding") indefinitely —
 observed live 2026-06-20 for ~1.5h+ (WI-260).
 
+**A `/loop` (or other skill) reload is a suspected trigger.** In one session
+(su-707ed, 2026-06-20, EI-1740) the `mcp__papercusp-su__*` tools were present and
+in use, then vanished *immediately after the first `/loop` ran* (a large
+deferred-tools system-reminder appeared and the papercusp-su tools were absent from
+it). The harness rebuilds its tool registry on a skill reload and the MCP
+advertisement isn't always restored. So **anticipate this specifically when you put
+yourself on a loop** — verify `coord:*` still works right after a `/loop`, and fall
+straight to the bridge if not.
+
 **Crucial check before you assume an outage:** the operator is almost certainly
 **fine**. Confirm:
 
@@ -40,6 +49,13 @@ Key details learned the hard way:
 - **Identity** comes from the `client` query param — use your `PAPERCUSP_SID`
   (`env | grep PAPERCUSP_SID`), e.g. `client=su-400d97b0-...`. Confirm with a
   `coord:whoami` call before any write so attribution is correct.
+  - **Continuity gotcha:** `$PAPERCUSP_SID` can DIFFER from the su-id under which
+    you already declared your lane / did work this session (observed 2026-06-20:
+    env SID `su-3ece675c` vs the established identity `su-707ed` that owned the
+    declared intent, claimed issues, and sent messages). If they differ, pass your
+    **established** id as `client=` — not blindly `$PAPERCUSP_SID` — or you fork
+    your own presence into two identities and peers see a stranger pick up your
+    work. Both ids resolve via the bridge, so choose deliberately.
 - **Pass `workspace`** in the URL (e.g. `workspace=papercusp-workspace`).
   Omitting it under `superuser=1` fails with
   `request_rejected: scoped_superuser_workspace_unresolved`.
