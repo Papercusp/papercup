@@ -102,3 +102,47 @@ describe('improvements:capture tool envelope', () => {
     expect(body).toEqual({ ok: true, id: 'EI-42', created: true, duplicateOf: null });
   });
 });
+
+describe('improvements:capture — observation strict/fail-loud (P-012)', () => {
+  // The tool's args zod is the strip-or-reject boundary (the handler-direct tests above bypass it).
+  // `.strict()` on the observation object makes an UNKNOWN key a LOUD arg-parse error instead of a
+  // silent strip — the silent strip dropped data live (su-2a0b4: an Overwatch scorecard against the
+  // not-yet-deployed schema persisted scope-only, no error). Tested via the exposed args zod.
+  const argsSchema = (
+    captureTool as unknown as {
+      args: { safeParse: (v: unknown) => { success: boolean; error?: { issues: unknown[] } } };
+    }
+  ).args;
+
+  it('accepts a known observation (kind/scope/confidence/refs)', () => {
+    const r = argsSchema.safeParse({
+      title: 'friction note',
+      lane: 'observation',
+      observation: { kind: 'friction', scope: 'self', confidence: 'high', refs: ['tool:foo'] },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts a rubric-graded observation (rubricRef + ratings with evidence)', () => {
+    const r = argsSchema.safeParse({
+      title: 'scorecard',
+      lane: 'observation',
+      observation: {
+        rubricRef: 'hive-coordination-health',
+        ratings: { placement: { rating: 'healthy', evidence: '0 stalls this wake' } },
+      },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('REJECTS an unknown observation field (was silently stripped — su-2a0b4) and names the key', () => {
+    const r = argsSchema.safeParse({
+      title: 'scorecard against a newer schema',
+      lane: 'observation',
+      observation: { kind: 'friction', bogusNewField: 'a field the deployed schema does not know' },
+    });
+    expect(r.success).toBe(false);
+    // fail-loud: the rejection NAMES the unrecognized key (not a silent strip / no opaque pass)
+    expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('bogusNewField');
+  });
+});
