@@ -272,6 +272,7 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
     const digest = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW, perCategory: 1 });
     expect(digest.capabilityGaps.length).toBeLessThanOrEqual(1);
     expect(digest.timeTokenSinks.length).toBe(1);
+    expect(digest.rubricRatings.length).toBeLessThanOrEqual(1);
   });
 
   it('is deterministic given nowMs', async () => {
@@ -298,11 +299,14 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       async friction() { return []; },
       async spend() { return []; },
       async deferrals() { return []; },
+      async observations() { return []; },
     };
     const digest = await synthesizeStateOfHive(empty, { nowMs: NOW });
     expect(() => DigestSchema.parse(digest)).not.toThrow();
     expect(digest.recurringFriction).toEqual([]);
+    expect(digest.rubricRatings).toEqual([]);
     expect(digest.corpus.spendUsd).toBe(0);
+    expect(digest.corpus.observations).toBe(0);
   });
 });
 
@@ -336,6 +340,14 @@ describe('structural contract with scout/types.ts', () => {
     const asTypes: TypesMetaPattern = fromSchema; // schema-output → types.ts
     const backToSchema: import('zod').infer<typeof MetaPatternSchema> = asTypes; // types.ts → schema-output
     expect(backToSchema.ref).toBe('wi:1');
+  });
+
+  it('the rubric-rating category is in sync across the schema enum + types.ts (P-006)', () => {
+    // Pins META_PATTERN_CATEGORIES ↔ types.ts MetaPatternCategory for the 5th lane.
+    const pattern: TypesMetaPattern = { category: 'rubric-rating', summary: 's', ref: 'rubric:r#c@h', weight: 1 };
+    expect(() => MetaPatternSchema.parse(pattern)).not.toThrow();
+    const asSchema: import('zod').infer<typeof MetaPatternSchema> = pattern; // types.ts → schema-output
+    expect(asSchema.category).toBe('rubric-rating');
   });
 
   it('a digest pattern is a valid MetaPattern per the schema validator', async () => {

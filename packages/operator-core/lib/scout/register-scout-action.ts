@@ -34,6 +34,14 @@ import { buildScoutCycleDeps } from './cycle-deps';
 import { createScoutPlanDraft } from './scout-plan-draft';
 import { buildScoutArchivePort, type ScoutArchivePort } from './scout-archive-port';
 import { nicheKey, type ArchivePort } from './gym-bridge';
+import { scoutCoordOwnerId } from './coord-identity';
+import { runScoutRevisionCycle } from './revise';
+import {
+  notifyQueenDraftRouted,
+  notifyQueenRevised,
+  type QueenNotifyMessage,
+  type QueenNotifyPorts,
+} from './queen-notify';
 
 /**
  * Placeholder gym-QD archive used when the real archive can't be built (PG down /
@@ -75,7 +83,7 @@ async function resolveArchive(scope: { workspaceId: string; harnessSlug: string 
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback }) => {
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
   // never pass the spawn chokepoint that patches `ANTHROPIC_BASE_URL` onto bee subprocesses —
@@ -98,6 +106,65 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
 
   const { llmCall } = await import('../llm-testing/llm-client');
   const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
+
+  // ── Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20) ──────────
+  // Scout's coord identity (P-003) + the two Scout→Queen ping ports (queen-notify).
+  // The coord/PG/ALS edge is lazily imported inside the closures so a boot that
+  // only references the runner never loads it; best-effort everywhere (a notify
+  // can never break ideation/revision).
+  const scoutOwner = scoutCoordOwnerId(harnessSlug);
+  const queenSend = async (msg: QueenNotifyMessage): Promise<void> => {
+    const { sendMessage } = await import('../agent-tools/coordination/messages');
+    const { runWithWorkspace } = await import('../workspace-als');
+    const identity = {
+      ownerId: scoutOwner,
+      ownerLabel: `scout · ${harnessSlug}`,
+      source: 'principal' as const,
+      workspaceId,
+      userId: null,
+    };
+    await runWithWorkspace(workspaceId, () =>
+      sendMessage(identity, {
+        to: msg.to,
+        summary: msg.summary,
+        body: msg.body,
+        plan_slug: msg.planSlug,
+        harnessSlug,
+      }),
+    );
+  };
+  const queenNotifyPorts: QueenNotifyPorts = {
+    // resolveQueenOwner takes workspaceId explicitly (no ALS needed); the routine's
+    // ctx workspace is where the hive's adv_sessions / coord live (NOT the DEFAULT
+    // plan workspace the drafts are pinned to).
+    resolveQueenOwner: async () => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { resolveQueenOwner } = await import('../hive/placement-watchdog');
+      const { sql } = getOrgPg();
+      return resolveQueenOwner(sql, workspaceId, harnessSlug);
+    },
+    send: queenSend,
+  };
+
+  // P-001: a queen-feedback tick runs a TARGETED revision of the Queen's draft(s)
+  // — NOT a fresh ideation cycle (which would route NEW plans, starving the loop).
+  // Same gateway-routed llmCall (FB-16 parity above applies). Pings the Queen back
+  // per draft so she re-reviews (D-001 step 3). Returns a cycle-shaped result the
+  // scheduler ledgers + acks (the scheduler only acks on a non-throwing return).
+  if (queenFeedback && queenFeedback.length > 0) {
+    const result = await runScoutRevisionCycle(queenFeedback, {
+      llmCall,
+      planWorkspaceId: DEFAULT_WORKSPACE_ID,
+      harnessSlug,
+    });
+    try {
+      await notifyQueenRevised(queenNotifyPorts, result.revisions);
+    } catch {
+      /* best-effort — a ping-back failure never fails the revision tick */
+    }
+    return result;
+  }
+
   const archive = await resolveArchive({ workspaceId, harnessSlug });
   const deps = buildScoutCycleDeps({
     harnessSlug,
@@ -108,8 +175,21 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     // routine's 'papercusp-workspace' is invisible to every plan UI/read
     // (live miss 2026-06-11 — 3 routed drafts stranded). The routed-idea
     // LEDGER row keeps the ctx workspace (learning.scout reads it there).
-    createPlanDraft: (args) =>
-      createScoutPlanDraft({ ...args, harnessSlug, workspaceId: DEFAULT_WORKSPACE_ID }),
+    // route→coord:send (D-003 #1): a NEWLY-routed draft pings the Queen so she
+    // reviews it — this is what STARTS the feedback loop. Only on `created` (a
+    // re-derived/idempotent existing slug is not re-announced). Best-effort: the
+    // ping never fails the routing path.
+    createPlanDraft: async (args) => {
+      const res = await createScoutPlanDraft({ ...args, harnessSlug, workspaceId: DEFAULT_WORKSPACE_ID });
+      if (res.created) {
+        try {
+          await notifyQueenDraftRouted(queenNotifyPorts, { slug: res.slug, title: args.title, scoutOwner });
+        } catch {
+          /* best-effort — a notify never breaks routing */
+        }
+      }
+      return res;
+    },
     archive,
     limits: { maxCostUsd: budget.maxCostUsd, maxIdeators: budget.maxIdeators },
     cycleId,

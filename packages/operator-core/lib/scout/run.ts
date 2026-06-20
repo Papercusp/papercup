@@ -52,6 +52,11 @@ export type ScoutCycleRunner = (ctx: {
    *  domain-generic-hive-architecture-2026-06-18). Omitted ⇒ the runner uses
    *  DEFAULT_SCOUT_CONFIG (behavior-neutral). */
   scoutConfig?: ScoutConfig;
+  /** Pending Queen→Scout revision requests this tick (queen-scout-feedback-loop P-001).
+   *  Present only when the scheduler's cycle-start coord:inbox read found plan-keyed
+   *  feedback for `scout:<hive>`; the runner then targets a REVISION of those draft
+   *  plans (register-scout-action.ts) instead of fresh ideation. */
+  queenFeedback?: QueenFeedbackItem[];
 }) => Promise<ScoutCycleLike>;
 
 export interface ScoutCycleActionConfig {
@@ -82,13 +87,14 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
   return buildScoutTickDeps({
     harnessSlug: input.installSlug,
     workspaceId: input.workspaceId,
-    runCycle: ({ budget, cycleId }) =>
+    runCycle: ({ budget, cycleId, queenFeedback }) =>
       runCycle({
         harnessSlug: input.installSlug,
         workspaceId: input.workspaceId,
         budget,
         cycleId,
         scoutConfig,
+        ...(queenFeedback ? { queenFeedback } : {}),
       }),
     readIdleRatio: () => readHiveIdleRatio({ workspaceId: input.workspaceId }),
     readFrictionSignals: () => readFrictionSignalCount({ harnessSlug: input.installSlug }),

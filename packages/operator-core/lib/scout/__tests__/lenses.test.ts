@@ -97,6 +97,21 @@ describe('flattenDigest / digestRefSet', () => {
     const set = digestRefSet(digest);
     expect([...set].sort()).toEqual(['plan:mem', 'wi:F-1', 'wi:F-2', 'wi:F-3']);
   });
+
+  it('folds in the rubricRatings lane so the ideators leap from measurements (P-006)', () => {
+    const withRubrics: CorpusDigest = {
+      ...digest,
+      rubricRatings: [{ summary: 'hive-coordination-health · end-to-end-flow @ papercusp: broken', ref: 'rubric:hive-coordination-health#end-to-end-flow@papercusp' }],
+    };
+    const flat = flattenDigest(withRubrics);
+    expect(flat).toHaveLength(5); // 4 friction lanes + the rubric measurement
+    expect(flat.find((p) => p.ref.startsWith('rubric:'))?.category).toBe('rubric-rating');
+    expect(digestRefSet(withRubrics).has('rubric:hive-coordination-health#end-to-end-flow@papercusp')).toBe(true);
+  });
+
+  it('a 4-lane digest with no rubricRatings flattens unchanged (byte-identical)', () => {
+    expect(flattenDigest(digest)).toHaveLength(4); // absent lane contributes nothing
+  });
 });
 
 describe('renderDigest', () => {
@@ -111,6 +126,16 @@ describe('renderDigest', () => {
   it('handles an empty digest', () => {
     const empty: CorpusDigest = { recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [] };
     expect(renderDigest(empty)).toContain('no meta-patterns');
+  });
+
+  it('labels rubric measurements in the rendered substrate (P-006)', () => {
+    const withRubrics: CorpusDigest = {
+      ...digest,
+      rubricRatings: [{ summary: 'hive-coordination-health · end-to-end-flow @ papercusp: broken', ref: 'rubric:hcs#e2e@papercusp', category: 'rubric-rating' }],
+    };
+    const text = renderDigest(withRubrics);
+    expect(text).toContain('[Rubric rating]');
+    expect(text).toContain('(ref: rubric:hcs#e2e@papercusp)');
   });
 });
 

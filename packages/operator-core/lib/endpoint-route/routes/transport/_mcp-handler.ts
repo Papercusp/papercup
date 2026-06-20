@@ -96,6 +96,33 @@ export const dynamic = 'force-dynamic';
 // `@papercusp/tooldef-mcp` (P-031) — generic mcp-handler `extra` extractors.
 
 /**
+ * scoped-superuser-workspace-clamp exemption (EI-1810). A `crossWorkspace: true`
+ * tool normally bypasses the per-workspace tx (getOrgPg admin handle) so an
+ * UNSCOPED superuser session can call it — which is exactly why the clamp denies
+ * such tools from a SCOPED superuser session (they could read across workspaces).
+ * These specific tools are the exception: they are crossWorkspace ONLY to support
+ * the unscoped path, but when called from a SCOPED session they confine themselves
+ * to the caller's OWN workspace (resolve ctx.principal.workspaceId) and are
+ * read-only — so a scoped session calling them never reads another workspace.
+ *
+ * The exemption lives HERE, in the gate, not as a self-asserted per-tool flag: a
+ * tool author must not be able to bypass workspace isolation by setting a boolean on
+ * their own def — each entry is reviewed as part of this security boundary.
+ *
+ *   - autonomy:decide — a pure advisory gate (capability intel:read, never mutates)
+ *     that resolves the caller's workspace and reads only THAT workspace's autonomy
+ *     policy. The Overwatch role runs workspace-scoped and its prompt mandates this
+ *     tool, so the clamp made it deterministically unusable for the role (EI-1810).
+ */
+const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set(['autonomy:decide']);
+
+/** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —
+ *  it self-confines to the caller's own workspace and is read-only (EI-1810). */
+function isScopedSafeCrossWorkspaceTool(toolName: string): boolean {
+  return SCOPED_SAFE_CROSSWORKSPACE.has(toolName);
+}
+
+/**
  * Parse the seven per-spawn URL params and return a partial
  * UnifiedToolContext fragment. Returns null if any required params are
  * missing — the caller falls back to built-in-only listing (e.g. dev
@@ -914,14 +941,20 @@ const handler = createMcpHandler(
           // superuser session (concrete workspaceId, not '*') is confined to its
           // workspace: (a) a crossWorkspace tool — which bypasses the workspace tx
           // (getOrgPg) and spans workspaces by design (see the P-062 admin-ctx
-          // branch below) — is DENIED; (b) its per-call `workspace` arg is
-          // overwritten with the clamped workspace (mirrors the power-user clamp).
-          // Only an UNSCOPED ('*') superuser may span. Flag OFF → no-op.
+          // branch below) — is DENIED, UNLESS it is on the scoped-safe allowlist
+          // (self-confines to the caller's own workspace + read-only; EI-1810);
+          // (b) its per-call `workspace` arg is overwritten with the clamped
+          // workspace (mirrors the power-user clamp). Only an UNSCOPED ('*')
+          // superuser may span. Flag OFF → no-op.
           const scopedSuperuserClamp =
             spawnRes.ctx.isSuperuser === true &&
             spawnRes.ctx.workspaceId !== '*' &&
             (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
-          if (scopedSuperuserClamp && projected.crossWorkspace === true) {
+          if (
+            scopedSuperuserClamp &&
+            projected.crossWorkspace === true &&
+            !isScopedSafeCrossWorkspaceTool(toolName)
+          ) {
             return {
               isError: true,
               content: [{

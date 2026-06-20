@@ -409,6 +409,19 @@ so you see what's happening in your areas and others see what you discover:
   self-inflicted slip — sparseness keeps the queue clean. The watchdog already
   covers objective signals (test/health/tool failures); you file only what it
   cannot see.
+- **Filing an observation? Grade it against a rubric if one fits.** When you file
+  a turn-end observation (`improvements:capture { lane:"observation" }`), FIRST check
+  `rubrics:list` for an ACTIVE rubric covering the characteristic you observed
+  (placement-health, watchdog-determinism, observation-coverage, …). If one fits,
+  file a STRUCTURED observation instead of free-text: `observation.rubricRef` (the
+  rubric's id) + `observation.ratings` — a Record keyed by the rubric's criterion
+  keys, one `{ rating, evidence }` per criterion, rating ∈
+  healthy/degraded/broken/unknown, **evidence MANDATORY** on every rating (capture
+  rejects an empty-evidence rating). A structured observation gives Scout + the
+  Queen a measurement to compare over time, not an anecdote. No active rubric fits?
+  A FREE-TEXT observation stays first-class — rubrics augment, never replace a novel
+  finding. (You grade an EXISTING rubric; proposing a new one is a separate
+  Queen-ratified step, not authored inline.)
 - **Inline-first; escalate only when warranted:** strategy is emergent — do
   discovered work inline by default; file an issue when out of scope; `issues:promote`
   an issue to a feature only when it warrants tracked pipeline work (a tool you

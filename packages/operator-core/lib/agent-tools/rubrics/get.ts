@@ -13,11 +13,11 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    'Read one rubric in full — its criteria (each with key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Grade against these: ratings[].criterion in a structured observation = a criteria[].key here.',
+    "Read one rubric in full — its criteria (each with key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }).",
   guidance: {
     when: 'You have a rubric_id (from rubrics:list/search) and need its full criteria to grade against — e.g. Overwatch emitting the hive-coordination-health scorecard, or filing a structured observation.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
-    chaining: 'rubrics:list → rubrics:get → grade each criterion (ratings[].criterion = criteria[].key) in your observation.',
+    chaining: "rubrics:list → rubrics:get → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation.",
   },
   capability: 'coord:read',
   requirePrincipal: false,

@@ -27,6 +27,8 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 const { buildStateOfHiveReaders } = await import('./corpus-digest-deps');
 const { synthesizeStateOfHive } = await import('./corpus-digest');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { createIssue } = await import('../issues-engineer');
+const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
 
 const WS = 'ws-state-of-hive-test';
 const T = Date.parse('2026-06-08T10:00:00Z');
@@ -142,5 +144,50 @@ describe('state-of-Hive production readers (real PG)', () => {
     // Corpus rollup reflects the real spend.
     expect(digest.corpus.spendUsd).toBeCloseTo(14.5, 5);
     expect(digest.corpus.spendBuckets).toBe(2); // 2 (harness,role) groups
+
+    // P-006: the rubric-rating lane is wired through the production readers without
+    // crashing. (Populated end-to-end in the dedicated scorecard test below.)
+    expect(Array.isArray(digest.rubricRatings)).toBe(true);
+    expect(digest.corpus.observations).toBe(0); // no scorecards inserted yet
+  });
+
+  it('observations reader surfaces a rubric-graded scorecard end-to-end → the rubric-rating lane (P-006)', async () => {
+    // REAL read path: createIssue(observation topic, payload.observation) → listIssues →
+    // issueToCandidate.observation (P-001 surfacing, su-f8ee5) → observations() reader →
+    // buildRubricRatings. Proves the structured observation flows all the way to the lane.
+    await createIssue({
+      title: 'hive-coordination-health scorecard',
+      topics: [OBSERVATION_TOPIC],
+      createdBy: 'overwatch',
+      payload: {
+        observation: {
+          rubricRef: 'hive-coordination-health',
+          sourceHive: 'papercusp',
+          // ratings is a Record keyed by criterion (D-003); evidence mandatory.
+          ratings: {
+            'end-to-end-flow': { rating: 'broken', evidence: '88 items unplaced despite idle capacity' },
+            'ideation-quality': { rating: 'healthy', evidence: 'lens weights diverged from uniform' },
+          },
+        },
+      },
+    });
+
+    // The reader maps the surfaced candidate.observation onto a clean record.
+    const records = await buildStateOfHiveReaders().observations();
+    const rec = records.find((r) => r.rubricRef === 'hive-coordination-health');
+    expect(rec).toBeDefined();
+    expect(rec!.sourceHive).toBe('papercusp');
+    expect(rec!.ratings?.['end-to-end-flow']).toEqual({ rating: 'broken', evidence: '88 items unplaced despite idle capacity' });
+
+    // The digest surfaces the broken criterion as a rubric measurement; healthy drops.
+    const digest = await synthesizeStateOfHive(buildStateOfHiveReaders(), { nowMs: T });
+    expect(digest.corpus.observations).toBeGreaterThanOrEqual(1);
+    const e2e = digest.rubricRatings.find(
+      (p) => p.ref === 'rubric:hive-coordination-health#end-to-end-flow@papercusp',
+    );
+    expect(e2e).toBeDefined();
+    expect(e2e!.summary).toContain('broken');
+    expect(e2e!.category).toBe('rubric-rating');
+    expect(digest.rubricRatings.some((p) => p.ref.includes('ideation-quality'))).toBe(false); // healthy → not surfaced
   });
 });

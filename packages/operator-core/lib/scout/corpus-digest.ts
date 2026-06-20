@@ -529,9 +529,9 @@ function buildRubricRatings(observations: StructuredObservationRecord[], limit: 
       const rating = r?.rating;
       if (!criterion || typeof rating !== 'string' || !rating.trim()) continue;
       const key = `${obs.rubricRef} ${obs.sourceHive ?? ''} ${criterion}`;
-      const g =
+      const g: RatingGroup =
         groups.get(key) ??
-        { rubricRef: obs.rubricRef, sourceHive: obs.sourceHive, criterion, counts: new Map(), severity: 0, total: 0 };
+        { rubricRef: obs.rubricRef, sourceHive: obs.sourceHive, criterion, counts: new Map<string, number>(), severity: 0, total: 0 };
       g.counts.set(rating, (g.counts.get(rating) ?? 0) + 1);
       g.severity += ratingSeverity(rating);
       g.total += 1;

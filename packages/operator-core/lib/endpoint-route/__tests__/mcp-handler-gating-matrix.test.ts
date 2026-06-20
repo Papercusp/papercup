@@ -329,6 +329,18 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).toContain('gatingtest:crossworkspace-ok');
   });
 
+  it('flag ON: a scoped superuser MAY call autonomy:decide — a scoped-safe self-confining crossWorkspace tool (EI-1810)', async () => {
+    // The Overwatch role runs workspace-scoped and its prompt MANDATES autonomy:decide,
+    // but the clamp made it deterministically unusable. The scoped-safe allowlist exempts
+    // it: it's crossWorkspace only for the unscoped path, yet self-scopes to the caller's
+    // own workspace + is read-only, so a scoped session calling it never reads another ws.
+    h.scopedClampFlag.value = true;
+    const res = await callTool('autonomy:decide', { action: 'improvements:capture' }, scoped('ws-test'));
+    expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
+    // …and it reached the handler, which self-scoped to the caller's OWN workspace.
+    expect(textOf(res)).toContain('"workspaceId": "ws-test"');
+  });
+
   it('flag ON: a scoped superuser’s foreign `workspace` ARG is overwritten with its own workspace', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('gatingtest:scoped', { workspace: 'other-ws' }, scoped('ws-test'));

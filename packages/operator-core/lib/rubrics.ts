@@ -9,7 +9,8 @@
  * Shape (Model A — the interface contract locked with su-f8ee5 [obs-schema consumer]
  * and su-5695e [P-003 seed author]): a rubric_id slug names ONE rubric; its `criteria`
  * jsonb holds the per-characteristic gradeable items. A structured observation's
- * rubricRef = rubrics.rubric_id, and ratings[].criterion = a criteria[].key.
+ * rubricRef = rubrics.rubric_id, and a structured observation's ratings is a
+ * Record keyed by criteria[].key (Record<criterionKey, { rating, evidence }>).
  *
  * Authorship (D-001): any agent PROPOSEs (status='proposed'); the Queen/owner RATIFIES
  * (proposed → active). v1 is workspace-LOCAL (not federated) and runs in the single
@@ -28,7 +29,7 @@ export const DEFAULT_RATING_SCALE: readonly string[] = ['healthy', 'degraded', '
 
 /** One gradeable item within a rubric (the per-characteristic criterion). */
 export interface RubricCriterion {
-  /** Stable kebab id; an observation's ratings[].criterion references this. */
+  /** Stable kebab id; a structured observation's ratings Record is keyed by this. */
   key: string;
   title: string;
   /** How this criterion is supposed to work (the MODEL). */
