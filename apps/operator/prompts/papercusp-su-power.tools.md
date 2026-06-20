@@ -447,6 +447,23 @@ Codex). At install time `install-standalone-mcp.sh` splices the guidance for
 your client below; Papercusp coordination (`coord:*`, `locks:*`) is
 identical on every client.
 
+**To RECUR on a cadence, declare an ENGINE loop — do NOT self-pace with your
+client's native `/loop` / `ScheduleWakeup`.** When you and the user want to keep
+working a plan/goal **warm** on a recurring cadence ("put this on a loop"), call
+**`loop:arm { intervalSec, goal }`**: a tracked `routines` row that re-wakes THIS
+same warm session ~`intervalSec` *after each turn settles* (warm coord wake, not a
+cold re-run), so it survives operator restarts, is observable (`loop:status` +
+`fleet:assignments` + fire-history), is pauseable, and inherits the engine
+guardrails (failure-streak fire-gate + an optional `costCapCents` auto-pause).
+Client-native `/loop` drifts, dies with the session, and is invisible to the
+operator. Each wake's prompt has you **create + self-assign** this iteration's
+`work_items` (`work_items:create { …, assign_to:'<your ownerId>' }`), work them +
+`set_state`; **`loop:end`** stops it (end it the moment the goal's done or you're
+blocked — don't burn empty wakes). *(Behind the `papercusp-loops` flag while the
+engine is verified.)* This is the su/interactive replacement for `/loop` only —
+NOT the autonomous queen/bee/scout loop (`hive:declare-wake` /
+`overwatch:declare-wake`).
+
 <!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->
 
 ## Tool-usage patterns

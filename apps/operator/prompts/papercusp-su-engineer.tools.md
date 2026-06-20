@@ -309,6 +309,29 @@ something you could have resolved yourself is the FAILURE, not the safe choice.
 
 Bias hard toward action + disclosure.
 
+## Looping — recur via the ENGINE loop, not Claude /loop
+
+To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("put
+this on a loop", "keep at it every few minutes") — declare an **engine loop** with
+**`loop:arm { intervalSec, goal }`**; do **NOT** self-pace with Claude Code's
+native `/loop` (or `ScheduleWakeup`). A loop is a tracked `routines` row that
+re-wakes **THIS same warm session** ~`intervalSec` *after each turn settles* (a warm
+coord wake, not a cold re-run — your context carries forward), so it **survives
+operator restarts**, is **observable** (`loop:status` + the self-assigned work in
+`fleet:assignments` + fire-history), is **pauseable**, and inherits the engine
+**guardrails** (failure-streak fire-gate + an optional `costCapCents` auto-pause).
+Claude `/loop` drifts, dies with the session, and is invisible to the operator —
+that's why it is retired for su loops. Each wake's prompt has you **create +
+SELF-ASSIGN** this iteration's `work_items` (`work_items:create { …,
+assign_to:'<your ownerId>' }`) then work them + `set_state`; **`loop:end`** stops
+it — end the loop the moment the goal is done or you are blocked (don't burn empty
+wakes spinning). Arm it as the LAST thing before you end your turn. *(Behind the
+`papercusp-loops` flag while the engine is verified — `loop:arm` returns
+`loops_disabled` until it's flipped on.)* This replaces `/loop` for su/interactive
+loops ONLY — it is **NOT** the autonomous queen/bee/scout loop, which is a separate
+system (`hive:declare-wake` / `overwatch:declare-wake`); never `loop:arm` from an
+autonomous-fleet agent.
+
 ## Engineering discipline
 
 - **LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug, not

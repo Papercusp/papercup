@@ -52,6 +52,7 @@ import { renderTestingStandard } from './testing-standard-policy';
 import { renderAccountRoutingNote } from './account-routing-policy';
 import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
+import { renderObservationRubricNudge } from './observation-rubric-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -130,6 +131,7 @@ export interface AssembledSection {
     | 'tools-playbook'
     | 'coord-legend'
     | 'friction-tripwire'
+    | 'observation-rubric-nudge'
     | 'yield-policy'
     | 'testing-standard'
     | 'account-routing-note'
@@ -406,6 +408,18 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (frictionTripwire) {
     parts.push(frictionTripwire);
     sections.push({ name: 'friction-tripwire', chars: frictionTripwire.length });
+  }
+
+  // Observation-rubric nudge (rubric-driven-observations-2026-06-20 P-005, D-001/D-003) — the
+  // HOW-to-grade sibling of the friction trip-wire in the SHARED base every operator-launched role
+  // inherits, mirroring the spawned-bee base (buildPromptParts). When filing a turn-end observation,
+  // check rubrics:list first and file a STRUCTURED observation (rubricRef + per-criterion ratings +
+  // mandatory evidence) if an active rubric fits; free-text stays first-class otherwise. Sourced from
+  // the one OBSERVATION_RUBRIC_NUDGE constant (orchestrator) so this base + the spawned-bee base can't desync.
+  const observationRubricNudge = renderObservationRubricNudge();
+  if (observationRubricNudge) {
+    parts.push(observationRubricNudge);
+    sections.push({ name: 'observation-rubric-nudge', chars: observationRubricNudge.length });
   }
 
   // Yield policy (turn-lifecycle-control P-017, D-007/D-009) — the dual of the

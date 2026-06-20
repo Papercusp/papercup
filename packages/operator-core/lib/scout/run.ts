@@ -33,6 +33,7 @@ import {
   type ScoutCycleLike,
   type ScoutTickDeps,
   type ScoutTickResult,
+  type QueenFeedbackItem,
 } from './scheduler';
 import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
 import type { ScoutCadenceOptions } from './cadence';

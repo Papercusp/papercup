@@ -34,6 +34,34 @@ vi.mock('../hive-epoch-boundary-wiring', () => ({
   isHiveRekeyEnabled: vi.fn(async () => true),
 }));
 
+// WI-280 reroute (ee7e9): the open-mode admit now funnels through upsertHiveMember, which does a
+// real hive_members INSERT (getOrgPg) BEFORE the grant. The hermetic harness has no org PG, so the
+// INSERT would throw and the admit would never reach the grant (where the boot-events are recorded).
+// Stub getOrgPg so the INSERT echoes its params back as the RETURNING row (valid for rowToRecord),
+// letting the admit reach the grant. The original test never hit getOrgPg, so this is the only call.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  const stubSql = {
+    unsafe: async (_q: string, params: readonly unknown[] = []) => [
+      {
+        workspace_id: params[0],
+        hive_home_slug: params[1],
+        github_user_id: params[2],
+        github_username: params[3],
+        display_name: params[4] ?? null,
+        avatar_url: params[5] ?? null,
+        device_attestations: params[6] ?? '[]',
+        revoked_pubkeys: params[7] ?? [],
+        binding_status: params[8] ?? 'unverified',
+      },
+    ],
+  };
+  return {
+    ...actual,
+    getOrgPg: (() => ({ sql: stubSql })) as unknown as typeof actual.getOrgPg,
+  };
+});
+
 import { bootHarnessSubstrate } from '../boot';
 import { grantEpochKeysToMembers } from '../hive-epoch-boundary-wiring';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
@@ -153,12 +181,12 @@ describe('WI-280 part B — re-key admit-grant failure is LOUD, not swallowed', 
         limit: 5,
       });
       expect(events.length).toBeGreaterThan(0);
-      expect(events[0].message).toContain('grantEpochKeysToMembers on admit failed');
+      expect(events[0].message).toContain('grantEpochKeysToMembers on upsertHiveMember failed');
 
       // The loud console.error (with the stack) also fired — the failure is no
       // longer message-only / swallowed.
       expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('grantEpochKeysToMembers on admit failed'),
+        expect.stringContaining('grantEpochKeysToMembers on upsertHiveMember failed'),
       );
     },
     5000,

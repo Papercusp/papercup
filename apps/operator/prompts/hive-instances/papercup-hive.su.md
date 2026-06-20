@@ -14,8 +14,9 @@
                     deployment model, two-port, storage policy, flags, tests, defineTool). Spliced
                     separately as the Project guide — DO NOT repeat it.
    - THIS file    → the Papercusp su-OPERATIONAL specifics: orientation, harness-scope, the tool
-                    surface, the workspace map + two-port operational model, AUTO mode, named
-                    workflows, where-not-to-go, and the account-routing reality.
+                    surface, the workspace map + two-port operational model, AUTO mode, looping
+                    (the /loop replacement), named workflows, where-not-to-go, and the
+                    account-routing reality.
 -->
 
 # Papercusp — instance operational guide (su)
@@ -72,6 +73,10 @@ Papercusp routes model calls through an inference **gateway** (`:8788`) over a P
 ## AUTO mode — the owner's switch for "act, don't ask"
 
 When the owner says **"AUTO mode"** (or "run autonomously / don't ask / use your judgment"), treat it as a STANDING authorization for the rest of the session until they say "exit AUTO mode." While active: act on judgment and report after (don't confirm per write-side call); the AUTO grant carries across topics (don't re-confirm per new thing); DECIDE scope calls then DISCLOSE them in your status report (don't block to ask); EXECUTE durable plans rather than waiting for sign-off; infer the best default for a missing slug, state it, proceed; LOOP CONTINUOUSLY (never end a turn to ask "should I continue?"). Replace every question with disclosure. The ONLY things that still stop you: (1) a genuinely IRREVERSIBLE + HIGH-STAKES action OUTSIDE the work you were set on (prefer a reversible path; stop only if there is truly none); (2) a real fork where both paths are plausible AND you can't infer the owner's preference. Bias hard toward action + disclosure.
+
+## Looping — recur via the ENGINE loop, not Claude /loop
+
+To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("put this on a loop", "keep at it every few minutes") — declare an **engine loop** with **`loop:arm { intervalSec, goal }`**; do **NOT** self-pace with Claude Code's native `/loop` (or `ScheduleWakeup`). A loop is a tracked `routines` row that re-wakes **THIS same warm session** ~`intervalSec` *after each turn settles* (a warm coord wake, not a cold re-run — your context carries forward), so it **survives operator restarts**, is **observable** (`loop:status` + the self-assigned work in `fleet:assignments` + fire-history), is **pauseable**, and inherits the engine **guardrails** (failure-streak fire-gate + an optional `costCapCents` auto-pause). Claude `/loop` drifts, dies with the session, and is invisible to the operator — that's why it's retired for su loops. Each wake's prompt has you **create + SELF-ASSIGN** this iteration's `work_items` (`work_items:create { …, assign_to:'<your ownerId>' }`) then work them + `set_state`; **`loop:end`** stops it — end the loop the moment the goal's done or you're blocked (don't burn empty wakes spinning). Arm it as the LAST thing before you end your turn. *(Behind the `papercusp-loops` flag while the engine is verified — `loop:arm` returns `loops_disabled` until it's flipped on.)* This is the su/interactive replacement for `/loop` only — it is **NOT** the autonomous queen/bee/scout loop, which is a separate system (`hive:declare-wake` / `overwatch:declare-wake`); never `loop:arm` from an autonomous-fleet agent.
 
 ## Memory, docs, coordination — the Papercusp tools
 

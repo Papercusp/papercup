@@ -447,6 +447,16 @@ import './issues/search';
 import './issues/link';
 import './issues/promote';
 
+// Rubrics — the shared-standards store (rubric-driven-observations-2026-06-20 P-002).
+// A rubric = the standard for a system characteristic (model + method + rating scale +
+// drift markers + per-characteristic criteria); agents grade STRUCTURED OBSERVATIONS
+// against an active rubric. Authorship D-001: any agent proposes, the Queen ratifies.
+import './rubrics/list';
+import './rubrics/get';
+import './rubrics/search';
+import './rubrics/propose';
+import './rubrics/ratify';
+
 // Work items — the UNIFIED work-item surface (unify-work-items-2026-06-04 D-007).
 // One `work_item` type discriminated by `kind` (feature|research-task|chunk|bug|change);
 // a facade over the two per-kind tables (harness_features_consolidated + engineer_issues).

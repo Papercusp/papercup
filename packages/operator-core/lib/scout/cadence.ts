@@ -20,6 +20,14 @@
  */
 
 export type ScoutCadenceReason =
+  /** A pending Queen revision request (queen-scout-feedback-loop-2026-06-20,
+   *  D-001/D-003) — fires the cycle OUT-OF-CADENCE, ahead of everything else and
+   *  past the min-interval floor, so the Queen's feedback on a routed draft is
+   *  iterated immediately and PREEMPTS a fresh-ideation cycle (D-003 #4). The
+   *  runaway bound is the per-cycle Scout budget + the autoloop fire-gate, NOT
+   *  the cadence floor (D-002). Set from the scheduler's cycle-start coord:inbox
+   *  read via {@link ScoutCadenceState.queenWakePending} (P-001/P-002). */
+  | 'queen-feedback'
   /** Accumulated friction crossed the threshold — the colony is stuck, leap now. */
   | 'friction-triggered'
   /** Scout's prior routed ideas are ALL resolved (none pending) — the idea
@@ -54,6 +62,15 @@ export interface ScoutCadenceState {
    */
   routedIdeaTotal?: number;
   pendingIdeaCount?: number;
+  /**
+   * A Queen revision request is waiting for this Scout (the scheduler read one at
+   * cycle-start from coord:inbox addressed to `scout:<hive>` — P-001). When true the
+   * gate fires `queen-feedback` immediately, ahead of every other trigger AND past
+   * the min-interval floor (out-of-cadence), so a routed-draft revision iterates
+   * now and preempts fresh ideation (queen-scout-feedback-loop D-001/D-003 #4).
+   * Optional (pure-gate default false) — omit when there is no feedback channel.
+   */
+  queenWakePending?: boolean;
 }
 
 export interface ScoutCadenceOptions {
@@ -107,6 +124,18 @@ export function shouldRunScoutCycle(
   const elapsedSec =
     state.lastRunAtMs == null ? Number.POSITIVE_INFINITY : (state.nowMs - state.lastRunAtMs) / 1000;
   const frictionTriggered = state.frictionSignals >= frictionThreshold;
+
+  // 0. Queen feedback PREEMPTS everything (queen-scout-feedback-loop D-001/D-003).
+  //    A pending Queen revision request fires the cycle OUT-OF-CADENCE — ahead of
+  //    friction and PAST the min-interval floor — so the Queen's feedback on a
+  //    routed draft is iterated immediately and never waits behind (or is starved
+  //    by) fresh ideation (D-003 #4). This is the deliberate floor BYPASS: the
+  //    revision loop's runaway bound is the per-cycle Scout budget + the autoloop
+  //    fire-gate (D-002), not the cadence interval. Disabled (the pure-gate
+  //    default) when the scheduler supplies no `queenWakePending`.
+  if (state.queenWakePending === true) {
+    return { fire: true, reason: 'queen-feedback' };
+  }
 
   // 1. Friction fires fast (own short floor) — the colony is stuck, leap now.
   if (frictionTriggered) {

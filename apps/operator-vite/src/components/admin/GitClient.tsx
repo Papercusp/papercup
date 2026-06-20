@@ -1,5 +1,6 @@
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { StatusPill } from '../ui';
 
 /**
  * /admin/git — the git-sync → green-checkpoint → release pipeline console.
@@ -151,9 +152,6 @@ const KIND_LABEL: Record<PipelineEvent['kind'], string> = {
 function Dot({ on }: { on: boolean }) {
   return <span className={`pc-git__dot ${on ? 'is-on' : 'is-off'}`} aria-hidden="true" />;
 }
-function Pill({ tone = 'neutral', children }: { tone?: Tone; children: React.ReactNode }) {
-  return <span className={`pc-git__pill is-${tone}`}>{children}</span>;
-}
 function Stat({ label, value, tone, sub }: { label: string; value: React.ReactNode; tone?: Tone; sub?: string }) {
   return (
     <div className={`pc-git__stat ${tone ? `is-${tone}` : ''}`}>
@@ -169,7 +167,7 @@ function RoutineCard({ r, label }: { r: RoutineInfo | null; label: string }) {
       <div className="pc-git__routine-head">
         <Dot on={!!r?.active} />
         <span className="pc-git__routine-name">{label}</span>
-        <Pill tone={r?.active ? 'good' : 'neutral'}>{r?.active ? 'active' : 'inactive'}</Pill>
+        <StatusPill tone={r?.active ? 'good' : 'neutral'} label={r?.active ? 'active' : 'inactive'} />
       </div>
       <div className="pc-git__kv">
         <span className="pc-git__k">cron</span>
@@ -301,7 +299,7 @@ export default function GitClient() {
             <div className="pc-git__cards">
               <div className="pc-git__card">
                 <div className="pc-git__card-h">
-                  git-sync <Pill tone={statusTone(st.gitSync.lastStatus)}>{st.gitSync.lastStatus ?? '—'}</Pill>
+                  git-sync <StatusPill tone={statusTone(st.gitSync.lastStatus)} label={st.gitSync.lastStatus ?? '—'} />
                 </div>
                 <div className="pc-git__kv">
                   <span className="pc-git__k">last sync</span>
@@ -311,7 +309,7 @@ export default function GitClient() {
                   <span className="pc-git__k">error streak</span>
                   <span className="pc-git__v">
                     {st.gitSync.consecutiveErrorTicks > 0 ? (
-                      <Pill tone="bad">{st.gitSync.consecutiveErrorTicks} ticks</Pill>
+                      <StatusPill tone="bad" label={`${st.gitSync.consecutiveErrorTicks} ticks`} />
                     ) : (
                       '0'
                     )}
@@ -329,7 +327,7 @@ export default function GitClient() {
                   <span className="pc-git__k">last run</span>
                   <span className="pc-git__v">
                     {st.resolver.lastStatus ? (
-                      <Pill tone={statusTone(st.resolver.lastStatus)}>{st.resolver.lastStatus}</Pill>
+                      <StatusPill tone={statusTone(st.resolver.lastStatus)} label={st.resolver.lastStatus} />
                     ) : (
                       'never'
                     )}
@@ -354,18 +352,18 @@ export default function GitClient() {
                 <div className="pc-git__card-h">
                   green-checkpoint gate{' '}
                   {st.gate.stalled ? (
-                    <Pill tone="bad">STALLED</Pill>
+                    <StatusPill tone="bad" label="STALLED" />
                   ) : st.gate.consecutiveReds > 0 ? (
-                    <Pill tone="warn">held</Pill>
+                    <StatusPill tone="warn" label="held" />
                   ) : (
-                    <Pill tone="good">green</Pill>
+                    <StatusPill tone="good" label="green" />
                   )}
                 </div>
                 <div className="pc-git__kv">
                   <span className="pc-git__k">red streak</span>
                   <span className="pc-git__v">
                     {st.gate.consecutiveReds > 0 ? (
-                      <Pill tone={st.gate.stalled ? 'bad' : 'warn'}>{st.gate.consecutiveReds} checkpoint(s)</Pill>
+                      <StatusPill tone={st.gate.stalled ? 'bad' : 'warn'} label={`${st.gate.consecutiveReds} checkpoint(s)`} />
                     ) : (
                       '0'
                     )}
@@ -375,7 +373,7 @@ export default function GitClient() {
                   <span className="pc-git__k">release-fixer</span>
                   <span className="pc-git__v">
                     {st.gate.lastFixerStatus ? (
-                      <Pill tone={statusTone(st.gate.lastFixerStatus)}>{st.gate.lastFixerStatus}</Pill>
+                      <StatusPill tone={statusTone(st.gate.lastFixerStatus)} label={st.gate.lastFixerStatus} />
                     ) : (
                       'never'
                     )}{' '}
@@ -384,7 +382,7 @@ export default function GitClient() {
                   <span className="pc-git__k">flaky tests</span>
                   <span className="pc-git__v">
                     {st.gate.flakyWorkspaces.length > 0 ? (
-                      <Pill tone="warn">{st.gate.flakyWorkspaces.join(', ')}</Pill>
+                      <StatusPill tone="warn" label={st.gate.flakyWorkspaces.join(', ')} />
                     ) : (
                       'none'
                     )}
@@ -396,11 +394,12 @@ export default function GitClient() {
                 <div className="pc-git__card-h">
                   deploy gate
                   {st.deploy.deployedBehindMain === 0 ? (
-                    <Pill tone="good">:3070 current</Pill>
+                    <StatusPill tone="good" label=":3070 current" />
                   ) : (
-                    <Pill tone="warn">
-                      {st.deploy.deployedBehindMain ?? '?'} behind {st.deploy.integrationBranch}
-                    </Pill>
+                    <StatusPill
+                      tone="warn"
+                      label={`${st.deploy.deployedBehindMain ?? '?'} behind ${st.deploy.integrationBranch}`}
+                    />
                   )}
                 </div>
                 <div className="pc-git__kv">
@@ -415,9 +414,9 @@ export default function GitClient() {
                   </span>
                   <span className="pc-git__v">
                     {st.deploy.readyBehindMain === 0 ? (
-                      <Pill tone="good">caught up</Pill>
+                      <StatusPill tone="good" label="caught up" />
                     ) : (
-                      <Pill tone="warn">{st.deploy.readyBehindMain ?? '?'} behind</Pill>
+                      <StatusPill tone="warn" label={`${st.deploy.readyBehindMain ?? '?'} behind`} />
                     )}
                   </span>
                   <span className="pc-git__k">undeployed ({st.deploy.releaseRef}→:3070)</span>
@@ -535,10 +534,6 @@ const gitCss = `
   .pc-git__dot.is-on { background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
   .pc-git__dot.is-off { background: rgba(148, 163, 184, 0.5); }
 
-  .pc-git__pill { font-size: 11px; font-weight: 640; padding: 2px 8px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%); color: color-mix(in srgb, var(--fg), transparent 20%); }
-  .pc-git__pill.is-good { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.1); }
-  .pc-git__pill.is-warn { color: #fcd34d; border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.1); }
-  .pc-git__pill.is-bad { color: #fca5a5; border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.1); }
 
   .pc-git__timeline { display: grid; gap: 4px; }
   .pc-git__event { display: grid; grid-template-columns: 88px 90px 1fr auto; gap: 10px; align-items: center; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%); border-radius: 8px; background: rgba(255,255,255,0.012); font-size: 12px; }

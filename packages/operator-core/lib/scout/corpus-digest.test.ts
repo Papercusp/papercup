@@ -22,10 +22,12 @@ import {
   type RevertRecord,
   type SpendRecord,
   type DeferralRecord,
+  type StructuredObservationRecord,
 } from './corpus-digest';
 
 const NOW = Date.parse('2026-06-08T12:00:00Z');
 const daysAgo = (d: number): string => new Date(NOW - d * 24 * 60 * 60 * 1000).toISOString();
+const msAgo = (d: number): number => NOW - d * 24 * 60 * 60 * 1000;
 
 const friction: ImprovementCandidate[] = [
   // Recurring friction: same stable signature ×2, both open.
@@ -67,6 +69,40 @@ const completions: ChangeFeedEntry[] = [
   { id: 'plan:p', kind: 'plan-run', title: 'plan done', ref: 'plan:p', ts: daysAgo(3) },
 ];
 
+// Structured (rubric-graded) observations — Overwatch-style scorecards (D-003):
+// ratings is a Record keyed by criterion. Two papercusp scorecards make
+// end-to-end-flow `broken` RECUR; a generic-test scorecard is a SEPARATE group by
+// source-hive; the pure-`healthy` criteria must drop out of the surfaced lane.
+const observations: StructuredObservationRecord[] = [
+  {
+    id: 'EI-OBS-1', title: 'hive-coordination-health scorecard',
+    sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(1),
+    ratings: {
+      'end-to-end-flow': { rating: 'broken', evidence: '88 items unplaced despite idle capacity' },
+      'ideation-quality': { rating: 'healthy', evidence: 'lens weights diverged from uniform' },
+      'watchdog-determinism': { rating: 'degraded', evidence: 'two non-deterministic red-tests this wake' },
+    },
+  },
+  {
+    id: 'EI-OBS-2', title: 'hive-coordination-health scorecard',
+    sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(3),
+    ratings: {
+      'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck — 0 placements last hr' },
+      'ideation-quality': { rating: 'healthy', evidence: 'fresh ideas generated' },
+    },
+  },
+  {
+    id: 'EI-OBS-3', title: 'scorecard',
+    sourceHive: 'generic-test', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(2),
+    ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'slow but moving' } },
+  },
+  {
+    id: 'EI-OBS-4', title: 'scorecard',
+    sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(1),
+    ratings: { 'tool-utilization': { rating: 'healthy', evidence: 'all tools loading fine' } },
+  },
+];
+
 function fixtureReaders(over: Partial<StateOfHiveReaders> = {}): StateOfHiveReaders {
   return {
     async completions() { return completions; },
@@ -74,6 +110,7 @@ function fixtureReaders(over: Partial<StateOfHiveReaders> = {}): StateOfHiveRead
     async friction() { return friction; },
     async spend() { return spend; },
     async deferrals() { return deferrals; },
+    async observations() { return observations; },
     ...over,
   };
 }
@@ -94,6 +131,7 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       deferrals: 3,
       spendUsd: 15.75,
       spendBuckets: 3,
+      observations: 4,
     });
   });
 
@@ -166,9 +204,60 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
     });
   });
 
+  describe('rubricRatings (P-006)', () => {
+    it('groups by (rubric, source-hive, criterion), ranks degraded/broken by severity × recurrence', async () => {
+      const { rubricRatings } = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
+      // 3 surfaced groups: e2e-flow@papercusp (broken×2), watchdog-determinism@papercusp
+      // (degraded×1), e2e-flow@generic-test (degraded×1). The 2 pure-healthy criteria drop.
+      expect(rubricRatings).toHaveLength(3);
+
+      const top = rubricRatings[0];
+      expect(top.summary).toBe('hive-coordination-health · end-to-end-flow @ papercusp: broken');
+      expect(top.ref).toBe('rubric:hive-coordination-health#end-to-end-flow@papercusp');
+      expect(top.category).toBe('rubric-rating');
+      expect(top.weight).toBe(1); // the most-severe group normalises to 1.0
+      expect(top.detail).toContain('broken 2×');
+      expect(top.detail).toContain('over 2 obs');
+      expect(top.detail).toContain('latest: 88 items unplaced despite idle capacity'); // most-recent (msAgo(1))
+    });
+
+    it('separates the same criterion by source-hive into distinct groups + refs', async () => {
+      const { rubricRatings } = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
+      const refs = rubricRatings.map((p) => p.ref);
+      expect(refs).toContain('rubric:hive-coordination-health#end-to-end-flow@papercusp');
+      expect(refs).toContain('rubric:hive-coordination-health#end-to-end-flow@generic-test'); // separate hive
+      const generic = rubricRatings.find((p) => p.ref.endsWith('@generic-test'))!;
+      expect(generic.summary).toContain('generic-test: degraded');
+    });
+
+    it('drops pure-healthy criteria (nothing to ideate on) but counts every scorecard in the rollup', async () => {
+      const digest = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
+      const summaries = digest.rubricRatings.map((p) => p.summary);
+      expect(summaries.some((s) => s.includes('ideation-quality'))).toBe(false); // healthy×2 → dropped
+      expect(summaries.some((s) => s.includes('tool-utilization'))).toBe(false); // healthy×1 → dropped
+      expect(digest.corpus.observations).toBe(4); // all 4 scorecards scanned (honest coverage)
+    });
+
+    it('isolates a throwing observations reader — empty lane, rest of the digest intact', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const digest = await synthesizeStateOfHive(
+        fixtureReaders({ async observations() { throw new Error('PG down'); } }),
+        { nowMs: NOW },
+      );
+      expect(digest.rubricRatings).toEqual([]);
+      expect(digest.corpus.observations).toBe(0);
+      expect(digest.recurringFriction.length).toBeGreaterThan(0); // others unaffected
+    });
+
+    it('every rubric-rating pattern validates against MetaPatternSchema', async () => {
+      const { rubricRatings } = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
+      for (const p of rubricRatings) expect(() => MetaPatternSchema.parse(p)).not.toThrow();
+    });
+  });
+
   it('every surfaced pattern carries a non-empty ref + summary, weight in [0,1]', async () => {
     const digest = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
-    const lanes = [digest.recurringFriction, digest.timeTokenSinks, digest.chronicDeferrals, digest.capabilityGaps, digest.reverts];
+    const lanes = [digest.recurringFriction, digest.timeTokenSinks, digest.chronicDeferrals, digest.capabilityGaps, digest.reverts, digest.rubricRatings];
     for (const lane of lanes) {
       for (const p of lane) {
         expect(p.summary.length).toBeGreaterThan(0);

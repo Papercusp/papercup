@@ -17,6 +17,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import type { IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
+import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 
 export default defineTool({
   name: 'improvements:capture',
@@ -56,30 +57,66 @@ export default defineTool({
         scope: z.enum(['self', 'role', 'harness', 'papercusp']).optional(),
         confidence: z.enum(['low', 'med', 'high']).optional(),
         refs: z.array(z.string().max(200)).max(12).optional().describe('attribution: tool:/file:/WI- refs grounding the observation'),
+        // ── Structured-observation v2 (rubric-driven-observations-2026-06-20 P-001 / D-003).
+        // Converges the source-hive tag (workspace-scoped-coordination P-001) + rubric
+        // grading (this plan) into ONE coherent extension. All optional — free-text
+        // observations stay first-class.
+        sourceHive: z.string().max(120).optional().describe('the hive the observation came FROM — AUTO-DERIVED from ctx (the agent harness/hive) when omitted; explicit callers (Overwatch/Scout) may set it'),
+        targetHive: z.string().max(120).optional().describe('optional: the hive the observation is ABOUT (a cross-hive observation)'),
+        rubricRef: z.string().max(120).optional().describe("a rubrics.rubric_id this observation grades against (e.g. 'hive-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it"),
+        ratings: z
+          .record(
+            z.string().min(1),
+            z.object({
+              rating: z.string().min(1).describe("a value from the criterion's ratingScale — default ['healthy','degraded','broken','unknown'] ('unknown' = not-assessable this wake)"),
+              evidence: z.string().min(1).describe('MANDATORY concrete evidence backing the rating — a metric, a query result, a reference (a rating without evidence is rejected)'),
+            }),
+          )
+          .optional()
+          .describe('per-criterion ratings against rubricRef, KEYED by rubric criterion `key` (a scorecard: one rating per criterion). evidence is mandatory on every entry'),
       })
       .optional()
-      .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body)'),
+      .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.'),
   }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     const source = id.source === 'omp-hook-session' || id.source === 'static-client' ? 'su' : 'engineer';
-    const result = await captureImprovement({
-      title: args.title,
-      kind: args.kind ?? 'change',
-      body: args.body,
-      severity: args.severity as IssueSeverity | undefined,
-      subTopic: args.subTopic,
-      scope: args.scope,
-      foundDuring: args.foundDuring,
-      paths: args.paths,
-      force: args.force,
-      checkDuplicatesOnly: args.checkDuplicatesOnly,
-      origin: args.origin,
-      lane: args.lane,
-      payloadExtra: args.observation ? { observation: args.observation } : undefined,
-      createdBy: id.ownerId,
-      source,
-    });
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    // Auto-derive sourceHive (rubric-driven-observations D-003) from the caller's
+    // hive/harness when omitted: signed-spawn bees carry ctx.harnessSlug; explicit
+    // callers (Overwatch/Scout) set observation.sourceHive themselves. '*' (the
+    // unscoped session) is not a hive → leave undefined.
+    const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const ctxHarness =
+      typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
+    const observation = args.observation
+      ? { ...args.observation, sourceHive: args.observation.sourceHive ?? ctxHarness }
+      : undefined;
+    try {
+      const result = await captureImprovement({
+        title: args.title,
+        kind: args.kind ?? 'change',
+        body: args.body,
+        severity: args.severity as IssueSeverity | undefined,
+        subTopic: args.subTopic,
+        scope: args.scope,
+        foundDuring: args.foundDuring,
+        paths: args.paths,
+        force: args.force,
+        checkDuplicatesOnly: args.checkDuplicatesOnly,
+        origin: args.origin,
+        lane: args.lane,
+        payloadExtra: observation ? { observation } : undefined,
+        createdBy: id.ownerId,
+        source,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    } catch (err) {
+      // Surface a rubric-rating contract violation (missing evidence / rubricRef)
+      // as a clean tool error instead of an opaque throw (D-002 evidence gate).
+      if (err instanceof ObservationEvidenceError) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: err.message }) }] };
+      }
+      throw err;
+    }
   },
 });

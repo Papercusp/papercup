@@ -21,6 +21,7 @@
 import { listIssues, type EngineerIssue, type ListIssuesFilter } from '../../issues-engineer';
 import type { ImprovementCandidate, WorkItemKind } from './policy';
 import { isSignalOrigin, originAllowed, ORGANIC_ONLY, type SignalOrigin } from './provenance';
+import { asStructuredObservation } from './observation-types';
 
 /** The built-in capture/triage lens topic (D-003). */
 export const IMPROVEMENT_TOPIC = 'papercusp-improvement';
@@ -57,6 +58,9 @@ interface ImprovementPayload {
   watchdogKey?: unknown;
   /** Machine-readable finding class ('<miner>:<shape>' — frontier P-044/D-008). */
   findingClass?: unknown;
+  /** The structured-observation v2 record (rubric-driven-observations-2026-06-20
+   *  P-001 / D-003) — payload.observation, surfaced onto the candidate for Scout (P-006). */
+  observation?: unknown;
 }
 
 function payloadOf(issue: EngineerIssue): ImprovementPayload {
@@ -71,6 +75,11 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
   const attempts = typeof p.implementAttempts === 'number' ? p.implementAttempts : undefined;
   const decidedReason = typeof p.decidedReason === 'string' && p.decidedReason.trim() ? p.decidedReason : undefined;
   const sourceRole = typeof p.sourceRole === 'string' ? (p.sourceRole as 'Queen' | 'bee' | 'system' | 'Scout' | 'human') : undefined;
+  // Structured-observation v2 view (rubric-driven-observations-2026-06-20 P-001 /
+  // D-003) — surfaced from payload.observation so Scout's corpus-digest (P-006)
+  // reads rubric ratings + source-hive without re-parsing the raw payload.
+  // Undefined on non-observation / free-text rows.
+  const observation = asStructuredObservation(p.observation);
   return {
     id: issue.id,
     kind,
@@ -92,6 +101,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(typeof p.watchdogKey === 'string' && p.watchdogKey ? { watchdogKey: p.watchdogKey } : {}),
     ...(typeof p.findingClass === 'string' && p.findingClass ? { findingClass: p.findingClass } : {}),
     ...(isSignalOrigin(issue.signalOrigin) ? { origin: issue.signalOrigin } : {}),
+    ...(observation ? { observation } : {}),
   };
 }
 

@@ -28,6 +28,7 @@ import {
   idleActivityEnabled,
   isAutoScaleOutEnabled,
   hasActiveThrottle,
+  IDLE_ACTIVITY_KINDS,
   type OwnerSteering,
 } from './owner-steering';
 
@@ -316,6 +317,22 @@ describe('throttle accessors (P-006)', () => {
     expect(idleActivityEnabled({ ...base, idleActivities: { gym: false } }, 'gym')).toBe(false);
     expect(idleActivityEnabled({ ...base, idleActivities: { gym: false } }, 'scout')).toBe(true);
     expect(idleActivityEnabled({ ...base, idleActivities: { scout: true } }, 'scout')).toBe(true);
+  });
+
+  it('plan-review is a registered idle-activity kind that gates the Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20 D-003 #2)', () => {
+    // The kind exists, so the Queen's idle review-iteration of Scout drafts is a
+    // real, owner-toggleable gate — not just prose in the persona.
+    expect(IDLE_ACTIVITY_KINDS).toContain('plan-review');
+    // Defaults ON (review runs on idle wakes unless the owner turns it off)…
+    expect(idleActivityEnabled(base, 'plan-review')).toBe(true);
+    // …and an explicit false suppresses ONLY plan-review, leaving the others ON.
+    const off = { ...base, idleActivities: { 'plan-review': false } as const };
+    expect(idleActivityEnabled(off, 'plan-review')).toBe(false);
+    expect(idleActivityEnabled(off, 'scout')).toBe(true);
+    expect(idleActivityEnabled(off, 'gym')).toBe(true);
+    // An OFF plan-review counts as an active throttle (surfaces in the wake brief).
+    expect(hasActiveThrottle(off)).toBe(true);
+    expect(hasActiveThrottle({ ...base, idleActivities: { 'plan-review': true } })).toBe(false); // ON is default
   });
 
   it('isAutoScaleOutEnabled defaults ON; only explicit false disables', () => {

@@ -50,14 +50,17 @@ export const CREATIVE_LENSES: readonly CreativeLens[] = [
 ] as const;
 
 /**
- * One meta-pattern category from the "state of the Hive" corpus digest (P-003).
- * Mirrors the four lanes curation/state-of-hive surfaces.
+ * One meta-pattern category from the "state of the Hive" corpus digest. The four
+ * friction lanes (P-003) plus `rubric-rating` — structured rubric measurements
+ * grouped by rubric/source-hive (rubric-driven-observations-2026-06-20 P-006), so
+ * the ideators leap from MEASUREMENTS, not just free-text clusters.
  */
 export type MetaPatternCategory =
   | 'recurring-friction'
   | 'time-token-sink'
   | 'chronic-deferral'
-  | 'capability-gap';
+  | 'capability-gap'
+  | 'rubric-rating';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -97,6 +100,15 @@ export interface CorpusDigest {
   timeTokenSinks: MetaPattern[];
   chronicDeferrals: MetaPattern[];
   capabilityGaps: MetaPattern[];
+  /**
+   * Structured rubric-rating measurements grouped by rubric / source-hive
+   * (rubric-driven-observations-2026-06-20 P-006). OPTIONAL so pre-rubric digests
+   * and the 4-lane test fixtures stay valid CorpusDigests; {@link flattenDigest}
+   * folds it in when present so the ideators ideate on MEASUREMENTS, not just
+   * free-text clusters. Each pattern is one (rubric, source-hive, criterion)
+   * standing; its `ref` (`rubric:<id>#<criterion>@<hive>`) is the drill-back.
+   */
+  rubricRatings?: MetaPattern[];
   /** Optional one-line "state of the Hive" headline. */
   headline?: string;
   /** ISO timestamp the digest was synthesized. */

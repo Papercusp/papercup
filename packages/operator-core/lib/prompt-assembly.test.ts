@@ -321,6 +321,19 @@ describe('assembleRolePrompt — reuse-first nudge (agents-reuse-first-default-2
   });
 });
 
+describe('assembleRolePrompt — observation-rubric nudge (rubric-driven-observations-2026-06-20 P-005/D-003)', () => {
+  it('injects the "check rubrics:list, grade structured if one fits" nudge into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Filing an observation? Grade it against a rubric if one fits');
+    expect(out.text).toContain('rubrics:list');
+    expect(out.text).toContain('observation.rubricRef');
+    expect(out.text).toContain('EVIDENCE IS REQUIRED');
+    expect(out.sections.some((s) => s.name === 'observation-rubric-nudge')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — friction trip-wire (self-learning-central P-001/A, D-006)', () => {
   it('injects the near-zero friction trip-wire into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

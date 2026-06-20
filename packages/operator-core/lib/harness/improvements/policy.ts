@@ -85,6 +85,13 @@ export interface ImprovementCandidate {
    *  `negative-space:resolution-gap`). The graduation tracker counts clean
    *  passes per class; absent on interactive/legacy captures. */
   findingClass?: string;
+  /** The structured-observation v2 view (rubric-driven-observations-2026-06-20
+   *  P-001 / D-003), surfaced from payload.observation for observation-lane rows:
+   *  { kind, scope, confidence, refs, sourceHive, targetHive, rubricRef, ratings }.
+   *  Lets the Scout corpus-digest (P-006) group by rubricRef/sourceHive + surface
+   *  rubric ratings WITHOUT re-reading the raw payload. Absent on non-observation /
+   *  free-text rows. */
+  observation?: import('./observation-types').StructuredObservation;
 }
 
 export type Tier = 'auto' | 'human';

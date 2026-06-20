@@ -33,6 +33,7 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
+import { validateObservationRatings, type StructuredObservation } from './observation-types';
 import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
@@ -181,6 +182,13 @@ export async function captureImprovement(
   // origin participate in dedup + decided-recall — a drill row deduping against an
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
   const isObservation = input.lane === 'observation';
+  // Rubric-grading evidence gate (rubric-driven-observations-2026-06-20 D-002):
+  // FAIL FAST — a structured observation whose ratings lack evidence (or whose
+  // ratings block names no rubric) is a contract violation, rejected before any
+  // dedup/search work. One gate here covers BOTH capture entry points (the
+  // improvements:capture tool + the watchdog). Throws ObservationEvidenceError;
+  // the tool handler catches it into a clean { ok:false, error } result.
+  validateObservationRatings(input.payloadExtra?.observation as StructuredObservation | undefined);
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
   // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
   // Scout clusters downstream, and the reflecting agent is told not to dedup — so a

@@ -1113,13 +1113,14 @@ test('[B-GW-2 chaos] a hung OAuth-TOKEN endpoint under high concurrency — ever
 
 test('[B-GW-1 AIMD] sustained upstream 429s SHRINK the effective admission concurrency, then 200s recover it', async () => {
   // Pool of 3. The upstream 429s (usage-cap, backoff-0 internal rotation) for the first 2 calls then 200s.
-  // 3-account pool. ONLY the first upstream call 429s (a BARE transient burst → a SHORT ~15s pace, fast
-  // rotation), every later call 200s. Request 1: A 429 (recordThrottle → trips a decrease at threshold 1)
-  // → rotate to B 200. A is then briefly paced; later requests route to the clean accounts (B/C) → 200,
-  // each draining pressure + earning additive recovery. A short transient pace (not a long usage cap) is
-  // what keeps the later requests OFF the fail-fast-shed path so recovery can actually flow.
+  // 3-account pool with PER-ACCOUNT governors (governorFor:undefined overrides boot's single shared
+  // governor → the registry's per-(model,account) buckets, so one account's 429 pause doesn't pause the
+  // others). ONLY the first upstream call 429s (a BARE transient burst → a short pace + fast pool
+  // rotation); every later call 200s. Request 1: the throttled account 429s (recordThrottle → trips a
+  // decrease at threshold 1) → rotate to a healthy account → 200. The throttled account is then briefly
+  // paced + pool-skipped, so later requests route to the CLEAN accounts → 200, each draining pressure +
+  // earning additive recovery toward the cap.
   resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
-  const gwlogs: string[] = [];
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
   const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
   let calls = 0;
@@ -1136,7 +1137,7 @@ test('[B-GW-1 AIMD] sustained upstream 429s SHRINK the effective admission concu
         res.end(JSON.stringify({ ok: true }));
       }
     },
-    { pool, concurrency: 8, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 2 }, log: (l, m) => gwlogs.push(`${l}: ${m}`) },
+    { pool, governorFor: undefined, concurrency: 8, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 2 } },
   );
 
   const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
@@ -1152,7 +1153,7 @@ test('[B-GW-1 AIMD] sustained upstream 429s SHRINK the effective admission concu
   for (let i = 0; i < 10; i++) {
     const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
     const rb = await r.text();
-    assert.equal(r.status, 200, `recovery request ${i} got ${r.status} (calls=${calls}, body=${rb.slice(0, 80)})\nGW LOGS:\n${gwlogs.join('\n')}`);
+    assert.equal(r.status, 200, `recovery request ${i} got ${r.status} (calls=${calls}, body=${rb.slice(0, 100)})`);
   }
   s = (await (await ask('/stats')).json()) as typeof s;
   assert.ok(s.aimd.effective > shrunk, `effective concurrency recovered after clean 200s (${shrunk} → ${s.aimd.effective})`);

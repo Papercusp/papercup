@@ -65,6 +65,27 @@ export interface ScoutCycleLike {
   stop?: string;
 }
 
+/**
+ * One pending Queen→Scout revision request (queen-scout-feedback-loop-2026-06-20,
+ * P-001/D-001). The scheduler reads these at cycle-start from coord:inbox addressed
+ * to `scout:<hive>` ({@link ScoutTickDeps.readQueenFeedback}); each is a coord
+ * message the Queen sent carrying the routed draft's `plan_slug` + her guidance
+ * `body`. Their presence fires the cycle out-of-cadence (`queen-feedback`, P-002)
+ * and is threaded into the cycle so it runs a TARGETED revision on those drafts.
+ */
+export interface QueenFeedbackItem {
+  /** The routed DRAFT plan slug the Queen is giving feedback on. */
+  planSlug: string;
+  /** The Queen's guidance text (the coord message body). */
+  body: string;
+  /** The Queen's coord owner id (the message sender) — the ping-back recipient. */
+  fromOwnerId: string;
+  /** The coord msg_id (acked after the revision so it is consumed exactly once). */
+  msgId: string;
+  /** ISO timestamp the Queen sent it (ordering / observability). */
+  ts: string;
+}
+
 export interface ScoutFireGate {
   allow: boolean;
   reason?: string;
@@ -74,8 +95,15 @@ export interface ScoutFireGate {
 export interface ScoutTickDeps {
   /** Read live cadence signals (idle ratio, friction count, last-run epoch ms). */
   readCadenceState: () => Promise<ScoutCadenceState>;
-  /** Run one Scout cycle under the resolved budget (cb4b9's runScoutCycle, adapted). */
-  runCycle: (ctx: { budget: Required<ScoutBudget>; cycleId: string }) => Promise<ScoutCycleLike>;
+  /** Run one Scout cycle under the resolved budget (cb4b9's runScoutCycle, adapted).
+   *  When `queenFeedback` is present (the cycle-start coord:inbox read found
+   *  plan-keyed Queen feedback, P-001) the runner targets a REVISION of those draft
+   *  plans instead of fresh ideation; otherwise it ideates as usual. */
+  runCycle: (ctx: {
+    budget: Required<ScoutBudget>;
+    cycleId: string;
+    queenFeedback?: QueenFeedbackItem[];
+  }) => Promise<ScoutCycleLike>;
   /** Persist routed-idea provenance for the cycle (P-013 ledger). */
   persistRouted: (records: ScoutRoutedRecord[], cycleId: string) => Promise<void>;
   /** Optional autoloop fire-gate (backoff/circuit); default: always allow. */
@@ -95,6 +123,21 @@ export interface ScoutTickDeps {
    * Best-effort: runScoutTick swallows its errors, so recording never fails a tick.
    */
   recordTick?: (rec: ScoutTickRecord) => Promise<void>;
+  /**
+   * Read pending Queen→Scout revision requests at cycle-start (queen-scout-feedback-loop
+   * P-001) — the coord:inbox messages addressed to `scout:<hive>` carrying a plan_slug
+   * (the Queen's feedback on a routed draft). Best-effort by contract: runScoutTick
+   * swallows its errors (a coord read must never fail a tick), and an unwired dep ⇒ the
+   * feedback loop is dormant (the hermetic unit-test default). When it returns items the
+   * tick fires `queen-feedback` out-of-cadence and threads them into {@link runCycle}.
+   */
+  readQueenFeedback?: () => Promise<QueenFeedbackItem[]>;
+  /**
+   * Acknowledge the consumed Queen feedback after a SUCCESSFUL revision cycle (P-001) so
+   * the same message is not re-processed on the next tick (exactly-once). Best-effort —
+   * an ack failure never fails the tick (the message simply re-fires next tick).
+   */
+  ackQueenFeedback?: (items: QueenFeedbackItem[]) => Promise<void>;
   /** Mint a cycle id; default `scout-<nowMs>`. */
   newCycleId?: (nowMs: number) => string;
 }
@@ -148,7 +191,26 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     }
   };
 
-  const state = await deps.readCadenceState();
+  // P-001: read pending Queen→Scout revision requests (coord:inbox → scout:<hive>)
+  // BEFORE the cadence gate. Best-effort by contract — a coord read must never fail
+  // a tick (an error / unwired dep ⇒ no feedback, the loop is simply dormant). When
+  // present they fire the cycle OUT-OF-CADENCE (queen-feedback) past the floor and are
+  // threaded into runCycle so it targets a revision of those drafts (P-002 / D-001).
+  let queenFeedback: QueenFeedbackItem[] = [];
+  if (deps.readQueenFeedback) {
+    try {
+      queenFeedback = (await deps.readQueenFeedback()) ?? [];
+    } catch {
+      /* best-effort — a coord read never fails the tick */
+    }
+  }
+
+  const baseState = await deps.readCadenceState();
+  // Overlay the queen-feedback signal onto the cadence state (readCadenceState owns
+  // the fleet/ledger signals; the Queen-feedback channel is the scheduler's, so the
+  // flag is merged here rather than coupling the cadence reader to coord).
+  const state: ScoutCadenceState =
+    queenFeedback.length > 0 ? { ...baseState, queenWakePending: true } : baseState;
   const verdict = shouldRunScoutCycle(state, opts.cadence);
   if (!verdict.fire) {
     await note({
@@ -190,10 +252,24 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   const cycleId = (deps.newCycleId ?? ((n) => `scout-${n}`))(state.nowMs);
   await deps.recordFire?.('attempt');
   try {
-    const cycle = await deps.runCycle({ budget, cycleId });
+    const cycle = await deps.runCycle({
+      budget,
+      cycleId,
+      ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
+    });
     const provenance = cycle.provenance ?? [];
     if (provenance.length > 0) await deps.persistRouted(provenance, cycleId);
     await deps.refreshOutcomes?.();
+    // P-001: a queen-feedback revision cycle SUCCEEDED — ack the consumed messages
+    // so the same feedback is not re-processed next tick (exactly-once). Best-effort:
+    // an ack failure simply leaves the message to re-fire, it never fails the tick.
+    if (queenFeedback.length > 0 && deps.ackQueenFeedback) {
+      try {
+        await deps.ackQueenFeedback(queenFeedback);
+      } catch {
+        /* best-effort — re-fires next tick rather than failing this one */
+      }
+    }
     await deps.recordFire?.('ok');
     await note({
       status: 'ran',
@@ -202,7 +278,12 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
       ideasDeduped:
         cycle.scored && cycle.survivors ? Math.max(0, cycle.scored.length - cycle.survivors.length) : 0,
       ...(cycle.costUsd != null ? { budgetUsedUsd: cycle.costUsd } : {}),
-      detail: { cycleId, reason: verdict.reason, ...(cycle.stop ? { stop: cycle.stop } : {}) },
+      detail: {
+        cycleId,
+        reason: verdict.reason,
+        ...(cycle.stop ? { stop: cycle.stop } : {}),
+        ...(queenFeedback.length > 0 ? { queenFeedbackCount: queenFeedback.length } : {}),
+      },
     });
     return {
       fired: true,
@@ -223,6 +304,10 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
 
 /** The autoloop role key for Scout-cycle fire-state (backoff/circuit + last-run). */
 export const SCOUT_CYCLE_ROLE = 'scout-cycle';
+
+/** Max Queen-feedback messages a single tick processes (P-001) — a safety bound so a
+ *  backlog can't fan out one giant revision tick; the remainder re-fire next tick. */
+export const MAX_QUEEN_FEEDBACK_PER_TICK = 20;
 
 export interface BuildScoutTickDepsOptions {
   harnessSlug: string;
@@ -302,6 +387,56 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     },
     async refreshOutcomes() {
       await refreshScoutOutcomes({ harnessSlug, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });
+    },
+    async readQueenFeedback(): Promise<QueenFeedbackItem[]> {
+      // P-001: the Queen→Scout feedback channel — coord:inbox messages addressed
+      // DIRECTLY to `scout:<hive>` (not broadcasts) carrying a routed draft's
+      // plan_slug. Dedup against the Scout's own acks (readAckedMsgIds) so a
+      // message is processed exactly once across ticks. Coord I/O runs in the
+      // routine's workspace ALS (the event log is workspace-keyed). Lazy imports
+      // keep this module's pure core free of the coord/PG edge.
+      const { scoutCoordOwnerId } = await import('./coord-identity');
+      const { readInbox, readAckedMsgIds } = await import('../agent-tools/coordination/messages');
+      const { runWithWorkspace } = await import('../workspace-als');
+      const scoutOwner = scoutCoordOwnerId(harnessSlug);
+      const gather = async (): Promise<QueenFeedbackItem[]> => {
+        const [inbox, acked] = await Promise.all([readInbox(scoutOwner, {}), readAckedMsgIds(scoutOwner)]);
+        return inbox
+          .filter((e) => e.kind !== 'ack') // never treat an ack as feedback
+          .filter((e) => !e.category) // drop ambient (service-health / governor), like coord:inbox
+          .filter((e) => Array.isArray(e.to) && e.to.includes(scoutOwner)) // DIRECTED, not a '*' broadcast
+          .filter((e) => typeof e.plan_slug === 'string' && (e.plan_slug as string).length > 0) // plan-keyed
+          .filter((e) => !acked.has(e.msg_id)) // not yet consumed
+          .map(
+            (e): QueenFeedbackItem => ({
+              planSlug: e.plan_slug as string,
+              body: ((e.body ?? e.summary ?? '') as string).trim(),
+              fromOwnerId: e.from,
+              msgId: e.msg_id,
+              ts: e.ts,
+            }),
+          )
+          .slice(-MAX_QUEEN_FEEDBACK_PER_TICK); // bound a backlog; the rest re-fire next tick
+      };
+      return opts.workspaceId ? runWithWorkspace(opts.workspaceId, gather) : gather();
+    },
+    async ackQueenFeedback(items: QueenFeedbackItem[]): Promise<void> {
+      if (items.length === 0) return;
+      const { scoutCoordOwnerId } = await import('./coord-identity');
+      const { appendAck } = await import('../agent-tools/coordination/messages');
+      const { runWithWorkspace } = await import('../workspace-als');
+      const scoutOwner = scoutCoordOwnerId(harnessSlug);
+      const identity = {
+        ownerId: scoutOwner,
+        ownerLabel: `scout · ${harnessSlug}`,
+        source: 'principal' as const,
+        workspaceId: opts.workspaceId ?? null,
+        userId: null,
+      };
+      const ack = async (): Promise<void> => {
+        for (const it of items) await appendAck(identity, it.msgId, it.fromOwnerId);
+      };
+      await (opts.workspaceId ? runWithWorkspace(opts.workspaceId, ack) : ack());
     },
     async recordTick(rec) {
       await recordScoutTick({

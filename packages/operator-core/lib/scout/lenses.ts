@@ -161,6 +161,9 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     ['time-token-sink', digest.timeTokenSinks ?? []],
     ['chronic-deferral', digest.chronicDeferrals ?? []],
     ['capability-gap', digest.capabilityGaps ?? []],
+    // P-006: structured rubric measurements ride the same flatten so the ideators
+    // leap from them. `?? []` keeps a 4-lane (pre-rubric) digest byte-identical.
+    ['rubric-rating', digest.rubricRatings ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -187,6 +190,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Chronic deferral';
     case 'capability-gap':
       return 'Capability gap';
+    case 'rubric-rating':
+      return 'Rubric rating';
   }
 }
 

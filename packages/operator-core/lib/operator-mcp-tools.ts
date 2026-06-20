@@ -27,6 +27,12 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__goals:list',
   'mcp__agentmcp__goals:get',
   'mcp__agentmcp__issues:list',
+  // Rubrics — the shared-standards store (rubric-driven-observations-2026-06-20
+  // P-002). The brain consults active rubrics (the standards agents grade structured
+  // observations against) — read-only here; propose/ratify are agent/Queen verbs.
+  'mcp__agentmcp__rubrics:list',
+  'mcp__agentmcp__rubrics:get',
+  'mcp__agentmcp__rubrics:search',
   // Scan findings live in the self-improvement backlog (unify-agent-launches
   // D-005) — improvements:digest is the operator's "what did the scanner
   // find?" read surface, replacing the retired scans_list/scans_get.

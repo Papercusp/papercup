@@ -29,7 +29,15 @@ import { gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { readImprovementItems, readObservationItems } from '../harness/improvements/read-items';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
-import { revertWeight, type DeferralRecord, type RevertRecord, type SpendRecord, type StateOfHiveReaders } from './corpus-digest';
+import {
+  revertWeight,
+  type DeferralRecord,
+  type ObservationRating,
+  type RevertRecord,
+  type SpendRecord,
+  type StateOfHiveReaders,
+  type StructuredObservationRecord,
+} from './corpus-digest';
 
 /** ISO timestamp from an epoch-ms bigint column (postgres-js returns bigint as string). */
 function epochMsToIso(v: string | number | null): string {
@@ -150,6 +158,64 @@ async function fetchDeferrals(): Promise<DeferralRecord[]> {
 }
 
 /**
+ * The structured-observation view P-001 (rubric-driven-observations D-003) surfaces
+ * onto `ImprovementCandidate.observation`. Read STRUCTURALLY (not via the typed
+ * field) so this module compiles + runs (yielding an empty rubric lane) BEFORE the
+ * P-001 type edit lands, and auto-activates the instant it surfaces the field — the
+ * "build against the draft contract" seam su-f8ee5 (P-001 owner) agreed. Once
+ * `ImprovementCandidate.observation` is in-tree this cast can collapse to `c.observation`.
+ */
+interface ObservationView {
+  sourceHive?: unknown;
+  targetHive?: unknown;
+  rubricRef?: unknown;
+  ratings?: unknown;
+}
+
+function observationViewOf(c: ImprovementCandidate): ObservationView | undefined {
+  const v = (c as { observation?: unknown }).observation;
+  return v && typeof v === 'object' ? (v as ObservationView) : undefined;
+}
+
+/** Validate the `Record<criterionKey, { rating, evidence }>` ratings shape (D-003),
+ *  dropping malformed entries. Returns undefined when nothing valid remains. */
+function normalizeObservationRatings(raw: unknown): Record<string, ObservationRating> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, ObservationRating> = {};
+  for (const [criterion, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!criterion || !val || typeof val !== 'object') continue;
+    const { rating, evidence } = val as { rating?: unknown; evidence?: unknown };
+    if (typeof rating !== 'string' || !rating.trim()) continue;
+    out[criterion] = { rating, evidence: typeof evidence === 'string' ? evidence : '' };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Map an observation candidate → the clean StructuredObservationRecord the digest
+ *  groups over. Returns undefined for FREE-TEXT observations (no rubricRef/ratings) —
+ *  only RUBRIC-GRADED scorecards become records (they still flow through the friction
+ *  lane as free-text). So corpus.observations counts exactly the rubric-graded ones. */
+function toStructuredObservation(c: ImprovementCandidate): StructuredObservationRecord | undefined {
+  const view = observationViewOf(c);
+  if (!view) return undefined;
+  const rubricRef = typeof view.rubricRef === 'string' && view.rubricRef.trim() ? view.rubricRef : undefined;
+  const ratings = normalizeObservationRatings(view.ratings);
+  if (!rubricRef || !ratings) return undefined; // not a rubric-graded observation
+  const sourceHive = typeof view.sourceHive === 'string' && view.sourceHive.trim() ? view.sourceHive : undefined;
+  const targetHive = typeof view.targetHive === 'string' && view.targetHive.trim() ? view.targetHive : undefined;
+  const tsMs = Date.parse(c.updatedAt ?? c.createdAt ?? '');
+  return {
+    id: c.id,
+    title: c.title,
+    rubricRef,
+    ratings,
+    ...(sourceHive ? { sourceHive } : {}),
+    ...(targetHive ? { targetHive } : {}),
+    ...(Number.isFinite(tsMs) ? { lastSeenMs: tsMs } : {}),
+  };
+}
+
+/**
  * Build the production StateOfHiveReaders. The core's synthesizeStateOfHive
  * wraps each reader defensively, so one bad query doesn't kill the whole digest.
  */
@@ -177,6 +243,19 @@ export function buildStateOfHiveReaders(): StateOfHiveReaders {
     },
     async deferrals() {
       return fetchDeferrals();
+    },
+    async observations(): Promise<StructuredObservationRecord[]> {
+      // Read the observation-lane topic and keep ONLY rubric-graded scorecards
+      // (P-006). An independent read from friction()'s free-text union — a single
+      // cheap topic query at Scout cadence — so the structured lane stays defensively
+      // isolated. Empty until P-001 surfaces candidate.observation + a rubric is in use.
+      const observations = await readObservationItems();
+      const out: StructuredObservationRecord[] = [];
+      for (const c of observations) {
+        const record = toStructuredObservation(c);
+        if (record) out.push(record);
+      }
+      return out;
     },
   };
 }

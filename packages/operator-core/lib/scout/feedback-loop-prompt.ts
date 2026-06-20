@@ -54,10 +54,11 @@ progress stalls. Check yourself each round:
 
 Only the Queen marks a draft READY (she promotes it) — that's not yours to do.
 Your terminal move is the other one: if you conclude the PREMISE is flawed (not
-just the execution), self-deprecate the draft, tell the Queen, AND emit a
-structured \`learnings\` observation (what was tried, why it stalled, what's
-salvageable) so a future cycle can re-ideate from the salvage. A deprecated draft
-still produces fuel — the loop stays closed, no dead ends.`;
+just the execution), self-deprecate the draft with one atomic call —
+\`plans:set-plan-status { status: 'superseded', learnings: { tried, stalled,
+salvageable } }\`, which marks it superseded AND emits the structured \`learnings\`
+observation — then tell the Queen. A deprecated draft still produces fuel (a
+future cycle re-ideates from the salvage); the loop stays closed, no dead ends.`;
 
 /**
  * The concise, state-describing lifecycle note embedded in a Scout draft's

@@ -97,6 +97,42 @@ export interface DeferralRecord {
   text: string;
 }
 
+/**
+ * One criterion's rating inside a structured observation — the Record VALUE; the
+ * criterion is the Record KEY (rubric-driven-observations-2026-06-20 D-003). The
+ * rating is a value from the rubric criterion's scale (default
+ * `healthy|degraded|broken|unknown`); `evidence` is mandatory per D-003.
+ */
+export interface ObservationRating {
+  rating: string;
+  evidence: string;
+}
+
+/**
+ * The structured-observation view the digest groups over (D-003). The P-001 owner
+ * surfaces it onto `ImprovementCandidate.observation`; the deps layer maps that
+ * onto this clean record so this pure core never reaches into `payload`. A
+ * free-text observation simply carries no `rubricRef`/`ratings` (free-text stays
+ * first-class — it still flows through the friction lane). `ratings` is KEYED by
+ * the rubric criterion `key` — one rating per criterion (a scorecard).
+ */
+export interface StructuredObservationRecord {
+  /** The observation's engineer_issue id — the drill-back key. */
+  id: string;
+  /** The observation title — exemplar text for a rating-group summary. */
+  title?: string;
+  /** Hive the observation came FROM (auto-derived at capture). The grouping axis. */
+  sourceHive?: string;
+  /** Hive the observation is ABOUT (cross-hive observations); not grouped on in v1. */
+  targetHive?: string;
+  /** The rubric graded against (a `rubrics.rubric_id`). Required when `ratings` is set. */
+  rubricRef?: string;
+  /** Per-criterion ratings, keyed by the rubric criterion `key` (one per criterion). */
+  ratings?: Record<string, ObservationRating>;
+  /** When the observation was last seen (updated/created, ms) — picks the latest evidence. */
+  lastSeenMs?: number;
+}
+
 /** The injectable source bag — each reader returns one corpus substrate. */
 export interface StateOfHiveReaders {
   /** The change feed: completions / proposals / plan-runs (curation/change-feed). */
@@ -109,6 +145,14 @@ export interface StateOfHiveReaders {
   spend(): Promise<SpendRecord[]>;
   /** Explicit deferrals (blocked / needs-human items + deferred decisions). */
   deferrals(): Promise<DeferralRecord[]>;
+  /**
+   * Structured observations (rubric-graded scorecards) for the rubric-rating lane
+   * (P-006). Distinct from `friction()` (which unions observations as FREE-TEXT
+   * for clustering) — this returns the STRUCTURED view so Scout can group by
+   * rubric/source-hive + surface ratings. An empty/absent list (no rubric usage
+   * yet) just yields an empty lane.
+   */
+  observations(): Promise<StructuredObservationRecord[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,12 +161,14 @@ export interface StateOfHiveReaders {
 // consumed contract); this zod schema is the runtime validator for it.
 // ---------------------------------------------------------------------------
 
-/** The four corpus lanes (mirrors scout/types.ts MetaPatternCategory). */
+/** The corpus-digest categories (mirrors scout/types.ts MetaPatternCategory):
+ *  the four friction lanes + `rubric-rating` (structured measurements, P-006). */
 const META_PATTERN_CATEGORIES = [
   'recurring-friction',
   'time-token-sink',
   'chronic-deferral',
   'capability-gap',
+  'rubric-rating',
 ] as const;
 
 /**
@@ -156,6 +202,8 @@ export const DigestSchema = z.object({
     deferrals: z.number().int().nonnegative(),
     spendUsd: z.number(),
     spendBuckets: z.number().int().nonnegative(),
+    /** Structured observations scanned (rubric-graded scorecards, P-006). */
+    observations: z.number().int().nonnegative(),
   }),
   // The four meta-pattern categories (plan P-003) — the shared CorpusDigest lanes.
   recurringFriction: z.array(MetaPatternSchema),
@@ -164,6 +212,10 @@ export const DigestSchema = z.object({
   capabilityGaps: z.array(MetaPatternSchema),
   /** Undone work — status regressions, churniest first (P-003's reverts input). */
   reverts: z.array(MetaPatternSchema),
+  /** Structured rubric measurements grouped by (rubric, source-hive, criterion) —
+   *  Scout ideates on MEASUREMENTS, not just free-text clusters (P-006). A 5th
+   *  CorpusDigest lane (the ideators fold it in via flattenDigest). */
+  rubricRatings: z.array(MetaPatternSchema),
   /** One-line summary for a coord broadcast / the Scout trigger. */
   headline: z.string(),
 });
@@ -423,6 +475,97 @@ function buildReverts(reverts: RevertRecord[], limit: number): MetaPattern[] {
 }
 
 /**
+ * Severity of one rating — how strongly a measurement signals a problem worth
+ * ideating on (rubric-driven-observations P-006). `healthy` = 0 (a healthy
+ * measurement is not a problem to scout); `unknown` carries a small weight (a
+ * persistently not-assessable criterion is itself a weak signal — a measurement
+ * gap). An UNMODELLED rating (a per-criterion scale override outside the default
+ * vocabulary) reads as a mild signal (1) rather than vanishing. Case-insensitive.
+ */
+const RATING_SEVERITY: Record<string, number> = { broken: 3, degraded: 2, unknown: 0.5, healthy: 0 };
+
+function ratingSeverity(rating: string): number {
+  const known = RATING_SEVERITY[rating.toLowerCase()];
+  return known === undefined ? 1 : known;
+}
+
+/** The most-severe rating present in a group — the headline for the criterion. */
+function worstRating(ratings: readonly string[]): string {
+  return [...ratings].sort((a, b) => ratingSeverity(b) - ratingSeverity(a))[0] ?? 'unknown';
+}
+
+/** A scratch accumulator for one (rubric, source-hive, criterion) measurement group. */
+interface RatingGroup {
+  rubricRef: string;
+  sourceHive?: string;
+  criterion: string;
+  /** rating value → how many observations gave it. */
+  counts: Map<string, number>;
+  /** Σ ratingSeverity over the observations — the salience (recurrence × severity). */
+  severity: number;
+  /** Total observations contributing a rating to this criterion. */
+  total: number;
+  /** The most-recent rating + its evidence (for the detail line). */
+  latest?: { rating: string; evidence: string; ms: number };
+}
+
+/**
+ * rubricRatings — STRUCTURED observations grouped by (rubricRef, sourceHive,
+ * criterion): surface the measured rating per criterion so Scout ideates on
+ * MEASUREMENTS, not just free-text clusters (P-006). Each surfaced pattern is one
+ * criterion's standing in one hive under one rubric, ranked by severity ×
+ * recurrence. Pure-healthy groups (nothing to ideate on) are DROPPED — mirroring
+ * how `buildReverts` drops non-regressions — but every scanned observation is
+ * still counted in `corpus.observations` for honesty. `ratings` is a Record keyed
+ * by criterion (D-003), so `Object.entries` is the grouping seam.
+ */
+function buildRubricRatings(observations: StructuredObservationRecord[], limit: number): MetaPattern[] {
+  const groups = new Map<string, RatingGroup>();
+  for (const obs of observations) {
+    // A rating needs its rubric (D-003: rubricRef REQUIRED when ratings present).
+    if (!obs.rubricRef || !obs.ratings) continue;
+    const ms = obs.lastSeenMs ?? 0;
+    for (const [criterion, r] of Object.entries(obs.ratings)) {
+      const rating = r?.rating;
+      if (!criterion || typeof rating !== 'string' || !rating.trim()) continue;
+      const key = `${obs.rubricRef} ${obs.sourceHive ?? ''} ${criterion}`;
+      const g =
+        groups.get(key) ??
+        { rubricRef: obs.rubricRef, sourceHive: obs.sourceHive, criterion, counts: new Map(), severity: 0, total: 0 };
+      g.counts.set(rating, (g.counts.get(rating) ?? 0) + 1);
+      g.severity += ratingSeverity(rating);
+      g.total += 1;
+      if (!g.latest || ms >= g.latest.ms) {
+        g.latest = { rating, evidence: (r.evidence ?? '').trim(), ms };
+      }
+      groups.set(key, g);
+    }
+  }
+
+  const scored: Scored[] = [];
+  for (const g of groups.values()) {
+    if (g.severity <= 0) continue; // pure-healthy — no problem to ideate on
+    const worst = worstRating([...g.counts.keys()]);
+    const dist = [...g.counts.entries()]
+      .sort((a, b) => ratingSeverity(b[0]) - ratingSeverity(a[0]))
+      .map(([rating, n]) => `${rating} ${n}×`)
+      .join(', ');
+    const hiveSuffix = g.sourceHive ? ` @ ${g.sourceHive}` : '';
+    const evidence = g.latest?.evidence ? `; latest: ${truncate(g.latest.evidence, 100)}` : '';
+    scored.push({
+      salience: g.severity,
+      pattern: {
+        category: 'rubric-rating' as MetaPatternCategory,
+        summary: `${g.rubricRef} · ${g.criterion}${hiveSuffix}: ${worst}`,
+        detail: `${dist} over ${g.total} obs${evidence}`,
+        ref: `rubric:${g.rubricRef}#${g.criterion}${g.sourceHive ? `@${g.sourceHive}` : ''}`,
+      },
+    });
+  }
+  return finalize(scored, limit);
+}
+
+/**
  * Synthesize the "state of the Hive" corpus digest. Pure + deterministic given
  * `nowMs`. Gathers all substrates (defensively), rolls each into its
  * meta-pattern lane, and returns a `DigestSchema`-valid digest (a structural
@@ -435,12 +578,13 @@ export async function synthesizeStateOfHive(
   const nowMs = opts.nowMs ?? Date.now();
   const limit = opts.perCategory ?? 20;
 
-  const [completions, reverts, friction, spend, deferrals] = await Promise.all([
+  const [completions, reverts, friction, spend, deferrals, observations] = await Promise.all([
     safe(() => readers.completions(), 'completions'),
     safe(() => readers.reverts(), 'reverts'),
     safe(() => readers.friction(), 'friction'),
     safe(() => readers.spend(), 'spend'),
     safe(() => readers.deferrals(), 'deferrals'),
+    safe(() => readers.observations(), 'observations'),
   ]);
 
   const recurringFriction = buildRecurringFriction(friction, nowMs, limit);
@@ -448,6 +592,7 @@ export async function synthesizeStateOfHive(
   const chronicDeferrals = buildChronicDeferrals(deferrals, limit);
   const capabilityGaps = buildCapabilityGaps(friction, nowMs, limit);
   const revertPatterns = buildReverts(reverts, limit);
+  const rubricRatings = buildRubricRatings(observations, limit);
 
   const spendUsd = round(spend.reduce((acc, s) => acc + (s.costUsd || 0), 0));
   const corpus = {
@@ -457,6 +602,7 @@ export async function synthesizeStateOfHive(
     deferrals: deferrals.length,
     spendUsd,
     spendBuckets: spend.length,
+    observations: observations.length,
   };
 
   const headline =
@@ -464,7 +610,8 @@ export async function synthesizeStateOfHive(
     `${timeTokenSinks.length} spend sink(s) ($${spendUsd}), ` +
     `${chronicDeferrals.length} chronic deferral(s), ` +
     `${capabilityGaps.length} capability gap(s), ` +
-    `${revertPatterns.length} reverted item(s) ` +
+    `${revertPatterns.length} reverted item(s), ` +
+    `${rubricRatings.length} rubric measurement(s) ` +
     `over ${completions.length} completions`;
 
   return {
@@ -475,6 +622,7 @@ export async function synthesizeStateOfHive(
     chronicDeferrals,
     capabilityGaps,
     reverts: revertPatterns,
+    rubricRatings,
     headline,
   };
 }
