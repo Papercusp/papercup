@@ -30,6 +30,7 @@ import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine } from '../harness/routines/claim';
 import { checkFireGate, recordFire } from '../autoloop';
+import { fireLoopWake } from '../harness/routines/loop-fire';
 import { getSystemAction, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
@@ -58,8 +59,40 @@ async function routineFireImpl(
   targetRole: string,
   triggerConfig: Record<string, unknown>,
   payloadTemplate: Record<string, unknown> | null,
+  // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-3): a LOOP routine carries an
+  // interval + a bound owner (su-d5a84's B-LOOP-1 schema). These are appended (optional on
+  // older enqueued fires recovered after deploy → undefined → the non-loop dispatch, which
+  // is correct: a non-loop routine has no interval anyway).
+  routineName?: string,
+  rescheduleIntervalSec?: number | null,
+  targetOwnerId?: string | null,
 ): Promise<void> {
   await runWithWorkspace(workspaceId, async () => {
+    // LOOP fire (B-LOOP-3 / P-004, D-005/D-006): a loop wakes its pinned session WARM instead
+    // of spawning a role / running a system action. Identified by an interval + a bound owner;
+    // the fire delivers a `coord` wake (rides the existing wake-executor liveness ladder — NO
+    // new resume code) gated by the failure-streak fire-gate AND the cost-cap. Tracking rides
+    // recordFire + the work-queue + plan progress (no per-fire plan_run, D-006). Takes
+    // precedence over the system/role dispatch below.
+    if (rescheduleIntervalSec != null && targetOwnerId) {
+      await DBOS.runStep(
+        async () => {
+          const res = await fireLoopWake({
+            routineId,
+            routineName: routineName ?? routineId,
+            workspaceId,
+            installSlug,
+            targetOwnerId,
+            payloadTemplate,
+          });
+          if (!res.fired) {
+            console.warn(`[routines] loop ${routineId} fire WITHHELD (${res.reason}: ${res.detail ?? ''})`);
+          }
+        },
+        { name: 'loop:wake' },
+      );
+      return;
+    }
     if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
       const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
       const actionResult = await DBOS.runStep(
@@ -182,7 +215,19 @@ async function routinesTickImpl(): Promise<void> {
         // workflow at the deadline, freeing the dedup. Ceiling sized above the
         // longest legitimate in-process action (a real gym cycle, ≲90 min).
         timeoutMS: ROUTINE_FIRE_TIMEOUT_MS,
-      })(r.id, r.workspaceId, r.installSlug, r.targetRole, r.triggerConfig, r.payloadTemplate ?? null);
+      })(
+        r.id,
+        r.workspaceId,
+        r.installSlug,
+        r.targetRole,
+        r.triggerConfig,
+        r.payloadTemplate ?? null,
+        // B-LOOP-3: the loop fields (su-d5a84's B-LOOP-1 RoutineRow seam) route the fire to
+        // the warm-wake branch when present.
+        r.name,
+        r.rescheduleIntervalSec ?? null,
+        r.targetOwnerId ?? null,
+      );
     } catch (e) {
       // Already enqueued/active for this routine — collapse (back-pressure).
       if (!/Duplicat/i.test(String(e))) throw e;
