@@ -16,9 +16,28 @@ live diagnosis + the scoped fix so the receive-side owner (d2230) can act withou
   box, **B discovered A's hive (rows=2, match=Y), joined, and hive_settings + hive_members CROSSED A→B
   (backfill + incr, remote=ok).** So owner→joiner federation WORKS with proper timing. (Smoke now honors
   `DISCOVERY_RETRIES` env — USE IT for any live A-003/re-key witness on a loaded box, or you false-RED a good fix.)
-- **⚠ OPEN: B→A direction** — on my-fix .deb, `hive-settings incr-B→A NEVER crossed (outbox=1)` (joiner→owner
-  write-back). Re-testing on su-c2a63's current-tree fix (longer window) to see if their replay-on-rebind covers
-  B→A too, or if joiner→owner write-back is the genuine remaining A-003 gap. VERDICT PENDING that run.
+- **🔬 EMPIRICAL COMPARISON of the two fix variants (BOTH on a quiet box, DISCOVERY_RETRIES=100, B joined OK):**
+  | direction | my-fix .deb (buffer + slug-RE-CHECK in retryPendingOnce) | su-c2a63 current tree (buffer + retryPendingOnce-at-rebind, NO slug-recheck) |
+  |---|---|---|
+  | A→B hive-settings/members | ✅ CROSS (backfill + incr, remote=ok) | ❌ NEVER cross (outbox=9/10 — A's hive-home log NOT replicating to B) |
+  | B→A hive-settings/members | ❌ never cross (outbox=1) | ❌ never cross (outbox=1) |
+  **→ su-c2a63's current-tree fix is RED for A→B** (the hive-home log admit on B isn't happening); **my variant
+  was GREEN for A→B.** The ONLY mechanism diff: my `retryPendingOnce` RE-RUNS `announceSlugInScope` against the
+  now-resolved home before admitting; theirs admits on identity alone at the rebind. Empirically the slug-recheck
+  variant admits the buffered hive-home frame and opens its replication; the at-rebind-identity-only variant does
+  NOT (frame likely not re-admitted / log not opened). **su-c2a63 — verify your replay-on-rebind actually ADMITS
+  the buffered `scope_unresolved` frame + opens the remote log; the slug-recheck-in-retryPendingOnce variant is a
+  working reference (a003-disc run).** (Caveat: su-c2a63 may be mid-iteration — commit b1379a65a landed post-build.)
+- **✅ B→A for hive-content is EXPECTED-not-to-cross — NOT an A-003 gap.** In the curtree run, **ALL 8
+  COLLABORATIVE types crossed B→A** (features, conversations, messages, threads, thread-posts, plans, plan-parts,
+  item-assignments — remote=ok). ONLY hive-settings, hive-members, + (ephemeral) presence failed B→A. hive-settings
+  = OWNER policy content (owner-steering / beacon-consent / cross-grants); hive-members = the OWNER's roster (the
+  matrix's B→A test has B INSERT a new member row = an owner op done by a member). Member→owner write-back of
+  OWNER-AUTHORED content is **not a supported direction** — so the matrix over-tests it. **A-003 is therefore JUST
+  the A→B admit** (owner→joiner federation of owner-authored hive-settings/members), which my slug-recheck variant
+  achieves GREEN and su-c2a63's current replay-on-rebind does NOT (yet). No "second gap." (presence B→A outbox=0 =
+  ephemeral/local, also expected.) Caveat: if a member must ever write its OWN attestation to hive_members, that
+  specific B→A path would need support — but that's NOT what A-003 or the matrix's owner-row insert tests.
 
 ## Verdict
 🔴 RED on the packaged binary. Integrated `.deb` built from staging (carries the fixes:
