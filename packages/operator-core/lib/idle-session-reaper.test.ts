@@ -5,6 +5,7 @@ import {
   terminateIdleLiveSessions,
   planZombieReap,
   reapZombieResumeProcs,
+  parseForegroundFromStat,
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
   type ReapableSession,
@@ -393,5 +394,29 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
     const r = await reapZombieResumeProcs({ deps });
     expect(calls.endedQ[0]).toEqual(['x']); // queried once, deduped
     expect(r.zombies).toBe(2);
+  });
+});
+
+describe('parseForegroundFromStat (slice 3: foreground/TTY spare — EI-1873 collateral guard)', () => {
+  // /proc/<pid>/stat: pid (comm) state ppid pgrp session tty_nr tpgid ...
+  const stat = (pgrp: number, ttyNr: number, tpgid: number, comm = 'claude') =>
+    `12345 (${comm}) S 1 ${pgrp} 1 ${ttyNr} ${tpgid} 4194304 0 0 0`;
+
+  it('FOREGROUND (live interactive, ps `+`): controlling tty AND pgrp owns it → true (SPARED)', () => {
+    expect(parseForegroundFromStat(stat(469879, 34882, 469879))).toBe(true);
+  });
+  it('no controlling tty (tty_nr=0) → false (a backgrounded leaked proc → reapable)', () => {
+    expect(parseForegroundFromStat(stat(200, 0, -1))).toBe(false);
+  });
+  it('tty but NOT the foreground group (pgrp≠tpgid) → false (background of its tty → reapable)', () => {
+    expect(parseForegroundFromStat(stat(200, 34882, 999))).toBe(false);
+  });
+  it('comm containing spaces/parens: lastIndexOf(")") slices correctly → still parses foreground', () => {
+    expect(parseForegroundFromStat(stat(200, 34882, 200, 'claude (worker)'))).toBe(true);
+    expect(parseForegroundFromStat(stat(200, 0, -1, 'claude --resume'))).toBe(false);
+  });
+  it('malformed/short line → false (NaN guard; never over-spare on garbage)', () => {
+    expect(parseForegroundFromStat('12345 (claude) S')).toBe(false);
+    expect(parseForegroundFromStat('')).toBe(false);
   });
 });

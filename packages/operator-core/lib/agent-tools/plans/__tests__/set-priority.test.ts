@@ -28,6 +28,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 import tool from '../set-priority';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 
 const MAKE_CTX = (harnessSlug?: string) =>
@@ -78,10 +79,11 @@ describe('plans:set-priority', () => {
     expect(H.state.txCalls[0].values[3]).toBe('ctxharn');
   });
 
-  it("defaults to the 'papercup' harness when the arg is the all-sentinel", async () => {
+  it('defaults to the operator-home harness when the arg is the all-sentinel', async () => {
+    const home = operatorHomeHarnessSlug(); // 'papercusp' post-migration
     const res = await run({ slug: 'p', priority: 1, harness: 'all' });
-    expect(H.state.txCalls[0].values[3]).toBe('papercup');
-    expect(JSON.parse(res.content[0].text).harnessSlug).toBe('papercup');
+    expect(H.state.txCalls[0].values[3]).toBe(home);
+    expect(JSON.parse(res.content[0].text).harnessSlug).toBe(home);
   });
 
   it('refuses when neither an arg nor a ctx harness scope is present', async () => {

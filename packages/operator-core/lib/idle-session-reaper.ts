@@ -621,16 +621,22 @@ async function defaultEndedSessionIds(sessionIds: string[]): Promise<Set<string>
  * 5=tpgid. Foreground ⇔ a controlling tty (tty_nr≠0) AND this pgrp owns it
  * (pgrp===tpgid). Best-effort: a read/parse failure → false (never over-spare).
  */
+/** PURE: parse a /proc/<pid>/stat line → is the process FOREGROUND + TTY-attached?
+ *  Exported so the field-offset + comm-with-parens parsing (the error-prone bit
+ *  that the EI-1873 collateral turned on) is unit-covered without /proc. */
+export function parseForegroundFromStat(stat: string): boolean {
+  const after = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+  const pgrp = Number(after[2]);
+  const ttyNr = Number(after[4]);
+  const tpgid = Number(after[5]);
+  return Number.isFinite(ttyNr) && ttyNr !== 0 && Number.isFinite(pgrp) && Number.isFinite(tpgid) && pgrp === tpgid;
+}
+
 async function isForegroundTty(pid: number): Promise<boolean> {
   try {
-    const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
-    const after = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
-    const pgrp = Number(after[2]);
-    const ttyNr = Number(after[4]);
-    const tpgid = Number(after[5]);
-    return Number.isFinite(ttyNr) && ttyNr !== 0 && Number.isFinite(pgrp) && pgrp === tpgid;
+    return parseForegroundFromStat(await readFile(`/proc/${pid}/stat`, 'utf8'));
   } catch {
-    return false;
+    return false; // gone/unreadable → never over-spare
   }
 }
 
