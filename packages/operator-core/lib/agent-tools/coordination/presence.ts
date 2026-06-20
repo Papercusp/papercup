@@ -20,6 +20,7 @@ import {
   type PresenceRecord,
 } from '@papercusp/coordination/presence';
 import { deriveAgentRole, type AgentIdentity } from './identity';
+import { writeSessionBrief } from '../../session-brief';
 
 export { PRESENCE_STALE_MS };
 export type { PresenceInput, PresenceRecord };
@@ -53,6 +54,18 @@ export async function writePresence(
     }
   }
   await store.write(identity, { ...input, agentRole, hiveSlug });
+
+  // EI-1742: persist a durable successor brief on this write path so the agent's last
+  // declared lane survives the coord_presence reaper sweep + abrupt session death
+  // (a continuing session reads it instead of doing transcript archaeology). Fully
+  // isolated/best-effort — never affects the presence write above.
+  await writeSessionBrief(identity, {
+    intent: input.intent,
+    currentPlanSlug: input.currentPlanSlug,
+    currentFiles: input.currentFiles,
+    harnessSlug: harnessSlug ?? null,
+    hiveSlug,
+  });
 }
 
 /** Bump heartbeat_at ONLY — the keepalive path (the 60s supervisor beat). No-op
