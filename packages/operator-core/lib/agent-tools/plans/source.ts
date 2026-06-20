@@ -21,12 +21,13 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem, type PlanStatus } from './parser';
 import { hashPlanContent } from './content-hash';
+import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import type { Sql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { resolveProject, resolveWorkspaceForHarnessSlug } from '../../harness-core';
-import { detectPapercupRoot } from '../../harness/register-papercup';
+import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 
@@ -107,6 +108,15 @@ export interface PlanRow {
   owner: string | null;
   /** P-015 free-text initiative grouping label (frontmatter-derived). */
   initiative: string | null;
+  /** Template TYPE a plan conforms to (plan-templates-and-rubric-v2 P-004/P-005) —
+   *  a code-registry zod schema name (e.g. 'rubric'); frontmatter-derived (mirrors
+   *  `initiative`), null for ordinary plans. Distinct from `templateSlug` (the
+   *  scheduled-instance back-pointer). */
+  template: string | null;
+  /** Per-plan structured template instance data (jsonb), validated against the
+   *  template's registry zod schema on write (plans:set-template-data, P-005);
+   *  null until set, never parsed from frontmatter. */
+  templateData: unknown;
   supersedes: string[];
   supersededBy: string | null;
   opStatus: 'started' | 'paused' | 'done' | null;
@@ -122,6 +132,9 @@ export interface PlanRow {
   decisions: PlanIndexDecision[];
   nowState: string | null;
   nowNext: string | null;
+  /** v2 P-001: the parsed `## Promote` policy ({ policy, warnings }); NULL when the row hasn't been
+   *  repopulated since mig 331 (consumers fall back to parsing content until the next write). */
+  promotePolicy: ParsePromoteResult | null;
   // Scheduled/recurring plans (scheduled-recurring-plans-2026-06-16, mig 299).
   /** Authored recurrence set + policy; NULL ⇒ not scheduled (D-004). */
   schedule: PlanSchedule | null;
@@ -152,6 +165,8 @@ interface PlanDbRow {
   updated: string | null;
   owner: string | null;
   initiative: string | null;
+  template: string | null;
+  template_data: unknown;
   supersedes: string[] | null;
   superseded_by: string | null;
   op_status: string | null;
@@ -166,6 +181,7 @@ interface PlanDbRow {
   decisions: unknown;
   now_state: string | null;
   now_next: string | null;
+  promote_policy: unknown;
   schedule: unknown;
   schedule_active: boolean;
   scheduled_at: string | null;
@@ -189,6 +205,8 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     updated: r.updated,
     owner: r.owner,
     initiative: r.initiative,
+    template: r.template ?? null,
+    templateData: r.template_data ?? null,
     supersedes: r.supersedes ?? [],
     supersededBy: r.superseded_by,
     opStatus: (r.op_status as PlanRow['opStatus']) ?? null,
@@ -203,6 +221,9 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     decisions: Array.isArray(r.decisions) ? (r.decisions as PlanIndexDecision[]) : [],
     nowState: r.now_state,
     nowNext: r.now_next,
+    // v2 P-001: surface the structured promote-policy; null when the column hasn't been repopulated
+    // (the row predates mig 331's lazy-populate) → consumers fall back to parsing content.
+    promotePolicy: (r.promote_policy as ParsePromoteResult | null) ?? null,
     schedule: (r.schedule as PlanSchedule | null) ?? null,
     scheduleActive: r.schedule_active ?? false,
     scheduledAt: r.scheduled_at,
@@ -536,8 +557,9 @@ export async function getPlanRow(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
-               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+               archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
+               template, template_data
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND plan_slug = ${slug}
@@ -553,7 +575,7 @@ export async function getPlanRow(
       err.message?.includes('does not exist')
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
-        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq'>[]>`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -573,6 +595,8 @@ export async function getPlanRow(
         tzid: null,
         template_slug: null,
         run_seq: null,
+        template: null,
+        template_data: null,
       } as PlanDbRow);
     }
     throw err;
@@ -593,7 +617,8 @@ export async function listPlanRows(
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
-               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
+               template, template_data
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
@@ -609,7 +634,7 @@ export async function listPlanRows(
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq'>[]>`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -630,6 +655,8 @@ export async function listPlanRows(
           tzid: null,
           template_slug: null,
           run_seq: null,
+          template: null,
+          template_data: null,
         } as PlanDbRow),
       );
     }
@@ -655,6 +682,12 @@ export async function listPlanIndexRows(
     limit?: number;
     /** Include per-run instance plans (template_slug IS NOT NULL). Default false (D-003). */
     includeInstances?: boolean;
+    /** Filter to plans of a given template TYPE (P-005) — uses the
+     *  harness_plans_template_idx filter index (mig 329). */
+    template?: string;
+    /** Filter to per-run instances of a given template plan (template_slug
+     *  back-pointer, P-005). Implies including instances. */
+    templateSlug?: string;
   } = {},
 ): Promise<PlanIndexRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
@@ -663,20 +696,33 @@ export async function listPlanIndexRows(
       const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
       const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
       // Hide per-run instance plans (Option C, D-003) by default — they are reached
-      // via the template's Runs history, not the main plan directory.
-      const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
+      // via the template's Runs history, not the main plan directory. A templateSlug
+      // filter (P-005) is itself an instance selector, so it overrides the hiding.
+      const instanceFilter = opts.templateSlug
+        ? tx``
+        : opts.includeInstances
+          ? tx``
+          : tx`AND template_slug IS NULL`;
+      // P-005 template filters — `template` rides the harness_plans_template_idx index (mig 329).
+      const templateFilter = opts.template ? tx`AND template = ${opts.template}` : tx``;
+      const templateSlugFilter = opts.templateSlug
+        ? tx`AND template_slug = ${opts.templateSlug}`
+        : tx``;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
-               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
+               template, template_data
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
          ${statusFilter}
          ${instanceFilter}
+         ${templateFilter}
+         ${templateSlugFilter}
          ORDER BY plan_slug ASC
          ${limitClause}
       `;
@@ -721,6 +767,8 @@ export async function listPlanIndexRows(
           tzid: null,
           template_slug: null,
           run_seq: null,
+          template: null,
+          template_data: null,
         } as PlanDbRow);
         return rest;
       });
@@ -749,6 +797,10 @@ export async function listPlanIndexRowsForWorkspace(
     status?: string;
     limit?: number;
     includeInstances?: boolean;
+    /** Filter to plans of a given template TYPE (P-005). */
+    template?: string;
+    /** Filter to per-run instances of a given template plan (P-005); implies instances. */
+    templateSlug?: string;
   },
 ): Promise<PlanIndexRow[]> {
   const { workspaceId } = opts;
@@ -756,19 +808,32 @@ export async function listPlanIndexRowsForWorkspace(
     const rows = await withWorkspace(workspaceId, async (tx) => {
       const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
       const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
-      const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
+      // A templateSlug filter (P-005) is itself an instance selector, so it overrides
+      // the default instance-hiding.
+      const instanceFilter = opts.templateSlug
+        ? tx``
+        : opts.includeInstances
+          ? tx``
+          : tx`AND template_slug IS NULL`;
+      const templateFilter = opts.template ? tx`AND template = ${opts.template}` : tx``;
+      const templateSlugFilter = opts.templateSlug
+        ? tx`AND template_slug = ${opts.templateSlug}`
+        : tx``;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
-               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
+               template, template_data
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId}
          ${archivedFilter}
          ${statusFilter}
          ${instanceFilter}
+         ${templateFilter}
+         ${templateSlugFilter}
          ORDER BY harness_slug ASC, plan_slug ASC
          ${limitClause}
       `;
@@ -813,6 +878,8 @@ export async function listPlanIndexRowsForWorkspace(
           tzid: null,
           template_slug: null,
           run_seq: null,
+          template: null,
+          template_data: null,
         } as PlanDbRow);
         return rest;
       });
@@ -915,7 +982,8 @@ export async function listPlanRowsMatchingAnyToken(
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
-               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
+               template, template_data
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
@@ -934,7 +1002,7 @@ export async function listPlanRowsMatchingAnyToken(
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq'>[]>`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -959,6 +1027,8 @@ export async function listPlanRowsMatchingAnyToken(
             tzid: null,
             template_slug: null,
             run_seq: null,
+            template: null,
+            template_data: null,
           } as PlanDbRow),
         ),
         truncated,
@@ -1031,6 +1101,8 @@ export interface PlanIndex {
   updated: string | null;
   owner: string | null;
   initiative: string | null;
+  /** Template TYPE (frontmatter-derived, mirrors `initiative`) — P-004/P-005. */
+  template: string | null;
   supersedes: string[];
   supersededBy: string | null;
   isLegacy: boolean;
@@ -1039,6 +1111,9 @@ export interface PlanIndex {
   decisions: PlanIndexDecision[];
   nowState: string | null;
   nowNext: string | null;
+  /** v2 P-001: the operator-side parsed `## Promote` policy ({ policy, warnings }), recomputed
+   *  on every write so consumers read it structured instead of re-parsing the markdown. */
+  promotePolicy: ParsePromoteResult;
 }
 
 /** Parse a plan body into its derived index (frontmatter + structured sections). */
@@ -1052,6 +1127,9 @@ export function deriveIndexFromContent(content: string): PlanIndex {
     updated: fm.updated ?? null,
     owner: fm.owner ?? null,
     initiative: fm.initiative ?? null,
+    // P-004/P-005: the template TYPE is frontmatter-derived (like initiative); the
+    // structured template_data is written separately + never parsed from frontmatter.
+    template: fm.template ?? null,
     supersedes: fm.supersedes ?? [],
     supersededBy: fm.supersededBy ?? null,
     isLegacy: p.isLegacy,
@@ -1073,6 +1151,10 @@ export function deriveIndexFromContent(content: string): PlanIndex {
     })),
     nowState: p.now?.state ?? null,
     nowNext: p.now?.next ?? null,
+    // v2 P-001: parse the `## Promote` policy ONCE here (operator-side; the pure @papercusp/plan-parser
+    // has no YAML dep) so the write stores it structured + the consumers (lint/expand-generators/promote)
+    // stop re-parsing the markdown at read time.
+    promotePolicy: parsePromotePolicy(content),
   };
 }
 

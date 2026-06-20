@@ -66,6 +66,20 @@ export interface PlanWriteMeta {
   contentHash: string;
 }
 
+/**
+ * A structured `template_data` write (plan-templates-and-rubric-v2 P-005). A
+ * mutator returns this (alongside its `value`) to write the plan's `template_data`
+ * jsonb column — `data` is the registry-VALIDATED value the caller already checked
+ * (`data === null` clears the column to SQL NULL). When the mutator also returns a
+ * non-null `newBody`, the structured data rides the same content upsert; when it
+ * returns `newBody: null` + a patch (the plans:set-template-data case) it is a
+ * STRUCTURED-ONLY write that still bumps `version`, stamps `updated_at`, and fires
+ * `afterWrite` (the revision spine) against the unchanged body.
+ */
+export interface TemplateDataPatch {
+  data: unknown;
+}
+
 export interface WithPlanLockOpts {
   /** Plan slug (the PG key + the advisory lock key). */
   slug: string;
@@ -147,7 +161,7 @@ export async function withPlanLock<T>(
   mutator: (
     current: string | null,
     meta: PlanWriteMeta | null,
-  ) => Promise<{ newBody: string | null; value: T }>,
+  ) => Promise<{ newBody: string | null; value: T; templateData?: TemplateDataPatch }>,
 ): Promise<WithPlanLockResult<T>> {
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
     throw new Error(`withPlanLock: invalid plan slug ${JSON.stringify(opts.slug)}`);
@@ -211,11 +225,18 @@ export async function withPlanLock<T>(
       ? { version: curVersion, contentHash: cur.content_hash }
       : null;
 
-    const { newBody, value } = await mutator(cur?.content ?? null, meta);
+    const { newBody, value, templateData } = await mutator(cur?.content ?? null, meta);
+    // A structured template_data write (plans:set-template-data, P-005). Present
+    // (even with data:null = clear) ⇒ write the jsonb column.
+    const writesTemplateData = templateData !== undefined;
 
     let newVersion = curVersion;
+    // The body to record a revision against (afterWrite): the new body for a content
+    // write, or the unchanged current body for a structured-only template_data write.
+    let writtenBody: string | null = null;
     if (newBody !== null) {
       newVersion = curVersion + 1;
+      writtenBody = newBody;
       const idx = deriveIndexFromContent(newBody);
       const hash = hashPlanContent(newBody);
       // jsonb columns bound as `${JSON.stringify(x)}::jsonb` — the operator's
@@ -223,16 +244,22 @@ export async function withPlanLock<T>(
       // (agent-insights/postgres-js-jsonb-binding).
       const itemsJson = JSON.stringify(idx.items);
       const decisionsJson = JSON.stringify(idx.decisions);
+      // v2 P-001: the structured promote-policy, parsed once at write-time (deriveIndexFromContent).
+      const promotePolicyJson = JSON.stringify(idx.promotePolicy);
+      // P-005: `template` (the type) is frontmatter-DERIVED (mirrors `initiative`),
+      // re-derived on every content write. `template_data` (the instance data) is
+      // NOT touched here — it is preserved on conflict (omitted from the SET) and
+      // written only by the structured path / plans:set-template-data.
       await tx`
         INSERT INTO harness_shared.harness_plans (
           workspace_id, harness_slug, plan_slug, content, content_hash, version,
-          title, status, created, updated, owner, initiative, supersedes, superseded_by,
-          is_legacy, items, decisions, now_state, now_next, origin
+          title, status, created, updated, owner, initiative, template, supersedes, superseded_by,
+          is_legacy, items, decisions, now_state, now_next, promote_policy, origin
         ) VALUES (
           ${workspaceId}, ${harnessSlug}, ${slug}, ${newBody}, ${hash}, ${newVersion},
-          ${idx.title}, ${idx.status}, ${idx.created}, ${idx.updated}, ${idx.owner}, ${idx.initiative},
+          ${idx.title}, ${idx.status}, ${idx.created}, ${idx.updated}, ${idx.owner}, ${idx.initiative}, ${idx.template},
           ${idx.supersedes}, ${idx.supersededBy}, ${idx.isLegacy},
-          ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext}, 'local'
+          ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext}, ${promotePolicyJson}::text::jsonb, 'local'
         )
         ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
           content       = EXCLUDED.content,
@@ -244,6 +271,7 @@ export async function withPlanLock<T>(
           updated       = EXCLUDED.updated,
           owner         = EXCLUDED.owner,
           initiative    = EXCLUDED.initiative,
+          template      = EXCLUDED.template,
           supersedes    = EXCLUDED.supersedes,
           superseded_by = EXCLUDED.superseded_by,
           is_legacy     = EXCLUDED.is_legacy,
@@ -251,11 +279,31 @@ export async function withPlanLock<T>(
           decisions     = EXCLUDED.decisions,
           now_state     = EXCLUDED.now_state,
           now_next      = EXCLUDED.now_next,
+          promote_policy = EXCLUDED.promote_policy,
           -- EI-117: a genuine local write must RESET origin — without this a row
           -- last touched by a hyperbee projection (origin='remote') keeps that
           -- origin, the CDC capture trigger skips the local write, and the edit
           -- never reaches the outbox/log (so a later replay reverts it).
           origin        = 'local'
+      `;
+    } else if (writesTemplateData && cur) {
+      // Structured-only template_data write (plans:set-template-data, P-005): bump
+      // version + write the validated jsonb, leaving `content` + the derived index
+      // untouched. `updated_at = now()` so the mig-211 trigger counts it as REAL
+      // activity (it would otherwise skip the bump — template_data is not in its
+      // meaningful-column set). A revision is recorded against the unchanged body
+      // via afterWrite below (writtenBody = the current content).
+      newVersion = curVersion + 1;
+      writtenBody = cur.content;
+      const dataJson = templateData!.data === null ? null : JSON.stringify(templateData!.data);
+      await tx`
+        UPDATE harness_shared.harness_plans
+           SET template_data = ${dataJson}::text::jsonb,
+               version       = ${newVersion},
+               updated_at    = now(),
+               origin        = 'local'
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+           AND plan_slug = ${slug}
       `;
     }
 
@@ -264,7 +312,7 @@ export async function withPlanLock<T>(
       value,
       filePath,
       version: newVersion,
-      writtenBody: newBody,
+      writtenBody,
       // P-010: the PRE-edit content, threaded to the post-commit per-part capture
       // so it can baseline (deterministic fed_ts=0) before diffing the new content.
       priorBody: cur?.content ?? null,

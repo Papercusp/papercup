@@ -55,6 +55,16 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe('Include per-run instance plans of scheduled templates (Option C). Hidden by default — they are reached via the template Runs history, not the main directory.'),
+  template: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Filter to plans of a given template TYPE (e.g. "rubric") — plan-templates-and-rubric-v2 P-005. Rides the harness_plans_template_idx filter index.'),
+  templateSlug: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Filter to per-run instances of a given template plan (the template_slug back-pointer). Implies including instances (they are otherwise hidden).'),
   /**
    * P-029: explicit multi-harness fan-out. When set, ignore the ctx
    * harness and walk each named harness's `docs/plans/` dir, returning
@@ -94,6 +104,8 @@ type ListRow = {
   owner: string | null;
   /** P-015 free-text initiative grouping label (frontmatter-derived), or null. */
   initiative: string | null;
+  /** Template TYPE this plan conforms to (frontmatter-derived), or null — P-005. */
+  template: string | null;
   archived: boolean;
   isLegacy: boolean;
   itemCounts: Partial<Record<(typeof ITEM_STATUSES)[number] | 'unknown', number>> | null;
@@ -199,6 +211,8 @@ export default defineTool({
         workspaceId: activeWorkspaceId(),
         includeArchived,
         includeInstances,
+        ...(args.template ? { template: args.template } : {}),
+        ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
       });
       const byHarness = new Map<string, PlanIndexRow[]>();
       for (const r of allRows) {
@@ -210,7 +224,13 @@ export default defineTool({
     } else {
       for (const harnessSlug of perHarness) {
         try {
-          const rows = await listPlanIndexRows({ harnessSlug, includeArchived, includeInstances });
+          const rows = await listPlanIndexRows({
+            harnessSlug,
+            includeArchived,
+            includeInstances,
+            ...(args.template ? { template: args.template } : {}),
+            ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
+          });
           batches.push({ harnessSlug, rows });
         } catch (err) {
           // infra round-3 F5: a stale/unregistered slug must not spike the
@@ -350,6 +370,7 @@ export default defineTool({
           created: row.created,
           owner: row.owner,
           initiative: row.initiative,
+          template: row.template,
           archived: row.archived,
           isLegacy: row.isLegacy,
           itemCounts,
