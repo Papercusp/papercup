@@ -580,12 +580,39 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       return undefined; // fail-open: fall back to member-slug binding (today's behavior)
     }
   };
+  // ── Per-admitted-peer identity store (rev-v2 Component A) ── populated at
+  // admit time from the SignedAnnounce frame so `reverifyAdmitted()` can
+  // re-call `verifyBinding(devicePubkey, githubLogin, githubUserId, gistId)`
+  // without the original frame. Keyed by `log_core_key` (same key as `admitted`).
+  // Cleaned up in every drop path: `revoke()`, `applyRevocationRefresh()`, and
+  // the attestation re-verify drop inside `reverifyAdmitted()`. Declared HERE (above
+  // `buildScopedApply`) so the WI-259 P-002 `resolveAuthorDevice` seam threads into the
+  // content projections that `buildScopedApply` builds below; `resolveAuthorId` (the
+  // rate limiter's, far below) reads this same map.
+  const admittedIdentities = new Map<
+    string,
+    { devicePubkey: string; githubLogin: string; githubUserId: number; attestationGistId: string }
+  >();
+
+  // WI-259 P-002 (membership-aware cross-member content apply): map an op's source-log
+  // core key → the admission-VERIFIED device pubkey that vouched for that log (its
+  // announce sig was checked against it AND it was a hive member — STEP 1 / P-001). The
+  // 6 content projections' guard (`shouldApplyMemberContentOp`) re-checks this device ∈
+  // the CURRENT member set (`resolveHiveMemberDeviceSet`) so a removed member's writes
+  // stop applying. Keyed off `op.sourceLogKeyHex` (immutable, receiver-stamped) NOT
+  // `op.author_pubkey` — the latter is caller-supplied (peer-log.ts:19), so a removed
+  // member could spoof a still-member's pubkey to evade the write-cut. `null` when the
+  // source log isn't admitted (own log / legacy op without a source key).
+  const resolveAuthorDevice = (sourceLogKeyHex: string): string | null =>
+    admittedIdentities.get(sourceLogKeyHex)?.devicePubkey ?? null;
+
   const buildScopedApply = (hiveHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       ownLogKeyHex: ownLog.keyHex,
       hiveHomeSlug,
+      resolveAuthorDevice,
     });
 
   let hiveHomeProjectionSlug = await resolveHiveHomeProjectionSlug(opts.swarmBinding);
@@ -676,17 +703,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // bridge between the two.
   const revoked = new Set<string>();
   const pubkeyToLogKey = new Map<string, string>();
-
-  // ── Per-admitted-peer identity store (rev-v2 Component A) ── populated at
-  // admit time from the SignedAnnounce frame so `reverifyAdmitted()` can
-  // re-call `verifyBinding(devicePubkey, githubLogin, githubUserId, gistId)`
-  // without the original frame. Keyed by `log_core_key` (same key as `admitted`).
-  // Cleaned up in every drop path: `revoke()`, `applyRevocationRefresh()`, and
-  // the attestation re-verify drop inside `reverifyAdmitted()`.
-  const admittedIdentities = new Map<
-    string,
-    { devicePubkey: string; githubLogin: string; githubUserId: number; attestationGistId: string }
-  >();
+  // `admittedIdentities` (+ the WI-259 P-002 `resolveAuthorDevice` seam) is declared
+  // ABOVE `buildScopedApply` so the content projections can thread the seam — see there.
 
   // ── Startup revocation seed (D-002) ── load PUBLISHED revocations BEFORE the
   // swarm is joined so any already-revoked peer is refused on first contact.

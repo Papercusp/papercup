@@ -37,6 +37,18 @@ describe('resolveBoundAccount', () => {
     await expect(resolveBoundAccount('ws')).rejects.toThrow(/not in the account pool/);
   });
 
+  it('carries the account egress (per-account IP routing, B-GW-3) through to the resolved account', async () => {
+    // End-to-end leg: the resolver must NOT drop a registered account's egress, else the gateway
+    // never builds its per-account dispatcher and all subscriptions share one egress IP.
+    process.env.PAPERCUSP_ACCOUNT_ID = 'acct-b';
+    mockedLoad.mockResolvedValue({
+      accounts: [acct('acct-a', 'ref:a'), { id: 'acct-b', credentialRef: 'ref:b', egress: { proxyUrl: 'http://10.0.0.2:3128' } }],
+    } as never);
+    expect(await resolveBoundAccount('ws')).toEqual({
+      accountId: 'acct-b', credentialRef: 'ref:b', egress: { proxyUrl: 'http://10.0.0.2:3128' }, source: 'env',
+    });
+  });
+
   it('uses the sole pool account when there is no env pin and exactly one account', async () => {
     mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] } as never);
     expect(await resolveBoundAccount('ws')).toEqual({
@@ -95,6 +107,24 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'missing';
     mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a')] } as never);
     await expect(resolveAccountPool('ws')).rejects.toThrow(/not in the account pool/);
+  });
+
+  it('carries each account egress through (end-to-end per-account IP routing, B-GW-3)', async () => {
+    // Both egress forms (proxyUrl + bound localAddress) and a no-egress account must survive the
+    // resolve → so the gateway can route each account through its own dispatcher (or shared default).
+    mockedLoad.mockResolvedValue({
+      accounts: [
+        { id: 'a', credentialRef: 'ref:a', egress: { proxyUrl: 'http://10.0.0.1:3128' } },
+        { id: 'b', credentialRef: 'ref:b', egress: { localAddress: '10.0.0.2' } },
+        acct('c', 'ref:c'),
+      ],
+    } as never);
+    const pool = await resolveAccountPool('ws');
+    expect(pool.map((p) => p.egress)).toEqual([
+      { proxyUrl: 'http://10.0.0.1:3128' },
+      { localAddress: '10.0.0.2' },
+      undefined,
+    ]);
   });
 
   it('falls back to a single local account when the pool is empty', async () => {

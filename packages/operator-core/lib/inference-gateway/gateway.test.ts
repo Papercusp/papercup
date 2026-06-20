@@ -677,6 +677,63 @@ test('no per-account egress → no dispatcher (default shared egress)', async ()
   assert.equal(captured?.dispatcher, undefined, 'no egress → fetch gets no dispatcher');
 });
 
+test('per-account egress isolation: each pinned account routes via its OWN dispatcher; cached per-account; localAddress builds an Agent (B-GW-3 / per-account IP routing, D-003)', async () => {
+  // The capacity win: each Max subscription egresses from its OWN IP, so Anthropic's per-IP opus
+  // throttle becomes per-ACCOUNT (rotation works + ~8× aggregate RPM). Proof, in one request flow:
+  //   (1) a request pinned to A builds A's dispatcher and B's builds a DISTINCT one (different egress
+  //       IP — the isolation that makes rotation real);
+  //   (2) the SAME account reuses its cached dispatcher (one stable egress IP across that account's
+  //       requests — keyed `<accountId>|<proxyUrl>|<localAddress>`);
+  //   (3) a bound-source-IP (`localAddress`) account also builds a dispatcher, not just the proxyUrl
+  //       form; and
+  //   (4) an account with no egress still falls back to the default shared egress (no dispatcher).
+  const captured: { auth?: string; dispatcher?: unknown }[] = [];
+  const fetchImpl = (async (_url: string, init: { headers: Record<string, string>; dispatcher?: unknown }) => {
+    captured.push({ auth: init.headers.authorization, dispatcher: init.dispatcher });
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+
+  // Each account's token getter returns a distinct token → the captured Authorization header names
+  // WHICH account actually egressed (ground truth, immune to any internal failover).
+  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const B: ActiveAccount = { accountId: 'B', token: async () => 'B-tok', egress: { proxyUrl: 'http://127.0.0.1:3129' } };
+  const C: ActiveAccount = { accountId: 'C', token: async () => 'C-tok', egress: { localAddress: '127.0.0.1' } };
+  const P: ActiveAccount = { accountId: 'P', token: async () => 'P-tok' }; // no egress → shared default
+  const byId: Record<string, ActiveAccount> = { A, B, C, P };
+  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => byId[id] ?? null };
+
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+
+  const pin = (acct: string) =>
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-account': acct },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+
+  // Sequential so each request's fetchImpl capture completes before the next (the cache assertion
+  // needs both A requests recorded in order).
+  await pin('A');
+  await pin('B');
+  await pin('A'); // again → must reuse A's cached dispatcher
+  await pin('C');
+  await pin('P');
+
+  const dispFor = (tok: string) => captured.filter((c) => c.auth === `Bearer ${tok}`).map((c) => c.dispatcher);
+  const [dA1, dA2] = dispFor('A-tok');
+  const [dB] = dispFor('B-tok');
+  const [dC] = dispFor('C-tok');
+  const [dP] = dispFor('P-tok');
+
+  assert.ok(dA1, "account A's request egresses via A's dispatcher");
+  assert.ok(dB, "account B's request egresses via B's dispatcher");
+  assert.notEqual(dA1, dB, 'A and B egress via DISTINCT dispatchers (per-account IP isolation — the rotation win)');
+  assert.equal(dA1, dA2, "A's dispatcher is cached per-account (one stable egress IP across A's requests)");
+  assert.ok(dC, 'a bound-source-IP (localAddress) account also builds an egress dispatcher (not just proxyUrl)');
+  assert.equal(dP, undefined, 'an account with no egress falls back to the default shared egress (no dispatcher)');
+});
+
 test('a STALLED OAuth token refresh fails FAST with a retryable 503 + releases the slot (2026-06-20 token-hang wedge)', async () => {
   // active.token() does a deadline-less network refresh that runs BEFORE the upstream stall-guard, so a
   // stalled OAuth endpoint used to pin every admission slot forever (counters frozen, multi-minute log

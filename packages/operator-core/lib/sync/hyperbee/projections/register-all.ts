@@ -98,6 +98,17 @@ export interface RegisterAllOpts {
    * projections ignore the extra field).
    */
   onEpochKeyApplied?: (hiveHomeSlug: string, epoch: number) => void;
+  /**
+   * WI-259 P-002 (membership-aware cross-member content apply): maps an op's
+   * `sourceLogKeyHex` (the immutable, receiver-stamped source-log core key) → the
+   * device-identity pubkey that was admission-VERIFIED for that log (∈ hive members at
+   * admit). The 6 content projections' membership-aware writeToPg guard
+   * (`shouldApplyMemberContentOp`) calls this with `op.sourceLogKeyHex` and re-checks the
+   * device ∈ the CURRENT member set. Boot wires it from `admittedIdentities`; undefined
+   * for non-hive / single-harness contexts (the guard then degrades to today's own-slug
+   * drop). NOT keyed off `op.author_pubkey` — that field is caller-supplied / spoofable.
+   */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
 }
 
 /**
@@ -175,21 +186,23 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
       : opts;
   return [
     buildContributorsProjection(opts),
-    // WI-259 (Option B): a shared-hive MEMBER's feature/plan/issue content federates
-    // under the PEER-STABLE hive-home slug (member slugs are NOT peer-stable), so a
-    // member's row written on peer A lands on peer B even though B boots a DIFFERENT
-    // member slug. These six content projections rebind to `hiveScoped` — the hive-home
-    // slug when boot supplies one (a joiner's member harness), else this harness's own
-    // slug (today's behavior for a non-hive / owned-home harness). The companion
-    // capture trigger (mig 322) stamps the outbox `harness_slug = <hive_home_slug>` so
-    // the wire op's `harness_slug` matches the hive-home-scoped projection guard, and
-    // the member-origin discriminator (author_pubkey) keeps two members' F-001 distinct.
-    buildFeatureClaimsProjection(hiveScoped),
-    buildFeatureQueueProjection(hiveScoped),
-    buildFeatureWorkingSetProjection(hiveScoped),
-    buildHarnessFeaturesProjection(hiveScoped),
-    buildHarnessPlansProjection(hiveScoped),
-    buildIssuesProjection(hiveScoped),
+    // WI-259 (MEMBERSHIP-AWARE — plan shared-hive-member-content-federation-2026-06-20;
+    // supersedes the reverted "Option B" hive-home remap): a shared-hive MEMBER's
+    // feature/plan/issue content stays under its OWN member slug (`opts`), NOT a re-keyed
+    // hive-home slug — member slugs aren't peer-stable, and re-keying needed an unforgeable
+    // origin discriminator we lack (author_pubkey is caller-supplied / spoofable). Instead
+    // these 6 content projections keep member-slug scope, and each writeToPg's guard is
+    // upgraded from the bare `harness_slug !== ownSlug` drop to a membership-aware check
+    // (`shouldApplyMemberContentOp`): a cross-member op applies iff its VERIFIED source-log
+    // device — `resolveAuthorDevice(op.sourceLogKeyHex)` (threaded via opts) — is in the
+    // CURRENT hive member set. So a peer member's content federates + stays attributable
+    // under its author's slug, and a removed member's writes stop applying, with no re-key.
+    buildFeatureClaimsProjection(opts),
+    buildFeatureQueueProjection(opts),
+    buildFeatureWorkingSetProjection(opts),
+    buildHarnessFeaturesProjection(opts),
+    buildHarnessPlansProjection(opts),
+    buildIssuesProjection(opts),
     buildPresenceProjection(opts),
     buildUsageProjection(opts),
     buildCoordConversationProjection(opts),

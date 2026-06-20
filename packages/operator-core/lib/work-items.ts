@@ -474,9 +474,18 @@ export interface CreateWorkItemInput {
    */
   workspaceId?: string;
   createdBy?: string;
-  /** Assign at creation (issue-family). collapse-delegate: the delegate session. */
+  /**
+   * ATOMIC create+claim (loop-routines P-007 / D-008, B-LOOP-4): the agent id to
+   * assign the new item to AT CREATION, in the same DB write — no separate claim,
+   * no create→claim race window. General: any agent id (self-assign = own id; a
+   * Queen create+place onto a bee = the bee's id). Honored for BOTH families —
+   * feature-family stamps `taken_by`/`taken_at` in the INSERT, issue-family writes
+   * the `assignee` column (collapse-delegate: the delegate session). Omit ⇒ the
+   * item lands unclaimed (the prior default).
+   */
   assignee?: string;
-  /** Durable delegator (collapse-delegate D-002). Issue-family. */
+  /** Durable delegator (collapse-delegate D-002). Issue-family only (the
+   *  feature table has no assigned_by column). */
   assignedBy?: string;
   /**
    * URGENT enqueue (swarm-coordination P-006/D-005): wake the Pot operator (the
@@ -515,10 +524,34 @@ function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
     .catch(() => {});
 }
 
+/**
+ * Fire `work-item:claimed:<id>` for an ATOMIC create+claim (loop-routines P-007 /
+ * D-008, B-LOOP-4): when `createWorkItem` was given an `assignee`, the row lands
+ * already-claimed, so emit the SAME awaited-event `claimWorkItem` fires — a
+ * Queen→bee place (or any `events:await` leg on the claim) observes it identically
+ * to a separate claim. Lazy import (work-items-events imports this module
+ * statically) + fire-and-forget: an emit-path failure must never break the write.
+ */
+function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
+  if (!assignTo) return;
+  void import('./work-items-events')
+    .then((m) => m.emitWorkItemClaimedEvent(wi, assignTo))
+    .catch(() => {});
+}
+
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
 export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
   if (!isWorkItemKind(input.kind)) throw new Error(`unknown work_item kind '${input.kind}'`);
   const id = await nextWorkItemId();
+
+  // ATOMIC create+claim (loop-routines P-007 / D-008, B-LOOP-4): a non-empty
+  // `assignee` makes the row land already-claimed by that agent — no separate
+  // claim call, no create→claim race window (a competing claim_next can't grab the
+  // row in the gap). Issue-family claims via createIssue's assignee/assigned_by
+  // columns; feature-family stamps taken_by/taken_at in the INSERT below. A
+  // freshly-created row is origin='local' ⇒ always admissible, so no auditor guard.
+  const assignTo =
+    typeof input.assignee === 'string' && input.assignee.trim() ? input.assignee.trim() : null;
 
   if (familyOf(input.kind) === 'issue') {
     const issue = await createIssue({
@@ -536,6 +569,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     });
     const created = issueToWorkItem(issue);
     maybeFireUrgentWake(input, created);
+    maybeFireClaimedEvent(assignTo, created);
     return created;
   }
 
@@ -562,31 +596,53 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // ("could not determine data type of parameter $N"), same as the $6::jsonb cast.
   const sourcePlanSlug =
     typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
+  // The fixed base columns/values (params $1..$11). $6 jsonb + $11 text carry
+  // explicit casts because the org pool runs prepare:false (a bare param leaves the
+  // server unable to infer its type). The two INDEPENDENT optionals — taken_by/
+  // taken_at (B-LOOP-4 atomic claim) and workspace_id (EI-728) — are appended in a
+  // fixed order with each param index computed off `params.length`, so they never
+  // collide on a positional slot regardless of which (or both) is present.
+  const params: unknown[] = [
+    input.harness,
+    id,
+    input.title,
+    input.summary ?? null,
+    input.kind,
+    input.payload != null ? JSON.stringify(input.payload) : null,
+    input.parent ?? null,
+    now,
+    now,
+    now,
+    sourcePlanSlug,
+  ];
+  const cols = [
+    'harness_slug', 'feature_id', 'title', 'summary', 'status', 'attempts',
+    'item_kind', 'payload', 'parent_id', 'needs_design', 'needs_human_review', 'ts', 'created_ts', 'updated_ts',
+    'source_plan_slug',
+  ];
+  const vals = [
+    '$1', '$2', '$3', '$4', `'todo'`, '0',
+    '$5', '$6::jsonb', '$7', 'FALSE', 'FALSE', '$8', '$9', '$10',
+    '$11::text',
+  ];
+  if (assignTo) {
+    // Atomic create+claim: stamp the owner + lease time in the SAME INSERT (mirrors
+    // claimWorkItem's `taken_by = …, taken_at = now()`), so the row is never
+    // momentarily unclaimed for a competing claim_next to steal.
+    params.push(assignTo);
+    cols.push('taken_by', 'taken_at');
+    vals.push(`$${params.length}::text`, 'now()');
+  }
+  if (explicitWs) {
+    params.push(explicitWs);
+    cols.push('workspace_id');
+    vals.push(`$${params.length}::text`);
+  }
   await sql.unsafe(
-    `INSERT INTO harness_shared.harness_features_consolidated (
-       harness_slug, feature_id, title, summary, status, attempts,
-       item_kind, payload, parent_id, needs_design, needs_human_review, ts, created_ts, updated_ts,
-       source_plan_slug${explicitWs ? ', workspace_id' : ''}
-     ) VALUES (
-       $1, $2, $3, $4, 'todo', 0,
-       $5, $6::jsonb, $7, FALSE, FALSE, $8, $9, $10,
-       $11::text${explicitWs ? ', $12::text' : ''}
-     )
+    `INSERT INTO harness_shared.harness_features_consolidated (${cols.join(', ')})
+     VALUES (${vals.join(', ')})
      ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
-    [
-      input.harness,
-      id,
-      input.title,
-      input.summary ?? null,
-      input.kind,
-      input.payload != null ? JSON.stringify(input.payload) : null,
-      input.parent ?? null,
-      now,
-      now,
-      now,
-      sourcePlanSlug,
-      ...(explicitWs ? [explicitWs] : []),
-    ],
+    params,
   );
   const wi: WorkItem = {
     id,
@@ -596,8 +652,8 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     title: input.title,
     summary: input.summary ?? '',
     state: 'todo',
-    assignee: null,
-    assignedBy: null,
+    assignee: assignTo, // B-LOOP-4: created already-claimed when `assignee` was given
+    assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
     severity: null,
     parent: input.parent ?? null,
     payload: input.payload ?? null,
