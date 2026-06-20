@@ -38,6 +38,11 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
   /** Round-robin cursor — the NEXT index to consider, advanced on every `active()` so unpinned
    *  egress spreads across the whole pool instead of concentrating on one account. */
   let rrIdx = 0;
+  /** The LIVE pool entries. Mutable so the gateway can HOT-RELOAD the account pool (B-HOT-1): an atomic
+   *  swap via `reload()` re-points active()/onExhausted()/select() at the new set WITHOUT a gateway
+   *  restart and WITHOUT changing this pool object's identity (the gateway holds this object for its
+   *  whole lifetime). Initialised from the constructor `entries`. */
+  let live: readonly ActiveAccount[] = entries.slice();
 
   const available = (e: ActiveAccount): boolean => {
     const until = exhaustedUntil.get(e.accountId);
@@ -49,16 +54,16 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  (including paused accounts) only when EVERY account is currently exhausted, so the gateway still
    *  picks SOMETHING (the retry loop / governor then paces it) rather than starving. */
   function active(): ActiveAccount {
-    for (let step = 0; step < entries.length; step++) {
-      const idx = (rrIdx + step) % entries.length;
-      if (available(entries[idx])) {
-        rrIdx = (idx + 1) % entries.length;
-        return entries[idx];
+    for (let step = 0; step < live.length; step++) {
+      const idx = (rrIdx + step) % live.length;
+      if (available(live[idx])) {
+        rrIdx = (idx + 1) % live.length;
+        return live[idx];
       }
     }
-    const idx = rrIdx % entries.length;
-    rrIdx = (idx + 1) % entries.length;
-    return entries[idx];
+    const idx = rrIdx % live.length;
+    rrIdx = (idx + 1) % live.length;
+    return live[idx];
   }
 
   /** Mark `exhaustedId` out of rotation until `resetAt`, and return the next DIFFERENT account that
@@ -66,12 +71,12 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  a reset). Idempotent: re-exhausting an already-paused account just refreshes its reset. */
   function onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null {
     exhaustedUntil.set(exhaustedId, resetAt > now() ? resetAt : now() + FIVE_HOURS_MS);
-    for (let step = 0; step < entries.length; step++) {
-      const idx = (rrIdx + step) % entries.length;
-      if (entries[idx].accountId !== exhaustedId && available(entries[idx])) {
-        rrIdx = (idx + 1) % entries.length;
-        log('warn', `inference-gateway: '${exhaustedId}' out of rotation → '${entries[idx].accountId}'`);
-        return entries[idx];
+    for (let step = 0; step < live.length; step++) {
+      const idx = (rrIdx + step) % live.length;
+      if (live[idx].accountId !== exhaustedId && available(live[idx])) {
+        rrIdx = (idx + 1) % live.length;
+        log('warn', `inference-gateway: '${exhaustedId}' out of rotation → '${live[idx].accountId}'`);
+        return live[idx];
       }
     }
     log('error', `inference-gateway: '${exhaustedId}' exhausted and no other account has budget — egress pauses until reset`);
@@ -83,8 +88,22 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  falls back to active()). Pins a bee to its account regardless of which one is `active` — a
    *  failover moves `active`, but a header-pinned request stays on its own credential's cache. */
   function select(accountId: string): ActiveAccount | null {
-    return entries.find((e) => e.accountId === accountId) ?? null;
+    return live.find((e) => e.accountId === accountId) ?? null;
   }
 
-  return { active, onExhausted, select };
+  /** HOT-RELOAD the pool (B-HOT-1): atomically swap the live entries to `next` WITHOUT a gateway
+   *  restart. The pool object identity is preserved (the gateway's captured `pool` reference keeps
+   *  working), the round-robin cursor is clamped to the new length, and the exhausted-state map is
+   *  pruned of accounts that LEFT the pool — a still-present paused account KEEPS its pause across the
+   *  swap. Throws on an empty set: the gateway must always have at least one egress account. */
+  function reload(next: readonly ActiveAccount[]): void {
+    if (next.length === 0) throw new Error('createFailoverPool.reload: at least one account is required');
+    live = next.slice();
+    const presentIds = new Set(live.map((e) => e.accountId));
+    for (const id of [...exhaustedUntil.keys()]) if (!presentIds.has(id)) exhaustedUntil.delete(id);
+    rrIdx = rrIdx % live.length;
+    log('info', `inference-gateway: account pool hot-reloaded → [${live.map((e) => e.accountId).join(', ')}]`);
+  }
+
+  return { active, onExhausted, select, reload };
 }
