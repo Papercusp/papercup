@@ -110,6 +110,14 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // earlier plans:write parity fix). The `bee` role already carries these.
     'memory:read',
     'memory:write',
+    // EI-2048 follow-up (owner-fix 2026-06-20): operator lacked locks:* while the
+    // lower-privileged `bee` role carries them (an inversion) — so db:next-migration,
+    // db:check_drift, and explicit multi-file holds 100%-failed for an operator/psu
+    // session with `lacks capability "locks:write"`. The operator should have ≥ the
+    // bee's infra caps; grant the locks pair. (The capability-envelope protected
+    // floor — secrets:* / processes:kill — still holds regardless.)
+    'locks:read',
+    'locks:write',
   ],
   // The QUEEN — the hive's placement-specialist decider (local-hive D-001:
   // "the operator specialized"), so her caps mirror the operator's. They cover

@@ -53,6 +53,12 @@ const OPERATOR_CAPS = [
   // row, and provision-without-force is a no-op for an existing row.)
   'memory:read',
   'memory:write',
+  // EI-2048 follow-up (owner-fix 2026-06-20): same omission class — operator lacked
+  // locks:* while the lower-privileged `bee` carries them, so db:next-migration /
+  // db:check_drift / multi-file holds failed with `lacks capability "locks:write"`.
+  // Keep this in lockstep with role-principal-caps.ts (they union at load time).
+  'locks:read',
+  'locks:write',
 ];
 
 export default defineTool({
