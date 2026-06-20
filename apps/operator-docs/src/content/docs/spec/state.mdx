@@ -2,6 +2,13 @@
 title: 5. State model (Postgres-backed)
 sidebar:
   order: 6
+plans:
+  - fumadocs-to-starlight-2026-05-20
+  - harness-state-storage-unification-2026-06-01
+  - papercusp-substrate-model-b-impl-2026-06-01
+  - papercusp-substrate-model-b-rewrite-2026-05-31
+  - unify-work-items-2026-06-04
+  - engineer-issues-2026-06-03
 ---
 
 <p>
@@ -25,6 +32,22 @@ sidebar:
         <code>tasks</code> table, and there is no standalone <code>audit</code> /
         <code>task_status</code> type by these names. The SQL below is the design
         illustration, not the live DDL.</em>
+      </p>
+
+      <p>
+        <em>Per-workspace isolation on the <code>harness_shared</code> tables is
+        enforced by Postgres Row Level Security, not merely by a
+        <code>workspace_id</code> column: each isolated table has
+        <code>ENABLE ROW LEVEL SECURITY</code> plus a policy gated on
+        <code>current_setting('app.workspace_id')</code> — e.g.
+        <code>goals_workspace_isolation</code> and
+        <code>pending_events_workspace_isolation</code>.
+        <code>engineer_issues</code> is a deliberate exception: it carries no RLS
+        (matching the <code>{'coord_*'}</code> family) because the
+        <code>{'issues:*'}</code> tools connect via a <code>BYPASSRLS</code> handle and
+        filter by <code>workspace_id</code> in-query, which lets SU pass
+        <code>workspace_id='*'</code> as a cross-workspace scope that a row-isolation
+        policy would break.</em>
       </p>
 
       
@@ -125,7 +148,20 @@ $$ LANGUAGE sql;
 --       - because → GOAL: Ship habit-tracker mobile app to TestFlight by EOM
 ```
 
-
+      <p>
+        <em>This is live, exercised behavior. The shipped
+        <code>harness_shared.task_lineage()</code> function is parameterized by
+        <code>(schema, harness_slug, feature_id)</code> and recurses over the
+        per-harness <code>harness_features</code> table (not a single
+        <code>task_id</code> over a <code>tasks</code> table). The substrate helper
+        <code>getFeatureLineage()</code> wraps it and
+        <code>formatLineageForPrompt()</code> emits the markdown block headed
+        <code>## Why this matters (your goal lineage)</code> — with
+        <code>- because → &lt;title&gt; (parent task)</code> lines and a terminal
+        <code>- because → **GOAL**: &lt;title&gt;</code> line. It is wired into the
+        <code>feature-views</code> harness route and the plugin host's
+        <code>lineage()</code> tool.</em>
+      </p>
 
       
 
@@ -138,25 +174,31 @@ $$ LANGUAGE sql;
 ```
 -- Worker's checkout query — atomic by definition.
 -- Concurrent workers each get a different row.
+-- (Live: targets the per-harness harness_features table; columns shown
+--  illustratively as `tasks`.)
 UPDATE tasks
-   SET status = 'in_progress',
+   SET status = CASE WHEN status = 'todo' THEN 'in_progress' ELSE status END,
        taken_by = $worker_id,
        taken_at = now(),
-       expires_at = now() + interval '30 minutes',
+       expires_at = now() + interval '30 minutes',  -- default lease (leaseSec)
        attempts = attempts + 1
  WHERE id = (
    SELECT id FROM tasks
-    WHERE status IN ('todo', 'failing')
+    WHERE status IN ('todo', 'failing')              -- default statuses
       AND taken_by IS NULL
-    ORDER BY priority DESC, created_at ASC
+    ORDER BY created_at ASC                           -- FIFO; no priority column
     LIMIT 1
     FOR UPDATE SKIP LOCKED        -- ← the magic
  )
 RETURNING *;
 
--- Orphan recovery: every tick, the substrate releases stale checkouts:
-UPDATE tasks SET taken_by = NULL, taken_at = NULL
- WHERE expires_at < now() AND status = 'in_progress';
+-- Orphan recovery: every tick, the substrate releases stale checkouts.
+-- Filters on taken_by (not status), clears the lease, and resets an
+-- in-progress row back to 'todo':
+UPDATE tasks
+   SET taken_by = NULL, taken_at = NULL, expires_at = NULL,
+       status = CASE WHEN status = 'in_progress' THEN 'todo' ELSE status END
+ WHERE expires_at < now() AND taken_by IS NOT NULL;
 ```
 
 
@@ -170,25 +212,29 @@ UPDATE tasks SET taken_by = NULL, taken_at = NULL
       
 
 ```
--- Inside accept_proposal handler — atomic Postgres transaction:
+-- Inside accept_proposal handler — atomic Postgres transaction.
+-- The budget is keyed on the PROJECT, not the goal: it locks the
+-- harness_shared.projects row and sums per-project committed cost.
 BEGIN;
 
-  -- Lock the goal to serialize concurrent accepts:
-  SELECT * FROM goals WHERE id = $goal_id FOR UPDATE;
+  -- Lock the project row to serialize concurrent accepts:
+  SELECT id, budget_cents FROM harness_shared.projects
+   WHERE id = $project_id FOR UPDATE;
 
-  -- Sum currently committed costs:
+  -- Sum currently committed costs for this project across the
+  -- per-harness harness_features tables:
   WITH committed AS (
-    SELECT COALESCE(SUM(estimated_cost_cents), 0) AS total
-      FROM tasks
-     WHERE goal_id = $goal_id
+    SELECT COALESCE(SUM(expected_cost_cents), 0) AS total
+      FROM harness_features
+     WHERE project_id = $project_id
        AND status NOT IN ('cancelled', 'rejected')
   )
-  SELECT (g.budget_cents - c.total) AS remaining
-    FROM goals g, committed c
-   WHERE g.id = $goal_id;
+  SELECT (p.budget_cents - c.total) AS remaining
+    FROM harness_shared.projects p, committed c
+   WHERE p.id = $project_id;
 
-  -- If remaining < proposed cost, ROLLBACK and reject.
-  -- Otherwise, INSERT the new task with the cost estimate.
+  -- If committed + proposed > budget, throw BudgetExceededError and ROLLBACK.
+  -- Otherwise, INSERT the new feature with its expected_cost_cents.
 
 COMMIT;
 ```
@@ -197,7 +243,14 @@ COMMIT;
 
       <p>
         This is enforced in the substrate <em>before</em> the orchestrator can dispatch worker roles, so director agents
-        physically cannot bypass via direct API.
+        physically cannot bypass via direct API. <code>harness_shared.projects</code>
+        carries the <code>budget_cents</code> cap (alongside <code>spent_cents</code>
+        and <code>cost_cap_cents</code>); <code>goals.budget_cents</code> exists but
+        is not the column the hard-stop gate reads. The write-skew-safe entry point
+        (<code>withProjectBudget</code>) keeps the <code>FOR UPDATE</code> check and
+        the cost-creating <code>INSERT</code> in the <em>same</em> transaction, so the
+        lock actually serializes — a budget cap of <code>null</code> means no cap and
+        always passes.
       </p>
 
       

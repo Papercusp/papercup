@@ -24,6 +24,7 @@ import * as path from 'node:path';
 // @ts-expect-error untyped JS package.
 import { applyPendingMigrations as _applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
+import { readMigratePolicy } from '@papercusp/operator-core/lib/migrate-policy';
 
 type ApplyPendingMigrations = (args: {
   client: unknown;
@@ -95,11 +96,27 @@ export async function applyStagedMigrations(opts: MigrateOpts = {}): Promise<Mig
   // routes hung for 37 min). Fail-fast → the migration is left pending and
   // retried, instead of taking the table down. application_name makes a stuck
   // migration self-identify in pg_stat_activity.
+  // lock_timeout / statement_timeout are runtime-settable via db:migrate-policy
+  // (live-configurability-audit P-003) — FAIL-SAFE to the 15s default if the policy (or its
+  // table) can't be read (CLI path / fresh DB / pre-migration / no org-pg context).
+  let lockTimeoutMs = 15_000;
+  let statementTimeoutMs: number | null = null;
+  try {
+    const pol = await readMigratePolicy();
+    lockTimeoutMs = pol.lockTimeoutMs;
+    statementTimeoutMs = pol.statementTimeoutMs;
+  } catch (e) {
+    log(`migrate-policy read failed, using defaults (lock_timeout=${lockTimeoutMs}): ${e instanceof Error ? e.message : e}`);
+  }
   const client = postgres(dbUrl, {
     max: 1,
     prepare: false,
     onnotice: () => {},
-    connection: { lock_timeout: 15_000, application_name: 'papercusp-deploy-migrate' },
+    connection: {
+      lock_timeout: lockTimeoutMs,
+      application_name: 'papercusp-deploy-migrate',
+      ...(statementTimeoutMs != null ? { statement_timeout: statementTimeoutMs } : {}),
+    },
   });
   try {
     const before = await appliedSet(client);

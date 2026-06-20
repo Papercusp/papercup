@@ -85,12 +85,12 @@ Every read or write against a workspace-scoped table must execute inside a trans
 
 ```ts
 await db.transaction(async (tx) => {
-  await tx.execute(sql`SET LOCAL app.workspace_id = ${workspaceId}`);
+  await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
   // ... queries via tx ...
 });
 ```
 
-`SET LOCAL` is reset at transaction end. **Bare-pool checkouts are not allowed for workspace-scoped queries** — a checkout without the GUC bypasses RLS silently. This is the canonical Drizzle/Knex RLS regression. Enforcement:
+The canonical wrapper sets the GUC via `set_config('app.workspace_id', <ws>, true)` rather than the literal `SET LOCAL app.workspace_id = …`, because `SET LOCAL` cannot take a bind parameter. The two are semantically equivalent: the `true` third argument makes the setting transaction-local, so it is reset at transaction end. **Bare-pool checkouts are not allowed for workspace-scoped queries** — a checkout without the GUC bypasses RLS silently. This is the canonical Drizzle/Knex RLS regression. Enforcement:
 
 1. **Tx-only ESLint rule** on the Agent-MCP package and substrate service code paths: bare-`db.X()` calls inside a `transaction()` callback are flagged. The callback must use the `tx` parameter.
 2. **CI cross-workspace probe**: programmatic test authenticates as workspace B, attempts to read workspace A's data through every endpoint, asserts denial.
@@ -125,9 +125,15 @@ Properties:
 
 Operator runs the script via `tsx libs/db/scripts/backfill-workspace-id.ts --dry-run` first, reviews the output, then re-runs with `--apply`. After `--apply` succeeds, the column default is altered from `''` to RAISE on insert (a CHECK constraint), enforcing future correctness.
 
-## Hindsight bank derivation
+The **no default-tag** rule applies to this one-time backfill, which loud-fails on indeterminate rows rather than guessing. At **runtime**, a separate fill trigger (`harness_shared.fill_workspace_id_from_projects()`) resolves `workspace_id` from `projects` by `harness_slug` for new inserts and, failing that, falls back to `'default'` — so freshly inserted rows always carry a non-empty `workspace_id` without relying on the backfill.
 
-Hindsight banks are `paperclip::<COMPANY_ID>`, a global namespace. The mapping is added to the workspace registry:
+## Hindsight bank derivation (deprecated)
+
+<Aside type="caution">
+**No longer a live surface.** This amendment originally specified auth-derived Hindsight bank scoping via a `hindsight:recall` tool. That tool was deprecated 2026-05-09 (degraded-empty ever since, with zero callers) and **removed from the agent-mcp catalog** in audit P-047. No current tool derives a Hindsight bank from workspace scope, so the bank-derivation and degraded-result behavior described below is not implemented anywhere today. The section is retained for design context.
+</Aside>
+
+The workspace registry still carries a `companyId` field — added per this amendment and retained for any future auth-derived scoping — even though its only former consumer (`hindsight:recall`) is gone:
 
 ```json
 {
@@ -143,11 +149,7 @@ Hindsight banks are `paperclip::<COMPANY_ID>`, a global namespace. The mapping i
 }
 ```
 
-`hindsight:recall` derives the bank from the calling principal's workspace's `companyId`. Body-supplied scope is rejected.
-
-If `companyId` is null, `hindsight:recall` returns `degraded: true, degradedReasons: ["hindsight_not_configured_for_workspace"]` with empty results. It does not throw.
-
-v1 enforces 1:1 — workspace registry rejects multi-company configuration.
+The original design (no longer realized in code): Hindsight banks were a global namespace keyed on `<COMPANY_ID>`, and `hindsight:recall` would derive the bank from the calling principal's workspace's `companyId`, reject body-supplied scope, and — when `companyId` was null — return `degraded: true` with `degradedReasons: ["hindsight_not_configured_for_workspace"]` and empty results rather than throwing. The 1:1 workspace→company intent (registry rejects multi-company configuration) likewise has no enforcing tool today.
 
 ## Observable invariants (post-migration)
 
@@ -162,13 +164,13 @@ These hold by construction once the migration completes:
 
 - **Cross-workspace data leak.** Today's dominant failure mode. Closed by RLS.
 - **Future plugin/agent leak.** A plugin querying `harness_shared.audit_log` directly inherits the same RLS. There is no surface that bypasses the policy.
-- **Hindsight cross-bank read.** Auth-derived bank ID prevents an agent in workspace A from recalling memories scoped to workspace B's company.
+- **Hindsight cross-bank read.** The original design used an auth-derived bank ID to prevent an agent in workspace A from recalling memories scoped to workspace B's company. The deriving tool (`hindsight:recall`) has since been removed (audit P-047), so this is no longer an active surface — see [Hindsight bank derivation](#hindsight-bank-derivation-deprecated).
 
 ## Threats it does not address
 
 - **A compromised `harness_admin` role.** Admin bypasses RLS by design (migrations).
 - **A leaked workspace bearer token.** Token holder can act as that workspace; recovery is workspace-level (analogous to the per-harness recovery in `auth-and-identity`).
-- **Single-workspace desktop modes.** Both the default `embedded-postgres` backend and the legacy `pglite` backend run one PG instance per workspace, so RLS is redundant but not harmful.
+- **Single-workspace desktop modes.** The desktop's sole `embedded-postgres` backend runs one PG instance per workspace, so RLS is redundant but not harmful.
 
 ## Compatibility
 
