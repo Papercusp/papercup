@@ -27,6 +27,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
+import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-tools/locks/contention-retry';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
@@ -188,6 +189,12 @@ async function releaseAll(cd: string, acquired: string[]): Promise<void> {
   }
 }
 
+// EI-1720 + worker-fire-path zombie spawns: the lock-acquire contention retry
+// (acquireWithContentionRetry / isWorkspaceContended) now lives in the shared
+// locks module (also used by file-lock-guard). Re-exported so the existing
+// git-sync-action suite keeps importing acquireWithContentionRetry from here.
+export { acquireWithContentionRetry } from '../../agent-tools/locks/contention-retry';
+
 /** Acquire `git-sync:<slug>` (auto-registered) + every extra resource exclusively,
  *  or signal held/error (releasing partials). */
 async function acquireLocks(cd: string, slug: string, resources: string[], acquired: string[]): Promise<AcquireOutcome> {
@@ -195,22 +202,31 @@ async function acquireLocks(cd: string, slug: string, resources: string[], acqui
   for (const resource of resources) {
     let r: { ok: boolean; reason?: string };
     try {
-      r = await inWorkspaceTxn(cd, GIT_SYNC_OWNER, async (tx) => {
-        // Auto-register ONLY the per-slug name, in the same txn as its acquire.
-        if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
-        return tryAcquireResource(tx, {
-          coordinationDomain: cd,
-          resource,
-          mode: 'exclusive',
-          owner: GIT_SYNC_OWNER,
-          ownerLabel: `git-sync:${slug}`,
-          reason: `auto-commit ${slug}`,
-          ttlSec: LOCK_TTL_SEC,
-        });
-      });
+      // EI-1720: retry-with-backoff on a TRANSIENT pg 57014/55P03 so a load-driven
+      // workspace-lock contention spike delays — but does not multi-minute-stall —
+      // the commit, instead of skipping the tick outright.
+      r = await acquireWithContentionRetry(() =>
+        inWorkspaceTxn(cd, GIT_SYNC_OWNER, async (tx) => {
+          // Auto-register ONLY the per-slug name, in the same txn as its acquire.
+          if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
+          return tryAcquireResource(tx, {
+            coordinationDomain: cd,
+            resource,
+            mode: 'exclusive',
+            owner: GIT_SYNC_OWNER,
+            ownerLabel: `git-sync:${slug}`,
+            reason: `auto-commit ${slug}`,
+            ttlSec: LOCK_TTL_SEC,
+          });
+        }));
     } catch (e) {
-      // SU-lock DB unreachable / not bootstrapped — proceed unlocked (best-effort).
-      console.warn(`[git-sync] lock infra unavailable (${resource}): ${e instanceof Error ? e.message : e}`);
+      // Reaching here on contention means the load window outlasted the retries
+      // (the next tick retries); otherwise it's SU-lock DB unreachable / not
+      // bootstrapped — proceed unlocked (best-effort).
+      const contended = isWorkspaceContended(e);
+      console.warn(
+        `[git-sync] lock ${contended ? 'contended after retries' : 'infra unavailable'} (${resource}): ${e instanceof Error ? e.message : e}`,
+      );
       await releaseAll(cd, acquired);
       acquired.length = 0;
       return { state: 'error' };

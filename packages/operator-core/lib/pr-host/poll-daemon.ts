@@ -140,7 +140,12 @@ export interface PollDaemonDeps {
   createHost?: () => Promise<PrHost | null>;
   fetchChecks?: (remote: string, headSha: string) => Promise<PrHostResult<PollChecks>>;
   resolveViewer?: () => Promise<PollViewer | null>;
-  triggerReviewer?: (args: { installSlug: string; workspaceId: string; pr: Pr }) => Promise<void>;
+  triggerReviewer?: (args: {
+    installSlug: string;
+    workspaceId: string;
+    pr: Pr;
+    reviewerGithubId: number;
+  }) => Promise<void>;
   readReport?: (args: {
     installSlug: string;
     workspaceId: string;
@@ -196,7 +201,12 @@ interface ResolvedDeps {
   createHost: () => Promise<PrHost | null>;
   fetchChecks: (remote: string, headSha: string) => Promise<PrHostResult<PollChecks>>;
   resolveViewer: () => Promise<PollViewer | null>;
-  triggerReviewer: (args: { installSlug: string; workspaceId: string; pr: Pr }) => Promise<void>;
+  triggerReviewer: (args: {
+    installSlug: string;
+    workspaceId: string;
+    pr: Pr;
+    reviewerGithubId: number;
+  }) => Promise<void>;
   readReport: (args: {
     installSlug: string;
     workspaceId: string;
@@ -327,8 +337,10 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
     // (a) WI↔PR tracking row (best-effort; PR-4 owns the full producer).
     await d.store.upsertFeaturePr({ workspaceId, installSlug, pr: enriched });
 
-    // (c) trigger the agent-reviewer (PR-2) — best-effort, inert until PR-2 lands.
-    await d.triggerReviewer({ installSlug, workspaceId, pr: enriched });
+    // (c) trigger the agent-reviewer (PR-2). Fires once per new/changed PR (last-seen
+    //     guard above). A blueprint-declared `pr:review` task takes precedence; absent
+    //     one, the default runs the deterministic reviewer in-process (PR-2 landed).
+    await d.triggerReviewer({ installSlug, workspaceId, pr: enriched, reviewerGithubId: viewer.id });
     counts.triggered.push(enriched.ref.number);
 
     // (d) auto-flow gate.
@@ -614,32 +626,57 @@ async function defaultFetchChecks(remote: string, headSha: string): Promise<PrHo
   }
 }
 
-/** Trigger the agent-reviewer (PR-2) via the launch-event seam. Inert until PR-2's
- *  blueprint declares `pr:review`; fire-and-forget like git-sync's resolver spawn. */
-async function defaultTriggerReviewer(args: { installSlug: string; workspaceId: string; pr: Pr }): Promise<void> {
+/** Trigger the agent-reviewer (PR-2). Preference order: a blueprint-declared `pr:review`
+ *  task (a full Bee, if a hive opts into one) takes precedence; absent one, run PR-2's
+ *  deterministic + safety-guarded reviewer IN-PROCESS. Either way fire-and-forget (the
+ *  auto-flow gate reads the resulting `pr_review_reports` row on a later poll). */
+async function defaultTriggerReviewer(args: {
+  installSlug: string;
+  workspaceId: string;
+  pr: Pr;
+  reviewerGithubId: number;
+}): Promise<void> {
   try {
     const { resolveLaunchTargetForEvent } = await import('../blueprint/launch-blueprint');
     const target = await resolveLaunchTargetForEvent(PR_REVIEW_EVENT, {
       installSlug: args.installSlug,
       workspaceId: args.workspaceId,
     });
-    if (!target) return; // no blueprint declares pr:review yet (PR-2 not landed) — inert.
-    const { loopbackFetch } = await import('../loopback-fetch');
-    void loopbackFetch(target.url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        kickoff: `Review PR #${args.pr.ref.number} on ${args.pr.ref.remote}: ${args.pr.title}`,
-        extra: [
-          '--pr-review',
-          JSON.stringify({
-            remote: args.pr.ref.remote,
-            number: args.pr.ref.number,
-            head_sha: args.pr.head_sha,
-            url: args.pr.url,
-          }),
-        ],
-      }),
+    if (target) {
+      // A hive declares a `pr:review` Bee task — hand off to it (heavyweight agent path).
+      const { loopbackFetch } = await import('../loopback-fetch');
+      void loopbackFetch(target.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kickoff: `Review PR #${args.pr.ref.number} on ${args.pr.ref.remote}: ${args.pr.title}`,
+          extra: [
+            '--pr-review',
+            JSON.stringify({
+              remote: args.pr.ref.remote,
+              number: args.pr.ref.number,
+              head_sha: args.pr.head_sha,
+              url: args.pr.url,
+            }),
+          ],
+        }),
+      }).catch(() => {});
+      return;
+    }
+    // No blueprint: run the deterministic reviewer in-process (PR-2's default path).
+    // Fire-and-forget so a multi-second LLM review never blocks the poll loop — the
+    // report lands in `pr_review_reports` for the gate + GUI to read on a later poll.
+    const { runPrReviewTask } = await import('./agent-reviewer');
+    void runPrReviewTask({
+      payload: {
+        remote: args.pr.ref.remote,
+        number: args.pr.ref.number,
+        head_sha: args.pr.head_sha,
+        url: args.pr.url,
+      },
+      workspaceId: args.workspaceId,
+      harnessSlug: args.installSlug,
+      reviewerGithubId: args.reviewerGithubId,
     }).catch(() => {});
   } catch {
     /* best-effort reviewer trigger; the auto-flow gate does not depend on it */

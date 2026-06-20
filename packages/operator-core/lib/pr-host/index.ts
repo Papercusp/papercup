@@ -79,6 +79,9 @@ export type {
   RunAgentReviewArgs,
   RunAgentReviewResult,
   RunAgentReviewDeps,
+  PrReviewTaskPayload,
+  RunPrReviewTaskArgs,
+  RunPrReviewTaskResult,
 } from './agent-reviewer';
 export {
   REVIEW_MODEL,
@@ -91,6 +94,7 @@ export {
   buildReviewPrompt,
   reviewPr,
   runAgentReview,
+  runPrReviewTask,
 } from './agent-reviewer';
 
 export type {

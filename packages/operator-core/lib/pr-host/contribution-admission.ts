@@ -137,11 +137,32 @@ export async function isPrAuthorRevoked(opts: {
   loadDevicePubkeys?: IsHiveContributorRevokedOpts['loadDevicePubkeys'];
   loadRevoked?: IsHiveContributorRevokedOpts['loadRevoked'];
   resolveProject?: (slug: string) => Promise<unknown>;
+  /**
+   * Observability probe (GAP review 2026-06-20): the per-harness SUBSTRATE revoked
+   * set for a NON-hive shared harness. Default: loadRevokedPubkeys. See the
+   * design-boundary note below.
+   */
+  probeLegacyRevocation?: (o: { workspaceId: string; harnessSlug: string }) => Promise<Set<string>>;
   log?: (msg: string) => void;
   sql?: Sql;
 }): Promise<boolean> {
   const hiveHomeSlug = await resolveHarnessHiveHomeSlug(opts.harnessSlug, opts.resolveProject);
-  if (!hiveHomeSlug) return false;
+  if (!hiveHomeSlug) {
+    // ── DESIGN BOUNDARY (GAP review 2026-06-20 — pr5-impl + pr3-impl consensus, option (b)) ──
+    // The code-plane contribution gate keys on HIVE membership BY DESIGN. A shared harness
+    // that is NOT a hive member (`hive_slug` null) uses the SUBSTRATE device-revocation plane
+    // (`contributors.revoked_pubkeys`, read-admission) — a DIFFERENT layer from "should this
+    // GitHub PR merge to canonical." Wiring the substrate set into the PR-merge decision would
+    // be a category error (PR-merge authority is the hive membership/trust model), and this
+    // gate is fail-SAFE — it must never lock a solo-harness contributor out of their own PR.
+    // So we do NOT change the decision (return false = not code-plane-revoked). BUT to avoid
+    // silent rot if that assumed-dead non-hive fork→PR path ever goes live, we LOUDLY log when
+    // such a harness nonetheless carries substrate revocations — so a regression is SEEN, not
+    // silently auto-merged. (fork-pr-on-feature-pass technically accepts any shared harness, so
+    // this is observability, not purely theoretical.)
+    await probeLegacyRevocationObservability(opts);
+    return false;
+  }
   return isHiveContributorRevoked({
     workspaceId: opts.workspaceId,
     hiveHomeSlug,
@@ -151,4 +172,40 @@ export async function isPrAuthorRevoked(opts: {
     ...(opts.log ? { log: opts.log } : {}),
     ...(opts.sql ? { sql: opts.sql } : {}),
   });
+}
+
+/**
+ * Fail-safe observability for the non-hive design boundary above. Best-effort: a
+ * non-empty per-harness substrate revoked set on a harness with no hive → a loud
+ * warning. NEVER throws and NEVER changes a merge decision.
+ */
+async function probeLegacyRevocationObservability(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  githubUserId: number;
+  probeLegacyRevocation?: (o: { workspaceId: string; harnessSlug: string }) => Promise<Set<string>>;
+  log?: (msg: string) => void;
+}): Promise<void> {
+  try {
+    const probe =
+      opts.probeLegacyRevocation ??
+      (async (o: { workspaceId: string; harnessSlug: string }) => {
+        const { loadRevokedPubkeys } = await import('../sync/hyperbee/load-revoked-pubkeys');
+        return loadRevokedPubkeys(o);
+      });
+    const revoked = await probe({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug });
+    if (revoked && revoked.size > 0) {
+      const warn = opts.log ?? ((m: string) => console.warn(m));
+      warn(
+        `[contribution-admission] OBSERVABILITY: non-hive shared harness '${opts.harnessSlug}' has ` +
+          `${revoked.size} substrate-revoked device pubkey(s), but the code-plane revocation gate is ` +
+          `HIVE-ONLY by design — PR author gh#${opts.githubUserId} is NOT gated by it here. If this ` +
+          `non-hive fork→PR path is live, the owner must also remove the contributor from ` +
+          `trusted_authors (PR-merge authority is the hive/trust model, not the substrate set). ` +
+          `(merge decision unchanged — observability only)`,
+      );
+    }
+  } catch {
+    /* best-effort observability — never throw, never affect the decision */
+  }
 }

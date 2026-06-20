@@ -300,10 +300,20 @@ export interface MergeCursor {
   positions: Map<string, number>;
   /** `${table}::${hbKey}` → current winner meta. */
   winners: Map<string, WinnerMeta>;
+  /**
+   * WI-255: per-op CONSECUTIVE apply-throw counter (op-identity → count). The
+   * winner is now recorded only AFTER a non-throwing apply, so a TRANSIENT apply
+   * throw (a PG blip/deadlock/timeout mid-merge) leaves the op un-deduped and it
+   * is retried next pass instead of being skipped forever (the data-loss bug).
+   * This counter bounds a PERSISTENTLY-throwing (poison) op so it quarantines
+   * (record+skip+log) instead of looping. Optional for back-compat with cursors
+   * built as a bare `{ positions, winners }` (lazily initialized at the apply site).
+   */
+  applyThrows?: Map<string, number>;
 }
 
 export function createMergeCursor(): MergeCursor {
-  return { positions: new Map(), winners: new Map() };
+  return { positions: new Map(), winners: new Map(), applyThrows: new Map() };
 }
 
 /**
@@ -394,6 +404,68 @@ function toMeta(env: OpEnvelope): WinnerMeta {
     type: env.type as 'put' | 'del',
     src: env.sourceLogKeyHex ?? '',
   };
+}
+
+/**
+ * WI-255: how many CONSECUTIVE apply throws on the SAME op before we stop
+ * retrying and QUARANTINE it. 3 gives a transient blip a couple of free retries
+ * while bounding a poison op's loop.
+ */
+const MAX_APPLY_THROWS = 3;
+
+/** Op identity for the per-op throw counter — a new op (or a different winner for
+ *  the key) gets a fresh retry budget; the same poison op accumulates throws. */
+function opIdent(groupKey: string, env: OpEnvelope): string {
+  return `${groupKey} ${env.ts ?? 0} ${env.sourceLogKeyHex ?? ''} ${env.type}`;
+}
+
+/**
+ * WI-255 — apply an op that has already passed the `beatsStored` LWW gate, then
+ * record it as the winner ONLY if apply returned WITHOUT throwing.
+ *
+ * The pre-WI-255 code recorded the winner BEFORE apply; an apply that threw
+ * (a transient PG blip/deadlock/timeout mid-merge) propagated out, the caller
+ * retried, and on the retry `beatsStored(env, env)` is false (strict `>`), so the
+ * op was SKIPPED forever — silent DATA LOSS until a rare full re-fold.
+ *
+ * Now: a TRANSIENT throw propagates with the winner NOT recorded, so the op is
+ * re-read + retried next pass and converges once the transient clears. A
+ * PERSISTENTLY-throwing (poison) op — e.g. a value PG can never store — is
+ * quarantined after MAX_APPLY_THROWS consecutive throws: its winner is recorded
+ * (so `beatsStored` stops re-selecting it) and it is dropped with a log, never an
+ * infinite retry loop. Winner-recording semantics on the no-throw path are
+ * UNCHANGED (apply true OR false both record the winner). Returns true iff apply
+ * landed the op.
+ */
+async function applyRecordingWinner(
+  cursor: MergeCursor,
+  groupKey: string,
+  env: OpEnvelope,
+  apply: (op: OpEnvelope) => Promise<boolean>,
+): Promise<boolean> {
+  let ok: boolean;
+  try {
+    ok = await apply(env);
+  } catch (err) {
+    const throws = (cursor.applyThrows ??= new Map());
+    const ident = opIdent(groupKey, env);
+    const n = (throws.get(ident) ?? 0) + 1;
+    if (n < MAX_APPLY_THROWS) {
+      throws.set(ident, n); // transient — winner NOT recorded → retried next pass
+      throw err;
+    }
+    // Persistently poison — quarantine (record winner + drop) so it can't loop.
+    throws.delete(ident);
+    cursor.winners.set(groupKey, toMeta(env));
+    console.error(
+      `[read-merge] WI-255 quarantine: op ${groupKey} (ts=${env.ts ?? 0}, src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) threw on apply ${n}× — recording winner + dropping to avoid a retry loop:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+  cursor.applyThrows?.delete(opIdent(groupKey, env)); // success clears the throw streak
+  cursor.winners.set(groupKey, toMeta(env));
+  return ok;
 }
 
 /** A log the incremental merge can OPTIONALLY range-prefetch (RemoteLog does;
@@ -554,8 +626,7 @@ export async function mergeAdmittedLogsIncremental(
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
           if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
-          cursor.winners.set(groupKey, toMeta(env));
-          if (await apply(env)) applied++;
+          if (await applyRecordingWinner(cursor, groupKey, env, apply)) applied++;
         }
         continue;
       }
@@ -563,8 +634,7 @@ export async function mergeAdmittedLogsIncremental(
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);
       if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
-      cursor.winners.set(groupKey, toMeta(env));
-      if (await apply(env)) applied++;
+      if (await applyRecordingWinner(cursor, groupKey, env, apply)) applied++;
     }
     cursor.positions.set(log.keyHex, pos);
     if (pos < log.length) {

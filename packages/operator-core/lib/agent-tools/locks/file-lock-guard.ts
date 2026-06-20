@@ -39,6 +39,7 @@ import { existsSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { readIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
+import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import { normalizePaths, tryAcquire, tryRelease, type AcquireBusy } from './su-lock-store';
 import { enrichBusy } from './enrich-busy';
 
@@ -139,13 +140,20 @@ export async function guardFileLock<T>(
 
   let acquired: Awaited<ReturnType<typeof tryAcquire>>;
   try {
-    acquired = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-      tryAcquire(tx, { coordinationDomain, owner: ownerId, ownerLabel, paths, intent: spec.intent, ttlSec }),
-    );
+    // EI-1720 / worker-fire-path: retry a TRANSIENT pg 57014/55P03 (workspace-lock
+    // timeout under box load) before failing open. Under load this acquire was
+    // FAULTING on a single timeout and silently bypassing the file-lock (so
+    // concurrent fleet edits raced); a few backoff retries ride out the dip.
+    acquired = await acquireWithContentionRetry(() =>
+      inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+        tryAcquire(tx, { coordinationDomain, owner: ownerId, ownerLabel, paths, intent: spec.intent, ttlSec }),
+      ));
   } catch (err) {
     // FAIL-OPEN: a lock-infra fault must never wedge a fleet agent's edit
-    // (parity with the hook). Log + run the body.
-    ctx.log?.(`[file-lock] acquire faulted, allowing edit (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+    // (parity with the hook). Reaching here on contention means the load window
+    // outlasted the retries. Log + run the body.
+    const contended = isWorkspaceContended(err);
+    ctx.log?.(`[file-lock] acquire ${contended ? 'contended after retries' : 'faulted'}, allowing edit (fail-open): ${err instanceof Error ? err.message : String(err)}`);
     return { acquired: true, result: await run() };
   }
 

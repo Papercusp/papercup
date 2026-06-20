@@ -218,6 +218,44 @@ describe('reconcileGitSyncRoutines — P-014 blind-spot detection', () => {
     expect(out.seeded).toEqual(['shop']);
   });
 
+  it('EI-1623: a link-join (joined_via_link, no hive_slug) is BACKFILLED joiner-side, not flagged as a blind spot', async () => {
+    // The failed-join-seed case: a bare invite-LINK clone whose best-effort
+    // join-time git-sync seed failed → it carries `joined_via_link` (+ coords)
+    // but has NO routine row. The reconcile must self-heal it, not leave it
+    // silently un-synced (only alarming as `unseeded`).
+    const linkJoin: ProjectEntry = {
+      slug: 'linked-clone',
+      path: '/clones/linked-clone',
+      github_remote: 'https://github.com/owner/repo',
+      github_repository_id: 7,
+      joined_via_link: true,
+    };
+    const { seed, calls } = fakeSeed(() => ({
+      seeded: true,
+      active: true,
+      push: false,
+      pushReason: 'joiner_side',
+      cron: '0 0 * * * *',
+    }));
+    const out = await reconcileGitSyncRoutines({
+      workspaceId: 'ws',
+      loadRegistry: regOf(papercup, linkJoin),
+      seedMember: seed,
+      sql: sqlFake,
+      eligibility: eligibleSet(['papercup', 'linked-clone']),
+      getRoutine: routineFor(['papercup']), // papercup has its row; the link-join has NONE
+    });
+    // The member loop BACKFILLED the link-join (a failed join-time seed self-heals)…
+    expect(out.seeded).toEqual(['linked-clone']);
+    // …seeded JOINER-side (push:false), never creator-side, with the per-install
+    // salted cron (D-004 — the same slug exists on N peer boxes)…
+    const call = calls.find((c) => c.installSlug === 'linked-clone')!;
+    expect(call.joinerSide).toBe(true);
+    expect((call as { cronKey?: string }).cronKey).toBe('linked-clone:ws');
+    // …and it is NOT surfaced as an unseeded blind spot (it's a member now).
+    expect(out.unseeded).toEqual([]);
+  });
+
   it('a repo WITH a routine (papercup) is never flagged', async () => {
     const out = await reconcileGitSyncRoutines({
       workspaceId: 'ws',

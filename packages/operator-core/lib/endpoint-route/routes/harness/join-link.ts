@@ -137,7 +137,19 @@ export async function handleJoinLink(
   if (state.cloneDir) {
     const reg2 = await deps.loadRegistry();
     if (!reg2.projects.some((p) => p.slug === slug)) {
-      reg2.projects.push({ slug, path: state.cloneDir });
+      // EI-1623: register the link-join clone as a self-describing JOINER member
+      // — upstream coords + the `joined_via_link` marker — so the boot git-sync
+      // reconcile (which keys on hive_slug/joined_via_link) BACKFILLS its routine
+      // joiner-side (push:false) if the best-effort join-time seed below fails.
+      // Without this the clone carries only { slug, path }, is invisible to the
+      // reconcile's member loop, and silently never syncs on a seed failure.
+      reg2.projects.push({
+        slug,
+        path: state.cloneDir,
+        github_remote: `https://github.com/${link.github}`,
+        github_repository_id: link.repoId,
+        joined_via_link: true,
+      });
       await deps.saveRegistry(reg2);
     }
 

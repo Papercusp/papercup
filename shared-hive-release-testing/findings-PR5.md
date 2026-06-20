@@ -3,6 +3,18 @@
 **Owner:** pr5-impl (this lane). **Plan:** `PLAN-pr-system-completion-dogfood.md` (Phase PR-5).
 **Last updated:** 2026-06-20. **coord MCP:** down — status here + on-disk artifacts is the channel.
 
+## 📓 Autonomous-session work log (pr5-impl, 2026-06-20 — owner asleep, full auto)
+After PR-1..5 completed, picked up adjacent PR-system queue work from `ideas-pr-system-followups.md`:
+- **#3 inbound-pipeline integration smoke test — SHIPPED** (`pr-host/inbound-pipeline.test.ts`, 5 tests):
+  wires the REAL `runAgentReview` (mock LLM) through the daemon → in-memory report store → gate →
+  revocation → approve/merge. Complementary to `poll-daemon.test.ts` (which stubs the reviewer);
+  reconciled with pr3-impl on the followups doc.
+- **GAP-1 per-harness revocation boundary — RESOLVED via consensus (b)+log** with pr3-impl:
+  documented the design boundary in `contribution-admission.ts` + a fail-safe observability warn
+  (non-hive harness with substrate revocations → loud log, decision unchanged). 3 teeth tests.
+- PR-system suite now **378 green** (22 files). Followups queue: #1/#2 offered by pr3-impl, #4 done,
+  #5 = live run (owner env). Next per the priority ladder: peer handoffs (`handoff-*.md`) / RELEASE-READINESS.
+
 ## 🔁 LOOP WATCHDOG (read first if resuming via /loop "continue where you left off")
 **PR-1..5 are ALL complete + verified — there is no implementation work left.** PR-5 is done; PR-1/2/3/4
 landed by their lanes; the only remaining step is the LIVE run (needs a running operator install, the

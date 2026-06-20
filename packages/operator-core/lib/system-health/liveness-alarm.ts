@@ -61,12 +61,18 @@ export function evaluateLivenessAlarm(
   opts: { snapshotStaleMs?: number } = {},
 ): AlarmSignal[] {
   const staleMs = opts.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
+  // EI-1695: a stale snapshot means the bg routine engine is frozen — the SAME
+  // condition that blinds the in-engine account-state read into a false
+  // all-paused 'accounts-starved'. Compute it once so that derived signal can be
+  // folded into the one root-cause (health-tick-stale) blocker below instead of
+  // firing N separate rate-starvation blockers for one incident.
+  const tickStale = snapshotAgeMs !== null && snapshotAgeMs > staleMs;
   const signals: AlarmSignal[] = [];
 
   // 1. The bg health-tick itself stalled → the routine engine (and the watchdog
   //    that lives in it) is likely frozen. The request-path catch for the
   //    BACKGROUND_WORKERS=0 / bg-host-down class.
-  if (snapshotAgeMs !== null && snapshotAgeMs > staleMs) {
+  if (tickStale) {
     signals.push({
       key: 'health-tick-stale',
       severity: 'blocker',
@@ -105,9 +111,14 @@ export function evaluateLivenessAlarm(
     });
   }
 
-  // 5. LLM substrate starved — every pool account paused.
+  // 5. LLM substrate starved — every pool account paused. ONLY trusted when the
+  //    snapshot is FRESH: when the bg routine engine is frozen (tickStale →
+  //    health-tick-stale already fires) the in-engine account-state read is
+  //    blinded into a false all-paused reading (EI-1695: accounts:status showed
+  //    7/8 available during the freeze). Suppressing it here folds the false
+  //    rate-starvation blocker into the one health-tick-stale root cause.
   const tk = health.panels.tokens?.data;
-  if (tk && tk.accountsTotal > 0 && tk.accountsAvailable === 0) {
+  if (!tickStale && tk && tk.accountsTotal > 0 && tk.accountsAvailable === 0) {
     signals.push({
       key: 'accounts-starved',
       severity: 'blocker',

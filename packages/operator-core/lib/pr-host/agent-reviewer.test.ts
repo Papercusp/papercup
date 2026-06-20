@@ -3,6 +3,7 @@ import type { Pr, PrHost, PrHostResult } from './types';
 import {
   reviewPr,
   runAgentReview,
+  runPrReviewTask,
   buildReviewPrompt,
   loadRepoConventions,
   type LlmRunner,
@@ -379,6 +380,57 @@ describe('runAgentReview', () => {
       deps: d,
     });
     expect(d.loadConventions).not.toHaveBeenCalled();
+  });
+
+  it('runPrReviewTask: fetches the PR then reviews/stores/audits', async () => {
+    const d = deps();
+    const host = makeHost(CLEAN_DIFF);
+    host.getPr = vi.fn(async (): Promise<PrHostResult<Pr>> => ({ ok: true, data: makePr() }));
+    const res = await runPrReviewTask({
+      payload: { remote: 'github.com/owner/repo', number: 42 },
+      workspaceId: 'ws1',
+      harnessSlug: 'papercup',
+      reviewerGithubId: 7,
+      host,
+      runLlm: llmReturning(approveJson),
+      model: 'm',
+      deps: d,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.review.recommendation).toBe('approve');
+    expect(d.store).toHaveBeenCalled();
+    expect(d.audit).toHaveBeenCalled();
+    assertNeverPosted(host);
+  });
+
+  it('runPrReviewTask: returns no_pr_host when host is unavailable', async () => {
+    const res = await runPrReviewTask({
+      payload: { remote: 'github.com/owner/repo', number: 42 },
+      workspaceId: 'ws1',
+      harnessSlug: 'papercup',
+      reviewerGithubId: 7,
+      host: null, // explicit null ⇒ no live resolution
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('no_pr_host');
+  });
+
+  it('runPrReviewTask: surfaces a PR-fetch failure', async () => {
+    const host = makeHost(CLEAN_DIFF);
+    host.getPr = vi.fn(
+      async (): Promise<PrHostResult<Pr>> => ({ ok: false, error: { kind: 'not_found', message: '404' } }),
+    );
+    const res = await runPrReviewTask({
+      payload: { remote: 'github.com/owner/repo', number: 999 },
+      workspaceId: 'ws1',
+      harnessSlug: 'papercup',
+      reviewerGithubId: 7,
+      host,
+      runLlm: llmReturning(approveJson),
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('getPr_failed:not_found');
+    assertNeverPosted(host);
   });
 
   it('still returns the recommendation when the store fails', async () => {

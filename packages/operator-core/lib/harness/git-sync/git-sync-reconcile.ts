@@ -7,12 +7,14 @@
  * registered member clones but no routine row, so they never sync. This sweep
  * walks one workspace's registry and seeds the MISSING rows only:
  *
- *   - Scope: hive MEMBERS only (`projects.filter(p => p.hive_slug)`).
- *     `papercup` itself carries no `hive_slug` — its hand-tuned row is never
- *     even visited. Hive HOMES and joiner-side `remote_hive` VIEWS carry no
- *     `hive_slug` either; member-shaped entries that are still not syncable
- *     (vanished path, cloud deployment, non-repo) are excluded by the spine's
- *     eligibility gate.
+ *   - Scope: hive MEMBERS only (`projects.filter(p => p.hive_slug || p.joined_via_link)`).
+ *     `papercup` itself carries neither flag — its hand-tuned row is never even
+ *     visited. Hive HOMES and joiner-side `remote_hive` VIEWS carry no `hive_slug`
+ *     either. Bare invite-LINK joins (EI-1623) carry no `hive_slug` but DO carry
+ *     `joined_via_link` (no local hive home exists) — they are included here and
+ *     seeded joiner-side, so a failed best-effort join-time seed is backfilled.
+ *     Member-shaped entries that are still not syncable (vanished path, cloud
+ *     deployment, non-repo) are excluded by the spine's eligibility gate.
  *   - ADD-only: an existing routine row — human-edited `active`/config
  *     included — is NEVER mutated (the spine's `routine_exists` skip, reported
  *     here as `already_seeded`). Flipping active/config is a human/tool
@@ -100,11 +102,18 @@ export async function reconcileGitSyncRoutines(
     return result;
   }
 
-  const members = projects.filter((p) => p.hive_slug);
+  // Members = `hive_slug` entries (creator-side + joinHiveAsView joiners) PLUS
+  // bare invite-LINK joins (EI-1623), which carry `joined_via_link` instead of a
+  // `hive_slug` (they have no local hive home). Both must be (re)seeded.
+  const members = projects.filter((p) => p.hive_slug || p.joined_via_link);
   const seed = opts.seedMember ?? seedGitSyncRoutineForMember;
   for (const member of members) {
     const home = projects.find((p) => p.slug === member.hive_slug);
-    const joinerSide = home?.remote_hive === true;
+    // A link-join (`joined_via_link`) is ALWAYS joiner-side: it cloned someone
+    // else's repo with no local home, so it must seed push:false (D-002/D-007 —
+    // fork-PR is the contribution path), never creator-side. A `remote_hive` home
+    // marks the other (joinHiveAsView) joiner case.
+    const joinerSide = home?.remote_hive === true || member.joined_via_link === true;
     const outcome = await seed(
       {
         workspaceId: opts.workspaceId,
@@ -129,9 +138,10 @@ export async function reconcileGitSyncRoutines(
   }
 
   // ── P-014 blind-spot detection ───────────────────────────────────────────
-  // The member loop above only ever visits `hive_slug` members (the EI-382
-  // class fixed at the join-time seed). A NEW registered-checkout path that
-  // isn't a hive member AND isn't seeded at creation would sit here forever,
+  // The member loop above visits `hive_slug` members + `joined_via_link` link-joins
+  // (the EI-382/EI-1623 classes — seeded at join AND backfilled here). A NEW
+  // registered-checkout path that is NEITHER a hive member NOR a link-join AND
+  // isn't seeded at creation would sit here forever,
   // silently un-synced, with nothing surfacing it. Detect it: any NON-member
   // checkout that IS git-sync-eligible (a real local repo) but carries NO
   // routine row is an eligible-but-unseeded registered repo — record it in
@@ -154,7 +164,7 @@ export async function reconcileGitSyncRoutines(
   }
   if (detectSql != null || opts.getRoutine != null) {
     for (const p of projects) {
-      if (p.hive_slug) continue; // members are handled (+ seeded) above
+      if (p.hive_slug || p.joined_via_link) continue; // members (incl. link-joins) are handled (+ seeded) above
       if (!eligibility(p).eligible) continue; // homes / views / non-repos / vanished paths
       try {
         const existing = await getRoutine(detectSql as Sql, p.slug);

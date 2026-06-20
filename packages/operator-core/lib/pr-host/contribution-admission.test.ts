@@ -152,4 +152,50 @@ describe('isPrAuthorRevoked (harness→hive→revocation chokepoint)', () => {
     expect(revoked).toBe(false);
     expect(loadDevicePubkeys).not.toHaveBeenCalled();
   });
+
+  // ── Design-boundary observability (GAP review 2026-06-20, option b) ──
+  it('OBSERVABILITY: a non-hive harness WITH substrate revocations → loud log, decision still false', async () => {
+    const log = vi.fn();
+    const revoked = await isPrAuthorRevoked({
+      workspaceId: WS,
+      harnessSlug: 'non-hive-shared',
+      githubUserId: GH,
+      resolveProject: async () => ({}), // hive_slug null → non-hive path
+      probeLegacyRevocation: async () => new Set(['legacy-pk-1', 'legacy-pk-2']),
+      log,
+    });
+    expect(revoked).toBe(false); // merge decision UNCHANGED (fail-safe by design)
+    expect(log).toHaveBeenCalledOnce();
+    expect(log.mock.calls[0][0]).toContain('HIVE-ONLY by design');
+  });
+
+  it('a non-hive harness with NO substrate revocations → no log (quiet)', async () => {
+    const log = vi.fn();
+    const revoked = await isPrAuthorRevoked({
+      workspaceId: WS,
+      harnessSlug: 'non-hive-shared',
+      githubUserId: GH,
+      resolveProject: async () => ({}),
+      probeLegacyRevocation: async () => new Set<string>(),
+      log,
+    });
+    expect(revoked).toBe(false);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('the observability probe never throws / never affects the decision', async () => {
+    const log = vi.fn();
+    const revoked = await isPrAuthorRevoked({
+      workspaceId: WS,
+      harnessSlug: 'non-hive-shared',
+      githubUserId: GH,
+      resolveProject: async () => ({}),
+      probeLegacyRevocation: async () => {
+        throw new Error('contributors table read failed');
+      },
+      log,
+    });
+    expect(revoked).toBe(false);
+    expect(log).not.toHaveBeenCalled(); // swallowed; no spurious warning
+  });
 });

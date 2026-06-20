@@ -90,7 +90,9 @@ export interface GetInProcessStatusOpts {
    * zero because this module is pure (no PG). Production callers (e.g. the
    * federation-status route) pass a resolver that queries `substrate_outbox`:
    *   undrainedCount = COUNT(*) WHERE drained_at IS NULL (for the scope),
-   *   oldestUndrainedAgeMs = now - MIN(captured_ts) of those rows (null if none).
+   *   oldestUndrainedAgeMs = now - MIN(ts) of those rows (null if none). NB the
+   *   capture-time column is `ts` (epoch-ms bigint), NOT `captured_ts`/`created_ts`
+   *   (verified vs 000-baseline.sql; see load-drain-stats.ts).
    * This is what flips a stuck (captured-but-not-federating) harness off "healthy".
    */
   resolveDrainStats?: (

@@ -155,7 +155,16 @@ describe('handleJoinLink', () => {
 
     expect(deps.saveRegistry).toHaveBeenCalledTimes(1);
     const saved = (deps.saveRegistry as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-    expect(saved.projects).toContainEqual({ slug: 'my-harness', path: '/tmp/my-harness' });
+    // EI-1623: the link-join clone is registered as a self-describing JOINER member
+    // (upstream coords + `joined_via_link`), so the boot git-sync reconcile can
+    // backfill its routine joiner-side if the best-effort join-time seed fails.
+    expect(saved.projects).toContainEqual({
+      slug: 'my-harness',
+      path: '/tmp/my-harness',
+      github_remote: 'https://github.com/Papercusp/papercup',
+      github_repository_id: 12345,
+      joined_via_link: true,
+    });
     expect(deps.scaffold).toHaveBeenCalledWith('my-harness');
   });
 

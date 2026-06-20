@@ -289,10 +289,21 @@ su-9140a's traced re-run (coord down + not in /tmp); staying armed.
 
 ---
 
-## Live-RED ROOT CAUSE + FIX (2026-06-20) — same-topic rekey churn
+## 2026-06-20 reconciliation + optional hardening proposal (su-d2230)
 
-**The trace landed and localized the bug definitively.** Evidence:
-`/tmp/a003-rewitness/matrix/inst-b.log` (the JOINER), chronological:
+**STATUS: A-003 is already GREEN at HEAD — this section is NOT a live-RED fix.** A
+continuous-loop re-check fired on a stale "live-RED" premise; I re-analyzed a STALE
+pre-fix trace before reconciling against `findings-A003-live-trace-diagnosis.md` +
+`findings-A003-GREEN-witness-2026-06-19.md` and confirming the fleet had already closed
+A-003 (ee7e9 ~17:00 + 9140a/c2a63 ~22:40, Jun 19; guarded by
+`a003-scope-buffer-replay.test.ts`). The analysis below is kept only because it
+characterizes the OLD (pre-fix) failure mode precisely and motivates an OPTIONAL
+robustness idea — the boot.ts change it describes was **reverted: never validated,
+never landed.** Do not treat any of the below as an open blocker.
+
+**The stale trace** (`/tmp/a003-rewitness/matrix/inst-b.log`, mtime **Jun 19 20:03 —
+PRE-fix binary**), chronological — this is the OLD REJECT@home=<none> state the fleet's
+buffer+replay fix already resolves:
 
 ```
 3453 [A-003] boot hello-world: swarmBinding.kind=topic hiveHomeProjectionSlug=<none>
@@ -314,49 +325,38 @@ su-9140a's traced re-run (coord down + not in /tmp); staying armed.
 - **My home resolution** — `resolve` (3458) + `rekey` (3459) both fire and compute
   `hello-world-hive` correctly. ✅ correct.
 
-**The actual root cause:** the joiner boots **directly onto the Hive topic**
-`3c72…` (joiner-resolves-own-topic), receives + buffers A's hive-home announce over
-that connection, then join-hive's 2c re-key calls `handle.rekey()` with a `hive`
-binding that derives **the SAME topic** `3c72…`. The old `rekey` **unconditionally
-`close()`d the swarm handle** (boot.ts ~1827) and re-joined — tearing down the live
-connection to A that was carrying the **in-flight replication of A's hive-home log
-core**. The buffered frame is re-admitted by `retryPendingOnce`, but its core blocks
-must now re-replicate over a fresh connection, and the content-matrix witness samples
-`hive_settings`/`hive_members` + tears the instances down (~13 log lines later, B log
-ends at 3472) **before that settles** → the hive-home log never crosses. This is the
-**EI-681 class of bug**: a rekey that drops a working replication stream when the
-topic has not actually changed.
+**The old failure mode (pre-fix):** the joiner boots **directly onto the Hive topic**
+`3c72…` (joiner-resolves-own-topic), receives + buffers A's hive-home announce, then
+join-hive's 2c re-key calls `handle.rekey()` with a `hive` binding deriving **the SAME
+topic** `3c72…`, and the rekey `close()`s + re-joins. On THIS pre-fix capture the frame
+was hard-rejected and never replayed. **At HEAD this is already handled**: onAnnounce
+BUFFERS the unresolved-home frame (`pending`) and `retryPendingOnce` (run synchronously
+at the rebind, fix-c) re-admits it with the scope re-checked against the resolved home —
+witnessed GREEN twice on the binary. So the crossing works; nothing here is open.
 
-This also explains why the earlier **resolve-then-join reorder did NOT close the RED**
-(su-9140a confirmed): reordering within rekey doesn't matter when the problem is the
-connection teardown itself, not the order of resolve vs join.
+---
 
-**THE FIX (landed in `boot.ts`, this session — my lane):** skip the swarm
-close+rejoin when the derived topic is UNCHANGED.
-- New `let currentTopic: Buffer | null` (set by `joinForBinding` on a successful join).
-- `handle.rekey`: `sameTopic = currentTopic != null && deriveSwarmTopic(binding).equals(currentTopic)`
-  (defensive try/catch → false on any derive error).
-- When `sameTopic`: do NOT `previous.close()`, do NOT `joinForBinding` — just
-  re-resolve `hiveHomeProjectionSlug`, rebuild `scopedApply`, re-register projections,
-  and `retryPendingOnce()` **in place**. The connection + A's hive-home replication
-  stay intact, so the buffered frame's admit→merge→apply finds the data present.
-- When the topic genuinely changes (the EI-681 gh→hive move): unchanged
-  close+rejoin behaviour. No regression to the owner-side EI-681 fix.
-- Trace now prints `sameTopic=<bool> (in-place, no swarm churn | close+rejoin)`.
+### OPTIONAL hardening idea (UNVALIDATED, NOT APPLIED — reverted) — for su-c2a63 / su-9140a
 
-**Why this fixes it:** before, the buffered hive-home core's replication was
-interrupted by the needless disconnect and never reliably re-arrived inside the
-witness sample window. After, the connection is never torn down, so `retryPendingOnce`'s
-mergeNow (and the 5s periodic retry as backstop) read the already-present/arriving
-core blocks and apply `hive_settings`/`hive_members` under the home slug.
+While analyzing the stale trace I noticed the rekey **unconditionally `close()`s + re-joins
+the swarm even when the derived topic is UNCHANGED** (`3c72…` at both boot-join 3455 and
+rekey-join 3461). That churns a live connection — dropping the in-flight replication of
+A's hive-home core — and forces the buffered frame's core to re-replicate over a fresh
+connection. The buffer+replay fix at HEAD compensates (hence GREEN), but su-9140a's note
+that A-003 green needs `DISCOVERY_RETRIES=100` on a loaded box hints the green is
+**timing-fragile**, and this needless same-topic churn is a plausible contributor.
 
-**Note on the rebuild:** the `.deb` is bundled with esbuild (types stripped → NO
-typecheck). The change is type-trivial (`Buffer.equals`, a boolean, two `if` guards)
-and was read-verified, but a `tsc --noEmit` on operator-core should be run when the box
-load allows, since the bundle won't catch a type error.
+**Proposed (NOT applied):** in `handle.rekey`, when `deriveSwarmTopic(binding)` equals the
+current topic, skip the `previous.close()` + `joinForBinding` and only re-resolve home +
+rebuild `scopedApply` + `retryPendingOnce()` in place (keeps the connection + replication
+alive). A genuine topic change (EI-681 gh→hive) keeps today's close+rejoin. This is
+EI-681-aligned ("re-key in place; never tear down replication streams").
 
-**GATE for GREEN (su-9140a):** rebuild the `.deb` from staging, re-run the
-content-matrix with `PAPERCUSP_A003_TRACE=1`, and confirm on the joiner's `inst-b.log`:
-`[A-003] rekey hello-world: … sameTopic=true (in-place, no swarm churn)` **and**
-`hive_settings`/`hive_members` rows land `origin='remote'` on B. Only then flip the
-verdict GREEN (+ the revoked-member admission-union live check still owed).
+**Why I did NOT land it:** (1) A-003 is already green — no live-RED justifies touching
+this file; (2) boot.ts's A-003 path is explicitly **guarded against silent modification**
+(`a003-scope-buffer-replay.test.ts` exists because of 3 prior silent reverts) and is
+**owned by su-c2a63** (Brief J), witnessed by su-9140a — not my lane to drive-by; (3) the
+change is unvalidated (the box was load-recovering; I did not run the guard test or a
+witness). I staged it, then **reverted to known-good HEAD**. If the owners want the
+hardening, it should go through the guard test + a `DISCOVERY_RETRIES`-lowered witness to
+prove it removes the timing fragility — that's their call, not a unilateral edit.

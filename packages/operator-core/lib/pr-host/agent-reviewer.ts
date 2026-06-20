@@ -32,6 +32,7 @@
  */
 import { runAgentChat } from '../agent-chat-stream';
 import type { Pr, PrHost } from './types';
+import { createGitHubPrHost } from './github';
 import {
   assembleReport,
   computeReviewSignals,
@@ -500,4 +501,75 @@ export async function runAgentReview(args: RunAgentReviewArgs): Promise<RunAgent
     recommendation: result.report.recommendation,
     error: result.error ?? storeError ?? undefined,
   };
+}
+
+// ── Triggered-task entry point (the consumer of PR-1's `pr:review` trigger) ──
+
+/**
+ * The payload PR-1's poll daemon ships with the `pr:review` trigger
+ * (`extra: ['--pr-review', JSON.stringify(...)]`). Identifies the PR to
+ * review by `(remote, number)`.
+ */
+export interface PrReviewTaskPayload {
+  remote: string;
+  number: number;
+  head_sha?: string;
+  url?: string;
+}
+
+export interface RunPrReviewTaskArgs {
+  payload: PrReviewTaskPayload;
+  workspaceId: string;
+  harnessSlug: string;
+  /** The HUMAN operator's GitHub id the review is attributed to (PR-4). */
+  reviewerGithubId: number;
+  bodyFeatureId?: string | null;
+  /** Inject a host (tests). Default: createGitHubPrHost() (live). */
+  host?: PrHost | null;
+  runLlm?: LlmRunner;
+  model?: string;
+  conventions?: string;
+  deps?: RunAgentReviewDeps;
+  signal?: AbortSignal;
+}
+
+export type RunPrReviewTaskResult =
+  | { ok: true; review: RunAgentReviewResult }
+  | { ok: false; error: 'no_pr_host' | string };
+
+/**
+ * Run a PR review FROM A TRIGGER PAYLOAD — the entry point a spawned
+ * reviewer task (PR-1's `pr:review` launch) or a loopback handler invokes.
+ * Resolves a host, fetches the full PR for `(remote, number)`, then runs
+ * the full review→store→audit flow via `runAgentReview`.
+ *
+ * Self-contained + injectable so it's unit-testable with no live host /
+ * model / DB. Never posts/merges (inherits runAgentReview's guarantee).
+ *
+ * Returns `{ok:false}` when it can't even start (not authed / PR fetch
+ * failed) so the caller can log + move on; the auto-flow gate treats an
+ * absent report as "no veto", so a failed review never blocks PR-1.
+ */
+export async function runPrReviewTask(args: RunPrReviewTaskArgs): Promise<RunPrReviewTaskResult> {
+  // Explicit `null` ⇒ "no host" (testable); `undefined` ⇒ resolve the live host.
+  const host = args.host !== undefined ? args.host : await createGitHubPrHost();
+  if (!host) return { ok: false, error: 'no_pr_host' };
+
+  const got = await host.getPr({ remote: args.payload.remote, number: args.payload.number });
+  if (!got.ok) return { ok: false, error: `getPr_failed:${got.error.kind}` };
+
+  const review = await runAgentReview({
+    host,
+    pr: got.data,
+    workspaceId: args.workspaceId,
+    harnessSlug: args.harnessSlug,
+    reviewerGithubId: args.reviewerGithubId,
+    bodyFeatureId: args.bodyFeatureId,
+    runLlm: args.runLlm,
+    model: args.model,
+    conventions: args.conventions,
+    deps: args.deps,
+    signal: args.signal,
+  });
+  return { ok: true, review };
 }

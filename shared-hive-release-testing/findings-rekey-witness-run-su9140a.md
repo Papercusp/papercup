@@ -103,6 +103,31 @@ membership delivery so the owner naturally registers the joiner (which also trig
 membership-seed/delivery is the second required piece. Implementation still proven hermetically; the LIVE
 ship-gate is blocked on this 2-part witness-setup gap, not on re-key correctness.
 
+## 🎯 FULL TRACE (runs 1–10, 2026-06-20) — every layer fixed; likely root = from-repo A→B federation stall
+The P-008 witness had a STACK of harness/build blockers, all now fixed (committed to the smoke):
+1. **`WITNESS_PROBE=1`** — the witness block (AK + K0–K3) is gated on it; runs 1–6 silently ran only the
+   federation smoke (never the re-key witness). MUST set it.
+2. **`mcp_call` broken** — missing `Accept: application/json, text/event-stream` (I fixed) + superuser
+   token (collaborator). Every approve/ban/revoke was 406-failing.
+3. **STALE BUILD** — the .deb (06-19) + local serve.mjs predated today's join-time grant CALL seam (c2a63
+   Seam 1/2, 06-20). `grantEpochKeysToMembers` existed but was never CALLED at admit. **Rebuilt the
+   sidecar** (fresh serve.mjs carries `'grantEpochKeysToMembers on admit'`); the collaborator's gate now
+   catches this (checks the minify-surviving code string, not the stripped comment).
+4. **The grant fires on the SUBSTRATE ANNOUNCE-ADMIT, not on approve** (boot.ts:1005-1022, Seam-2): when A
+   admits B's peer (open-mode auto-admit), it grants B's device every epoch key. So no approve/pending-join
+   is needed — the auto-admit grant is the path. (My approve step is harmless but unnecessary.)
+5. **⇒ LIKELY ROOT (not yet directly witnessed — box-blocked): the from-repo INCREMENTAL A→B federation
+   STALLS** (`federate-A→B=FAIL`, "federation stalls after the first op"; B→A works). The Seam-2 grant
+   mints B's keys ON A, but **K0 needs them to FEDERATE A→B to B** — the stalling direction. So B gets 0
+   keys → K0 fails → no cut. This is the SAME A→B stall as the federation smoke, and it's the federation
+   lane's (d2230) — possibly a REAL from-repo release issue (a member joining via from-repo may not receive
+   the owner's incremental content). Distinct from A-003 (which fixed owner→joiner for hive_settings; this
+   is the member-harness/epoch-key A→B incremental path).
+- **STATUS: witness mechanically COMPLETE + committed; blocked on (a) box contention (overnight infra storm,
+  load 50–76) preventing a clean run, and (b) the likely A→B stall.** The FIRST clean run on a quiet box
+  confirms whether K0 passes (A→B delivers the keys) or fails (stall). Re-run: `HIVE_SMOKE_MODE=sidecar
+  PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1 WITNESS_PROBE=1 DISCOVERY_RETRIES=100 bash …from-repo-smoke.sh`.
+
 ## Status of the rest (context)
 A-003 is CLOSED + live-green (su-c2a63's converged fix; my binary witness + suite 1085 green). The re-key
 is BUILT + hermetically tested. This P-008 LIVE witness is the one remaining ship-gate proof for C-001 —

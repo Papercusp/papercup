@@ -160,7 +160,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
 // importing the action module registers `git-sync` into the system-action registry,
 // exactly as production's register-system-actions side-effect import does.
 import './git-sync-action';
-import { isResolverInFlight } from './git-sync-action';
+import { isResolverInFlight, acquireWithContentionRetry } from './git-sync-action';
 import { getSystemAction, type SystemActionCtx } from '../routines/system-actions';
 
 // --- helpers over the captured PG writes ------------------------------------------
@@ -942,5 +942,53 @@ describe('EI-438 content-guard kill-switch flag', () => {
     expect(runGitSyncOpts().contentDetectors).toEqual([]);
     expect(loopbackFetchMock).not.toHaveBeenCalled();
     expect(escalationUpserts().filter((u) => u.params[1] === 'git-sync-content')).toEqual([]);
+  });
+});
+
+describe('acquireWithContentionRetry (EI-1720 — transient pg 57014/55P03 is retried, not skipped)', () => {
+  const contended = () => Object.assign(new Error('workspace "ws" contended (pg 57014: lock/statement timeout)'), {
+    name: 'WorkspaceContendedError', pgCode: '57014',
+  });
+
+  it('retries on contention then succeeds; backs off between attempts', async () => {
+    const slept: number[] = [];
+    let n = 0;
+    const run = vi.fn(async () => {
+      if (n++ < 2) throw contended();
+      return { ok: true };
+    });
+    const r = await acquireWithContentionRetry(run, { backoffsMs: [10, 20, 40], sleep: async (ms) => { slept.push(ms); } });
+    expect(r).toEqual({ ok: true });
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(slept).toEqual([10, 20]); // two backoffs before the 3rd (successful) attempt
+  });
+
+  it('throws the contention error after exhausting retries (next tick retries)', async () => {
+    const run = vi.fn(async () => { throw contended(); });
+    await expect(
+      acquireWithContentionRetry(run, { backoffsMs: [1, 1], sleep: async () => {} }),
+    ).rejects.toMatchObject({ name: 'WorkspaceContendedError', pgCode: '57014' });
+    expect(run).toHaveBeenCalledTimes(3); // initial + 2 retries
+  });
+
+  it('does NOT retry a non-contention error (real bug surfaces immediately)', async () => {
+    const slept: number[] = [];
+    const run = vi.fn(async () => { throw new Error('SU-lock DB unreachable'); });
+    await expect(
+      acquireWithContentionRetry(run, { backoffsMs: [10, 20], sleep: async (ms) => { slept.push(ms); } }),
+    ).rejects.toThrow('SU-lock DB unreachable');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(slept).toEqual([]);
+  });
+
+  it('also retries the lock_timeout SQLSTATE 55P03', async () => {
+    let n = 0;
+    const run = vi.fn(async () => {
+      if (n++ < 1) throw Object.assign(new Error('lock_timeout'), { code: '55P03' });
+      return { ok: false, reason: 'held' };
+    });
+    const r = await acquireWithContentionRetry(run, { backoffsMs: [1], sleep: async () => {} });
+    expect(r).toEqual({ ok: false, reason: 'held' });
+    expect(run).toHaveBeenCalledTimes(2);
   });
 });

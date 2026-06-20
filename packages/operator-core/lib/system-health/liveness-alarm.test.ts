@@ -70,6 +70,22 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).toContain('accounts-starved');
   });
 
+  it('EI-1695: a STALE snapshot SUPPRESSES accounts-starved (blinded read folds into health-tick-stale)', () => {
+    // bg routine engine frozen (stale) blinds the in-engine account read into a
+    // false all-paused; the one root cause is health-tick-stale, not N rate blockers.
+    const h = mkHealth({ panels: { tokens: { data: { accountsTotal: 8, accountsAvailable: 0 } } } });
+    const keys = evaluateLivenessAlarm(h, 10 * 60_000, { snapshotStaleMs: 6 * 60_000 }).map((s) => s.key);
+    expect(keys).toContain('health-tick-stale');
+    expect(keys).not.toContain('accounts-starved');
+  });
+
+  it('EI-1695: a FRESH snapshot still fires accounts-starved (a real all-paused is not suppressed)', () => {
+    const h = mkHealth({ panels: { tokens: { data: { accountsTotal: 8, accountsAvailable: 0 } } } });
+    const keys = evaluateLivenessAlarm(h, 60_000, { snapshotStaleMs: 6 * 60_000 }).map((s) => s.key);
+    expect(keys).toContain('accounts-starved');
+    expect(keys).not.toContain('health-tick-stale');
+  });
+
   it('catch-all: an unforeseen crit panel still surfaces (no silent miss)', () => {
     const h = mkHealth({ panels: { deploy: { status: 'crit', summary: 'release refs unreadable' } } });
     const sigs = evaluateLivenessAlarm(h, null);

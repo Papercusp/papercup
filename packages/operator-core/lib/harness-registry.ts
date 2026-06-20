@@ -43,6 +43,17 @@ export interface ProjectEntry {
    * federation gate already returns null for it (no hives row/identity).
    */
   remote_hive?: boolean;
+  /**
+   * Set when this checkout was registered by the bare invite-LINK join path
+   * (`join-link.ts`), which clones someone else's shared repo WITHOUT a local
+   * hive home — so it carries no `hive_slug` and no `remote_hive` home entry the
+   * git-sync reconcile can key on (EI-1623). It marks a JOINER-side member: the
+   * boot reconcile treats it as a member and (re)seeds its git-sync routine
+   * `push:false` (a local commit+fetch+merge mirror; fork-PR is the contribution
+   * path) — so a failed best-effort join-time seed is still backfilled instead of
+   * the clone silently never syncing. NEVER set on the creator/add-member paths.
+   */
+  joined_via_link?: boolean;
   // ── Upstream GitHub coordinates (hive-from-github-url-2026-06-11 P-002) ──
   // Written at registration time by the projects-route githubUrl path and
   // hive:create_from_repo. Consumed by the hive directory announce derivation

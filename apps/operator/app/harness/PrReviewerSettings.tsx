@@ -117,6 +117,37 @@ export function auditActionTone(action: string): 'ok' | 'warn' | 'bad' | 'muted'
   return 'warn';
 }
 
+/**
+ * Human-readable audit detail. PR-2's agent-review rows store `detail` as a
+ * JSON blob ({model, head_sha, recommendation, feature_id, risks, …}); rendering
+ * it raw is an ugly blob in the log. For agent_review/agent_review_error rows,
+ * parse + format it ("approve · model claude · @abc1234 · 2 risks"); for any
+ * other action — or anything that doesn't parse — return the raw string
+ * unchanged (graceful fallback, zero regression). Pure — unit-tested.
+ */
+export function formatAuditDetail(action: string, detail: string | null): string {
+  if (!detail) return '';
+  if (action !== 'agent_review' && action !== 'agent_review_error') return detail;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(detail);
+  } catch {
+    return detail;
+  }
+  if (parsed === null || typeof parsed !== 'object') return detail;
+  const p = parsed as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof p.recommendation === 'string' && p.recommendation) parts.push(p.recommendation);
+  if (typeof p.model === 'string' && p.model) parts.push(`model ${p.model}`);
+  if (typeof p.head_sha === 'string' && p.head_sha) parts.push(`@${p.head_sha.slice(0, 7)}`);
+  if (typeof p.feature_id === 'string' && p.feature_id) parts.push(p.feature_id);
+  if (typeof p.risks === 'number' && p.risks > 0) {
+    parts.push(`${p.risks} risk${p.risks === 1 ? '' : 's'}`);
+  }
+  if (typeof p.error === 'string' && p.error) parts.push(`error: ${p.error}`);
+  return parts.length > 0 ? parts.join(' · ') : detail;
+}
+
 // ─── Network ──────────────────────────────────────────────────────
 
 async function fetchSettings(slug: string): Promise<PrReviewerSettingsResponse> {
@@ -369,7 +400,11 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
                       ) : (
                         <span className="pc-prrs__audit-pr">PR #{a.pr_number}</span>
                       )}
-                      {a.detail && <span className="pc-prrs__audit-detail">{a.detail}</span>}
+                      {a.detail && (
+                        <span className="pc-prrs__audit-detail">
+                          {formatAuditDetail(a.action, a.detail)}
+                        </span>
+                      )}
                       <span className="pc-prrs__audit-ts">{new Date(a.ts).toLocaleString()}</span>
                     </li>
                   ))}

@@ -228,4 +228,15 @@ describe('durableSpawnFireImpl — permanent (target-gone) vs transient fire fai
       await expect(durableSpawnFireImpl(IMPL)).rejects.toThrow(new RegExp(`HTTP ${status}`));
     },
   );
+
+  it('captures the response body into the thrown error so a non-2xx fire is self-diagnosing', async () => {
+    h.loopbackFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => '{"error":"harness paused"}',
+    });
+    await expect(durableSpawnFireImpl(IMPL)).rejects.toThrow(
+      /HTTP 400 — \{"error":"harness paused"\}/,
+    );
+  });
 });

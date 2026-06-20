@@ -14,6 +14,7 @@ import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 
 import { emitPlanEvent, emitPlanEventForCaller, readPlanEvents } from '../plan-events';
 import { configureCoordLog, resetCoordLog } from '../log';
+import planEventsTool from '../tools/plan-events';
 
 beforeEach(() => {
   configureCoordLog(new InMemoryCoordLog());
@@ -102,5 +103,41 @@ describe('plan-events', () => {
     await expect(
       emitPlanEventForCaller({}, { planSlug: 'x', event: 'created' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('coord:plan-events tool — result bound (EI-1737)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const run = (args: Record<string, unknown> = {}) => (planEventsTool as any).handler(args, {} as any);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parse = (res: any) => JSON.parse(res.content[0].text);
+
+  it('a no-arg call returns the NEWEST `limit` (default 100) events + reports total/truncated', async () => {
+    for (let i = 0; i < 150; i++) await emitPlanEvent({ planSlug: `p-${i}`, event: 'created' });
+    const full = await readPlanEvents();
+    expect(full).toHaveLength(150);
+
+    const out = parse(await run());
+
+    expect(out.events).toHaveLength(100);
+    expect(out.total).toBe(150);
+    expect(out.truncated).toBe(true);
+    expect(out.events).toEqual(full.slice(-100)); // exactly the newest 100 (ts-ascending tail)
+  });
+
+  it('respects an explicit `limit`', async () => {
+    for (let i = 0; i < 20; i++) await emitPlanEvent({ planSlug: `q-${i}`, event: 'created' });
+    const out = parse(await run({ limit: 5 }));
+    expect(out.events).toHaveLength(5);
+    expect(out.total).toBe(20);
+    expect(out.truncated).toBe(true);
+  });
+
+  it('returns everything, not truncated, when under the limit', async () => {
+    for (let i = 0; i < 10; i++) await emitPlanEvent({ planSlug: `r-${i}`, event: 'created' });
+    const out = parse(await run());
+    expect(out.events).toHaveLength(10);
+    expect(out.total).toBe(10);
+    expect(out.truncated).toBe(false);
   });
 });

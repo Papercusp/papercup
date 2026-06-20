@@ -205,6 +205,22 @@ export async function startDbos(): Promise<void> {
     console.warn('[dbos-executor-reaper] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
 
+  // EI-455 bug #2 — start the green-checkpoint silent-stall watchdog: a process-
+  // level sweep (NOT a DBOS routine, same reason as the reaper) that alarms when an
+  // ACTIVE green-checkpoint routine stops firing or stops producing greens. The
+  // in-routine detector (trackGateStall) only runs when the routine fires, so it is
+  // blind to the routine NOT firing — the actual EI-455 stall. See
+  // release/green-stall-watchdog.ts. Best-effort — must not fail boot.
+  try {
+    const [{ startGreenStallWatchdog }, { getOrgPg }] = await Promise.all([
+      import('../release/green-stall-watchdog'),
+      import('@papercusp/db-org'),
+    ]);
+    startGreenStallWatchdog(getOrgPg().sql);
+  } catch (e) {
+    console.warn('[green-stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
   if (dbosCurationActive()) {
     // Arm the event-driven urgent wake (curator-operator P2): coord_inbox →
     // immediate urgent-only curation tick, so escalations/blockers surface

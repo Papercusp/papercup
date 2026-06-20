@@ -606,8 +606,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // identity) ⇒ the per-pass applyImpl stays `enforcedApply`, byte-for-byte today. The
   // boot-deps helper owns the LocalDevice/crypto build behind a cheap flag-FIRST off-path, so
   // a non-rekey harness pays one cached flag read. Built BEFORE registerAllHarnessProjections
-  // so the drain hook (below) can wire into the projection registration.
-  const rekeyDeps = await buildHiveRekeyBootDeps({
+  // so the drain hook (below) can wire into the projection registration. `let`, NOT const:
+  // rekey() REBUILDS it when a mid-session join resolves the hive-home (the boot build returned
+  // null because the home was not yet bound) — see the rekey() rebind. The per-pass applyImpl +
+  // drain re-read `rekeyDeps` each pass (mergeOnePass re-evaluates), so a rebuild takes effect
+  // on the next pass with no reboot.
+  let rekeyDeps = await buildHiveRekeyBootDeps({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
   });
@@ -615,8 +619,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // `onEpochKeyApplied(hive, epoch)` PUSHES here when a key row applies — RECORDING, not
   // draining (so it never re-enters the apply that is firing it). `mergeOnePass` drains it
   // AFTER each pass via `drainQueuedEpochContent`, re-applying the now-decryptable deferred
-  // content. Empty + unused when the re-key is off.
+  // content. Empty + unused when the re-key is off. Shared boot-scope buffer — BOTH the
+  // boot-time registration and the rekey() re-registration feed it via `recordEpochDrain`.
   const epochDrainQueue: DrainedEpoch[] = [];
+  const recordEpochDrain = (hiveHomeSlug: string, epoch: number): void => {
+    epochDrainQueue.push({ hiveHomeSlug, epoch });
+  };
 
   // Wire the per-table PG projection writers into the GLOBAL registry too —
   // some non-Model-B callers (CLI introspection, single-harness contexts) still
@@ -628,13 +636,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     hiveHomeSlug: hiveHomeProjectionSlug,
     // Drain hook: feed the queue ONLY when the re-key is active (rekeyDeps non-null) — else
     // the hive_epoch_keys projection's onEpochKeyApplied stays undefined (today's behavior).
-    ...(rekeyDeps
-      ? {
-          onEpochKeyApplied: (hiveHomeSlug: string, epoch: number) => {
-            epochDrainQueue.push({ hiveHomeSlug, epoch });
-          },
-        }
-      : {}),
+    ...(rekeyDeps ? { onEpochKeyApplied: recordEpochDrain } : {}),
   });
 
   // ── Per-harness scoped projection apply (D-021 collision fix). ──
@@ -1856,10 +1858,30 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (next !== hiveHomeProjectionSlug) {
           hiveHomeProjectionSlug = next;
           scopedApply = buildScopedApply(next);
+          // ── Re-key GATE LIFECYCLE (su-c2a63, Gate 3) ── A mid-session join resolves the
+          // hive-home (home <none> → the hive-home slug), making THIS harness a hive member
+          // NOW. The boot-time buildHiveRekeyBootDeps returned null (not yet a hive), so without
+          // this rebuild the member keeps applyImpl=enforcedApply (NO decrypt gate) until a
+          // reboot → flag-on it would project raw __rekey ciphertext as content (garbage).
+          // Rebuild beside the scopedApply rebind (the proven A-003 in-place path): `next` is
+          // now the resolved hive-home, so buildHiveRekeyBootDeps builds the gate + a fresh
+          // PendingEpochContent. Flag-dark (off ⇒ null ⇒ byte-for-byte). The next merge pass
+          // re-reads rekeyDeps (applyImpl@mergeOpts + the per-pass drain), so it takes effect
+          // with no reboot. NOTE: this rebind block runs on EVERY home-resolving rekey,
+          // including the sameTopic in-place path (which skips only close+rejoin) — so a
+          // same-topic first-join still rebuilds the gate. This is the witness's B path (a
+          // mid-session joiner): without it K1 (B reads F-CTRL) can't pass.
+          rekeyDeps = await buildHiveRekeyBootDeps({
+            workspaceId: opts.workspaceId,
+            harnessSlug: opts.harnessSlug,
+          });
           registerAllHarnessProjections({
             workspaceId: opts.workspaceId,
             harnessSlug: opts.harnessSlug,
             hiveHomeSlug: next,
+            // Re-wire the drain hook onto the re-registered hive_epoch_keys projection (shared
+            // boot-scope epochDrainQueue via recordEpochDrain) when the re-key is now active.
+            ...(rekeyDeps ? { onEpochKeyApplied: recordEpochDrain } : {}),
           });
         }
       } else if (process.env.PAPERCUSP_A003_TRACE === '1') {

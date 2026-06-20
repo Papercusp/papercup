@@ -130,6 +130,19 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           body: JSON.stringify(input.body),
         });
         if (r.ok) return { ok: true } as const;
+        // Capture the response body so a non-2xx fire is self-diagnosing: the bare
+        // status (`→ HTTP 400`) tells the watchdog/operator nothing about WHICH
+        // install or WHY the /invoke route rejected the spawn, so a recurring 400
+        // (observed: papercup/papercup-hive queen fires) is undebuggable from the
+        // persisted error alone. Mirrors the describeFetchError convention for
+        // network errors (loopback-fetch.ts). Bounded + whitespace-collapsed to
+        // keep the persisted workflow_status error row small.
+        // Defensive: the diagnostic read must never itself break the fire step,
+        // so guard that `.text` exists (real Response always has it) and swallow
+        // any read error.
+        const body =
+          typeof r.text === 'function' ? await r.text().catch(() => '') : '';
+        const detail = body ? ` — ${body.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
         // Permanent (target-gone) failure: the harness was deleted, so retrying
         // (3×) + DBOS recovery (5×) can never succeed and just spams the log.
         // Return — the step SUCCEEDS, so neither retries nor recovery fire and the
@@ -137,7 +150,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
         if (PERMANENT_SPAWN_STATUSES.has(r.status)) {
           return { ok: false, permanentStatus: r.status } as const;
         }
-        throw new Error(`durable-spawn fire ${input.label ?? ''} → HTTP ${r.status}`);
+        throw new Error(`durable-spawn fire ${input.label ?? ''} → HTTP ${r.status}${detail}`);
       },
       { name: 'durable-spawn-fire', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 10, backoffRate: 2 },
     );

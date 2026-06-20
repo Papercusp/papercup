@@ -120,3 +120,28 @@ describe('withFileLock + fileLockedResult', () => {
     expect(JSON.parse(r.content[0].text).reason).toBe('file_locked');
   });
 });
+
+describe('guardFileLock — EI-1720 / worker-fire-path contention retry', () => {
+  it('retries a transient pg-57014 contention before failing open (ACQUIRES, not fail-open)', async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      h.tryAcquire.mockImplementation(async () => {
+        if (n++ < 1) {
+          throw Object.assign(new Error('workspace contended'), { name: 'WorkspaceContendedError', pgCode: '57014' });
+        }
+        return { ok: true, lock_id: 'L1', expires_ts: new Date(), held: ['foo.ts'] };
+      });
+      const run = vi.fn(async () => 'R');
+      const p = guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, run);
+      await vi.runAllTimersAsync(); // advance the backoff sleep
+      const out = await p;
+      expect(out).toEqual({ acquired: true, result: 'R' });
+      expect(h.tryAcquire).toHaveBeenCalledTimes(2); // retried once, then acquired
+      expect(h.tryRelease).toHaveBeenCalledOnce();    // released after a real acquire → proves NOT fail-open
+      expect(run).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
