@@ -222,6 +222,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // to gym routing); the owner flips it after reviewing the mechanical proposal→arms
   // mapping (the LLM-polished candidate-overlay generation is the follow-on).
   FLAGS.SCOUT_EXPERIMENT_RAIL,
+  // plan-templates-and-rubric-v2-2026-06-20 P-009 (Phase 4 auto-crystallization): the
+  // Scout `rubric` rail auto-authors a `template: rubric` DRAFT plan on each detected
+  // rubric gap. DELIBERATE dark ship — a brand-new autonomous PLAN-WRITE behavior; the
+  // gap DETECTION (P-008) is always live, only the auto-authoring is gated so the owner
+  // observes gap quality before Scout starts creating drafts. Drafts are Queen-gated
+  // (invisible to rubrics:list until promoted). Pending flip surfaced in the plan's ## Now.
+  FLAGS.SCOUT_RUBRIC_RAIL,
   // overwatch-role-2026-06-15 B-10 (D-002 / D-004): the OVERWATCH autonomous
   // system-health role. DELIBERATE dark ship (NOT the alpha default-on policy) —
   // a brand-new, not-yet-proven autonomous role that nudges the live fleet; a
