@@ -83,6 +83,17 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return null;
   }
 
+  /** Clear an account's out-of-rotation pause AHEAD of its reset — the dual of onExhausted. Called when a
+   *  half-open egress probe confirms the proxy RECOVERED, so a token-healthy account rejoins rotation the
+   *  instant its transport is healthy again, instead of sitting out the full circuit window (owner-reported
+   *  2026-06-21: flaky proxies kept healthy accounts out 60s → empty-pool "all throttled" sheds). No-op if
+   *  the account wasn't paused. */
+  function readmit(accountId: string): void {
+    if (exhaustedUntil.delete(accountId)) {
+      log('warn', `inference-gateway: '${accountId}' readmitted to rotation (egress proxy recovered)`);
+    }
+  }
+
   /** Per-request cache-affinity routing (inference-gateway-multi-credential-routing P-002):
    *  the pool entry named by the `x-papercusp-account` header, or null when unknown (the gateway
    *  falls back to active()). Pins a bee to its account regardless of which one is `active` — a
@@ -105,5 +116,5 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     log('info', `inference-gateway: account pool hot-reloaded → [${live.map((e) => e.accountId).join(', ')}]`);
   }
 
-  return { active, onExhausted, select, reload };
+  return { active, onExhausted, select, reload, readmit };
 }
