@@ -31,8 +31,11 @@ describe('ADV_TABS', () => {
       expect(tab.id).toBeTruthy();
       expect(tab.label).toBeTruthy();
       expect(['function', 'object'].includes(typeof tab.icon)).toBe(true); // React components can be functions or forwardRef objects
-      expect(tab.accent).toMatch(/^#[0-9a-f]{6}$/i);
-      expect(tab.accentRgb).toMatch(/^\d+,\s*\d+,\s*\d+$/);
+      // accent/accentRgb may be a literal (hex / "r, g, b") OR a CSS-token reference
+      // (var(--token[, fallback])) — the design-token compliance pass (EI-2387) tokenizes
+      // these incrementally, so both forms are valid during the migration.
+      expect(tab.accent).toMatch(/^(#[0-9a-f]{6}|var\(--[\w-]+(,.*)?\))$/i);
+      expect(tab.accentRgb).toMatch(/^(\d+,\s*\d+,\s*\d+|var\(--[\w-]+(,.*)?\))$/i);
     }
   });
 

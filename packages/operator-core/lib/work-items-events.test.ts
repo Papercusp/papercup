@@ -15,6 +15,8 @@ const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   summary: '',
   state: 'resolved',
   assignee: 'su-child',
+  takenAt: null,
+  lastProgressAt: null,
   assignedBy: 'su-parent',
   severity: null,
   parent: null,

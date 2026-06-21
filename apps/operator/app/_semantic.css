@@ -33,6 +33,7 @@
   --warn-bg: rgba(251, 191, 36, 0.1); /** #fbbf24 @ 0.1 */
   --warn-border: rgba(251, 191, 36, 0.35); /** #fbbf24 @ 0.35 */
   --accent: var(--sky-400);
+  --accent-rgb: 56, 189, 248; /** RGB triplet of --accent (sky-400 #38bdf8) for rgba()/color-mix alpha composition, e.g. var(--accent-rgb) in rgb(var(--accent-rgb) / 0.5) */
   --accent-strong: var(--sky-300);
   --accent-cool: var(--sky-cool);
   --accent-soft: var(--sky-200); /** Light accent tint — glows/highlights (frost: sky-200) */

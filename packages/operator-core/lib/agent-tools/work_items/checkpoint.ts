@@ -19,7 +19,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
-import { getWorkItem } from '../../work-items';
+import { getWorkItem, markFeatureProgress } from '../../work-items';
 
 export default defineTool({
   name: 'work_items:checkpoint',
@@ -72,6 +72,11 @@ export default defineTool({
         { harness, workItemId: args.id, workspaceId: c.workspaceId ?? undefined },
         args.checkpoint,
       );
+      // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
+      // is REAL item-scoped progress — credit it so the item reads as `progressing`, not
+      // `stalled`. Fire-and-forget + fail-soft (markFeatureProgress swallows errors and
+      // no-ops a holderless/issue row) so a progress bump never breaks the checkpoint write.
+      if (stored !== null) void markFeatureProgress(harness, args.id);
       return {
         content: [
           {

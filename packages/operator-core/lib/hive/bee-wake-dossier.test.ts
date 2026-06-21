@@ -17,6 +17,8 @@ function wi(over: Partial<WorkItem> = {}): WorkItem {
     summary: 'Build the thing per the spec.',
     state: 'todo',
     assignee: null,
+    takenAt: null,
+    lastProgressAt: null,
     assignedBy: null,
     severity: null,
     parent: null,

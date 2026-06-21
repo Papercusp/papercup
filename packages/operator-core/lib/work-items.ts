@@ -790,6 +790,38 @@ export function normalizeWorkItemState(
   };
 }
 
+/**
+ * Bump a feature work-item's `last_progress_at` to now — the REAL item-scoped
+ * progress signal (agent-activity-liveness-truth-2026-06-21 P-001, D-001/D-004).
+ *
+ * Call this ONLY on genuine item-scoped work that ISN'T already a state transition
+ * (a checkpoint write is the canonical case — {@link setWorkItemState} folds the
+ * bump into its own transition UPDATE, so it must NOT also call this). NEVER call it
+ * on a bare presence heartbeat or a lease keepalive — bumping progress on a mere
+ * keepalive is exactly the false "the work is advancing" signal D-001 forbids
+ * (`work_item_claims.last_activity_ts` already conflates the two; this column must
+ * stay clean). Only a CLAIMED feature row is credited — an unclaimed/terminal/issue
+ * row matches 0 rows and is a harmless no-op (the classifier ignores progress on a
+ * holderless item anyway). Fail-soft: returns false on any error so a progress bump
+ * can never break the caller's primary write.
+ *
+ * @returns true if a held feature row was bumped, false otherwise (no match / error).
+ */
+export async function markFeatureProgress(harness: string, id: string): Promise<boolean> {
+  if (!harness || !id) return false;
+  try {
+    const { sql } = getOrgPg();
+    const res = await sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET last_progress_at = now()
+       WHERE harness_slug = ${harness} AND feature_id = ${id}
+         AND taken_by IS NOT NULL AND taken_by <> ''`;
+    return res.count > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Lifecycle.setState — feature → status; issue → state. The requested state is
  *  normalized onto the family's native vocabulary first (EI-24); an unmappable
  *  state throws a typed error naming the valid set. */
@@ -825,7 +857,7 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
              requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
              -- agent-activity-liveness-truth P-001 (D-001/D-004): a state transition is
              -- REAL item-scoped progress — bump last_progress_at so a held item reads as
-             -- `progressing`, not `stalled`. Only for HELD rows (an unclaimed-row flip has
+             -- progressing, not stalled. Only for HELD rows (an unclaimed-row flip has
              -- no holder to credit, and a later claim resets the signal anyway).
              last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
              updated_ts = ${Date.now()}

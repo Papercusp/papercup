@@ -19,6 +19,8 @@ const wi = (id: string, family: 'feature' | 'issue'): WorkItem => ({
   summary: '',
   state: 'todo',
   assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
   assignedBy: null,
   severity: null,
   parent: null,
