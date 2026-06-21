@@ -459,6 +459,8 @@ import './capability/revoke-role';
 import './prompt/role-override';
 // live-configurability-audit-2026-06-20 P-005 — settable fleet opus-budget shed bands:
 import './fleet/opus-budget';
+// live-configurability-audit-2026-06-20 P-006 — settable account scale-out trigger policy:
+import './accounts/scale-policy';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

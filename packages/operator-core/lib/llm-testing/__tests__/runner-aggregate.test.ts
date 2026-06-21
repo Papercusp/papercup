@@ -96,6 +96,8 @@ describe('scenario registry', () => {
       // code:run adoption (code-execution-tool-orchestration B-CX-3)
       'su-S13-code-run-batch',
       'su-S14-code-run-not-for-single',
+      'su-S15-code-run-small-batch',
+      'su-S16-code-run-batch-write',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',

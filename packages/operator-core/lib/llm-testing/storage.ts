@@ -74,7 +74,7 @@ async function persistSingleRun(
       ${s.totalCostUsd}, ${s.capBreaches},
       ${sql.json(r.judge.scores)}, ${sql.json(findingsCount)},
       ${transcriptRawBytes}, ${sql.json(normalizeTurns(s.turns))},
-      ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows })},
+      ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows, ...(s.variantId ? { variantId: s.variantId } : {}) })},
       ${sql.json({ asserts: 'see-scenario', violations: r.violations })},
       ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd })}
     )

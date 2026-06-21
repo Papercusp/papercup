@@ -10,7 +10,8 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
-import { readOpusBudgetPolicy, writeOpusBudgetPolicy, type OpusBudgetPolicy } from '../../opus-budget-policy';
+import { readOpusBudgetPolicy, writeOpusBudgetPolicy } from '../../opus-budget-policy';
+import type { OpusBudgetPolicy } from '../../opus-budget-governor';
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };

@@ -21,6 +21,7 @@ import { onGovernorPause, parseGovernorKey, snapshotGovernors } from '@papercusp
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readOpusBudgetPolicy } from '../opus-budget-policy';
+import { readScalePolicy } from '../scale-policy';
 import {
   type AccountEgress,
   type AccountPool,
@@ -320,7 +321,7 @@ export async function handleAccountExhausted(
 ): Promise<ScaleOutResult> {
   const now = deps.now?.() ?? Date.now();
   const pool = await deps.loadPool(ws);
-  const decision = decideScaleOut(pool, exhaustedId, now, opts);
+  const decision = decideScaleOut(pool, exhaustedId, now, { ...opts, policy: opts.policy ?? (await readScalePolicy()) });
   if (!decision.provision) return { scaledOut: false, reason: decision.reason };
 
   const fresh = decision.account;
@@ -460,7 +461,7 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
           ws,
         );
         const acct = getAccount(pool, accountId);
-        if (!acct || !isSustainedlyLimited(acct, t)) return; // not exhausted (yet) — just pausing
+        if (!acct || !isSustainedlyLimited(acct, t, await readScalePolicy())) return; // not exhausted (yet) — just pausing
         emitExhausted(accountId, ev.pausedUntil); // observability fires regardless of the toggle
         // Owner auto-scale-out toggle (queen-steering-panel P-006): when disabled, the
         // account is left paused (no auto-deploy); manual accounts:scale_out still works.
@@ -511,13 +512,14 @@ export interface AccountStatusRow {
 export async function accountStatus(ws?: string, now = Date.now()): Promise<AccountStatusRow[]> {
   const pool = await loadAccountPool(ws);
   const live = snapshotGovernors();
+  const scalePolicy = await readScalePolicy();
   return pool.accounts.map((a) => ({
     id: a.id,
     label: a.label,
     credentialRef: a.credentialRef,
     boundTo: a.boundTo,
     available: isAvailable(a, now),
-    sustainedlyLimited: isSustainedlyLimited(a, now),
+    sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
     rate: a.rate,
     egress: a.egress,
     liveBuckets: live

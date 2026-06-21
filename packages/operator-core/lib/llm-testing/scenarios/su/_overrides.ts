@@ -347,6 +347,74 @@ export const CODE_RUN_BATCH_CONTEXT: ToolDispatchOverride = {
 };
 
 /**
+ * SU-S15 (small-batch adoption): the user names a FEW items (3) to check — a
+ * modest fan-out. The token win still favors ONE code:run over 3 round-trips, so
+ * the engineer should batch even here ("reach for it a lot"). `work_items:get`
+ * returns per-item state; the blocked check needs a get per id.
+ */
+export const SMALL_BATCH_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'work_items:get') {
+      const id = String(a.id ?? '');
+      const n = Number(id.split('-')[1] ?? 0);
+      return {
+        content: [
+          { text: JSON.stringify({ id, state: n % 2 === 0 ? 'blocked' : 'open', ...(n % 2 === 0 ? { blockedReason: 'awaiting review' } : {}) }) },
+        ],
+      };
+    }
+    if (canon === 'code:tools') {
+      return { content: [{ text: JSON.stringify({ namespaces: [{ ns: 'work_items', verbs: ['get'] }], count: 1 }) }] };
+    }
+    if (canon === 'code:run') {
+      return { content: [{ text: JSON.stringify({ ok: true, summary: { blocked: ['WI-302'] } }) }] };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
+ * SU-S16 (batch WRITE via dry-run): the user asks to mark every OPEN work item
+ * as observed — a per-item WRITE over a collection. The engineer should collapse
+ * it into one code:run (ideally dryRun:true to preview, then commit), not loop
+ * `work_items:set_state` one call at a time. `work_items:list` returns 9 open
+ * items; the write tool + code:run are stubbed believably.
+ */
+const S16_OPEN_ITEMS = Array.from({ length: 9 }, (_, i) => ({ id: `WI-${400 + i}`, state: 'open' }));
+export const BATCH_WRITE_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'work_items:list') {
+      return { content: [{ text: JSON.stringify({ items: S16_OPEN_ITEMS, count: S16_OPEN_ITEMS.length }) }] };
+    }
+    if (canon === 'work_items:set_state') {
+      return { content: [{ text: JSON.stringify({ ok: true, id: a.row ?? a.id ?? '' }) }] };
+    }
+    if (canon === 'code:tools') {
+      return { content: [{ text: JSON.stringify({ namespaces: [{ ns: 'work_items', verbs: ['list', 'setState'] }], count: 2 }) }] };
+    }
+    if (canon === 'code:run') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              dryRun: !!a.dryRun,
+              plannedMutations: a.dryRun ? S16_OPEN_ITEMS.map((w) => ({ tool: 'work_items:set_state', args: { id: w.id, state: 'observed' } })) : [],
+              summary: { updated: a.dryRun ? 0 : S16_OPEN_ITEMS.length },
+            }),
+          },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
  * Realistic single-fact result for SU-S14 (no code:run over-application): a
  * `harness:status` snapshot. The question is answerable in ONE direct call, so
  * the engineer must NOT wrap it in `code:run` (the nudge's "NOT WHEN: a single

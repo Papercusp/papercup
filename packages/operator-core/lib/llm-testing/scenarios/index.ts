@@ -92,6 +92,8 @@ import { SU_S12_SAME_TURN_INSIGHT } from './su/S12-same-turn-insight';
 // "do X for each of N" loop (S13), and NOT over-apply it to a single call (S14)?
 import { SU_S13_CODE_RUN_BATCH } from './su/S13-code-run-batch';
 import { SU_S14_CODE_RUN_NOT_FOR_SINGLE } from './su/S14-code-run-not-for-single';
+import { SU_S15_CODE_RUN_SMALL_BATCH } from './su/S15-code-run-small-batch';
+import { SU_S16_CODE_RUN_BATCH_WRITE } from './su/S16-code-run-batch-write';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
@@ -179,6 +181,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S12_SAME_TURN_INSIGHT,
   SU_S13_CODE_RUN_BATCH,
   SU_S14_CODE_RUN_NOT_FOR_SINGLE,
+  SU_S15_CODE_RUN_SMALL_BATCH,
+  SU_S16_CODE_RUN_BATCH_WRITE,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,
