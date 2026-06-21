@@ -3,6 +3,14 @@ title: Feature flags
 description: The complete feature-flag system — every flag, how to flip them, where they're enforced, the V1 ship contract, and the admin UI.
 sidebar:
   order: 2
+plans:
+  - fumadocs-to-starlight-2026-05-20
+  - starlight-projection-site-2026-06-18
+  - docs-and-memory-as-projections-2026-06-05
+  - legacy-docs-audit-revival-2026-06-06
+  - finish-next-removal-2026-06-01
+  - revive-cupboard-distribution-2026-06-04
+  - retire-snapshots-instance-spec-2026-06-09
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -10,17 +18,18 @@ sidebar:
 
 Feature flags are how Papercusp ships V1 with a minimal feature set while keeping the cut features in the codebase, ready to re-enable. The cut-for-V1 flags default to **off**; flags created for newly built features default to **on** in alpha (finished work ships active — the flag is the owner's off-switch, not a dark launch). The operator falls back to bundled defaults when offline, and admins flip flags through the operator's own UI — no PostHog dashboard required for day-to-day use.
 
-## The 15 flags
+## The flag set
 
-The canonical set lives in `FLAGS` in `libs/flags/src/types.ts`:
+The canonical set lives in `FLAGS` in `libs/flags/src/types.ts`. As of this writing it holds **101 flags** (`FLAG_DEFAULTS` is **51 default-`true` / 50 default-`false`**) — the set grows continuously, so treat the live `FLAGS` object as authoritative, not this page.
+
+The table below is a **representative slice** (roughly the original V1 cut-set + a few later additions), **not** the full set. The ~86 flags not shown here include the autonomy set (`QUEEN_AUTONOMY_ARMED`, `QUEEN_FULL_AUTONOMY`), `OVERWATCH`, `SCHEDULED_PLANS`, `LOOPS`, `WEDGE_AUTO_REAP`, `CLAUDE_CRED_SYNC`, `OPEN_SIGNUP`, `ENDPOINT_AUTH_TIERS`, the entire self-learning-frontier set, and the workspace-isolation set. Run `grep -E '"papercusp-' libs/flags/src/types.ts` for the complete list.
 
 | Key | TS constant | Default | What it gates |
 |---|---|---|---|
 | `papercusp-cloudflare-publish` | `FLAGS.CLOUDFLARE_PUBLISH` | `false` | Publish-to-Cloudflare flow. |
-| `papercusp-oracle` | `FLAGS.ORACLE` | `false` | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off). |
 | `papercusp-harness-phases` | `FLAGS.HARNESS_PHASES` | `false` | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints. |
 | `papercusp-design` | `FLAGS.DESIGN` | `false` | In-harness "design" tab + `/design` route + `/api/design/*` routes. |
-| `papercusp-testing` | `FLAGS.TESTING` | `false` | Testing-only surfaces: the `pi` tab + the "add plugin" button. |
+| `papercusp-testing` | `FLAGS.TESTING` | `false` | Testing-only surfaces: the `pi` tab + the "add plugin" button **and** the Oracle assistant (dock + `/settings/oracle` + all `/api/oracle/*` Hono endpoints, 404 when off). The separate `papercusp-oracle` key was folded into this one by owner ask (2026-06-10) — the Oracle is now a testing surface. The server even filters the retired `papercusp-oracle` key out of any stored PG override row. |
 | `papercusp-inbox-durable-escalations` | `FLAGS.INBOX_DURABLE_ESCALATIONS` | `false` | Mirror chat decision cards to durable coord escalations (answer live or from the inbox). |
 | `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false` | Master switch for auto-implementing captured improvements. Off = capture + triage only. |
 | `papercusp-video-channels` | `FLAGS.VIDEO_CHANNELS` | `true` | Desktop P2P video channel (the workbench `VideoGrid`). Owner-activated 2026-06-09 (alpha default-on policy); the live two-instance camera E2E is still outstanding. |
@@ -45,6 +54,14 @@ Two statements that hold for every shipped binary:
 2. Every flag resolves to its `FLAG_DEFAULTS` value, so every cut surface (default `false`) is unreachable — routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered — while shipped alpha features (default `true`) stay live.
 
 Both hold without any post-install configuration. Verified by the build-agent handoff via a clean-machine smoke test.
+
+### The `KNOWN_DARK_FLAGS` invariant
+
+Under the alpha flags-default-on policy, a **newly added flag defaults to `true`** (finished work ships active). A flag may default to `false` only when it gates genuinely incomplete/unsafe work or an explicit owner-requested dark launch — and in that case it **must** be consciously listed in `KNOWN_DARK_FLAGS` in `libs/flags/src/production-defaults.test.ts`. The test asserts that every default-`false` flag is either in that allowlist or fails the build, and it also flags stale allowlist entries (a key listed as dark that no longer defaults to `false`) plus a review-by date guard so the dark set can't silently linger. This is why the split is currently 51 `true` / 50 `false`: each of those 50 is a deliberate, reviewed dark ship.
+
+### Runtime overrides when PostHog is unconfigured
+
+`FLAG_DEFAULTS` is the *bundled* fallback, but it isn't the only no-PostHog path. When the flag backend is unconfigured, both `flags:set` (MCP) and `POST /api/flags/set` fall back to a **Postgres-backed override store** (`setFlagOverride` / `loadStoredOverrides` in `libs/flags/src/server.ts`), reporting `backend: 'pg-override'`. This lets you toggle a flag at runtime on a dev box with no PostHog and no restart — a stored override **beats** the evaluated/default value (`stored beats evaluated`). The presets clear these: applying either preset calls `clearAllFlagOverrides()`, so the V1 ship state truly returns to the bundled defaults rather than leaving a stale PG override in place. (Overrides are filtered through `resolveWithDefaults`, so retired keys like `papercusp-oracle` can never leak back into a client payload.)
 
 ## The two-knob model
 
@@ -78,7 +95,7 @@ Open **Admin → Features** (`/admin/features`). You'll see:
    - **🚀 V1 Production** → sets `testingFeatures: false`. Operator stops contacting PostHog. Cuts stay cut. PostHog values are left untouched (irrelevant).
    - **🧪 Full testing** → sets `testingFeatures: true` + flips every flag in `ALL_FLAG_KEYS` to `active=true` with `rollout_percentage: 100`. Everything on.
 2. **Master switch** — the `testingFeatures` toggle with a status pill (`on` / `off`) and its current source (`discovery-file`, `discovery-file-opt-out`, `env`, `unconfigured`).
-3. **Per-flag toggles** — each flag listed with label, blurb, raw key. Toggles are disabled (greyed) when `testingFeatures` is off — turn that on first.
+3. **Per-flag toggles** — every flag in `ALL_FLAG_KEYS` listed with its raw key. Only the original V1 cut-set (~11 flags) carries a friendly label + blurb, resolved through the lexicon (`flagLabels(t)` / `flagBlurbs(t)`); the remaining ~90 flags display their raw key (`labels[key] ?? key`). Toggles are disabled (greyed) when `testingFeatures` is off — turn that on first.
 
 Every toggle round-trips through the operator's HTTP endpoints, which:
 
@@ -107,7 +124,9 @@ For agents:
 | `flags:get` | `intel:read` | Reads a single flag value. |
 | `flags:set` | `audit:write` | Flips a flag in PostHog. Requires a `reason` arg (≥8 chars). Writes an audit row (`action='flag:set'`) in `harness_shared.audit_log`. |
 
-All three are defined under `packages/operator-core/lib/agent-tools/flags/` and exposed to the `operator` / `architect` agent roles (`flags:list` / `flags:get` also to `debugger`).
+All three are defined under `packages/operator-core/lib/agent-tools/flags/`. `flags:set` is exposed to the `operator` / `architect` roles; the read tools `flags:list` / `flags:get` are exposed more widely — to `operator`, `architect`, `debugger`, **and `bee`**.
+
+`flags:set` runs with `profile: 'engineer'` and `crossWorkspace: true`: its only PG write is the no-workspace operator `audit_log` INSERT (on the admin handle), which is why it isn't a workspace-scoped RLS write.
 
 `flags:set` writes both `active` and `filters.groups[].rollout_percentage` so the binary on/off semantics work as expected — see "Bug 1" in the [Wire-up gotchas](#wire-up-gotchas) section for why.
 
@@ -135,13 +154,13 @@ Each cut feature has gating at multiple layers; the goal is that no path — dir
 The operator frontend is the Vite SPA (Next.js is retired). Gated routes call `requireFlag(FLAGS.X)` in their `beforeLoad`; the helper (`apps/operator-vite/src/lib/require-flag.ts`) `loadFlags()`-then-`throw notFound()` if the flag is off, which renders the root route's `notFoundComponent`:
 
 ```tsx
-// apps/operator-vite/src/routes/design/index.tsx
+// apps/operator-vite/src/routes/design/$slug.tsx
 import { FLAGS } from '@papercusp/flags';
-import { requireFlag } from '@/lib/require-flag';
+import { requireFlag } from '../../lib/require-flag';
 
-export const Route = createFileRoute('/design/')({
+export const Route = createFileRoute('/design/$slug')({
   beforeLoad: () => requireFlag(FLAGS.DESIGN),
-  component: DesignClient,
+  component: DesignSlugPage,
 });
 ```
 
@@ -155,9 +174,9 @@ Nav / settings-sidebar entries are wrapped in `useFlag(FLAGS.X) && …`. `useFla
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 
-const oracleFlag = useFlag(FLAGS.ORACLE);
+const designFlag = useFlag(FLAGS.DESIGN);
 // …
-{oracleFlag ? <OracleLauncher /> : null}
+{designFlag ? <DesignLauncher /> : null}
 ```
 
 ### Component layer (defense-in-depth)
@@ -191,13 +210,13 @@ async handler(req) {
 }
 ```
 
-For a whole route group (Oracle, harness tests), the gate is checked per handler against `getFlag(FLAGS.X, 'system')` and returns 404 when off (see `packages/operator-core/lib/endpoint-route/routes/oracle/index.ts`):
+For a whole route group (Oracle, harness tests), the gate is checked per handler against `getFlag(FLAGS.X, 'system')` and returns 404 when off (see `packages/operator-core/lib/endpoint-route/routes/oracle/index.ts`). Note the Oracle group gates on `FLAGS.TESTING` — the Oracle is dark unless `papercusp-testing` is on (the `papercusp-oracle` key was folded into `TESTING`, see the flag table above):
 
 ```ts
 async function oracleEnabled(): Promise<boolean> {
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
-  return getFlag(FLAGS.ORACLE, 'system');
+  return getFlag(FLAGS.TESTING, 'system');
 }
 ```
 
@@ -237,7 +256,10 @@ The system lives in three places:
 | `POST /api/flags/preset` | `{ name: 'production' \| 'testing' }` | Atomic preset apply (loopback-guarded). `production` writes `testingFeatures: false`; `testing` sets `testingFeatures: true` + flips every flag in `ALL_FLAG_KEYS` on. |
 | `GET /api/flags/dashboard-url` | — | Returns the PostHog UI URL for deep-linking out of the admin page. |
 
-All of these are Hono `endpoint-route` handlers (`packages/operator-core/lib/endpoint-route/routes/flags/*`) authored via `defineTool({ method, path, auth: 'public', … })` and served by the operator's bundled Hono host on `:3070`. `auth: 'public'` opts the route out of principal auth; `/set` and `/preset` keep their own loopback guard (`requireLoopbackOr403`), and `/webhook` authenticates via the shared-secret header.
+All of these are Hono `endpoint-route` handlers (`packages/operator-core/lib/endpoint-route/routes/flags/*`) authored via `defineTool({ method, path, auth, … })` and served by the operator's bundled Hono host on `:3070`. They split across two declarative auth tiers:
+
+- **`auth: 'public'`** — `bootstrap`, `stream`, `webhook`, `dashboard-url`, and the **GET** half of `testing-features`. "Public" opts the route out of principal auth; `webhook` then authenticates via the shared-secret header.
+- **`auth: 'loopback'`** — the flag-mutating routes `set` and `preset`, plus the **POST** half of `testing-features`. This is the auth-tier Wave 1 declarative tier (`ENDPOINT_AUTH_TIERS`): loopback is enforced at the dispatch chokepoint (a non-loopback `Host` → 403), **not** by a hand-called `requireLoopbackOr403` in the handler body. The earlier in-handler `requireLoopbackOr403` sites were converted to the declared tier.
 
 ## How a flag flip propagates
 
@@ -286,7 +308,7 @@ The Admin section is structured as separate operator-vite SPA routes per tab (no
 
 `AdminShell` is the chrome (header with title + tabs). Each tab is a TanStack `<Link>` so navigations are full route transitions; the URL is the source of truth for the active tab (no `useState`).
 
-The `/admin/*` routes are intentionally not linked from the nav — reach them by URL. The flag-mutating endpoints behind them (`/api/flags/set`, `/api/flags/preset`) enforce a loopback guard server-side (`requireLoopbackOr403`); the route itself is **not** flag-gated (an earlier `FLAGS.ADMIN` gate was removed — and that key no longer exists in `FLAGS`).
+The `/admin/*` routes are intentionally not linked from the nav — reach them by URL. The flag-mutating endpoints behind them (`/api/flags/set`, `/api/flags/preset`) enforce loopback server-side via the declarative `auth: 'loopback'` tier (the `ENDPOINT_AUTH_TIERS` chokepoint), **not** an in-handler `requireLoopbackOr403` call; the route itself is **not** flag-gated (an earlier `FLAGS.ADMIN` gate was removed — and that key no longer exists in `FLAGS`).
 
 ## Wire-up gotchas
 
@@ -365,7 +387,7 @@ curl -s http://localhost:3055/api/flags/bootstrap | jq
 
 1. Add the key + default to `libs/flags/src/types.ts` (`FLAGS` + `FLAG_DEFAULTS`). **In alpha, the `FLAG_DEFAULTS` entry for a flag you create alongside the feature is `true`** — finished work ships active; the flag exists so the owner can switch it off (or cut it for ship), not to ship the feature dark. Default `false` only for genuinely incomplete/unsafe work or an explicit owner-requested dark launch — and then surface the pending flip in the plan + completion report.
 2. If you also define the flag in the PostHog UI at `flags.papercuspai.com`, match the bundled default (`active: true`, `rollout_percentage: 100` for an alpha default-on flag). Key must match the TS string exactly.
-3. Add the entry to `FLAG_LABELS` + `FLAG_BLURBS` in `apps/operator/app/admin/features/FeaturesAdmin.tsx`.
+3. *(Optional)* Add a friendly label/blurb in `apps/operator/app/admin/features/FeaturesAdmin.tsx`. There are **no** `FLAG_LABELS`/`FLAG_BLURBS` constants — labels and blurbs are built at render through the lexicon-bound functions `flagLabels(t)` / `flagBlurbs(t)` (so the displayed names follow the active `THE_HIVE` brand pack). These cover only the original V1 cut-set (~11 flags); every other flag falls back to its raw key in the admin per-flag list (`labels[key] ?? key`). Skipping this step just means your flag shows its raw key — the admin list still renders and toggles it.
 4. Gate the actual surfaces — pages with `requireFlag`, nav entries with `useFlag`, API routes with `gateApiRoute`, MCP tools with the same.
 5. `tsc --noEmit` on the operator to confirm no surface forgot the gate.
 
