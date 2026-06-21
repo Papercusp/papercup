@@ -52,6 +52,24 @@ function sh(cmd) {
   return execSync(cmd, { cwd: ROOT, encoding: 'utf8' }).trim();
 }
 
+// Collect every file changed vs `base` — committed (base...HEAD), uncommitted
+// (working tree vs HEAD), and untracked. Passes `--ignore-submodules=all` so a
+// broken/retired submodule gitlink cannot make `git diff` fail: the shared
+// staging checkout carries retired submodules (e.g. libs/papercusp-db,
+// libs/zero-harness) whose `.git` ref can point at a missing `.git/modules/...`
+// gitdir, which otherwise aborts the diff with `fatal: not a git repository:
+// libs/papercusp-db/../../.git/modules/libs/papercusp-db`. Before this, that
+// failure was swallowed and the whole run silently degraded to `--all` (every
+// workspace) — slow, noisy, and it masked the real cause (EI-1989).
+// `git ls-files --others` does not recurse into submodules, so it needs no such
+// flag. Throws on a genuine git error so the caller can decide to warn or bail.
+function changedFiles() {
+  const committed = sh(`git diff --name-only --ignore-submodules=all ${base}...HEAD`).split('\n').filter(Boolean);
+  const uncommitted = sh('git diff --name-only --ignore-submodules=all HEAD').split('\n').filter(Boolean);
+  const untracked = sh('git ls-files --others --exclude-standard').split('\n').filter(Boolean);
+  return [...new Set([...committed, ...uncommitted, ...untracked])];
+}
+
 const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const workspaces = expandWorkspaces(root.workspaces);
 
@@ -106,13 +124,21 @@ function affectedWorkspaces() {
 
   let changed;
   try {
-    changed = sh(`git diff --name-only ${base}...HEAD`).split('\n').filter(Boolean);
-    const uncommitted = sh('git diff --name-only HEAD').split('\n').filter(Boolean);
-    const untracked = sh('git ls-files --others --exclude-standard').split('\n').filter(Boolean);
-    changed = [...new Set([...changed, ...uncommitted, ...untracked])];
+    changed = changedFiles();
   } catch (e) {
-    console.error(`git diff against ${base} failed: ${e.message}`);
-    console.error('falling back to --all');
+    // `--ignore-submodules=all` (see changedFiles) means a broken retired
+    // submodule no longer trips this — so a failure HERE is now a GENUINE git
+    // problem, not the routine retired-submodule breakage. Make the
+    // degrade-to-everything LOUD: the old fallback printed two quiet lines and
+    // ran all ~80 workspaces, which read as a normal (if slow) run and hid the
+    // real cause (EI-1989). A banner on stderr ensures it can't masquerade as
+    // the intended fast path.
+    console.error('');
+    console.error('!!!!!! affected-tests: COULD NOT COMPUTE THE AFFECTED SET !!!!!!');
+    console.error(`!!!!!! \`git diff\` against ${base} failed: ${e.message}`);
+    console.error('!!!!!! FALLING BACK TO --all (running EVERY workspace) — SLOW, and a BUG, not the intended path.');
+    console.error('!!!!!! Fix the git error above; do not rely on this fallback.');
+    console.error('');
     return [...wsByDir.values()];
   }
 
@@ -150,10 +176,7 @@ function elSuiteAutoTrigger() {
   if (runAll) return false; // user already opted into everything
   let changed;
   try {
-    changed = sh(`git diff --name-only ${base}...HEAD`).split('\n').filter(Boolean);
-    const uncommitted = sh('git diff --name-only HEAD').split('\n').filter(Boolean);
-    const untracked = sh('git ls-files --others --exclude-standard').split('\n').filter(Boolean);
-    changed = [...new Set([...changed, ...uncommitted, ...untracked])];
+    changed = changedFiles();
   } catch { return false; }
   return changed.some((f) =>
     f === 'apps/operator/prompts/operator.persona.md' ||
