@@ -4,6 +4,17 @@ description: When planReversibleArm runs without a declared riskTier (the common
 discovered: 2026-06-18
 tags: [autonomy, tripwire, arm-call-site, planReversibleArm, EI-570]
 status: active
+documents:
+  - "packages/operator-core/lib/autonomy/arm-reversible-action.ts: planReversibleArm (lines 119-159; ceiling-as-risk-proxy at 137-147)"
+  - "packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts: planWorkItemArm"
+  - "packages/operator-core/lib/autonomy/decider.ts: decideAutonomy (D-002 critical fail-safe, line 182) and resolveAutonomyDecision"
+  - "packages/operator-core/lib/autonomy/policy.ts: effectiveCeiling"
+  - "packages/operator-core/lib/autonomy/capability-category-map.ts: categoryForAction (work_items:* → work-prioritization)"
+plans:
+  - queen-autonomy-policy-2026-06-13
+  - queen-autonomy-ceiling-widening-2026-06-14
+  - queen-autonomy-and-selffeed-fix-2026-06-15
+  - queen-loop-alignment-2026-06-14
 sidebar:
   order: 99
 ---

@@ -3,10 +3,56 @@ title: Adding a query to the Zero-free sync resolver
 description: How to add a new useSyncQuery name to the v2 dispatcher. ~15 LOC drizzle entry, registry-style, no ZQL. Pairs with the reactive-table insight.
 discovered: 2026-05-25
 tags: [sync, sync-resolver, useSyncQuery, drizzle]
-status: active
+status: superseded
+documents:
+  - packages/operator-core/lib/sync-resolver/index.ts
+  - packages/operator-core/lib/sync-resolver/table-to-query-names.ts
+  - packages/operator-core/lib/sync-resolver/index.test.ts
+  - packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts
+  - packages/operator-core/lib/sync-sse.ts
+  - libs/generic/sync/src/transports/sse/SSEAdapter.tsx
+  - libs/generic/sync/src/server/invalidation-bus.ts
+  - packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.ts
+plans:
+  - papercusp-dogfood-v5-2026-05-23
+  - plans-pg-canonical-migration-2026-06-03
+  - storage-settings-page-2026-06-15
+  - hive-from-repo-hardening-2026-06-11
+  - adv-harness-tab-migration-2026-05-30
+  - presence-v2-2026-06-14
+  - fs-watcher-retirement-2026-05-10
+  - spec-md-ui-deprecation-cleanup-2026-05-30
+  - collapse-delegate-into-workitems-2026-06-04
+  - archive-legacy-orchestrator-deadcode-2026-06-06
 sidebar:
   order: 14
 ---
+
+import { Aside } from '@astrojs/starlight/components';
+
+:::caution[Superseded — Step 4 is stale]
+Step 4 below tells you to bump exact-count `toHaveLength(N)` assertions in
+two test files. **Those assertions no longer exist** — both were deliberately
+deleted and replaced with non-shrinking floor checks specifically *because*
+bumping them on every add/remove flapped CI red. There is no count to bump.
+
+- `packages/operator-core/lib/sync-resolver/index.test.ts:149` now asserts
+  `expect(names.length).toBeGreaterThanOrEqual(61)` (the comment at `:141`
+  calls the old `toHaveLength(63)` a "brittle exact-count that flapped red").
+- `packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts:102`
+  now asserts `expect(names.length).toBeGreaterThanOrEqual(45)` (the comment at
+  `:92`–`:100` calls the old exact count of 56 "brittle" and states the floor
+  is "set WELL BELOW the current count ... so a routine add/remove doesn't flap
+  it red").
+
+**What to actually do for a registry add today:** add your new name to the
+relevant `toContain(...)` family assertion(s) in `index.test.ts` (the
+exact-set assertions are what catch real drift now) and, if it's bridged, to
+the corresponding membership assertion in `table-to-query-names.test.ts`. The
+floor checks (`toBeGreaterThanOrEqual`) only fire if the registry *shrinks*
+below the floor — leave them alone. The `FORWARD_DEFINED` guidance later in
+Step 4 is still correct.
+:::
 
 ## What
 

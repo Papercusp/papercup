@@ -55,7 +55,7 @@ touching the PG pool:
 
 To name the on-loop consumer: a 60s CPU profile of the live host
 (`node --cpu-prof` / inspector). EI-79's was the hyperbee P2P read-merge driver
-(`sync/hyperbee/boot.ts` `mergeNow`, 1Hz poll) re-decoding **every op from index
+(`packages/operator-core/lib/sync/hyperbee/boot.ts` `mergeNow`, 1Hz poll) re-decoding **every op from index
 0 in every admitted peer log every second** — O(total-history) per tick. Fix was
 an incremental merge cursor reading only `[cursor,length)` + a steady-state
 change-detection skip + PG-level `fed_ts` ts-guarded LWW writers (mig 181).

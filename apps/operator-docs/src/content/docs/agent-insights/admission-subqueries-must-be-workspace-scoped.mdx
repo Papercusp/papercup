@@ -4,12 +4,21 @@ description: The G2 admission/trust predicate runs on the getOrgPg() admin handl
 discovered: 2026-06-13
 tags: [security, federation, admission, trust, rls, workspace-isolation, postgres]
 status: active
+documents:
+  - packages/operator-core/lib/work-items-admission.ts
+  - packages/operator-core/lib/work-items.ts
+  - libs/papercusp/libs/db/src/connection.ts
+  - libs/papercusp/libs/db/sql/276-user-trust-list.sql
+  - packages/operator-core/lib/work-items-admission.integration.test.ts
+plans:
+  - shared-hive-trust-admission-2026-06-14
+  - papercusp-user-protection-gate-2026-05-31
 ---
 
 ## The trap
 
 `harness_shared.user_trust_list` ships with RLS (`migration 276`,
-`POLICY workspace_isolation` keyed on `workspace_id`). It is tempting to lean on
+`POLICY user_trust_list_workspace_isolation` keyed on `workspace_id`). It is tempting to lean on
 that policy for isolation and write the trust fast-path of the G2 admission
 predicate as:
 
