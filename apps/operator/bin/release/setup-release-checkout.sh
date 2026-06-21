@@ -107,6 +107,33 @@ while IFS= read -r P; do
 done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
 
 # 3. node_modules ----------------------------------------------------------
+# EI-2118: list workspace packages (@papercusp/@papercup) that RESOLVE in the
+# integration tree but do NOT resolve in the release tree — i.e. a release
+# node_modules symlink that is MISSING or DANGLING (its target absent from the
+# release tree). `need_node_modules`'s name-set `diff` below only compares ENTRY
+# NAMES, and `ls` lists a dangling symlink's name just the same as a live one — so
+# a release symlink that exists by name but does not resolve slips through that
+# check, yet fails at require() with "Cannot find module '@papercusp/<pkg>'",
+# crash-looping the operator at the restart cutover (2026-06-20 @papercusp/plugin-loader;
+# same class as the 2026-06-09 @dnd-kit/core outage). `-e` FOLLOWS symlinks, so a
+# missing/dangling link (or a target dir without package.json) fails it. The
+# integration tree is the source of truth: a package integration itself cannot
+# resolve is a pre-existing break, not this copy's regression to chase. Pure shell
+# (no Node) — keeps this script standalone by design.
+unresolved_workspace_pkgs() {
+  local scope pkg
+  for scope in @papercusp @papercup; do
+    [ -d "$INTEGRATION_ROOT/node_modules/$scope" ] || continue
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] || continue
+      [ -e "$INTEGRATION_ROOT/node_modules/$scope/$pkg/package.json" ] || continue
+      [ -e "$RELEASE_ROOT/node_modules/$scope/$pkg/package.json" ] && continue
+      printf '%s/%s ' "$scope" "$pkg"
+    done < <(ls -1 "$INTEGRATION_ROOT/node_modules/$scope" 2>/dev/null)
+  done
+  return 0
+}
+
 need_node_modules() {
   case "$NODE_MODULES_MODE" in
     skip) return 1 ;;
@@ -121,6 +148,10 @@ need_node_modules() {
       # missed by the scoped-package check and may not be detected by lockfile
       # comparison if the release tree's package-lock.json is missing or stale.
       [ -d "$RELEASE_ROOT/node_modules" ] || return 0
+      # EI-2118: force a re-copy when any release workspace symlink is missing or
+      # DANGLES (exists by name but does not resolve) — the name-set diff below
+      # cannot see a broken-but-named symlink. Step 3's rm -rf + cp -al re-links it.
+      [ -n "$(unresolved_workspace_pkgs)" ] && return 0
       # Check scoped packages (@papercusp, @papercup).
       for scope in @papercusp @papercup; do
         if ! diff -q <(ls -1 "$INTEGRATION_ROOT/node_modules/$scope" 2>/dev/null | sort) \
@@ -188,6 +219,25 @@ if [ -d "$RELEASE_ROOT/patches" ] && [ -x "$RELEASE_ROOT/node_modules/.bin/patch
   log "applying committed dependency patches (patch-package)"
   (cd "$RELEASE_ROOT" && ./node_modules/.bin/patch-package 1>/dev/null 2>&1) \
     || log "WARN patch-package reported issues (continuing)"
+fi
+
+# 3c. Workspace-resolution gate (EI-2118) — fail the swap BEFORE any restart ---
+# A workspace package the release tree cannot resolve is invisible until the
+# operator boots and crash-loops on "Cannot find module", which then health-fails
+# into a rollback FLAP (fbd1c134<->0a5d3074, 2026-06-20). The deploy's verify-paths
+# step runs only AFTER the restart cutover, so it cannot prevent that. Catch it
+# HERE, loudly, while the live operator is still untouched: if step 3 left (or, in
+# mode=skip, never synced) any package that resolves in the integration tree but
+# not in the release tree, abort non-zero so the deploy's `swap` step fails cleanly
+# (no migrate, no restart) instead of cutting over to a tree that cannot boot. In
+# `auto` mode step 3's copy already re-links any break, so this should only ever
+# fire when the copy genuinely could not produce a resolvable tree.
+unresolved="$(unresolved_workspace_pkgs)"
+if [ -n "$unresolved" ]; then
+  echo "[setup-release] FATAL: release tree cannot resolve workspace package(s): $unresolved" >&2
+  echo "[setup-release] aborting BEFORE restart — the swapped tree would crash-loop the operator" >&2
+  echo "[setup-release] (re-run with --node-modules force to rebuild node_modules from the integration tree)" >&2
+  exit 1
 fi
 
 # 4. SPA dist (deploys only) -------------------------------------------------
