@@ -47,7 +47,15 @@ export default defineTool({
   // code:run is as powerful as the shell capability — it can call any of the agent's write tools.
   capability: 'capability:bash',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // SU_ROLES + `bee` (code-execution-tool-orchestration B-CX-3): the spawned-bee base already
+  // carries the CODE_RUN_NUDGE, and the generic hive `bee` is the dominant fleet worker doing the
+  // high-volume multi-tool work this collapses — yet it was the one role excluded here, so the nudge
+  // was inert for it. The grant is privilege-PRESERVING (the facade is role-scoped — a bee's script
+  // can only call tools the bee may already call) and capability-safe (bees hold capability:bash
+  // since the 2026-06-14 confinement lift; a hive that re-confines its bees via a blueprint
+  // allow-list still denies bash → code:run at the envelope). Same `[...SU_ROLES, 'bee']` shape the
+  // plans:* write tools use.
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     script: z
       .string()

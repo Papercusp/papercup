@@ -165,7 +165,7 @@ export function evaluateCapabilityEnvelope(args: {
   return { withinEnvelope: true, applied: true };
 }
 
-function matchesAny(value: string, globs: readonly string[]): boolean {
+export function matchesAny(value: string, globs: readonly string[]): boolean {
   for (const g of globs) if (matchGlob(value, g)) return true;
   return false;
 }

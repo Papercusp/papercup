@@ -270,7 +270,10 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   orchestrate them in a SINGLE `code:run` script, not one call at a time: each call
   is its own inference round-trip re-reading your whole context, while a script
   runs them in the runtime and returns ONLY its final value (N round-trips → one).
-  NOT for a single call or a step needing YOUR judgment mid-flow. Flow: `code:tools
+  **Trigger:** about to call the SAME tool once per item in a list (a `get` per id,
+  a check per file)? That repetition IS the cue — reach for `code:run` BEFORE the
+  first such call, not after firing several one-at-a-time. NOT for a single call or
+  a step needing YOUR judgment mid-flow. Flow: `code:tools
   {}` → `code:tools { namespaces }` for typed signatures → write the script →
   `code:run { dryRun:true }` to preview `effect:'write'` mutations → `code:run`.
   **Summarize conservatively — over-filtering backfires:** only the RETURNED value

@@ -1,4 +1,6 @@
 import type { Sql } from 'postgres';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 /**
  * Capabilities granted to **blueprint-declared roles** — agents a blueprint spawns
@@ -278,6 +280,21 @@ export async function loadRoleCapabilities(
   // carry an empty-cap synthesized principal, so the cap-gate denied their own
   // documented discovery tool with `missing_capability`.
   caps.add('agent_tools:read');
+  // live-configurability-audit-2026-06-20 P-008 — runtime role→capability grants, FLAG-GATED.
+  // Default-OFF ⇒ the (cached) flag read returns false ⇒ no SQL + byte-identical resolution.
+  // Fail-safe: a flag/read error never blocks cap resolution (grants are purely additive).
+  try {
+    if (await getFlag(FLAGS.CAPABILITY_GRANT_TOOL, workspaceId)) {
+      const grantRows = await tx<Array<{ capabilities: unknown }>>`
+        SELECT capabilities FROM harness_shared.role_capability_grants
+         WHERE workspace_id = ${workspaceId} AND role = ${roleName} LIMIT 1
+      `;
+      const granted = grantRows[0]?.capabilities;
+      if (Array.isArray(granted)) for (const c of granted) if (typeof c === 'string') caps.add(c);
+    }
+  } catch {
+    /* additive grants only — never block capability resolution on a flag/read error */
+  }
   return caps;
 }
 

@@ -435,6 +435,10 @@ export const FLAGS = {
   // non-fleet callers are exempt regardless (D-002). Surfaced loudly in the plan ## Now +
   // the completion report as the pending B-18 flip.
   CAPABILITY_ENVELOPE: "papercusp-capability-envelope",
+  // live-configurability-audit-2026-06-20 P-008 — runtime role→capability grant tool
+  // (capability:grant_role / capability:revoke_role). DARK by default (owner-authority, D-007):
+  // it flag-gates both the loadRoleCapabilities grant-union AND the grant/revoke tools.
+  CAPABILITY_GRANT_TOOL: "papercusp-capability-grant-tool",
   // agent-capability-confinement-2026-06-13 B-06 (P-011) ⨯ queen-autonomy-policy D-012/P-110:
   // the Queen decision-ledger ACTION-CHOKEPOINT emit — one append-only row per governed
   // (tier != 'low') action by a non-SU principal, from the dispatch postInvoke seam. ON by
@@ -1154,6 +1158,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // would deny fleet tool calls before the B-18 cutover + B-05 capability tools exist. OFF =
   // observe-only/shadow (evaluate + annotate, never block). The B-18 flip is the arming act.
   [FLAGS.CAPABILITY_ENVELOPE]: false,
+  // P-008 — capability grant tool ships DARK (owner-authority / D-007); the flag gates the
+  // loadRoleCapabilities grant-union, so OFF = byte-identical capability resolution.
+  [FLAGS.CAPABILITY_GRANT_TOOL]: false,
   // ON by default — Phase-0 foundation record-keeping (B-06 / P-011), same call as
   // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
   // OFF is the kill-switch (the emit no-ops).

@@ -837,6 +837,44 @@ export async function claimWorkItem(id: string, assignee: string, opts: { harnes
   return claimed;
 }
 
+/**
+ * Why did `claimWorkItem`/`claimIssue` return null? (EI-2197.)
+ *
+ * The compare-and-claim returns a bare `null` for THREE very different outcomes,
+ * and the claim TOOLS historically flattened all of them into the single
+ * misleading message `work_item '<id>' not found` — which sent agents into a
+ * pointless retry-with-harness dance (the id WAS resolvable via get/observe/
+ * comment/complete) and HID the real signal (lost a race / a dead claim needs
+ * taking over). This classifier re-reads the item's CURRENT state and names the
+ * outcome so the tool can return an accurate, actionable error:
+ *
+ *   • not_found — genuinely absent (get also returns null).
+ *   • conflict  — exists, held by ANOTHER agent. The caller lost the
+ *     compare-and-claim race, OR the holder is dead (→ the stale-claim reclaim
+ *     lane frees it; don't blind-retry — coordinate, or take over once freed).
+ *   • gated     — exists, NOT held, but the claim was refused by the
+ *     feature-family admission/trust gate (autoPickableWhereSql), or a race just
+ *     released it between the failed claim and this re-read.
+ *
+ * Pure over the already-fetched row so it unit-tests without a DB. A self-held
+ * item re-claims idempotently (claim would have SUCCEEDED), so reaching here with
+ * holder === claimer is not a real conflict — reported as `gated` for safety.
+ */
+export type ClaimFailure =
+  | { reason: 'not_found'; holder: null }
+  | { reason: 'conflict'; holder: string }
+  | { reason: 'gated'; holder: null };
+
+export function classifyClaimFailure(
+  current: { assignee?: string | null } | null,
+  claimer: string,
+): ClaimFailure {
+  if (!current) return { reason: 'not_found', holder: null };
+  const holder = current.assignee?.trim();
+  if (holder && holder !== claimer) return { reason: 'conflict', holder };
+  return { reason: 'gated', holder: null };
+}
+
 export interface ClaimNextFilter {
   harness: string;
   assignee: string;

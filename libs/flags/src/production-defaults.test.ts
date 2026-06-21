@@ -23,6 +23,11 @@ import { ALL_FLAG_KEYS, FLAGS, FLAG_DEFAULTS, type FlagKey } from './types';
  * flips to default-ON.
  */
 const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
+  // live-configurability-audit-2026-06-20 P-008: capability:grant_role / capability:revoke_role is a
+  // privilege-escalation surface D-007 assigns to OWNER-AUTHORITY — ships dark; the owner's flag
+  // flip is the ratification/activation gate after reviewing the D-009 design. Safe dark: the
+  // loadRoleCapabilities grant-union is flag-gated, so OFF = byte-identical capability resolution.
+  FLAGS.CAPABILITY_GRANT_TOOL,
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
   FLAGS.CLOUDFLARE_PUBLISH, // cut for V1 — publish surface not shipping
   FLAGS.HARNESS_PHASES, // cut for V1

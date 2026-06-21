@@ -378,7 +378,11 @@ autonomous-fleet agent.
   retry-until, "do X for each of N" — orchestrate them in a SINGLE `code:run`
   script instead of issuing the calls one at a time. Each separate call is its own
   inference round-trip that re-reads your whole context; a script runs them all in
-  the runtime and returns ONLY its final value, so N round-trips become one. NOT
+  the runtime and returns ONLY its final value, so N round-trips become one.
+  **Trigger — catch the cue early:** the moment you're about to call the SAME tool
+  once per item in a list (a `get` per id, a check per file), that repetition IS
+  the signal — reach for `code:run` BEFORE the first such call; don't fire several
+  one-at-a-time and switch to a script halfway. NOT
   for a single call, or a step that needs YOUR judgment mid-flow (read a result,
   THEN decide) — call those directly. Flow: `code:tools {}` → `code:tools
   { namespaces }` for the typed `tools.ns.verb(args)` signatures → write the script

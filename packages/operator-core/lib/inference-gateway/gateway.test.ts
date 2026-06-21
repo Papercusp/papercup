@@ -1206,6 +1206,51 @@ test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide 429 (no healthy account) DOES shrin
   assert.ok(s.aimd.effective < 16 && s.aimd.effective >= 3, `effective shrank below the cap but never below the floor (got ${s.aimd.effective})`);
 }, 20_000);
 
+test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: per-account 429s do NOT choke the global gate — everything routes to capacity (the owner "API errors despite headroom")', async () => {
+  // The owner's EXACT scenario (2026-06-21): some accounts are maxed (429 every request) while others have
+  // headroom (200). Under fleet concurrency the round-robin transiently hits the maxed ones → per-account
+  // quota-429s that route around to a healthy account. PRE-FIX every such 429 recordThrottle'd → the GLOBAL
+  // admission gate collapsed to the AIMD floor → requests queued behind it and timed out → bee "API errors".
+  // POST-FIX the routed-around 429s are invisible to AIMD: the gate stays at the cap, every request reaches a
+  // healthy account, nothing is shed.
+  resetGovernorRegistry();
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const maxed = new Set(['A', 'B']); // 2 maxed, 6 with headroom
+  const pool = createFailoverPool(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(acct));
+  let calls429 = 0;
+  await boot(
+    (req, res) => {
+      const id = String(req.headers['authorization'] ?? '').replace(/^Bearer\s+/, '').replace(/-tok$/, '');
+      if (maxed.has(id)) {
+        calls429 += 1;
+        res.writeHead(429, { 'content-type': 'application/json' }); // bare transient → the gateway routes around
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    },
+    { pool, governorFor: undefined, concurrency: 24, aimd: { floor: 4 } },
+  );
+
+  const N = 40;
+  const statuses = await Promise.all(
+    Array.from({ length: N }, () =>
+      post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }).then(async (r) => {
+        await r.text();
+        return r.status;
+      }),
+    ),
+  );
+  const ok = statuses.filter((st) => st === 200).length;
+  const s = (await (await ask('/stats')).json()) as { aimd: { effective: number; floor: number; cap: number; decreases: number }; inFlight: number };
+  assert.ok(calls429 > 0, 'the maxed accounts WERE hit under concurrency (the scenario is actually exercised)');
+  assert.equal(ok, N, `every request routed around the maxed accounts to a healthy one (got ${ok}/${N} 200)`);
+  assert.equal(s.aimd.decreases, 0, `the maxed-account quota-429s did NOT trip a single global AIMD decrease (got ${s.aimd.decreases})`);
+  assert.equal(s.aimd.effective, s.aimd.cap, `global admission stayed at the cap, never choked by per-account quotas (effective=${s.aimd.effective}/${s.aimd.cap})`);
+  assert.equal(s.inFlight, 0, 'no admission slot leaked');
+}, 30_000);
+
 test('[B-GW-1] fail-fast SHED when the whole pool is throttled with a far-off reset (slot freed, not squatted)', async () => {
   // Pre-pause the single account far beyond maxQueueWaitMs (boot uses 80ms). The next request finds no
   // account with headroom at admission and the reset is far → it sheds IMMEDIATELY with a pool-wide

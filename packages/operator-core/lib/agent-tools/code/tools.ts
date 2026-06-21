@@ -42,10 +42,11 @@ export default defineTool({
   },
   // Read-only signature rendering over the tool catalog — same capability as agent_tools:list (its
   // code-mode sibling). The `:read` suffix infers effect:'read' (never dry-run-gated); agentRoles
-  // mirrors code:run's audience and the role-scoped allowed set is the real boundary.
+  // mirrors code:run's audience (SU_ROLES + `bee`, B-CX-3) and the role-scoped allowed set is the
+  // real boundary.
   capability: 'agent_tools:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     namespaces: z
       .array(z.string())
