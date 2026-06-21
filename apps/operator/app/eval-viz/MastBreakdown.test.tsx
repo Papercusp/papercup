@@ -23,9 +23,9 @@ describe('mastTotal', () => {
 });
 
 describe('MAST_MODES', () => {
-  it('declares the four MAST failure modes with stable colors', () => {
+  it('declares the four MAST failure modes with stable explicit colors', () => {
     expect(MAST_MODES.map((m) => m.key)).toEqual(['duplication', 'coordinationBreakdown', 'misalignment', 'redundant']);
-    expect(MAST_MODES.every((m) => /^#/.test(m.color))).toBe(true);
+    expect(MAST_MODES.every((m) => /^#/.test(m.color) || m.color.startsWith('var('))).toBe(true);
   });
 });
 

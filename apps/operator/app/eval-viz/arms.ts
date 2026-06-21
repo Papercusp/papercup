@@ -82,35 +82,35 @@ export function armLabel(arm: string): string {
 }
 
 /**
- * Series color for an arm. These EXACT hexes are the canonical arm palette —
+ * Series color for an arm. These exact values are the canonical arm palette —
  * the Evaluation surface's legend + per-arm scoreboard key on the same values
  * (AdvEvalsTab `ARM_COLOR`), so the Frontier scatter dots match the legend.
  * This is the single source of truth: the surface should import `armColor` from
- * here rather than re-declaring it (categorical series colors, not semantic
- * theme tokens, so raw hex — not CSS vars — is correct). Unknown arms get the
- * neutral muted color.
+ * here rather than re-declaring it. Cyan/sky slots use the semantic accent token
+ * so the chart follows the active theme; other categorical slots keep fixed hues.
+ * Unknown arms get the neutral muted color.
  */
 export function armColor(arm: string): string {
   switch (arm) {
     case 'papercusp': return '#eab308'; // gold — the L1 treatment (matches the active-subtab accent)
     case 'baseline-a-ablation': return '#a78bfa'; // violet
-    case 'baseline-b-native': return '#38bdf8'; // sky — native arm
+    case 'baseline-b-native': return 'var(--accent, #38bdf8)'; // accent — native arm
     case 'baseline-c-bestofn': return '#34d399'; // emerald
     // Fleet arms (Phase 5). hive = the treatment (gold, like papercusp — they
     // never share a chart). queen-ablated = the headline baseline control (rose).
-    // native-serial reuses native sky. Competitors get distinct hues.
+    // native-serial reuses the native accent. Competitors get distinct hues.
     case 'hive': return '#eab308'; // gold — the L2+ treatment (D-010)
     case 'queen-ablated': return '#fb7185'; // rose — the headline baseline (Queen OFF)
-    case 'native-serial': return '#38bdf8'; // sky — serial floor (native, serial)
+    case 'native-serial': return 'var(--accent, #38bdf8)'; // accent — serial floor (native, serial)
     case 'openhands-async': return '#a78bfa'; // violet
     case 'crewai': return '#f97316'; // orange
     case 'langgraph': return '#2dd4bf'; // teal
     // Real run-engine arms (D-004). hive-realqueen = treatment (gold, like hive);
     // fifo-noqueen = the Queen-OFF control (rose, like queen-ablated); mini-swe-agent
-    // = the standard-harness reference baseline (sky — the harness floor).
+    // = the standard-harness reference baseline (accent — the harness floor).
     case 'hive-realqueen': return '#eab308'; // gold — real-Queen treatment
     case 'fifo-noqueen': return '#fb7185'; // rose — no-Queen control
-    case 'mini-swe-agent': return '#38bdf8'; // sky — reference standard harness
+    case 'mini-swe-agent': return 'var(--accent, #38bdf8)'; // accent — reference standard harness
     // su-independent (P-001): N independent agents, no orchestration — the honest "our agent system"
     // pole vs the Queen system + the reference harness. Lime, distinct from gold/rose/sky.
     case 'su-independent': return '#84cc16'; // lime — independent-agents pole

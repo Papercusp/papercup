@@ -50,7 +50,7 @@ export const MAST_MODES: readonly MastMode[] = [
   { key: 'duplication', label: 'duplication', color: '#fbbf24' }, // amber
   { key: 'coordinationBreakdown', label: 'coord. breakdown', color: '#fb7185' }, // rose
   { key: 'misalignment', label: 'misalignment', color: '#a78bfa' }, // violet
-  { key: 'redundant', label: 'redundant work', color: '#38bdf8' }, // sky
+  { key: 'redundant', label: 'redundant work', color: 'var(--accent, #38bdf8)' }, // accent
 ] as const;
 
 const DEFAULT_W = 520;

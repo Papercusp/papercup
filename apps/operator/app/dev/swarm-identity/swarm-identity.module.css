@@ -348,7 +348,7 @@
   --surface: #0d1411;
   --surface-2: #0b1a16;
   --accent: #f3b232;
-  --accent-2: #7dd3fc;
+  --accent-2: var(--accent-strong, var(--accent));
   --threat: #a3e635;
 }
 

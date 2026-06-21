@@ -100,7 +100,7 @@ const ARM_HINT: Record<ArmId, string> = {
 const ARM_COLOR: Record<ArmId, string> = {
   papercusp: '#eab308',
   'baseline-a-ablation': '#a78bfa',
-  'baseline-b-native': '#38bdf8',
+  'baseline-b-native': 'var(--accent, #38bdf8)',
   'baseline-c-bestofn': '#34d399',
 };
 
@@ -1312,8 +1312,8 @@ function LiveFleetPanel({ live }: { live: BenchRunLive }) {
 
 // ── Coordination timeline (P-008) — the Queen's orchestration, event by event ─
 const COORD_COLOR: Record<string, string> = {
-  placement: '#38bdf8', complete: '#34d399', rework: '#fbbf24', stranded_item: '#fb7185',
-  evicted: '#fb7185', spawn: '#a78bfa', handoff: '#a78bfa', claim: '#38bdf8', wake: '#eab308',
+  placement: 'var(--accent, #38bdf8)', complete: '#34d399', rework: '#fbbf24', stranded_item: '#fb7185',
+  evicted: '#fb7185', spawn: '#a78bfa', handoff: '#a78bfa', claim: 'var(--accent, #38bdf8)', wake: '#eab308',
 };
 function CoordTimeline({ events }: { events: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> }) {
   if (events.length === 0) return null;
@@ -1946,7 +1946,7 @@ function EvalsStyles() {
 
       .pc-runstatus { display: inline-flex; align-items: center; justify-content: center; min-height: 24px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border, rgba(125,211,252,0.18)); background: var(--bg-2, rgba(255,255,255,0.04)); color: var(--fg-dim, #b9d4e8); font-size: 11px; font-weight: 720; text-transform: capitalize; white-space: nowrap; }
       .pc-runstatus--good { border-color: color-mix(in oklab, #34d399, transparent 40%); color: #34d399; background: color-mix(in oklab, #34d399, transparent 90%); }
-      .pc-runstatus--info { border-color: color-mix(in oklab, #38bdf8, transparent 40%); color: #7dd3fc; background: color-mix(in oklab, #38bdf8, transparent 90%); }
+      .pc-runstatus--info { border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 40%); color: var(--accent-strong, var(--accent)); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 90%); }
       .pc-runstatus--warn { border-color: color-mix(in oklab, #fbbf24, transparent 35%); color: #fbbf24; background: color-mix(in oklab, #fbbf24, transparent 90%); }
       .pc-runstatus--bad { border-color: color-mix(in oklab, #fb7185, transparent 35%); color: #fb7185; background: color-mix(in oklab, #fb7185, transparent 91%); }
 

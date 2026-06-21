@@ -492,8 +492,8 @@ export function PrsTab({
         }
         .pc-adv-prs__scope { display: inline-flex; gap: 4px; }
         .pc-adv-prs__chip--scope { --chip-tint: #5eead4; }
-        .pc-adv-prs__chip--all { --chip-tint: #7dd3fc; }
-        .pc-adv-prs__chip--mine { --chip-tint: #38bdf8; }
+        .pc-adv-prs__chip--all { --chip-tint: var(--accent-strong, var(--accent)); }
+        .pc-adv-prs__chip--mine { --chip-tint: var(--accent, #38bdf8); }
         .pc-adv-prs__chip--awaiting-me { --chip-tint: #f59e0b; }
         .pc-adv-prs__chip--approved { --chip-tint: #22c55e; }
         .pc-adv-prs__chip--merged { --chip-tint: #a78bfa; }

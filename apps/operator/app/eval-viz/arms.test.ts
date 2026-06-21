@@ -2,8 +2,8 @@
  * arms.test.ts — the benchmark-arm vocabulary (impartial-benchmark-suite). armLabel +
  * armColor are the cross-brief contract the gym + Evaluation surfaces key on. The
  * load-bearing invariant (per the module doc): every KNOWN arm has an explicit human
- * label + a hex color (so the legend/scoreboard are complete), and an UNKNOWN arm falls
- * back safely — raw id for the label, the neutral muted color — so a newly-introduced arm
+ * label + color token/value (so the legend/scoreboard are complete), and an UNKNOWN arm
+ * falls back safely — raw id for the label, the neutral muted color — so a newly-introduced arm
  * never crashes the chart. A regression that drops a known arm from either switch (it
  * would silently render with the fallback) is what this catches.
  *
@@ -27,10 +27,11 @@ describe('benchmark arm vocabulary', () => {
     }
   });
 
-  it('every known arm has an explicit hex color (not the neutral fallback)', () => {
+  it('every known arm has an explicit color (not the neutral fallback)', () => {
     for (const id of ARM_IDS) {
       const color = armColor(id);
-      expect(color, `${id} should be a hex`).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(color, `${id} should be an explicit color`).toMatch(/^(#[0-9a-f]{6}|var\(--)/i);
+      expect(color, `${id} should not use the neutral fallback`).not.toMatch(/var\(--fg-mute/);
     }
   });
 
