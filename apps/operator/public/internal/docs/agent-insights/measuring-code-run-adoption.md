@@ -102,3 +102,29 @@ hand-loop) are different metrics — a weak model often does both, which inflate
   prose copies, since it raises reaching with no over-application downside and matches the operator's
   stated preference (adopt aggressively even at a small per-call cost). Re-run the A/B on sonnet to
   confirm the clean-adoption + token deltas on the real fleet model.
+
+## Code recipes — the reuse layer that makes the win compound
+
+Adoption (above) makes ONE agent's `code:run` cheap. **Code recipes** (plan
+`code-recipes-2026-06-21`, shipped 2026-06-21) make it cheap for *every* agent after, and
+self-promote the hottest patterns into first-class tools:
+
+* **Capture:** every successful `code:run` is auto-saved as a hive-scoped *recipe* (best-effort,
+  never breaks a run) — `agent-tools/code/capture-recipe.ts`, `code-recipes-store.ts`, migration `349`
+  (`code_recipes` + `code_recipe_runs`).
+* **Soft dedup:** on run, a hybrid `@papercusp/search` (BM25 + pgvector + tool-set Jaccard) surfaces
+  similar recipes *in the result* — the LLM decides reuse-vs-proceed, never blocked
+  (`code-recipes-search.ts`).
+* **Reuse:** `recipes:list/get/search/run`; `recipes:run` executes under the **reuser's** role
+  envelope, never the author's (tested invariant).
+* **Graduation:** `recipes:candidates` scores recipes deterministically (run-frequency × distinct-agent
+  breadth × success × tool-cohesion − redundancy; canonical formula in `code-recipes-candidates.ts`),
+  scored against the **`recipe-graduation-readiness`** rubric. The **Queen** owns idle-gated review
+  (`queen.base.md`): she files a work-item to promote a hot recipe to a `defineTool` (the coding
+  pipeline's review IS the gate) or merge near-duplicates (`recipes:merge`/`recipes:sweep`).
+
+This is the same "frequency is proven demand" principle as the adoption A/B, but applied to *genesis*:
+a recipe run many times by many agents is a tool candidate with the implementation already written —
+a better signal than scout/observation guessing at a missing tool. Complements
+`tool-call-batching-wrappers-2026-06-21` (hand-curated fixed-ritual wrappers) — shared
+`dev:tool_cooccurrence` signal + shared catalog labeling.

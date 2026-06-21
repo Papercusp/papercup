@@ -30,6 +30,10 @@ interface ConverseRequestBody {
   uiClientId?: string;
   conversationId?: string;
   isAutoFire?: boolean;
+  /** Which persona the brain assumes — the Sentinel-as-Herald re-home seam.
+   *  Defaults to 'operator' (backward-compatible). 'sentinel' resolves the
+   *  `sentinel:converse` tool alias (same handler, loads the Herald persona). */
+  role?: string;
 }
 
 export default defineTool({
@@ -69,9 +73,16 @@ export default defineTool({
       console.warn('[operator-converse] session user resolution failed:', (err as Error).message);
     }
 
-    const operatorConverseTool = lookupByMcpName('operator:converse');
+    // Sentinel-as-Herald re-home seam: resolve `${role}:converse`. Default
+    // 'operator' is byte-identical to before; 'sentinel' resolves the
+    // sentinel:converse alias (same handler, Herald persona). An unknown role
+    // falls back to operator:converse so a stray value can't 500 a live turn.
+    const role = typeof body.role === 'string' && body.role.trim() ? body.role.trim() : 'operator';
+    const converseToolName = `${role}:converse`;
+    const operatorConverseTool =
+      lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {
-      return new Response('operator:converse tool not registered', { status: 500 });
+      return new Response(`${converseToolName} tool not registered`, { status: 500 });
     }
 
     const ctrl = new AbortController();
@@ -119,12 +130,12 @@ export default defineTool({
         }
 
         const ctxBase: UnifiedToolContext = {
-          log: (msg) => { console.log(`[operator:converse][tool] ${msg}`); },
+          log: (msg) => { console.log(`[${converseToolName}][tool] ${msg}`); },
           signal: ctrl.signal,
           progress: () => {},
           emit: () => { /* installed by dispatchProjectedToolStream */ },
           workspaceId,
-          role: 'operator',
+          role,
           runId: globalThis.crypto.randomUUID(),
           spawnId: globalThis.crypto.randomUUID(),
           transport: 'in_process',
@@ -135,7 +146,7 @@ export default defineTool({
         try {
           for await (const ev of dispatchProjectedToolStream(
             operatorConverseTool,
-            'operator:converse',
+            converseToolName,
             {
               messages: body.messages ?? [],
               trigger: body.trigger,
@@ -147,6 +158,9 @@ export default defineTool({
               // Enables rolling-summary context + the post-turn compaction
               // pass (operator-context-compaction-2026-06-05).
               conversationId: body.conversationId,
+              // Sentinel-as-Herald re-home seam: forward the persona role so the
+              // prompt builder loads the matching persona set ('operator' default).
+              role,
               sessionUser,
             },
             ctxBase,

@@ -22,6 +22,7 @@ import {
   loadRoleToolsMd,
   loadRoleConverse,
   renderToolsCatalog,
+  type Role,
 } from '../../prompt-assembly';
 import { buildMemoryContextBlock, lastUserContext } from '../../memory/injection';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -33,6 +34,13 @@ export interface ConverseInput {
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
+  /** Which persona the converse brain assumes — the re-home seam (Sentinel-as-
+   *  Herald). Defaults to 'operator' (fully backward-compatible). 'sentinel' loads
+   *  the Herald persona set (sentinel.persona[.<mode>-mode].md / .converse.md /
+   *  .tools.md) instead, so the SAME brain becomes the always-on voice-first
+   *  Herald. Constrained to PROMPT_ROLES (the roles with a persona set under
+   *  apps/operator/prompts/); an unknown role would throw in loadRolePersona. */
+  role?: Role;
   /** Who the operator is talking to. Controls the persona overlay injected
    *  as the first system section. Defaults to 'engineer'. */
   audienceMode?: 'engineer' | 'novice';
@@ -107,20 +115,25 @@ export async function buildOperatorPrompt(
   const trigger = input.trigger ?? 'user_message';
   const mayAskActive = !!input.mayAskActive;
   const audienceMode = input.audienceMode ?? 'engineer';
+  // The persona the brain assumes — the Sentinel-as-Herald re-home seam. Defaults
+  // to 'operator' (byte-identical to the pre-seam behavior); 'sentinel' loads the
+  // Herald persona set instead. The catalog/playbook stay role-keyed too so each
+  // persona gets its own tools.md.
+  const role: Role = input.role ?? 'operator';
 
   // SYSTEM sections (stable persona spec — set as omp --system-prompt)
   const systemSections: string[] = [];
 
   // Audience-mode overlay first — frames who the user is before shared rules.
-  const modeOverlay = loadRoleModePersona('operator', audienceMode);
+  const modeOverlay = loadRoleModePersona(role, audienceMode);
   if (modeOverlay) {
     systemSections.push(modeOverlay);
   } else {
-    console.warn(`[converse-prompt] No mode overlay found for audienceMode="${audienceMode}" — operator.persona.${audienceMode}-mode.md is missing or unreadable.`);
+    console.warn(`[converse-prompt] No mode overlay found for audienceMode="${audienceMode}" — ${role}.persona.${audienceMode}-mode.md is missing or unreadable.`);
   }
 
-  systemSections.push(loadRoleConverse('operator'));
-  systemSections.push(loadRolePersona('operator'));
+  systemSections.push(loadRoleConverse(role));
+  systemSections.push(loadRolePersona(role));
 
   // Look the catalog up by the colon MCP-catalog name (the registry key), but
   // DISPLAY the underscore form below — Claude Code sanitizes the colon out of
@@ -138,7 +151,7 @@ export async function buildOperatorPrompt(
   // invisible to a voice user, so the tool declares modality:['text']
   // and gets dropped from the voice catalog automatically (replaces
   // the manual NOTE in the trigger sections below).
-  const catalog = renderToolsCatalog('operator', operatorToolNames, modality, toClaudeName);
+  const catalog = renderToolsCatalog(role, operatorToolNames, modality, toClaudeName);
   if (catalog) systemSections.push(catalog);
 
   // Tool-calling contract (voice-persona P-005/P-009). The brain runs on
@@ -165,7 +178,7 @@ export async function buildOperatorPrompt(
       `instead of improvising a tool.`,
   );
 
-  const playbook = loadRoleToolsMd('operator');
+  const playbook = loadRoleToolsMd(role);
   if (playbook) systemSections.push(playbook);
 
   // Operator memory pre-turn injection — best-effort, via the shared

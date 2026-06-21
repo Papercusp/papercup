@@ -77,3 +77,55 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
     expect(tui.userPromptText).toContain('tui_list_clients');
   });
 });
+
+describe('buildOperatorPrompt — role re-home seam (Sentinel-as-Herald)', () => {
+  it("role:'operator' (default) loads the operator persona — backward-compatible", async () => {
+    // No role passed → defaults to 'operator'; the operator persona's signature
+    // line is present and the Herald's is not.
+    const { systemPromptText } = await buildOperatorPrompt(
+      { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message' },
+      null,
+    );
+    expect(systemPromptText).toContain('# Operator persona');
+    expect(systemPromptText).not.toContain('# Sentinel persona — the Herald');
+
+    // Explicit role:'operator' is identical to the default.
+    const explicit = await buildOperatorPrompt(
+      { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', role: 'operator' },
+      null,
+    );
+    expect(explicit.systemPromptText).toBe(systemPromptText);
+  });
+
+  it("role:'sentinel' loads the Herald persona set (persona + converse + tools.md)", async () => {
+    const { systemPromptText } = await buildOperatorPrompt(
+      { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', role: 'sentinel' },
+      null,
+    );
+    // The sentinel persona (sentinel.persona.md), NOT the operator one.
+    expect(systemPromptText).toContain('# Sentinel persona — the Herald');
+    expect(systemPromptText).not.toContain('# Operator persona');
+    // The sentinel converse rules (sentinel.converse.md) — the file-and-nudge,
+    // never-place charter is the load-bearing difference from the operator.
+    expect(systemPromptText).toContain('You are the Sentinel — the Herald.');
+    // The sentinel tools playbook (sentinel.tools.md).
+    expect(systemPromptText).toContain('# Sentinel tool playbook');
+  });
+
+  it("role:'sentinel' picks the sentinel audience-mode overlay (novice)", async () => {
+    const { systemPromptText } = await buildOperatorPrompt(
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        trigger: 'user_message',
+        role: 'sentinel',
+        audienceMode: 'novice',
+      },
+      null,
+    );
+    // The novice overlay leads every persona's mode file; the sentinel novice
+    // overlay carries the "suggest and hand off; you don't do the building" line
+    // that distinguishes the Herald from the operator's novice overlay.
+    expect(systemPromptText).toContain('# Audience mode: Novice');
+    expect(systemPromptText).toMatch(/suggest and hand off/i);
+  });
+});

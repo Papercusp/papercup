@@ -13,7 +13,8 @@ export default defineTool({
     chaining: `voice:channels {op:'list'} → voice:join → speak via the local voice socket (pui/desktop) → voice:leave.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect'],
+  // Sentinel-as-Herald: the voice-first Herald drives the voice channel.
+  agentRoles: ['operator', 'architect', 'sentinel'],
   rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 100 } },
   args: z.object({ channel: z.string().min(1).describe('Channel id (vc-…) or name') }),
   async handler(args) {

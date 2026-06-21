@@ -44,6 +44,8 @@ import './recipes/sweep';
 
 import './operator/stats';
 import './operator/converse';
+// Sentinel-as-Herald: the sentinel:converse alias (same brain, Herald persona).
+import './operator/sentinel-converse';
 import './operator/delegate';
 import './architect/chat';
 import './oracle/chat';
@@ -189,6 +191,9 @@ import './wiki/backlinks';
 import './harness/phase_path';
 import './harness/markdown_index';
 import './harness/escalation';
+// tool-call-batching-wrappers-2026-06-21 P-006 — the "state of X" compound read
+// (harness:status + escalation [+ list] + issues:list in one round-trip).
+import './harness/overview';
 import './harness/pending_reviews';
 import './harness/health';
 import './harness/list_features';

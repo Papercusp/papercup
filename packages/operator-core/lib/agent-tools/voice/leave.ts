@@ -12,7 +12,8 @@ export default defineTool({
     notWhen: `Removing a channel from the registry is \`voice:channels {op:'remove'}\` — leaving only ends THIS node's participation.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect'],
+  // Sentinel-as-Herald: the voice-first Herald drives the voice channel.
+  agentRoles: ['operator', 'architect', 'sentinel'],
   rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 100 } },
   args: z.object({}),
   async handler() {

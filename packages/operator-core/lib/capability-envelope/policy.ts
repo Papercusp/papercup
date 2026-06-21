@@ -79,6 +79,22 @@ export interface RoleEnvelope {
  * `bee` entry here to re-confine. Live behind `papercusp-capability-envelope`.
  */
 export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
+  // The SENTINEL — the fleet watcher re-homed onto the always-on, voice-first
+  // HERALD (Sentinel-as-Herald). The Herald WATCHES the fleet and NARRATES it to
+  // the user (one role): it talks (operator:converse), drives voice (voice:*),
+  // reads the live blackboard (curation:* / plans:attention / fleet:assignments),
+  // and ACTS on a user request the ONLY sanctioned way — it FILES a high-priority
+  // work_item (work_items:create / set_priority) and NUDGES the Queen (coord:send
+  // / escalate). It must NEVER edit code or run a shell: it suggests + files +
+  // hands off; the QUEEN places/executes (the hard boundary). So, mirroring the
+  // overwatch deny, refuse the write+exec capabilities at the envelope layer — the
+  // explicit belt on top of the cap-grant omission (BLUEPRINT_ROLE_CAPS.sentinel
+  // carries no capability:fs-write / capability:bash, and no work_items:set_state /
+  // harness:write / plans:write / routines:write; fleet:spawn carves it out). Even
+  // a tool that asks for fs-write/bash is refused for the sentinel.
+  sentinel: {
+    denyCapabilities: ['capability:fs-write', 'capability:bash'],
+  },
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01 + D-002). It READS the whole system and NUDGES/OBSERVES/ESCALATES
   // (coord:send / coord:escalate / improvements:capture / messages:send), but it must

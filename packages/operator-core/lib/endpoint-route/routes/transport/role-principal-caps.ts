@@ -39,14 +39,40 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // COORD_ROLES (fleet:assignments/tree, coord:presence/inbox/feed/escalate/send,
   // work_items:list, issues:list) + the ALL_ROLES health/search reads
   // (harness:health/escalation, activity:recent, search:fulltext/semantic).
+  //
+  // HERALD RE-HOME (Sentinel-as-Herald): the sentinel is re-homed onto the
+  // always-on, voice-first HERALD — it is the user-facing single voice into the
+  // Hive (watch + narrate = ONE role). That adds a USER-FACING surface on top of
+  // the read-mostly watcher: it CONVERSES (operator:converse — the brain loaded
+  // with role='sentinel'), drives the VOICE channel (voice:* → operator:read /
+  // operator:write), reads the live blackboard it heralds from (curation:read →
+  // curation:feed / state-of-hive / change-feed; plans:read → plans:attention),
+  // and ACTS on a user request the ONLY way it is allowed to — it FILES a
+  // high-priority work_item (work_items:write → work_items:create /
+  // set_priority) and NUDGES the Queen (coord:write → coord:send / escalate). It
+  // still NEVER places/executes: the ROLE_ENVELOPES.sentinel deny (capability:
+  // fs-write / capability:bash) holds, fleet:spawn carves it out, and it gets NO
+  // work_items:set_state / harness:write / plans:write / routines:write /
+  // processes:kill. Suggest + file + nudge + hand-off to the Queen; never place.
+  // TWO-GATE: each cap below is paired with `sentinel` in the matching tool's
+  // agentRoles — operator:converse + voice:* explicitly add it; work_items:create/
+  // set_priority + coord:send/escalate already admit it via COORD_ROLES;
+  // plans:attention adds it to its SU_ROLES list; the curation:* reads are
+  // un-allowlisted (capability-only) so curation:read alone resolves them.
   sentinel: [
     'coord:read',
-    'coord:write', // alarms only: coord:escalate / coord:send
+    'coord:write', // alarms + Queen-nudge: coord:escalate / coord:send
     'work_items:read',
+    'work_items:write', // file the user's ask: work_items:create / set_priority (NOT set_state — never places)
     'issues:read',
     'harness:read',
     'activity:read',
     'search:read',
+    'curation:read', // the live blackboard it heralds: curation:feed / state-of-hive / change-feed
+    'plans:read', // plans:attention — what needs the user's eye
+    'operator:converse', // the Herald brain (role='sentinel' persona)
+    'operator:read', // voice:status / voice:transcript
+    'operator:write', // voice:join / voice:leave / voice:channels / voice:agent
   ],
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01; a sibling to the Queen, the sense→decide→act actuator the watchdog lacks).

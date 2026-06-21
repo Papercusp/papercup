@@ -17,6 +17,7 @@
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import CoordHistory from './CoordHistory';
+import styles from './coord.module.css';
 import { LivenessDot, livenessFromHeartbeat } from './presence-ui';
 
 const PANELS = ['sessions', 'inbox', 'plans', 'history'] as const;
@@ -29,6 +30,10 @@ const PANEL_LABEL: Record<Panel, string> = {
   history: 'History',
 };
 
+function cx(...classes: Array<string | false | null | undefined>): string {
+  return classes.filter(Boolean).join(' ');
+}
+
 export default function CoordDashboard() {
   const [panel, setPanel] = useQueryState<Panel>(
     'panel',
@@ -36,10 +41,10 @@ export default function CoordDashboard() {
   );
 
   return (
-    <div className="mx-auto max-w-6xl p-6 text-slate-100">
-      <header className="mb-4">
-        <h1 className="text-2xl font-semibold">Coordination</h1>
-        <p className="text-sm text-slate-400">
+    <div className={styles.root}>
+      <header className={styles.header}>
+        <h1 className={styles.title}>Coordination</h1>
+        <p className={styles.description}>
           Agent coordination surface — presence, the human inbox, plans, and the
           event history. Backed by <code>coord/*</code> + <code>plans/*</code>.
         </p>
@@ -47,17 +52,12 @@ export default function CoordDashboard() {
 
       <HookHealthBanner />
 
-      <nav className="mb-5 flex gap-1 border-b border-slate-700">
+      <nav className={styles.tabNav}>
         {PANELS.map((p) => (
           <button
             key={p}
             onClick={() => setPanel(p)}
-            className={
-              'rounded-t px-4 py-2 text-sm ' +
-              (panel === p
-                ? 'border-b-2 border-blue-400 font-medium text-blue-200'
-                : 'text-slate-400 hover:text-slate-200')
-            }
+            className={cx(styles.tabButton, panel === p && styles.tabButtonActive)}
           >
             {PANEL_LABEL[p]}
           </button>
@@ -142,9 +142,9 @@ function HookHealthBanner() {
   return (
     <div
       role="alert"
-      className="mb-4 rounded border border-amber-500 bg-amber-950/40 px-4 py-2 text-sm text-amber-100"
+      className={styles.warningAlert}
     >
-      <strong className="font-semibold">File-lock enforcement is offline.</strong>{' '}
+      <strong className={styles.strong}>File-lock enforcement is offline.</strong>{' '}
       {label} ({minutes}m ago). Edits are being allowed without claim;
       coordination relies on cooperative <code>locks:*</code> calls until the
       hook recovers.
@@ -232,27 +232,27 @@ function SessionsPanel() {
   return (
     <div>
       {error && (
-        <div className="mb-3 rounded border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+        <div className={styles.alert}>
           Error: {error}
         </div>
       )}
-      <h2 className="mb-2 text-sm font-medium text-slate-300">
+      <h2 className={styles.sectionTitle}>
         Active ({active.length})
       </h2>
       {active.length === 0 && (
-        <p className="mb-4 text-sm text-slate-500">No active agent sessions.</p>
+        <p className={styles.mutedCopy}>No active agent sessions.</p>
       )}
-      <ul className="mb-6 space-y-2">
+      <ul className={styles.list}>
         {active.map((s) => (
           <SessionRow key={s.ownerId} s={s} />
         ))}
       </ul>
       {stale.length > 0 && (
         <>
-          <h2 className="mb-2 text-sm font-medium text-slate-500">
+          <h2 className={cx(styles.sectionTitle, styles.sectionTitleMuted)}>
             Stale ({stale.length}) — heartbeat &gt; 10 min old
           </h2>
-          <ul className="space-y-2 opacity-50">
+          <ul className={cx(styles.listCompact, styles.staleList)}>
             {stale.map((s) => (
               <SessionRow key={s.ownerId} s={s} />
             ))}
@@ -268,30 +268,30 @@ function SessionRow({ s }: { s: PresenceRecord }) {
   // section grouping gives — distinguishes "live <1m" from "idle").
   const liveness = livenessFromHeartbeat(s.heartbeatAt);
   return (
-    <li className="rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="flex items-center gap-1.5 text-sm font-medium text-slate-200">
+    <li className={cx(styles.cardRow, styles.cardRowPadded)}>
+      <div className={styles.rowHeader}>
+        <span className={styles.rowTitle}>
           <LivenessDot liveness={liveness} />
           {s.ownerLabel}
         </span>
-        <span className="text-xs text-slate-500">
+        <span className={styles.rowMeta}>
           {s.source} · {new Date(s.heartbeatAt).toLocaleTimeString()}
         </span>
       </div>
-      <div className="mt-0.5 text-xs text-slate-400">
+      <div className={styles.rowBody}>
         {s.intent || '(no declared intent)'}
       </div>
       {(s.currentPlanSlug || s.currentFiles.length > 0) && (
-        <div className="mt-1 flex flex-wrap gap-1">
+        <div className={styles.pillRow}>
           {s.currentPlanSlug && (
-            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+            <span className={styles.miniBadge}>
               plan: {s.currentPlanSlug}
             </span>
           )}
           {s.currentFiles.slice(0, 4).map((f) => (
             <span
               key={f}
-              className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-500"
+              className={cx(styles.miniBadge, styles.miniBadgeMuted)}
             >
               {f}
             </span>
@@ -322,44 +322,41 @@ function InboxPanel() {
   return (
     <div>
       {error && (
-        <div className="mb-3 rounded border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+        <div className={styles.alert}>
           Error: {error}
         </div>
       )}
-      <p className="mb-3 text-sm text-slate-400">
+      <p className={styles.mutedCopy}>
         Open escalations and messages addressed to you. This is the channel
         agents use to surface decisions that need a human.
       </p>
       {items.length === 0 && (
-        <p className="text-sm text-slate-500">Inbox is empty.</p>
+        <p className={styles.emptyCopy}>Inbox is empty.</p>
       )}
-      <ul className="space-y-2">
+      <ul className={styles.listCompact}>
         {items.map((it) => (
           <li
             key={`${it.source}:${it.msg_id}`}
-            className={
-              'rounded border px-3 py-2 ' +
-              (it.kind === 'escalation'
-                ? 'border-amber-800 bg-amber-950/30'
-                : 'border-slate-800 bg-slate-900/40')
-            }
+            className={cx(
+              styles.cardRow,
+              styles.inboxItem,
+              it.kind === 'escalation' && styles.inboxItemEscalation,
+            )}
           >
-            <div className="flex items-baseline gap-2">
+            <div className={styles.inlineRow}>
               <span
-                className={
-                  'shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ' +
-                  (it.kind === 'escalation'
-                    ? 'bg-amber-900/50 text-amber-200'
-                    : 'bg-slate-700/50 text-slate-200')
-                }
+                className={cx(
+                  styles.kindBadge,
+                  it.kind === 'escalation' ? styles.kindBadgeEscalation : styles.kindBadgeNeutral,
+                )}
               >
                 {it.kind}
               </span>
-              <span className="truncate text-sm text-slate-200">
+              <span className={cx(styles.truncateText, styles.summaryText)}>
                 {it.summary ?? '—'}
               </span>
             </div>
-            <div className="mt-0.5 text-xs text-slate-500">
+            <div className={styles.rowMeta}>
               {new Date(it.ts).toLocaleString()}
               {it.from && ` · from ${it.from}`}
               {it.plan_slug && ` · plan ${it.plan_slug}`}
@@ -416,38 +413,38 @@ function PlansPanel() {
   return (
     <div>
       {error && (
-        <div className="mb-3 rounded border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+        <div className={styles.alert}>
           Error: {error}
         </div>
       )}
       {plans.length === 0 && (
-        <p className="text-sm text-slate-500">No structured plans found.</p>
+        <p className={styles.emptyCopy}>No structured plans found.</p>
       )}
-      <ul className="space-y-2">
+      <ul className={styles.listCompact}>
         {plans.map((p) => (
-          <li key={p.slug} className="rounded border border-slate-800 bg-slate-900/40">
+          <li key={p.slug} className={styles.cardRow}>
             <button
               onClick={() => openPlan(p.slug)}
-              className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-slate-800/30"
+              className={styles.rowButton}
             >
-              <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-400">
+              <span className={styles.miniBadge}>
                 {p.status}
               </span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm text-slate-200">{p.title}</div>
-                <div className="mt-0.5 text-xs text-slate-500">
+              <div className={styles.contentColumn}>
+                <div className={cx(styles.truncateText, styles.planTitle)}>{p.title}</div>
+                <div className={styles.rowMeta}>
                   {p.slug} · {p.item_count} items · {p.decision_count} decisions
                   {p.updated && ` · updated ${p.updated}`}
                 </div>
                 {p.now_next && (
-                  <div className="mt-1 truncate text-xs text-slate-400">
+                  <div className={cx(styles.rowBody, styles.truncateText)}>
                     Now: {p.now_next}
                   </div>
                 )}
               </div>
             </button>
             {openSlug === p.slug && (
-              <pre className="max-h-[60vh] overflow-auto border-t border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] whitespace-pre-wrap text-slate-300">
+              <pre className={styles.payloadPre}>
 {mdLoading ? 'Loading…' : markdown}
               </pre>
             )}

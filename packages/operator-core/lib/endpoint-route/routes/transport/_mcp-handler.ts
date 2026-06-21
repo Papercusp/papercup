@@ -123,6 +123,35 @@ function isScopedSafeCrossWorkspaceTool(toolName: string): boolean {
 }
 
 /**
+ * GLOBAL-config superuser admin tools exempt from the clamp's crossWorkspace denial.
+ *
+ * RATIONALE (security review — scoped-superuser-clamp follow-up). The clamp's threat
+ * model is a scoped superuser reading another workspace's tenant DATA (a `crossWorkspace`
+ * tool runs on the getOrgPg admin handle, which bypasses per-workspace RLS). The
+ * `flags:*` family is categorically different: it is the ONE GLOBAL feature-flag store —
+ * there is no per-workspace flag data, so confining it to a workspace protects no tenant
+ * data. And denying it creates a CIRCULAR LOCKOUT: `flags:set` is the very control that
+ * GOVERNS the clamp — a scoped superuser otherwise cannot disable the clamp (or flip any
+ * global flag) without it, locking the operator out of its own controls. A superuser is
+ * already god-mode at dispatch (`isSuperuser` bypasses role gates); managing GLOBAL config
+ * is squarely within that authority. So the flag-admin family is reachable even from a
+ * scoped superuser session. This widens NO per-workspace DATA reach — only the
+ * global-config meta-controls. (Reviewed in the gate, not a self-asserted per-tool flag,
+ * per the SCOPED_SAFE_CROSSWORKSPACE convention above.)
+ */
+const SUPERUSER_GLOBAL_FLAG_ADMIN: ReadonlySet<string> = new Set([
+  'flags:get',
+  'flags:set',
+  'flags:list',
+]);
+
+/** Whether a tool is a GLOBAL-config superuser meta-control (the flag system) that a
+ *  scoped superuser may reach despite the clamp — no tenant-data reach (see above). */
+function isSuperuserGlobalFlagAdmin(toolName: string): boolean {
+  return SUPERUSER_GLOBAL_FLAG_ADMIN.has(toolName);
+}
+
+/**
  * Parse the seven per-spawn URL params and return a partial
  * UnifiedToolContext fragment. Returns null if any required params are
  * missing — the caller falls back to built-in-only listing (e.g. dev
@@ -962,7 +991,12 @@ const handler = createMcpHandler(
           if (
             scopedSuperuserClamp &&
             projected.crossWorkspace === true &&
-            !isScopedSafeCrossWorkspaceTool(toolName)
+            !isScopedSafeCrossWorkspaceTool(toolName) &&
+            // GLOBAL-config superuser meta-controls (flags:*) are exempt — they touch no
+            // per-workspace tenant data, and denying flags:set circularly locks the
+            // operator out of the very control that governs this clamp. See
+            // SUPERUSER_GLOBAL_FLAG_ADMIN above for the security review.
+            !isSuperuserGlobalFlagAdmin(toolName)
           ) {
             return {
               isError: true,

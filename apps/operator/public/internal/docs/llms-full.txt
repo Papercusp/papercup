@@ -9193,6 +9193,19 @@ GROUP BY scenario, arm ORDER BY scenario, arm;
 * **Low-N is the hardest case for a weak model** — S15 (a 3-item batch) baseline got 0/3 `reached_coderun` even under the aggressive nudge: haiku just fires 3 direct gets. The “reach for it even at 2–3 calls” framing is aimed here; whether it moves a capable model is the sonnet re-run’s job.
 * **Action taken:** folded the `strong-enforce` framing (“prefer it aggressively — batching cuts tokens several-fold, reach for it even at 2–3 calls”) into the canonical `CODE_RUN_NUDGE` + the su prose copies, since it raises reaching with no over-application downside and matches the operator’s stated preference (adopt aggressively even at a small per-call cost). Re-run the A/B on sonnet to confirm the clean-adoption + token deltas on the real fleet model.
 
+## Code recipes — the reuse layer that makes the win compound
+
+[Section titled “Code recipes — the reuse layer that makes the win compound”](#code-recipes--the-reuse-layer-that-makes-the-win-compound)
+
+Adoption (above) makes ONE agent’s `code:run` cheap. **Code recipes** (plan `code-recipes-2026-06-21`, shipped 2026-06-21) make it cheap for *every* agent after, and self-promote the hottest patterns into first-class tools:
+
+* **Capture:** every successful `code:run` is auto-saved as a hive-scoped *recipe* (best-effort, never breaks a run) — `agent-tools/code/capture-recipe.ts`, `code-recipes-store.ts`, migration `349` (`code_recipes` + `code_recipe_runs`).
+* **Soft dedup:** on run, a hybrid `@papercusp/search` (BM25 + pgvector + tool-set Jaccard) surfaces similar recipes *in the result* — the LLM decides reuse-vs-proceed, never blocked (`code-recipes-search.ts`).
+* **Reuse:** `recipes:list/get/search/run`; `recipes:run` executes under the **reuser’s** role envelope, never the author’s (tested invariant).
+* **Graduation:** `recipes:candidates` scores recipes deterministically (run-frequency × distinct-agent breadth × success × tool-cohesion − redundancy; canonical formula in `code-recipes-candidates.ts`), scored against the **`recipe-graduation-readiness`** rubric. The **Queen** owns idle-gated review (`queen.base.md`): she files a work-item to promote a hot recipe to a `defineTool` (the coding pipeline’s review IS the gate) or merge near-duplicates (`recipes:merge`/`recipes:sweep`).
+
+This is the same “frequency is proven demand” principle as the adoption A/B, but applied to *genesis*: a recipe run many times by many agents is a tool candidate with the implementation already written — a better signal than scout/observation guessing at a missing tool. Complements `tool-call-batching-wrappers-2026-06-21` (hand-curated fixed-ritual wrappers) — shared `dev:tool_cooccurrence` signal + shared catalog labeling.
+
 # mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores
 
 > 84% of memory_canonical was mem0 entity-linking junk ("ticks with", "s interactive session") surfacing in memory:search — mem0 separates its entity store ONLY by a *_entities collectionName suffix, and our patched CanonicalVectorStore ignored collectionName, so both stores shared one pool. Fix at the store, not the read seam.

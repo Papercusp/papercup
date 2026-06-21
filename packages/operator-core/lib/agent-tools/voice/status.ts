@@ -12,7 +12,8 @@ export default defineTool({
     notWhen: `The durable channel LIST is \`voice:channels {op:'list'}\` — status only covers the channel this node is in.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect'],
+  // Sentinel-as-Herald: the voice-first Herald reads voice status too.
+  agentRoles: ['operator', 'architect', 'sentinel'],
   rolesQuota: { architect: { perRun: 100 }, operator: { perRun: 400 } },
   args: z.object({}),
   async handler() {

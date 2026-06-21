@@ -19,7 +19,8 @@ export default defineTool({
     chaining: `voice:join → voice:transcript {op:'enable'} → voice:transcript {op:'read'} (note the cursor) → … → voice:transcript {op:'read', since:<cursor>} for only what's new.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect'],
+  // Sentinel-as-Herald: the voice-first Herald reads spoken transcripts.
+  agentRoles: ['operator', 'architect', 'sentinel'],
   rolesQuota: { architect: { perRun: 200 }, operator: { perRun: 600 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('enable') }),

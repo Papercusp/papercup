@@ -153,6 +153,43 @@ describe('evaluateCapabilityEnvelope — overwatch read+nudge confinement (overw
   });
 });
 
+describe('evaluateCapabilityEnvelope — sentinel/Herald read+suggest confinement (Sentinel-as-Herald)', () => {
+  const sn = (capabilities: readonly string[], toolName = 't') =>
+    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'sentinel' } });
+
+  it('DENIES capability:fs-write for the sentinel (the Herald suggests + hands off, it never edits code)', () => {
+    const d = sn(['capability:fs-write'], 'capability:write');
+    expect(d.applied).toBe(true);
+    expect(d.withinEnvelope).toBe(false);
+    expect(d.reason).toContain('sentinel');
+  });
+
+  it('DENIES capability:bash for the sentinel (no shell — it files work + nudges the Queen, never runs anything)', () => {
+    expect(sn(['capability:bash'], 'capability:bash').withinEnvelope).toBe(false);
+  });
+
+  it('leaves the Herald plane open: converse + voice + file-a-work_item + nudge + reads', () => {
+    // CAN talk / drive voice / file the user's ask / nudge the Queen / read state.
+    for (const cap of [
+      'operator:converse',
+      'operator:read',
+      'operator:write',
+      'work_items:write', // work_items:create / set_priority (file the ask)
+      'coord:write', // coord:send / escalate (nudge the Queen)
+      'curation:read',
+      'plans:read',
+    ]) {
+      expect(sn([cap]).withinEnvelope, `${cap} should stay within the sentinel envelope`).toBe(true);
+    }
+    expect(sn(['capability:fs-read'], 'capability:read').withinEnvelope).toBe(true);
+  });
+
+  it('STILL denies the universal protected set (the floor holds for the Herald too)', () => {
+    expect(sn(['secrets:read:x']).withinEnvelope).toBe(false);
+    expect(sn(['processes:kill']).withinEnvelope).toBe(false);
+  });
+});
+
 describe('evaluateCapabilityEnvelope — testing-phase full access (EI-2048)', () => {
   // Flag ON (default / unset): the testing roles bypass their per-role denies, but
   // the universal protected floor still holds.

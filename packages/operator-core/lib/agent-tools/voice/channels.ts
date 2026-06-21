@@ -13,7 +13,8 @@ export default defineTool({
     chaining: `voice:channels {op:'create'} → voice:join {channel} → voice:status.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect'],
+  // Sentinel-as-Herald: the voice-first Herald manages its voice channels.
+  agentRoles: ['operator', 'architect', 'sentinel'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('list') }),

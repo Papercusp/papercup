@@ -89,19 +89,93 @@ describe('loadRoleCapabilities', () => {
       expect(health.agentRoles).toContain('sentinel');
     });
 
-    test('sentinel is READ-MOSTLY: no work/harness/plan/routine WRITE caps (watch, do not act)', async () => {
+    // ── Sentinel-as-Herald: the watcher is re-homed onto the always-on, voice-first
+    // Herald. It gains a USER-FACING surface (converse + voice + file-a-work_item +
+    // nudge), but the hard boundary holds: it suggests + files + hands off; the
+    // QUEEN places/executes. ──
+    test("Herald CONVERSE contract is reachable: operator:converse cap AND the converse tool allowlists sentinel", async () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
-      expect(caps.has('work_items:write')).toBe(false);
+      // The brain runs with role='sentinel' (the operator-converse route resolves
+      // `${role}:converse`); the cap + the allowlist are the two gates.
+      expect(caps.has('operator:converse')).toBe(true);
+      const { default: converse } = await import('../../../agent-tools/operator/converse.js');
+      expect(converse.agentRoles).toContain('sentinel');
+      expect(converse.agentRoles).toContain('operator'); // unchanged for the operator
+    });
+
+    test('Herald VOICE contract is reachable: operator:read/write caps AND the voice:* tools allowlist sentinel', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      expect(caps.has('operator:read')).toBe(true); // voice:status / voice:transcript
+      expect(caps.has('operator:write')).toBe(true); // voice:join / leave / channels / agent
+      const { default: join } = await import('../../../agent-tools/voice/join.js');
+      expect(join.agentRoles).toContain('sentinel');
+      const { default: status } = await import('../../../agent-tools/voice/status.js');
+      expect(status.agentRoles).toContain('sentinel');
+    });
+
+    test('Herald can FILE the user’s ask: work_items:write cap AND work_items:create/set_priority admit sentinel (via COORD_ROLES)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      expect(caps.has('work_items:write')).toBe(true);
+      const { default: create } = await import('../../../agent-tools/work_items/create.js');
+      expect(create.agentRoles).toContain('sentinel');
+      const { default: setPriority } = await import('../../../agent-tools/work_items/set_priority.js');
+      expect(setPriority.agentRoles).toContain('sentinel');
+    });
+
+    test('Herald can NUDGE the Queen: coord:write cap AND coord:send/escalate admit sentinel (via COORD_ROLES)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      expect(caps.has('coord:write')).toBe(true);
+      const { default: send } = await import('../../../agent-tools/coordination/tools/send.js');
+      expect(send.agentRoles).toContain('sentinel');
+      const { default: escalate } = await import('../../../agent-tools/coordination/tools/escalate.js');
+      expect(escalate.agentRoles).toContain('sentinel');
+    });
+
+    test('Herald reads the live blackboard it narrates: curation:read + plans:read caps (+ plans:attention allowlists it)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      expect(caps.has('curation:read')).toBe(true); // curation:feed / state-of-hive / change-feed (capability-only, no allowlist)
+      expect(caps.has('plans:read')).toBe(true);
+      const { default: attention } = await import('../../../agent-tools/plans/attention.js');
+      expect(attention.agentRoles).toContain('sentinel');
+    });
+
+    test('sentinel still NEVER places/executes: no set_state / harness / plan / routine WRITE caps (suggest + hand off, do not act)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      // It CAN file work_items (work_items:write → create/set_priority) but the
+      // PLACEMENT verbs stay the Queen's: it gets no harness/plan/routine write.
       expect(caps.has('harness:write')).toBe(false);
       expect(caps.has('plans:write')).toBe(false);
       expect(caps.has('routines:write')).toBe(false);
     });
 
-    test('sentinel is carved OUT of fleet:spawn (placement is the Queen’s, not the watcher’s)', async () => {
+    test('sentinel CANNOT place/execute: carved OUT of fleet:spawn + DENIED fs-write/bash at the envelope', async () => {
       const { default: spawn } = await import('../../../agent-tools/fleet/spawn.js');
       expect(spawn.agentRoles).not.toContain('sentinel');
       // ...but the Queen (operator) still spawns it.
       expect(spawn.agentRoles).toContain('operator');
+      // The envelope belt: even a tool asking for fs-write/bash is refused.
+      const { evaluateCapabilityEnvelope } = await import('../../../capability-envelope/policy.js');
+      const prev = process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES;
+      process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = 'off';
+      try {
+        expect(
+          evaluateCapabilityEnvelope({
+            toolName: 'capability:write',
+            capabilities: ['capability:fs-write'],
+            ctx: { role: 'sentinel' },
+          }).withinEnvelope,
+        ).toBe(false);
+        expect(
+          evaluateCapabilityEnvelope({
+            toolName: 'capability:bash',
+            capabilities: ['capability:bash'],
+            ctx: { role: 'sentinel' },
+          }).withinEnvelope,
+        ).toBe(false);
+      } finally {
+        if (prev === undefined) delete process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES;
+        else process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = prev;
+      }
     });
   });
 

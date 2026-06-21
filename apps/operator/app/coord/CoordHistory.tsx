@@ -16,6 +16,7 @@
 
 import { useQueryState, parseAsArrayOf, parseAsString } from 'nuqs';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import styles from './coord.module.css';
 
 interface HistoryItem {
   ts: string;
@@ -51,11 +52,15 @@ const SOURCE_LABEL: Record<HistoryItem['source'], string> = {
 };
 
 const SOURCE_BADGE: Record<HistoryItem['source'], string> = {
-  plan_event: 'bg-blue-900/40 text-blue-200',
-  message: 'bg-slate-700/50 text-slate-200',
-  escalation: 'bg-amber-900/50 text-amber-200',
-  handoff: 'bg-emerald-900/50 text-emerald-200',
+  plan_event: styles.sourceBadgePlanEvent,
+  message: styles.sourceBadgeMessage,
+  escalation: styles.sourceBadgeEscalation,
+  handoff: styles.sourceBadgeHandoff,
 };
+
+function cx(...classes: Array<string | false | null | undefined>): string {
+  return classes.filter(Boolean).join(' ');
+}
 
 export default function CoordHistory() {
   const [sources, setSources] = useQueryState<string[]>(
@@ -136,58 +141,56 @@ export default function CoordHistory() {
   const items = data?.items ?? [];
 
   return (
-    <div className="text-slate-100">
-      <div className="mb-3 flex justify-end">
+    <div>
+      <div className={styles.toolbar}>
         <button
           onClick={() => void refresh()}
-          className="rounded bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600 disabled:opacity-50"
+          className={styles.button}
           disabled={loading}
         >
           {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3 rounded border border-slate-700 bg-slate-900/50 p-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">Sources</span>
+      <div className={styles.filterBar}>
+        <div className={styles.filterGroup}>
+          <span className={styles.filterLabel}>Sources</span>
           {ALL_SOURCES.map((s) => {
             const active = (sources ?? ALL_SOURCES).includes(s);
             return (
               <button
                 key={s}
                 onClick={() => toggleSource(s)}
-                className={
-                  'rounded-full px-2 py-0.5 text-xs ' +
-                  (active
-                    ? SOURCE_BADGE[s]
-                    : 'bg-slate-800 text-slate-500 hover:text-slate-300')
-                }
+                className={cx(
+                  styles.sourcePill,
+                  active ? SOURCE_BADGE[s] : styles.sourcePillInactive,
+                )}
               >
                 {SOURCE_LABEL[s]}
               </button>
             );
           })}
         </div>
-        <label className="flex items-center gap-1 text-xs">
-          <span className="text-slate-400">plan_slug</span>
+        <label className={styles.filterControl}>
+          <span className={styles.filterLabel}>plan_slug</span>
           <input
             value={planSlug ?? ''}
             onChange={(e) => setPlanSlug(e.target.value || null)}
-            className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-100"
+            className={styles.filterInput}
             placeholder="(any)"
           />
         </label>
-        <label className="flex items-center gap-1 text-xs">
-          <span className="text-slate-400">owner</span>
+        <label className={styles.filterControl}>
+          <span className={styles.filterLabel}>owner</span>
           <input
             value={owner ?? ''}
             onChange={(e) => setOwner(e.target.value || null)}
-            className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-100"
+            className={styles.filterInput}
             placeholder="(any)"
           />
         </label>
         {data && (
-          <span className="text-xs text-slate-500">
+          <span className={styles.resultCount}>
             {items.length} of {data.total}
             {data.truncated && ' (truncated)'}
           </span>
@@ -195,14 +198,14 @@ export default function CoordHistory() {
       </div>
 
       {error && (
-        <div className="mb-3 rounded border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+        <div className={styles.alert}>
           Error: {error}
         </div>
       )}
 
-      <ul className="space-y-2">
+      <ul className={styles.listCompact}>
         {items.length === 0 && !loading && (
-          <li className="rounded border border-slate-800 bg-slate-900/30 p-4 text-sm text-slate-500">
+          <li className={cx(styles.cardRow, styles.cardRowPadded, styles.emptyCopy)}>
             No coordination events match these filters.
           </li>
         )}
@@ -212,32 +215,29 @@ export default function CoordHistory() {
           return (
             <li
               key={key}
-              className="rounded border border-slate-800 bg-slate-900/40"
+              className={styles.cardRow}
             >
               <button
                 onClick={() => setExpanded(isOpen ? null : key)}
-                className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-slate-800/30"
+                className={styles.eventButton}
               >
                 <span
-                  className={
-                    'shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ' +
-                    SOURCE_BADGE[it.source]
-                  }
+                  className={cx(styles.kindBadge, SOURCE_BADGE[it.source])}
                 >
                   {it.kind}
                 </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className="truncate text-sm text-slate-200">
+                <div className={styles.contentColumn}>
+                  <div className={styles.eventTitleRow}>
+                    <span className={styles.eventSummary}>
                       {it.summary ?? '—'}
                     </span>
                     {it.plan_slug && (
-                      <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                      <span className={styles.miniBadge}>
                         plan: {it.plan_slug}
                       </span>
                     )}
                   </div>
-                  <div className="mt-0.5 text-xs text-slate-500">
+                  <div className={styles.rowMeta}>
                     {new Date(it.ts).toLocaleString()}
                     {it.from && ` · from ${it.from}`}
                     {it.to && it.to.length > 0 && ` · to ${it.to.join(', ')}`}
@@ -245,7 +245,7 @@ export default function CoordHistory() {
                 </div>
               </button>
               {isOpen && (
-                <pre className="overflow-x-auto border-t border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-300">
+                <pre className={cx(styles.payloadPre, styles.historyPayload)}>
 {JSON.stringify(it.payload, null, 2)}
                 </pre>
               )}

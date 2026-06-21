@@ -44,6 +44,7 @@ import { parseOperatorTurn } from '../../operator-converse-tags';
 import { readSystemPrincipal } from '../../system-principal';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_AGENT_MCP_TOOLS } from '../../operator-mcp-tools';
+import { PROMPT_ROLES } from '../../prompt-assembly';
 import {
   buildOperatorPrompt,
   type ConverseSessionUser,
@@ -78,6 +79,13 @@ const ArgsSchema = z.object({
   mayAskActive: z.boolean().optional(),
   modality: z.union([z.literal('voice'), z.literal('text')]).optional(),
   audienceMode: z.union([z.literal('engineer'), z.literal('novice')]).optional(),
+  /** Which persona the brain assumes — the Sentinel-as-Herald re-home seam.
+   *  Defaults to 'operator' (fully backward-compatible). 'sentinel' loads the
+   *  always-on, voice-first Herald persona set (same brain, different persona).
+   *  Constrained to the persona roles that ship a prompt set under
+   *  apps/operator/prompts/ (PROMPT_ROLES); an unknown value would throw in the
+   *  persona loader, so the schema pins it to the known set. */
+  role: z.enum(PROMPT_ROLES).optional(),
   /** Rendering surface: 'desktop' (web/Tauri UI, default) vs 'tui' (the pui
    *  terminal workbench). Same persona either way; only per-surface affordances
    *  differ (tui-operator-surface D-001/D-003). */
@@ -149,7 +157,14 @@ export default defineTool({
     'Operator brain conversation turn. Self-contained: builds the prompt (role+memory+history+trigger), gates on budget, runs the LLM with agentmcp tools, records spend, post-turn mem0.add, dispatches <spawn> tags. Streams deltas + tool_calls.',
   capability: 'operator:converse',
   requirePrincipal: false,
-  agentRoles: ['operator'],
+  // Sentinel-as-Herald: the sentinel is re-homed onto the always-on voice-first
+  // Herald, which IS this converse brain loaded with role='sentinel' (the
+  // operator-converse route resolves `${role}:converse` and the prompt builder
+  // loads the sentinel persona set). So the sentinel role must be allowlisted
+  // here too — paired with its operator:converse capability grant
+  // (BLUEPRINT_ROLE_CAPS.sentinel). The sentinel:converse tool alias registers
+  // the same handler under the sentinel name; both resolve this allowlist.
+  agentRoles: ['operator', 'sentinel'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a
@@ -191,6 +206,9 @@ export default defineTool({
         surface: input.surface,
         uiClientId: input.uiClientId,
         conversationId: input.conversationId,
+        // Sentinel-as-Herald re-home seam: 'operator' (default) is unchanged;
+        // 'sentinel' loads the Herald persona set.
+        role: input.role,
       } satisfies OperatorConverseInput,
       sessionUser,
     );

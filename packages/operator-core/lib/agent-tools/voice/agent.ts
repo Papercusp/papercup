@@ -19,7 +19,9 @@ export default defineTool({
     chaining: `voice:join → voice:agent {op:'brain', on:true} (ears + auto-reply: peer speech → operator-converse → spoken reply). For manual control use {op:'enable'} then {op:'say', text:'…'}.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect'],
+  // Sentinel-as-Herald: the sentinel is the voice-first Herald, so it drives the
+  // voice channel like the operator does (paired with its operator:write cap).
+  agentRoles: ['operator', 'architect', 'sentinel'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('enable') }),

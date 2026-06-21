@@ -225,6 +225,10 @@ registerProjectedTool({
   expose: { mcp: { name: 'cross_harness:probe' } },
   fn: probeFn('cross_harness:probe'),
 });
+// NB: the REAL flags:set (crossWorkspace:true, global flag store) is already registered,
+// so the clamp-exemption test below calls it directly — registering a 'flags:set' probe
+// here would collide (ToolRegistrationError). We assert only that the GATE doesn't deny it
+// (no workspace_forbidden); the handler's own arg-validation result is irrelevant.
 
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
@@ -339,6 +343,23 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
     // …and it reached the handler, which self-scoped to the caller's OWN workspace.
     expect(textOf(res)).toContain('"workspaceId": "ws-test"');
+  });
+
+  it('flag ON: a scoped superuser MAY call flags:set — a GLOBAL-config meta-control exempt from the clamp (no tenant data; fixes the circular lockout)', async () => {
+    // flags:set is crossWorkspace:true (it writes the global flag store + audit log), but it
+    // touches NO per-workspace tenant data — and denying it would lock the operator out of the
+    // very control that GOVERNS this clamp (a scoped superuser couldn't disable it). The
+    // SUPERUSER_GLOBAL_FLAG_ADMIN exemption lets a scoped superuser reach the flag system.
+    h.scopedClampFlag.value = true;
+    const res = await callTool('flags:set', {}, scoped('ws-test'));
+    expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
+  });
+
+  it('flag ON: a NON-exempt crossWorkspace tool is STILL denied (clamp intact for tenant-data tools)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:crossworkspace', {}, scoped('ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('workspace_forbidden'); // the clamp's data-isolation is unchanged
   });
 
   it('flag ON: a scoped superuser’s foreign `workspace` ARG is overwritten with its own workspace', async () => {
