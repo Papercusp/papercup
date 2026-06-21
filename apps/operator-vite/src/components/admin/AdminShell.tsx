@@ -97,7 +97,7 @@ export default function AdminShell({
           font-size: 28px;
           font-weight: 760;
           line-height: 1;
-          letter-spacing: -0.02em;
+          letter-spacing: 0;
           color: var(--fg);
         }
         .pc-adminshell__tabs {

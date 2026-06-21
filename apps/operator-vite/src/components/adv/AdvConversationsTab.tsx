@@ -1848,9 +1848,9 @@ function AdvConvStyles() {
       .pc-advconv__header-copy { position: relative; z-index: 1; min-width: 0; }
       .pc-advconv__header h1 {
         margin: 0;
-        font-size: clamp(20px, 2.4vw, 26px);
+        font-size: 24px;
         line-height: 1;
-        letter-spacing: -0.04em;
+        letter-spacing: 0;
         color: var(--fg, #e7f7ff);
       }
       .pc-advconv__header p {
@@ -2313,13 +2313,13 @@ function AdvConvStyles() {
         font-size: 10px;
         font-variant-numeric: tabular-nums;
       }
-      .pc-advconv__threads .pc-coord__row-title {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-weight: 700;
-        letter-spacing: -0.01em;
-      }
+    .pc-advconv__threads .pc-coord__row-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
       .pc-advconv__threads .pc-coord__row-meta {
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2345,9 +2345,9 @@ function AdvConvStyles() {
         margin: 0 0 5px;
       }
       .pc-advconv__threads .pc-coord__card header h2 {
-        font-size: clamp(18px, 2.4vw, 24px);
+        font-size: 22px;
         line-height: 1;
-        letter-spacing: -0.04em;
+        letter-spacing: 0;
       }
       .pc-advconv__detailstats {
         display: flex;

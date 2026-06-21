@@ -490,7 +490,7 @@ const gitCss = `
   .pc-git { color: var(--fg); padding: 14px 18px 28px; }
   .pc-git__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   .pc-git__bar-l { display: flex; align-items: baseline; gap: 10px; }
-  .pc-git__bar-l strong { font-size: 15px; letter-spacing: -0.01em; }
+  .pc-git__bar-l strong { font-size: 15px; letter-spacing: 0; }
   .pc-git__muted { color: color-mix(in srgb, var(--fg), transparent 45%); font-size: 12px; }
   .pc-git__bar-r { display: flex; align-items: center; gap: 8px; }
   .pc-git__seg { display: inline-flex; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%); border-radius: 8px; overflow: hidden; }
@@ -517,7 +517,7 @@ const gitCss = `
   .pc-git__stat.is-warn { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.06); }
   .pc-git__stat.is-bad { border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.07); }
   .pc-git__stat.is-good { border-color: rgba(52, 211, 153, 0.32); }
-  .pc-git__stat-v { font-size: 26px; font-weight: 760; line-height: 1; letter-spacing: -0.02em; }
+  .pc-git__stat-v { font-size: 26px; font-weight: 760; line-height: 1; letter-spacing: 0; }
   .pc-git__stat-l { margin-top: 6px; font-size: 12px; color: color-mix(in srgb, var(--fg), transparent 22%); font-weight: 600; }
   .pc-git__stat-s { margin-top: 2px; font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 50%); }
 

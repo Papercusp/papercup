@@ -649,7 +649,7 @@ export default function AdvShell({
           font-size: 22px;
           font-weight: 760;
           line-height: 1;
-          letter-spacing: -0.02em;
+          letter-spacing: 0;
           color: var(--fg, #e7f7ff);
         }
         .pc-advshell__selector {

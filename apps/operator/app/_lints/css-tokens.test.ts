@@ -35,6 +35,12 @@ import { join, resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 const OPERATOR_ROOT = resolve(__dirname, '../..');
+const APPS_ROOT = resolve(OPERATOR_ROOT, '..');
+const SOURCE_ROOTS = [
+  join(OPERATOR_ROOT, 'app'),
+  join(OPERATOR_ROOT, 'lib'),
+  join(APPS_ROOT, 'operator-vite/src'),
+];
 
 // Tokens set at runtime by a framework, not in any CSS source. Treat as defined.
 const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
@@ -50,6 +56,11 @@ const CSS_SOURCES = [
   'app/globals.css',
   'app/_semantic.css',
   'app/_brand-primitives.css',
+  '../operator-vite/src/components/left-sidebar/left-sidebar.styles.ts',
+  '../operator-vite/src/components/dev-admin-rail/dev-admin-rail.styles.ts',
+  '../operator-vite/src/components/adv/scheduled-calendar.css',
+  '../operator-vite/src/components/voice-video/VoiceChannelPanel.css',
+  '../operator-vite/src/components/voice-video/VideoGrid.css',
 ];
 
 function readDefinedTokens(): Set<string> {
@@ -63,9 +74,9 @@ function readDefinedTokens(): Set<string> {
       // clean checkouts; just skip.
       continue;
     }
-    // Match `  --name:` (any leading whitespace, at column start of
-    // its line). Ignore `var(--X)` references inside other rules.
-    const re = /^\s*(--[a-z0-9_-]+)\s*:/gim;
+    // Match `--name:` declarations at line start or inside a CSS rule block.
+    // Ignore `var(--X)` references inside other rules.
+    const re = /(?:^|\n|[;{])\s*(--[a-z0-9_-]+)\s*:/gim;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
       defined.add(m[1]);
@@ -103,8 +114,7 @@ function walk(dir: string, out: string[]): void {
 function collectUsedTokens(): Map<string, string[]> {
   const used = new Map<string, string[]>();
   const files: string[] = [];
-  walk(join(OPERATOR_ROOT, 'app'), files);
-  walk(join(OPERATOR_ROOT, 'lib'), files);
+  for (const root of SOURCE_ROOTS) walk(root, files);
   for (const file of files) {
     let content: string;
     try {
@@ -113,13 +123,19 @@ function collectUsedTokens(): Map<string, string[]> {
       continue;
     }
     // Component-local custom properties: a `--name:` defined inside this same
-    // file (e.g. a styled-jsx <style> block) is satisfied within the component.
-    // The global CSS-source scan can't see definitions that live in a .tsx, so
-    // collect this file's own definitions and treat self-references as defined.
+    // file (e.g. a styled-jsx <style> block), or a React inline custom-property
+    // key such as `{ ['--name' as string]: value }`, is satisfied within the
+    // component. The global CSS-source scan can't see definitions that live in a
+    // .tsx, so collect this file's own definitions and treat self-references as
+    // defined.
     const localDefs = new Set<string>();
-    const defRe = /^\s*(--[a-z0-9_-]+)\s*:/gim;
+    const defRe = /(?:^|\n|[;{])\s*(--[a-z0-9_-]+)\s*:/gim;
     let dm: RegExpExecArray | null;
     while ((dm = defRe.exec(content)) !== null) {
+      localDefs.add(dm[1].toLowerCase());
+    }
+    const reactDefRe = /['"`](--[a-z0-9_-]+)['"`]\s*(?:as\s+string)?\s*[:\]]/gi;
+    while ((dm = reactDefRe.exec(content)) !== null) {
       localDefs.add(dm[1].toLowerCase());
     }
     // Match var(--name) or var(--name, fallback).
@@ -130,7 +146,7 @@ function collectUsedTokens(): Map<string, string[]> {
       const name = m[1].toLowerCase();
       if (localDefs.has(name)) continue; // defined in this same component
       const arr = used.get(name) ?? [];
-      const rel = file.replace(OPERATOR_ROOT + '/', '');
+      const rel = file.replace(APPS_ROOT + '/', '');
       if (!arr.includes(rel)) arr.push(rel);
       used.set(name, arr);
     }

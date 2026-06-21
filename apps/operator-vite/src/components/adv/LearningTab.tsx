@@ -2124,7 +2124,7 @@ function LearningStyles() {
       .pc-learning { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px 20px; gap: 12px; overflow-y: auto; }
       .pc-learning__header { display: flex; align-items: flex-start; gap: 12px; }
       .pc-learning__copy { flex: 1; min-width: 0; }
-      .pc-learning__copy h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: -0.02em; color: var(--fg, #e7f7ff); }
+      .pc-learning__copy h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: 0; color: var(--fg, #e7f7ff); }
       .pc-learning__copy p { margin: 4px 0 0; font-size: 12.5px; color: var(--fg-mute, #7f9bb4); max-width: 78ch; }
 
       .pc-learning__controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
