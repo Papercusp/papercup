@@ -1,6 +1,9 @@
 ---
 title: Design phase — plan
 description: Add Design as a first-class phase in the feature lifecycle, with a separate Design tab, a generic ecosystem-agnostic engine, and per-ecosystem adapters (React/Tailwind ships first). Designer agents produce JSON-IR specs that implementer agents consume.
+plans:
+  - design-tokens-implementation-plan-2026-05-13
+  - design-migration-deferred-2026-05-13
 ---
 
 This plan turns Design into a first-class phase in the same way
@@ -14,21 +17,48 @@ for the build.
 > **Implementation status (partial — kept as the canonical spec).** The spine
 > shipped: lifecycle fields + gate + `needsDesign` heuristic in
 > `packages/operator-core/lib/design-phase.ts` (`DesignStatus = 'pending' |
-> 'accepted' | 'ignored'`, `computeNeedsDesign`, `assertDesignGate`); the PG
-> tables `harness_shared.harness_design_phase` + `harness_design_artifacts`; the
-> UI IR JSON Schema (`design-ir/schema.ts`); the designer prompt + DESIGN_SPEC
-> resolution (`design-spec/`); the first ecosystem adapter
+> 'accepted' | 'ignored'`, `computeNeedsDesign`, `assertDesignGate`). The
+> lifecycle fields shipped as **columns on the existing
+> `harness_shared.harness_features_consolidated` table** (`needs_design`,
+> `design_status`, `design_spec_id`, `discarded_design_work`), keyed by
+> `(harness_slug, feature_id)` — there is no separate `harness_design_phase`
+> table; the orchestrator design gate reads `needs_design` / `design_status`
+> straight from the consolidated (canonical) store. Spec artifacts shipped in
+> `harness_shared.harness_design_artifacts` (columns `id`, `harness_slug`,
+> `feature_id`, `kind`, `payload`, `metadata`, `created_ts`; PK
+> `(harness_slug, id)`). Also shipped: the UI IR JSON Schema
+> (`design-ir/schema.ts`); the designer prompt + DESIGN_SPEC resolution
+> (`design-spec/`); the first ecosystem adapter
 > (`design-adapter-react-tailwind/` — `registry` / `tokens` / `codeEmit`); the
 > Design tab (`apps/operator/app/design/[slug]/DesignDashboard.tsx`, behind the
-> `papercusp-design` V1 feature flag — `FLAGS.DESIGN`, default off); and a
-> subset of the §15 MCP surface as
-> **`design-phase:*`** tools (`list_tokens`, `read_token`, `search_registry`,
-> `get_registry_component`, `record_review` — note the `design-phase:` prefix +
-> snake_case, not the camelCase names drafted in §15). The token pipeline shipped
-> on **Style Dictionary v4** (see [design tokens](/internal/docs/design/tokens)),
-> not Terrazzo. Everything else (the six panes, tldraw, Lost Pixel, the
-> Plotly/raw/chart sub-IRs, the non-React adapters, the reviewer/crit loop,
-> mock-input + export adapters) remains aspirational.
+> `papercusp-design` V1 feature flag — `FLAGS.DESIGN`, default off) **with all
+> six panes implemented** (features, memos, registry, tokens, sketch,
+> regressions); **Lost Pixel** visual regression (the `lost-pixel ^3.22.0`
+> dependency, `lostpixel.config.ts`, the `lostpixel-baseline/` directory, the
+> `lostpixel` / `lostpixel:update` npm scripts, and `RegressionPane.tsx` reading
+> its output); and the full §15 MCP surface (12 tools) shipped by the
+> `@papercupai/design-phase` plugin: `validate_spec`, `lint_spec`, `submit_spec`,
+> `list_memos`, `read_memo`, `get_design_spec`, `search_registry`,
+> `get_registry_component`, `list_tokens`, `read_token`, `get_accepted_spec`,
+> `record_review` (snake_case, not the camelCase names drafted in §15; the
+> `design-phase:` prefix is a su-catalog / test-fixture convention — the plugin
+> manifest itself uses the bare names). The **spec-submission + reviewer-verdict
+> plumbing shipped at the storage + MCP layer**: `submit_spec` persists a
+> `kind='spec'` artifact and flips `design_status`; `record_review` records
+> approved / rejected / changes-requested and flips `design_status` back to
+> `pending` on rejection; `get_accepted_spec` resolves the accepted IR via
+> `design_spec_id`; and the artifacts table carries a `'review'` kind (migration
+> 052). The token pipeline's repo-level `npm run tokens` build runs on **Style
+> Dictionary v4** (`^4.4.0`, `design-tokens/style-dictionary.config.mjs`; see
+> [design tokens](/internal/docs/design/tokens)); the react-tailwind adapter,
+> separately, ships its own minimal in-house CSS-vars + Tailwind-preset emitter
+> (Terrazzo is not a dependency). Genuinely **aspirational**: `tldraw`
+> (`SketchPane` is a minimal HTML5 canvas — its docstring says "tldraw is a
+> planned upgrade"); the orchestrator's automatic designer / reviewer **spawn
+> loop** (no `designReady` / `spawn-designer` logic exists in the orchestrator —
+> the verdict plumbing above is wired, but nothing spawns the agents yet); the
+> Plotly / raw / chart sub-IRs; the non-React adapters; the design-crit picker;
+> and the mock-input + export adapters.
 
 ---
 
@@ -78,17 +108,28 @@ Gate: a feature cannot transition into the implementing phase until
 
 ## 2.1 Storage
 
+> **As shipped:** the lifecycle fields landed as **columns on the existing
+> canonical features table** rather than a new sibling table — `needs_design`,
+> `design_status`, `design_spec_id`, `discarded_design_work` on
+> `harness_shared.harness_features_consolidated`, keyed by
+> `(harness_slug, feature_id)`. There is no `harness_design_phase` table; the
+> gate reads the design columns straight from the consolidated store.
+
 `needsDesign`, `designStatus`, `designSpec`, `discardedDesignWork`
-live in a new PG table `harness_shared.harness_design_phase`,
-keyed by `(workspace_id, feature_id)`, in the harness DB. This
-matches the existing pattern (per memory: features, issues,
-proposals, etc., are PG-canonical via Zero sync).
+live on the canonical features table
+`harness_shared.harness_features_consolidated` (columns
+`needs_design`, `design_status`, `design_spec_id`,
+`discarded_design_work`), keyed by `(harness_slug, feature_id)`, in
+the harness DB. This matches the existing pattern (per memory:
+features, issues, proposals, etc., are PG-canonical via Zero sync).
 
 Spec artifacts (the IR JSON, sketches, screenshots) live in a
-sibling table `harness_design_artifacts` with `(workspace_id,
-feature_id, kind, payload, created_at)`. PG over filesystem so
-artifacts are queryable, syncable via Zero, and survive harness
-moves.
+sibling table `harness_shared.harness_design_artifacts` with columns
+`(id, harness_slug, feature_id, kind, payload, metadata,
+created_ts)`, keyed by `(harness_slug, id)`. (Note the `created_ts`
+BIGINT timestamp, and the `id` + `metadata` columns the earlier draft
+omitted.) PG over filesystem so artifacts are queryable, syncable via
+Zero, and survive harness moves.
 
 ## 2.2 Relationship to existing `proposals`
 
@@ -461,10 +502,12 @@ sub-IR.
 
 Icons are a sub-registry under the component registry, with their
 own schema (`iconId → svgPath / sourcePointer`). Referenced by ID
-in the IR (`{ kind: "icon", id: "inbox" }` or `icon: "inbox"` in
-slot props). Adapters scan icon paths declared in their manifest;
-the React-Tailwind adapter will scan `lucide-react` exports +
-project-local SVGs.
+in the IR. As shipped in v0.1 the IR's icon reference is a **plain
+string id** (`iconRef = string`): the inline slot-prop form is
+`"icon": "inbox"`, and the `{ kind: "icon", id: "inbox" }` node form
+carries the same string under its `icon` field. Adapters scan icon
+paths declared in their manifest; the React-Tailwind adapter will
+scan `lucide-react` exports + project-local SVGs.
 
 ## 7.7 Copy and i18n
 
@@ -517,9 +560,10 @@ semantically:
 { "motion": { "enter": "slide-up", "exit": "fade", "duration": "duration.md" } }
 ```
 
-Allowed values draw from a small, named vocabulary
-(`fade / slide-up / slide-down / scale / none`). Concrete
-keyframes/easings live in tokens (`duration.*`, `easing.*`).
+Allowed values draw from a small, named vocabulary — the shipped
+schema enum is `fade / slide-up / slide-down / slide-left /
+slide-right / scale / none`. Concrete keyframes/easings live in
+tokens (`duration.*`, `easing.*`).
 Adapters bind to their motion library (motion / auto-animate / Qt
 animations / etc.).
 
@@ -673,8 +717,14 @@ The W3C Design Tokens Community Group format
 tokens. It is deliberately neutral: color, dimension, typography,
 duration, etc.
 
-Adopt DTCG as the canonical token store under
-`design/tokens/*.json`. Per-ecosystem transformers emit:
+Adopt DTCG as the canonical token store under `design/tokens/`. As
+shipped, the canonical DTCG store file is
+**`design/tokens/base.json`** — the runtime sync-resolver, the
+`list_tokens` MCP tool, and the Design tab's Token pane all read it
+directly. The seeder writes a sibling
+`design/tokens/seeded-from-harness-css.json` as the input to the
+manual semantic pass (§20.13), which merges into `base.json`.
+Per-ecosystem transformers emit:
 
 - CSS custom properties for React/Tauri
 - Tailwind preset
@@ -687,6 +737,14 @@ Transformer choice: **Terrazzo** (DTCG-native, modern) or
 **Style Dictionary** (battle-tested, Amazon). Terrazzo is the
 recommended default for new code; Style Dictionary remains a fine
 choice for adapters that need the wider transform ecosystem.
+
+> **As shipped:** the repo-level `npm run tokens` build runs on
+> **Style Dictionary v4** (`^4.4.0`, config in
+> `design-tokens/style-dictionary.config.mjs`) — not Terrazzo. The
+> react-tailwind adapter, on a separate path, ships its **own minimal
+> in-house** CSS-vars + Tailwind-preset emitter (its docstring notes
+> Terrazzo "is not yet a dep"). Terrazzo remains the planned long-term
+> transformer but is not currently a dependency.
 
 This solves the existing harness.css triplication problem
 (operator + libs/papercusp + libs/git-graph) as a side effect:
@@ -833,8 +891,9 @@ export) is a specialization of a single plugin shape:
 
 ```typescript
 interface DesignEcosystemAdapter {
-  id:        string;       // "react-tailwind", "qt-widgets", ...
-  ecosystem: string;       // human-readable
+  id:          string;     // stable plugin id, e.g. "papercusp-design-react-tailwind"
+  displayName: string;     // human-readable, e.g. "React + Tailwind (papercusp)"
+  ecosystem:   string;     // machine ecosystem id; matches the IR `ecosystem` field, e.g. "react-tailwind"
   capabilities: AdapterCapability[];
   irVersionsSupported: string[];    // e.g. ["0.x", "1.x"]
   uiPaths: string[];                // globs for needsDesign heuristic
@@ -980,8 +1039,11 @@ designer pass, not silent edits."
 - React-Tailwind adapter (first; for papercusp itself)
 - In-app token editor (Token inventory pane)
 - Token-extraction seeder script (CSS custom properties → DTCG)
-- `harness_shared.harness_design_phase` + `harness_design_artifacts`
-  PG tables + Zero sync hookups
+- Design lifecycle columns on
+  `harness_shared.harness_features_consolidated` +
+  `harness_shared.harness_design_artifacts` PG table + Zero sync
+  hookups (the lifecycle fields shipped as columns on the canonical
+  features table, not a separate `harness_design_phase` table)
 
 **Skip / defer:**
 
@@ -1008,12 +1070,14 @@ designer pass, not silent edits."
 
 Each step is independently shippable.
 
-1. **PG tables + lifecycle fields + gate.** Create
-   `harness_shared.harness_design_phase` +
-   `harness_design_artifacts` tables (with Zero sync). Add
-   `needsDesign`, `designStatus`, `designSpec`,
-   `discardedDesignWork` to the feature record. Heuristic at
-   creation. Gate before implementing. No UI yet.
+1. **Schema + lifecycle fields + gate.** Add the design lifecycle
+   columns (`needs_design`, `design_status`, `design_spec_id`,
+   `discarded_design_work`) to the canonical features table
+   `harness_shared.harness_features_consolidated`, plus the
+   `harness_shared.harness_design_artifacts` table (with Zero sync).
+   (Shipped as columns on the consolidated table, not a separate
+   `harness_design_phase` table.) Heuristic at creation. Gate before
+   implementing. No UI yet.
 2. **Design tab shell** with Features pane only (mode=design).
    Three-column layout (§6.1). Validates the `mode` parameter
    abstraction.

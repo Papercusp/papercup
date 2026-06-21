@@ -3,6 +3,13 @@ title: Design — UI library guide for agents
 description: Which libraries the harness UI uses, when to reach for each, and what NOT to hand-roll.
 sidebar:
   order: 1
+plans:
+  - adv-harness-tab-migration-2026-05-30
+  - design-migration-deferred-2026-05-13
+  - design-audit-2026-05-14
+  - starlight-projection-site-2026-06-18
+  - design-spec-compliance-2026-06-18
+  - design-tokens-implementation-plan-2026-05-13
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -36,7 +43,7 @@ The library set documented here was chosen, installed, and applied across the ha
 | Action button | native `<button>` (neutral, baseline-styled) for inline form/grid actions; `<Button variant="primary">` for the page's primary CTA; `<Button variant="destructive">` for delete/clear/forget; `<Button variant="ghost">` for low-emphasis | `<Button>` from `app/harness/Button.tsx`; unwrapped `<button>` inherits the same look from `globals.css` |
 | Expandable / collapsible section | `@radix-ui/react-collapsible` | `<Collapsible.Root><Collapsible.Trigger><Collapsible.Content>` |
 | Toast / notification | `sonner` | `import { toast } from 'sonner'` — `toast.success()`, `toast.error()` |
-| Hover card (rich content on hover) | `@radix-ui/react-hover-card` | Direct import — used in `FeatureLink.tsx` |
+| Hover card (rich content on hover) | `@radix-ui/react-hover-card` | Direct import (installed but currently unused — no live consumer; re-source an example when you add the first one) |
 | Icons | `lucide-react` | `import { ChevronRight } from 'lucide-react'` |
 | Single-submit form (one Submit button, atomic persist) | `react-hook-form` + `zod` (or `ajv` for plugin schemas) | `useFormWith(schema)` + `<FormField>` + `<SubmitButton>` from `@/lib/forms` |
 | Per-field auto-save settings page (no Submit button) | Independent `useState` + debounced save | `useDebouncedSave(value, persist)` from `app/harness/useDebouncedSave.tsx` |
@@ -49,7 +56,7 @@ The library set documented here was chosen, installed, and applied across the ha
 
 1. **Never write `<div role="dialog">` or `aria-modal="true"` by hand.** Use `<Modal>` (centered) or `<Drawer.Root>` (side panel). Both wire focus trap, scroll lock, ESC, outside-click, and portal correctly.
 
-2. **Never write `<input type="checkbox">` for harness UI.** Use `<Checkbox>`. The native control can't represent indeterminate state declaratively, and won't pick up the focus ring our other controls use. *(Carve-out: native checkboxes inside `MarkdownPreview` task lists — and other places a React wrapper can't legitimately reach — pick up `accent-color: var(--accent)` from the global baseline. The wrapper rule is still absolute for harness UI; the carve-out is for content rendered from text.)*
+2. **Never write `<input type="checkbox">` for harness UI.** Use `<Checkbox>`. The native control can't represent indeterminate state declaratively, and won't pick up the focus ring our other controls use. *(Carve-out: native checkboxes inside rendered markdown task lists — and other places a React wrapper can't legitimately reach — are acceptable. Note there is **no** app-wide `input[type=checkbox|radio|range]` `accent-color` baseline; only component-scoped rules tint natives (`.pc-toggle input` and `.h-proposal-item input` use `var(--accent)`; `.pc-template-manifest-structured input[type=checkbox]` hardcodes `#22d3ee`), so a stray native checkbox inherits the OS accent unless its surrounding component opts in. The wrapper rule is still absolute for harness UI; the carve-out is for content rendered from text — see the markdown-rendering components like `app/_components/MarkdownEditor.tsx` and `app/settings/SettingsMarkdownEditor.tsx`.)*
 
 3. **Never write `<select>` with `<option>` for harness UI.** Use `<Select>`. The native dropdown is OS-themed (white on macOS, system-chrome on Windows) and clashes hard with the dark UI. Radix Select renders a portaled listbox that we control.
 
@@ -61,15 +68,15 @@ The library set documented here was chosen, installed, and applied across the ha
 
 7. **Pick the form pattern that matches the page's submission model.** There is no single "use RHF for forms" rule — that conflates two genuinely different submission models. Pick by how the page persists:
 
-   - **Single-submit forms** (one Submit button, atomic persist, validation on submit, dirty tracking, redirect-or-stay on success): use `react-hook-form` via `useFormWith(zodSchema)` — or the AJV resolver for plugin-author JSON Schemas. Wrappers live in `apps/operator/lib/forms/`. *Canonical sites: `/login`, `/signup`, `/installed/templates/<slug>/edit`, `/snapshots/<id>/fork`.*
+   - **Single-submit forms** (one Submit button, atomic persist, validation on submit, dirty tracking, redirect-or-stay on success): use `react-hook-form` via `useFormWith(zodSchema)` — or the AJV resolver for plugin-author JSON Schemas. Wrappers live in `apps/operator/lib/forms/`. *Canonical sites: `app/settings/profile/page.tsx`, `app/settings/oracle/OracleClient.tsx`, `app/settings/operator/page.tsx`, `app/settings/api-keys/page.tsx`.* (Note: `/login` is **not** one — it uses plain `useState` fields with an `onSubmit` handler, not `useFormWith`.)
 
-   - **Per-field auto-save settings pages** (each control persists independently — toggle a switch, it saves — there is no "Submit"): use independent `useState` per field and `useDebouncedSave(value, persist)` from `app/harness/useDebouncedSave.tsx`. This is the right model for the macOS-System-Preferences / iOS-Settings shape of page. HR1/HR2/HR3/HR6 still apply — only the centralized form-state model from RHF is dropped. Test/preview buttons read the state vars directly (no `getValues()` bridge). *Canonical sites: `/settings/voice`, `/settings/backups`, `/settings/operator`.*
+   - **Per-field auto-save settings pages** (each control persists independently — toggle a switch, it saves — there is no "Submit"): use independent `useState` per field and `useDebouncedSave(value, persist)` from `app/harness/useDebouncedSave.tsx`. This is the right model for the macOS-System-Preferences / iOS-Settings shape of page. HR1/HR2/HR3/HR6 still apply — only the centralized form-state model from RHF is dropped. Test/preview buttons read the state vars directly (no `getValues()` bridge). *Canonical site: `app/settings/agent/page.tsx` — currently the only live `useDebouncedSave` consumer.* (`/settings/voice` and `/settings/backups` also auto-save per field, but via bespoke per-section save callbacks — e.g. `savePrefsPatch` in voice — not the `useDebouncedSave` hook; and `/settings/operator` is a single-submit `useFormWith` page, not auto-save.)
 
    - **Wizard flows** (multi-step with progress, each step its own slice of state): RHF per step with the step's local Zod slice, plus a parent state coordinator. *Canonical site: `app/_components/SetupWizard`.*
 
    Exceptions to all three: single-textarea chat composers and Monaco code editors — both explicitly out of scope; use plain `useState`.
 
-8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@papercusp/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (`MarkdownPreview`) — those are content-author tables, not UI tables.
+8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@papercusp/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (the markdown-rendering components, e.g. `app/_components/MarkdownEditor.tsx` and `app/settings/SettingsMarkdownEditor.tsx`) — those are content-author tables, not UI tables.
 
 9. **Buttons are flat — no 3D.** In-page action buttons and pills are flat: a solid (or `color-mix`-tinted) background, a 1px border, readable text. Do **not** give them an embossed bevel (`box-shadow: inset 0 1px 0 …`), a raised drop-shadow / glow (`box-shadow: 0 8px … rgba(0,0,0,…)`), a hover-lift or press (`transform: translateY(…)`), or a vertical "sheen" gradient fill (`linear-gradient(180deg, rgba(255,255,255,.05), …)`) — those read as 3D and hurt legibility. Hover/active = change the background/border colour, not the elevation. Keyboard focus rings (`:focus-visible`) are the one box-shadow/outline that stays. *Carve-out: the large top-level **page/tab nav** (e.g. the `/adv` tab strip) is a different category — it may keep its accent treatment.* See [buttons](#buttons) below for the flat recipe.
 
@@ -108,15 +115,15 @@ Buttons are **flat**. The look is a solid or `color-mix`-tinted surface, a 1px b
 
 **Reach for the wrapper:** `<Button>` from `app/harness/Button.tsx` for emphasis variants; a bare `<button>` inherits the flat baseline. Token reference: [design tokens](/internal/docs/design/tokens#the-bluefrost-semantic-scale).
 
-**`/adv` enforcement:** the `/adv` shell flattens every in-page button for free — a scoped rule on `.pc-advshell__body` strips `box-shadow` (non-focus) and hover/active `transform` so a stray bespoke 3D button can't slip through. The large top **tab strip** (`.pc-advshell__header`) is exempt — it's page-level nav, a different category. Still author buttons flat at the source; the scoped rule is a backstop, not a licence to ship embossed CSS.
+**`/adv` enforcement:** the `/adv` shell ships flat buttons via per-component flat-button recipes rather than a single scoped strip-everything rule — `.pc-advpanel__iconbtn` (flat 28×28 frost icon button) and `.pc-advpanel__btn` (flat labeled frost button) in `app/adv/harnesses/adv-panel-chrome.css` are the canonical flat recipes panels reuse. (The body wrapper is `pc-adv-harnesses__body`, not the old `.pc-advshell__body`; the `pc-advshell__*` class family no longer exists in any live CSS or component — it survives only in stale e2e selectors. There is no scoped `box-shadow`-stripping backstop, so author buttons flat at the source.) The large top **tab strip** is page-level nav, a different category, and keeps its accent treatment.
 
 ## Soft rules (judgment calls)
 
 - **Tooltips on grid-cell text.** When you're rendering thousands of rows in `RichGrid` and want truncation tooltips, `title="…"` on the cell `<span>` is fine. Wrapping each row in a Radix Tooltip mounts thousands of portals and listeners — bad perf. The "no native title=" rule is for *action elements*, not data cells.
 
-- **Filter pills vs real tabs.** If clicking the pill swaps which list of items is shown but the surrounding layout is the same, `<Tabs.Root asChild>` + `<Tabs.List>` + `<Tabs.Trigger>` is correct (see `ArchitectInbox.tsx`, `ProposalsPanel.tsx`). If clicking swaps fundamentally different content panels, use the same with `<Tabs.Content>` per panel (see `BrainstormFull.tsx`). If the pills are mutually-exclusive boolean toggles where each one filters a single list, native `<button aria-pressed>` is also acceptable — `@radix-ui/react-toggle-group` would be ideal but is not currently installed.
+- **Filter pills vs real tabs.** If clicking the pill swaps which list of items is shown but the surrounding layout is the same, `<Tabs.Root>` + `<Tabs.List>` + `<Tabs.Trigger>` is correct (live example: `app/adv/sessions/AdvSessionsClient.tsx`, the session detail-panel tab strip). If clicking swaps fundamentally different content panels, add a `<Tabs.Content>` per panel. If the pills are mutually-exclusive boolean toggles where each one filters a single list, native `<button aria-pressed>` is also acceptable — `@radix-ui/react-toggle-group` would be ideal but is not currently installed.
 
-- **HoverCard vs Tooltip.** Use Tooltip for short text labels. Use HoverCard for rich content (multi-line, links, badges, images) like the feature card in `FeatureLink.tsx`.
+- **HoverCard vs Tooltip.** Use Tooltip for short text labels. Use HoverCard for rich content (multi-line, links, badges, images). `@radix-ui/react-hover-card` is installed but has no live consumer right now — re-source a concrete example here once one lands.
 
 - **Where to put the shared CSS.** Radix sets `data-state="active"` (when there's a matching `<Tabs.Content>`) and `aria-selected="true"` (always, on the trigger). Some of our existing CSS uses `.on` to mean active. We bridge with `[data-state="active"]` and `[aria-selected="true"]` attribute selectors at the bottom of `harness.css`. Add new aliases there, not inline.
 
@@ -126,9 +133,9 @@ Three grid components in `@papercusp/grid-core`. Pick by what your cells need to
 
 | Use… | When | Cell style | Virtualization | Examples |
 |---|---|---|---|---|
-| **`RichGrid`** | You want JSX cells: status pills, hover popovers, action buttons, multi-line content, per-row expand | Anything you can render in React | Optional via `virtualMode` | `FeatureList.tsx`, `ProposalsPanel.tsx`, `ArchivesPanel.tsx`, `IssuesList.tsx`, `SnapshotsPanel.tsx` |
+| **`RichGrid`** | You want JSX cells: status pills, hover popovers, action buttons, multi-line content, per-row expand | Anything you can render in React | Optional via `virtualMode` | `app/admin/plans/RunsPanel.tsx`, `app/adv/harnesses/WorkItemsPanel.tsx`, `app/adv/harnesses/AcceptancePanel.tsx`, `app/harness/InsightsPanel.tsx`, `app/harness/[slug]/projects/ProjectsList.tsx` |
 | **`GridTable`** | Static admin page, low row count (under 200), declarative cell *types* (`text`, `stepper`, `price`, `checkbox`, `expand`), SSR-rendered HTML matters | Built-in via column `type:` | None | small admin tables, settings pages |
-| **`DataGridShell`** | Catalog-style scrolling, 5000+ rows of mostly-scalar data, DOM perf hurts | Canvas pixels (cells aren't React) | Built-in (canvas) | `HarnessConsoleView` (papercup), `WholesaleGlideGrid` |
+| **`DataGridShell`** | Catalog-style scrolling, 5000+ rows of mostly-scalar data, DOM perf hurts | Canvas pixels (cells aren't React) | Built-in (canvas) | Exported from `@papercusp/grid-core`; no live consumer in the operator app today |
 
 Authoring style differs:
 
@@ -158,6 +165,15 @@ Authoring style differs:
   formatters={{ budgetCents: (v) => formatCents(v) }}
 />
 ```
+
+### What RichGrid consumers get for free
+
+Beyond JSX cells, `@papercusp/grid-core` ships opt-in machinery (all from `grid-core/src/index.ts`):
+
+- **Built-in sortable headers** — set a column's `sortKey` and pass `sortState` / `onSortChange`; the header becomes a sort button. (The standalone `applySort` helper is still exported for small in-memory datasets, but live consumers drive sort through the built-in `sortState` props rather than calling `applySort` directly.)
+- **Per-column client-side filtering** — `applyColumnFilters` (with `deriveEnumOptions`, `encodeColumnFilters` / `decodeColumnFilters`, `filterChipLabel`). The consumer holds the `ColumnFilterState` (e.g. in a nuqs URL param), calls `applyColumnFilters` before passing rows in, and opts a column in via `ColumnDef.filter`. Live consumers: `app/adv/harnesses/WorkItemsPanel.tsx`, `app/adv/harnesses/AdvAgentsPanel.tsx`, `app/adv/harnesses/AdvLogsPanel.tsx`.
+- **Persisted drag-resized column widths** — `usePersistedColumnWidths` pairs with RichGrid's controlled `columnWidths` / `onColumnWidthsChange` so widths survive remounts.
+- **Print + Ctrl+C copy** — RichGrid ships a print mirror and TSV+HTML copy payloads (Ctrl+A / Ctrl+C) without extra wiring.
 
 ### Decision tree
 
