@@ -118,13 +118,17 @@ const EGRESS_FAIL_CIRCUIT_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_EGRES
  *  enough that the natural half-open (pause expires → the next request re-probes the account → a success
  *  closes the circuit, a transport failure re-opens it) retests soon; long enough to route the fleet
  *  around a dead proxy. Env-tunable. */
-const EGRESS_CIRCUIT_OPEN_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_CIRCUIT_MS) || 60_000;
+// FALLBACK ceiling on the egress-circuit pause: the half-open probe now LIFTS the pause the instant the
+// proxy recovers (out-duration = actual recovery, usually a few seconds), so this only bites when the probe
+// is disabled or the proxy is genuinely dead. Shortened 60s→20s (2026-06-21) so a flaky proxy never strands
+// a token-healthy account for a full minute even in the probe-off fallback path.
+const EGRESS_CIRCUIT_OPEN_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_CIRCUIT_MS) || 20_000;
 /** Delay before the half-open egress PROBE fires after a circuit opens (egress-probe.ts re-tests the
  *  account's proxy through the same dispatcher). On success it clears the failure streak so the account
  *  readmits CLEAN at pause-expiry; `=0` disables the active probe (the natural pause-expiry half-open
  *  still applies). Env-tunable. */
 const EGRESS_PROBE_DELAY_MS =
-  process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS !== undefined ? Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS) : 15_000;
+  process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS !== undefined ? Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS) : 4_000;
 /** Per-probe network timeout for the half-open egress probe — shorter than the probe default so it never
  *  lingers on a still-dead proxy. */
 const EGRESS_PROBE_HTTP_TIMEOUT_MS = 8_000;
@@ -272,6 +276,10 @@ export interface AccountPool {
    *  caller falls back to `active()`). A bee is pinned to one account for its whole life so its
    *  conversation cache — which is per-credential — survives. Optional: a single-account pool omits it. */
   select?(accountId: string): ActiveAccount | null;
+  /** Clear an account's out-of-rotation pause ahead of its reset (the dual of onExhausted) — called when a
+   *  half-open egress probe confirms the proxy recovered, so a token-healthy account rejoins rotation the
+   *  instant transport is healthy rather than sitting out the full circuit window. Optional. */
+  readmit?(accountId: string): void;
   /** HOT-RELOAD the pool (B-HOT-1): atomically swap the live entries WITHOUT a gateway restart, keeping
    *  this pool object's identity (the gateway holds it for life). Optional: a pool that can't hot-reload
    *  omits it. The launch-layer reload primitive re-resolves the DB account pool then calls this. */
@@ -656,36 +664,52 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // dedupes the half-open probe.
   const egressFailStreak = new Map<string, number>();
   const egressProbePending = new Set<string>();
-  /** Half-open egress probe: after a circuit opens, re-test the account's proxy with the SAME dispatcher
-   *  the gateway uses (egress-probe.ts). On success it clears the failure streak so the account readmits
-   *  CLEAN when its pause expires (the natural half-open) — the pause itself is lifted by EXPIRY, since
-   *  the shared governor's pausedUntil is take-MAX (can only extend, never shorten: a 429 streak = real
-   *  exhaustion). Best-effort, unref'd, never throws into the request path. `EGRESS_PROBE_DELAY_MS=0`
-   *  disables the active probe (pause-expiry half-open still applies). */
-  function scheduleEgressProbe(account: ActiveAccount): void {
+  /** Per-account TRANSPORT pause the egress circuit set (= the resetAt handed to gov.penalize), so the
+   *  half-open probe can lift exactly THAT pause on recovery without ever shortening a real 429 pause. */
+  const egressPauseUntil = new Map<string, number>();
+  /** Half-open egress probe: after a circuit opens, re-test the account's proxy (egress-probe.ts) on a short
+   *  LOOP. On the FIRST success it LIFTS the transport pause IMMEDIATELY — clears the streak, lifts the
+   *  governor's transport pause (gov.liftTransportPause, a no-op if a real 429 pause superseded it), and
+   *  readmits the account to the round-robin — so a flaky proxy that recovers in seconds rejoins rotation in
+   *  seconds, NOT at the full circuit-window expiry. Before 2026-06-21 the probe only cleared the streak and
+   *  the account waited the whole window (take-MAX pausedUntil can't be shortened) — which kept the only
+   *  token-healthy accounts out together → empty-pool "all throttled" sheds. Keeps probing until recovery OR
+   *  the circuit pause expires (bounded fallback). Best-effort, unref'd, never throws into the request path.
+   *  `EGRESS_PROBE_DELAY_MS=0` disables it (pause-expiry half-open still applies). */
+  function scheduleEgressProbe(account: ActiveAccount, gov: RateLimitGovernor, pausedUntil: number): void {
     if (EGRESS_PROBE_DELAY_MS <= 0 || egressProbePending.has(account.accountId)) return;
     egressProbePending.add(account.accountId);
+    const runProbe = (): void => {
     const t = setTimeout(() => {
       void (async () => {
+        let recovered = false;
         try {
           const probe = await probeEgress(
             { id: account.accountId, egress: account.egress } as ClaudeAccount,
             { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS },
           );
-          if (probe.exitIp) {
+          recovered = !!probe.exitIp;
+          if (recovered) {
             egressFailStreak.delete(account.accountId);
-            log('warn', `inference-gateway: egress half-open probe for '${account.accountId}' RECOVERED (exit ${probe.exitIp}) — readmits clean at pause-expiry`);
+            gov.liftTransportPause(pausedUntil); // lift the transport pause NOW (no-op if a real 429 superseded it)
+            pool.readmit?.(account.accountId); // rejoin the round-robin immediately
+            egressPauseUntil.delete(account.accountId);
+            log('warn', `inference-gateway: egress probe for '${account.accountId}' RECOVERED (exit ${probe.exitIp}) — readmitted immediately`);
           } else {
-            log('warn', `inference-gateway: egress half-open probe for '${account.accountId}' STILL DOWN (${probe.error ?? 'no exit IP'}) — stays circuit-paused`);
+            log('warn', `inference-gateway: egress probe for '${account.accountId}' STILL DOWN (${probe.error ?? 'no exit IP'}) — stays circuit-paused`);
           }
         } catch (err) {
           log('warn', `inference-gateway: egress probe error for '${account.accountId}': ${(err as Error).message}`);
         } finally {
-          egressProbePending.delete(account.accountId);
+          // Keep probing until the proxy recovers OR the circuit pause expires (then it readmits naturally).
+          if (!recovered && Date.now() < pausedUntil) runProbe();
+          else egressProbePending.delete(account.accountId);
         }
       })();
     }, EGRESS_PROBE_DELAY_MS);
     t.unref?.();
+    };
+    runProbe();
   }
 
   let totalRequests = 0;
