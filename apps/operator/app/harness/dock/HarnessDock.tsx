@@ -29,13 +29,14 @@ import { MissingPanel } from './MissingPanel';
 import { toDockviewJson, toLayoutDoc, type DockviewLayout } from './layout-adapter';
 import { useDockLayout, type DockLayoutRow } from './useDockLayout';
 import { bindDockApi } from './dock-actions';
-import { canClosePanel } from './close-guard';
+import { canClosePanel, configureCloseGuard } from './close-guard';
 import { useNavShortcuts } from './useNavShortcuts';
 import { useLayoutResetShortcut } from './useLayoutResetShortcut';
 import { useRegisterPluginPanels } from './useRegisterPluginPanels';
 import { useFocusedPanelTracker } from './useFocusedPanelTracker';
 import { destroy as destroyIframe } from './iframe-host';
 import { isWellFormedLayout, type LayoutDoc } from '@papercusp/operator-core/lib/dock-layouts';
+import { useConfirmDialog } from '../useConfirmDialog';
 
 interface HarnessDockProps {
   /**
@@ -157,6 +158,19 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
   const apiRef = useRef<DockviewApi | null>(null);
   const restoredOnceRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+
+  useEffect(() => {
+    configureCloseGuard({
+      confirm: () =>
+        askConfirm({
+          title: 'Discard unsaved changes?',
+          body: 'This panel has unsaved changes. Close it anyway?',
+          confirmLabel: 'Close panel',
+          destructive: true,
+        }),
+    });
+  }, [askConfirm]);
 
   // Cmd+[/] global shortcuts; ignored when focus is in an input.
   useNavShortcuts();
@@ -365,10 +379,13 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
   }
 
   return (
-    <DockviewReact
-      onReady={onReady}
-      components={components}
-      className={className ?? 'dockview-theme-dark'}
-    />
+    <>
+      {confirmEl}
+      <DockviewReact
+        onReady={onReady}
+        components={components}
+        className={className ?? 'dockview-theme-dark'}
+      />
+    </>
   );
 }

@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { X, Trash2 } from 'lucide-react';
 import { PanelBar, PanelState, formatRelative } from '../panel-kit';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 type ToastLogRow = {
   id: number;
@@ -53,15 +54,16 @@ export default function NotificationsPanel({ active }: { active: boolean }) {
       <PanelBar label="Notifications" fetching={sync.fetching} onRefresh={sync.invalidate}>
         {errorCount > 0 && <span className="pcdar-pill is-bad">{errorCount} err</span>}
         {(sync.data?.length ?? 0) > 0 && (
-          <button
-            type="button"
-            className="pcdar-panel__refresh"
-            onClick={clearAll}
-            aria-label="Clear all notifications"
-            title="Clear all notification history"
-          >
-            <Trash2 size={12} aria-hidden="true" />
-          </button>
+          <Tooltip label="Clear all notification history">
+            <button
+              type="button"
+              className="pcdar-panel__refresh"
+              onClick={clearAll}
+              aria-label="Clear all notifications"
+            >
+              <Trash2 size={12} aria-hidden="true" />
+            </button>
+          </Tooltip>
         )}
       </PanelBar>
       <PanelState

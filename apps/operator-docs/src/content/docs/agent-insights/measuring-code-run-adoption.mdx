@@ -94,11 +94,20 @@ hand-loop) are different metrics — a weak model often does both, which inflate
 
 ## Empirical findings (2026-06-21, haiku, N=3 — directional)
 
+- **The token mechanism, measured: availability cuts tool calls ~3×.** On S13 the `no-coderun` arm
+  made **~16 tool calls** (hand-loops every item); every code:run-available arm made **~5–7**. The
+  *dollar* delta is muted (no-coderun $0.0204 vs baseline $0.0172, ~16%) ONLY because the in-process
+  target caps the SUT loop at `MAX_TOOL_ITERATIONS` — a real uncapped agent pays the full ~3× in
+  re-read context, so **`mean_calls` (16 → 6) is the truer proxy than `mean_cost` here**.
 - **Enforcement raises *reaching* without over-application.** `strong-enforce` and `reflexive`
-  overlays took S13 `reached_coderun` 2/3 → 3/3, while S14 stayed 3/3 pass with zero code:run — a
-  stronger nudge did not cause the model to wrap single calls.
+  overlays took S13 `reached_coderun` 2/3 → 3/3 while S14 stayed 3/3 pass with zero code:run — a
+  stronger nudge did not cause the model to wrap single calls. `strong-enforce` was even cost-NEGATIVE
+  vs baseline ($0.0164 < $0.0172).
 - **It does not fix CLEAN adoption on a weak model** — `clean_adopt` stayed ~0–1/3 across arms
   (haiku reaches for code:run but redundantly hand-loops too). The clean win is model-capability-gated.
+- **Low-N is the hardest case for a weak model** — S15 (a 3-item batch) baseline got 0/3
+  `reached_coderun` even under the aggressive nudge: haiku just fires 3 direct gets. The "reach for it
+  even at 2–3 calls" framing is aimed here; whether it moves a capable model is the sonnet re-run's job.
 - **Action taken:** folded the `strong-enforce` framing ("prefer it aggressively — batching cuts
   tokens several-fold, reach for it even at 2–3 calls") into the canonical `CODE_RUN_NUDGE` + the su
   prose copies, since it raises reaching with no over-application downside and matches the operator's

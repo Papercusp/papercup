@@ -15,6 +15,7 @@
 import { ListOrdered } from 'lucide-react';
 import type { ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 import type { BlockingImpact } from '@papercusp/operator-core/lib/harness/improvements/blocking-impact';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 const TOP_N = 5;
 
@@ -50,21 +51,22 @@ export default function HumanQueueDrain({
           const impact = impactOf(it);
           return (
             <li key={it.id}>
-              <button
-                type="button"
-                className="pc-hqdrain__item"
-                title={impact?.reasons.length ? impact.reasons.join('; ') : 'No downstream signals yet — ranked by severity and age'}
-                onClick={onSelect ? () => onSelect(it.id) : undefined}
-              >
-                <span className="pc-hqdrain__id">{it.id}</span>
-                <span className="pc-hqdrain__title">{it.title}</span>
-                {impact ? (
-                  <span className="pc-hqdrain__score" aria-label={`Blocking impact ${impact.score}`}>
-                    {impact.score}
-                  </span>
-                ) : null}
-                {impact?.reasons.length ? <span className="pc-hqdrain__why">{impact.reasons.join(' · ')}</span> : null}
-              </button>
+              <Tooltip label={impact?.reasons.length ? impact.reasons.join('; ') : 'No downstream signals yet — ranked by severity and age'}>
+                <button
+                  type="button"
+                  className="pc-hqdrain__item"
+                  onClick={onSelect ? () => onSelect(it.id) : undefined}
+                >
+                  <span className="pc-hqdrain__id">{it.id}</span>
+                  <span className="pc-hqdrain__title">{it.title}</span>
+                  {impact ? (
+                    <span className="pc-hqdrain__score" aria-label={`Blocking impact ${impact.score}`}>
+                      {impact.score}
+                    </span>
+                  ) : null}
+                  {impact?.reasons.length ? <span className="pc-hqdrain__why">{impact.reasons.join(' · ')}</span> : null}
+                </button>
+              </Tooltip>
             </li>
           );
         })}

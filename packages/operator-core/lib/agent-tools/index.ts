@@ -461,6 +461,8 @@ import './prompt/role-override';
 import './fleet/opus-budget';
 // live-configurability-audit-2026-06-20 P-006 — settable account scale-out trigger policy:
 import './accounts/scale-policy';
+// live-configurability-audit-2026-06-20 P-011 — settable auto-implement risk policy + dispatch limits:
+import './improvements/set-auto-policy';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

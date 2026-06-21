@@ -29,6 +29,7 @@ import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
 import AdvNowRunning from './AdvNowRunning';
 import HivesRunningPill from './HivesRunningPill';
@@ -449,23 +450,25 @@ export default function AdvShell({
                 <span>sub-{t('pot', { plural: true, lower: true })}</span>
               </label>
             )}
-            <button
-              type="button"
-              className="pc-advshell__action pc-advshell__action--new"
-              title={`Create or add a new ${t('pot')}`}
-              onClick={() => void setCreateOpen(true)}
-            >
-              <Plus size={13} aria-hidden /> New
-            </button>
-            {!allMode && activeSlug && activeIsHive && (
+            <Tooltip label={`Create or add a new ${t('pot')}`}>
               <button
                 type="button"
-                className="pc-advshell__action pc-advshell__action--share"
-                title={`Share ${activeSlug} — publish the hive to the P2P directory so others can join`}
-                onClick={() => void setShareOpen(true)}
+                className="pc-advshell__action pc-advshell__action--new"
+                onClick={() => void setCreateOpen(true)}
               >
-                <Share2 size={13} aria-hidden /> Share
+                <Plus size={13} aria-hidden /> New
               </button>
+            </Tooltip>
+            {!allMode && activeSlug && activeIsHive && (
+              <Tooltip label={`Share ${activeSlug} — publish the hive to the P2P directory so others can join`}>
+                <button
+                  type="button"
+                  className="pc-advshell__action pc-advshell__action--share"
+                  onClick={() => void setShareOpen(true)}
+                >
+                  <Share2 size={13} aria-hidden /> Share
+                </button>
+              </Tooltip>
             )}
             {!allMode && activeSlug && !activeIsHive && activeIsShared && (
               <span
@@ -512,7 +515,6 @@ export default function AdvShell({
                 <Tabs.Trigger
                   key={t.id}
                   value={t.id}
-                  title={t.label}
                   className={`pc-advshell__tab pc-advshell__tab--${t.id}`}
                   style={{
                     '--h-main-tab-accent': t.accent,

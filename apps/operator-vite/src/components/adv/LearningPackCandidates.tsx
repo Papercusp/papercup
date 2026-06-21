@@ -17,6 +17,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Inbox } from 'lucide-react';
 import type { LearningPackCandidate } from '@papercusp/operator-core/lib/learning-packs/candidates';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 const actionBtn: React.CSSProperties = {
   background: 'none',
@@ -102,24 +103,26 @@ export default function LearningPackCandidates() {
             >
               {lcand === c.id ? 'hide draft' : 'view draft'}
             </button>
-            <button
-              type="button"
-              style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
-              disabled={busy === c.id}
-              title="Write this lesson into the fleet-lessons pack (hives adopt it through the pack update review)"
-              onClick={() => void decide(c, 'adopt')}
-            >
-              adopt
-            </button>
-            <button
-              type="button"
-              style={actionBtn}
-              disabled={busy === c.id}
-              title="Dismiss permanently — this lesson's signature never re-files"
-              onClick={() => void decide(c, 'dismiss')}
-            >
-              dismiss
-            </button>
+            <Tooltip label="Write this lesson into the fleet-lessons pack (hives adopt it through the pack update review)">
+              <button
+                type="button"
+                style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                disabled={busy === c.id}
+                onClick={() => void decide(c, 'adopt')}
+              >
+                adopt
+              </button>
+            </Tooltip>
+            <Tooltip label="Dismiss permanently — this lesson's signature never re-files">
+              <button
+                type="button"
+                style={actionBtn}
+                disabled={busy === c.id}
+                onClick={() => void decide(c, 'dismiss')}
+              >
+                dismiss
+              </button>
+            </Tooltip>
           </div>
           <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
             recurred {c.recurrenceCount}× across {c.scopes.join(', ')}

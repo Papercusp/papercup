@@ -57,6 +57,9 @@ import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
 import { DemandPanel } from './DemandPanel';
 import { ExperimentsPanel } from './ExperimentsPanel';
 import { Select } from '@/app/harness/Select';
+import { Tooltip } from '@/app/harness/Tooltip';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { usePromptDialog } from '@/app/harness/usePromptDialog';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
@@ -1749,6 +1752,8 @@ function LearningsView({ hive }: { hive: string }) {
     review: InstallReview;
     choices: Record<string, InstallAction>;
   } | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   const packPost = async (
     path: 'install' | 'upgrade' | 'uninstall' | 'set-enabled',
@@ -1794,7 +1799,13 @@ function LearningsView({ hive }: { hive: string }) {
   };
 
   const forget = async (row: HiveLearningRowT) => {
-    if (!window.confirm(`Remove this learning?\n\n${row.text.slice(0, 160)}`)) return;
+    const ok = await askConfirm({
+      title: 'Remove this learning?',
+      body: row.text.slice(0, 160),
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await fetch(`/api/user/memory?id=${encodeURIComponent(row.id)}`, { method: 'DELETE' });
     } finally {
@@ -1802,7 +1813,14 @@ function LearningsView({ hive }: { hive: string }) {
     }
   };
   const edit = async (row: HiveLearningRowT) => {
-    const next = window.prompt('Edit this learning (agents recall the exact text):', row.text);
+    const next = await askPrompt({
+      title: 'Edit learning',
+      label: 'Learning text',
+      body: 'Agents recall the exact text.',
+      defaultValue: row.text,
+      submitLabel: 'Save',
+      validate: (value) => (value.trim() ? null : 'Learning text is required.'),
+    });
     if (next == null || !next.trim() || next === row.text) return;
     try {
       await fetch('/api/user/memory', {
@@ -1826,6 +1844,9 @@ function LearningsView({ hive }: { hive: string }) {
   };
 
   return (
+    <>
+    {confirmEl}
+    {promptEl}
     <section className="pc-learning__section">
       {/* The hive picker now lives in the tab header (P-042) — this strip keeps
           only the origin filter, scoped to the header-selected hive. */}
@@ -1865,39 +1886,52 @@ function LearningsView({ hive }: { hive: string }) {
           {(snap?.packs ?? []).map((p) => (
             <span key={p.packId} className="pc-learning__flowchip" style={{ gap: 6 }}>
               <strong>{p.packId}</strong>
-              {p.enabled === false ? <em title="Muted — rows stay stored but are not injected into agent turns">muted</em> : null}
-              <button
-                type="button"
-                style={actionBtn}
-                disabled={busyPack === p.packId}
-                title={p.enabled === false ? 'Resume injecting this pack' : 'Stop injecting this pack (rows stay stored)'}
-                onClick={() => void packPost('set-enabled', { pack: p.packId, enabled: p.enabled === false })}
-              >
-                {p.enabled === false ? 'unmute' : 'mute'}
-              </button>
-              <button
-                type="button"
-                style={actionBtn}
-                disabled={busyPack === p.packId}
-                title="Remove this pack's rows (your edited rows are kept)"
-                onClick={() => {
-                  if (window.confirm(`Uninstall ${p.packId}? Rows you edited are kept.`)) {
-                    void packPost('uninstall', { pack: p.packId });
-                  }
-                }}
-              >
-                uninstall
-              </button>
-              {p.updateAvailable ? (
+              {p.enabled === false ? (
+                <Tooltip label="Muted — rows stay stored but are not injected into agent turns">
+                  <em>muted</em>
+                </Tooltip>
+              ) : null}
+              <Tooltip label={p.enabled === false ? 'Resume injecting this pack' : 'Stop injecting this pack (rows stay stored)'}>
                 <button
                   type="button"
-                  style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                  style={actionBtn}
                   disabled={busyPack === p.packId}
-                  title={`Adopt the new learnings in v${p.availableVersion} — rows you already have are never auto-changed`}
-                  onClick={() => void packPost('upgrade', { pack: p.packId }, 'upgrade')}
+                  onClick={() => void packPost('set-enabled', { pack: p.packId, enabled: p.enabled === false })}
                 >
-                  v{p.availableVersion} available
+                  {p.enabled === false ? 'unmute' : 'mute'}
                 </button>
+              </Tooltip>
+              <Tooltip label="Remove this pack's rows (your edited rows are kept)">
+                <button
+                  type="button"
+                  style={actionBtn}
+                  disabled={busyPack === p.packId}
+                  onClick={async () => {
+                    const ok = await askConfirm({
+                      title: `Uninstall ${p.packId}?`,
+                      body: 'Rows you edited are kept.',
+                      confirmLabel: 'Uninstall',
+                      destructive: true,
+                    });
+                    if (ok) {
+                    void packPost('uninstall', { pack: p.packId });
+                  }
+                  }}
+                >
+                  uninstall
+                </button>
+              </Tooltip>
+              {p.updateAvailable ? (
+                <Tooltip label={`Adopt the new learnings in v${p.availableVersion} — rows you already have are never auto-changed`}>
+                  <button
+                    type="button"
+                    style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                    disabled={busyPack === p.packId}
+                    onClick={() => void packPost('upgrade', { pack: p.packId }, 'upgrade')}
+                  >
+                    v{p.availableVersion} available
+                  </button>
+                </Tooltip>
               ) : null}
             </span>
           ))}
@@ -2032,7 +2066,7 @@ function LearningsView({ hive }: { hive: string }) {
             <li key={r.id} className="pc-learning__row" style={{ alignItems: 'flex-start' }}>
               <span
                 className="pc-learning__sev"
-                style={{ background: r.packId ? '#818cf8' : '#34d399', marginTop: 5 }}
+                style={{ background: r.packId ? 'var(--accent)' : 'var(--ok)', marginTop: 5 }}
                 aria-hidden
               />
               <span style={{ flex: 1, minWidth: 0 }}>
@@ -2052,14 +2086,19 @@ function LearningsView({ hive }: { hive: string }) {
                 </span>
               </span>
               <span style={{ display: 'flex', gap: 6, marginTop: 2 }}>
-                <button type="button" style={actionBtn} onClick={() => void edit(r)} title="Edit the learning text">edit</button>
-                <button type="button" style={actionBtn} onClick={() => void forget(r)} title="Remove this learning from the hive's memory">remove</button>
+                <Tooltip label="Edit the learning text">
+                  <button type="button" style={actionBtn} onClick={() => void edit(r)}>edit</button>
+                </Tooltip>
+                <Tooltip label="Remove this learning from the hive's memory">
+                  <button type="button" style={actionBtn} onClick={() => void forget(r)}>remove</button>
+                </Tooltip>
               </span>
             </li>
           ))}
         </ul>
       )}
     </section>
+    </>
   );
 }
 

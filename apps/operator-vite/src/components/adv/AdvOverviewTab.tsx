@@ -209,16 +209,18 @@ export default function AdvOverviewTab() {
       <div className="pc-overview__topbar">
         <FleetRateControl />
         <div className="pc-overview__topbar-spacer" />
-        <button
-          type="button"
-          className="pc-overview__alerts"
-          data-has-alerts={alertCount > 0}
-          title="Alerts — smoke failures + escalations"
-          onClick={() => void openInbox('alert')}
-        >
-          <Bell size={13} aria-hidden />
-          <span>{alertCount}</span>
-        </button>
+        <Tooltip label="Alerts — smoke failures + escalations">
+          <button
+            type="button"
+            className="pc-overview__alerts"
+            data-has-alerts={alertCount > 0}
+            aria-label="Open alerts"
+            onClick={() => void openInbox('alert')}
+          >
+            <Bell size={13} aria-hidden />
+            <span>{alertCount}</span>
+          </button>
+        </Tooltip>
       </div>
 
       {/* ── 2×2 tiles ──────────────────────────────────────────────────── */}
@@ -509,7 +511,7 @@ function OverviewTile({
         <span className="pc-overview__tile-title">{title}</span>
         {typeof count === 'number' && count > 0 && <span className="pc-overview__tile-count">{count}</span>}
         <Tooltip label={`Open ${title}`}>
-          <button type="button" className="pc-overview__tile-open" onClick={onOpen}>
+          <button type="button" className="pc-overview__tile-open" aria-label={`Open ${title}`} onClick={onOpen}>
             open <ArrowRight size={11} aria-hidden />
           </button>
         </Tooltip>

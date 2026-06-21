@@ -4,6 +4,7 @@ import { Eye, Hand, MonitorPlay, MonitorOff, RefreshCw, X } from 'lucide-react';
 import { createResilientEventSource, type ResilientEventSource } from '@papercusp/sse';
 import FrameVncView from './FrameVncView';
 import FrameScreenTrackView from './FrameScreenTrackView';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 /**
  * AdvFramesTab — the Swarm live view
@@ -251,26 +252,26 @@ export default function AdvFramesTab() {
                 const key = tileKey(t.slug, t.display);
                 const ageMs = now - t.capturedAtMs;
                 return (
-                  <button
-                    key={key}
-                    type="button"
-                    className="pc-frames__tile"
-                    data-selected={selectedKey === key}
-                    data-stale={ageMs > STALE_AFTER_MS}
-                    onClick={() => void setSelectedKey(selectedKey === key ? null : key)}
-                    title={`${t.slug} :${t.display}${t.role ? ` — ${t.role}` : ''}`}
-                  >
-                    <img
-                      src={`data:image/jpeg;base64,${t.jpegBase64}`}
-                      alt={`${t.slug} display :${t.display}`}
-                    />
-                    <span className="pc-frames__tile-meta">
-                      <span className="pc-frames__tile-slug">{t.slug}</span>
-                      <span className="pc-frames__tile-display">:{t.display}</span>
-                      {t.role && <span className="pc-frames__tile-role">{t.role}</span>}
-                      <span className="pc-frames__tile-age">{formatAge(ageMs)}</span>
-                    </span>
-                  </button>
+                  <Tooltip key={key} label={`${t.slug} :${t.display}${t.role ? ` — ${t.role}` : ''}`}>
+                    <button
+                      type="button"
+                      className="pc-frames__tile"
+                      data-selected={selectedKey === key}
+                      data-stale={ageMs > STALE_AFTER_MS}
+                      onClick={() => void setSelectedKey(selectedKey === key ? null : key)}
+                    >
+                      <img
+                        src={`data:image/jpeg;base64,${t.jpegBase64}`}
+                        alt={`${t.slug} display :${t.display}`}
+                      />
+                      <span className="pc-frames__tile-meta">
+                        <span className="pc-frames__tile-slug">{t.slug}</span>
+                        <span className="pc-frames__tile-display">:{t.display}</span>
+                        {t.role && <span className="pc-frames__tile-role">{t.role}</span>}
+                        <span className="pc-frames__tile-age">{formatAge(ageMs)}</span>
+                      </span>
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -316,20 +317,23 @@ export default function AdvFramesTab() {
                 {live ? 'Back to stills' : 'Watch live'}
               </button>
               {live && (
-                <button
-                  type="button"
-                  className="pc-frames__panel-btn"
-                  data-danger={!drive}
-                  data-active={drive}
-                  title={
+                <Tooltip
+                  label={
                     drive
                       ? 'Hand the mouse/keyboard back to the agent'
                       : 'Take the mouse/keyboard — disruptive to a working agent; audited (D-002)'
                   }
-                  onClick={() => void setDrive(drive ? null : true)}
                 >
-                  {drive ? 'Release control' : 'Take control'}
-                </button>
+                  <button
+                    type="button"
+                    className="pc-frames__panel-btn"
+                    data-danger={!drive}
+                    data-active={drive}
+                    onClick={() => void setDrive(drive ? null : true)}
+                  >
+                    {drive ? 'Release control' : 'Take control'}
+                  </button>
+                </Tooltip>
               )}
             </span>
             <button

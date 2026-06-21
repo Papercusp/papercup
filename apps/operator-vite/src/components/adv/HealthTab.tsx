@@ -19,6 +19,7 @@
 import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { ArrowUpRight, HeartPulse } from 'lucide-react';
+import { Tooltip } from '@/app/harness/Tooltip';
 import {
   PANEL_ORDER,
   type SystemHealth,
@@ -108,15 +109,16 @@ function HealthCard({ panel, onLink }: { panel: HealthPanel; onLink: (href: stri
         <span className={`pc-hcard__dot pc-hcard__dot--${tone}`} aria-hidden title={panel.status} />
         <span className="pc-hcard__title">{panel.label}</span>
         {panel.link && (
-          <a
-            className="pc-hcard__link"
-            href={panel.link.href}
-            onClick={onLink(panel.link.href)}
-            title={`Open ${panel.link.label}`}
-            aria-label={`Open ${panel.link.label}`}
-          >
-            <ArrowUpRight size={12} aria-hidden />
-          </a>
+          <Tooltip label={`Open ${panel.link.label}`}>
+            <a
+              className="pc-hcard__link"
+              href={panel.link.href}
+              onClick={onLink(panel.link.href)}
+              aria-label={`Open ${panel.link.label}`}
+            >
+              <ArrowUpRight size={12} aria-hidden />
+            </a>
+          </Tooltip>
         )}
       </div>
       <div className="pc-hcard__summary" title={panel.error ?? panel.summary}>

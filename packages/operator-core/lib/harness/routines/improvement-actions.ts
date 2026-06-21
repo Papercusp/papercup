@@ -38,6 +38,7 @@ import { buildLaunchSpawnRequest } from '../../blueprint/launch-blueprint';
 import type { DurableSpawnFireInput } from '../../dbos/durable-spawn';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
+import { readAutoImplementPolicy } from '../../auto-implement-policy';
 import { readOwnerFullAutonomyGrant } from '../improvements/full-autonomy-grant';
 import { readRecentDispatches, recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
 import { laneInEnvOutage } from '../improvements/orphaned-dispatch';
@@ -420,14 +421,19 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
   // OVERRIDES it to a DIFFERENT harness. `planImplementRun`'s pure no-runner guard stays
   // intact (the `|| null` tail still trips it if neither resolves — e.g. an empty slug).
   const runnerHarness = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || ctx.installSlug || null;
-  const maxPerRun = intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_PER_RUN', 1, { min: 0 });
+  // live-configurability-audit P-011: the stored auto-implement policy (riskTier + dispatch limits)
+  // overrides the env value-gates / DEFAULT_RISK_TIER_POLICY; an empty store ⇒ env/default ⇒
+  // byte-identical. Inert until IMPROVEMENT_AUTO_IMPLEMENT is armed (flagEnabled below).
+  const storedAutoPolicy = await readAutoImplementPolicy();
+  const maxPerRun = storedAutoPolicy.maxPerRun ?? intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_PER_RUN', 1, { min: 0 });
   // maxAttempts is genuinely optional (undefined = no cap). Honor an explicit 0
   // (a valid "never dispatch" pause) when set; leave undefined when unset/blank.
   const maxAttemptsRaw = process.env.PAPERCUSP_IMPROVEMENT_MAX_ATTEMPTS;
   const maxAttempts =
-    maxAttemptsRaw && maxAttemptsRaw.trim() !== ''
+    storedAutoPolicy.maxAttempts ??
+    (maxAttemptsRaw && maxAttemptsRaw.trim() !== ''
       ? intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_ATTEMPTS', 0, { min: 0 })
-      : undefined;
+      : undefined);
 
   // P-032: PAUSE the lane during a fleet credential/env outage so it stops dispatching
   // workers that die instantly on rate-limit/auth (and stops generating orphan noise —
@@ -445,7 +451,7 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     }
   }
 
-  const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts, laneEnvOutage, ownerFullAutonomy });
+  const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts, laneEnvOutage, ownerFullAutonomy, policy: storedAutoPolicy.riskTier });
 
   // Exhausted-without-resolve ⇒ needs-human (consume-edges P-012): an item whose
   // dispatch attempts exhausted with no improvements:resolve ever recorded (silent

@@ -169,7 +169,7 @@ describe('AdvOverviewTab component', () => {
     render(<AdvOverviewTab />);
     expect(screen.getByText('Approve the migration')).toBeTruthy();
     expect(screen.getByText('papercup')).toBeTruthy();
-    const alerts = screen.getByTitle(/Alerts — smoke failures \+ escalations/);
+    const alerts = screen.getByRole('button', { name: 'Open alerts' });
     expect(alerts.textContent).toContain('2');
     expect(alerts.getAttribute('data-has-alerts')).toBe('true');
   });
@@ -236,22 +236,22 @@ describe('AdvOverviewTab component', () => {
 
   it('clicking a tile open button writes the target tab to the URL', () => {
     render(<AdvOverviewTab />);
-    fireEvent.click(screen.getByTitle('Open Plans'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Plans' }));
     expect(nuqsSetters.tab).toHaveBeenCalledWith('plans');
-    fireEvent.click(screen.getByTitle('Open Agents'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Agents' }));
     expect(nuqsSetters.tab).toHaveBeenCalledWith('harnesses');
   });
 
   it('the alerts button deep-links the inbox alert tier (sequential writes)', async () => {
     render(<AdvOverviewTab />);
-    fireEvent.click(screen.getByTitle(/Alerts — smoke failures/));
+    fireEvent.click(screen.getByRole('button', { name: 'Open alerts' }));
     await waitFor(() => expect(nuqsSetters.inboxTier).toHaveBeenCalledWith('alert'));
     expect(nuqsSetters.tab).toHaveBeenCalledWith('plans');
   });
 
   it('the Needs-you open button deep-links the decision tier', async () => {
     render(<AdvOverviewTab />);
-    fireEvent.click(screen.getByTitle('Open Needs you'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Needs you' }));
     await waitFor(() => expect(nuqsSetters.inboxTier).toHaveBeenCalledWith('decision'));
     expect(nuqsSetters.tab).toHaveBeenCalledWith('plans');
   });

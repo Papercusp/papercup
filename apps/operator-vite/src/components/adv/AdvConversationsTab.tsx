@@ -754,7 +754,7 @@ function FeedItem({
             type="button"
             className="pc-advfeed__from"
             onClick={() => onAgentClick(row.from)}
-            title={`Filter to ${row.from}`}
+            aria-label={`Filter to ${row.from}`}
           >
             {row.from}
           </button>
@@ -765,7 +765,7 @@ function FeedItem({
           className="pc-advfeed__summary"
           onClick={onToggle}
           aria-expanded={open}
-          title={hasDetail ? 'Expand' : undefined}
+          aria-label={hasDetail ? 'Expand row' : undefined}
         >
           {summary || <em className="pc-advfeed__nosum">(no summary)</em>}
         </button>
@@ -774,7 +774,7 @@ function FeedItem({
             type="button"
             className="pc-advfeed__planchip"
             onClick={() => onPlanClick(row.plan_slug!)}
-            title={`Filter to ${row.plan_slug}`}
+            aria-label={`Filter to ${row.plan_slug}`}
           >
             {row.plan_slug}
           </button>
@@ -1718,7 +1718,7 @@ function MessagesView() {
                   className="pc-advfeed__summary"
                   onClick={() => void setOpen((p) => (p === m.id ? null : m.id))}
                   aria-expanded={isOpen}
-                  title={hasDetail ? 'Expand' : undefined}
+                  aria-label={hasDetail ? 'Expand row' : undefined}
                 >
                   {m.subject || m.body || <em className="pc-advfeed__nosum">(no subject)</em>}
                 </button>

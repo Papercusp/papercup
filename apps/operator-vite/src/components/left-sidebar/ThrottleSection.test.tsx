@@ -23,6 +23,29 @@ const H = vi.hoisted(() => ({
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ data: H.tiers, loading: false, error: null }),
 }));
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({
+    value,
+    onChange,
+    options,
+    ariaLabel,
+    disabled,
+  }: {
+    value: string;
+    onChange: (v: string) => void;
+    options: Array<{ value: string; label: string; disabled?: boolean }>;
+    ariaLabel?: string;
+    disabled?: boolean;
+  }) => (
+    <select aria-label={ariaLabel} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      {options.map((o) => (
+        <option key={o.value} value={o.value} disabled={o.disabled}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
 
 import ThrottleSection, {
   effectiveCadence,

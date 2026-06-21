@@ -11,8 +11,12 @@ import { relative, resolve, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const OPERATOR_ROOT = resolve(__dirname, '../..');
+const APPS_ROOT = resolve(OPERATOR_ROOT, '..');
 
-const SOURCE_DIRS = ['app'];
+const SOURCE_DIRS = [
+  join(OPERATOR_ROOT, 'app'),
+  join(APPS_ROOT, 'operator-vite/src'),
+];
 
 const SKIP_DIR_NAMES = new Set([
   'node_modules',
@@ -67,13 +71,13 @@ function walk(dir: string, out: string[]): void {
 function collectFiles(): string[] {
   const files: string[] = [];
   for (const sourceDir of SOURCE_DIRS) {
-    walk(join(OPERATOR_ROOT, sourceDir), files);
+    walk(sourceDir, files);
   }
   return files.sort();
 }
 
 function rel(file: string): string {
-  return relative(OPERATOR_ROOT, file);
+  return relative(APPS_ROOT, file);
 }
 
 function unexpectedFiles(pattern: RegExp, allowed: ReadonlySet<string>): string[] {

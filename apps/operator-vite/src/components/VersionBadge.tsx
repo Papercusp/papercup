@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 /**
  * VersionBadge — bottom-right "what's running" pill + out-of-date detector.
@@ -69,37 +70,38 @@ export default function VersionBadge() {
       ).toLocaleString()}\n${info.isDesktop ? 'desktop' : 'browser'}`;
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      style={{
-        position: 'fixed',
-        right: 10,
-        bottom: 8,
-        zIndex: 2147483640,
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '4px 9px',
-        borderRadius: 8,
-        font: '600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace',
-        letterSpacing: '0.02em',
-        cursor: stale ? 'pointer' : 'default',
-        border: `1px solid ${stale ? 'rgba(250,204,21,0.55)' : 'rgba(125,211,252,0.16)'}`,
-        background: stale ? 'rgba(250,204,21,0.16)' : 'rgba(8,18,30,0.55)',
-        color: stale ? '#fde68a' : 'rgba(186,230,253,0.55)',
-        opacity: stale ? 1 : 0.6,
-        backdropFilter: 'blur(6px)',
-        WebkitBackdropFilter: 'blur(6px)',
-        transition: 'opacity 120ms ease, background 120ms ease, color 120ms ease, border-color 120ms ease',
-      }}
-    >
-      <span>v{info.appVersion}</span>
-      <span style={{ opacity: 0.5 }}>·</span>
-      <span>{info.sidecarSha}</span>
-      {stale && <span style={{ fontWeight: 800 }}>↻ reload</span>}
-    </button>
+    <Tooltip label={title}>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={title}
+        style={{
+          position: 'fixed',
+          right: 10,
+          bottom: 8,
+          zIndex: 2147483640,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 9px',
+          borderRadius: 8,
+          font: '600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace',
+          letterSpacing: '0.02em',
+          cursor: stale ? 'pointer' : 'default',
+          border: `1px solid ${stale ? 'rgba(250,204,21,0.55)' : 'rgba(125,211,252,0.16)'}`,
+          background: stale ? 'rgba(250,204,21,0.16)' : 'rgba(8,18,30,0.55)',
+          color: stale ? '#fde68a' : 'rgba(186,230,253,0.55)',
+          opacity: stale ? 1 : 0.6,
+          backdropFilter: 'blur(6px)',
+          WebkitBackdropFilter: 'blur(6px)',
+          transition: 'opacity 120ms ease, background 120ms ease, color 120ms ease, border-color 120ms ease',
+        }}
+      >
+        <span>v{info.appVersion}</span>
+        <span style={{ opacity: 0.5 }}>·</span>
+        <span>{info.sidecarSha}</span>
+        {stale && <span style={{ fontWeight: 800 }}>↻ reload</span>}
+      </button>
+    </Tooltip>
   );
 }

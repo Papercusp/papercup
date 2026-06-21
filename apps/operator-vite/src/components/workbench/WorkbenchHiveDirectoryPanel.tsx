@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { panelRegistry } from '@/app/harness/dock/panel-registry';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 interface HiveRow {
   hiveId: string;
@@ -124,9 +125,11 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
 
   const refreshBtn = (
     <div style={headerRow}>
-      <button type="button" data-testid="hive-directory-refresh" onClick={() => void load()} title="Re-fetch the discovered hives now">
-        Refresh
-      </button>
+      <Tooltip label="Re-fetch the discovered hives now">
+        <button type="button" data-testid="hive-directory-refresh" onClick={() => void load()}>
+          Refresh
+        </button>
+      </Tooltip>
     </div>
   );
 

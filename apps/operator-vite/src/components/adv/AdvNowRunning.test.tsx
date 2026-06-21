@@ -168,9 +168,9 @@ describe('AdvNowRunning', () => {
 
   it('Stop confirms, then fires hive:pause with drainBees', async () => {
     hiveResult = { data: [{ slug: 'hive-1', started: true }] };
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Stop hive'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause hive' }));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
         { name: 'hive:pause', args: { harness: 'hive-1', drainBees: true }, confirmed: true },
@@ -181,9 +181,9 @@ describe('AdvNowRunning', () => {
 
   it('a declined confirm aborts the pause entirely', async () => {
     hiveResult = { data: [{ slug: 'hive-1', started: true }] };
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Stop hive'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
     expect(runToolCalls).toEqual([]);
     expect(toastMock.success).not.toHaveBeenCalled();
   });

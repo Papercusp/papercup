@@ -23,10 +23,7 @@ export type ConfirmClose = (panelId: string) => boolean | Promise<boolean>;
 
 const guards = new Map<string, CanCloseSilently>();
 
-let confirmClose: ConfirmClose = (_panelId) =>
-  typeof window !== 'undefined'
-    ? window.confirm('This panel has unsaved changes. Close it anyway?')
-    : true;
+let confirmClose: ConfirmClose = async () => false;
 
 /** Override the confirm prompt (e.g. a project's own modal). */
 export function configureCloseGuard(opts: { confirm?: ConfirmClose }): void {
@@ -75,8 +72,5 @@ export async function canClosePanel(panelId: string): Promise<boolean> {
 /** Test-only: clear registry + restore the default confirm. */
 export function _resetCloseGuardsForTests(): void {
   guards.clear();
-  confirmClose = (_panelId) =>
-    typeof window !== 'undefined'
-      ? window.confirm('This panel has unsaved changes. Close it anyway?')
-      : true;
+  confirmClose = async () => false;
 }
