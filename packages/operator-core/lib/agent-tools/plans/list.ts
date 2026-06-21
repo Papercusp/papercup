@@ -89,8 +89,45 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe('List EVERY plan in the active workspace, regardless of harness (workspace-data-isolation-leaks F-A1). The UI "all plans" view uses this instead of the harness:"all" wildcard (which is the SU shortcut for Papercusp\'s own plans). Overrides harness / harness_slugs.'),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(500)
+    .optional()
+    .describe('Max plans returned (after ordering). Combine with order:"updated" for "the N most-recent plans" instead of fetching every plan.'),
+  createdSince: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Only plans created at/after this — an ISO date/timestamp ("2026-06-17") OR a relative window ("4d", "12h", "30m"). Filtered server-side (PG), not after fetch.'),
+  updatedSince: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Only plans with last real activity at/after this — ISO or relative ("4d"). Filtered server-side.'),
+  order: z
+    .enum(['updated', 'created', 'slug'])
+    .optional()
+    .describe('Order: "updated"/"created" = most-recent first; "slug" (default) = alphabetical.'),
+  compact: z
+    .boolean()
+    .optional()
+    .describe('Skip per-plan item-state resolution — omit itemCounts + maxImportance for a smaller, cheaper result (keeps slug/title/status/updated/created/owner/template/nextAction/harness). Use for a fast directory scan; drop it when you need effective item counts.'),
   harness: harnessArg,
 });
+
+/** Resolve a createdSince/updatedSince arg: a relative window ("4d"/"12h"/"30m")
+ *  → an absolute ISO timestamp; otherwise pass the (assumed-ISO) string through
+ *  for PG to parse. */
+function resolveSince(v: string | undefined): string | undefined {
+  if (!v) return undefined;
+  const m = /^(\d+)\s*([dhm])$/i.exec(v.trim());
+  if (!m) return v;
+  const n = Number.parseInt(m[1], 10);
+  const unitMs = m[2].toLowerCase() === 'd' ? 86_400_000 : m[2].toLowerCase() === 'h' ? 3_600_000 : 60_000;
+  return new Date(Date.now() - n * unitMs).toISOString();
+}
 
 type ListRow = {
   slug: string;
@@ -152,9 +189,10 @@ export default defineTool({
   description:
     'List SU plans under apps/operator/docs/plans/. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line. Legacy plans (no frontmatter) surface as status="draft" (flagged via isLegacy).',
   guidance: {
-    when: 'You need a directory of plans — "what plans exist", "what plans are active", or the entry point before plans:get.',
+    when:
+      'A directory of plans — "what plans exist / are active", or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or "4d") + order:"updated" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For a fast scan that skips item-count resolution, add compact:true.',
     notWhen:
-      'You already know the plan slug and want full contents — call plans:get directly.',
+      'You already know the plan slug and want full contents — call plans:get directly. For an ad-hoc/aggregate query no arg here exposes (group-by, joins), use dev:pg_query.',
     chaining:
       'plans:list → plans:get { slug } (full plan) or plans:items { actionable: true } (pickable items across plans).',
   },
@@ -170,6 +208,14 @@ export default defineTool({
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
     const includeInstances = args.includeInstances === true;
+    const compact = args.compact === true;
+    // Server-side recency/order/limit (pushed into the SQL, not post-filtered).
+    const sourceFilters = {
+      ...(resolveSince(args.createdSince) ? { createdSince: resolveSince(args.createdSince) } : {}),
+      ...(resolveSince(args.updatedSince) ? { updatedSince: resolveSince(args.updatedSince) } : {}),
+      ...(args.order ? { order: args.order } : {}),
+      ...(args.limit && args.limit > 0 ? { limit: args.limit } : {}),
+    };
 
     // P-029: build the list of harness slugs to read.
     // When `harness_slugs` is supplied, fan out across each (validated via
@@ -213,6 +259,7 @@ export default defineTool({
         includeInstances,
         ...(args.template ? { template: args.template } : {}),
         ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
+        ...sourceFilters,
       });
       const byHarness = new Map<string, PlanIndexRow[]>();
       for (const r of allRows) {
@@ -230,6 +277,7 @@ export default defineTool({
             includeInstances,
             ...(args.template ? { template: args.template } : {}),
             ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
+            ...sourceFilters,
           });
           batches.push({ harnessSlug, rows });
         } catch (err) {
@@ -265,10 +313,13 @@ export default defineTool({
     // `blocked` by an open engineer-issue. Hoisted out of the harness×plan loops.
     // Non-fatal — degrades to resolver-only counts on error.
     let allBlocked = new Map<string, string[]>();
-    try {
-      allBlocked = await getAllBlockedPlanItems();
-    } catch {
-      // Non-fatal — no issue-block overlay.
+    if (!compact) {
+      // Only needed for the itemCounts overlay — skipped in compact mode.
+      try {
+        allBlocked = await getAllBlockedPlanItems();
+      } catch {
+        // Non-fatal — no issue-block overlay.
+      }
     }
 
     // Scout provenance: one batched ledger read (scout_routed_ideas is the
@@ -297,9 +348,9 @@ export default defineTool({
       // Stage-3 items index — e.g. a federated remote row whose projection
       // didn't fill): ONE batched content fetch for just those slugs, parsed
       // below. Best-effort — on failure their counts degrade to {}.
-      const gapSlugs = rows
-        .filter((r) => !r.isLegacy && r.items.length === 0)
-        .map((r) => r.planSlug);
+      const gapSlugs = compact
+        ? []
+        : rows.filter((r) => !r.isLegacy && r.items.length === 0).map((r) => r.planSlug);
       let gapContents = new Map<string, string>();
       if (gapSlugs.length > 0) {
         try {
@@ -334,7 +385,7 @@ export default defineTool({
 
         let itemCounts: ListRow['itemCounts'] = null;
         let maxImportance: Importance | null = null;
-        if (!row.isLegacy) {
+        if (!compact && !row.isLegacy) {
           const { items } = applyPlanItemBlocks(
             resolveEffectiveStatusForItems(itemsForRow(row)).items,
             (id) => allBlocked.get(planItemRef(slug, id)),
@@ -391,16 +442,29 @@ export default defineTool({
       }
     }
 
+    // Re-apply order + limit ACROSS harness batches (SQL ordered/limited each
+    // batch; this makes a multi-harness fan-out yield the correct global top-N).
+    if (args.order === 'updated') {
+      augmentedRows.sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
+    } else if (args.order === 'created') {
+      augmentedRows.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
+    } else if (args.order === 'slug') {
+      augmentedRows.sort((a, b) => a.slug.localeCompare(b.slug));
+    }
+    const plans =
+      args.limit && args.limit > 0 ? augmentedRows.slice(0, args.limit) : augmentedRows;
+
     ctxAny.metadata?.({
-      count: augmentedRows.length,
+      count: plans.length,
       includeArchived,
       includeLegacy,
+      compact,
       harnessCount: batches.length,
       ...(unknownHarnesses.length > 0 && { unknownHarnesses }),
     });
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ plans: augmentedRows }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify({ plans }) }],
     };
   },
 });

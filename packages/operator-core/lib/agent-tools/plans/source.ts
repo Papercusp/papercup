@@ -818,6 +818,12 @@ export async function listPlanIndexRowsForWorkspace(
     template?: string;
     /** Filter to per-run instances of a given template plan (P-005); implies instances. */
     templateSlug?: string;
+    /** Only plans whose row `created_at >= this` (ISO timestamp). */
+    createdSince?: string;
+    /** Only plans whose row `updated_at >= this` (ISO timestamp). */
+    updatedSince?: string;
+    /** Row order: 'updated'/'created' = recency DESC, default = harness+slug ASC. */
+    order?: 'updated' | 'created' | 'slug';
   },
 ): Promise<PlanIndexRow[]> {
   const { workspaceId } = opts;
@@ -836,6 +842,14 @@ export async function listPlanIndexRowsForWorkspace(
       const templateSlugFilter = opts.templateSlug
         ? tx`AND template_slug = ${opts.templateSlug}`
         : tx``;
+      const createdSinceFilter = opts.createdSince ? tx`AND created_at >= ${opts.createdSince}` : tx``;
+      const updatedSinceFilter = opts.updatedSince ? tx`AND updated_at >= ${opts.updatedSince}` : tx``;
+      const orderClause =
+        opts.order === 'updated'
+          ? tx`ORDER BY updated_at DESC NULLS LAST`
+          : opts.order === 'created'
+            ? tx`ORDER BY created_at DESC NULLS LAST`
+            : tx`ORDER BY harness_slug ASC, plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
@@ -851,7 +865,9 @@ export async function listPlanIndexRowsForWorkspace(
          ${instanceFilter}
          ${templateFilter}
          ${templateSlugFilter}
-         ORDER BY harness_slug ASC, plan_slug ASC
+         ${createdSinceFilter}
+         ${updatedSinceFilter}
+         ${orderClause}
          ${limitClause}
       `;
     });
