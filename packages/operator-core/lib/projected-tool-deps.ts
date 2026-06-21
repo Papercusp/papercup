@@ -302,12 +302,65 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   };
 }
 
+/**
+ * EI-2112 — read-shaped board polls from the loopback command-palette bridge are
+ * UI refresh, not agent activity, and must NOT be telemetered.
+ *
+ * `lib/capabilities/invoke.ts` stamps `ctx.spawnId='palette'` for every desktop
+ * command-palette / dock invoke. The dock's wake-board pane POLLS a couple of
+ * read-only coord board tools on a refresh tick; each poll wrote one
+ * `harness_shared.tool_invocations` row, and together `coord:wake-queue{list}` +
+ * `coord:wake-mode` (read) were ~817K rows/24h = 74.5% of the WHOLE telemetry
+ * table (polled ~6.6×/sec, 24/7). The table is meant to reflect AGENT tool calls,
+ * so those UI poll-reads are dropped at the sink.
+ *
+ * The predicate keys on the READ shape of each tool's args (`coord:wake-queue` is
+ * read when `action` is absent or `list`; `coord:wake-mode` is read when `mode` is
+ * absent). Scoped tight so it never hides real activity:
+ *   - only the palette bridge identity (`spawn_id='palette'`) — a real agent spawn
+ *     reading the board IS activity and still records;
+ *   - only the READ shape — a palette ACTION through the same tool (a wake
+ *     release/skip, a wake-mode set, …) is not read-shaped and still records, so
+ *     the human-initiated audit trail is intact.
+ *
+ * Add a tool here only when it is BOTH (a) polled by a palette/dock UI surface on
+ * a tick and (b) cleanly read-vs-write separable by args. Pure + exported for
+ * unit tests.
+ */
+const PALETTE_POLL_READ_TOOLS: Record<string, (args: Record<string, unknown>) => boolean> = {
+  // Wake-board snapshot: `list` (the default action) is the read; release / skip /
+  // release_all / skip_all mutate and must stay audited.
+  'coord:wake-queue': (a) => a.action === undefined || a.action === 'list',
+  // Wake-mode: a read omits `mode` (a set carries one); agent absent = the GLOBAL
+  // default read the board polls.
+  'coord:wake-mode': (a) => a.mode === undefined,
+};
+
+export function isPaletteUiPollRead(input: {
+  toolName: string;
+  ctx: Pick<UnifiedToolContext, 'spawnId'>;
+  args?: unknown;
+}): boolean {
+  if (input.ctx.spawnId !== 'palette') return false;
+  const isRead = PALETTE_POLL_READ_TOOLS[input.toolName];
+  if (!isRead) return false;
+  const args = (input.args && typeof input.args === 'object' ? input.args : {}) as Record<string, unknown>;
+  return isRead(args);
+}
+
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
   // Turn-level presence beat (liveness-hardening P-001): every settled dispatch
   // keeps its owner's presence warm, throttled per owner. Stays SYNCHRONOUS on
   // the hot path (cheap, throttled) — before the workspace guard, since a beat
   // needs an identity, not a workspace.
   maybeBeatPresenceOnDispatch(input.ctx);
+  // EI-2112: a pure UI poll-READ from the command-palette bridge (the desktop
+  // dock's wake-board refresh tick, spawn_id='palette') is UI refresh, not agent
+  // activity — it was 74.5% of the whole tool_invocations table. Drop it from
+  // telemetry AFTER the presence beat (the dock surface still proves liveness);
+  // the palette's mutating ACTIONS through the same tools are not read-shaped and
+  // still record.
+  if (isPaletteUiPollRead(input)) return;
   // P-003: snapshot the row synchronously, then enqueue + return. The actual PG
   // INSERT happens in a batched background flush, OFF the dispatcher's awaited
   // hot path.

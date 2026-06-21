@@ -22,7 +22,13 @@
  *     the per-run cap > 0. A disarmed lane never fires, so a quiet dispatcher is
  *     correct (this is the "shipping is healthy" gate the issue asks for: a frozen
  *     deploy is captured separately as `service-down`/`ship-link`, and an owner who
- *     pauses the lane flips the flag — both leave `armed=false`).
+ *     pauses the lane flips the flag — both leave `armed=false`). The armed inputs
+ *     are resolved EXACTLY as `improvement-implement` resolves them — the runner
+ *     falls back to the routine's install slug when the env override is unset
+ *     (WI-290's post-incident default), and the flag distinct-id keys on the install
+ *     slug. Reading the runner env-ONLY would make THIS collector skip as "disarmed"
+ *     in the very env-unset config that caused EI-2150 — a detector blind to its own
+ *     scenario.
  *   - NOT env-paused — `laneInEnvOutage` over the dispatch ledger: a fleet
  *     credential/rate-limit outage legitimately PAUSES the lane (plan-implement's
  *     'paused' action) and is already surfaced separately, so suppress here.
@@ -169,7 +175,14 @@ export interface CollectDispatcherStalenessOpts {
   dispatcherStalenessThresholdHours?: number;
   /** Now (ms) — injectable for tests. */
   nowMs?: number;
-  /** Distinct-id for the auto-implement flag read. Default `routine:<workspaceId>`. */
+  /**
+   * The routine's install slug (the watchdog tick passes `ctx.installSlug`). Used to
+   * mirror the dispatcher's armed inputs (EI-2150): the runner falls back to it when the
+   * env override is unset, and the flag distinct-id keys on it (`routine:<installSlug>`).
+   * Absent ⇒ the runner is env-only and the distinct-id falls back to `routine:<workspaceId>`.
+   */
+  installSlug?: string | null;
+  /** Distinct-id for the auto-implement flag read. Default `routine:<installSlug ?? workspaceId>`. */
   flagDistinctId?: string;
   /** Pre-resolved deps — injectable so the glue is unit-testable without PG/flags. */
   deps?: Partial<DispatcherStalenessDeps>;
@@ -178,7 +191,10 @@ export interface CollectDispatcherStalenessOpts {
 /** Injectable IO seam (tests pin every leg; the default wires the real readers). */
 export interface DispatcherStalenessDeps {
   flagEnabled: (workspaceId: string, distinctId: string) => Promise<boolean>;
-  runnerHarness: () => string | null;
+  /** Resolve the runner harness GIVEN the install slug — mirrors the dispatcher's
+   *  `env || installSlug || null` (WI-290), so an unset env override is NOT read as
+   *  "disarmed" (EI-2150). */
+  runnerHarness: (installSlug: string | null) => string | null;
   maxPerRun: () => number;
   readDispatches: (workspaceId: string) => Promise<ImprovementDispatchRow[]>;
   readItems: typeof readImprovementItems;
@@ -196,7 +212,11 @@ function maxPerRunFromEnv(): number {
 
 const defaultDeps: DispatcherStalenessDeps = {
   flagEnabled: (_ws, distinctId) => getFlag(FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, distinctId),
-  runnerHarness: () => process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || null,
+  // Mirror improvement-implement's runner resolution EXACTLY (WI-290): env override,
+  // else the routine's own install slug, else null. Env-only here would re-open the
+  // EI-2150 blind spot (env unset ⇒ dispatcher armed via the install-slug fallback,
+  // yet this collector would skip as "disarmed" and never fire).
+  runnerHarness: (installSlug) => process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || installSlug || null,
   maxPerRun: maxPerRunFromEnv,
   readDispatches: (ws) => readRecentDispatches(ws, { limit: DISPATCHER_STALENESS_SCAN_READ_LIMIT }),
   readItems: readImprovementItems,
@@ -220,10 +240,16 @@ export async function collectDispatcherStalenessSignals(
       ? opts.dispatcherStalenessThresholdHours * 3_600_000
       : DEFAULT_DISPATCHER_STALENESS_THRESHOLD_MS;
 
-  // 1. Cheap config gates first — a disarmed lane skips all IO below.
-  const distinctId = opts.flagDistinctId ?? `routine:${workspaceId}`;
+  // 1. Cheap config gates first — a disarmed lane skips all IO below. Resolve the
+  //    dispatcher's OWN armed inputs EXACTLY as `improvement-implement` does, or the
+  //    detector inherits a blind spot: the flag distinct-id keys on the install slug
+  //    (`routine:<installSlug>`) and the runner falls back to the install slug when the
+  //    env override is unset (WI-290). Reading the runner env-ONLY would skip as
+  //    "disarmed" in the very env-unset config that caused EI-2150.
+  const installSlug = opts.installSlug ?? null;
+  const distinctId = opts.flagDistinctId ?? `routine:${installSlug ?? workspaceId}`;
   const flagEnabled = await deps.flagEnabled(workspaceId, distinctId).catch(() => false);
-  const runnerHarness = deps.runnerHarness();
+  const runnerHarness = deps.runnerHarness(installSlug);
   const maxPerRun = deps.maxPerRun();
   if (!flagEnabled || !runnerHarness || maxPerRun <= 0) {
     return {

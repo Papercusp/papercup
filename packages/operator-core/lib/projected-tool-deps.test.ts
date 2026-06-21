@@ -36,7 +36,12 @@ vi.mock('./decision-ledger/emit', async (importOriginal) => ({
   recordDecisionLedger: vi.fn(),
 }));
 
-import { PROJECTED_DEPS, setReactionPostInvoke, jsonbSafeStringify } from './projected-tool-deps';
+import {
+  PROJECTED_DEPS,
+  setReactionPostInvoke,
+  jsonbSafeStringify,
+  isPaletteUiPollRead,
+} from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
 import { getOverride } from '@papercusp/testing-shell/llm';
 import { recordDecisionLedger } from './decision-ledger/emit';
@@ -220,5 +225,75 @@ describe('jsonbSafeStringify -- NUL-byte sanitization for ::jsonb', () => {
   it('is identical to JSON.stringify when there is no NUL (no behavior change otherwise)', () => {
     const v = { a: 1, b: 'hello', c: [true, null, { d: 'x' }] };
     expect(jsonbSafeStringify(v)).toBe(JSON.stringify(v));
+  });
+});
+
+// EI-2112: the loopback command-palette bridge (ctx.spawnId='palette', stamped by
+// lib/capabilities/invoke.ts) drives the desktop dock's wake-board refresh tick,
+// which polled coord:wake-queue{list} + coord:wake-mode (read) ~6.6x/sec, 24/7 ->
+// 817K rows/24h = 74.5% of the WHOLE tool_invocations table. recordInvocationImpl
+// drops those UI poll-reads via this predicate so the table reflects AGENT tool
+// calls. Scoped tight: only the palette identity, only the READ shape -- a palette
+// ACTION (a wake release/skip, a wake-mode set) and a REAL agent reading the board
+// both still record.
+describe('isPaletteUiPollRead -- exclude palette UI poll-reads from telemetry (EI-2112)', () => {
+  const palette = (toolName: string, args: unknown) =>
+    isPaletteUiPollRead({ toolName, ctx: ctx({ spawnId: 'palette' }), args });
+
+  it('DROPS coord:wake-queue list polls (explicit action and the zod default)', () => {
+    expect(palette('coord:wake-queue', { action: 'list' })).toBe(true);
+    expect(palette('coord:wake-queue', {})).toBe(true); // action defaults to 'list'
+    expect(palette('coord:wake-queue', { agent: 'su-x', action: 'list' })).toBe(true);
+  });
+
+  it('RECORDS coord:wake-queue mutating actions (release / skip / *_all stay audited)', () => {
+    expect(palette('coord:wake-queue', { action: 'release', agent: 'su-x', id: 7 })).toBe(false);
+    expect(palette('coord:wake-queue', { action: 'skip', agent: 'su-x', id: 7 })).toBe(false);
+    expect(palette('coord:wake-queue', { action: 'release_all', agent: 'su-x' })).toBe(false);
+    expect(palette('coord:wake-queue', { action: 'skip_all', agent: 'su-x' })).toBe(false);
+  });
+
+  it('DROPS coord:wake-mode reads (global default read and an agent read)', () => {
+    expect(palette('coord:wake-mode', {})).toBe(true);
+    expect(palette('coord:wake-mode', { agent: 'su-x' })).toBe(true);
+  });
+
+  it('RECORDS coord:wake-mode sets (a mode is a human-initiated action)', () => {
+    expect(palette('coord:wake-mode', { agent: 'su-x', mode: 'manual' })).toBe(false);
+    expect(palette('coord:wake-mode', { mode: 'auto' })).toBe(false);
+  });
+
+  it('RECORDS a non-board palette action (e.g. hive:start) — only the board polls are dropped', () => {
+    expect(palette('hive:start', { harness: 'papercup' })).toBe(false);
+    expect(palette('coord:send', { to: ['*'], summary: 'hi' })).toBe(false);
+  });
+
+  it('RECORDS a REAL agent reading the board — spawn_id != palette is genuine activity', () => {
+    expect(
+      isPaletteUiPollRead({
+        toolName: 'coord:wake-queue',
+        ctx: ctx({ spawnId: 's-123-abc' }),
+        args: { action: 'list' },
+      }),
+    ).toBe(false);
+    expect(
+      isPaletteUiPollRead({
+        toolName: 'coord:wake-mode',
+        ctx: ctx({ spawnId: 's-123-abc' }),
+        args: {},
+      }),
+    ).toBe(false);
+  });
+
+  it('RECORDS when spawnId is absent (no palette identity to key on)', () => {
+    expect(
+      isPaletteUiPollRead({ toolName: 'coord:wake-queue', ctx: ctx({}), args: { action: 'list' } }),
+    ).toBe(false);
+  });
+
+  it('tolerates a non-object / missing args payload without throwing', () => {
+    expect(palette('coord:wake-queue', undefined)).toBe(true); // no action -> read
+    expect(palette('coord:wake-mode', null)).toBe(true); // no mode -> read
+    expect(palette('coord:wake-queue', 'garbage')).toBe(true);
   });
 });

@@ -278,4 +278,53 @@ describe('collectDispatcherStalenessSignals — the glue (EI-2150)', () => {
     });
     expect(res.signals).toHaveLength(1);
   });
+
+  // EI-2150 regression: the collector must mirror the DISPATCHER's runner resolution
+  // (env || installSlug || null, WI-290). Reading the runner env-ONLY re-opens the exact
+  // blind spot the detector exists to close — env unset ⇒ the dispatcher is armed via the
+  // install-slug fallback and can genuinely stall, but an env-only collector skips as
+  // "disarmed" and never fires. These two exercise the REAL default runnerHarness dep
+  // (NOT injected), toggling the env override.
+  it('mirrors the dispatcher — an UNSET runner env falls back to the install slug (NOT a false "runner unset" skip, EI-2150)', async () => {
+    const prev = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS;
+    delete process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS;
+    try {
+      // Everything EXCEPT runnerHarness is injected, so the real default
+      // (env || installSlug || null) decides armed-ness off the install slug.
+      const deps: Partial<DispatcherStalenessDeps> = {
+        flagEnabled: async () => true,
+        maxPerRun: () => 1,
+        readDispatches: async () => [dispatchRow({ id: 'd1', itemId: 'EI-1405' })],
+        readItems: async () => [bug({ id: 'EI-1' }), bug({ id: 'EI-2' })],
+        ownerFullAutonomy: async () => false,
+      };
+      const res = await collectDispatcherStalenessSignals('ws', { nowMs: NOW, installSlug: 'papercup', deps });
+      expect(res.signals).toHaveLength(1); // armed via the install-slug fallback — the EI-2150 incident shape
+      expect(res.note).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS;
+      else process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS = prev;
+    }
+  });
+
+  it('skips (note) when neither the runner env nor an install slug resolves a runner', async () => {
+    const prev = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS;
+    delete process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS;
+    try {
+      const deps: Partial<DispatcherStalenessDeps> = {
+        flagEnabled: async () => true,
+        maxPerRun: () => 1,
+        readDispatches: async () => [dispatchRow({ id: 'd1', itemId: 'EI-1405' })],
+        readItems: async () => [bug({ id: 'EI-1' })],
+        ownerFullAutonomy: async () => false,
+      };
+      // No installSlug + no env override ⇒ runner unresolvable ⇒ correctly disarmed.
+      const res = await collectDispatcherStalenessSignals('ws', { nowMs: NOW, deps });
+      expect(res.signals).toEqual([]);
+      expect(res.note).toMatch(/runner unset/);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS;
+      else process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS = prev;
+    }
+  });
 });
