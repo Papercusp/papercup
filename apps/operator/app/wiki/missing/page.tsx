@@ -62,7 +62,7 @@ export default async function WikiMissingPage({
 
       {top.length > 0 ? (
         <>
-          <h2 className="pc-wiki-missing-subtitle" style={{ fontSize: 14, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+          <h2 className="pc-wiki-missing-subtitle" style={{ fontSize: 14, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0', marginBottom: 8 }}>
             Did you mean
           </h2>
           <ul className="pc-wiki-missing-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>

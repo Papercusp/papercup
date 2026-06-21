@@ -166,7 +166,7 @@ export default function ThemeEditor({ seedThemeId, existing, onSaved, onCancel }
 
         {GROUPS.map((group) => (
           <fieldset key={group.label} style={{ border: 'none', margin: 0, padding: 0 }}>
-            <legend style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--fg-mute)', marginBottom: 6 }}>
+            <legend style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0, color: 'var(--fg-mute)', marginBottom: 6 }}>
               {group.label}
             </legend>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -242,7 +242,7 @@ export default function ThemeEditor({ seedThemeId, existing, onSaved, onCancel }
 
       {/* Live preview — driven by the in-progress draft via inline CSS vars. */}
       <div style={{ flex: '0 0 220px' }}>
-        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--fg-mute)', marginBottom: 6 }}>
+        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0, color: 'var(--fg-mute)', marginBottom: 6 }}>
           Preview
         </div>
         <div

@@ -236,7 +236,7 @@ const projectDocsCss = `
     border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 93%);
   }
   .project-docs-project-header { backdrop-filter: blur(10px); }
-  .project-docs-project-header strong { display: block; font-size: 14px; letter-spacing: .01em; }
+  .project-docs-project-header strong { display: block; font-size: 14px; letter-spacing: 0; }
   .project-docs-project-header div {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -386,7 +386,7 @@ const projectDocsCss = `
   .project-docs-article th {
     color: var(--fg, #e7f7ff);
     font-size: 11px;
-    letter-spacing: .04em;
+    letter-spacing: 0;
     background: color-mix(in srgb, var(--accent-strong), transparent 92.5%);
     position: sticky;
     top: 0;
