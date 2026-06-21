@@ -601,38 +601,60 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
   });
 }
 
+/**
+ * PURE: tally plan-index rows into PlansHealth. `startedDraft` = plans force-STARTED
+ * while still DRAFT — the queen-plan-selection anti-pattern the rubric flags ("does not
+ * force-start a draft"). Surfaced so the Overwatch can rate queen-plan-selection instead
+ * of 'unknown' (hive-loop-supervision 2026-06-21).
+ */
+export function tallyPlans(
+  rows: ReadonlyArray<{
+    archived?: boolean | null;
+    status?: string | null;
+    opStatus?: string | null;
+    opUpdatedAt?: string | number | Date | null;
+    items?: ReadonlyArray<{ status?: string | null }> | null;
+  }>,
+  nowMs: number,
+  staleMs: number = PLAN_STALE_MS,
+): PlansHealth {
+  let active = 0, started = 0, shipped = 0, draft = 0, itemsDone = 0, itemsTotal = 0, stalledPlans = 0, startedDraft = 0;
+  for (const r of rows) {
+    if (r.archived) continue;
+    if (r.status === 'active') active++;
+    if (r.status === 'shipped') shipped++;
+    if (r.status === 'draft') draft++;
+    if (r.opStatus === 'started') {
+      started++;
+      if (r.status === 'draft') startedDraft++;
+      const upd = r.opUpdatedAt ? new Date(r.opUpdatedAt).getTime() : 0;
+      if (upd > 0 && nowMs - upd > staleMs) stalledPlans++;
+    }
+    for (const it of r.items ?? []) {
+      if (it.status === 'done') { itemsDone++; itemsTotal++; }
+      else if (['todo', 'wip', 'blocked', 'needs-human'].includes(it.status ?? '')) itemsTotal++;
+    }
+  }
+  return { active, started, shipped, draft, itemsDone, itemsTotal, stalledPlans, startedDraft };
+}
+
 async function collectPlans(ctx: HealthCtx): Promise<HealthPanel<PlansHealth>> {
   return panelSafe<PlansHealth>('plans', async () => {
     const { listPlanIndexRows } = await import('../agent-tools/plans/source');
     const rows = await listPlanIndexRows({ workspaceId: ctx.ws });
-    let active = 0, started = 0, shipped = 0, draft = 0, itemsDone = 0, itemsTotal = 0, stalledPlans = 0;
-    for (const r of rows) {
-      if (r.archived) continue;
-      if (r.status === 'active') active++;
-      if (r.status === 'shipped') shipped++;
-      if (r.status === 'draft') draft++;
-      if (r.opStatus === 'started') {
-        started++;
-        const upd = r.opUpdatedAt ? new Date(r.opUpdatedAt).getTime() : 0;
-        if (upd > 0 && ctx.now - upd > PLAN_STALE_MS) stalledPlans++;
-      }
-      for (const it of r.items ?? []) {
-        if (it.status === 'done') { itemsDone++; itemsTotal++; }
-        else if (['todo', 'wip', 'blocked', 'needs-human'].includes(it.status)) itemsTotal++;
-      }
-    }
-    const data: PlansHealth = { active, started, shipped, draft, itemsDone, itemsTotal, stalledPlans };
+    const data = tallyPlans(rows, ctx.now);
     const status = plansStatus(data);
     return {
       status,
-      summary: `${started} started, ${active} active, ${itemsDone}/${itemsTotal} items${stalledPlans > 0 ? `, ${stalledPlans} stalled` : ''}`,
+      summary: `${data.started} started, ${data.active} active, ${data.itemsDone}/${data.itemsTotal} items${data.stalledPlans > 0 ? `, ${data.stalledPlans} stalled` : ''}${data.startedDraft > 0 ? `, ${data.startedDraft} force-started DRAFT` : ''}`,
       data,
       link: { label: 'Create', href: '/adv?tab=plans' },
       metrics: [
-        m('started', started),
-        m('active', active),
-        m('items', `${itemsDone}/${itemsTotal}`),
-        m('stalled', stalledPlans, stalledPlans > 0 ? 'warn' : undefined),
+        m('started', data.started),
+        m('active', data.active),
+        m('items', `${data.itemsDone}/${data.itemsTotal}`),
+        m('stalled', data.stalledPlans, data.stalledPlans > 0 ? 'warn' : undefined),
+        m('force-started draft', data.startedDraft, data.startedDraft > 0 ? 'warn' : undefined),
       ],
     };
   });
@@ -913,7 +935,11 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
     const { readScoutTicks } = await import('../scout/tick-ledger');
     const ticks = await readScoutTicks({ workspaceId: ctx.ws, limit: 200 });
     const data = scoutHealthVerdict(ticks, ctx.now);
-    const status: PanelStatus = data.transportDeath ? 'crit' : data.lastRanAt == null ? 'unknown' : 'ok';
+    // 'warn' (not 'crit') on transport-death: this panel exists to make Scout
+    // OBSERVABLE so the Overwatch can rate ideation-quality + escalate per judgment —
+    // not to auto-fire an infra BLOCKER via the liveness catch-all (Scout being dead
+    // stalls R&D but does not wedge the running system).
+    const status: PanelStatus = data.transportDeath ? 'warn' : data.lastRanAt == null ? 'unknown' : 'ok';
     const summary =
       data.lastRanAt == null
         ? data.lastTickAt == null
@@ -928,7 +954,7 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
       data,
       link: { label: 'Learning', href: '/adv?tab=learning' },
       metrics: [
-        m('ideas 24h', data.ideasInWindow, data.transportDeath ? 'crit' : undefined),
+        m('ideas 24h', data.ideasInWindow, data.transportDeath ? 'warn' : undefined),
         m('cycles 24h', data.ranInWindow),
         m('last run', agoMin(data.lastRanAt, ctx.now)),
         m('last tick', agoMin(data.lastTickAt, ctx.now)),

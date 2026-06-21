@@ -305,6 +305,11 @@ export interface PlansHealth {
   itemsTotal: number;
   /** Started plans with no op update in the aging window. */
   stalledPlans: number;
+  /** Plans force-STARTED while still status=draft — the queen-plan-selection
+   *  anti-pattern the rubric flags ("does not force-start a draft"). Surfaced so the
+   *  Overwatch can rate queen-plan-selection instead of 'unknown' (hive-loop-supervision
+   *  2026-06-21). */
+  startedDraft: number;
 }
 
 /** Escalations. */

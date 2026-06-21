@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, tallyPlans, type EscalationAgingInput } from './compute';
 import { PANEL_LABELS } from './types';
 
 describe('observationRole — per-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
@@ -71,6 +71,35 @@ describe('scoutHealthVerdict — ideation observability (hive-loop-supervision 2
     expect(v.ranInWindow).toBe(0);
     expect(v.transportDeath).toBe(false);
     expect(v.lastTickAt).not.toBeNull();
+  });
+});
+
+describe('tallyPlans — queen-plan-selection signal (hive-loop-supervision 2026-06-21)', () => {
+  const now = 2_000_000_000;
+  it('startedDraft = plans force-started while still draft (the anti-pattern)', () => {
+    const v = tallyPlans([
+      { status: 'draft', opStatus: 'started' },  // force-started draft — flagged
+      { status: 'active', opStatus: 'started' }, // started a ready/active plan — fine
+      { status: 'draft', opStatus: null },       // a draft NOT started — fine
+    ], now);
+    expect(v.startedDraft).toBe(1);
+    expect(v.started).toBe(2);
+    expect(v.draft).toBe(2);
+    expect(v.active).toBe(1);
+  });
+  it('counts stalled started plans past the aging window', () => {
+    const v = tallyPlans([{ status: 'active', opStatus: 'started', opUpdatedAt: new Date(now - 48 * 60 * 60_000).toISOString() }], now);
+    expect(v.stalledPlans).toBe(1);
+  });
+  it('skips archived rows', () => {
+    const v = tallyPlans([{ status: 'draft', opStatus: 'started', archived: true }], now);
+    expect(v.startedDraft).toBe(0);
+    expect(v.started).toBe(0);
+  });
+  it('tallies item done/total (dropped excluded)', () => {
+    const v = tallyPlans([{ status: 'active', items: [{ status: 'done' }, { status: 'todo' }, { status: 'dropped' }] }], now);
+    expect(v.itemsDone).toBe(1);
+    expect(v.itemsTotal).toBe(2);
   });
 });
 

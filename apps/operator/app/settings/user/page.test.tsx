@@ -1,0 +1,96 @@
+// @vitest-environment jsdom
+/**
+ * User-settings page — render-tier coverage for the override surface migrated
+ * onto the shared <OverridableSetting> primitive (sentinel-herald P-035).
+ *
+ * The page's three fetches (auth/me, user/preferences, workspace voice-prefs)
+ * are stubbed so we control which keys are overridden. We assert the migrated
+ * chrome: an overridden row shows the shared "override" badge + a "Clear" reset
+ * button (wired to the DELETE), a non-overridden row shows the "default" badge
+ * and NO reset, and the workspace-value hint still renders for overrides.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor, within, fireEvent } from '@testing-library/react';
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// RouteLink pulls next router context; stub to a plain anchor.
+vi.mock('@/app/_components/RouteLink', () => ({
+  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
+}));
+
+import UserSettingsPage from './page';
+
+const ME = { user: { id: 'u1', username: 'ada', display_name: 'Ada', has_password: true } };
+
+/** workspace defaults + the user override map drive the override surface. */
+function stubFetches(opts: { workspace: Record<string, unknown>; user: Record<string, unknown> }) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (u.includes('/api/auth/me')) return new Response(JSON.stringify(ME), { status: 200 });
+      if (u.includes('/api/user/preferences') && method === 'GET')
+        return new Response(JSON.stringify({ payload: opts.user }), { status: 200 });
+      if (u.includes('/api/user/preferences')) return new Response('{}', { status: 200 }); // PATCH/DELETE
+      if (u.includes('operator-voice-prefs')) return new Response(JSON.stringify(opts.workspace), { status: 200 });
+      return new Response('{}', { status: 200 });
+    }),
+  );
+}
+
+beforeEach(() => {
+  stubFetches({
+    // wakeWordKeyword is overridden by the user; voiceMaxSpokenWords is not.
+    workspace: { wakeWordKeyword: 'jarvis', voiceMaxSpokenWords: 60 },
+    user: { wakeWordKeyword: 'computer' },
+  });
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  vi.clearAllMocks();
+});
+
+describe('UserSettingsPage override surface (shared OverridableSetting)', () => {
+  it('an overridden row shows the override badge, the workspace hint, and a Clear reset', async () => {
+    render(<UserSettingsPage />);
+    await waitFor(() => expect(screen.getByText('Wake word')).toBeTruthy());
+
+    // The shared primitive renders the label inside .pc-override; find that row.
+    const label = screen.getByText('Wake word');
+    const row = label.closest('.pc-override') as HTMLElement;
+    expect(row).toBeTruthy();
+    // Overridden → "override" badge (not "default") and a Clear reset button.
+    expect(within(row).getByText('override')).toBeTruthy();
+    const clear = within(row).getByRole('button', { name: /Reset Wake word to default/i });
+    expect(clear.textContent).toContain('Clear');
+    // The workspace-value hint persists next to the row.
+    expect(screen.getByText(/workspace:/)).toBeTruthy();
+  });
+
+  it('a non-overridden row shows the default badge and no reset', async () => {
+    render(<UserSettingsPage />);
+    await waitFor(() => expect(screen.getByText('Max spoken words per reply')).toBeTruthy());
+    const row = screen.getByText('Max spoken words per reply').closest('.pc-override') as HTMLElement;
+    expect(within(row).getByText('default')).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: /to default/i })).toBeNull();
+  });
+
+  it('clicking Clear fires the DELETE for that override key', async () => {
+    render(<UserSettingsPage />);
+    await waitFor(() => expect(screen.getByText('Wake word')).toBeTruthy());
+    const row = screen.getByText('Wake word').closest('.pc-override') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /Reset Wake word to default/i }));
+    await waitFor(() =>
+      expect(
+        (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(
+          ([u, init]) =>
+            String(u).includes('/api/user/preferences') &&
+            String(u).includes('wakeWordKeyword') &&
+            (init as RequestInit | undefined)?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
+  });
+});
