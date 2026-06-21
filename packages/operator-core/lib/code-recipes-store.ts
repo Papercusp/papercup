@@ -124,8 +124,9 @@ function mapRow(r: DbRow): CodeRecipeRow {
 }
 
 /** SELECT-list shared by every read so `has_embedding` is computed uniformly
- *  (the raw VECTOR is never serialized back into JS — only its presence). */
-const SELECT_COLS = (sql: postgres.Sql) => sql`
+ *  (the raw VECTOR is never serialized back into JS — only its presence).
+ *  Accepts a plain Sql OR a TransactionSql so the merge transaction can reuse it. */
+const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
   id, workspace_id, hive_slug, title, description, script, author_role,
   tools_used, run_count, success_count, last_run_at, status, promoted_tool,
   merged_into, tags, (embedding IS NOT NULL) AS has_embedding,
@@ -237,7 +238,9 @@ export async function mergeRecipes(
   // De-dupe the request + drop self-merge before touching the DB.
   const requested = [...new Set(input.duplicateIds)].filter((id) => id !== survivorId);
 
-  return sql.begin(async (tx) => {
+  // postgres-js types `begin`'s return loosely (UnwrapPromiseArray) — cast the
+  // structured result back, mirroring agent-governor-pg-store.ts's transact().
+  return (await sql.begin(async (tx) => {
     const survivorRows = await tx<DbRow[]>`
       SELECT ${SELECT_COLS(tx)} FROM harness_shared.code_recipes
        WHERE workspace_id = ${workspaceId} AND id = ${survivorId}
@@ -282,7 +285,7 @@ export async function mergeRecipes(
       RETURNING ${SELECT_COLS(tx)}`;
 
     return { survivor: mapRow(updated[0]), mergedIds };
-  });
+  })) as unknown as MergeRecipesResult;
 }
 
 export interface SweepRecipesInput {
