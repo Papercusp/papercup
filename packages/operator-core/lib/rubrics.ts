@@ -1,25 +1,39 @@
 /**
- * rubrics store — the shared-standards library (rubric-driven-observations-2026-06-20
- * P-002 / brief B2). A RUBRIC is the reusable STANDARD for a system characteristic:
- * the MODEL (how it's supposed to work) + the METHOD (how to investigate; may point at
- * an agent-insights runbook via method_ref) + the RATING scale + DRIFT markers. Agents
- * grade STRUCTURED OBSERVATIONS against an ACTIVE rubric, so Scout/Queen/Overwatch get
- * measurements, not just free-text anecdotes (plan D-001/D-002).
+ * rubrics store — the shared-standards library. A RUBRIC is the reusable STANDARD for a
+ * system characteristic: the MODEL (how it's supposed to work) + the METHOD (how to
+ * investigate; may point at an agent-insights runbook via methodRef) + the RATING scale
+ * + DRIFT markers. Agents grade STRUCTURED OBSERVATIONS against an ACTIVE rubric, so
+ * Scout/Queen/Overwatch get measurements, not just free-text anecdotes.
  *
- * Shape (Model A — the interface contract locked with su-f8ee5 [obs-schema consumer]
- * and su-5695e [P-003 seed author]): a rubric_id slug names ONE rubric; its `criteria`
- * jsonb holds the per-characteristic gradeable items. A structured observation's
- * rubricRef = rubrics.rubric_id, and a structured observation's ratings is a
- * Record keyed by criteria[].key (Record<criterionKey, { rating, evidence }>).
+ * ── v2: A RUBRIC IS A PLAN (plan-templates-and-rubric-v2-2026-06-20, D-002) ──────────
+ * As of P-007, the rubrics store is PLANS-ONLY: a rubric is a `template: rubric` plan
+ * (harness_shared.harness_plans). Its STRUCTURED fields (characteristic, criteria,
+ * ratingScale, methodRef, description) live in the plan's `template_data` jsonb,
+ * validated against the rubric template schema (rubric-template.ts); its NARRATIVE
+ * model/method prose lives in the plan body; its top-level title in the plan frontmatter.
+ *   • READS (list/get/search) query rubric-template plans, map `template_data` → the v1
+ *     `Rubric` shape (planRowToRubric), so rubrics:list/get/search + the Overwatch
+ *     scorecard-emit read the SAME shape with the backing changed (the scorecards.ts
+ *     getRubric seam, D-003).
+ *   • WRITES (proposeRubric / ratifyRubric) author/promote a rubric-template plan through
+ *     the canonical plan-write path (withPlanLock): propose upserts the plan + its
+ *     validated template_data (status draft = a "proposed" rubric); ratify flips the
+ *     plan status → active. The Queen ratifies a rubric by promoting its plan.
  *
- * Authorship (D-001): any agent PROPOSEs (status='proposed'); the Queen/owner RATIFIES
- * (proposed → active). v1 is workspace-LOCAL (not federated) and runs in the single
- * coordination workspace (DEFAULT_COORD_WORKSPACE), so a ratified rubric is visible to
- * Overwatch/Scout wherever they run. Table: migration 326 (harness_shared.rubrics).
+ * The v1 standalone table (harness_shared.rubrics, mig 326/327) and the P-006
+ * transitional plans∪table union are GONE (P-007 Stage 2): the seeded
+ * hive-coordination-health rubric is served from its migrated rubric-template plan
+ * (mig 338, ws='default', harness='papercusp'), and the table is dropped by a follow-on
+ * migration. Versioning falls out of the plan revision spine (no separate machinery).
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { rubricTemplateDataSchema, RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
+import {
+  rubricTemplateDataSchema,
+  RUBRIC_TEMPLATE_NAME,
+} from './agent-tools/plans/rubric-template';
+import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 
 export type RubricStatus = 'proposed' | 'active' | 'retired';
 export const RUBRIC_STATUSES: readonly RubricStatus[] = ['proposed', 'active', 'retired'];
@@ -63,77 +77,40 @@ export interface Rubric {
 }
 
 /**
- * Rubrics live in the single coordination workspace (the same constant the
- * coordination layer uses), so a ratified rubric is visible to Overwatch/Scout
- * wherever they run. v1 is workspace-local; if rubrics ever become genuinely
- * per-workspace, the WRITE path changes first and reads follow (the engineer_issues
- * pattern). The PRIMARY KEY already carries workspace_id, leaving room for that.
+ * Rubrics live in the single coordination workspace (the same constant the coordination
+ * layer uses), so a ratified rubric is visible to Overwatch/Scout wherever they run.
+ * The re-pointed store reads/writes rubric-template PLANS in this workspace
+ * (harness_plans.workspace_id = this); the seeded hive-coordination-health rubric plan
+ * (mig 338) lives here. NOTE: only workspace + template gate the read — harness_slug is
+ * NOT read (the plans leg, listRubricPlans), so a rubric plan in any harness within this
+ * workspace resolves.
  */
 function rubricsScopeWorkspace(): string {
   return DEFAULT_COORD_WORKSPACE;
 }
 
-interface RubricRowDb {
-  rubric_id: string;
-  workspace_id: string;
-  characteristic: string;
-  title: string;
-  description: string;
-  criteria: RubricCriterion[] | null; // jsonb — postgres.js returns it parsed
-  rating_scale: string[] | null;
-  method_ref: string | null;
-  status: string;
-  created_by: string | null;
-  proposed_by: string | null;
-  ratified_by: string | null;
-  created_at: string | Date;
-  updated_at: string | Date;
+/**
+ * The harness a rubric-template plan is HOMED under for WRITES (the plan PK is
+ * (workspace, harness, slug)). The seeded rubric (mig 338) used operatorHomeHarnessSlug()
+ * = 'papercusp'; propose/ratify resolve an EXISTING plan's own harness so a re-write
+ * targets the same PK row, falling back to the operator home for a brand-new rubric. The
+ * READ path does not filter on harness, so this only governs the write PK (no dual-row).
+ */
+function defaultRubricWriteHarness(): string {
+  return operatorHomeHarnessSlug();
 }
-
-const RUBRIC_COLS = `rubric_id, workspace_id, characteristic, title, description, criteria,
-  rating_scale, method_ref, status, created_by, proposed_by, ratified_by, created_at, updated_at`;
 
 function tsIso(v: string | Date): string {
   return typeof v === 'string' ? v : v.toISOString();
 }
 
-function toRubric(r: RubricRowDb): Rubric {
-  return {
-    rubricId: r.rubric_id,
-    workspaceId: r.workspace_id,
-    characteristic: r.characteristic,
-    title: r.title,
-    description: r.description,
-    criteria: Array.isArray(r.criteria) ? r.criteria : [],
-    ratingScale: Array.isArray(r.rating_scale) ? r.rating_scale : [...DEFAULT_RATING_SCALE],
-    methodRef: r.method_ref,
-    status: (RUBRIC_STATUSES as readonly string[]).includes(r.status) ? (r.status as RubricStatus) : 'proposed',
-    createdBy: r.created_by,
-    proposedBy: r.proposed_by,
-    ratifiedBy: r.ratified_by,
-    createdAt: tsIso(r.created_at),
-    updatedAt: tsIso(r.updated_at),
-  };
-}
-
-// ─── v2 re-point: a rubric IS a plan (plan-templates-and-rubric-v2 P-006) ───────────
-//
-// The reads below resolve rubrics from TWO legs, de-duped with PLANS winning:
-//   • rubric-template PLANS — harness_plans rows with template='rubric', their
-//     `template_data` jsonb validated against the rubric schema and mapped to the v1
-//     `Rubric` shape (so rubrics:list/get/search + the Overwatch scorecard-emit read
-//     the SAME shape with the backing changed — the scorecards.ts getRubric seam, D-003);
-//   • the v1 standalone TABLE — harness_shared.rubrics, the transitional leg.
-// The union keeps the seeded hive-coordination-health rubric (still a table row) live
-// across the P-006→P-007 gap. P-007 migrates the seed → a plan, drops the table, and
-// removes the table leg (leaving only the plan leg). The writes (proposeRubric /
-// ratifyRubric, below) still target the table — re-pointed to plan-create/promote in
-// P-007/P-009; until then a table-proposed rubric still surfaces via the table leg.
+// ─── plans leg: a rubric IS a `template: rubric` plan (P-006/P-007) ──────────────────
 
 /** The harness_plans columns the rubric re-point reads (a rubric-template plan). */
 interface RubricPlanRow {
   plan_slug: string;
   workspace_id: string;
+  harness_slug: string;
   title: string | null;
   status: string | null;
   created: string | null;
@@ -165,18 +142,37 @@ export function planStatusToRubricStatus(planStatus: string | null, archived = f
   }
 }
 
+/** The inverse of planStatusToRubricStatus, for the WRITE path: a rubric status → the
+ *  plan frontmatter status to author. proposed → draft (awaiting Queen ratification),
+ *  active → active (ratified), retired → superseded. */
+export function rubricStatusToPlanStatus(status: RubricStatus): string {
+  switch (status) {
+    case 'active':
+      return 'active';
+    case 'retired':
+      return 'superseded';
+    default: // 'proposed'
+      return 'draft';
+  }
+}
+
 /**
  * Reconstruct the v1 `Rubric` from a rubric-template plan row: slug = rubricId,
  * frontmatter title = title, validated `template_data` = the structured fields.
  * Returns null when `template_data` is absent or fails the rubric schema (degrade,
- * never throw — mirrors `toRubric`), so a half-authored rubric plan is skipped rather
- * than surfaced broken.
+ * never throw), so a half-authored rubric plan is skipped rather than surfaced broken.
+ *
+ * Identity: a plan has ONE `owner`, so createdBy / proposedBy / ratifiedBy all derive
+ * from it (ratifiedBy only once active). The proposer↔ratifier distinction the v1 table
+ * tracked separately is intentionally collapsed (D-002: the plan is the substrate; no
+ * consumer reads the distinction — its history lives in the plan's revision spine).
  */
 export function planRowToRubric(row: RubricPlanRow): Rubric | null {
   const parsed = rubricTemplateDataSchema.safeParse(row.template_data);
   if (!parsed.success) return null;
   const d = parsed.data;
   const updatedAt = tsIso(row.updated_at);
+  const status = planStatusToRubricStatus(row.status, row.archived);
   return {
     rubricId: row.plan_slug,
     workspaceId: row.workspace_id,
@@ -193,10 +189,10 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     })),
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,
-    status: planStatusToRubricStatus(row.status, row.archived),
+    status,
     createdBy: row.owner ?? null,
     proposedBy: row.owner ?? null,
-    ratifiedBy: planStatusToRubricStatus(row.status, row.archived) === 'active' ? (row.owner ?? null) : null,
+    ratifiedBy: status === 'active' ? (row.owner ?? null) : null,
     createdAt: row.created ?? updatedAt,
     updatedAt,
   };
@@ -211,28 +207,17 @@ function sortRubrics(rubrics: Rubric[]): Rubric[] {
   );
 }
 
-/**
- * The transitional UNION: rubric-template PLANS ∪ the v1 TABLE, de-duped by rubricId
- * with PLANS winning on collision (the new backing supersedes the legacy row). Pure —
- * the two legs are fetched by the callers; unit-tested without PG.
- */
-export function mergeRubricLegs(planRubrics: Rubric[], tableRubrics: Rubric[]): Rubric[] {
-  const byId = new Map<string, Rubric>();
-  for (const r of tableRubrics) byId.set(r.rubricId, r);
-  for (const r of planRubrics) byId.set(r.rubricId, r); // plans win
-  return [...byId.values()];
-}
-
-/** The plan leg: every rubric-template plan in the rubric workspace, mapped to Rubric.
- *  Degrades to [] if the plans store is unavailable (so the table leg always serves). */
-async function listRubricPlans(): Promise<Rubric[]> {
+/** Every rubric-template plan in the rubric workspace, mapped to Rubric. The single read
+ *  path the three public reads filter/search over. Degrades to [] if the plans store is
+ *  unavailable (e.g. a test DB with no harness_plans) — reads never throw. */
+async function loadAllRubrics(): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
     // Exclude per-run instance plans (template_slug IS NOT NULL) — a rubric is a
     // top-level plan, not a scheduled instance (D-003).
     const rows = await sql<RubricPlanRow[]>`
-      SELECT plan_slug, workspace_id, title, status, created, updated, updated_at, owner,
-             archived, template_data
+      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
+             owner, archived, template_data
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
@@ -240,28 +225,8 @@ async function listRubricPlans(): Promise<Rubric[]> {
        LIMIT 500`;
     return rows.map(planRowToRubric).filter((r): r is Rubric => r !== null);
   } catch {
-    // No harness_plans table (e.g. a rubrics-only test DB) / workspace not provisioned —
-    // the rubric reads still serve the v1 table leg. Degrade, never throw.
     return [];
   }
-}
-
-/** The table leg: every v1 table-backed rubric in the rubric workspace (unfiltered;
- *  filtering/sort/limit happen in-process after the union). */
-async function listTableRubrics(): Promise<Rubric[]> {
-  const { sql } = getOrgPg();
-  const rows = await sql<RubricRowDb[]>`
-    SELECT ${sql.unsafe(RUBRIC_COLS)} FROM harness_shared.rubrics
-     WHERE workspace_id = ${rubricsScopeWorkspace()}
-     LIMIT 500`;
-  return rows.map(toRubric);
-}
-
-/** Load + union both legs (plans ∪ table, plans win). The single read path the three
- *  public reads filter/search over. */
-async function loadAllRubrics(): Promise<Rubric[]> {
-  const [planRubrics, tableRubrics] = await Promise.all([listRubricPlans(), listTableRubrics()]);
-  return mergeRubricLegs(planRubrics, tableRubrics);
 }
 
 export interface ListRubricsFilter {
@@ -271,7 +236,7 @@ export interface ListRubricsFilter {
 }
 
 /** List rubrics (active first, then proposed, then retired), optionally filtered by
- *  status / characteristic. Reads the plans ∪ table union (P-006). */
+ *  status / characteristic. Reads rubric-template plans (P-006/P-007). */
 export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubric[]> {
   let rubrics = await loadAllRubrics();
   if (filter.status) rubrics = rubrics.filter((r) => r.status === filter.status);
@@ -279,17 +244,15 @@ export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubri
   return sortRubrics(rubrics).slice(0, Math.min(filter.limit ?? 100, 500));
 }
 
-/** Fetch one rubric in full by its slug id (plans ∪ table; a plan wins over a same-id
- *  table row). Returns null when no rubric carries that id. */
+/** Fetch one rubric in full by its slug id. Returns null when no rubric carries that id. */
 export async function getRubric(rubricId: string): Promise<Rubric | null> {
   return (await loadAllRubrics()).find((r) => r.rubricId === rubricId) ?? null;
 }
 
 /**
  * Search rubrics by id / characteristic / title / description. Case-insensitive,
- * all-tokens-must-match (websearch's AND semantics), over the plans ∪ table union —
- * a uniform in-process match since the rubric-template plans are not in the v1 FTS
- * index. At this scale (tens of rubrics) an in-process scan is as fast as the table FTS.
+ * all-tokens-must-match (websearch's AND semantics). At this scale (tens of rubrics) an
+ * in-process scan over the rubric-template plans is as fast as a table FTS.
  */
 export async function searchRubrics(query: string, limit = 50): Promise<Rubric[]> {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -301,6 +264,8 @@ export async function searchRubrics(query: string, limit = 50): Promise<Rubric[]
   return sortRubrics(matched).slice(0, Math.min(limit, 200));
 }
 
+// ─── writes: author / ratify a rubric-template plan (P-007 Stage 2) ──────────────────
+
 export interface ProposeRubricInput {
   rubricId: string;
   characteristic: string;
@@ -309,62 +274,206 @@ export interface ProposeRubricInput {
   criteria: RubricCriterion[];
   ratingScale?: string[];
   methodRef?: string;
-  /** Who is proposing (ownerId). Recorded as proposed_by (and created_by on insert). */
+  /** Who is proposing (ownerId). Recorded as the plan owner. */
   by?: string;
   /**
    * Lifecycle status to write. Defaults to 'proposed' (the rubrics:propose tool path,
    * D-001: agents propose, the Queen ratifies). Seed/test paths may pass 'active' to
-   * upsert a ratified rubric directly (idempotent at-boot seeding). On CONFLICT the
-   * content is updated; status is overwritten with this value.
+   * author a ratified rubric directly. Idempotent on rubricId: re-propose updates the
+   * plan content + template_data and sets the status.
    */
   status?: RubricStatus;
 }
 
-/**
- * Propose (idempotent upsert) a rubric. New → status (default 'proposed'); existing →
- * content is updated and status is set to the given value. The single write path behind
- * rubrics:propose (status omitted) and programmatic seeding (status:'active').
- */
-export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
-  const { sql } = getOrgPg();
-  const status: RubricStatus = input.status ?? 'proposed';
-  const ratifiedBy = status === 'active' ? (input.by ?? null) : null;
-  const rows = await sql<RubricRowDb[]>`
-    INSERT INTO harness_shared.rubrics
-      (workspace_id, rubric_id, characteristic, title, description, criteria, rating_scale,
-       method_ref, status, created_by, proposed_by, ratified_by, created_at, updated_at)
-    VALUES (${rubricsScopeWorkspace()}, ${input.rubricId}, ${input.characteristic}, ${input.title},
-            ${input.description ?? ''}, ${JSON.stringify(input.criteria)}::text::jsonb,
-            ${JSON.stringify(input.ratingScale ?? DEFAULT_RATING_SCALE)}::text::jsonb,
-            ${input.methodRef ?? null}, ${status}, ${input.by ?? null}, ${input.by ?? null},
-            ${ratifiedBy}, now(), now())
-    ON CONFLICT (workspace_id, rubric_id) DO UPDATE SET
-      characteristic = EXCLUDED.characteristic,
-      title          = EXCLUDED.title,
-      description    = EXCLUDED.description,
-      criteria       = EXCLUDED.criteria,
-      rating_scale   = EXCLUDED.rating_scale,
-      method_ref     = EXCLUDED.method_ref,
-      status         = EXCLUDED.status,
-      proposed_by    = EXCLUDED.proposed_by,
-      ratified_by    = CASE WHEN EXCLUDED.status = 'active'
-                            THEN COALESCE(EXCLUDED.ratified_by, harness_shared.rubrics.ratified_by)
-                            ELSE harness_shared.rubrics.ratified_by END,
-      updated_at     = now()
-    RETURNING ${sql.unsafe(RUBRIC_COLS)}`;
-  return toRubric(rows[0]);
+/** Build the validated `template_data` for a rubric-template plan from a propose input.
+ *  Throws (fail-loud, D-004) if the rubric data is malformed — never persists a broken
+ *  rubric. Returns the schema-coerced data. */
+function buildRubricTemplateData(input: ProposeRubricInput): unknown {
+  const data = {
+    characteristic: input.characteristic,
+    criteria: input.criteria,
+    ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
+    ...(input.methodRef ? { methodRef: input.methodRef } : {}),
+    ...(input.description !== undefined ? { description: input.description } : {}),
+  };
+  const parsed = rubricTemplateDataSchema.safeParse(data);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
+    throw new Error(`proposeRubric: invalid rubric data for '${input.rubricId}': ${issues}`);
+  }
+  return parsed.data;
+}
+
+/** The `template: rubric` plan body (frontmatter + Now + Background + Decisions). The
+ *  structured fields live in `template_data` (written separately); the body is narrative
+ *  context. Mirrors the Scout rubric-rail draft shape so the plan parses + derives the
+ *  `template` column. */
+function buildRubricPlanBody(args: {
+  slug: string;
+  title: string;
+  planStatus: string;
+  owner: string | null;
+  date: string;
+  description?: string;
+}): string {
+  const { slug, title, planStatus, owner, date, description } = args;
+  const ownerLine = owner ? `\nowner: ${owner}` : '';
+  const blurb = description?.trim()
+    ? description.trim()
+    : 'A shared standard for a system characteristic — its criteria grade structured observations.';
+  return `---
+title: ${title}
+slug: ${slug}
+status: ${planStatus}
+template: ${RUBRIC_TEMPLATE_NAME}
+created: ${date}
+updated: ${date}${ownerLine}
+---
+
+# ${title}
+
+## Now
+
+**State:** Rubric-template plan (template:rubric). Its structured fields (characteristic,
+criteria, ratingScale, methodRef) live in \`template_data\`, queried via
+rubrics:list/get/search; this body is the narrative model/method context. Status
+\`${planStatus}\` ⇒ a ${planStatusToRubricStatus(planStatus)} rubric.
+
+**Next:** The Queen ratifies a proposed rubric by promoting this plan to \`active\`
+(rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data.
+
+## Background
+
+${blurb}
+
+## Criteria — the structured \`template_data\`
+
+The per-criterion model / method / drift markers live in \`template_data\` (read via
+rubrics:get or plans:get-template-data). Agents read/write the rubric structured, never
+by parsing this markdown.
+
+## Decisions
+
+(Use plans:add-decision to append.)
+`;
+}
+
+/** Resolve the (workspace, harness) PK scope for a rubric-template plan write. Reuses an
+ *  EXISTING plan's own harness so a re-propose/ratify targets the same PK row; falls back
+ *  to the operator-home harness for a brand-new rubric. */
+async function resolveRubricWriteScope(
+  rubricId: string,
+): Promise<{ workspaceId: string; harnessSlug: string }> {
+  const workspaceId = rubricsScopeWorkspace();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ harness_slug: string }[]>`
+      SELECT harness_slug
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId}
+         AND plan_slug = ${rubricId}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+       LIMIT 1`;
+    if (rows[0]?.harness_slug) return { workspaceId, harnessSlug: rows[0].harness_slug };
+  } catch {
+    /* fall through to the default home harness */
+  }
+  return { workspaceId, harnessSlug: defaultRubricWriteHarness() };
 }
 
 /**
- * Ratify a proposed rubric → active (D-001: the Queen/owner gate). Returns the updated
- * rubric, or null if no rubric with that id exists.
+ * Propose (idempotent upsert) a rubric → a `template: rubric` plan. status defaults to
+ * 'proposed' (draft plan); 'active' authors a ratified rubric directly. Re-proposing the
+ * same rubricId updates the plan content + template_data. Two canonical plan writes (the
+ * content path and the structured template_data path cannot be combined): (1) upsert the
+ * plan body (frontmatter → title/status/template columns); (2) write the validated
+ * template_data jsonb.
  */
-export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubric | null> {
-  const { sql } = getOrgPg();
-  const rows = await sql<RubricRowDb[]>`
-    UPDATE harness_shared.rubrics
-       SET status = 'active', ratified_by = ${by ?? null}, updated_at = now()
-     WHERE workspace_id = ${rubricsScopeWorkspace()} AND rubric_id = ${rubricId}
-    RETURNING ${sql.unsafe(RUBRIC_COLS)}`;
-  return rows[0] ? toRubric(rows[0]) : null;
+export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
+  const rubricStatus: RubricStatus = input.status ?? 'proposed';
+  const planStatus = rubricStatusToPlanStatus(rubricStatus);
+  // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
+  // half-state (a body with no/invalid template_data).
+  const templateData = buildRubricTemplateData(input);
+  const scope = await resolveRubricWriteScope(input.rubricId);
+  const date = new Date().toISOString().slice(0, 10);
+  const body = buildRubricPlanBody({
+    slug: input.rubricId,
+    title: input.title,
+    planStatus,
+    owner: input.by ?? null,
+    date,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+  });
+
+  // Write 1 — upsert the plan body (derives title/status/template columns from frontmatter).
+  const bodyResult = await withPlanLock<true>(
+    null,
+    { slug: input.rubricId, intent: `rubrics:propose ${input.rubricId}`, ...scope },
+    async () => ({ newBody: body, value: true }),
+  );
+  if (bodyResult.kind === 'busy') {
+    throw new Error(`proposeRubric: plan '${input.rubricId}' is being written by another caller`);
+  }
+
+  // Write 2 — the validated template_data jsonb (structured-only path: newBody:null).
+  const dataResult = await withPlanLock<boolean>(
+    null,
+    { slug: input.rubricId, intent: `rubrics:propose:data ${input.rubricId}`, ...scope },
+    async (current) =>
+      current === null
+        ? { newBody: null, value: false }
+        : { newBody: null, templateData: { data: templateData }, value: true },
+  );
+  if (dataResult.kind === 'busy') {
+    throw new Error(`proposeRubric: template_data write for '${input.rubricId}' is busy`);
+  }
+
+  const rubric = await getRubric(input.rubricId);
+  if (!rubric) {
+    throw new Error(`proposeRubric: rubric '${input.rubricId}' did not resolve after write`);
+  }
+  return rubric;
+}
+
+/**
+ * Ratify a proposed rubric → active (D-001: the Queen/owner gate) by promoting its plan
+ * (status → active). Returns the activated rubric, or null if no rubric-template plan
+ * with that id exists. `by` is informational (the plan owner is the recorded identity;
+ * the ratifying authority lands in the plan's revision history).
+ */
+export async function ratifyRubric(rubricId: string, _by?: string): Promise<Rubric | null> {
+  const existing = await getRubric(rubricId);
+  if (!existing) return null;
+  const scope = await resolveRubricWriteScope(rubricId);
+  const result = await withPlanLock<boolean>(
+    null,
+    { slug: rubricId, intent: `rubrics:ratify ${rubricId}`, ...scope },
+    async (current) => {
+      if (current === null) return { newBody: null, value: false };
+      const flipped = setPlanFrontmatterStatus(current, 'active');
+      return flipped === null
+        ? { newBody: null, value: false }
+        : { newBody: bumpUpdatedDate(flipped), value: true };
+    },
+  );
+  if (result.kind === 'busy') {
+    throw new Error(`ratifyRubric: plan '${rubricId}' is being written by another caller`);
+  }
+  return getRubric(rubricId);
+}
+
+/** Pure: flip the frontmatter `status:` line within the leading `---`…`---` block only.
+ *  Returns null when there is no frontmatter status line (legacy/malformed). Mirrors
+ *  flipPlanFrontmatterStatus (set-plan-status.ts) — inlined to keep this lib off the
+ *  agent-tools/MCP dependency graph. */
+function setPlanFrontmatterStatus(body: string, target: string): string | null {
+  if (!body.startsWith('---')) return null;
+  const close = body.indexOf('\n---', 3);
+  if (close === -1) return null;
+  const fm = body.slice(0, close);
+  const rest = body.slice(close);
+  const re = /^(status:[ \t]*)([A-Za-z][\w-]*)([ \t]*)$/m;
+  if (!re.test(fm)) return null;
+  return fm.replace(re, `$1${target}$3`) + rest;
 }
