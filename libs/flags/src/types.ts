@@ -301,6 +301,15 @@ export const FLAGS = {
   // Scout unchanged. D-001 dark-ship rule; double-gated — experiment:run also rides
   // papercusp-replay-harness + the governor before anything could spend.
   SCOUT_EXPERIMENT_RAIL: "papercusp-scout-experiment-rail",
+  // plan-templates-and-rubric-v2-2026-06-20 (P-009, Phase 4 auto-crystallization):
+  // the Scout `rubric` rail. ON ⇒ on a detected RUBRIC GAP (corpus-digest rubricGaps,
+  // P-008) Scout AUTHORS a `template: rubric` DRAFT plan → the existing queen↔scout
+  // loop ratifies it into an active rubric; OFF ⇒ the gap is detected (visible in the
+  // digest) but no draft is auto-authored. DARK by default — a brand-new autonomous
+  // PLAN-WRITE behavior; the owner flips it after observing gap quality. Idempotent
+  // (one stable slug/gap) + best-effort (never disturbs the cycle); drafts are
+  // Queen-gated (invisible to rubrics:list until promoted active+templateData).
+  SCOUT_RUBRIC_RAIL: "papercusp-scout-rubric-rail",
   // self-learning-frontier-2026-06-12 (P-021 / FB-07): regret mining —
   // `system:regret-mine` selects bad historical sessions (token-burn
   // percentile, validator bounces, rescue markers), locates the divergence
@@ -1057,6 +1066,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // until the owner flips it (experiment-registry-invocation-api #2). Double-gated by
   // papercusp-replay-harness + the governor.
   [FLAGS.SCOUT_EXPERIMENT_RAIL]: false,
+  // OFF by default — a brand-new autonomous PLAN-WRITE behavior (the Scout `rubric`
+  // rail auto-authors a template:rubric draft per detected gap). Ships dark so the
+  // owner can observe gap quality before Scout starts creating draft plans live; the
+  // detection (P-008 rubricGaps) is always on, only the auto-authoring is gated.
+  [FLAGS.SCOUT_RUBRIC_RAIL]: false,
   // OFF by default — same D-001 dark-ship rule as the loops above: the
   // deferral-interest refit is a frontier learning loop (SQL-only, zero LLM
   // spend); the flag flip + an owner-set per-cycle governor budget on loop

@@ -72,6 +72,14 @@ export interface CreateScoutPlanDraftInput {
   workspaceId?: string;
   /** ISO date (YYYY-MM-DD); defaults to today. */
   date?: string;
+  /**
+   * Override the draft body, built from the RESOLVED (dated) slug + date so the
+   * body's frontmatter slug always matches the row's slug. Default:
+   * {@link buildScoutPlanTemplate} (the broad-rail draft). The Scout `rubric` rail
+   * (rubric-rail.ts, P-009) passes a `template: rubric` body builder — reusing this
+   * function's idempotent withPlanLock create path rather than forking it.
+   */
+  buildBody?: (args: { slug: string; date: string }) => string;
 }
 
 export interface ScoutPlanDraftDeps {
@@ -92,7 +100,9 @@ export async function createScoutPlanDraft(
 ): Promise<{ slug: string; created: boolean }> {
   const date = (input.date ?? new Date().toISOString()).slice(0, 10);
   const slug = ensureDatedSlug(input.slug, date);
-  const body = buildScoutPlanTemplate({ slug, title: input.title, date, rationale: input.rationale });
+  const body = input.buildBody
+    ? input.buildBody({ slug, date })
+    : buildScoutPlanTemplate({ slug, title: input.title, date, rationale: input.rationale });
 
   const result = await deps.withPlanLock<{ created: boolean }>(
     null,

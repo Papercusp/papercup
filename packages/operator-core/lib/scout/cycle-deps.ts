@@ -179,7 +179,32 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     llmCall: opts.llmCall,
     limits: opts.limits,
     cycleId: opts.cycleId,
-    readCorpus: () => synthesizeStateOfHive(readers, opts.digestOptions),
+    readCorpus: async () => {
+      const digest = await synthesizeStateOfHive(readers, opts.digestOptions);
+      // Scout `rubric` rail (plan-templates-and-rubric-v2 P-009, SCOUT_RUBRIC_RAIL,
+      // default OFF): on a detected RUBRIC GAP (digest.rubricGaps, P-008) AUTHOR a
+      // `template: rubric` DRAFT plan → the existing queen↔scout loop ratifies it into
+      // an active rubric. Forked HERE (not the `route` port) because this is the seam
+      // that holds the full StateOfHiveDigest (rubricGaps lives off the digest, not the
+      // proposal flow). Best-effort + idempotent (a stable per-gap slug no-ops on
+      // re-run): a failure or missing PG NEVER disturbs the digest or the cycle.
+      try {
+        if (digest.rubricGaps.length > 0) {
+          const { getFlag } = await import('@papercusp/flags/server');
+          const { FLAGS } = await import('@papercusp/flags');
+          if (await getFlag(FLAGS.SCOUT_RUBRIC_RAIL, 'scout-rubric-rail')) {
+            const { authorRubricGapPlans } = await import('./rubric-rail');
+            await authorRubricGapPlans(digest.rubricGaps, { harnessSlug: opts.harnessSlug });
+          }
+        }
+      } catch (err) {
+        console.warn(
+          '[scout/cycle-deps] rubric-rail author failed (cycle unaffected):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return digest;
+    },
     readNoveltyCorpus: noveltyCorpus,
     // D-009 closure (P-013 → P-004 meta-learning): bias the EXTRA ideators toward
     // the lenses that have been winning, read from the PERSISTED scout_lens_weights
