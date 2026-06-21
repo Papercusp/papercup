@@ -58,12 +58,26 @@ describe('maybeBeatPresenceOnDispatch', () => {
     const beat = vi.fn(async (_ownerId: string) => {});
     // No identity markers at all → resolveAgentIdentity throws → swallowed.
     expect(() => maybeBeatPresenceOnDispatch({}, { beat })).not.toThrow();
-    // Superuser ctx MISSING uiClientId → resolver throws → swallowed.
-    expect(() =>
-      maybeBeatPresenceOnDispatch({ isSuperuser: true }, { beat }),
-    ).not.toThrow();
     await flush();
     expect(beat).not.toHaveBeenCalled();
+  });
+
+  test('superuser ctx without uiClientId beats under the su-loopback fallback (EI-2127)', async () => {
+    // EI-2127 / EI-334: a superuser with no per-session id resolves to
+    // SUPERUSER_FALLBACK_CLIENT_ID ('su-loopback') instead of throwing
+    // (see identity.ts SUPERUSER_FALLBACK_CLIENT_ID constant). The heartbeat
+    // therefore fires for it — it IS an attributable owner. The prior test
+    // comment "resolver throws → swallowed" no longer applies; the throw was
+    // removed in the EI-2127 fix so that every identity-resolving tool
+    // (coord:whoami, locks:*, db:next-migration) works from a client-less
+    // superuser context.
+    const beat = vi.fn(async (_ownerId: string) => {});
+    const now = () => 20_000_000;
+    expect(() =>
+      maybeBeatPresenceOnDispatch({ isSuperuser: true }, { beat, now }),
+    ).not.toThrow();
+    await flush();
+    expect(beat).toHaveBeenCalledWith('su-loopback');
   });
 
   test('a failing beat is swallowed and retried on the next window', async () => {

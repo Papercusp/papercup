@@ -64,10 +64,17 @@ describe('resolveAgentIdentity — superuser tier', () => {
     expect(id.source).toBe('static-client');
   });
 
-  it('throws when a superuser ctx has no uiClientId', () => {
-    expect(() =>
-      resolveAgentIdentity({ isSuperuser: true }),
-    ).toThrow(/missing uiClientId/);
+  it('resolves to the su-loopback fallback (not a throw) when uiClientId is absent (EI-2127)', () => {
+    // EI-2127 / EI-334: a superuser that carries no per-session id (no
+    // Mcp-Session-Id, no ?client=) is still attributable — admission already
+    // proved the machine admin — so the resolver returns the stable
+    // SUPERUSER_FALLBACK_CLIENT_ID ('su-loopback') instead of throwing.
+    // Throwing here broke every identity-resolving tool (coord:whoami, locks:*,
+    // db:next-migration, …) from a client-less superuser context. See the source
+    // comment on SUPERUSER_FALLBACK_CLIENT_ID for the full rationale.
+    const id = resolveAgentIdentity({ isSuperuser: true });
+    expect(id.ownerId).toBe('su-loopback');
+    expect(id.source).toBe('omp-hook-session');
   });
 });
 
