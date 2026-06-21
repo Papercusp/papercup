@@ -1,32 +1,25 @@
-# Worker log — EI-1405
+# Worker Log — EI-1405
 
-**Date:** 2026-06-20  
-**Issue:** Green operator (:3070) crash-loops on postgres null-socket uncaughtException when oversized pool exceeds PG cap
+**Bug:** Green operator (:3070) crash-loops on postgres null-socket uncaughtException when its oversized pool exceeds the PG cap (backend-connection-scaling P4-3 regression)
 
 ## What I found
 
-EI-1405 was **already fixed** by a prior auto-implement run (comment 46889, 2026-06-21T03:35). The issue state was `resolved`, ideaLifecycle was `applied`. My dispatch was a re-run verification.
+EI-1405 was **already fully resolved** by a previous improvement-runner before this worker was dispatched. State: `resolved`, `ideaLifecycle.state: applied`.
 
-## What exists in the codebase
+## Fix verified in-tree
 
-1. **`apps/operator/bin/host-benign-errors.ts`** — `isTransientPgConnectionError()` classifies the postgres-js null-socket TypeError both for:
-   - ESM path: `postgres/src/connection.js`  
-   - CJS path: `postgres/cjs/src/connection.js` (the actual EI-1405 incident stack from papercup-release bundled node_modules)
-   Also classifies `CONNECTION_CLOSED` code/message as benign.
+**`apps/operator/bin/host-benign-errors.ts`** — `isTransientPgConnectionError()` classifies:
+- `TypeError: Cannot read properties of null (reading 'write')` when stack is inside `postgres/src/connection.js` OR `postgres/cjs/src/connection.js` (both ESM and CJS paths)
+- `CONNECTION_CLOSED` code/message
 
-2. **`apps/operator/bin/hono-host.ts`** — imports `isBenignHostError` and uses it in both `uncaughtException` and `unhandledRejection` handlers; swallows benign errors (log + keep serving) instead of `process.exit(1)`.
+**`apps/operator/bin/hono-host.ts`** — both `uncaughtException` and `unhandledRejection` handlers import and use `isBenignHostError()`, which composes `isTransientPgConnectionError()`. Benign errors are logged and swallowed (no exit), non-benign errors still fail fast.
 
-3. **`apps/operator/bin/host-benign-errors.test.ts`** — 13 tests, including the CJS-incident regression case pinning `postgres/cjs/src/connection.js:255`.
-
-## Verification
-
-```
-cd apps/operator && npx vitest run bin/host-benign-errors.test.ts
-→ 13 passed (13), exit 0
-```
+**`apps/operator/bin/host-benign-errors.test.ts`** — 13 tests covering:
+- CJS incident path (`postgres/cjs/src/connection.js:255`) — the actual EI-1405 crash stack
+- ESM path
+- `CONNECTION_CLOSED` code and message
+- Negative: same null-write message but stack in app code stays fatal
 
 ## Outcome
 
-`improvements:resolve { id: 'EI-1405', outcome: 'fixed' }` — successful.
-
-The fix is in green main; the crash class is neutralized at the process level; regression tests prevent future regressions.
+No action required — `improvements:resolve` was already called by the prior worker. This worker confirms the fix is durable and in-tree.
