@@ -28,7 +28,9 @@
  * declines the re-file; a RESOLVED one means the problem regressed → re-file).
  */
 
+import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { lastServiceHealth, lastServiceHealthAt, probeAll, type ProbeResult } from '../../service-health';
 import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
@@ -2032,6 +2034,61 @@ export function planSelfEscalations(
 export type TickLockOutcome<T> = { ran: true; value: T } | { ran: false };
 
 /**
+ * The DIRECT (non-pooled) URL the tick lock connects on. Deliberately
+ * `getHarnessAdminUrl()` — which does NOT route through `maybePgbouncer` — so the
+ * lock NEVER rides the PgBouncer transaction pooler, even under PAPERCUSP_PGBOUNCER=1.
+ * Exported so the P-001 regression test can assert this invariant (transaction
+ * pooling would silently break a session-level advisory lock; see below).
+ */
+export function watchdogTickLockUrl(): string {
+  return getHarnessAdminUrl();
+}
+
+/**
+ * Dedicated DIRECT `max:1` admin connection for the cross-host tick lock
+ * (backend-connection-scaling-2026-06-17 P-001).
+ *
+ * The tick mutex is a SESSION-level `pg_advisory_lock` whose acquire and release
+ * MUST hit the same backend. Under PgBouncer transaction pooling
+ * (PAPERCUSP_PGBOUNCER=1) `getOrgPg().sql` routes through the pooler, where each
+ * statement is its own transaction and consecutive statements (lock → … → unlock)
+ * can land on DIFFERENT server backends → the `pg_advisory_unlock` misses, the lock
+ * LEAKS on the original backend, and every subsequent tick fails to acquire →
+ * `{ ran:false }` forever → the watchdog SILENTLY STOPS SWEEPING. So the lock rides
+ * its OWN dedicated direct connection (bypasses `maybePgbouncer`, exactly like the
+ * LISTEN buses do), pinning one stable backend for the lock's whole lifetime.
+ *
+ * Cost: ONE extra direct backend per process, lazily opened only on hosts that
+ * actually run the watchdog (bg-host / :3070) — it does NOT reintroduce the
+ * org-pool bloat that C2 cures. `idle_timeout:0` keeps the session alive between
+ * ticks (an idle-closed session would drop the lock). Correct in BOTH modes: a
+ * direct connection always has a stable session, so there is no PgBouncer-on/off
+ * behavioral fork.
+ */
+let _tickLockSql: Sql | null = null;
+function tickLockSql(): Sql {
+  if (!_tickLockSql) {
+    _tickLockSql = postgres(watchdogTickLockUrl(), {
+      onnotice: () => {},
+      max: 1,
+      idle_timeout: 0, // never idle-close: an idle-closed session drops the advisory lock
+      connection: {
+        application_name: `pcusp:watchdog-ticklock:p${process.pid}`.slice(0, 63),
+      },
+    });
+  }
+  return _tickLockSql;
+}
+
+/** Test-only — close + drop the dedicated tick-lock connection between cases. */
+export async function _closeWatchdogTickLockForTests(): Promise<void> {
+  if (_tickLockSql) {
+    await _tickLockSql.end({ timeout: 1 }).catch(() => {});
+    _tickLockSql = null;
+  }
+}
+
+/**
  * Run `fn` while holding the cross-host watchdog advisory lock (watchdog-robustness
  * P-003 / D-004). Two operator hosts (`:3070` + `:3170`, or a deploy overlap) can
  * fire `system:improvement-watchdog` against the ONE shared DB; without this they
@@ -2039,15 +2096,19 @@ export type TickLockOutcome<T> = { ran: true; value: T } | { ran: false };
  * captures. We hold a SESSION advisory lock on a reserved connection for the whole
  * tick (the captures themselves run on the pool — the lock is just the mutex).
  *
+ * The lock connection is a dedicated DIRECT (non-pooled) admin connection — see
+ * `tickLockSql()` for WHY (a session advisory lock breaks under PgBouncer
+ * transaction pooling; backend-connection-scaling-2026-06-17 P-001).
+ *
  * `{ ran:false }` ⇒ another host owns this tick → the caller records a skipped tick.
  * FAIL-OPEN: if the lock plumbing itself errors (can't reserve / lock query fails),
  * run `fn` unlocked — a missed mutex is better than a missed sweep. A `fn` error is
  * NEVER swallowed or double-run; it propagates cleanly.
  */
 export async function withWatchdogTickLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<TickLockOutcome<T>> {
-  let reserved: Awaited<ReturnType<ReturnType<typeof getOrgPg>['sql']['reserve']>>;
+  let reserved: Awaited<ReturnType<ReturnType<typeof tickLockSql>['reserve']>>;
   try {
-    reserved = await getOrgPg().sql.reserve();
+    reserved = await tickLockSql().reserve();
   } catch (e) {
     console.warn(`[improvement-watchdog] could not reserve a connection for the tick lock, running unlocked (fail-open): ${e instanceof Error ? e.message : e}`);
     return { ran: true, value: await fn() };
