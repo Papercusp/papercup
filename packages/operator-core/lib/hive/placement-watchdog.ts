@@ -40,6 +40,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
+import { placementOverride } from '../hive-control-policy';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
@@ -107,6 +108,8 @@ export function placementConfig(): PlacementConfig {
     recoveryDebounceMs: Number.isFinite(debounce) && debounce >= 0 ? debounce : 5 * 60_000,
     dormancyGraceMs: Number.isFinite(dormancy) && dormancy >= 0 ? dormancy : 10 * 60_000,
     infraBreakerThreshold: Number.isFinite(infra) && infra >= 1 ? infra : 12,
+    // live-configurability-audit P-015: overlay the runtime hive:control_policy override (empty ⇒ env defaults).
+    ...placementOverride(),
   };
 }
 
