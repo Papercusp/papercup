@@ -83,7 +83,10 @@ describe('projected tool inputSchemas (invalid_args class — structural)', () =
     const loose = projected.filter(
       (t) => (t.inputSchema as { additionalProperties?: unknown }).additionalProperties !== false,
     );
-    expect(loose.length, `${loose.length} projected tools allow unknown keys (want additionalProperties:false)`).toBe(0);
+    expect(
+      loose.length,
+      `${loose.length} projected tools allow unknown keys (want additionalProperties:false): ${loose.map((t) => JSON.stringify(t).slice(0, 220)).join(' || ')}`,
+    ).toBe(0);
   });
 
   it('a substantial set of tools declare required args (contract is enforced, not vestigial)', () => {

@@ -63,7 +63,7 @@ export interface OperatorVoiceSessionDeps {
   /** Open the EL WebSocket and wire inbound text/close/error. */
   connect(signedUrl: string, handlers: ElConnectHandlers): Promise<ElSocket>;
   /** Run the operator brain once for a spoken turn; returns the text EL speaks. */
-  askOperator(question: string, opConversationId: string | null): Promise<string>;
+  askOperator(question: string, opConversationId: string | null, role?: string): Promise<string>;
   /** The shared operator conversation id (D-005) — voice turns persist into it. */
   loadConversationId(): Promise<string | null>;
   /** Persist one turn into the shared thread (host is the SOLE writer → once). */
@@ -92,6 +92,10 @@ export class OperatorVoiceSession {
   private playerId: string | null = null;
   private opConversationId: string | null = null;
   private elConversationId: string | null = null;
+  // Which human-facing brain/persona the voice host runs: 'operator' (default) or
+  // 'sentinel' (the Herald). Set from the EL agent/persona config at start (P-011);
+  // defaults to 'operator' so the existing live voice path is byte-for-byte unchanged.
+  private brainRole = 'operator';
   private audioFormat: 'pcm_s16le' | 'encoded' = 'pcm_s16le';
   private sampleRate = 16000;
   private socket: ElSocket | null = null;
@@ -344,7 +348,7 @@ export class OperatorVoiceSession {
     }
     const question = String(parameters.question ?? parameters.message ?? parameters.text ?? '').trim();
     try {
-      const reply = await this.deps.askOperator(question, this.opConversationId);
+      const reply = await this.deps.askOperator(question, this.opConversationId, this.brainRole);
       this.socket?.send(elClientToolResultMessage(toolCallId, reply, false));
     } catch (err) {
       this.socket?.send(

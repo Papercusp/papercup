@@ -22,6 +22,7 @@
  */
 import { useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import OverridableSetting from '../override/OverridableSetting';
 // type-only (erased at build): a VALUE import of operator-core constants doesn't
 // resolve in the operator-vite vitest env, so the workspace-default tiers come
 // from the sync resolver instead of a client import.
@@ -113,25 +114,26 @@ export default function ModelTiersOverride({
             const draft = drafts[t.name] ?? effectiveSpec(baseline, override, t.name);
             return (
               <li key={t.name} className={`pc-mt__row${over ? ' pc-mt__row--on' : ''}`}>
-                <span className="pc-mt__name" title={t.name}>{t.name}</span>
-                <input
-                  className="pc-mt__spec"
-                  value={draft}
-                  disabled={busy}
-                  aria-label={`${t.name} model spec`}
-                  placeholder="model[:effort]"
-                  onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: e.target.value }))}
-                  onBlur={() => commit(t.name)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                  }}
-                />
-                <span className={`pc-mt__badge${over ? ' pc-mt__badge--on' : ''}`}>{over ? 'override' : 'default'}</span>
-                {over && (
-                  <button type="button" className="pc-mt__reset" onClick={() => resetTier(t.name)} disabled={busy} aria-label={`Reset ${t.name} to default`}>
-                    ↺
-                  </button>
-                )}
+                <OverridableSetting
+                  label={t.name}
+                  isOverridden={over}
+                  onReset={() => resetTier(t.name)}
+                  busy={busy}
+                  badgeStyle="chip"
+                >
+                  <input
+                    className="pc-mt__spec"
+                    value={draft}
+                    disabled={busy}
+                    aria-label={`${t.name} model spec`}
+                    placeholder="model[:effort]"
+                    onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: e.target.value }))}
+                    onBlur={() => commit(t.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    }}
+                  />
+                </OverridableSetting>
               </li>
             );
           })}

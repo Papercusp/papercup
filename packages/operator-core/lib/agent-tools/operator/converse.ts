@@ -63,7 +63,10 @@ const SessionUserSchema = z.object({
   has_password: z.boolean(),
 });
 
-const ArgsSchema = z.object({
+/** Exported so the `sentinel:converse` alias (sentinel-converse.ts) reuses the EXACT
+ *  same strict arg surface — instead of a `.passthrough()` that drops the projected
+ *  inputSchema's additionalProperties:false (the tool-input-schema-rejection guard). */
+export const ArgsSchema = z.object({
   messages: z.array(MessageSchema).default([]),
   trigger: z
     .union([

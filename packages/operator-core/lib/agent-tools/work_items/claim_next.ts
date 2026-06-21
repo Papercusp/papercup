@@ -29,6 +29,9 @@ export default defineTool({
     chaining: 'work_items:claim_next → work_items:set_state → work_items:release.',
   },
   capability: 'work_items:write',
+  // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: atomic self-select
+  // replaces a manual work_items:claim (find-oldest + claim, race-free).
+  replaces: ['work_items:claim'],
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({

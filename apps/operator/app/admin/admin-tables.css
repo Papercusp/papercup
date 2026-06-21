@@ -20,7 +20,7 @@
   padding: 14px 16px 10px;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   font-weight: 600;
 }
@@ -116,7 +116,7 @@
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   white-space: nowrap;
@@ -202,7 +202,7 @@
 .pc-admin-field label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   font-weight: 500;
 }

@@ -420,7 +420,7 @@ export default function CupboardModerationClient() {
         .pc-cbmod__harness { font-weight: 700; color: var(--fg, #e7f7ff); }
         .pc-cbmod__gh { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--accent, #38bdf8); text-decoration: none; }
         .pc-cbmod__gh:hover { text-decoration: underline; }
-        .pc-cbmod__status { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 999px; }
+        .pc-cbmod__status { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; padding: 1px 7px; border-radius: 999px; }
         .pc-cbmod__status--pending { color: #f59e0b; background: color-mix(in oklab, #f59e0b, transparent 84%); }
         .pc-cbmod__status--resolved_unlist { color: #f87171; background: color-mix(in oklab, #f87171, transparent 84%); }
         .pc-cbmod__status--resolved_dismiss { color: #22c55e; background: color-mix(in oklab, #22c55e, transparent 84%); }

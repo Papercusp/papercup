@@ -92,6 +92,9 @@ export default defineTool({
       'work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot.',
   },
   capability: 'work_items:write',
+  // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: replaces the
+  // per-task fleet:spawn / coord:send placement loop (drives the catalog back-pointer).
+  replaces: ['fleet:spawn', 'coord:send'],
   requirePrincipal: false,
   // Placement is the Queen's (or operator's) surface — same carve-out as fleet:spawn:
   // the worker-bee + the watch-only sentinel are excluded (they don't place agents).

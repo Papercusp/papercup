@@ -35,7 +35,10 @@ import { FLAGS } from '@papercusp/flags';
 import { getOverride } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
-import { evaluateCapabilityEnvelope } from './capability-envelope/policy';
+import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
+// live-configurability-audit-2026-06-20 P-009 — runtime envelope overrides (D-010 sync-cache).
+// Getters return empty when the dark flag is off ⇒ byte-identical envelope resolution.
+import { envelopeRoleOverrides, envelopeProtectedAdditions } from './capability-envelope-overrides';
 import { recordDecisionLedger } from './decision-ledger/emit';
 
 /**
@@ -394,10 +397,17 @@ async function checkCapabilityEnvelopeImpl(input: {
   ctx: UnifiedToolContext;
   args: unknown;
 }): Promise<CapabilityEnvelopeVerdict | null> {
+  // P-009 (D-010): merge the runtime per-role overrides OVER the baked ROLE_ENVELOPES (per-role
+  // replace) and union the tighten-only protected-floor additions. Both getters are SYNC and
+  // return empty unless papercusp-capability-envelope-overrides is ON ⇒ off = byte-identical.
+  const roleOverrides = envelopeRoleOverrides();
+  const protectedAdditions = envelopeProtectedAdditions();
   const decision = evaluateCapabilityEnvelope({
     toolName: input.toolName,
     capabilities: input.capabilities,
     ctx: input.ctx,
+    envelopes: Object.keys(roleOverrides).length > 0 ? { ...ROLE_ENVELOPES, ...roleOverrides } : undefined,
+    protectedAdditions: protectedAdditions.length > 0 ? protectedAdditions : undefined,
   });
   if (!decision.applied) return null; // exempt — no verdict; ledger records posture 'auto'
   if (decision.withinEnvelope) return { decision: 'allow', posture: 'auto', applied: true };

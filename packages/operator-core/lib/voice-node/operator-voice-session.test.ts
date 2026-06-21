@@ -242,7 +242,8 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
       client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_1', parameters: { question: 'how goes it' } },
     });
     await flush();
-    expect(h.deps.askOperator).toHaveBeenCalledWith('how goes it', 'op_conv_1');
+    // brainRole defaults to 'operator' (P-010 voice-role param; backward-compatible).
+    expect(h.deps.askOperator).toHaveBeenCalledWith('how goes it', 'op_conv_1', 'operator');
     const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
     expect(result).toMatchObject({ tool_call_id: 'tc_1', is_error: false, result: '<say>here you go</say>' });
   });

@@ -114,22 +114,26 @@ describe('pickRedundancyWinner — deterministic winner selection', () => {
 });
 
 describe('workItemRedundancyEnabled — the master switch (off by default)', () => {
+  // Migrated off the `PAPERCUSP_WORKITEM_REDUNDANCY` env gate to the `WORKITEM_REDUNDANCY`
+  // FLAG (live-configurability-audit-2026-06-20 P-007). The switch now reads the flag
+  // (sync-cached, default OFF) — the env var no longer controls it. The flag-on path is
+  // covered by the flags infrastructure; here we pin the safe default + that the legacy
+  // env no longer flips it.
   const prev = process.env.PAPERCUSP_WORKITEM_REDUNDANCY;
   afterEach(() => {
     if (prev === undefined) delete process.env.PAPERCUSP_WORKITEM_REDUNDANCY;
     else process.env.PAPERCUSP_WORKITEM_REDUNDANCY = prev;
   });
 
-  it('is OFF when unset', () => {
+  it('is OFF by default (the WORKITEM_REDUNDANCY flag is dark)', () => {
     delete process.env.PAPERCUSP_WORKITEM_REDUNDANCY;
     expect(workItemRedundancyEnabled()).toBe(false);
   });
-  it('is ON only for exactly "1"', () => {
+  it('is NOT controlled by the legacy PAPERCUSP_WORKITEM_REDUNDANCY env (migrated to the flag)', () => {
+    // Setting the retired env gate must NOT enable redundancy — the switch reads the
+    // flag now (default OFF), so this stays false. Guards against a silent revert to the
+    // env gate (which lint:env-feature-gates also forbids).
     process.env.PAPERCUSP_WORKITEM_REDUNDANCY = '1';
-    expect(workItemRedundancyEnabled()).toBe(true);
-    process.env.PAPERCUSP_WORKITEM_REDUNDANCY = 'true';
-    expect(workItemRedundancyEnabled()).toBe(false);
-    process.env.PAPERCUSP_WORKITEM_REDUNDANCY = '0';
     expect(workItemRedundancyEnabled()).toBe(false);
   });
 

@@ -15,8 +15,14 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 
-/** id + at-least-one of {content, kind, workspaceId, scope}. */
-const UPDATE_ARGS = z
+/**
+ * The wire SHAPE — a PLAIN z.object so the projected inputSchema keeps
+ * `additionalProperties:false` (unknown args rejected at the wire). KEEP THIS PLAIN:
+ * wrapping it in `.refine()`/`.superRefine()` yields a ZodEffects whose projected JSON
+ * schema DROPS additionalProperties:false (the tool-input-schema-rejection guard). The
+ * at-least-one-field rule rides `UPDATE_ARGS` below, which the handler validates against.
+ */
+const UPDATE_ARGS_SHAPE = z
   .object({
     id: z.string().uuid('Memory ID must be a valid UUID'),
     content: z.string().min(1).max(2000).optional().describe('replacement fact body (a CONTENT edit)'),
@@ -38,18 +44,21 @@ const UPDATE_ARGS = z
       .describe(
         'MOVE the memory to a different recall pool (its user_id/scope, e.g. a user-id or "harness:<slug>"). Changes which queries see it.',
       ),
-  })
-  .refine(
-    (a) =>
-      a.content !== undefined ||
-      a.kind !== undefined ||
-      a.workspaceId !== undefined ||
-      a.scope !== undefined,
-    { message: 'provide content and/or at least one metadata field (kind, workspaceId, scope)' },
-  );
+  });
+
+/** id + at-least-one of {content, kind, workspaceId, scope} — the HANDLER validates against
+ *  this refined schema; the tool's `args` uses the plain UPDATE_ARGS_SHAPE (see note above). */
+const UPDATE_ARGS = UPDATE_ARGS_SHAPE.refine(
+  (a) =>
+    a.content !== undefined ||
+    a.kind !== undefined ||
+    a.workspaceId !== undefined ||
+    a.scope !== undefined,
+  { message: 'provide content and/or at least one metadata field (kind, workspaceId, scope)' },
+);
 
 /** Build the neutral UpdatePatch from validated args. */
-function toPatch(a: z.infer<typeof UPDATE_ARGS>): { text?: string; metadata?: Record<string, unknown> } {
+function toPatch(a: z.infer<typeof UPDATE_ARGS_SHAPE>): { text?: string; metadata?: Record<string, unknown> } {
   const metadata: Record<string, unknown> = {};
   if (a.kind !== undefined) metadata.kind = a.kind;
   if (a.workspaceId !== undefined) metadata.workspace_id = a.workspaceId;
@@ -86,7 +95,7 @@ export default defineTool({
   // definePrincipalGatedTool drops them (never copied to the def, never
   // enforced); the all-roles lists + quotas formerly here were dead inputs
   // (memory-taxonomy-and-debt-followups P-004).
-  args: UPDATE_ARGS,
+  args: UPDATE_ARGS_SHAPE,
   async handler(args) {
     // Validate args; the defineTool wrapper will have validated in production,
     // but direct handler calls (e.g. in tests) bypass it.

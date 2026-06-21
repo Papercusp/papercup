@@ -34,6 +34,7 @@ import { ChevronDown, ChevronRight, Cpu, Gauge, Moon, TrendingUp, Users } from '
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
+import OverridableSetting from '../override/OverridableSetting';
 
 /** The idle background activities the owner can gate (mirrors owner-steering.ts
  *  IDLE_ACTIVITY_KINDS — redeclared locally so this stays import-light in the
@@ -194,10 +195,7 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Gauge size={11} aria-hidden />
-              <span className="pc-queen__knoblabel">Wake cadence floor</span>
-              <span className={`pc-queen__knobbadge${cadenceFloorSec != null ? ' pc-queen__knobbadge--on' : ''}`}>
-                {cadenceFloorSec != null ? 'override' : 'default'}
-              </span>
+              <OverridableSetting label="Wake cadence floor" isOverridden={cadenceFloorSec != null} badgeStyle="inline" />
             </div>
             <div className="pc-queen__knobrow">
               <DraftNumberInput value={cadenceFloorSec} ariaLabel="Wake cadence floor (seconds)" min={1} busy={busy} onCommit={onSetCadenceFloor} />
@@ -226,10 +224,7 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Users size={11} aria-hidden />
-              <span className="pc-queen__knoblabel">Max concurrent bees</span>
-              <span className={`pc-queen__knobbadge${maxBees != null ? ' pc-queen__knobbadge--on' : ''}`}>
-                {maxBees != null ? 'override' : 'default'}
-              </span>
+              <OverridableSetting label="Max concurrent bees" isOverridden={maxBees != null} badgeStyle="inline" />
             </div>
             <div className="pc-queen__knobrow">
               <DraftNumberInput value={maxBees} ariaLabel="Max concurrent bees" min={1} busy={busy} onCommit={onSetMaxBees} />
@@ -251,10 +246,7 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Cpu size={11} aria-hidden />
-              <span className="pc-queen__knoblabel">Cap bees at tier</span>
-              <span className={`pc-queen__knobbadge${beeTier ? ' pc-queen__knobbadge--on' : ''}`}>
-                {beeTier ? 'override' : 'default'}
-              </span>
+              <OverridableSetting label="Cap bees at tier" isOverridden={!!beeTier} badgeStyle="inline" />
             </div>
             <Select
               className="pc-queen__select"

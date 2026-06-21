@@ -299,6 +299,9 @@ export default defineTool({
     chaining: 'Returns { ok, slug }. Follow with plans:get to read the created plan.',
   },
   capability: 'plans:write',
+  // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: applies a
+  // promote:plan block as plans:new + set-now + add-item×N + add-decision×N in one call.
+  replaces: ['plans:new', 'plans:set-now', 'plans:add-item', 'plans:add-decision'],
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'operator', 'bee'],
   args: z.object({

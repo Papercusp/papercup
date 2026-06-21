@@ -21,7 +21,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import operatorConverse from './converse';
+import operatorConverse, { ArgsSchema } from './converse';
 
 // The operator converse handler — reused verbatim. It reads `input.role` to pick
 // the persona; this alias defaults that to 'sentinel' when the caller omits it.
@@ -46,14 +46,14 @@ export default defineTool({
   idleTimeoutSec: 120,
   replayBufferSize: 5000,
   modality: ['text', 'voice'],
-  // Mirror the operator converse arg surface, but default `role` to 'sentinel'
-  // (the whole point of the alias). z.passthrough so any field the operator
-  // schema accepts flows through to the shared handler unchanged.
-  args: z
-    .object({
-      role: z.string().optional().default('sentinel'),
-    })
-    .passthrough(),
+  // Mirror the operator converse arg surface (the REAL converse ArgsSchema, so every
+  // field the shared handler reads flows through), only defaulting `role` to 'sentinel'
+  // (the whole point of the alias). Reusing ArgsSchema keeps the STRICT arg surface
+  // (additionalProperties:false at the wire — tool-input-schema-rejection contract)
+  // instead of a `.passthrough()` that opened the schema to unknown keys.
+  args: ArgsSchema.extend({
+    role: z.string().optional().default('sentinel'),
+  }),
   events: {
     delta: z.object({ text: z.string() }),
     tool_call: z.object({ name: z.string(), input: z.unknown() }),

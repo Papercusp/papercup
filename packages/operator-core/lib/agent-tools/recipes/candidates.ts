@@ -20,6 +20,8 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { hiveHomeSlugForHarness } from '../../hive-federation';
 import { recipeCandidates } from '../../code-recipes-candidates';
 import { buildQueryEmbedder } from '../search/embedder';
+// tool-call-batching-wrappers-2026-06-21 P-004 / D-016 — the deterministic co-occurrence scoring leg.
+import { buildRecipeCooccurrenceDep } from '../../recipe-cooccurrence-leg';
 
 export default defineTool({
   name: 'recipes:candidates',
@@ -62,6 +64,9 @@ export default defineTool({
       ? await hiveHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
       : null;
     const embedder = await buildQueryEmbedder().catch(() => null);
+    // tool-call-batching-wrappers P-004 / D-016 — fold in the deterministic co-occurrence
+    // leg: mean pairwise confidence of a recipe's tool-set, from dev:tool_cooccurrence.
+    const toolCooccurrence = await buildRecipeCooccurrenceDep(workspaceId).catch(() => null);
     const { promoteCandidates, mergeClusters } = await recipeCandidates(
       getOrgPg().sql,
       {
@@ -70,7 +75,7 @@ export default defineTool({
         minRunCount: args.minRunCount,
         limit: args.limit,
       },
-      { embedder, log: (msg) => ctx.log(msg) },
+      { embedder, toolCooccurrence, log: (msg) => ctx.log(msg) },
     );
     return {
       content: [

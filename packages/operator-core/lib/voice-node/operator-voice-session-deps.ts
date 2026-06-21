@@ -128,9 +128,15 @@ function connect(signedUrl: string, handlers: ElConnectHandlers): Promise<ElSock
   });
 }
 
-async function askOperator(question: string, opConversationId: string | null): Promise<string> {
-  const tool = lookupByMcpName('operator:converse');
-  if (!tool) throw new Error('operator:converse tool not registered');
+async function askOperator(
+  question: string,
+  opConversationId: string | null,
+  role: string = 'operator',
+): Promise<string> {
+  // role selects the human-facing persona/brain: 'operator' (default, backward-compatible)
+  // or 'sentinel' (the Herald). The `${role}:converse` tool alias loads the matching persona.
+  const tool = lookupByMcpName(`${role}:converse`);
+  if (!tool) throw new Error(`${role}:converse tool not registered`);
 
   const conversationId = opConversationId ?? (await getOrCreateActiveConversation()).id;
   const recent = await listTurnsRecent({ conversationId, limit: HISTORY_CONTEXT_TURNS });
@@ -142,7 +148,7 @@ async function askOperator(question: string, opConversationId: string | null): P
     progress: () => {},
     emit: () => {},
     workspaceId: activeWorkspaceId(),
-    role: 'operator',
+    role: role as UnifiedToolContext['role'],
     runId: globalThis.crypto.randomUUID(),
     spawnId: globalThis.crypto.randomUUID(),
     transport: 'in_process',
@@ -152,8 +158,8 @@ async function askOperator(question: string, opConversationId: string | null): P
   let assembled = '';
   for await (const ev of dispatchProjectedToolStream(
     tool,
-    'operator:converse',
-    { messages, trigger: 'user_message', modality: 'voice', conversationId },
+    `${role}:converse`,
+    { messages, trigger: 'user_message', modality: 'voice', conversationId, role },
     ctxBase,
     {},
   )) {

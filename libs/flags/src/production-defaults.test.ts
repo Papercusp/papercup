@@ -31,6 +31,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // live-configurability-audit-2026-06-20 P-007: BOINC work-item redundancy (N× model spend) —
   // migrated off the PAPERCUSP_WORKITEM_REDUNDANCY env gate to a FLAG; ships dark, owner-ratified.
   FLAGS.WORKITEM_REDUNDANCY,
+  // live-configurability-audit-2026-06-20 P-009: runtime per-role capability-envelope overrides
+  // modify AUTH on the dispatch hot path (D-010) — ships DARK pending owner ratification (mirrors
+  // the P-008 owner-authority pause). OFF = byte-identical (the D-010 sync-cache stays empty).
+  FLAGS.CAPABILITY_ENVELOPE_OVERRIDES,
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
   FLAGS.CLOUDFLARE_PUBLISH, // cut for V1 — publish surface not shipping
   FLAGS.HARNESS_PHASES, // cut for V1

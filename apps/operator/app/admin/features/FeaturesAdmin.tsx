@@ -320,7 +320,7 @@ export default function FeaturesAdmin() {
           font-size: 11px;
           font-weight: 760;
           color: rgba(203, 238, 255, 0.76);
-          letter-spacing: 0.12em;
+          letter-spacing: 0;
           text-transform: uppercase;
         }
         .fa-p {
@@ -374,7 +374,7 @@ export default function FeaturesAdmin() {
         .fa-flag-key { color: rgba(148, 163, 184, 0.78); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
         .fa-pill {
           display: inline-block; padding: 2px 8px; border-radius: 999px;
-          font-size: 10px; font-weight: 760; text-transform: uppercase; letter-spacing: 0.08em;
+          font-size: 10px; font-weight: 760; text-transform: uppercase; letter-spacing: 0;
           margin-left: 8px;
         }
         .fa-pill.on  { background: rgba(34, 197, 94, 0.18); color: #86efac; }

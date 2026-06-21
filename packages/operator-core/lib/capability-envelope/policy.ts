@@ -137,6 +137,14 @@ export function evaluateCapabilityEnvelope(args: {
    * to before — a non-fleet harness is unchanged.
    */
   envelopes?: Partial<Record<string, RoleEnvelope>>;
+  /**
+   * TIGHTEN-ONLY additions to the universal never-auto protected floor
+   * (`PROTECTED_CAPABILITY_GLOBS`), unioned for THIS evaluation
+   * (live-configurability-audit-2026-06-20 P-009 — the runtime `protectedAdditions` from
+   * `capability_envelope:set_protected`). Empty/absent ⇒ exactly the baked floor, byte-identical.
+   * The floor is append-only here: callers can only ADD globs, never remove the baked set (D-002).
+   */
+  protectedAdditions?: readonly string[];
 }): EnvelopeDecision {
   const { toolName, capabilities, ctx } = args;
 
@@ -154,8 +162,14 @@ export function evaluateCapabilityEnvelope(args: {
   const testingExempt = testingFullAccess(role);
 
   const env = (args.envelopes ?? ROLE_ENVELOPES)[role];
+  // P-009: union any TIGHTEN-ONLY runtime additions onto the baked never-auto floor. Absent ⇒
+  // exactly PROTECTED_CAPABILITY_GLOBS (byte-identical). The baked set is never removable here.
+  const protectedGlobs =
+    args.protectedAdditions && args.protectedAdditions.length > 0
+      ? [...PROTECTED_CAPABILITY_GLOBS, ...args.protectedAdditions]
+      : PROTECTED_CAPABILITY_GLOBS;
   for (const cap of capabilities) {
-    if (matchesAny(cap, PROTECTED_CAPABILITY_GLOBS)) {
+    if (matchesAny(cap, protectedGlobs)) {
       return {
         withinEnvelope: false,
         applied: true,

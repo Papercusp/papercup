@@ -443,6 +443,13 @@ export const FLAGS = {
   // (migrated off the PAPERCUSP_WORKITEM_REDUNDANCY env gate). DARK (N× model spend); SYNC-cached
   // because the claim-path read is synchronous (the WORKITEM_CLAIM_LEASE migration pattern).
   WORKITEM_REDUNDANCY: "papercusp-workitem-redundancy",
+  // live-configurability-audit-2026-06-20 P-009 — runtime per-role capability-envelope
+  // overrides (capability_envelope:set_role / :set_protected). DARK: when ON the D-010
+  // sync-cache merges per-role deny/allow overrides OVER the baked ROLE_ENVELOPES and unions
+  // tighten-only protected-floor additions, at the dispatch checkCapabilityEnvelope step.
+  // OFF (default) ⇒ the sync-cache stays empty ⇒ byte-identical. (Also needs CAPABILITY_ENVELOPE
+  // ON for the envelope to actually bite — this flag only governs whether overrides apply.)
+  CAPABILITY_ENVELOPE_OVERRIDES: "papercusp-capability-envelope-overrides",
   // agent-capability-confinement-2026-06-13 B-06 (P-011) ⨯ queen-autonomy-policy D-012/P-110:
   // the Queen decision-ledger ACTION-CHOKEPOINT emit — one append-only row per governed
   // (tier != 'low') action by a non-SU principal, from the dispatch postInvoke seam. ON by
@@ -1184,6 +1191,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.CAPABILITY_GRANT_TOOL]: false,
   // P-007 — work-item redundancy is N× model spend; ships DARK (owner flips via /admin/features).
   [FLAGS.WORKITEM_REDUNDANCY]: false,
+  // P-009 — runtime capability-envelope overrides modify AUTH on the dispatch hot path (D-010);
+  // ship DARK. OFF = the sync-cache stays empty = byte-identical envelope resolution.
+  [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES]: false,
   // ON by default — Phase-0 foundation record-keeping (B-06 / P-011), same call as
   // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
   // OFF is the kill-switch (the emit no-ops).

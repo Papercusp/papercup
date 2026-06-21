@@ -280,4 +280,19 @@ describe('design primitive lint', () => {
       ]),
     );
   });
+
+  it('keeps audited operator app stylesheets on design-spec letter spacing', () => {
+    expectNoUnexpected(
+      'Nonzero letter-spacing in audited operator app stylesheets',
+      unexpectedNonzeroLetterSpacingUnderAny([
+        join(OPERATOR_ROOT, 'app/admin/_components/AdminShell.tsx'),
+        join(OPERATOR_ROOT, 'app/admin/admin-ops.css'),
+        join(OPERATOR_ROOT, 'app/admin/admin-tables.css'),
+        join(OPERATOR_ROOT, 'app/admin/cupboard-moderation/CupboardModerationClient.tsx'),
+        join(OPERATOR_ROOT, 'app/admin/features/FeaturesAdmin.tsx'),
+        join(OPERATOR_ROOT, 'app/admin/plans/plans.css'),
+        join(OPERATOR_ROOT, 'app/admin/testing/testing.css'),
+      ]),
+    );
+  });
 });

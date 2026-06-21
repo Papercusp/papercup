@@ -25,6 +25,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { ChevronDown, ChevronRight, ExternalLink, GitBranch, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
+import OverridableSetting from '../override/OverridableSetting';
 
 export const DECOMP_MODES = ['serial', 'balanced', 'parallel'] as const;
 export type DecompMode = (typeof DECOMP_MODES)[number];
@@ -158,10 +159,7 @@ export default function AutonomySurfacing({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <GitBranch size={11} aria-hidden />
-              <span className="pc-queen__knoblabel">Decomposition</span>
-              <span className={`pc-queen__knobbadge${decomposition != null ? ' pc-queen__knobbadge--on' : ''}`}>
-                {decomposition != null ? 'override' : 'default'}
-              </span>
+              <OverridableSetting label="Decomposition" isOverridden={decomposition != null} badgeStyle="inline" />
             </div>
             <div className="pc-queen__seg" role="group" aria-label="Decomposition aggressiveness">
               <button

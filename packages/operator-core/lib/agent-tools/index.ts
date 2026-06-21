@@ -476,6 +476,9 @@ import './routines/set';
 // papercusp-capability-grant-tool; D-007 owner-authority):
 import './capability/grant-role';
 import './capability/revoke-role';
+// live-configurability-audit-2026-06-20 P-009 — runtime per-role capability-envelope override
+// (capability_envelope:set_role). DARK behind papercusp-capability-envelope-overrides.
+import './capability/envelope-set-role';
 // live-configurability-audit-2026-06-20 P-001 — per-(harness,role) prompt override (read/set/clear):
 import './prompt/role-override';
 // live-configurability-audit-2026-06-20 P-005 — settable fleet opus-budget shed bands:
