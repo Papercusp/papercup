@@ -1,6 +1,11 @@
 ---
 title: Plugin + marketplace pipeline — state as of 2026-05-11
 description: One-page reference for the TS plugin/template/snapshot/marketplace system as it stands today. Where the code is, what's covered by tests, what's deferred, and where to look first.
+plans:
+  - plugin-system-hive-port-2026-06-11
+  - retire-snapshots-instance-spec-2026-06-09
+  - revive-cupboard-distribution-2026-06-04
+  - revive-plugin-system-2026-06-04
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -20,6 +25,10 @@ Preserved as the 2026-05-11 milestone. Reading it today, note:
   `apps/operator/lib/*` (e.g. `plugin-host-runtime.ts`, `plugin-grants.ts`)
   now lives under **`packages/operator-core/lib/`**. The Next route paths in
   the tables below are stale.
+- Migrations **`051`** and **`052`** were folded into **`000-baseline.sql`** and
+  archived (`libs/papercusp/libs/db/sql/archive/`); they are no longer live
+  numbered migrations. `harness_shared.plugin_capability_grants` is defined in
+  the baseline.
 - The `localhost:3057` / `papercuspai.com` marketplace-api was superseded by
   the in-app **Cupboard** (`apps/operator-public`, CF Workers + Hono + D1).
 - The "use git worktrees for non-main work" hard rule is **reversed** under
@@ -31,6 +40,8 @@ Preserved as the 2026-05-11 milestone. Reading it today, note:
 ## TL;DR
 
 Three publishable kinds (`plugin`, `template`, `snapshot`) share one marketplace pipeline. Operator at `localhost:3055` serves the install/discover surface; marketplace-api at `localhost:3057` is the registry. Plugins run in-process under a two-tier capability check (manifest ∩ user-granted). Tests cover every helper and DB-backed function shipped in this session.
+
+*As of today:* the `snapshot` publishable kind was **retired** (see the snapshot note below); the `:3057`/`papercuspai.com` registry was superseded by the in-app **Cupboard**; plugins also load as **WASM** or **daemon** runtimes, not only in-process JS.
 
 ## Source layout
 
@@ -155,8 +166,8 @@ Out-of-band gated:
 
 ```
 GET   /api/marketplace/catalog                  — proxies marketplace-api with hide-filter
-POST  /api/marketplace/install                  — template/snapshot install (slug-collision aware)
-POST  /api/marketplace/install-plugin           — plugin install via papercusp CLI
+POST  /api/marketplace/install                  — template install (slug-collision aware)
+POST  /api/cupboard/install-plugin              — plugin install: git-clone the listing's GitHub repo (replaces the dead marketplace/install-plugin tarball path)
 DELETE /api/marketplace/uninstall               — template uninstall
 GET   /api/plugins/global                       — installed plugins
 GET   /api/plugins/manifest?slug=<id>           — declared capabilities for consent UI
@@ -165,10 +176,11 @@ GET   /api/plugins/grants?plugin=&version=&harness=
 POST  /api/plugins/grants                       — toggle a (plugin, harness, cap) grant
 POST  /api/plugins/enable                       — enable/disable a plugin in harness(es)
 POST  /api/plugins/uninstall
-POST  /api/snapshots/create
-POST  /api/snapshots/<id>/publish
-POST  /api/snapshots/<id>/instantiate           — fork (carries grants)
-POST  /api/snapshots/<id>/retract
+# /api/snapshots/* (create, publish, instantiate, retract) — RETIRED; the
+#   publishable-snapshot system moved to _retired/snapshot-system. Replacement:
+#   the InstanceSpec system (packages/operator-core/lib/instance-spec/).
+#   The surviving /api/harness/:slug/snapshots is a DIFFERENT feature
+#   (per-harness iteration snapshots / FS rollback).
 POST  /api/harness/<slug>/save-as-template
 POST  /api/templates/<slug>/<version>/publish
 ```

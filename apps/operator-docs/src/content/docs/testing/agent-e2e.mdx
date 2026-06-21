@@ -2,9 +2,18 @@
 title: Agent E2E playbook — driving the operator like a user
 sidebar:
   order: 2
+plans:
+  - app-impersonation-e2e-round5-2026-06-18
+  - app-impersonation-e2e-round3-2026-06-14
+  - app-impersonation-e2e-round2-2026-06-10
+  - app-impersonation-e2e-perf-testing-2026-06-10
+  - app-impersonation-e2e-deep-journeys-2026-06-15
+  - release-pipeline-resilience-2026-06-09
+  - operator-vite-migration-2026-05-20
+  - operator-vite-ui-consolidation-2026-06-16
 ---
 
-> **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
+> **Webapp retired (2026-05-14).** Any `localhost:3055` (Vite SPA) or `localhost:3270` (the dev shell's own working-tree Hono host) URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`. (`:3070` is the systemd-owned green release operator — a separate process the dev shell does not load.)
 
 
 import { Aside } from '@astrojs/starlight/components';
@@ -21,12 +30,14 @@ miss them.
 </Aside>
 
 <Aside type="caution" title="Drive the running Tauri dev shell — there is no standalone webapp">
-The webapp at `:3055` / `:3070` was retired on 2026-05-14. The Next
-sidecar still binds a port (so `localhost:3055` may render a page) but
-it is **only meant to be reached through the Tauri shell** — auth,
-workspace switching, embedded-PG discovery, and the IPC bridge all
-assume the Tauri host. Driving the bare Next port skips that wiring
-and the bugs you'll find won't reproduce for users.
+The standalone webapp was retired on 2026-05-14. The dev shell still
+binds ports (the Vite SPA on `:3055`, its own working-tree Hono host on
+`:3270` — `:3070` is the separate green release operator, not this
+session), so `localhost:3055` may render a page, but it is **only meant
+to be reached through the Tauri shell** — auth, workspace switching,
+embedded-PG discovery, and the IPC bridge all assume the Tauri host.
+Driving the bare SPA port skips that wiring and the bugs you'll find
+won't reproduce for users.
 
 Start the shell with `cd papercusp-desktop && npm run dev` (or attach
 to an already-running one — see §1) and drive that webview via the
@@ -105,8 +116,16 @@ npm run dev    # foregrounds 'tauri dev'; cargo build first run is ~2 min
 
 The first launch compiles the Rust shell; subsequent launches hot-load
 the operator sidecar (the Vite SPA `@papercusp/operator-vite` on `:3055`
-+ the Hono host on `:3070` — Next.js is retired). Wait for
-`dev bridge listening` to appear in the log before driving.
++ this dev shell's own working-tree Hono host on `:3270` — Next.js is
+retired). The webview's `devUrl` points at `:3270`, **not** `:3070`:
+`:3070` is the green release operator (systemd-owned), a separate
+process the dev shell does not load. The own-port split
+(`release-pipeline-resilience` P-010, 2026-06-11) exists precisely so a
+desktop dev session stops loading the green release — `tauri.conf.json`
+sets `devUrl` to `http://127.0.0.1:3270` and `bin/dev-operator-ifneeded.sh`
+spawns the operator with `PAPERCUSP_HONO_PORT` defaulting to `3270`
+(`OPERATOR_DEV_PORT`). Wait for `dev bridge listening` to appear in the
+log before driving.
 
 ### 1.2 Bridge probe
 
@@ -124,10 +143,16 @@ Bridge version:   0.7.0
 Endpoints:        /eval, /logs, /describe, /version, /process, /capabilities, /devtools, /health
 Windows:          main
 Page:
-  URL:      http://127.0.0.1:<port>/harness?slug=<slug>&ws=<ws>
+  URL:      http://127.0.0.1:<port>/adv?tab=<tab>&slug=<slug>
   Title:    Papercusp
   Viewport: 1280x800   # or whatever the user has resized to
 ```
+
+`/harness` is no longer a landing surface — it `beforeLoad`-redirects to
+`/adv` (translating `?slug`/`?project`→`?slug` and `?panel`→`?tab`), so a
+probe of a running dev shell shows an `/adv` URL, not `/harness?slug=…`.
+The live product surface is `/adv` (see §13); §5–§8 below describe the
+legacy `/harness` etc. as historical reference only.
 
 If multiple bridges show up, several Tauri dev instances are running
 (stale token files do **not** mean stale bridges — `kill -0 <pid>`
@@ -1219,7 +1244,9 @@ the per-panel detail lives in the panels themselves, not here.
 [ /adv — Overview]      tab=overview mounts, workspace summary renders
 [ /adv — Brainstorm]    tab=brainstorm mounts (per-pot)
 [ /adv — Create]        tab=plans: plan list, plan editor, launch path
+[ /adv — Calendar]      tab=calendar mounts (workspace-scoped scheduled/recurring plans)
 [ /adv — Working]       tab=harnesses: dock mounts; Work-items grid (filter/search/row-select)
+[ /adv — Health]        tab=health mounts (flag SYSTEM_HEALTH_TAB, default on; read-only system dashboard)
 [ /adv — Working dock]  Add panel catalog (work-items/detail/overview/agents/logs/contributors/insights/chat), layout reset, per-slug layout persistence
 [ /adv — Detail]        ?sel=WI-*/F-* drives Detail pane; Actions incl. Chat (wi-detail-chat)
 [ /adv — Chat panel]    free slot picker (adv-chat-pick/adv-chat-start) → worker chat; repeat opens FOCUS the existing chat (no duplicate agent_chats row); archive frees the slot
@@ -1227,6 +1254,7 @@ the per-panel detail lives in the panels themselves, not here.
 [ /adv — Tests]         tab=testing: domains tree, per-file status, run affordances
 [ /adv — Docs]          tab=docs (per-pot docs tree)
 [ /adv — Insights]      tab=insights mounts
+[ /adv — Evaluation]    tab=evals mounts (impartial-benchmark suite, workspace-scoped)
 [ /adv — Conversations] tab=conversations: all 5 views (threads/deliberations/agentchats/messages/feed); threads reply/accept/promote; LIVE agent chat shows the interactive composer (advconv-live-chat), archived stays read-only
 [ /adv — Learning]      tab=learning: papercusp-improvement backlog renders
 [ /adv — Frames]        tab=frames mounts (workspace live view)

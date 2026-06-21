@@ -158,12 +158,14 @@ The tables below give the current locations.
 | `apps/operator/app/harness/PiPanel.tsx` | xterm.js React component (xterm + addon-fit + addon-web-links). SSE on mount, POST keystrokes on input, POST resize on container resize. Cleanup on unmount. |
 | `apps/operator/app/harness/PiPanel.css` | Pane chrome (header bar, "open new", spinner) + xterm theme matching papercusp dark colors. |
 | `packages/operator-core/lib/pty-bridge.ts` | Server-side `@lydell/node-pty` wrapper. `spawnPty({command, args, cwd, env, cols, rows})` → typed handle with `onData` / `write` / `resize` / `kill`, an owner-SID tag, a 1 MB byte ring, and a per-handle `xterm-headless` + `SerializeAddon` mirror for bounded screen-state replay. Centralizes lifecycle, the host-scaled process-wide pty cap, and the 5-min idle reaper. |
+| `packages/operator-core/lib/pty-ws.ts` | WebSocket server for the pty bridge (started from `instrumentation.ts`). Client connects to `ws://…/pty/<id>` after `/spawn`; replaces the SSE-output + POST-input data channels with one full-duplex WS (binary frames, no base64), with VS Code-shape flow control. The HTTP control plane is unchanged. |
+| `packages/operator-core/lib/pty-tauri.ts` | Native desktop data path — `isTauriNative()` + `openNativeSession()`. Inside the Tauri webview, forks the pty Rust-side and streams over Tauri IPC, bypassing HTTP/WS/SSE. |
 
 #### Modified files
 
 | Path | Change |
 |---|---|
-| `apps/operator/package.json` | Add `node-pty` (or `@lydell/node-pty` for prebuilt support — research first), `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`. |
+| `apps/operator/package.json` | Added `@lydell/node-pty` (the prebuilt-binary fork — chosen over plain `node-pty`), `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`, `@xterm/addon-attach` (WS data path), `@xterm/headless` + `@xterm/addon-serialize` (server-side screen-state replay). |
 | `packages/operator-core/lib/endpoint-route/routes/index.ts` | Register the pty router (flattened into the route table) so it mounts under `/api/harness/:slug/pty`. |
 | `apps/operator/app/harness/PiTerminalsDock.tsx` | Multi-pane (dockview) container that hosts the pi/omp terminals as draggable tabs/splits; each panel mounts a `<PiPanel>`. (Replaces the original plan's `HarnessDashboard.tsx` `MainPanel`-union single-tab integration after the harness-UI restructure.) |
 | `apps/operator/app/harness/PiPanel.tsx` | Per-feature "open in pi" wiring: passes the feature id as `laneId` so the pane spawns in that feature's worktree. |
@@ -261,10 +263,10 @@ On the WS path the data channel is binary frames of raw pty bytes (no base64). O
 
 ## What is explicitly NOT in scope
 
-- Pi plugin exposing papercusp tools (deferred to Phase 3d).
-- Session persistence / resume across pane reopen (deferred).
 - Replacing the `vscode` tab — pi sits alongside it, not instead of it.
 - Web (non-desktop) deployment of the pi pane — works the same way (sidecar is identical), but rollout is separate.
+
+(The original "not in scope" list also named the pi plugin and session-persistence/resume; both shipped under Phase 3d — see the phasing notes above.)
 
 <Aside type="note">
 Track A and Track B are independent — implement either or both. Track A alone is the smaller, less-visible change. Track B alone gives users the interactive override without changing how the autonomous loop runs. Together they make pi a first-class citizen in the desktop runtime.
