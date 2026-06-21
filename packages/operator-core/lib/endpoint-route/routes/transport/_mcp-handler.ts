@@ -691,33 +691,38 @@ export const MCP_SERVER_CAPABILITIES = {
  * Disabled via PAPERCUSP_SU_MEMORY_INJECTION=off when needed.
  */
 const PAPERCUSP_MCP_INSTRUCTIONS = `At the start of any session-with-context (a user task you have not
-seen this run), establish your three-layer memory state:
+seen this run), bootstrap in ONE call:
 
-  1. **mem0 (what you know)** — call \`memory:search\` with the user's
-     intent as the query. Pass \`harness_slug\` for project-specific
-     facts. Each result carries \`id\` — remember it; if the user later
-     contradicts something, call \`memory:forget\` on that id.
+  **\`coord:orient { intent }\`** — pass your one-line intent for the
+  task. In a SINGLE round-trip it returns your current assignments
+  (+ lane + load), the claimable backlog, your unread inbox summary,
+  the recent plan-events delta, AND a mem0 recall for \`intent\` — and
+  it DECLARES \`intent\` to peers so they see what you're working on.
+  This replaces the old four-call ritual (memory:search + coord:inbox +
+  coord:plan-events + coord:declare-intent); reach for those individually
+  only for detail orient deliberately bounds.
 
-  2. **coord (what's happening)** — call \`coord:inbox\` for messages
-     addressed to you and \`coord:plan-events\` for recent plan changes
-     (use \`since_ts\` to get only deltas). Then call
-     \`coord:declare-intent\` so peers see what you're working on — and
-     when the work is plan items, declare them as your lane:
-     \`{ intent, current_plan_slug, items: ['P-001', …] }\` CLAIMS those
-     items for you (and releases ones you've moved off). An unclaimed
-     lane is invisible to the Queen and peers, so work gets
-     double-placed. (Flipping an item \`wip\` via \`plans:set-status\`
-     also auto-claims; \`done\` releases. A \`claim_conflict\` means a
-     live peer holds it — coordinate with the holder, don't take it.)
+  - **Claim your lane.** When the work is plan items, pass them:
+    \`coord:orient { intent, planSlug, planItems: ['P-001', …] }\` CLAIMS
+    those items for you (and releases ones you've moved off). An unclaimed
+    lane is invisible to the Queen and peers, so work gets double-placed.
+    (Flipping an item \`wip\` via \`plans:set-status\` also auto-claims;
+    \`done\` releases. A \`claim_conflict\` means a live peer holds it —
+    coordinate with the holder, don't take it.)
+  - **mem0 (what you know).** orient's recall uses \`intent\` as the query;
+    pass \`harness\` for project-specific facts. Each mem0 hit carries an
+    \`id\` — if the user later contradicts something, \`memory:forget\`
+    that id. Use \`memoryQuery\` for a different query, or call
+    \`memory:search\` directly.
+  - **insights (how things work).** When you hit a confusing failure,
+    \`docs:search\` the \`agent-insights/\` section before grepping code —
+    many "weird bugs" already have a written runbook.
 
-  3. **insights (how things work)** — when you hit a confusing failure,
-     \`docs:search\` the \`agent-insights/\` section before grepping
-     code — many "weird bugs" already have a written runbook.
-
-Memory writes belong in the right layer: stable facts → mem0,
-in-flight state → coord, long-form runbooks → a new MDX in
-\`apps/operator-docs/src/content/docs/agent-insights/\`. See the plan
-\`papercusp-su-memory-2026-05-25\` for the full design.`;
+Memory writes belong in the right layer: stable facts → mem0
+(\`memory:remember\`), in-flight state → coord, long-form runbooks → a new
+MDX in \`apps/operator-docs/src/content/docs/agent-insights/\`. See the
+plans \`papercusp-su-memory-2026-05-25\` and
+\`tool-call-batching-wrappers-2026-06-21\`.`;
 
 function mcpInstructionsForServer(): string | undefined {
   if (process.env.PAPERCUSP_SU_MEMORY_INJECTION === 'off') return undefined;

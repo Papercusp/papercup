@@ -18,10 +18,19 @@ import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
 import { DEFAULT_SCALE_POLICY, type ScalePolicy } from './deployment/account-pool';
 
-/** Effective policy = stored override merged over the baked DEFAULT_SCALE_POLICY. */
+/** Effective policy = stored override merged over the baked DEFAULT_SCALE_POLICY.
+ *  Truly safe-by-default: a store READ FAILURE (no DB / transient) ⇒ DEFAULT, never a
+ *  throw. The account-scale observer calls this inside its exhaustion-emit + scale-out
+ *  path; a policy read that threw would silently skip exhaustion handling entirely
+ *  (and broke account-pool-store.test.ts's hermetic observer test). "Empty store ⇒
+ *  DEFAULT" now extends to "unreadable store ⇒ DEFAULT". */
 export async function readScalePolicy(): Promise<ScalePolicy> {
-  const stored = await readOperatorState<Partial<ScalePolicy>>('operator_scale_policy');
-  return { ...DEFAULT_SCALE_POLICY, ...(stored ?? {}) };
+  try {
+    const stored = await readOperatorState<Partial<ScalePolicy>>('operator_scale_policy');
+    return { ...DEFAULT_SCALE_POLICY, ...(stored ?? {}) };
+  } catch {
+    return DEFAULT_SCALE_POLICY;
+  }
 }
 
 /** Merge a patch over the current policy + persist; returns the new effective policy. */
