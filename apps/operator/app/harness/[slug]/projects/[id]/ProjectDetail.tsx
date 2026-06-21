@@ -322,7 +322,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
               background: COLORS.bg, border: `1px solid ${COLORS.borderSubtle}`, borderRadius: RADIUS.sm,
               maxHeight: 320, overflowY: 'auto',
             }}>
-              <div style={{ fontSize: SIZES.xs, fontWeight: 600, color: COLORS.textDim, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              <div style={{ fontSize: SIZES.xs, fontWeight: 600, color: COLORS.textDim, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0 }}>
                 Revisions ({revisions.length})
               </div>
               {revisions.length === 0 ? (

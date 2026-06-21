@@ -29,7 +29,7 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--fg);
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
 }
 .h-project {
   background: var(--bg-3);
@@ -62,7 +62,7 @@
 .h-stat-label {
   font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.8px;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-dim);
 }
@@ -177,7 +177,7 @@
 .h-panel-title {
   font-weight: 600;
   font-size: 11px;
-  letter-spacing: 0.6px;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-dim);
 }
@@ -259,7 +259,7 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
   text-transform: lowercase;
   border: 1px solid transparent;
   white-space: nowrap;
@@ -358,7 +358,7 @@
   background: color-mix(in oklab, var(--bg-3), transparent 18%);
   font-size: 9.5px;
   font-weight: 850;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   line-height: 1.45;
   text-transform: uppercase;
 }
@@ -394,7 +394,7 @@
 .h-log-line.kind-iteration .h-log-msg {
   color: color-mix(in oklab, var(--fg-dim), white 22%);
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
 }
 
 .h-log-line.kind-invoke { border-left-color: var(--good); }
@@ -563,7 +563,7 @@
   margin-bottom: 8px;
   color: color-mix(in oklab, var(--accent), white 14%);
   line-height: 1.35;
-  letter-spacing: 0.005em;
+  letter-spacing: 0;
   font-variant-numeric: tabular-nums;
   text-wrap: pretty;
   overflow-wrap: anywhere;
@@ -843,7 +843,7 @@
   padding: 7px 12px;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.4px;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-dim);
   border: none;
@@ -909,7 +909,7 @@
   min-height: 22px;
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
   color: color-mix(in oklab, var(--fg-dim), white 7%);
   background: color-mix(in oklab, var(--bg), white 2%);
   border: 1px solid color-mix(in oklab, var(--border), transparent 8%);
@@ -1003,7 +1003,7 @@
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0;
   flex-shrink: 0;
   border: 1px solid transparent;
 }
@@ -1071,7 +1071,7 @@
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
 }
 
@@ -1199,7 +1199,7 @@
   color: var(--accent);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1235,7 +1235,7 @@
   color: var(--fg-dim);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1289,7 +1289,7 @@
   color: var(--fg-dim);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1306,7 +1306,7 @@
   padding: 3px 9px;
   font-size: 10.5px;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid transparent;
 }
@@ -1356,7 +1356,7 @@
 
 .h-stat-label {
   font-size: 9px;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
 }
 
 .h-stat-value {
@@ -1503,7 +1503,7 @@
 
 .h-panel-title {
   color: color-mix(in oklab, var(--fg-dim), white 18%);
-  letter-spacing: 0.09em;
+  letter-spacing: 0;
 }
 
 .h-empty {
@@ -1644,7 +1644,7 @@
   color: color-mix(in oklab, var(--fg-dim), white 12%);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1751,7 +1751,7 @@
   color: color-mix(in oklab, var(--fg-dim), white 18%);
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.09em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1774,7 +1774,7 @@
   color: var(--fg-dim);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.09em;
+  letter-spacing: 0;
   text-align: left;
   text-transform: uppercase;
   border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 10%);
@@ -1823,7 +1823,7 @@
   background: color-mix(in oklab, var(--accent), transparent 90%);
   font-size: 10.5px;
   font-weight: 800;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
 }
 
 .h-agent-role.validator {
@@ -1899,7 +1899,7 @@
 .h-agent-run-hint {
   color: color-mix(in oklab, var(--fg-dim), transparent 12%);
   font-size: 10px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .h-agent-size-cell {
@@ -1921,7 +1921,7 @@
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
 }
 
@@ -2105,7 +2105,7 @@
 .h-chat-hint {
   font-size: 9.5px;
   color: var(--fg-dim);
-  letter-spacing: 0.4px;
+  letter-spacing: 0;
   margin-right: auto;
 }
 
@@ -2265,7 +2265,7 @@
   border: 1px solid color-mix(in oklab, var(--border), white 6%);
   color: var(--fg-dim);
   font-size: 10.5px;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   pointer-events: none;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -2481,7 +2481,7 @@
   color: var(--fg-dim);
   font-size: 9.5px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 .rf-mind-kind-btn:hover { color: var(--fg); border-color: #4a90e2; }
@@ -2565,7 +2565,7 @@
   color: var(--fg-dim);
   font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   cursor: pointer;
   backdrop-filter: blur(6px);
 }
@@ -2743,7 +2743,7 @@
   color: var(--fg-dim);
   font-size: 9.5px;
   font-weight: 850;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3096,7 +3096,7 @@
   color: color-mix(in oklab, var(--fg-dim), white 9%);
   font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   text-transform: none;
 }
 
@@ -3124,7 +3124,7 @@
   background: color-mix(in oklab, var(--good), transparent 90%);
   font-size: 10px;
   font-weight: 850;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -4824,7 +4824,7 @@
   color: var(--fg-dim);
   font-size: 9.5px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -4900,7 +4900,7 @@
   color: var(--fg-dim);
   font-size: 8.5px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -4995,7 +4995,7 @@
   background: linear-gradient(180deg, var(--bg-2), color-mix(in oklab, var(--bg-2), transparent 8%));
   font-size: 9px;
   font-weight: 820;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -5113,7 +5113,7 @@
   background: color-mix(in oklab, var(--bg-3), transparent 15%);
   font-size: 9px;
   font-weight: 820;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   line-height: 1.1;
   text-transform: uppercase;
   white-space: nowrap;
@@ -5225,7 +5225,7 @@
   color: var(--fg-dim);
   font-size: 9px;
   font-weight: 800;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -5344,7 +5344,7 @@
   color: var(--fg-dim);
   font-size: 9px;
   font-weight: 820;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -5528,7 +5528,7 @@
   color: var(--fg-dim);
   font-size: 9px;
   font-weight: 820;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -5713,7 +5713,7 @@
   white-space: nowrap;
   font-size: 9.5px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 .h-git-filter b {
   color: var(--fg);
@@ -5898,7 +5898,7 @@
   color: var(--fg-faint);
   font-size: 9px;
   font-weight: 750;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 .h-git-detail-id code {
@@ -6253,7 +6253,7 @@ body:has(.h-top-collapse-inline) main {
 }
 .h-brand-kicker {
   font-size: 9px !important;
-  letter-spacing: 0.1em !important;
+  letter-spacing: 0 !important;
 }
 .h-title {
   font-size: 14px !important;
@@ -6509,7 +6509,7 @@ body:has(.h-top-collapse-inline) main {
   color: var(--accent-strong) !important;
   font-size: 9px !important;
   font-weight: 800 !important;
-  letter-spacing: 0.14em !important;
+  letter-spacing: 0 !important;
   text-transform: uppercase !important;
 }
 
@@ -6643,7 +6643,7 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--fg-dim), white 20%);
   font-size: 10.5px;
   font-weight: 850;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
   white-space: nowrap;
@@ -6700,7 +6700,7 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--fg-dim), white 10%);
   font: inherit;
   font-size: 10.5px;
-  letter-spacing: 0.015em;
+  letter-spacing: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6885,7 +6885,7 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--fg-dim), white 14%);
   font-size: 9.5px;
   font-weight: 850;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -6896,7 +6896,7 @@ body:has(.h-top-collapse-inline) main {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px;
   font-weight: 850;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .h-project-meta-status {
@@ -6914,7 +6914,7 @@ body:has(.h-top-collapse-inline) main {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace !important;
   font-size: 9.5px !important;
   font-weight: 800 !important;
-  letter-spacing: 0.035em !important;
+  letter-spacing: 0 !important;
   line-height: 1 !important;
   color: color-mix(in oklab, var(--fg-dim), white 18%) !important;
   background: linear-gradient(180deg, color-mix(in oklab, var(--bg-3), white 4%), color-mix(in oklab, var(--bg-2), black 2%)) !important;
@@ -6966,7 +6966,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-feature-row-id {
-  letter-spacing: 0.025em;
+  letter-spacing: 0;
 }
 
 .h-feature-status-text {
@@ -7047,7 +7047,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-feature-inline-note-head strong {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .h-feature-inline-note-head button {
@@ -7330,7 +7330,7 @@ body:has(.h-top-collapse-inline) main {
   font-size: 7.5px !important;
   line-height: 1 !important;
   font-weight: 750 !important;
-  letter-spacing: 0.13em !important;
+  letter-spacing: 0 !important;
   color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
 }
 
@@ -7356,7 +7356,7 @@ body:has(.h-top-collapse-inline) main {
   gap: 6px !important;
   font-size: 8px !important;
   line-height: 1 !important;
-  letter-spacing: 0.12em !important;
+  letter-spacing: 0 !important;
   color: color-mix(in oklab, var(--fg-dim), white 14%) !important;
 }
 
@@ -7372,7 +7372,7 @@ body:has(.h-top-collapse-inline) main {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 9px;
   font-weight: 850;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .h-running-lane {
@@ -7524,7 +7524,7 @@ body:has(.h-top-collapse-inline) main {
 
   .h-project-topline-statuses .h-project-lanes .h-running-head span {
     font-size: 7.8px !important;
-    letter-spacing: 0.1em !important;
+    letter-spacing: 0 !important;
   }
 
   .h-project-topline-statuses .h-project-lanes .h-running-head strong {
@@ -7623,7 +7623,7 @@ body:has(.h-top-collapse-inline) main {
     inset 0 -1px 0 color-mix(in srgb, var(--bg-deeper), transparent 58%) !important;
   font-size: 10px !important;
   font-weight: 820 !important;
-  letter-spacing: 0.095em !important;
+  letter-spacing: 0 !important;
   line-height: 1 !important;
   text-transform: uppercase !important;
   cursor: pointer !important;
@@ -7750,7 +7750,7 @@ body:has(.h-top-collapse-inline) main {
     height: 28px !important;
     padding: 0 10px 0 7px !important;
     font-size: 9px !important;
-    letter-spacing: 0.06em !important;
+    letter-spacing: 0 !important;
   }
 
   .h-top-collapse-icon {
@@ -8014,7 +8014,7 @@ body:has(.h-top-collapse-inline) main {
   font-size: 10.5px;
   color: var(--fg-dim);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   margin-right: 4px;
   flex-shrink: 0;
 }
@@ -9148,12 +9148,12 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older {
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-unseen-pill {
   font-weight: 780;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:active,
@@ -9748,7 +9748,7 @@ body:has(.h-top-collapse-inline) main {
 .h-config-tab {
   flex: 0 0 auto;
   text-transform: none;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .h-config-tab:hover {
@@ -10351,7 +10351,7 @@ body:has(.h-top-collapse-inline) main {
 .h-plugin-config-title {
   margin-right: 0 !important;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   font-size: 10px;
 }
 
@@ -10963,7 +10963,7 @@ body:has(.h-top-collapse-inline) main {
   border-radius: 999px !important;
   font-size: 8px !important;
   font-weight: 850 !important;
-  letter-spacing: 0.08em !important;
+  letter-spacing: 0 !important;
   color: color-mix(in oklab, var(--accent-cool), white 18%) !important;
   border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background:
@@ -11091,7 +11091,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-stat-label {
   text-transform: uppercase !important;
-  letter-spacing: 0.10em !important;
+  letter-spacing: 0 !important;
 }
 
 .h-feature-row-title {
@@ -11591,7 +11591,7 @@ body:has(.h-top-collapse-inline) main {
     0 8px 18px rgba(0,0,0,0.18),
     0 0 0 1px color-mix(in oklab, var(--h-feature-filter-tone), transparent 82%),
     inset 0 1px 0 rgba(255,255,255,0.055) !important;
-  letter-spacing: 0.015em;
+  letter-spacing: 0;
   transition: transform 120ms var(--ease-out), color 120ms var(--ease-out), border-color 120ms var(--ease-out), background 120ms var(--ease-out), box-shadow 120ms var(--ease-out) !important;
 }
 
@@ -12076,7 +12076,7 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-foot-pill {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 10px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .h-feature-row-id {
@@ -12971,7 +12971,7 @@ body:has(.h-top-collapse-inline) main {
 .h-hud-dial-copy span {
   color: rgba(215, 246, 255, 0.68);
   font-size: 9px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 0 10px rgba(34, 211, 238, 0.12);
 }
@@ -12979,7 +12979,7 @@ body:has(.h-top-collapse-inline) main {
 .h-hud-dial-copy strong {
   color: #ffffff;
   font-size: 15px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-shadow: 0 0 14px rgba(34, 211, 238, 0.18);
 }
 .h-hud-dial-copy {
@@ -13747,7 +13747,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-project-pulse > div > span:first-child {
   color: #e0faff !important;
   font-weight: 950 !important;
-  letter-spacing: 0.16em !important;
+  letter-spacing: 0 !important;
   text-shadow: 0 0 14px color-mix(in srgb, var(--accent), transparent 54%);
 }
 
@@ -13810,7 +13810,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-project-topline-statuses .h-project-lanes .h-running-head span {
   color: #e0faff !important;
   font-weight: 950 !important;
-  letter-spacing: 0.15em !important;
+  letter-spacing: 0 !important;
   text-shadow: 0 0 14px rgba(34, 211, 238, 0.42);
 }
 
@@ -15134,7 +15134,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--fg-dim), white 10%);
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
 }
 .h-active-agents-copy strong {
   font-weight: 600;
@@ -15274,7 +15274,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--accent-cool), white 18%);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
 }
 
 .h-active-agents-row.is-idle .h-active-agents-copy strong {
@@ -15370,7 +15370,7 @@ html body .h-root.h-root :is(
     linear-gradient(180deg, color-mix(in oklab, var(--good), black 42%), color-mix(in oklab, var(--good), black 62%)) !important;
   color: color-mix(in oklab, #ecfdf5, white 8%) !important;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
 }
 
 .h-active-agents-start:hover,
@@ -15391,7 +15391,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, #fff1f2, white 6%);
   font-size: 12px;
   font-weight: 850;
-  letter-spacing: 0.10em;
+  letter-spacing: 0;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.11),
     0 9px 22px color-mix(in oklab, var(--bad), transparent 82%);
@@ -15494,7 +15494,7 @@ html body .h-root.h-root :is(
 .h-feature-peek-drawer > div:nth-of-type(2) > div > div:first-child,
 .h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) > div:first-child {
   color: color-mix(in oklab, var(--h-popout-accent), white 18%) !important;
-  letter-spacing: 0.14em !important;
+  letter-spacing: 0 !important;
 }
 
 .h-issue-detail-drawer > div:nth-of-type(2) > div:first-of-type {
@@ -15831,7 +15831,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--fg-dim), white 18%);
   font-size: 0.72rem;
   font-weight: 820;
-  letter-spacing: 0.15em;
+  letter-spacing: 0;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -15857,14 +15857,14 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--h-popout-accent), white 20%);
   font-size: 0.72rem;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
 .h-drawer-eyebrow .h-issue-id,
 .h-drawer-eyebrow button {
   text-transform: none;
-  letter-spacing: 0.025em;
+  letter-spacing: 0;
 }
 
 .h-drawer-meta-strip {
@@ -16514,7 +16514,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--accent-strong), var(--fg-dim) 38%);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   line-height: 1.2;
   text-transform: uppercase;
 }
@@ -16561,7 +16561,7 @@ html body .h-root.h-root :is(
   color: var(--fg-mute);
   font-size: 9px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -16803,7 +16803,7 @@ html body .h-root.h-root :is(
   color: var(--fg-dim);
   font-size: 10.5px;
   font-weight: 760;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -16894,7 +16894,7 @@ html body .h-root.h-root :is(
   color: var(--fg-mute);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -16915,7 +16915,7 @@ html body .h-root.h-root :is(
   color: var(--fg-dim);
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -17240,7 +17240,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--fg), white 12%) !important;
   font-size: 10px !important;
   font-weight: 760 !important;
-  letter-spacing: 0.055em !important;
+  letter-spacing: 0 !important;
   text-transform: uppercase !important;
   border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 58%) !important;
   background:
@@ -17328,7 +17328,7 @@ html body .h-root.h-root :is(
   border-radius: 999px;
   font-size: 8px;
   font-weight: 850;
-  letter-spacing: 0.09em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 70%);
   background: rgba(255, 255, 255, 0.07);
@@ -17384,7 +17384,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline {
   height: 22px !important;
   padding: 0 8px !important;
   font-size: 9px !important;
-  letter-spacing: 0.07em !important;
+  letter-spacing: 0 !important;
 }
 
 body > .h-top-collapse-btn.h-top-collapse-inline[data-align="auto-toggle"] {
@@ -17422,7 +17422,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   border: 0 !important;
   background: transparent !important;
   font-size: 9px !important;
-  letter-spacing: 0.08em !important;
+  letter-spacing: 0 !important;
   color: color-mix(in oklab, var(--fg), white 10%) !important;
 }
 
@@ -17504,7 +17504,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   gap: 9px;
   color: color-mix(in oklab, var(--fg), white 12%) !important;
   font-size: 0.74rem !important;
-  letter-spacing: 0.18em !important;
+  letter-spacing: 0 !important;
   text-shadow: 0 0 18px color-mix(in oklab, var(--h-popout-accent), transparent 64%);
 }
 
@@ -17578,7 +17578,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--h-popout-accent), white 18%) !important;
   font-size: 0.72rem !important;
   font-weight: 860 !important;
-  letter-spacing: 0.16em !important;
+  letter-spacing: 0 !important;
 }
 
 .h-drawer-meta-strip > span,
@@ -17665,7 +17665,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-drawer-topbar-label {
   gap: 8px;
   font-size: 0.70rem !important;
-  letter-spacing: 0.12em !important;
+  letter-spacing: 0 !important;
   text-shadow: none !important;
 }
 
@@ -17722,7 +17722,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   gap: 6px !important;
   color: color-mix(in oklab, var(--h-popout-accent), white 8%) !important;
   font-size: 0.68rem !important;
-  letter-spacing: 0.08em !important;
+  letter-spacing: 0 !important;
 }
 
 .h-feature-peek-drawer .h-drawer-title-card > div:last-child {
@@ -17787,7 +17787,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   margin-bottom: 10px !important;
   color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
   font-size: 0.68rem !important;
-  letter-spacing: 0.10em !important;
+  letter-spacing: 0 !important;
 }
 
 .h-feature-peek-drawer .h-markdown-view,
@@ -17904,7 +17904,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child {
   text-transform: none !important;
   font-weight: 720 !important;
-  letter-spacing: 0.015em !important;
+  letter-spacing: 0 !important;
 }
 
 .h-feature-peek-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(.h-drawer-footer),
@@ -17916,7 +17916,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-issue-detail-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(:first-of-type) > div:first-child {
   text-transform: none !important;
   font-weight: 720 !important;
-  letter-spacing: 0.015em !important;
+  letter-spacing: 0 !important;
 }
 @media (max-width: 860px) {
   .h-feature-peek-drawer,
@@ -17981,7 +17981,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg-dim), white 18%) !important;
   font-size: 0.74rem !important;
   font-weight: 720 !important;
-  letter-spacing: 0.01em !important;
+  letter-spacing: 0 !important;
   line-height: 1.35;
   text-transform: none !important;
 }
@@ -20058,7 +20058,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-drawer-topbar-label {
   color: color-mix(in oklab, var(--fg-dim), white 8%) !important;
   font-size: 0.68rem !important;
-  letter-spacing: 0.12em !important;
+  letter-spacing: 0 !important;
 }
 
 .h-feature-peek-drawer > div:nth-of-type(2),
@@ -20117,7 +20117,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg-dim), var(--h-popout-accent) 18%) !important;
   font-size: 0.69rem !important;
   font-weight: 760 !important;
-  letter-spacing: 0.10em !important;
+  letter-spacing: 0 !important;
   text-transform: uppercase !important;
   text-shadow: none !important;
 }
@@ -20253,7 +20253,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg-dim), white 12%) !important;
   font-size: 0.68rem !important;
   font-weight: 740 !important;
-  letter-spacing: 0.08em !important;
+  letter-spacing: 0 !important;
   text-transform: uppercase !important;
 }
 

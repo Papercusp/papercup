@@ -241,7 +241,7 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
       borderRadius: RADIUS.sm,
       padding: '10px 12px',
     }}>
-      <div className="h-insights-kpi-label" style={{ fontSize: '0.65rem', color: COLORS.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
+      <div className="h-insights-kpi-label" style={{ fontSize: '0.65rem', color: COLORS.textDim, textTransform: 'uppercase', letterSpacing: 0, fontWeight: 600 }}>
         {label}
       </div>
       <div className="h-insights-kpi-value" style={{ fontSize: '1.3rem', color: color ?? COLORS.text, fontWeight: 600, fontFamily: FONTS.mono, marginTop: 4 }}>
@@ -258,7 +258,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
       fontSize: '0.65rem',
       color: COLORS.textDim,
       textTransform: 'uppercase',
-      letterSpacing: '0.08em',
+      letterSpacing: 0,
       fontWeight: 600,
       marginBottom: 8,
     }}>

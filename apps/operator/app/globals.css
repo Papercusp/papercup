@@ -471,7 +471,7 @@ section[aria-label*="Notifications"][aria-live] {
 .notif-level {
   text-transform: uppercase;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 9px;
@@ -858,7 +858,7 @@ pre, .pc-code {
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0.18em;
+  letter-spacing: 0;
   line-height: 1;
   padding: 11px 16px;
   text-transform: uppercase;
@@ -975,7 +975,7 @@ html[data-route-pending="true"] .pc-header::after {
   font-size: 11pt;
   font-style: italic;
   font-weight: 700;
-  letter-spacing: 0.035em;
+  letter-spacing: 0;
   line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
@@ -1013,7 +1013,7 @@ html[data-route-pending="true"] .pc-header::after {
   color: var(--bg-1);
   font-size: 13px;
   font-weight: 850;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   line-height: 1;
   text-decoration: none;
   white-space: nowrap;
@@ -1409,7 +1409,7 @@ p {
   color: var(--accent-strong);
   font-size: 12px;
   font-weight: 820;
-  letter-spacing: 0.16em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1508,7 +1508,7 @@ p {
   color: var(--fg-dim);
   font-size: 12px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1548,7 +1548,7 @@ p {
   color: var(--accent-strong);
   font-size: 11px;
   font-weight: 820;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -2267,7 +2267,7 @@ p {
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.7px;
+  letter-spacing: 0;
   color: var(--fg-mute);
   margin-bottom: 4px;
 }
@@ -2439,7 +2439,7 @@ p {
 }
 .oracle-picker-section {
   padding: 6px 10px 4px; font-size: 10px; text-transform: uppercase;
-  letter-spacing: 0.6px; color: var(--fg-mute);
+  letter-spacing: 0; color: var(--fg-mute);
 }
 .oracle-picker-item {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
@@ -2628,7 +2628,7 @@ p {
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   color: var(--fg-mute);
 }
 
@@ -2696,7 +2696,7 @@ p {
   color: var(--accent-cool);
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -2933,7 +2933,7 @@ p {
   color: var(--accent-cool);
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3043,7 +3043,7 @@ p {
   color: var(--accent-cool);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3115,7 +3115,7 @@ p {
   color: var(--fg-mute);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3499,7 +3499,7 @@ p {
   color: var(--fg-dim);
   font-size: 12px;
   font-weight: 820;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3605,7 +3605,7 @@ p {
   color: var(--accent-strong);
   font-size: 11px;
   font-weight: 820;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3745,7 +3745,7 @@ p {
   color: var(--accent-strong);
   font-size: 11px;
   font-weight: 820;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3819,7 +3819,7 @@ p {
   font-size: 10px;
   font-style: normal;
   font-weight: 820;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -4003,7 +4003,7 @@ p {
   color: var(--accent-strong);
   font-size: 11px;
   font-weight: 820;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -4043,7 +4043,7 @@ p {
   color: var(--fg);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
 }
 
 .pc-marketplace-snapshot-meta code {
@@ -4472,7 +4472,7 @@ body.papercusp-chromeless #papercusp-app > main {
   font-size: 11px;
   font-family: ui-monospace, "JetBrains Mono", "Menlo", monospace;
   color: var(--accent-strong);
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4630,7 +4630,7 @@ body.h-harness-top-collapsed .pc-header {
 
 .oracle-load-earlier-end {
   opacity: 0.55;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
   font-size: 10px;
 }
@@ -4863,7 +4863,7 @@ body.h-harness-top-collapsed .pc-header {
   gap: 9px;
   border-radius: 999px;
   color: #e9fbff;
-  letter-spacing: 0.045em;
+  letter-spacing: 0;
   text-transform: none;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.72), 0 0 12px rgb(from var(--accent-strong) r g b / 0.20);
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.46);
@@ -5035,7 +5035,7 @@ body.h-harness-top-collapsed .pc-header {
 .pc-header .pc-operator-auto-feed__title {
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   color: rgba(231, 247, 255, 0.6);
   font-weight: 600;
 }
@@ -5357,7 +5357,7 @@ body.h-harness-top-collapsed .pc-header {
   color: color-mix(in oklab, var(--accent-cool), white 18%);
   font-size: 10px;
   font-weight: 820;
-  letter-spacing: 0.16em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -5390,7 +5390,7 @@ body.h-harness-top-collapsed .pc-header {
   color: color-mix(in oklab, var(--fg-dim), white 24%);
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0.10em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgba(148, 163, 184, 0.26);
   border-radius: 999px;
@@ -5719,14 +5719,14 @@ body.h-harness-top-collapsed .pc-header {
   color: color-mix(in oklab, var(--fg-dim), white 22%);
   font-size: 10px;
   font-weight: 820;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
 .operator-section__head em {
   color: var(--fg-faint);
   font-style: normal;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
 }
 
 .operator-callout,
@@ -5950,7 +5950,7 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 10px;
   font-weight: 760;
   line-height: 1;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgba(var(--operator-arc), 0.15);
   border-radius: 999px;
@@ -6195,7 +6195,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-panel__rail h3 {
   color: color-mix(in oklab, var(--fg-dim), white 22%) !important;
   font-size: 10px !important;
-  letter-spacing: 0.13em !important;
+  letter-spacing: 0 !important;
 }
 
 .operator-panel__rail ul {
@@ -6306,7 +6306,7 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 10.5px;
   font-style: normal;
   font-weight: 760;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -6363,7 +6363,7 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-main-tabs button span {
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .operator-stream {
@@ -6822,7 +6822,7 @@ body.h-harness-top-collapsed .pc-header {
   color: #f4fdff;
   font-size: 12.5px;
   font-weight: 820;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 0 12px rgb(from var(--accent-strong) r g b / 0.22);
 }
@@ -6940,7 +6940,7 @@ body.h-harness-top-collapsed .pc-header {
   color: color-mix(in oklab, var(--fg-dim), white 26%);
   font-size: 11px;
   font-weight: 760;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-decoration: none;
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.20);
@@ -7176,7 +7176,7 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--fg-mute);
 }
 .kbd-cheat-list {
@@ -7299,7 +7299,7 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 10px;
   font-weight: 760;
   line-height: 1.2;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute);
 }
@@ -7343,7 +7343,7 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 8px;
   font-weight: 760;
   line-height: 1;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   text-transform: uppercase;
   padding: 2px 5px;
   border-radius: 999px;
@@ -7559,7 +7559,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-empty-rail em {
   display: block;
   font-style: normal;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -9430,7 +9430,7 @@ body.h-harness-top-collapsed .pc-header {
   font-family: ui-monospace, monospace;
   font-size: 9px;
   font-weight: 850;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -10481,7 +10481,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 
 .pc-route-loading__copy .pc-eyebrow {
   margin: 0;
-  letter-spacing: 0.16em;
+  letter-spacing: 0;
 }
 
 .pc-route-loading__title {
@@ -11610,7 +11610,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   color: #422006;
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   border-radius: 999px;
   white-space: nowrap;
   pointer-events: none;
@@ -11770,7 +11770,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   align-items: center;
   gap: 5px;
   line-height: 1.1;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .operator-panel__actions {
@@ -11790,7 +11790,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   padding: 0 12px !important;
   color: color-mix(in oklab, var(--operator-action-tone), white 30%) !important;
   line-height: 1;
-  letter-spacing: 0.015em;
+  letter-spacing: 0;
   border-color: color-mix(in oklab, var(--operator-action-tone), transparent 36%) !important;
   border-radius: 999px !important;
   clip-path: none !important;
@@ -12093,7 +12093,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .hud-telemetry-marquee__segment {
   color: rgba(188, 239, 255, 0.72);
   font-size: 10px;
-  letter-spacing: 0.24em;
+  letter-spacing: 0;
   text-transform: uppercase;
   white-space: nowrap;
   text-shadow: 0 0 10px rgba(34, 211, 238, 0.18);
@@ -12169,7 +12169,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   background: linear-gradient(90deg, rgba(var(--operator-gold), 0.06), rgba(255, 255, 255, 0.03), rgba(var(--operator-arc), 0.08));
   color: rgba(216, 246, 255, 0.74);
   font-size: 10px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0;
   text-transform: uppercase;
   clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%, 0 8px);
 }
@@ -12276,7 +12276,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-reactor-readout span {
   color: rgba(218, 247, 255, 0.76);
   font-size: 9px;
-  letter-spacing: 0.16em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 0 10px rgba(var(--operator-reactor-core), 0.22);
 }
@@ -12346,7 +12346,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-hud-telemetry__eyebrow {
   color: rgba(219, 247, 255, 0.68);
   font-size: 10px;
-  letter-spacing: 0.28em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 .operator-hud-telemetry__values {
@@ -12504,7 +12504,7 @@ html[data-visual-effects='full'] .pc-header-quote--hud::after {
       drop-shadow(0 0 5px rgba(34, 211, 238, 0.46))
       drop-shadow(0 0 13px rgba(34, 211, 238, 0.18));
     transform: translate3d(0.1px, 0, 0) scaleX(1.003);
-    letter-spacing: 0.035em;
+    letter-spacing: 0;
   }
   6% {
     opacity: 0.42;
@@ -12513,7 +12513,7 @@ html[data-visual-effects='full'] .pc-header-quote--hud::after {
       drop-shadow(0 0 6px rgba(34, 211, 238, 0.54))
       drop-shadow(0 0 15px rgba(34, 211, 238, 0.20));
     transform: translate3d(0.35px, 0.35px, 0) scaleX(1.006);
-    letter-spacing: 0.041em;
+    letter-spacing: 0;
   }
   11% {
     opacity: 0.38;
@@ -12522,7 +12522,7 @@ html[data-visual-effects='full'] .pc-header-quote--hud::after {
       drop-shadow(0 0 5px rgba(34, 211, 238, 0.46))
       drop-shadow(0 0 13px rgba(34, 211, 238, 0.18));
     transform: translate3d(-0.3px, 0.2px, 0) scaleX(1.004);
-    letter-spacing: 0.037em;
+    letter-spacing: 0;
   }
 }
 
@@ -13097,7 +13097,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 .pc-route-transition__title {
   font-size: 48px;
   font-weight: 950;
-  letter-spacing: 0.16em;
+  letter-spacing: 0;
 }
 
 .pc-route-transition__subtitle {
@@ -13105,7 +13105,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   color: rgba(190, 242, 255, 0.82);
   font-size: 12px;
   font-weight: 850;
-  letter-spacing: 0.22em;
+  letter-spacing: 0;
 }
 
 .pc-route-transition__telemetry {
@@ -13142,7 +13142,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   color: rgb(from var(--accent-strong) r g b / 0.78);
   font-size: 10px;
   font-weight: 900;
-  letter-spacing: 0.24em;
+  letter-spacing: 0;
 }
 
 .pc-route-transition__telemetry strong {
@@ -13150,7 +13150,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   color: #f8feff;
   font-size: 14px;
   font-weight: 900;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -13184,7 +13184,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   color: rgba(167, 243, 208, 0.76);
   font-size: 9px;
   font-weight: 950;
-  letter-spacing: 0.32em;
+  letter-spacing: 0;
 }
 
 .pc-route-transition__status strong {
@@ -13193,7 +13193,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
   font-size: 13px;
   font-weight: 950;
-  letter-spacing: 0.24em;
+  letter-spacing: 0;
   text-shadow: 0 0 18px rgb(from var(--emerald-400) r g b / 0.86);
 }
 
@@ -13206,7 +13206,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.26em;
+  letter-spacing: 0;
   text-align: center;
   text-transform: uppercase;
   text-shadow: 0 0 14px rgba(103, 232, 249, 0.66);
@@ -13280,13 +13280,13 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 
   .pc-route-transition__status strong {
     font-size: 11px;
-    letter-spacing: 0.14em;
+    letter-spacing: 0;
   }
 
   .pc-route-transition__checksum {
     bottom: 56px;
     font-size: 8px;
-    letter-spacing: 0.16em;
+    letter-spacing: 0;
   }
 
   .pc-route-transition__core {
@@ -14008,7 +14008,7 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
   font-size: 9px;
   font-weight: 840;
   line-height: 1;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   text-transform: uppercase;
   opacity: 0.72;
 }
@@ -14023,7 +14023,7 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
   font-size: 9px;
   font-weight: 820;
   line-height: 1;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   text-transform: uppercase;
   opacity: 0.62;
 }
@@ -14440,7 +14440,7 @@ body:not(.papercusp-chromeless) .pc-header {
   color: #083344;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   border-radius: 999px;
   white-space: nowrap;
   pointer-events: none;
@@ -14790,7 +14790,7 @@ body:not(.papercusp-chromeless) .pc-header {
   color: color-mix(in oklab, var(--fg-mute), white 4%);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   line-height: 1.2;
   text-transform: uppercase;
 }
@@ -14921,7 +14921,7 @@ body:not(.papercusp-chromeless) .pc-header {
   border-radius: 999px;
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   line-height: 1.2;
   text-transform: uppercase;
 }
@@ -15317,7 +15317,7 @@ body:has(.pc-settings-page--voice) .pc-settings-shell section section[style*="pa
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   opacity: 0.86;
 }
@@ -15353,7 +15353,7 @@ body:has(.pc-settings-page--voice) .pc-settings-shell section section[style*="pa
   font-size: 10.5px;
   font-style: normal;
   font-weight: 800;
-  letter-spacing: 0.09em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -15635,7 +15635,7 @@ div[class*="grid-area:toc"]::before {
   font-size: 7px;
   font-weight: 880;
   line-height: 1;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgba(45, 212, 191, 0.22);
   border-radius: 999px;
@@ -16342,7 +16342,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
   gap: 7px;
   color: color-mix(in oklab, var(--accent-cool), white 20%) !important;
   font-weight: 760;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
   border-radius: 999px;
   outline: 1px solid rgb(from var(--accent-strong) r g b / 0.12);
   outline-offset: 3px;
@@ -16376,7 +16376,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
   color: color-mix(in oklab, var(--operator-entry-tone), white 16%);
   font-size: 8px;
   font-weight: 840;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   opacity: 0.72;
 }
@@ -16464,7 +16464,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
   font-size: 8px;
   font-weight: 840;
   line-height: 1;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid color-mix(in oklab, var(--operator-metric-accent), transparent 70%);
   border-radius: 999px;
@@ -16496,7 +16496,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid color-mix(in oklab, var(--operator-entry-tone), transparent 68%);
   border-radius: 999px;
@@ -16531,7 +16531,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
   color: rgba(167, 243, 208, 0.94);
   font-size: 9px;
   font-weight: 860;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgba(45, 212, 191, 0.24);
   border-radius: 999px;
@@ -16745,7 +16745,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 
 .operator-harness-status__title {
   color: color-mix(in oklab, var(--fg-dim), white 22%) !important;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   opacity: 0.86 !important;
 }
 
@@ -16789,7 +16789,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-size: 9px;
   font-weight: 820;
   line-height: 1;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgba(45, 212, 191, 0.18);
   border-radius: 999px;
@@ -16814,7 +16814,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 .operator-harness-status__more {
   color: var(--fg-faint);
   font-size: 10px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -16831,7 +16831,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 0 10px rgb(from var(--accent-strong) r g b / 0.18);
   pointer-events: none;
@@ -17127,7 +17127,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   color: rgb(from var(--accent-strong) r g b / 0.88);
   font-size: 8px;
   font-weight: 880;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -17142,7 +17142,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   color: rgba(148, 163, 184, 0.72);
   font-size: 8px;
   font-weight: 840;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -17340,7 +17340,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   display: inline-block;
   font-size: 0.78em;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   font-weight: 700;
   opacity: 0.7;
   margin-right: 6px;
@@ -17982,7 +17982,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   color: rgba(167, 243, 208, 0.94);
   font-size: 9px;
   font-weight: 860;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgba(45, 212, 191, 0.24);
   border-radius: 999px;
@@ -18001,7 +18001,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   color: color-mix(in oklab, var(--accent-cool), white 22%);
   font-size: 10px;
   font-weight: 840;
-  letter-spacing: 0.10em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.24);
   border-radius: 999px;
@@ -18029,7 +18029,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-size: 7px;
   font-weight: 880;
   line-height: 1;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border: 1px solid rgba(45, 212, 191, 0.24);
   border-radius: 999px;
@@ -18378,7 +18378,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   color: #dff8ff;
   font-size: 12px;
   font-weight: 820;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.070), rgba(255,255,255,0.014)),
     color-mix(in srgb, var(--bg-deep), transparent 24%);
@@ -18546,7 +18546,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   color: color-mix(in oklab, currentColor, white 18%);
   font-size: 8px;
   font-weight: 840;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   opacity: 0.66;
 }
@@ -18584,7 +18584,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-size: 7px;
   font-weight: 880;
   line-height: 1;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
   border-radius: 999px;
   white-space: nowrap;
@@ -19016,7 +19016,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 
 .pc-marketplace-card-actions .pc-button {
   font-weight: 820;
-  letter-spacing: 0.005em;
+  letter-spacing: 0;
 }
 
 .pc-marketplace-steps li strong {
@@ -19302,7 +19302,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 0 10px rgb(from var(--accent-strong) r g b / 0.18);
   pointer-events: none;
@@ -19321,7 +19321,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 0 10px rgba(45, 212, 191, 0.18);
   pointer-events: none;
@@ -19682,7 +19682,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 0 10px rgb(from var(--accent-strong) r g b / 0.18);
   pointer-events: none;
@@ -20097,7 +20097,7 @@ body:has(.operator-panel) {
 .pc-enabled-in-trigger span {
   color: var(--fg-dim);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   font-weight: 800;
 }
 
@@ -21189,7 +21189,7 @@ body:has(.operator-panel) {
   background: color-mix(in oklab, var(--bg-2, var(--bg)), transparent 35%);
   color: var(--fg-dim, #94a3b8);
   font-size: 10px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
@@ -21286,7 +21286,7 @@ body:has(.operator-panel) {
 .operator-scan-history__cards-label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--fg-mute, rgba(255,255,255,0.55));
   margin: 0 0 4px;
 }
@@ -21310,7 +21310,7 @@ body:has(.operator-panel) {
   border-radius: 999px;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   background: rgba(255,255,255,0.06);
 }
 .operator-scan-history__tier.tier-high { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
@@ -22226,7 +22226,7 @@ body:has(.operator-panel) {
 
 .operator-panel .operator-tier {
   text-transform: none;
-  letter-spacing: 0.025em;
+  letter-spacing: 0;
   border-left-width: 3px !important;
 }
 
@@ -22302,7 +22302,7 @@ body:has(.operator-panel) {
   color: color-mix(in srgb, var(--accent-soft), transparent 18%);
   font-size: 10.5px;
   font-weight: 720;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   border: 1px solid color-mix(in oklab, var(--operator-entry-tone), transparent 72%);
   border-radius: 999px;
   background:
@@ -22368,7 +22368,7 @@ body:has(.operator-panel) {
   color: rgba(254, 226, 226, 0.96);
   font-size: 12px;
   font-weight: 850;
-  letter-spacing: 0.015em;
+  letter-spacing: 0;
 }
 
 .operator-confirm-strip__copy span {
@@ -22506,7 +22506,7 @@ body:has(.operator-panel) {
   font-size: 11px !important;
   font-style: normal;
   font-weight: 780;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -24198,7 +24198,7 @@ body:has(.operator-panel) {
 }
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn {
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn--primary::before,
@@ -24578,7 +24578,7 @@ body:has(.operator-panel) {
   color: rgba(226, 232, 240, 0.74);
   font-size: 10.5px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -24640,7 +24640,7 @@ body:has(.operator-panel) {
 .pc-settings-status dt {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: rgba(255,255,255,0.5);
 }
 .pc-settings-status dd { font-size: 14px; font-weight: 500; margin: 0; }
@@ -24745,7 +24745,7 @@ body:has(.operator-panel) {
 
 .op-chat-sidebar .oracle-msg-role {
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
 }
 
 .op-chat-sidebar .oracle-thinking-row {
@@ -24798,7 +24798,7 @@ body:has(.operator-panel) {
   color: color-mix(in srgb, var(--accent-soft), transparent 26%);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -25018,7 +25018,7 @@ body:has(.operator-panel) {
 }
 
 .op-chat-sidebar .oracle-empty-state-title {
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   text-shadow: 0 1px 10px rgb(from var(--accent-strong) r g b / 0.08);
 }
 
@@ -25047,7 +25047,7 @@ body:has(.operator-panel) {
   color: color-mix(in srgb, var(--accent-soft), transparent 28%);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -25174,13 +25174,13 @@ body:has(.operator-panel) {
   padding: 11px 13px 10px;
   font-size: 13.5px;
   line-height: 1.62;
-  letter-spacing: 0.008em;
+  letter-spacing: 0;
 }
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-content {
   padding: 11px 14px 10px;
   font-weight: 500;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .op-chat-sidebar .oracle-thinking-row {
@@ -25211,7 +25211,7 @@ body:has(.operator-panel) {
   z-index: 1;
   color: #d5e9f7;
   font-size: 12.5px;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .op-chat-sidebar .oracle-thinking-dots {
@@ -25321,7 +25321,7 @@ body:has(.operator-panel) {
 
 .oracle-dock .oracle-msg-role,
 .op-chat-sidebar .oracle-msg-role {
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
 }
 
 .oracle-dock .oracle-msg-user .oracle-msg-content,
@@ -25362,7 +25362,7 @@ body:has(.operator-panel) {
 .oracle-dock .oracle-input-shell input,
 .op-chat-sidebar .oracle-input-shell input {
   padding-right: 62px !important;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .oracle-input-meta {
@@ -25382,7 +25382,7 @@ body:has(.operator-panel) {
   color: color-mix(in srgb, var(--accent-soft), transparent 30%);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
   pointer-events: none;
 }
@@ -25574,7 +25574,7 @@ body:has(.operator-panel) {
   color: color-mix(in srgb, var(--accent-soft), transparent 38%);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -25638,7 +25638,7 @@ body:has(.operator-panel) {
 .pc-setup-wizard__title {
   font-size: 18px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   margin: 0 0 4px;
   color: var(--fg);
 }
@@ -25853,7 +25853,7 @@ body:has(.operator-panel) {
   font-size: 10.5px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   padding: 3px 8px;
   border-radius: 999px;
   background: var(--bg-3);
@@ -25881,7 +25881,7 @@ body:has(.operator-panel) {
 .pc-perm { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
 .pc-perm__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .pc-perm__title { font-size: 13.5px; font-weight: 500; color: var(--fg); }
-.pc-perm__platforms { font-size: 10.5px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: 0.06em; }
+.pc-perm__platforms { font-size: 10.5px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: 0; }
 .pc-perm__why { font-size: 12.5px; color: var(--fg-dim); margin: 4px 0 0; line-height: 1.55; }
 
 .pc-field { display: flex; flex-direction: column; gap: 4px; max-width: 540px; }
@@ -25942,7 +25942,7 @@ body:has(.operator-panel) {
 .pc-cost-modes { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .pc-cost-modes li { font-size: 12px; line-height: 1.55; }
 
-.pc-badge { font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em; }
+.pc-badge { font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0; }
 .pc-badge--required { background: rgb(from var(--accent) r g b / 0.16); color: var(--accent); }
 .pc-badge--optional { background: var(--bg-3); color: var(--fg-mute); }
 
@@ -26036,7 +26036,7 @@ body:has(.operator-panel) {
 .pc-consent__heading {
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   color: var(--fg);
   margin: 12px 0 0;
   text-transform: uppercase;
@@ -26103,7 +26103,7 @@ body:has(.operator-panel) {
   color: var(--fg-mute);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.07em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 .pc-welcome__essentials {
@@ -26240,7 +26240,7 @@ body:has(.operator-panel) {
   margin-bottom: 8px;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--accent);
   text-transform: uppercase;
 }
@@ -26446,7 +26446,7 @@ body:has(.operator-panel) {
   margin-top: 1px;
   color: color-mix(in srgb, var(--accent-soft), transparent 28%);
   font-size: 9px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
 }
 
 .op-chat-sidebar .ask-choice-picked span {
@@ -26811,7 +26811,7 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
 .report-block-title {
   font-weight: 600;
   color: var(--fg);
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 .report-block-plans {
   display: flex;
@@ -26840,7 +26840,7 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
 .report-block-plan-status {
   font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--muted);
   margin-left: auto;
 }

@@ -186,7 +186,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
           alignItems: 'center',
           gap: 8,
         }}>
-          <span style={{ textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: 600 }}>Memory map</span>
+          <span style={{ textTransform: 'uppercase', letterSpacing: 0, fontWeight: 600 }}>Memory map</span>
           <span style={{ color: 'var(--fg-mute)' }}>· {files.length}</span>
           {alive && (
             <span style={{ marginLeft: 'auto', color: 'var(--warn)', fontSize: 10 }}>
@@ -205,7 +205,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
                 fontSize: 10,
                 color: meta.color,
                 textTransform: 'uppercase',
-                letterSpacing: 0.8,
+                letterSpacing: 0,
                 fontWeight: 600,
                 background: 'var(--bg)',
                 borderBottom: '1px solid var(--border)',

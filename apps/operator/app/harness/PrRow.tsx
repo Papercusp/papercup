@@ -131,7 +131,7 @@ function RecommendationChip({ recommendation }: { recommendation: PrReviewRecomm
         padding: '1px 8px',
         fontSize: 11,
         fontWeight: 700,
-        letterSpacing: '0.01em',
+        letterSpacing: 0,
       }}
     >
       <Bot size={11} aria-hidden />
@@ -218,7 +218,7 @@ function ReportPanel({ report }: { report: NonNullable<PrRowData['report']> }) {
       )}
       {report.risks.length > 0 && (
         <div style={{ display: 'grid', gap: 3 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: TONE.warn.fg, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: TONE.warn.fg, textTransform: 'uppercase', letterSpacing: 0 }}>
             Risks ({report.risks.length})
           </span>
           <ul style={{ margin: 0, paddingLeft: 16, display: 'grid', gap: 2 }}>

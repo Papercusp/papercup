@@ -349,7 +349,7 @@ function SidebarSection({
     <div style={{ borderBottom: '1px solid var(--border)' }}>
       <div style={{
         padding: '8px 10px',
-        fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase',
+        fontSize: 10, letterSpacing: 0, textTransform: 'uppercase',
         color: 'var(--fg-dim)', fontWeight: 600,
         display: 'flex', alignItems: 'center', gap: 6,
       }}>

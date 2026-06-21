@@ -473,7 +473,7 @@ function ShareHiveStyles() {
         font-weight: 600;
         color: var(--fg-mute, #7f9bb4);
         text-transform: uppercase;
-        letter-spacing: 0.03em;
+        letter-spacing: 0;
       }
       .pc-share-hive__repos { display: flex; flex-direction: column; gap: 4px; }
       .pc-share-hive__repo-list {

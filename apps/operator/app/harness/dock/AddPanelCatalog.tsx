@@ -302,7 +302,7 @@ export function AddPanelCatalog({
           .pc-add-panel__title {
             font-size: 10px;
             font-weight: 760;
-            letter-spacing: 0.1em;
+            letter-spacing: 0;
             text-transform: uppercase;
             color: var(--fg-mute, #7f9bb4);
           }
@@ -366,7 +366,7 @@ export function AddPanelCatalog({
             flex-shrink: 0;
             font-size: 9px;
             font-weight: 700;
-            letter-spacing: 0.06em;
+            letter-spacing: 0;
             text-transform: uppercase;
             color: var(--good, #4ade80);
             background: color-mix(in oklab, var(--good, #4ade80), transparent 84%);

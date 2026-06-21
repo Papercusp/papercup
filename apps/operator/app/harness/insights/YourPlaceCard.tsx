@@ -53,7 +53,7 @@ const SECTION_TITLE: CSSProperties = {
   fontSize: 11,
   fontWeight: 600,
   textTransform: 'uppercase',
-  letterSpacing: '0.06em',
+  letterSpacing: 0,
   color: 'var(--fg-dim)',
 };
 

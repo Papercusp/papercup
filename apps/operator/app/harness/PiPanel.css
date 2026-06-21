@@ -26,7 +26,7 @@
 
 .pi-panel__title {
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   color: #6ea8ff;
   font-weight: 600;
 }
@@ -97,7 +97,7 @@
   gap: 8px;
   font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: #6ea8ff;
   font-weight: 600;
   margin-bottom: 8px;
@@ -202,7 +202,7 @@
   color: #888;
   font-size: 12px;
   font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   pointer-events: none;
   /* Warm spawns ARE fast (server adopts in 7-30ms once the warm pool
    * is mature) but the warm pool itself isn't *fully ready* until omp
@@ -336,7 +336,7 @@
   align-items: center;
   gap: 6px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   color: #6ea8ff;
   font-weight: 600;
 }
@@ -447,7 +447,7 @@
 
 .chat-panel__role {
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   color: #6ea8ff;
   font-weight: 600;
 }
@@ -543,7 +543,7 @@
   font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
 }
 
 .chat-turn--user .chat-turn__role {

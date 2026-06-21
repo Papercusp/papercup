@@ -441,7 +441,7 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
         .pc-prrs__sect { display: grid; gap: 10px; }
         .pc-prrs__sect-title {
           display: inline-flex; align-items: center; gap: 6px; margin: 0;
-          font-size: 12px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase;
+          font-size: 12px; font-weight: 700; letter-spacing: 0; text-transform: uppercase;
           color: var(--fg-mute, #7f9bb4);
         }
         .pc-prrs__sect-title svg { color: var(--accent, #38bdf8); }

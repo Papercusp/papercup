@@ -77,7 +77,7 @@ const OUTCOME_PILL_BASE: CSSProperties = {
   fontSize: 11,
   fontWeight: 500,
   textTransform: 'uppercase',
-  letterSpacing: 0.5,
+  letterSpacing: 0,
 };
 
 const OUTCOME_STYLES: Record<string, CSSProperties> = {
