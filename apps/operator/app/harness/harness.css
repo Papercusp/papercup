@@ -14112,11 +14112,10 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 /* Main workspace tabs: subtle per-tab color accents for faster scanning. */
 .h-root .h-main-tabs .h-tab {
   --h-main-tab-accent: var(--accent-strong);
-  --h-main-tab-accent-rgb: 125, 211, 252;
   position: relative;
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.15);
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.15);
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.065), transparent 72%),
+    radial-gradient(circle at 18% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.065), transparent 72%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.006)),
     color-mix(in srgb, var(--bg-deep), transparent 38%);
 }
@@ -14130,87 +14129,87 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
   height: 1px;
   pointer-events: none;
   border-radius: 999px;
-  background: linear-gradient(90deg, transparent, rgba(var(--h-main-tab-accent-rgb), 0.54), transparent);
+  background: linear-gradient(90deg, transparent, rgb(from var(--h-main-tab-accent) r g b / 0.54), transparent);
   opacity: 0.42;
 }
 
 .h-root .h-main-tabs .h-tab:hover {
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.30);
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.30);
   color: color-mix(in oklab, var(--fg), var(--h-main-tab-accent) 10%);
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.13), transparent 72%),
+    radial-gradient(circle at 18% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.13), transparent 72%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.010)),
     color-mix(in srgb, var(--bg), transparent 24%);
   box-shadow:
     0 8px 20px rgba(0, 0, 0, 0.15),
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
-    inset 0 0 0 1px rgba(var(--h-main-tab-accent-rgb), 0.055);
+    inset 0 0 0 1px rgb(from var(--h-main-tab-accent) r g b / 0.055);
 }
 
 .h-root .h-main-tabs .h-tab[aria-selected="true"] {
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.38);
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.38);
   color: var(--fg);
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.20), transparent 72%),
-    linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.17), rgba(255, 255, 255, 0.018)),
+    radial-gradient(circle at 18% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.20), transparent 72%),
+    linear-gradient(180deg, rgb(from var(--h-main-tab-accent) r g b / 0.17), rgba(255, 255, 255, 0.018)),
     color-mix(in srgb, var(--bg), transparent 14%);
   box-shadow:
     0 10px 24px rgba(0, 0, 0, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 0 0 1px rgba(var(--h-main-tab-accent-rgb), 0.10),
-    0 0 18px rgba(var(--h-main-tab-accent-rgb), 0.08);
+    inset 0 0 0 1px rgb(from var(--h-main-tab-accent) r g b / 0.10),
+    0 0 18px rgb(from var(--h-main-tab-accent) r g b / 0.08);
 }
 
 .h-root .h-main-tabs .h-tab[aria-selected="true"]::after {
-  background: linear-gradient(90deg, rgba(var(--h-main-tab-accent-rgb), 0.88), color-mix(in oklab, var(--h-main-tab-accent), white 30%));
-  box-shadow: 0 0 14px rgba(var(--h-main-tab-accent-rgb), 0.34);
+  background: linear-gradient(90deg, rgb(from var(--h-main-tab-accent) r g b / 0.88), color-mix(in oklab, var(--h-main-tab-accent), white 30%));
+  box-shadow: 0 0 14px rgb(from var(--h-main-tab-accent) r g b / 0.34);
 }
 
-.h-root .h-main-tabs .h-tab:nth-child(1) { --h-main-tab-accent: var(--accent); --h-main-tab-accent-rgb: 56, 189, 248; } /* brainstorm */
-.h-root .h-main-tabs .h-tab:nth-child(2) { --h-main-tab-accent: #f59e0b; --h-main-tab-accent-rgb: 245, 158, 11; } /* proposals */
-.h-root .h-main-tabs .h-tab:nth-child(3) { --h-main-tab-accent: var(--accent); --h-main-tab-accent-rgb: 34, 211, 238; } /* dashboard */
-.h-root .h-main-tabs .h-tab:nth-child(4) { --h-main-tab-accent: #a78bfa; --h-main-tab-accent-rgb: 167, 139, 250; } /* summary */
-.h-root .h-main-tabs .h-tab:nth-child(5) { --h-main-tab-accent: #60a5fa; --h-main-tab-accent-rgb: 96, 165, 250; } /* docs/plugin */
-.h-root .h-main-tabs .h-tab:nth-child(6) { --h-main-tab-accent: #34d399; --h-main-tab-accent-rgb: 52, 211, 153; } /* pi/plugin */
-.h-root .h-main-tabs .h-tab:nth-child(7) { --h-main-tab-accent: #818cf8; --h-main-tab-accent-rgb: 129, 140, 248; } /* vs code/plugin */
-.h-root .h-main-tabs .h-tab:nth-child(8) { --h-main-tab-accent: #f472b6; --h-main-tab-accent-rgb: 244, 114, 182; } /* experts */
-.h-root .h-main-tabs .h-tab:nth-child(9) { --h-main-tab-accent: #2dd4bf; --h-main-tab-accent-rgb: 45, 212, 191; } /* insights */
-.h-root .h-main-tabs .h-tab:nth-child(10) { --h-main-tab-accent: #c084fc; --h-main-tab-accent-rgb: 192, 132, 252; } /* config */
-.h-root .h-main-tabs .h-tab:nth-child(11) { --h-main-tab-accent: #94a3b8; --h-main-tab-accent-rgb: 148, 163, 184; } /* add/plugin overflow */
+.h-root .h-main-tabs .h-tab:nth-child(1) { --h-main-tab-accent: var(--accent); } /* brainstorm */
+.h-root .h-main-tabs .h-tab:nth-child(2) { --h-main-tab-accent: #f59e0b; } /* proposals */
+.h-root .h-main-tabs .h-tab:nth-child(3) { --h-main-tab-accent: var(--accent); } /* dashboard */
+.h-root .h-main-tabs .h-tab:nth-child(4) { --h-main-tab-accent: #a78bfa; } /* summary */
+.h-root .h-main-tabs .h-tab:nth-child(5) { --h-main-tab-accent: #60a5fa; } /* docs/plugin */
+.h-root .h-main-tabs .h-tab:nth-child(6) { --h-main-tab-accent: #34d399; } /* pi/plugin */
+.h-root .h-main-tabs .h-tab:nth-child(7) { --h-main-tab-accent: #818cf8; } /* vs code/plugin */
+.h-root .h-main-tabs .h-tab:nth-child(8) { --h-main-tab-accent: #f472b6; } /* experts */
+.h-root .h-main-tabs .h-tab:nth-child(9) { --h-main-tab-accent: #2dd4bf; } /* insights */
+.h-root .h-main-tabs .h-tab:nth-child(10) { --h-main-tab-accent: #c084fc; } /* config */
+.h-root .h-main-tabs .h-tab:nth-child(11) { --h-main-tab-accent: #94a3b8; } /* add/plugin overflow */
 
 /* Main workspace tabs: stable value-based accent mapping and stronger painted state. */
-.h-root .h-main-tabs .h-tab[id$="trigger-brainstorm"] { --h-main-tab-accent: var(--accent); --h-main-tab-accent-rgb: 56, 189, 248; }
-.h-root .h-main-tabs .h-tab[id$="trigger-proposals"] { --h-main-tab-accent: #f59e0b; --h-main-tab-accent-rgb: 245, 158, 11; }
-.h-root .h-main-tabs .h-tab[id$="trigger-dashboard"] { --h-main-tab-accent: var(--accent); --h-main-tab-accent-rgb: 34, 211, 238; }
-.h-root .h-main-tabs .h-tab[id$="trigger-summary"] { --h-main-tab-accent: #a78bfa; --h-main-tab-accent-rgb: 167, 139, 250; }
-.h-root .h-main-tabs .h-tab[id$="trigger-plugin:fumadocs"] { --h-main-tab-accent: #60a5fa; --h-main-tab-accent-rgb: 96, 165, 250; }
-.h-root .h-main-tabs .h-tab[id$="trigger-plugin:pi"] { --h-main-tab-accent: #34d399; --h-main-tab-accent-rgb: 52, 211, 153; }
-.h-root .h-main-tabs .h-tab[id$="trigger-plugin:vscode"] { --h-main-tab-accent: #818cf8; --h-main-tab-accent-rgb: 129, 140, 248; }
-.h-root .h-main-tabs .h-tab[id$="trigger-experts"] { --h-main-tab-accent: #f472b6; --h-main-tab-accent-rgb: 244, 114, 182; }
-.h-root .h-main-tabs .h-tab[id$="trigger-insights"] { --h-main-tab-accent: #2dd4bf; --h-main-tab-accent-rgb: 45, 212, 191; }
-.h-root .h-main-tabs .h-tab[id$="trigger-config"] { --h-main-tab-accent: #c084fc; --h-main-tab-accent-rgb: 192, 132, 252; }
+.h-root .h-main-tabs .h-tab[id$="trigger-brainstorm"] { --h-main-tab-accent: var(--accent); }
+.h-root .h-main-tabs .h-tab[id$="trigger-proposals"] { --h-main-tab-accent: #f59e0b; }
+.h-root .h-main-tabs .h-tab[id$="trigger-dashboard"] { --h-main-tab-accent: var(--accent); }
+.h-root .h-main-tabs .h-tab[id$="trigger-summary"] { --h-main-tab-accent: #a78bfa; }
+.h-root .h-main-tabs .h-tab[id$="trigger-plugin:fumadocs"] { --h-main-tab-accent: #60a5fa; }
+.h-root .h-main-tabs .h-tab[id$="trigger-plugin:pi"] { --h-main-tab-accent: #34d399; }
+.h-root .h-main-tabs .h-tab[id$="trigger-plugin:vscode"] { --h-main-tab-accent: #818cf8; }
+.h-root .h-main-tabs .h-tab[id$="trigger-experts"] { --h-main-tab-accent: #f472b6; }
+.h-root .h-main-tabs .h-tab[id$="trigger-insights"] { --h-main-tab-accent: #2dd4bf; }
+.h-root .h-main-tabs .h-tab[id$="trigger-config"] { --h-main-tab-accent: #c084fc; }
 
 .h-root .h-main-tabs .h-tab {
   --h-topbar-control-tone: var(--h-main-tab-accent);
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.24) !important;
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.24) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.11), transparent 72%),
-    linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.075), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
+    radial-gradient(circle at 18% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.11), transparent 72%),
+    linear-gradient(180deg, rgb(from var(--h-main-tab-accent) r g b / 0.075), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
 }
 
 .h-root .h-main-tabs .h-tab:hover {
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.38) !important;
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.38) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.18), transparent 72%),
-    linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.12), color-mix(in srgb, var(--bg-deep), transparent 2%)) !important;
+    radial-gradient(circle at 18% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.18), transparent 72%),
+    linear-gradient(180deg, rgb(from var(--h-main-tab-accent) r g b / 0.12), color-mix(in srgb, var(--bg-deep), transparent 2%)) !important;
 }
 
 .h-root .h-main-tabs .h-tab[aria-selected="true"] {
   --h-topbar-control-tone: var(--h-main-tab-accent);
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.48) !important;
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.48) !important;
   background:
-    radial-gradient(circle at 50% 0%, rgba(var(--h-main-tab-accent-rgb), 0.28), transparent 76%),
-    linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.20), color-mix(in srgb, var(--bg-deeper), transparent 1%)) !important;
+    radial-gradient(circle at 50% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.28), transparent 76%),
+    linear-gradient(180deg, rgb(from var(--h-main-tab-accent) r g b / 0.20), color-mix(in srgb, var(--bg-deeper), transparent 1%)) !important;
 }
 
 /* Harness topbar contrast continuation v8: darken environment cards and pulse/running shells. */
@@ -14777,33 +14776,33 @@ html body .h-root.h-root :is(
 }
 
 /* Main workspace tabs v11: stable, distinct hint colors per tab label. */
-.h-root .h-main-tabs .h-tab.h-tab--brainstorm { --h-main-tab-accent: var(--accent); --h-main-tab-accent-rgb: 56, 189, 248; }
-.h-root .h-main-tabs .h-tab.h-tab--proposals { --h-main-tab-accent: #f59e0b; --h-main-tab-accent-rgb: 245, 158, 11; }
-.h-root .h-main-tabs .h-tab.h-tab--dashboard { --h-main-tab-accent: var(--accent); --h-main-tab-accent-rgb: 34, 211, 238; }
-.h-root .h-main-tabs .h-tab.h-tab--summary { --h-main-tab-accent: #8b5cf6; --h-main-tab-accent-rgb: 139, 92, 246; }
-.h-root .h-main-tabs .h-tab.h-tab--docs { --h-main-tab-accent: #3b82f6; --h-main-tab-accent-rgb: 59, 130, 246; }
-.h-root .h-main-tabs .h-tab.h-tab--pi { --h-main-tab-accent: #22c55e; --h-main-tab-accent-rgb: 34, 197, 94; }
-.h-root .h-main-tabs .h-tab.h-tab--vscode { --h-main-tab-accent: #6366f1; --h-main-tab-accent-rgb: 99, 102, 241; }
-.h-root .h-main-tabs .h-tab.h-tab--experts { --h-main-tab-accent: #f472b6; --h-main-tab-accent-rgb: 244, 114, 182; }
-.h-root .h-main-tabs .h-tab.h-tab--insights { --h-main-tab-accent: #14b8a6; --h-main-tab-accent-rgb: 20, 184, 166; }
-.h-root .h-main-tabs .h-tab.h-tab--config { --h-main-tab-accent: #e879f9; --h-main-tab-accent-rgb: 232, 121, 249; }
-.h-root .h-main-tabs .h-tab.h-tab--plugin { --h-main-tab-accent: #94a3b8; --h-main-tab-accent-rgb: 148, 163, 184; }
+.h-root .h-main-tabs .h-tab.h-tab--brainstorm { --h-main-tab-accent: var(--accent); }
+.h-root .h-main-tabs .h-tab.h-tab--proposals { --h-main-tab-accent: #f59e0b; }
+.h-root .h-main-tabs .h-tab.h-tab--dashboard { --h-main-tab-accent: var(--accent); }
+.h-root .h-main-tabs .h-tab.h-tab--summary { --h-main-tab-accent: #8b5cf6; }
+.h-root .h-main-tabs .h-tab.h-tab--docs { --h-main-tab-accent: #3b82f6; }
+.h-root .h-main-tabs .h-tab.h-tab--pi { --h-main-tab-accent: #22c55e; }
+.h-root .h-main-tabs .h-tab.h-tab--vscode { --h-main-tab-accent: #6366f1; }
+.h-root .h-main-tabs .h-tab.h-tab--experts { --h-main-tab-accent: #f472b6; }
+.h-root .h-main-tabs .h-tab.h-tab--insights { --h-main-tab-accent: #14b8a6; }
+.h-root .h-main-tabs .h-tab.h-tab--config { --h-main-tab-accent: #e879f9; }
+.h-root .h-main-tabs .h-tab.h-tab--plugin { --h-main-tab-accent: #94a3b8; }
 
 /* Main workspace tabs v11b: keep label-specific hints visible even when disabled/base CSS loads later. */
 .h-root .h-main-tabs .h-tab[class*="h-tab--"] {
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.28) !important;
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.28) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.12), transparent 72%),
-    linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.080), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
+    radial-gradient(circle at 18% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.12), transparent 72%),
+    linear-gradient(180deg, rgb(from var(--h-main-tab-accent) r g b / 0.080), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
 }
 
 .h-root .h-main-tabs .h-tab[class*="h-tab--"][disabled] {
   opacity: 0.58 !important;
   color: color-mix(in oklab, var(--fg-dim), var(--h-main-tab-accent) 18%) !important;
-  border-color: rgba(var(--h-main-tab-accent-rgb), 0.20) !important;
+  border-color: rgb(from var(--h-main-tab-accent) r g b / 0.20) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.075), transparent 72%),
-    linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.045), color-mix(in srgb, var(--bg-deeper), transparent 4%)) !important;
+    radial-gradient(circle at 18% 0%, rgb(from var(--h-main-tab-accent) r g b / 0.075), transparent 72%),
+    linear-gradient(180deg, rgb(from var(--h-main-tab-accent) r g b / 0.045), color-mix(in srgb, var(--bg-deeper), transparent 4%)) !important;
 }
 
 /* Harness top chrome tab-switch stability: full HUD effects may animate the
@@ -18925,8 +18924,8 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-root .h-main-tabs .h-tab[class*="h-tab--"],
 .h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"] {
-  border-color: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.34) !important;
-  background: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.10) !important;
+  border-color: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.34) !important;
+  background: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.10) !important;
   color: color-mix(in oklab, var(--h-main-tab-accent, var(--accent-cool)), white 58%) !important;
   box-shadow: none !important;
   filter: none !important;
@@ -18937,8 +18936,8 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-main-tabs .h-tab[class*="h-tab--"]:focus-visible,
 .h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"]:not([disabled]):hover,
 .h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"]:focus-visible {
-  border-color: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.50) !important;
-  background: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.15) !important;
+  border-color: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.50) !important;
+  background: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.15) !important;
   box-shadow: none !important;
 }
 
@@ -18946,16 +18945,16 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-main-tabs .h-tab[class*="h-tab--"].on,
 .h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"][aria-selected="true"],
 .h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"].on {
-  border-color: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.64) !important;
-  background: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.20) !important;
+  border-color: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.64) !important;
+  background: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.20) !important;
   color: color-mix(in oklab, var(--fg), var(--h-main-tab-accent, var(--accent-cool)) 20%) !important;
   box-shadow: none !important;
 }
 
 .h-root .h-main-tabs .h-tab[class*="h-tab--"][aria-selected="true"] .h-tab-count,
 .h-root .h-main-tabs .h-tab[class*="h-tab--"].on .h-tab-count {
-  border-color: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.48) !important;
-  background: rgba(var(--h-main-tab-accent-rgb, 56, 189, 248), 0.18) !important;
+  border-color: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.48) !important;
+  background: rgb(from var(--h-main-tab-accent, var(--accent)) r g b / 0.18) !important;
   color: color-mix(in oklab, var(--h-main-tab-accent, var(--accent-cool)), white 18%) !important;
 }
 
@@ -19092,19 +19091,19 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
 }
 
-.h-root .h-main-tabs .h-tab.h-tab--brainstorm { --h-main-tab-accent: var(--accent); --h-main-tab-accent-rgb: 56, 189, 248; }
-.h-root .h-main-tabs .h-tab.h-tab--proposals { --h-main-tab-accent: #f59e0b; --h-main-tab-accent-rgb: 245, 158, 11; }
-.h-root .h-main-tabs .h-tab.h-tab--experts { --h-main-tab-accent: #f472b6; --h-main-tab-accent-rgb: 244, 114, 182; }
-.h-root .h-main-tabs .h-tab.h-tab--dashboard { --h-main-tab-accent: #3b82f6; --h-main-tab-accent-rgb: 59, 130, 246; }
-.h-root .h-main-tabs .h-tab.h-tab--summary { --h-main-tab-accent: #a78bfa; --h-main-tab-accent-rgb: 167, 139, 250; }
-.h-root .h-main-tabs .h-tab.h-tab--pi { --h-main-tab-accent: #22c55e; --h-main-tab-accent-rgb: 34, 197, 94; }
-.h-root .h-main-tabs .h-tab.h-tab--docs { --h-main-tab-accent: #60a5fa; --h-main-tab-accent-rgb: 96, 165, 250; }
-.h-root .h-main-tabs .h-tab.h-tab--vscode { --h-main-tab-accent: #818cf8; --h-main-tab-accent-rgb: 129, 140, 248; }
-.h-root .h-main-tabs .h-tab.h-tab--prs { --h-main-tab-accent: #fb7185; --h-main-tab-accent-rgb: 251, 113, 133; }
-.h-root .h-main-tabs .h-tab.h-tab--insights { --h-main-tab-accent: #14b8a6; --h-main-tab-accent-rgb: 20, 184, 166; }
-.h-root .h-main-tabs .h-tab.h-tab--config { --h-main-tab-accent: #e879f9; --h-main-tab-accent-rgb: 232, 121, 249; }
-.h-root .h-main-tabs .h-tab.h-tab--settings { --h-main-tab-accent: #f97316; --h-main-tab-accent-rgb: 249, 115, 22; }
-.h-root .h-main-tabs .h-add-plugin-tab { --h-main-tab-accent: #94a3b8; --h-main-tab-accent-rgb: 148, 163, 184; }
+.h-root .h-main-tabs .h-tab.h-tab--brainstorm { --h-main-tab-accent: var(--accent); }
+.h-root .h-main-tabs .h-tab.h-tab--proposals { --h-main-tab-accent: #f59e0b; }
+.h-root .h-main-tabs .h-tab.h-tab--experts { --h-main-tab-accent: #f472b6; }
+.h-root .h-main-tabs .h-tab.h-tab--dashboard { --h-main-tab-accent: #3b82f6; }
+.h-root .h-main-tabs .h-tab.h-tab--summary { --h-main-tab-accent: #a78bfa; }
+.h-root .h-main-tabs .h-tab.h-tab--pi { --h-main-tab-accent: #22c55e; }
+.h-root .h-main-tabs .h-tab.h-tab--docs { --h-main-tab-accent: #60a5fa; }
+.h-root .h-main-tabs .h-tab.h-tab--vscode { --h-main-tab-accent: #818cf8; }
+.h-root .h-main-tabs .h-tab.h-tab--prs { --h-main-tab-accent: #fb7185; }
+.h-root .h-main-tabs .h-tab.h-tab--insights { --h-main-tab-accent: #14b8a6; }
+.h-root .h-main-tabs .h-tab.h-tab--config { --h-main-tab-accent: #e879f9; }
+.h-root .h-main-tabs .h-tab.h-tab--settings { --h-main-tab-accent: #f97316; }
+.h-root .h-main-tabs .h-add-plugin-tab { --h-main-tab-accent: #94a3b8; }
 
 .h-root .h-main-tabs .h-tab.h-tab--dashboard[aria-selected="true"],
 .h-root .h-main-tabs .h-tab.h-tab--dashboard.on {

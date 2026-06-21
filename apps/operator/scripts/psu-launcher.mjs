@@ -433,6 +433,44 @@ function findCodexRollout(root, id) {
   return null;
 }
 
+function trackedCodexSessionsRoot(session, home = homedir()) {
+  if (session.id == null) return null;
+  return join(home, '.papercusp', 'su-codex-homes', `session-${session.id}`, 'sessions');
+}
+
+/**
+ * Resolve a direct `psu --resume <id>` against tracked adv_sessions rows.
+ *
+ * Claude records its native UUID at bootstrap, so `sessionId` is enough. OMP
+ * learns its native thread id after launch via the coord hook, so match
+ * `ompThreadId` too. Codex cannot be forced to a pre-minted id, but its rollout
+ * UUID is persisted under the tracked row's isolated CODEX_HOME; when the user
+ * passes that UUID, discover the owning row and graft the id onto the transient
+ * session object so `resumeArgsFor` can emit `codex resume <uuid>` while
+ * `launchResume` still restores that row's CODEX_HOME.
+ */
+export function resolveTrackedResumeSession(sessions, id, { home = homedir() } = {}) {
+  if (!id) return null;
+  const wanted = String(id);
+  const direct = sessions.find(
+    (s) =>
+      String(s.id) === wanted ||
+      (s.sessionId && s.sessionId === wanted) ||
+      (s.ompThreadId && s.ompThreadId === wanted),
+  );
+  if (direct) return direct;
+
+  if (!UUID_RE.test(wanted)) return null;
+  for (const session of sessions) {
+    if (session.agent !== 'codex') continue;
+    const root = trackedCodexSessionsRoot(session, home);
+    if (root && findCodexRollout(root, wanted)) {
+      return { ...session, sessionId: wanted };
+    }
+  }
+  return null;
+}
+
 /**
  * Find a session the user did NOT launch via psu, by searching each agent's
  * OWN session store for the id — NOT a filesystem crawl: claude keeps every
@@ -529,7 +567,7 @@ export function sessionHasTranscript(session, { home = homedir() } = {}) {
   }
   if (session.agent === 'codex') {
     if (!session.sessionId || session.id == null) return true;
-    const sessionsRoot = join(home, '.papercusp', 'su-codex-homes', `session-${session.id}`, 'sessions');
+    const sessionsRoot = trackedCodexSessionsRoot(session, home);
     return Boolean(findCodexRollout(sessionsRoot, session.sessionId));
   }
   return true;
@@ -1433,9 +1471,7 @@ async function resumeFlow(args = {}) {
     //    so resuming by EITHER handle finds the tracked row — and resumes the
     //    exact session (resumeArgsFor prefers the native id) with NO false
     //    "not started by psu" warning.
-    const tracked = sessions.find(
-      (s) => String(s.id) === String(args.resumeId) || (s.sessionId && s.sessionId === args.resumeId),
-    );
+    const tracked = resolveTrackedResumeSession(sessions, args.resumeId);
     if (tracked) {
       // A tracked row alone doesn't prove resumability — a launch that died
       // (or was closed) before its first persisted message has NO transcript,
@@ -1463,7 +1499,7 @@ async function resumeFlow(args = {}) {
       const ids = sessions.map((s) => s.id).filter((x) => x != null).join(', ');
       console.error(
         `psu: no session "${args.resumeId}" — not a tracked psu session (ids: ${ids || 'none'}), ` +
-          `and no claude/codex session file with that id under ~/.claude/projects or ~/.codex/sessions ` +
+          `and no claude/codex session file with that id under ~/.claude/projects, tracked CODEX_HOME dirs, or ~/.codex/sessions ` +
           `(omp threads resume by thread name).`,
       );
       process.exit(1);

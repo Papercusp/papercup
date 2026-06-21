@@ -18,13 +18,13 @@
  * bootstrap-su test mocks them; suLaunchArgs/resumeArgsFor are imported live
  * from the actual psu-launcher.mjs.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from './endpoint-route/define-route';
 // The REAL launcher helpers (the forcing + resuming halves of the contract).
-import { suLaunchArgs, resumeArgsFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { suLaunchArgs, resumeArgsFor, resolveTrackedResumeSession } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -182,6 +182,24 @@ describe('native session id round-trip (bootstrap-su → suLaunchArgs → resume
     expect(resume.args).not.toContain('--session-id');
   });
 
+  it('omp: a post-launch linked thread id resolves a tracked direct resume', () => {
+    const tracked = {
+      id: 42,
+      agent: 'omp',
+      cwd: '/home/me/work',
+      sessionId: null,
+      ompThreadId: '019ee911-f1d4-7031-859b-27c3527acbc0',
+    };
+
+    const resolved = resolveTrackedResumeSession([tracked], tracked.ompThreadId);
+    expect(resolved).toBe(tracked);
+
+    const resume = resumeArgsFor(resolved);
+    expect(resume.bin).toBe('omp');
+    expect(resume.args).toContain('-r');
+    expect(resume.args[resume.args.indexOf('-r') + 1]).toBe(tracked.ompThreadId);
+  });
+
   it('codex: native id is null end-to-end — never minted, never forced (resume via CODEX_HOME)', async () => {
     const json = await bootstrap('codex');
 
@@ -195,6 +213,24 @@ describe('native session id round-trip (bootstrap-su → suLaunchArgs → resume
     const resume = resumeArgsFor({ agent: 'codex', cwd: json.cwd });
     expect(resume.args).toContain('resume');
     expect(resume.args).toContain('--last');
+  });
+
+  it('codex: a rollout uuid under the tracked CODEX_HOME resolves a tracked direct resume', () => {
+    const home = mkdtempSync(join(tmpdir(), 'native-sid-rt-codex-home-'));
+    const rolloutId = '019ee911-f1d4-7031-859b-27c3527acbc0';
+    const sessionsDir = join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions', '2026', '06', '21');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, `rollout-2026-06-21T00-00-00-${rolloutId}.jsonl`), '{"cwd":"/home/me/work"}\n');
+
+    const tracked = { id: 42, agent: 'codex', cwd: '/home/me/work', sessionId: null };
+    const resolved = resolveTrackedResumeSession([tracked], rolloutId, { home });
+    expect(resolved).toMatchObject({ ...tracked, sessionId: rolloutId });
+
+    const resume = resumeArgsFor(resolved);
+    expect(resume.bin).toBe('codex');
+    expect(resume.args).toContain('resume');
+    expect(resume.args[resume.args.indexOf('resume') + 1]).toBe(rolloutId);
+    expect(resume.args).not.toContain('--last');
   });
 
   it('claude: forcing the bootstrapped uuid is what makes resume-by-uuid match (would-be false-negative guard)', async () => {
