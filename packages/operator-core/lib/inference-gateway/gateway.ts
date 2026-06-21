@@ -1156,8 +1156,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
             gov.penalize({ retryAfterMs: pauseMs, resetAt });
             if (circuitOpen) {
               egressCircuitOpens++;
-              log('warn', `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures) — out of rotation ${Math.round(pauseMs / 1000)}s; half-open retest on pause-expiry`);
-              scheduleEgressProbe(active);
+              egressPauseUntil.set(active.accountId, resetAt); // mark the TRANSPORT pause so the probe can lift exactly it on recovery
+              log('warn', `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures) — out of rotation ≤${Math.round(pauseMs / 1000)}s; half-open probe lifts it the moment the proxy recovers`);
+              scheduleEgressProbe(active, gov, resetAt);
             }
             // ROUTE AROUND IT: rotate to a healthy account + retry on the same admission slot (like the
             // usage-cap path). pool.onExhausted also marks this account out of the round-robin until
