@@ -25,6 +25,21 @@ vi.mock('@/app/harness/dock/workbench-panels', () => ({ registerWorkbenchPanels:
 vi.mock('../components/workbench/WorkbenchVoicePanel', () => ({ registerWorkbenchVoicePanel: () => registerWorkbenchVoicePanel() }));
 vi.mock('../components/workbench/WorkbenchHiveDirectoryPanel', () => ({ registerWorkbenchHiveDirectoryPanel: () => registerWorkbenchHiveDirectoryPanel() }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({ value, onChange, options, testId }: {
+    value: string;
+    onChange: (value: string) => void;
+    options: Array<{ value: string; label: React.ReactNode; disabled?: boolean }>;
+    testId?: string;
+  }) => (
+    <select data-testid={testId} value={value} onChange={(e) => onChange(e.target.value)}>
+      {options.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
+    </select>
+  ),
+}));
+vi.mock('@/app/harness/Tooltip', () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 vi.mock('@/app/harness/dock/HarnessDock', () => ({
   HarnessDock: ({ slug }: { slug: string }) => <div data-testid="harness-dock" data-slug={slug} />,
 }));
@@ -133,7 +148,7 @@ describe('/workbench route', () => {
     fetchImpl = () => ({ ok: false, status: 500, body: {} });
     renderWb();
     await waitFor(() => expect(slug()).toBe(''));
-    expect(screen.getByRole('option', { name: '— select —' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'select' })).toBeTruthy();
     expect(screen.queryByRole('option', { name: 'Project One' })).toBeNull();
   });
 });

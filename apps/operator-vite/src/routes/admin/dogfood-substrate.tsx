@@ -120,6 +120,7 @@ function DogfoodSubstratePage() {
               rows={rows}
               columns={columns}
               getRowId={(row) => `${row.workspaceId}::${row.harnessSlug}`}
+              rowProps={({ row }) => ({ 'data-testid': `dogfood-substrate-row-${row.harnessSlug}` })}
               rowMinHeight={32}
             />
           </div>

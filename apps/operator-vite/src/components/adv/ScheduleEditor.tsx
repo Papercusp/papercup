@@ -15,6 +15,7 @@
  * the component is the thin form + the run-tool POST around it.
  */
 import { useMemo, useState } from 'react';
+import { Select } from '@/app/harness/Select';
 
 export type ScheduleMode = 'one-shot' | 'recurring';
 export type Freq = 'DAILY' | 'WEEKLY' | 'MONTHLY';
@@ -381,11 +382,16 @@ export default function ScheduleEditor({
             </label>
             <label className="pc-sched-editor__field">
               <span>Frequency</span>
-              <select value={form.freq} onChange={(e) => patch({ freq: e.target.value as Freq })}>
-                <option value="DAILY">day(s)</option>
-                <option value="WEEKLY">week(s)</option>
-                <option value="MONTHLY">month(s)</option>
-              </select>
+              <Select
+                value={form.freq}
+                onChange={(value) => patch({ freq: value as Freq })}
+                options={[
+                  { value: 'DAILY', label: 'day(s)' },
+                  { value: 'WEEKLY', label: 'week(s)' },
+                  { value: 'MONTHLY', label: 'month(s)' },
+                ]}
+                ariaLabel="Frequency"
+              />
             </label>
           </div>
 

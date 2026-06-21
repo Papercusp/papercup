@@ -35,6 +35,34 @@ vi.mock('@/app/harness/insights/ClaimAttemptTimelineClient', () => ({
     <div data-testid="claim-timeline" data-slug={slug} data-limit={limit} />
   ),
 }));
+vi.mock('@papercusp/grid-core', () => ({
+  RichGrid: ({ rows, columns, getRowId, rowProps }: {
+    rows: Record<string, unknown>[];
+    columns: Array<{ key: string; render: (ctx: { row: Record<string, unknown> }) => React.ReactNode }>;
+    getRowId: (row: Record<string, unknown>) => string;
+    rowProps?: (ctx: { row: Record<string, unknown> }) => React.HTMLAttributes<HTMLDivElement>;
+  }) => (
+    <div>
+      {rows.map((row) => (
+        <div key={getRowId(row)} {...rowProps?.({ row })}>
+          {columns.map((col) => <span key={col.key}>{col.render({ row })}</span>)}
+        </div>
+      ))}
+    </div>
+  ),
+}));
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({ value, onChange, options, testId }: {
+    value: string;
+    onChange: (value: string) => void;
+    options: Array<{ value: string; label: React.ReactNode }>;
+    testId?: string;
+  }) => (
+    <select data-testid={testId} value={value} onChange={(e) => onChange(e.target.value)}>
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  ),
+}));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import { Route } from './dogfood-substrate';

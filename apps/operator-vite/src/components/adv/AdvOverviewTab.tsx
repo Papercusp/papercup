@@ -10,6 +10,7 @@ import {
   type AttentionTier,
   type ItemStatus,
 } from '@/app/admin/plans/plans-api';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 /**
  * Brief 23 — the Overview / dashboard: the default landing surface of /adv.
@@ -507,9 +508,11 @@ function OverviewTile({
         {icon}
         <span className="pc-overview__tile-title">{title}</span>
         {typeof count === 'number' && count > 0 && <span className="pc-overview__tile-count">{count}</span>}
-        <button type="button" className="pc-overview__tile-open" onClick={onOpen} title={`Open ${title}`}>
-          open <ArrowRight size={11} aria-hidden />
-        </button>
+        <Tooltip label={`Open ${title}`}>
+          <button type="button" className="pc-overview__tile-open" onClick={onOpen}>
+            open <ArrowRight size={11} aria-hidden />
+          </button>
+        </Tooltip>
       </div>
       <div className="pc-overview__tile-body">
         {error ? (
@@ -527,4 +530,3 @@ function OverviewTile({
     </section>
   );
 }
-

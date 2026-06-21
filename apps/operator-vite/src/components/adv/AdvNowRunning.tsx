@@ -6,6 +6,8 @@ import { useSyncQuery } from '@papercusp/sync';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
 import { fetchPlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { useLexicon } from '@/lib/useLexicon';
+import { Tooltip } from '@/app/harness/Tooltip';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface AgentRun {
   runId: string;
@@ -102,6 +104,7 @@ export function waitingLabel(n: number): string {
 export default function AdvNowRunning({ slug }: Props) {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [starting, setStarting] = useState(false);
@@ -219,7 +222,13 @@ export default function AdvNowRunning({ slug }: Props) {
   // legacy /stop route only ever matched the retired run.sh driver).
   const stopHive = useCallback(async () => {
     if (!hive) return;
-    if (!window.confirm(`Pause the hive (${hive.slug})? Live bees are asked to wrap up; no new wakes fire until Start.`)) return;
+    const ok = await askConfirm({
+      title: `Pause hive (${hive.slug})?`,
+      body: 'Live bees are asked to wrap up; no new wakes fire until Start.',
+      confirmLabel: 'Pause hive',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await runHiveControl('hive:pause', hive.slug, { drainBees: true });
       toast.success('Hive paused', { description: 'Autonomous wakes staged; bees draining' });
@@ -227,7 +236,7 @@ export default function AdvNowRunning({ slug }: Props) {
     } catch (e) {
       toast.error('Pause failed', { description: String(e) });
     }
-  }, [hive]);
+  }, [askConfirm, hive]);
 
   const showWaitingPlans = useCallback(() => {
     void setAdvTab('plans');
@@ -251,6 +260,8 @@ export default function AdvNowRunning({ slug }: Props) {
   const stateClass = isLoading ? 'is-checking' : effectivelyAlive ? 'is-active' : 'is-stopped';
 
   return (
+    <>
+    {confirmEl}
     <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label={`${t('pot')} status`}>
       {/* Active status indicator — only shown when running */}
       {effectivelyAlive && (
@@ -273,25 +284,25 @@ export default function AdvNowRunning({ slug }: Props) {
             const dur = now - r.ts;
             const label = `${r.role}${r.featureId ? ` · ${r.featureId}` : ''} · ${fmt(dur)}`;
             return (
-              <button
-                key={r.runId}
-                type="button"
-                className="pc-advshell__pill"
-                title="Hover for live thinking"
-                onMouseEnter={(e) => {
-                  cancelClose();
-                  if (enterTimer.current) clearTimeout(enterTimer.current);
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  enterTimer.current = setTimeout(() => setHovered({ run: r, rect }), 250);
-                }}
-                onMouseLeave={() => {
-                  if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
-                  scheduleClose();
-                }}
-              >
-                <span className="pc-advshell__pill-dot" aria-hidden />
-                <span>{label}</span>
-              </button>
+              <Tooltip key={r.runId} label="Hover for live thinking">
+                <button
+                  type="button"
+                  className="pc-advshell__pill"
+                  onMouseEnter={(e) => {
+                    cancelClose();
+                    if (enterTimer.current) clearTimeout(enterTimer.current);
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    enterTimer.current = setTimeout(() => setHovered({ run: r, rect }), 250);
+                  }}
+                  onMouseLeave={() => {
+                    if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
+                    scheduleClose();
+                  }}
+                >
+                  <span className="pc-advshell__pill-dot" aria-hidden />
+                  <span>{label}</span>
+                </button>
+              </Tooltip>
             );
           })}
         </div>
@@ -300,42 +311,45 @@ export default function AdvNowRunning({ slug }: Props) {
       {/* Nudge: started plans exist but the harness isn't running to pick
           them up. Click → Plans tab, Running filter. */}
       {!effectivelyAlive && waitingCount > 0 && (
-        <button
-          type="button"
-          className="pc-advshell__action pc-advshell__action--waiting"
-          onClick={showWaitingPlans}
-          title={`These plans are started but the ${t('pot', { lower: true })} isn't running — click to view them`}
-        >
-          <AlertTriangle size={11} aria-hidden />
-          {waitingLabel(waitingCount)}
-        </button>
+        <Tooltip label={`These plans are started but the ${t('pot', { lower: true })} isn't running — click to view them`}>
+          <button
+            type="button"
+            className="pc-advshell__action pc-advshell__action--waiting"
+            onClick={showWaitingPlans}
+          >
+            <AlertTriangle size={11} aria-hidden />
+            {waitingLabel(waitingCount)}
+          </button>
+        </Tooltip>
       )}
 
       {/* Start (when paused) / Stop (when started) — THE hive control.
           Hidden when no hive is registered (nothing to start: feature work
           is event/routine-driven, the legacy run-loop launch is retired). */}
       {hive && !effectivelyAlive && (
-        <button
-          type="button"
-          className="pc-advshell__action pc-advshell__action--start"
-          onClick={startHive}
-          disabled={starting || isLoading}
-          title={`Start hive (${hive.slug}) — wake the Queen and enable autonomous wakes`}
-        >
-          <Play size={11} aria-hidden />
-          {starting ? 'Starting…' : 'Start hive'}
-        </button>
+        <Tooltip label={`Start hive (${hive.slug}) — wake the Queen and enable autonomous wakes`}>
+          <button
+            type="button"
+            className="pc-advshell__action pc-advshell__action--start"
+            onClick={startHive}
+            disabled={starting || isLoading}
+          >
+            <Play size={11} aria-hidden />
+            {starting ? 'Starting…' : 'Start hive'}
+          </button>
+        </Tooltip>
       )}
       {hive && effectivelyAlive && (
-        <button
-          type="button"
-          className="pc-advshell__action pc-advshell__action--stop"
-          onClick={stopHive}
-          title={`Pause hive (${hive.slug}) — stage autonomous wakes and drain live bees`}
-        >
-          <Square size={11} aria-hidden />
-          Stop hive
-        </button>
+        <Tooltip label={`Pause hive (${hive.slug}) — stage autonomous wakes and drain live bees`}>
+          <button
+            type="button"
+            className="pc-advshell__action pc-advshell__action--stop"
+            onClick={stopHive}
+          >
+            <Square size={11} aria-hidden />
+            Stop hive
+          </button>
+        </Tooltip>
       )}
 
       {hovered && (
@@ -351,6 +365,7 @@ export default function AdvNowRunning({ slug }: Props) {
         />
       )}
     </div>
+    </>
   );
 }
 

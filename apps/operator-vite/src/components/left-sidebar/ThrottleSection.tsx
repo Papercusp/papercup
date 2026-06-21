@@ -33,6 +33,7 @@ import { ChevronDown, ChevronRight, Cpu, Gauge, Moon, TrendingUp, Users } from '
 // resolve in the operator-vite vitest env — mirror ModelTiersOverride.
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 
 /** The idle background activities the owner can gate (mirrors owner-steering.ts
  *  IDLE_ACTIVITY_KINDS — redeclared locally so this stays import-light in the
@@ -255,20 +256,17 @@ export default function ThrottleSection({
                 {beeTier ? 'override' : 'default'}
               </span>
             </div>
-            <select
+            <Select
               className="pc-queen__select"
-              value={beeTier ?? ''}
+              value={beeTier ?? '_none'}
               disabled={busy || tiers.length === 0}
-              aria-label="Cap bees at model tier"
-              onChange={(e) => onSetBeeTierCap(e.target.value || null)}
-            >
-              <option value="">No cap (any tier)</option>
-              {tiers.map((t) => (
-                <option key={t.name} value={t.name}>
-                  {t.name} · {t.spec}
-                </option>
-              ))}
-            </select>
+              ariaLabel="Cap bees at model tier"
+              onChange={(value) => onSetBeeTierCap(value === '_none' ? null : value)}
+              options={[
+                { value: '_none', label: 'No cap (any tier)' },
+                ...tiers.map((t) => ({ value: t.name, label: `${t.name} · ${t.spec}` })),
+              ]}
+            />
             <span className="pc-queen__hint">A ceiling — bees never run above this tier. Finer per-tier models: the Model tiers section above.</span>
           </div>
 
