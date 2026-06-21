@@ -271,8 +271,10 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   is its own inference round-trip re-reading your whole context, while a script
   runs them in the runtime and returns ONLY its final value (N round-trips → one).
   **Prefer it aggressively:** batching cuts per-turn token cost SEVERAL-FOLD, which
-  outweighs per-call efficiency — reach for it even for a 2–3 call fan-out; when in
-  doubt, script it.
+  outweighs per-call efficiency — reach for it for ANY loop over items: NO minimum N,
+  a loop of just 2–3 IDENTICAL calls (three `get`s over three ids) still batches, N=3
+  is NOT too small. (A few DIFFERENT one-off calls is NOT a loop — call those directly;
+  the cue is REPETITION of the same call, not call count.) When in doubt, script it.
   **Trigger:** about to call the SAME tool once per item in a list (a `get` per id,
   a check per file)? That repetition IS the cue — reach for `code:run` BEFORE the
   first such call, not after firing several one-at-a-time. NOT for a single call or

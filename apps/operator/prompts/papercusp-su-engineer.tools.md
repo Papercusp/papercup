@@ -381,8 +381,11 @@ autonomous-fleet agent.
   the runtime and returns ONLY its final value, so N round-trips become one.
   **Prefer it aggressively:** batching cuts your per-turn token cost SEVERAL-FOLD
   (each avoided round-trip is a whole context re-read skipped), which matters far
-  more than per-call efficiency — so reach for it even for a small 2–3 call fan-out
-  and even when a direct loop looks simpler; when in doubt, script it.
+  more than per-call efficiency — so reach for it for ANY loop over items, even a
+  small one: there's NO minimum N — a loop of just 2–3 IDENTICAL calls over a list
+  (three `get`s over three ids) still batches; N=3 is NOT too small. (A few DIFFERENT
+  one-off calls is NOT a loop — call those directly; the trigger is REPETITION of the
+  SAME call over items, not raw call count.) When in doubt, script it.
   **Trigger — catch the cue early:** the moment you're about to call the SAME tool
   once per item in a list (a `get` per id, a check per file), that repetition IS
   the signal — reach for `code:run` BEFORE the first such call; don't fire several
