@@ -236,3 +236,39 @@ describe('system:improvement-implement — dispatch ledger write path (consume-e
     expect(ledgerResults).toEqual([]); // nothing to update — no row id
   });
 });
+
+describe('system:improvement-implement — runner-harness defaults to ctx.installSlug (WI-290)', () => {
+  const arm = (...items: ImprovementCandidate[]) => {
+    vi.mocked(getFlag).mockResolvedValue(true as never);
+    vi.mocked(readImprovementItems).mockResolvedValue(items as never);
+  };
+
+  it('with the env override UNSET, still dispatches — runner resolves to the routine install slug, NOT no-runner', async () => {
+    // The regression guard for the 2026-06-19 dark-and-stay-dark: the DBOS routines
+    // executor (the bg-host) lacked PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS, so the lane
+    // returned action='no-runner' every tick and silently stranded ~200 bugs. The fix
+    // defaults the runner to ctx.installSlug, so a dropped env can no longer dark the lane.
+    delete process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS;
+    arm(cand({ id: 'EI-NOENV', attempts: 0 }));
+
+    await run();
+
+    // It dispatched (no-runner would have dispatched nothing) and the ledger row carries
+    // the install slug as the runner.
+    expect(dispatched.map((s) => s.id)).toEqual(['EI-NOENV']);
+    expect(ledgerFired).toEqual([
+      { workspaceId: 'ws-1', itemId: 'EI-NOENV', attempt: 1, runnerHarness: 'papercup', hiveSlug: null },
+    ]);
+  });
+
+  it('the env override, when set, still wins over the install-slug default', async () => {
+    process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS = 'a-different-runner';
+    arm(cand({ id: 'EI-OVERRIDE', attempts: 0 }));
+
+    await run();
+
+    expect(ledgerFired).toEqual([
+      { workspaceId: 'ws-1', itemId: 'EI-OVERRIDE', attempt: 1, runnerHarness: 'a-different-runner', hiveSlug: null },
+    ]);
+  });
+});
