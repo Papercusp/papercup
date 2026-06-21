@@ -27,7 +27,7 @@
  */
 import { emptyOverwatchBrief } from './brief-types';
 import type { Anomaly, OverwatchBrief } from './brief-types';
-import { computeSystemHealth, deriveQueenAlive } from '../system-health';
+import { computeSystemHealth, deriveQueenAlive, queenPlacementStalled } from '../system-health';
 import type { SystemHealth } from '../system-health/types';
 
 /**
@@ -79,6 +79,39 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         target: 'queen',
         message:
           'Queen — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
+      },
+    });
+  }
+
+  // ── Queen placement liveness (D-009) ───────────────────────────────────────
+  // The cadence signals above MISS the silent stall where the Queen wakes ON time
+  // (alive + !stalled) but her wakes run 0 LLM tokens (the LLM never executes — an
+  // infra / account rate-limit loss), so nothing is placed. Owner-actionable: it
+  // points at the account pool / launcher host, which the Queen cannot self-fix.
+  if (
+    crossMonitor.queenAlive &&
+    !queen.stalled &&
+    queenPlacementStalled({
+      consecutiveZeroTokenWakes: queen.consecutiveZeroTokenWakes,
+      frontier: workFeed.frontier,
+      paused: false,
+      beesBusy: bees.running,
+    })
+  ) {
+    out.push({
+      kind: 'queen-placement-stalled',
+      severity: 'warning',
+      subject: 'queen',
+      detail:
+        `Queen is alive + waking on cadence but her last ${queen.consecutiveZeroTokenWakes} wake(s) ran 0 LLM tokens ` +
+        `(the LLM never executed) while ${workFeed.frontier} placeable item(s) wait — placement is stalled, not idle.`,
+      suggestedAction: {
+        type: 'escalate',
+        target: 'owner',
+        message:
+          `Queen alive but ${queen.consecutiveZeroTokenWakes} consecutive wakes ran 0 LLM tokens while ${workFeed.frontier} items are placeable — ` +
+          `she launches but never reaches an LLM turn. Likely the account pool is rate-limit-exhausted (or the launcher host is down); ` +
+          `this is an infra/capacity stall the Queen cannot self-fix.`,
       },
     });
   }
@@ -331,6 +364,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
       // Resolved by the async computeOverwatchBrief wrapper (needs DB) — the pure
       // mapper leaves it null; SystemHealth.QueenHealth has no coord owner.
       coordOwner: null,
+      consecutiveZeroTokenWakes: queen.consecutiveZeroTokenWakes,
     };
   }
 

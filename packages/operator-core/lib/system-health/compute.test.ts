@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, tallyPlans, type EscalationAgingInput } from './compute';
+import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
 
 describe('observationRole — per-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
@@ -71,6 +72,35 @@ describe('scoutHealthVerdict — ideation observability (hive-loop-supervision 2
     expect(v.ranInWindow).toBe(0);
     expect(v.transportDeath).toBe(false);
     expect(v.lastTickAt).not.toBeNull();
+  });
+});
+
+describe('countLeadingZeroTokenWakes / queenPlacementStalled — Queen placement liveness (hive-loop-supervision 2026-06-21, D-009)', () => {
+  const z = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  const nz = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 100, cacheCreationTokens: 0 };
+  it('counts leading consecutive 0-token wakes (newest-first), stopping at the first non-zero', () => {
+    expect(countLeadingZeroTokenWakes([z, z, z, nz, z])).toBe(3);
+    expect(countLeadingZeroTokenWakes([nz, z, z])).toBe(0);
+    expect(countLeadingZeroTokenWakes([])).toBe(0);
+  });
+  it('fires when ≥3 consecutive 0-token wakes + placeable frontier + not paused', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 3, frontier: 7, paused: false })).toBe(true);
+  });
+  it('does NOT fire when frontier=0 (nothing to place)', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 9, frontier: 0, paused: false })).toBe(false);
+  });
+  it('does NOT fire when a recent wake spent tokens (leading-zero count < threshold)', () => {
+    const n = countLeadingZeroTokenWakes([nz, z, z, z]); // 0 — newest wake ran the LLM
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: n, frontier: 7, paused: false })).toBe(false);
+  });
+  it('does NOT fire when paused', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 5, frontier: 7, paused: true })).toBe(false);
+  });
+  it('does NOT fire below the consecutive threshold (one-off blip)', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 2, frontier: 7, paused: false })).toBe(false);
+  });
+  it('does NOT fire when the bee fleet is already full (no capacity)', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 5, frontier: 7, paused: false, beesBusy: 24, beesCap: 24 })).toBe(false);
   });
 });
 

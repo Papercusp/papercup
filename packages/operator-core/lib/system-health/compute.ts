@@ -67,6 +67,7 @@ import {
   overwatchStatus,
   worstStatus,
   deriveQueenAlive,
+  countLeadingZeroTokenWakes,
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
 } from './thresholds';
@@ -217,6 +218,7 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
         lastWakeAt: null, staleForMs: null, nextFireAt: null, cadenceOk: false,
         watchdogFires24h: 0, demand: { todoItems: 0, startedPlans: 0 },
         decisionsWindow: { total: 0, auto: 0, gated: 0 }, workingTracked: 0,
+        consecutiveZeroTokenWakes: 0,
       };
       return { status: 'unknown', summary: 'no hive registered in this workspace', metrics: [], data };
     }
@@ -248,11 +250,23 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
       ((live.staleForMs !== null && live.staleForMs > QUEEN_STALL_MS && !live.armed) || overdue);
     const cadenceOk = started && live.armed && !stalled;
 
+    // Monitor-the-monitor (hive-loop-supervision 2026-06-21 / D-009): are the Queen's
+    // recent wakes actually running the LLM? A 0-token wake = launched but never reached
+    // an LLM turn (infra / rate-limit loss) — the cadence signals above can't see it.
+    // Fail-soft: usage unreadable ⇒ leave 0, the detector simply won't fire.
+    let consecutiveZeroTokenWakes = 0;
+    try {
+      const { queenWakeEfficiency } = await import('../hive/queen-wake-efficiency');
+      const eff = await queenWakeEfficiency(ws, { harnessSlug: hiveSlug, limit: 10 });
+      consecutiveZeroTokenWakes = countLeadingZeroTokenWakes(eff.samples);
+    } catch { /* usage unreadable — leave 0 (fail-soft) */ }
+
     const data: QueenHealth = {
       hiveSlug, started, stalled, midTurn, armed: live.armed,
       lastWakeAt, staleForMs: live.staleForMs, nextFireAt, cadenceOk,
       watchdogFires24h, demand: { todoItems: demand.todoItems, startedPlans: demand.startedPlans },
       decisionsWindow, workingTracked: ctx.openPlacements?.workingTracked ?? 0,
+      consecutiveZeroTokenWakes,
     };
     const status = queenStatus(data);
     const summary = !started
@@ -901,58 +915,6 @@ export function overwatchScorecardSkipped(args: {
   if (args.alive === false || args.lastWakeAt == null) return false;
   if (args.now - args.lastWakeAt <= grace) return false; // turn may still be in flight
   return args.freshnessStatus !== 'fresh';
-}
-
-/**
- * PURE: count the most-recent CONSECUTIVE Queen wakes that ran ZERO LLM tokens.
- * Samples are newest-first (as queenWakeEfficiency returns them). A 0-token wake =
- * the agent process launched but the LLM never executed (infra / rate-limit loss) —
- * DISTINCT from a healthy short wake, which still spends tokens deciding "nothing to
- * do". (hive-loop-supervision 2026-06-21 — D-009: the Queen's 0-token-no-op outage.)
- */
-export function countLeadingZeroTokenWakes(
-  samples: ReadonlyArray<{
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-  }>,
-): number {
-  let n = 0;
-  for (const s of samples) {
-    const tokens = s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheCreationTokens;
-    if (tokens === 0) n += 1;
-    else break;
-  }
-  return n;
-}
-
-/**
- * PURE: is the Queen alive-but-not-placing-despite-placeable-work? (hive-loop-supervision
- * 2026-06-21, sibling of overwatchScorecardSkipped). True when her last ≥minConsecutive
- * wakes ran 0 LLM tokens (the LLM never executed — see countLeadingZeroTokenWakes) WHILE a
- * placeable frontier waits and placement is not paused. This catches the silent stall the
- * cadence-based `queen-stalled` signal MISSES: the Queen wakes ON cadence (looks healthy) but
- * her wakes are empty, so nothing is placed. A known bee-cap fullness suppresses it (a full
- * fleet, not a stall). Default threshold 3 (≈1.5h at a 30-min cadence) avoids a one-off blip.
- */
-export function queenPlacementStalled(args: {
-  consecutiveZeroTokenWakes: number;
-  frontier: number;
-  paused: boolean;
-  beesBusy?: number;
-  beesCap?: number;
-  minConsecutive?: number;
-}): boolean {
-  if (args.paused) return false;
-  if (args.frontier <= 0) return false; // nothing for the Queen to place → not a stall
-  if (
-    typeof args.beesCap === 'number' && args.beesCap > 0 &&
-    typeof args.beesBusy === 'number' && args.beesBusy >= args.beesCap
-  ) {
-    return false; // fleet is full — the lack of new placements isn't the bug
-  }
-  return args.consecutiveZeroTokenWakes >= (args.minConsecutive ?? 3);
 }
 
 /**

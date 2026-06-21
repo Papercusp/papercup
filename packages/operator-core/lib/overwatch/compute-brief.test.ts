@@ -25,7 +25,7 @@ import type {
 // one from the DB-free './thresholds' module so the mapper derives correctly here.
 vi.mock('../system-health', async () => {
   const real = await vi.importActual<typeof import('../system-health/thresholds')>('../system-health/thresholds');
-  return { computeSystemHealth: vi.fn(), deriveQueenAlive: real.deriveQueenAlive };
+  return { computeSystemHealth: vi.fn(), deriveQueenAlive: real.deriveQueenAlive, queenPlacementStalled: real.queenPlacementStalled };
 });
 
 // computeOverwatchBrief resolves the Queen's coord owner (the nudge address) AND
@@ -60,7 +60,7 @@ test('detectAnomalies — healthy brief trips nothing', () => {
 
 test('detectAnomalies — a stalled Queen → a critical queen-stalled NUDGE (B-11)', () => {
   const b = base();
-  b.queen = { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 2, nextFireAt: null, coordOwner: null };
+  b.queen = { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 2, nextFireAt: null, coordOwner: null, consecutiveZeroTokenWakes: 0 };
   const a = only(detectAnomalies(b), 'queen-stalled');
   assert.equal(a.severity, 'critical');
   assert.equal(a.suggestedAction.type, 'nudge');
@@ -159,6 +159,35 @@ test('detectAnomalies — EI-2357 recurrence guard: dispatcher-lane backlog with
   assert.equal(hits.length, 0);
 });
 
+test('detectAnomalies — Queen alive + on cadence but 0-token wakes with placeable frontier → queen-placement-stalled ESCALATE owner (D-009)', () => {
+  const b = base();
+  // The Queen looks healthy to the cadence signals (alive, not stalled) — this is the
+  // silent-stall gap the existing queen-stalled / queen-dark detectors MISS: she wakes on
+  // cadence but her wakes run 0 LLM tokens (the LLM never executes — infra/rate-limit loss).
+  b.queen.consecutiveZeroTokenWakes = 3;
+  b.workFeed = { frontier: 7, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 };
+  const a = only(detectAnomalies(b), 'queen-placement-stalled');
+  assert.equal(a.severity, 'warning');
+  assert.equal(a.suggestedAction.type, 'escalate');
+  assert.equal(a.suggestedAction.target, 'owner');
+  // Mutually exclusive with the cadence-liveness anomalies.
+  assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-stalled' || x.kind === 'queen-dark').length, 0);
+});
+
+test('detectAnomalies — queen-placement-stalled does NOT fire when frontier=0 (nothing to place)', () => {
+  const b = base();
+  b.queen.consecutiveZeroTokenWakes = 5;
+  b.workFeed = { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 };
+  assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-placement-stalled').length, 0);
+});
+
+test('detectAnomalies — queen-placement-stalled does NOT fire on <3 zero-token wakes (one-off blip)', () => {
+  const b = base();
+  b.queen.consecutiveZeroTokenWakes = 2;
+  b.workFeed = { frontier: 7, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 };
+  assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-placement-stalled').length, 0);
+});
+
 test('detectAnomalies — stranded-on-resolved-constraint → NUDGE queen to re-open', () => {
   const b = base();
   b.workFeed = { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 2 };
@@ -251,6 +280,7 @@ const queenData = (o: Partial<QueenHealth> = {}): QueenHealth => ({
   demand: { todoItems: 0, startedPlans: 0 },
   decisionsWindow: { total: 0, auto: 0, gated: 0 },
   workingTracked: 0,
+  consecutiveZeroTokenWakes: 0,
   ...o,
 });
 

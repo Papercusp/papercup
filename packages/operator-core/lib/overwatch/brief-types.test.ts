@@ -12,7 +12,7 @@ function unhealthyBrief(): OverwatchBrief {
   return {
     hiveSlug: 'papercup-hive',
     wokeBy: 'timer',
-    queen: { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 3, nextFireAt: null, coordOwner: 's-queen-1781000000-abc' },
+    queen: { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 3, nextFireAt: null, coordOwner: 's-queen-1781000000-abc', consecutiveZeroTokenWakes: 0 },
     bees: { running: 4, completed: 11, churning: 2, deadClaims: 1 },
     workFeed: { frontier: 7, autoEligibleStuck: 5, deadRoutines: 1, blockedStranded: 2 },
     tokens: { pausedBuckets: ['opus', 'sonnet'], gatewayFailovers: 3, gw429s: 12, accountsAvailable: 1, gatewayWedged: false, gatewaySustainedThrottle: false },

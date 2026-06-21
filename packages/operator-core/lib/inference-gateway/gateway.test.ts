@@ -1307,6 +1307,26 @@ test('[B-GW-1] fail-fast SHED when the whole pool is throttled with a far-off re
   assert.equal(s.inFlight, 0, 'the admission slot was freed immediately, not held');
 });
 
+test('[serviceable fallback] a near-cap-but-ALLOWED account is SERVED (residual budget), NOT an all-throttled shed (owner 2026-06-21)', async () => {
+  // The owner-reported bug: 2 agents pinned to a 0.98-7d/0.05-5h account — the 2nd got "all accounts
+  // throttled" though the account was still ALLOWED (serviceable). Predictive pause routes AROUND a near-cap
+  // account when a healthier one exists, but with none it must SERVE the residual, not shed.
+  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
+  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); }, {}, gov);
+  gov.recordResponse({
+    'anthropic-ratelimit-unified-5h-status': 'allowed', // still ALLOWED by Anthropic
+    'anthropic-ratelimit-unified-5h-utilization': '0.97', // ≥ predict-pause watermark → predictively paused
+    'anthropic-ratelimit-unified-5h-reset': String(Math.round((Date.now() + 5 * 60 * 60_000) / 1000)),
+  });
+  assert.ok(gov.softPaused(Date.now()), 'precondition: the account is SOFT-paused (serviceable, not rejected)');
+  assert.ok(gov.state.pausedUntil - Date.now() > 80, 'precondition: pause is far beyond maxQueueWaitMs (would shed pre-fix)');
+  const res = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 200, 'a serviceable near-cap account SERVES its residual — NOT a 429 all-throttled shed');
+  await res.text();
+  const s = (await (await ask('/stats')).json()) as { shedAllThrottled: number };
+  assert.equal(s.shedAllThrottled, 0, 'no shed — the account was serviceable');
+});
+
 test('[#0 cache] the passive observer tallies prompt-cache READ/WRITE per account from message_start (a HIT)', async () => {
   resetGovernorRegistry();
   await boot((_req, res) => {

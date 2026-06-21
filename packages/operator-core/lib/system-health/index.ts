@@ -12,6 +12,4 @@ export {
   getSystemHealth,
   lastSystemHealth,
   _resetSystemHealthCache,
-  queenPlacementStalled,
-  countLeadingZeroTokenWakes,
 } from './compute';

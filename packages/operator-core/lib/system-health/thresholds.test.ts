@@ -42,7 +42,7 @@ const queen = (o: Partial<QueenHealth> = {}): QueenHealth => ({
   hiveSlug: 'h', started: true, stalled: false, midTurn: false, armed: true,
   lastWakeAt: 0, staleForMs: 60_000, nextFireAt: 0, cadenceOk: true,
   watchdogFires24h: 0, demand: { todoItems: 0, startedPlans: 0 },
-  decisionsWindow: { total: 0, auto: 0, gated: 0 }, workingTracked: 0, ...o,
+  decisionsWindow: { total: 0, auto: 0, gated: 0 }, workingTracked: 0, consecutiveZeroTokenWakes: 0, ...o,
 });
 
 describe('queenStatus', () => {
