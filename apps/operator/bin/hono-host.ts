@@ -28,6 +28,8 @@ import {
   resolveMemoryWatchdogLimitMb,
 } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
+// infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
+import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
 import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
@@ -86,7 +88,7 @@ process.on('uncaughtException', (err) => {
 const port = Number(
   process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070,
 );
-const hostname = process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1';
+const hostname = resolveBindHost();
 
 /**
  * Start the request-serving plane: the HTTP server + per-process loop monitors +

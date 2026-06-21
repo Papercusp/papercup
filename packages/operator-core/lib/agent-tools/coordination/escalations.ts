@@ -23,8 +23,11 @@ import {
   type EscalationRecord,
   type EscalationResolvedEvent,
 } from '@papercusp/coordination/core';
-import { coordLog } from './log';
+import { coordLog, coordSql, coordWorkspaceId } from './log';
 import type { AgentIdentity } from './identity';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { systemDistinctId } from '../../flag-distinct-id';
 
 export type {
   EscalationSeverity,
@@ -81,10 +84,55 @@ async function loadEscalations(): Promise<{
   return { opens, resolves };
 }
 
+/**
+ * Read the OPEN escalation set from the materialized projection (mig 355) — a
+ * small table holding exactly the currently-open escalation records, maintained
+ * incrementally by the coord_open_escalations_trg trigger. This is the P-005
+ * fast path: it replaces the unbounded ~35k-event full-surface replay
+ * (loadEscalations -> readEvents) that pg_stat_statements pinned as ~88% of DB
+ * exec time. The stored `body` IS the open EscalationRecord (resolved:null by
+ * construction — resolved rows are deleted by the trigger). Sorted in JS with
+ * the SAME comparator as foldEscalations({status:'open'}) so the output is
+ * byte-identical to the fold path (collation-independent).
+ */
+async function readOpenEscalationsProjection(): Promise<EscalationRecord[]> {
+  const sql = coordSql();
+  const ws = coordWorkspaceId();
+  const rows = await sql<{ body: EscalationRecord }[]>`
+    SELECT body FROM harness_shared.coord_open_escalations
+     WHERE workspace_id = ${ws}
+  `;
+  return rows
+    .map((r) => r.body)
+    .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
+}
+
 /** List escalation records. Optionally filter by open/resolved. */
 export async function listEscalations(
   opts: { status?: 'open' | 'resolved' } = {},
 ): Promise<EscalationRecord[]> {
+  // P-005 fast path: serve the open set from the materialized projection instead
+  // of the unbounded full-surface event replay, when the flag is ON. Fail-safe:
+  // any flag-read or projection-read error falls through to the authoritative
+  // fold below (e.g. before mig 355 applies, the projection table won't exist).
+  if (opts.status === 'open') {
+    let useProjection = false;
+    try {
+      useProjection = await getFlag(
+        FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION,
+        systemDistinctId(),
+      );
+    } catch {
+      useProjection = false;
+    }
+    if (useProjection) {
+      try {
+        return await readOpenEscalationsProjection();
+      } catch {
+        // fall through to the authoritative event-fold
+      }
+    }
+  }
   const { opens, resolves } = await loadEscalations();
   return foldEscalations(opens, resolves, opts);
 }

@@ -1310,3 +1310,35 @@ test('[#0 cache] a cold prefix (cache_read=0, large input) counts as a MISS', as
   assert.equal(s.cache.create, 4000, 'the cold cache-creation is still tallied');
 });
 
+test('[stall-autowake P-002] an all-throttled shed to an IDENTIFIED bee records a stall event on /admin/stalls', async () => {
+  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
+  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, {}, gov);
+  gov.penalize({ resetAt: Date.now() + 600_000 }); // whole pool out of budget ~10min ≫ maxQueueWaitMs (80ms)
+
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-test-1' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 429, 'all-throttled → shed 429');
+  await r.text();
+
+  const stalls = (await (await ask('/admin/stalls')).json()) as { stalls: { ownerId: string; accountId: string; soonestResetAt: number }[] };
+  assert.equal(stalls.stalls.length, 1, 'one stall recorded');
+  assert.equal(stalls.stalls[0].ownerId, 'spawn-test-1', 'tagged with the bee owner id (== spawnId)');
+  assert.equal(stalls.stalls[0].accountId, 'test-acct', 'tagged with the account that was out of budget');
+  assert.ok(stalls.stalls[0].soonestResetAt > Date.now(), 'carries the soonest-reset (recovery) time for the waker');
+  assert.equal(((await (await ask('/stats')).json()) as { stallsRecorded: number }).stallsRecorded, 1);
+});
+
+test('[stall-autowake P-002] an UN-identified bee (no x-papercusp-owner) records NO stall (not wake-able)', async () => {
+  const gov = new RateLimitGovernor({ maxConcurrent: 20 });
+  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, {}, gov);
+  gov.penalize({ resetAt: Date.now() + 600_000 });
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 429, 'still sheds (the shed is unchanged — only the recording is owner-gated)');
+  await r.text();
+  assert.equal(((await (await ask('/stats')).json()) as { stallsRecorded: number }).stallsRecorded, 0, 'no owner header → nothing to wake → not recorded');
+  assert.equal(((await (await ask('/admin/stalls')).json()) as { stalls: unknown[] }).stalls.length, 0);
+});
+

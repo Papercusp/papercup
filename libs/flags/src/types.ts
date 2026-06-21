@@ -855,6 +855,14 @@ export const FLAGS = {
   // attended integration-verify. OFF ⇒ no promotion (today's behavior, byte-identical).
   // KNOWN_DARK_FLAGS.
   PLAN_WORKITEM_PROMOTION: "papercusp-plan-workitem-promotion",
+  // infra-perf-reliability-audit-round4 P-005 (D-005): switch listEscalations({status:'open'})
+  // to read the materialized harness_shared.coord_open_escalations projection (mig 355) instead
+  // of the unbounded ~35k-event full-surface replay that pg_stat_statements pinned as ~88% of
+  // DB exec time. DEFAULT OFF (dark): the projection table+trigger ship via mig 355 (additive,
+  // harmless while OFF — the trigger just maintains the table); this flag gates only the READ
+  // cutover, flipped ON after the migration+backfill is confirmed applied in prod. OFF ⇒ the
+  // authoritative event-fold (today's behavior, byte-identical). KNOWN_DARK_FLAGS.
+  COORD_OPEN_ESCALATIONS_PROJECTION: "papercusp-coord-open-escalations-projection",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1327,6 +1335,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (dark): mints work-items on the live plans:start path; flip ON after an
   // attended integration-verify (unified-work-item-ledger P-003 / D-002).
   [FLAGS.PLAN_WORKITEM_PROMOTION]: false,
+  // DEFAULT OFF (infra-perf-round4 P-005): gates the listEscalations read cutover onto the
+  // coord_open_escalations projection. The projection table+trigger (mig 355) are additive +
+  // harmless while OFF; flip ON only after the migration+backfill is verified in prod.
+  // OFF ⇒ the authoritative event-fold (byte-identical). KNOWN_DARK_FLAGS.
+  [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

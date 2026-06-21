@@ -31,6 +31,7 @@
  * (P-001..P-006) lands clean.
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -105,14 +106,20 @@ try {
 }
 
 const lines = raw.split('\n');
-// file -> { lineno -> content } so we can peek the preceding line for an allow marker.
-const byFileLine = new Map();
-for (const line of lines) {
-  const m = line.match(/^([^:]+):(\d+):(.*)$/);
-  if (!m) continue;
-  const [, file, lineno, content] = m;
-  if (!byFileLine.has(file)) byFileLine.set(file, new Map());
-  byFileLine.get(file).set(Number(lineno), content);
+
+// Read a hit file's lines (cached) so we can check the hit line + the line directly
+// above for an allow marker — git grep only emits matching lines, so a marker on a plain
+// comment line above is invisible without reading the file.
+const fileLinesCache = new Map();
+function fileLines(file) {
+  if (!fileLinesCache.has(file)) {
+    try {
+      fileLinesCache.set(file, readFileSync(join(ROOT, file), 'utf8').split('\n'));
+    } catch {
+      fileLinesCache.set(file, []);
+    }
+  }
+  return fileLinesCache.get(file);
 }
 
 const hits = [];
@@ -133,8 +140,9 @@ for (const line of lines) {
   const lhs = content.slice(0, dm.index).match(LHS_TOKEN_RE)?.[1] ?? '';
   if (!SCOPE_LHS_RE.test(lhs)) continue;
 
-  if (content.includes(ALLOW_MARKER)) continue;
-  if ((byFileLine.get(file)?.get(lineno - 1) ?? '').includes(ALLOW_MARKER)) continue;
+  // marker on the hit line, or on the line directly above (1-based lineno → 0-based idx).
+  const aboveLine = fileLines(file)[lineno - 2] ?? '';
+  if (content.includes(ALLOW_MARKER) || aboveLine.includes(ALLOW_MARKER)) continue;
 
   hits.push({ file, lineno, content: content.trim() });
 }

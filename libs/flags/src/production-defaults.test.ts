@@ -50,6 +50,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // live plans:start path; ships dark, owner flips after an attended integration-verify. Safe
   // dark: OFF ⇒ no promotion (today's behavior, byte-identical).
   FLAGS.PLAN_WORKITEM_PROMOTION,
+  // infra-perf-reliability-audit-round4 P-005 (D-005): gates the listEscalations read cutover
+  // onto the coord_open_escalations projection (mig 355). DARK until the migration+backfill is
+  // verified applied in prod; the table+trigger are additive + harmless while OFF, so OFF ⇒ the
+  // authoritative event-fold (byte-identical). su-f9b53 flips ON after verifying the apply.
+  FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION,
   // NOTE: SU_BLUEPRINT_PERSONA (P-006) is now DEFAULT ON (owner-authorized 2026-06-18) — removed from
   // this allowlist after the P-008 papercup-hive su instance-override content was authored + seeded.
   // NOTE: REPLACE_CLAUDE_BASE (P-013/P-014) is now DEFAULT ON (owner-authorized 2026-06-18) — removed
