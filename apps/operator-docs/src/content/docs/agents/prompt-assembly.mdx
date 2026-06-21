@@ -1,26 +1,51 @@
 ---
 title: Prompt assembly
-description: How a role's system prompt is built from persona, tools catalog, role playbook, and runtime context. The four-section layer that sits next to the endpoint system.
+description: How a role's system prompt is built from persona, tools catalog, role playbook, a shared-base policy block, and runtime context. The reference assembly layer that sits next to the endpoint system.
 sidebar:
   order: 4
+plans:
+  - phase-4-endpoint-system-2026-05-12
+  - voice-persona-production-readiness-2026-06-02
+  - operator-audience-mode-2026-05-27
+  - operator-core-headless-serve-2026-06-04
+  - domain-generic-agent-personas-2026-06-17
+  - self-learning-central-2026-06-06
+  - turn-lifecycle-control-2026-06-08
+  - token-usage-reduction-audit-2026-06-09
+  - papercusp-user-protection-gate-2026-05-31
+  - hive-blueprint-generalization-2026-06-15
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
 ## The one-line version
 
-Every agent LLM call assembles its system prompt from **four sections in fixed order**:
+`assembleRolePrompt` in `packages/operator-core/lib/prompt-assembly.ts` builds a role's system prompt from a **persona + catalog + playbook** core, a **shared-base policy block**, and **runtime context** — concatenated in fixed order:
 
 ```
-1. <role>.persona.md         character + behavior rules
-2. Tools catalog             per-tool guidance from defineTool({ guidance })
-3. <role>.tools.md           cross-tool patterns + workflows
-4. Runtime context           caller-supplied blocks (history, trigger, ...)
+1.  <role>.persona.md         character + behavior rules
+2.  Tools catalog             per-tool guidance from defineTool({ guidance })
+3.  <role>.tools.md           cross-tool patterns + workflows
+─── shared-base policy block (≈10 sections, see below) ───
+4.  coord-legend              how to read injected [coord+N] blocks
+5.  friction-tripwire         file friction you felt
+6.  observation-rubric-nudge  how to grade a turn-end observation
+7.  yield-policy              cooperative turn:interrupt yield behavior
+8.  account-routing-note      don't mis-diagnose routing as capacity
+9.  concurrency-first-note    don't back off on contention
+10. testing-standard          write tests the project way
+11. deploy-pipeline-note      don't babysit the async pipeline
+12. reuse-first-nudge         extend, don't fork
+13. code-run-note             collapse N tool calls into one code:run
+─────────────────────────────────────────────────────────
+14. Runtime context           caller-supplied blocks (history, trigger, ...)
 ```
 
-Sources 1 and 3 are filesystem files under `apps/operator/prompts/`. Source 2 is auto-rendered from the projection registry. Source 4 is per-request data (conversation history, trigger reason, etc.).
+Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–13 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 14 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 14 sections.
 
-The assembly function is [`assembleRolePrompt`](#api) in `packages/operator-core/lib/prompt-assembly.ts`. Every chat-mode route calls it; agents spawned via the orchestrator get the same layering through its prompt-build path (re-exported as `@papercusp/orchestrator/role-prompt`).
+<Aside type="caution">
+`assembleRolePrompt` is the **reference/CLI assembly path** — `role-launch-spec` uses it (via the *orchestrator's* slug-based variant; see [API](#api)) and tests exercise this one, but **no live chat route calls operator-core's `assembleRolePrompt` directly**. The two real chat surfaces — operator converse and oracle — call the lower-level loaders (`loadRolePersona` / `renderToolsCatalog` / `loadRoleToolsMd`) and assemble manually so they can interleave converse rules and audience-mode overlays. The per-feature worker-chat route (`agent-chats`) calls the **orchestrator's** distinct slug-based `assembleRolePrompt` (the spawned-bee `buildPrompt` path), which produces a different layout entirely. Read this page as the canonical description of *the layering*, not a single function every surface funnels through.
+</Aside>
 
 ## Why a separate layer
 
@@ -37,11 +62,11 @@ A given tool needs **three** kinds of guidance authored:
 
 If you put cross-tool guidance in a single tool's `guidance`, you have to copy it to N other tools when you change it. If you put per-tool guidance in `<role>.tools.md`, you have to copy it to every role file the tool appears in. The split avoids both.
 
-## The four sections
+## The sections
 
 ### Section 1 — `<role>.persona.md`
 
-Character + behavior rules for the role. Always-on; rendered first so the rest of the prompt reads against it.
+Character + behavior rules for the role. Always-on. In `assembleRolePrompt` it is pushed first. Note the real operator chat route doesn't keep it first: `converse-prompt.ts` pushes the audience-mode overlay (`operator.persona.<mode>-mode.md` via `loadRoleModePersona`), then the converse rules (`loadRoleConverse`), *then* the persona — so in the live operator assembly persona is the **third** system section. The fixed-order guarantee is about `assembleRolePrompt`, not about every hand-built surface.
 
 ```markdown
 # Operator persona
@@ -53,7 +78,7 @@ You are the user's local operator. Your job is to keep them productive…
 - Tier-high panel cards require explicit user confirmation before dispatch…
 ```
 
-One file per role. Loaded by `loadRolePersona(role)`. **Required** for every role — missing file throws.
+Loaded by `loadRolePersona(role)`, which **throws if the file is missing**. Only the roles whose persona is assembled through `loadRolePersona` keep a `<role>.persona.md` here — today that is just `auditor`, `operator`, and `oracle`. The orchestrator-spawned roles (worker, scoper, architect, validator, reviewer, debugger, documenter, curator) get their persona from a *different* path: the orchestrator's `resolvePromptFiles` reads `blueprints/base/prompts/<role>.md` (plus an optional `<role>.base.md` prefix), not `apps/operator/prompts/<role>.persona.md`. Calling `loadRolePersona`/`assembleRolePrompt` for one of those roles would throw, because no persona file exists for it in this directory.
 
 ### Section 2 — Tools catalog
 
@@ -73,6 +98,11 @@ The `When` / `Not when` / `Chaining` lines come from each tool's `defineTool({ g
 <Aside type="note">
 The catalog is THE authoritative answer to "what tools does this role know about?" It's filtered by the caller's `allowedTools` for chat surfaces, and re-derived for every request — agents always see the current surface, no stale list to chase.
 </Aside>
+
+`renderToolsCatalog(role, toolNames, modality = 'text', displayTransform?)` has two filters the four-section sketch hides:
+
+- **`modality`** (`'text' | 'voice'`) — each tool may declare a `modality: ('text' | 'voice')[]`; a tool whose array excludes the requested modality is dropped. The default when a tool omits the field is `['text', 'voice']` (usable in either surface). Voice surfaces pass `'voice'`, so e.g. `chat:ask_choice` (declared `modality: ['text']` because buttons are invisible to a voice user) falls out of the voice catalog automatically.
+- **`displayTransform`** — an optional rewrite of the *displayed* tool name (lookup is always by the colon MCP name). The operator passes a `:`→`_` transform so the catalog advertises `harness_status` instead of `harness:status`: Claude Code sanitizes the colon out of MCP tool names before handing them to the model, so the catalog must show the underscore form the model actually sees. Every other role uses the identity default, so its catalog is byte-identical.
 
 ### Section 3 — `<role>.tools.md`
 
@@ -97,11 +127,15 @@ For tools not in this playbook, call `agent_tools:list { onlyAllowed: true }`
 to introspect the full role-filtered surface.
 ```
 
-8 files exist today (`operator`, `oracle`, `worker`, `scoper`, `architect`, `validator`, `reviewer`, `debugger`). Loaded by `loadRoleToolsMd(role)`.
+13 files exist today: `architect`, `auditor`, `bee`, `debugger`, `operator`, `oracle`, `papercusp-su-engineer`, `papercusp-su-power`, `reviewer`, `scoper`, `tester`, `validator`, `worker`. Loaded by `loadRoleToolsMd(role)`, which returns `null` (no playbook section) when the file is absent.
 
-### Section 3b — Shared cross-role guides
+### Section 3b — Shared cross-role guides (spawn path only)
 
 The orchestrator's spawn path additionally injects authored MDX from `apps/operator-docs/src/content/docs/agents/` as a separate `sharedGuides` section after `<role>.tools.md` (see `prompt-build.ts`). Today this loads `finding-context.mdx` (the retrieval-surface decision tree). The page lives in the docs site so humans + agents share one source; the orchestrator strips frontmatter and emits the body as another `## ...` section. See [Finding context](/internal/docs/agents/finding-context).
+
+<Aside type="caution">
+`sharedGuides` is a **spawned-bee `buildPrompt` feature only**. Operator-core's `assembleRolePrompt` — the function the rest of this page documents — has no `sharedGuides` parameter and never emits this section. The shared-base policy block below is the analogue it *does* inject.
+</Aside>
 
 ### Section 4 — Runtime context
 
@@ -118,7 +152,26 @@ Per-request blocks supplied by the caller via `AssembleOptions.runtime`. Convers
 user_message — the user just sent a message in chat.
 ```
 
-The order within runtime is caller-controlled. The contract is: runtime always comes after the three static sections so it can refer to them.
+The order within runtime is caller-controlled. The contract is: runtime always comes last so it can refer to everything above it.
+
+## The shared-base policy block
+
+Between the tools playbook (section 3) and runtime (section 14), `assembleRolePrompt` injects up to **ten shared-base policy sections** in this order:
+
+| Section | What it primes |
+|---|---|
+| `coord-legend` | how to read the injected `[coord+N]` blocks the PostToolUse hook adds |
+| `friction-tripwire` | file friction you *felt* (a workaround, a misleading doc, a >3-attempt confusing failure) via `improvements:capture` the moment it hits |
+| `observation-rubric-nudge` | when filing a turn-end observation, check `rubrics:list` first and file a structured observation if an active rubric fits |
+| `yield-policy` | on a `turn:interrupt` yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn |
+| `account-routing-note` | don't mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system |
+| `concurrency-first-note` | don't back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents |
+| `testing-standard` | write tests the project way |
+| `deploy-pipeline-note` | your change ships via an async, self-healing pipeline; don't babysit or self-diagnose a stall |
+| `reuse-first-nudge` | extend an existing durable surface, don't fork a parallel one |
+| `code-run-note` | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset) |
+
+Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can't desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all ten.
 
 ## The noun/verb split
 

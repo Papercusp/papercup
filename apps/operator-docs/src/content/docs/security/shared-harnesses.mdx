@@ -36,13 +36,18 @@ the **feature queue, pull-request status, the contributor list, and feature "cla
 syncs peer-to-peer over the Holepunch stack and is projected into each peer's local
 Postgres:
 
-- **Hyperswarm** — DHT peer discovery. The swarm **topic = `sha256("papercusp-substrate-v1:gh:<github_repository_id>")`**, derived from the *public* GitHub repo id, so it is **discoverable, not a secret**.
+- **Hyperswarm** — DHT peer discovery. The swarm **topic = `sha256("papercusp-substrate-v1:gh:<github_repository_id>")`**, derived from the *public* GitHub repo id, so it is **discoverable, not a secret**. `gh:<repository_id>` is only one of several topic bindings: the shipped multi-engineer (**Hive**) substrate is keyed by **`hive:<hive_pubkey>`**, which *replaces* the per-repo slug as the top-level federation unit (a Hive's Swarms all join this one topic), with `local:<workspace_id>/<slug>` for pre-binding/private dev and an explicit `topic:<hex>` carrier so a link-joiner lands on the owner's exact Hive topic rather than re-deriving a `gh:` topic that wouldn't match.
 - **Hypercore** — one Ed25519-signed append-only log per device.
 - **Autobase** — merges many device Hypercores into one materialized view (concurrent, eventually-consistent).
 
 Identity is anchored to **GitHub**: each device holds an Ed25519 keypair in the OS
-keychain, and a **two-channel binding** ties that pubkey to a GitHub login (an OAuth
-`GET /user` re-check **plus** a GitHub-verified, device-signed commit/gist).
+keychain. The OAuth `GET /user` channel is a **local self-attestation only — it is never
+part of remote admission**. Remote admission (post write-free-join) proves the
+`device_pubkey ↔ github_user_id` binding entirely from a **device-signed announce** plus
+`verifyAttestation` on a **public GitHub gist** — the gist pins `owner.id ===
+github_user_id`, the body's `device_pubkey`, and a device signature. There is **no
+device-signed commit** anywhere in the code: the old shared-repo contributor-file channel
+was removed in the write-free-join work.
 
 The single most important fact: **the authority for the one thing that truly matters —
 merging code — is GitHub itself.** PRs merge through the GitHub REST API with a real user
@@ -221,8 +226,13 @@ into the projection (no per-op authz — the accepted equivocation tradeoff). Th
 call-site audit (plan `shared-hive-hardening-2026-06-13`, P-017) confirmed this invariant
 holds across **all** authorization-bearing consumers of peer-synced state — there is **no
 gap**. The federated tables are `contributors`, `queue` / `features-by-id`
-(→ `harness_features_consolidated`), `working-set`/`claims`, `prs`, `presence`, plans, and
+(→ `harness_features_consolidated`), `working-set`/`claims`, `presence`, plans, and
 coord; the table below enumerates every site that *acts* on one (display-only reads omitted).
+PR state is **not** federated: `harness_feature_prs` was reclassified `sync:'none'`
+(EI-479) — it is GitHub-derived and re-polled per-machine, so Postgres is the local
+store-of-record and federation is redundant; it has no projection producer and is not a
+registered projection tag. (This is why the auto-merge row below correctly reads the `Pr`
+object from a live GitHub poll, not from a federated row.)
 
 | Call-site | Authorization decision | Reads | Re-derives from GitHub? |
 |---|---|---|---|
@@ -235,7 +245,7 @@ coord; the table below enumerates every site that *acts* on one (display-only re
 | `pr-host/auto-merge.ts` · `tryAutoMerge` → `host.merge` | merge a PR | `Pr` object from **GitHub** poll (`PrHost`/`github.ts`) | **Yes** — PR state read live from GitHub; merge enforced by GitHub write-access + branch protection |
 | `pr-host/auto-approve.ts` · `tryAutoApprove` | post an approving review | **local** `trusted_authors` + GitHub PR author | **N/A** — trust list is local config (not federated); approval still doesn't bypass GitHub's merge authority |
 | `harness/completion-ref-verifier.ts` | stamp the "shipped ✓" verified tier | `completion_ref` on the feature row | **Yes** — `git ls-remote <remote> <sha>` (GitHub native auth) confirms the SHA is on the remote |
-| `dbos/orchestrator-finalize.ts` · `reconcileDoneStatus` | flip a feature `validating → passed` | `harness_features_consolidated.status` (federated) | **N/A — advisory.** Fires only from the **local** orchestrator's own pipeline reaching an unblocked DONE (`outcome==='done'`); a peer's forged row cannot make the local pipeline run a feature to DONE. `passed` is internal pipeline coordination, **not** a "shipped"/authz fact — every downstream effect (push/PR/merge) is independently GitHub-gated. |
+| `dbos/orchestrator-finalize.ts` · `reconcileDoneStatus` | flip a feature `validating`/`in_progress → passed` | `harness_features_consolidated.status` (federated) | **N/A — advisory.** Fires only from the **local** orchestrator's own pipeline reaching an unblocked DONE (`outcome==='done'`); a peer's forged row cannot make the local pipeline run a feature to DONE. `passed` is internal pipeline coordination, **not** a "shipped"/authz fact — every downstream effect (push/PR/merge) is independently GitHub-gated. |
 | `contributors` / `claims` / `queue` / `working-set` readers (claim avatars, status badges, queue UI) | display & coordination only | federated rows | **N/A** — advisory by design; gate no action |
 
 **Why the federated feature `status` is not a gap (the one row worth tracing).**
@@ -243,14 +253,34 @@ coord; the table below enumerates every site that *acts* on one (display-only re
 `features-by-id`), so an admitted peer can write a `status` value into another peer's PG.
 But no authorization decision acts on it: a forged `status='shipped'` does not earn the
 verified ✓ badge (that re-derives via `git ls-remote`), and `reconcileDoneStatus` only
-closes the `validating→passed` loop as the **local** pipeline's own terminal verdict on a
-feature it actually executed — it cannot be driven by a peer-supplied row. The real "did it
+closes the `validating`/`in_progress`→`passed` loop (the `in_progress` case was added
+2026-06-17 for coding-harness bees that skip the validator step) as the **local** pipeline's
+own terminal verdict on a feature it actually executed — it cannot be driven by a
+peer-supplied row; terminal-failure states (failing/deprecated) are left untouched. The real "did it
 ship" authority remains GitHub's merge state, and code only lands through GitHub's
 write-access + branch-protection. This is the security doc's own placement of "feature
 queue / status" in the **advisory** column, confirmed at the code level.
 
 **Verdict:** the wholesale-trust-of-admitted-peer model is sound **because** the
 re-derivation invariant is universal. No remediation needed; P-017 closed `done`.
+
+### Revocation chokepoints (built)
+
+Two revocation mechanisms are wired beyond the `revoked_pubkeys` admission drop-list:
+
+- **PR auto-approve and auto-merge refuse a revoked contributor's PR up front.** A PR whose
+  author is a revoked Hive contributor is denied (action `skipped_revoked`) **before** the
+  trust / checks / approval gates — the strongest deny, **overriding the trust list** (it
+  holds even for an author otherwise in `trusted_authors`). The live chokepoint resolves it
+  via `isHiveContributorRevoked` and passes it into both `tryAutoApprove` and `tryAutoMerge`.
+- **Owner-revocation of another contributor** (`revokeContributorViaGithub`) is gated on a
+  **live GitHub repo-admin** check (`repos.get → permissions.admin`) — the harness-owner
+  authority. It works by unioning the target's device pubkeys into the **owner's own**
+  contributor-row `revoked_pubkeys` and publishing it (the old "delete the `user/<id>`
+  branch" lever became a no-op under write-free join, and an admin cannot delete another
+  user's attestation gist). Because `load-revoked-pubkeys` **unions `revoked_pubkeys` across
+  all contributor rows** for the harness, that block federates via the owner's log and is
+  honored by every peer's admission union.
 
 ## Accepted-insecurity tradeoffs
 

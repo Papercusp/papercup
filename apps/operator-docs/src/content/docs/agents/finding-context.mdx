@@ -1,23 +1,32 @@
 ---
 title: Finding context
 description: The retrieval surfaces every spawned agent has access to, and which to reach for when.
+plans:
+  - per-harness-plans-and-docs-2026-05-23
+  - docs-and-memory-as-projections-2026-06-05
+  - harness-docs-integration-2026-06-05
+  - playbook-audience-neutral-rewrite-2026-05-23
 ---
 
 # Finding context
 
 You have several ways to find context. This page tells you which to reach for, in what order.
 
-`docs:*` is context-aware: in a harness it returns your harness's docs; outside a harness (Papercusp engineer agents) it returns Papercusp framework engineering reference. Same tool, source picked by your context.
+`docs:*` (outline / get / search) is context-aware and resolves **three** sources, picked by your context — same tool, same shape:
+
+- **In a harness** → your harness's docs.
+- **No harness, but `PAPERCUSP_PROJECT_DOCS_ROOT` is set** (the project shell — e.g. the omp-su wrapper) → your project's docs. This branch wins over the engineering reference whenever the env var is present.
+- **No harness and no project-docs root** → the Papercusp framework engineering reference, **but only for papercusp-su callers** (the audience of this page). A non-SU caller in this case gets a `no_docs_source` error rather than the engineering reference.
 
 ## Decision table
 
 | Question | Reach for | Notes |
 |---|---|---|
-| "What's documented for what I'm working on?" (SPEC, plans, architecture) | `docs:outline` → `docs:get` | Cached per run. For long pages, refine with `docs:get { slugs: [slug], heading: 'anchor-id' }`. |
+| "What's documented for what I'm working on?" (SPEC, plans, architecture) | `docs:outline` → `docs:get` | Outline is cached per run. Resolves your harness's docs, your project's docs (when `PAPERCUSP_PROJECT_DOCS_ROOT` is set), or the engineering reference. For long pages, refine with `docs:get { slugs: [slug], heading: 'anchor-id' }`. |
 | Same question, but a keyword you have in mind | `docs:search` | Use when the section name is non-obvious. |
 | "What's the current state of this harness?" | `harness:status`, `harness:list_features`, `harness:pending_reviews`, `harness:escalation` | Runtime state — features, open reviews, escalations. |
 | "What's the history of this feature?" | `features:history` | Long-running feature state across turns. |
-| "What did we decide about X in chat / escalation?" | `search:fulltext`, `search:semantic` | PG-stored prose recall — chats, escalations, brainstorms. |
+| "What did we decide about X in chat / escalation?" | `search:fulltext`, `search:semantic` | PG-stored prose recall over four surfaces — chats (turns), escalations, brainstorms, and decisions. `search:semantic` defaults to `mode=hybrid` (RRF fusion of BM25 + embeddings) and degrades gracefully to BM25 alone when embeddings aren't populated. |
 | "What `[[name]]` references this thing?" | `wiki:backlinks` | Cross-references inside the harness. |
 | "What tools are available to me?" | `agent_tools:list` | The catalog — describes every tool you can call. |
 
@@ -28,7 +37,7 @@ For any task that needs context:
 1. **Your docs first.** `docs:outline` (cheap, cached). Pick a slug. `docs:get { slugs: [...] }`. For long pages, refine with `{ slugs: [slug], heading: 'anchor-id' }`.
 2. **Keyword lookup if needed.** `docs:search` when you have a term but no slug.
 3. **Runtime state.** `harness:status` / `harness:list_features`. Don't grep code for state PG owns.
-4. **Prose recall last.** `search:fulltext` for chat/escalation discussions.
+4. **Prose recall last.** `search:fulltext` for chat/escalation discussions. Both `search:fulltext` and `search:semantic` cover all four prose surfaces by default — chats (turns), escalations, brainstorms, and decisions. Reach for `search:semantic` (default `mode=hybrid`: BM25 + embeddings via RRF, falling back to BM25 if embeddings are unavailable) when you're paraphrasing rather than matching an exact keyword.
 
 ## Role-flavored starting points
 

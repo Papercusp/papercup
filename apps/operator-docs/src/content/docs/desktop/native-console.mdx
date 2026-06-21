@@ -3,6 +3,13 @@ title: Native console launcher
 description: The "+" button next to the voice button opens an OS-native terminal with the same MCP context spawned agents get. macOS, Linux, Windows-via-WSL.
 sidebar:
   order: 1
+plans:
+  - native-terminal-desktop-2026-06-06
+  - plan-agent-launch-2026-05-21
+  - scoped-superuser-workspace-clamp-2026-06-18
+  - unify-launch-mechanics-2026-06-09
+  - plans-newbutton-and-subharness-scope-2026-05-25
+  - psu-only-launch-unification-2026-05-31
 ---
 
 ## What it is
@@ -13,8 +20,8 @@ terminal lands in the active harness's directory (or workspace root
 when there's no active harness), with env vars set and a `.mcp.json`
 written so any agent the user invokes inside it (`claude`, `codex`,
 `omp`, …) auto-discovers the operator's MCP server and gets the full
-[tool catalog](/internal/docs/endpoint-system/tool-catalog) (145+ tools as of
-this writing).
+[tool catalog](/internal/docs/endpoint-system/tool-catalog) (434 built-in
+tools as of this writing, per `.papercusp/tool-catalog.json`).
 
 This is the visible end of the [superuser-mode](/internal/docs/endpoint-system/superuser-mode)
 plumbing — that doc covers the threat model + token mechanics; this
@@ -22,20 +29,43 @@ page is about how to test it.
 
 ## How it works
 
+There are two launch paths. The **primary** path is a same-origin,
+server-side spawn: the operator process spawns the terminal itself, so
+no Tauri IPC is involved. The **fallback** path (the Tauri
+`console_launch` IPC command) is used only when the operator host isn't
+Linux — the server route returns HTTP 501 and the renderer falls
+through to it.
+
 ```
-click +   ─►  POST /api/agent-mcp/console/resolve { slug? }
-              ─►  returns ConsoleEnvelope (cwd, env, mcp.json body, …)
-              ─►  Tauri invoke('console_launch', { envelope })
-                  ─►  Rust:
-                      ├─ ensure ~/.papercusp/superuser-token (installer)
-                      ├─ atomic .mcp.json write with backup-restore
-                      └─ spawn OS terminal in NEW WINDOW
-                          ├─ macOS:  open -na <term> /tmp/papercup-*.command
-                          ├─ Linux:  $TERMINAL → gnome-terminal/konsole/…
-                          └─ Windows: wt.exe -w new wsl.exe -d papercup-runtime
+click +   ─►  POST /api/agent-mcp/console/launch { slug?, planSlug?, label?, resumeSessionId? }   (PRIMARY)
+              ─►  operator (Linux) spawns directly:
+                  ├─ build ConsoleEnvelope (cwd, env, mcp.json body, …)
+                  ├─ .mcp.json write with backup-restore at cwd
+                  ├─ interactive safety floor (concurrency ceiling → 429)
+                  ├─ record adv_sessions row (surfaced in /adv/sessions)
+                  └─ spawn OS terminal in NEW WINDOW, recolored + titled
+                          └─ Linux: $TERMINAL → gnome-terminal/konsole/…
+
+              ─►  if operator host isn't Linux → HTTP 501 → FALLBACK:
+                  POST /api/agent-mcp/console/resolve { slug? }
+                  ─►  returns ConsoleEnvelope
+                  ─►  Tauri invoke('console_launch', { envelope })
+                      ─►  Rust:
+                          ├─ ensure ~/.papercusp/superuser-token (installer)
+                          ├─ atomic .mcp.json write with backup-restore
+                          └─ spawn OS terminal in NEW WINDOW
+                              ├─ macOS:  open -na <term> /tmp/papercup-*.command
+                              └─ Windows: wt.exe -w new wsl.exe -d papercup-runtime
 ```
 
 Every click opens a **new window**, not a new tab.
+
+The primary route also records an `adv_sessions` tracking row (tagged
+with the launch's `planSlug` / `label`, visible in `/adv/sessions`) and
+ends it when the terminal exits. The Tauri fallback path skips this
+row. Interactive launches waive brain admission but still pass a
+concurrency ceiling: over-ceiling returns HTTP 429 and **no terminal
+opens**.
 
 ## What appears inside the new terminal
 
@@ -55,10 +85,19 @@ The greeting prints workspace + harness + pending suggestion count +
 escalations. Then the user is in their normal shell (zsh/bash/fish/…)
 with everything inherited from their rc files.
 
+On the server-side (Linux) path the launcher prepends an appearance
+prelude before the one-liner: OSC escapes recolor the window (dark,
+plan-slug-hashed background; light `#f4f4f5` foreground for ANSI
+brights) and set the title to `SH[adv:<id>]: <label>` (or just
+`SH[adv:<id>]` when there's no label/plan). So the smoke test sees a
+**colored** window with a tagged title, not a default-theme terminal.
+
 `.mcp.json` is dropped at cwd (backup-and-restore if one already
 existed). Inside that terminal, running `claude` or `codex` connects
-to `/api/mcp?superuser=1&workspace=<slug>` with the bearer header from
-`~/.papercusp/superuser-token`.
+to `/api/mcp?superuser=1&workspace=<workspaceId>` (the active
+workspace, e.g. `default` — or `workspace=*` when launched
+all-workspaces; the harness slug never lands in this param) with the
+bearer header from `~/.papercusp/superuser-token`.
 
 ## Smoke test — macOS
 
@@ -89,9 +128,13 @@ Same as macOS, with these differences in step 4:
 - `$TERMINAL` is honored first. If unset, the launcher cascades through
   `gnome-terminal` → `konsole` → `xfce4-terminal` → `alacritty` →
   `kitty` → `wezterm` → `xterm` in order.
-- Each terminal opens with its new-window flag (`--window` for
-  gnome-terminal, `--new-window` for konsole, `--always-new-process`
-  for wezterm, defaults for alacritty/kitty/xterm).
+- Each terminal opens with its new-window flag (`--new-window` for
+  konsole, `--always-new-process` for wezterm, defaults for
+  alacritty/kitty/xterm). On the primary server-side path gnome-terminal
+  is invoked with `--wait --window --`; the `--wait` is required so the
+  thin gnome-terminal client process doesn't exit immediately and make
+  the `adv_sessions` row look ended. (The Tauri fallback's Rust table
+  uses `--window --`, without `--wait`.)
 - If none of those are installed, the launcher errors with
   `no terminal emulator found. Set $TERMINAL or install one of: …`.
 
@@ -158,26 +201,47 @@ Pass `{"slug": null}` (or omit the body) for a workspace-only console
 — cwd becomes the workspace root, no `PAPERCUSP_HARNESS_SLUG` or
 `PI_CODING_AGENT_DIR` are set, the MCP URL still pins `workspace=default`.
 
+The written `.mcp.json` is **ephemeral**: a sentinel-file watcher
+(polling for `.papercup-console-active.*` files) restores the prior
+`.mcp.json` — or removes ours when none existed — once the last
+papercup-launched shell exits, bounded by a 24h hard timeout. It does
+not persist at cwd after you close the terminals.
+
+The `POST /console/launch` route also accepts `resumeSessionId`. When
+set, the greeting becomes `resuming plan-run <id>…` and the console
+`exec`s straight into the live agent CLI (`<agent-cli> -r <session-id>`)
+instead of opening a fresh shell. (The `/console/resolve` route used by
+the Tauri fallback does not thread `resumeSessionId` or `allWorkspaces`,
+so a resolve-based envelope is always scoped and non-resume.)
+
 ## What the agent in the terminal can do
 
-Per the [tool catalog](/internal/docs/endpoint-system/tool-catalog), 96 built-in
-tools + 36 plugin tools are exposed via `?superuser=1`:
+Per the [tool catalog](/internal/docs/endpoint-system/tool-catalog), the full
+built-in surface (434 tools as of this writing) plus the plugin tools
+are exposed via `?superuser=1`:
 
 - **Read workspace state**: `harness:status`, `tasks:list`,
   `features:get`, `goals:list`, `issues:list`, `messages:inbox`.
 - **Operator surface**: `operator:audit`, `operator:nudge`.
 - **Cross-workspace**: `papercusp:list_workspaces`, then any tool
   with `?workspace=<slug>`.
-- **Spawn / supervise other agents** (the `fleet:*` surface):
+- **Spawn / supervise other agents** (the full `fleet:*` surface):
   `fleet:spawn`, `fleet:supervise`, `fleet:cancel`, `fleet:tree`,
-  `fleet:assignments`. (The old `orchestrator.spawn` plugin was retired
-  2026-06-06 — superseded by `fleet/operator-spawn.ts`.)
+  `fleet:assignments`, plus `fleet:admit`, `fleet:bee_mail`,
+  `fleet:drain`, `fleet:governor`, `fleet:place_batch`,
+  `fleet:sandbox_deps`, `fleet:selected_bee`. (The old
+  `orchestrator.spawn` plugin was retired 2026-06-06 — superseded by
+  the `fleet/` tools.)
 - **Plugin tools**: `repomix.pack`, `gitnexus.*`, `firecrawl.*`,
   `code2prompt.*`, `fetch_plus.*`.
 
 Every call is recorded in `harness_shared.tool_invocations` with
-`role='operator', run_id='standalone'` — filter the Intel panel by
-`runId='standalone'` to see just human-console activity.
+`role='operator'` (the default when no `?role=` param is sent). Note
+that `run_id` is **not** a `'standalone'` sentinel — the shared
+sentinel was removed (it created a cross-cancellation hazard), and each
+superuser/console MCP call now gets a per-request UUID
+(`crypto.randomUUID()`). Filter the Intel panel by `role='operator'`,
+not by `runId='standalone'` (that returns nothing).
 
 ## Common failure modes
 
@@ -186,6 +250,7 @@ Every call is recorded in `harness_shared.tool_invocations` with
 | Button is hidden | Running in browser, not Tauri desktop | Open the desktop app build |
 | Toast "no terminal emulator found" | Linux without any of the 7 known terminals | `apt install gnome-terminal` or set `$TERMINAL` |
 | `unknown harness slug` 400 | UI sent a slug not in `harness_registry` | Refresh the page; harness may have been deleted |
+| `429` / over-ceiling, no terminal opens | Too many concurrent agent sessions (interactive safety floor) | Close some sessions, then retry |
 | Terminal opens but `papercup` isn't on PATH | Dev mode without sidecar bundle | Verify `PAPERCUSP_SCRIPTS_DIR` env var inside the terminal points at a real directory |
 | `claude` says no MCP server | `.mcp.json` not in cwd, or stale bearer | `cat .mcp.json`; re-run `install-standalone-mcp.sh` to rotate |
 | Tab opens instead of new window | Terminal's args missing new-window flag | Bug — file the OS + emulator name |
