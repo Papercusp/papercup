@@ -921,9 +921,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // to such an account on its own paused pin and 429'd it ("account X paced/paused; retry after Ns") instead
     // of yielding to liveness (owner-reported 2026-06-21). Now a paused pin walks to a healthy account too.
     const chosenWasPin = pinned !== null && active.accountId === pinned.accountId;
+    // Serving a SERVICEABLE soft-paused account as a last resort (predictively near its cap but Anthropic
+    // still ALLOWS it) → acquire with allowSoftPaused so the governor admits it. See the graceful-degradation
+    // tier below.
+    let serveSoft = false;
     if (gov.state.pausedUntil > Date.now()) {
       let soonestPaused = gov.state.pausedUntil;
       let found = false;
+      // Best SERVICEABLE soft-paused fallback: predictively paused (still ALLOWED, util < 1) AND its egress
+      // proxy is up — usable if NO fully-healthy account exists, so we serve residual budget instead of
+      // manufacturing "all accounts throttled" from accounts that can still serve (owner-reported 2026-06-21:
+      // a pin to a 0.98-7d / 0.05-5h account was shed though it was serviceable). Lowest-util wins (most residual).
+      let softCand: ActiveAccount | null = null;
+      let softGov: RateLimitGovernor | null = null;
+      let softUtil = Infinity;
       for (let walk = 0; walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
         const cand = pool.active();
         const cgov = governorForAccount(model, cand.accountId);
@@ -934,9 +945,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
           break;
         }
         soonestPaused = Math.min(soonestPaused, cgov.state.pausedUntil);
+        if (cgov.softPaused(Date.now()) && (egressPauseUntil.get(cand.accountId) ?? 0) <= Date.now()) {
+          const u = cgov.snapshot().unified?.utilization ?? 1;
+          if (u < softUtil) {
+            softUtil = u;
+            softCand = cand;
+            softGov = cgov;
+          }
+        }
       }
       if (found && chosenWasPin) {
         log('warn', `inference-gateway: pinned '${pinned!.accountId}' paused → routed to '${active.accountId}' (cache-affinity yields to liveness)`);
+      }
+      // GRACEFUL DEGRADATION (2026-06-21): no fully-IDLE account, but a SERVICEABLE soft-paused one exists
+      // (predictively near its cap, yet still ALLOWED by Anthropic, proxy up) → SERVE it (residual budget)
+      // rather than shed. Only the genuinely-exhausted case (every account hard-rejected / transport-down)
+      // falls through to the shed below. This is what lets a pin to a 98%-account run instead of 429ing.
+      if (!found && softCand && softGov) {
+        active = softCand;
+        gov = softGov;
+        found = true;
+        serveSoft = true;
+        log('warn', `inference-gateway: no idle account → SERVING serviceable near-cap account '${active.accountId}' (util ${softUtil.toFixed(2)}, still allowed) instead of shedding`);
       }
       // FAIL-FAST SHED when the WHOLE reachable pool is throttled (B-GW-1 / audit P1). The walk found no
       // account with headroom AND the soonest reset is beyond maxQueueWaitMs — so gov.acquire would just
@@ -969,12 +999,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // A still-pinned request gets only a SHORT admission wait, then fails over to active() rather than
     // waiting the full maxQueueWaitMs and 429-looping the bee.
     const stillPinned = pinned !== null && active.accountId === pinned.accountId;
-    let release = await gov.acquire(est, { maxWaitMs: stillPinned ? PINNED_FAILOVER_WAIT_MS : maxQueueWaitMs });
+    let release = await gov.acquire(est, { maxWaitMs: stillPinned ? PINNED_FAILOVER_WAIT_MS : maxQueueWaitMs, allowSoftPaused: serveSoft });
     if (!release && stillPinned) {
       log('warn', `inference-gateway: pinned '${pinned!.accountId}' admission-timeout → failover to active '${poolActive.accountId}'`);
       active = poolActive;
       gov = governorForAccount(model, active.accountId);
-      release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs });
+      release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs, allowSoftPaused: serveSoft });
     }
     if (!release) {
       queued429++;
