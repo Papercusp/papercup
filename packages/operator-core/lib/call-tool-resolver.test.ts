@@ -41,12 +41,8 @@ describe('operatorToolResolver', () => {
     expect(operatorToolResolver('operator:scan').route).toBe('/api/agent-tools/operator/scan');
   });
 
-  it('maps operator:delegate to its delegate-chat shim route', () => {
-    expect(operatorToolResolver('operator:delegate').route).toBe('/api/agent-mcp/delegate-chat');
-  });
-
   it('Phase E: marks the verified self-contained tools direct-eligible', () => {
-    for (const n of ['operator:converse', 'operator:delegate']) {
+    for (const n of ['operator:converse']) {
       expect(operatorToolResolver(n).directEligible).toBe(true);
     }
   });

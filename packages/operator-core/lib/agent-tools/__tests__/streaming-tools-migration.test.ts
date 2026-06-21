@@ -1,7 +1,7 @@
 /**
  * Phase 3 pilot+fold-in regression test — verifies the migrated
  * streaming tools (architect:chat, brainstorm:chat,
- * operator:converse, operator:delegate) emit the expected event
+ * operator:converse) emit the expected event
  * sequence and declare the wire-classification their consumers
  * already depend on.
  *
@@ -142,90 +142,28 @@ describe('operator:converse / delegate (JSON-delta wire)', () => {
       runAgentChat: () => mockAgentChat([]),
     }));
     await import('../operator/converse');
-    await import('../operator/delegate');
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
-    for (const name of ['operator:converse', 'operator:delegate']) {
+    for (const name of ['operator:converse']) {
       const tool = lookupByMcpName(name);
       expect(tool, `${name} registered`).toBeTruthy();
       expect(tool!.eventWireKinds?.delta).toBe('json');
     }
   });
-
-  it('operator:delegate emits error as JSON object (not raw string)', async () => {
-    vi.doMock('../../agent-chat-stream', () => ({
-      runAgentChat: () =>
-        mockAgentChat([
-          { type: 'delta', text: 'thinking' },
-          { type: 'tool_call', name: 'read_file', input: { path: 'a.ts' } },
-          { type: 'error', message: 'soft fail', stderr: '' },
-          { type: 'result', costUsd: 0.001, tokensIn: 5, tokensOut: 5 },
-        ]),
-    }));
-    // operator:delegate is thin sugar over work_items now — the handler runs
-    // readSystemPrincipal + createDelegatedTask (the kind=task work_item) +
-    // recordDelegateTurn + generateTaskTitle internally. Mock everything
-    // PG-touching so the unit test stays unit-y.
-    vi.doMock('../../system-principal', () => ({
-      readSystemPrincipal: async () => ({
-        bearer: 'x', workspaceId: 'default', principalId: 'p_test',
-      }),
-    }));
-    vi.doMock('../../workspace-registry', () => ({
-      activeWorkspaceId: () => 'default',
-    }));
-    vi.doMock('../../delegated-tasks', () => ({
-      createDelegatedTask: async () => ({ id: 'WI-1' }),
-      findOpenDelegatedTask: async () => null,
-      recordDelegateTurn: async () => {},
-    }));
-    vi.doMock('../../delegate-summary', () => ({
-      generateTaskTitle: async () => {},
-    }));
-    // Skip mem0 — the helper warns when the embedder isn't set up in
-    // the test environment and vitest-fail-on-console flips it red.
-    vi.doMock('../../memory/injection', () => ({
-      buildMemoryContextBlock: async () => null,
-      lastUserContext: () => '',
-    }));
-    const { default: delegate } = await import('../operator/delegate');
-    const { events, ctx } = recordingCtx();
-
-    await delegate.handler(
-      {
-        requestText: 'do the thing',
-        sessionId: undefined,
-        newSession: false,
-      },
-      ctx,
-    );
-
-    const errorEv = events.find((e) => e.name === 'error');
-    expect(errorEv).toBeTruthy();
-    expect(typeof errorEv!.data).toBe('object');
-    expect((errorEv!.data as { message: string }).message).toBe('soft fail');
-
-    // The new self-contained shape also emits a `session` event upfront.
-    const sessionEv = events.find((e) => e.name === 'session');
-    expect(sessionEv).toBeTruthy();
-    expect((sessionEv!.data as { created: boolean }).created).toBe(true);
-  });
 });
 
-describe('All four tools — common framework integration', () => {
+describe('Streaming tools — common framework integration', () => {
   it('register with idleTimeoutSec + timeoutSec set (catches deadlocked-child)', async () => {
     vi.doMock('../../agent-chat-stream', () => ({
       runAgentChat: () => mockAgentChat([]),
     }));
     const { architectChat, brainstormChat } = await import('../architect/chat');
     const { default: converse } = await import('../operator/converse');
-    const { default: delegate } = await import('../operator/delegate');
 
     for (const [name, tool] of [
       ['architect:chat', architectChat],
       ['brainstorm:chat', brainstormChat],
       ['operator:converse', converse],
-      ['operator:delegate', delegate],
     ] as const) {
       expect(tool.idleTimeoutSec, `${name} has idleTimeoutSec`).toBeGreaterThan(0);
       expect(tool.timeoutSec, `${name} has timeoutSec`).toBeGreaterThan(0);

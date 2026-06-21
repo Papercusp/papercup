@@ -133,7 +133,11 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   let fireError: unknown = null;
   // The fire step returns a discriminated result (memoized by DBOS, so it
   // survives a recovery replay) instead of leaking via closure side-effects.
-  let fireResult: { ok: true } | { ok: false; permanentStatus: number; detail: string } | null = null;
+  let fireResult:
+    | { ok: true }
+    | { ok: false; permanentStatus: number; detail: string }
+    | { ok: false; infraLoss: true; detail: string }
+    | null = null;
   try {
     fireResult = await DBOS.runStep(
       async () => {

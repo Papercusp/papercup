@@ -6,8 +6,8 @@
  *   - lib/agent-tools/__tests__/streaming-tools-migration.test.ts (wire)
  *   - __tests__/e2e/chat-architect.e2e.test.ts (architect via fixture)
  *
- * This file fills the remaining gap: for each of the 4 remaining
- * surfaces (brainstorm, oracle, operator-converse, operator-delegate),
+ * This file fills the remaining gap: for each remaining surface
+ * (brainstorm, oracle, operator-converse),
  * verify the registry-level invariants that the round-13 #34 + #36
  * regressions broke:
  *   - replayBufferSize set on the projected tool (round-13 #34)
@@ -31,12 +31,7 @@ afterEach(() => {
   vi.doUnmock('@papercusp/operator-core/lib/agent-tools/architect/prompts');
   vi.doUnmock('@papercusp/operator-core/lib/agent-tools/oracle/prompts');
   vi.doUnmock('@papercusp/operator-core/lib/agent-tools/operator/converse-prompt');
-  vi.doUnmock('@papercusp/operator-core/lib/agent-tools/operator/delegate');
   vi.doUnmock('@papercusp/operator-core/lib/memory/injection');
-  vi.doUnmock('@papercusp/operator-core/lib/system-principal');
-  vi.doUnmock('@papercusp/operator-core/lib/workspace-registry');
-  vi.doUnmock('@papercusp/operator-core/lib/delegated-tasks');
-  vi.doUnmock('@papercusp/operator-core/lib/delegate-summary');
 });
 
 function mockAgentChat() {
@@ -94,20 +89,7 @@ describe('operator:converse — registry invariants', () => {
   });
 });
 
-describe('operator:delegate — registry invariants', () => {
-  it('registers with replayBufferSize > 0', async () => {
-    mockAgentChat();
-    await import('@papercusp/operator-core/lib/agent-tools/operator/delegate'); // register
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
-
-    const tool = lookupByMcpName('operator:delegate');
-    expect(tool).toBeTruthy();
-    expect(tool!.replayBufferSize).toBeGreaterThan(0);
-    expect(tool!.modality === undefined || Array.isArray(tool!.modality)).toBe(true);
-  });
-});
-
-describe('all 5 streaming surfaces declare consistent replay-buffer + modality', () => {
+describe('streaming surfaces declare consistent replay-buffer + modality', () => {
   it('canonical sweep: each surface present in registry with sane invariants', async () => {
     mockAgentChat();
     vi.doMock('@papercusp/operator-core/lib/agent-tools/architect/prompts', () => ({
@@ -115,11 +97,9 @@ describe('all 5 streaming surfaces declare consistent replay-buffer + modality',
       composeArchitectPrompt: async () => 'PROMPT',
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
-    // Register all five.
     await import('@papercusp/operator-core/lib/agent-tools/architect/chat');
     await import('@papercusp/operator-core/lib/agent-tools/oracle/chat');
     await import('@papercusp/operator-core/lib/agent-tools/operator/converse');
-    await import('@papercusp/operator-core/lib/agent-tools/operator/delegate');
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const surfaces = [
@@ -127,7 +107,6 @@ describe('all 5 streaming surfaces declare consistent replay-buffer + modality',
       'brainstorm:chat',
       'oracle:chat',
       'operator:converse',
-      'operator:delegate',
     ] as const;
 
     for (const name of surfaces) {

@@ -46,7 +46,6 @@ import './operator/stats';
 import './operator/converse';
 // Sentinel-as-Herald: the sentinel:converse alias (same brain, Herald persona).
 import './operator/sentinel-converse';
-import './operator/delegate';
 import './architect/chat';
 import './oracle/chat';
 import './agent_chats/chat';
