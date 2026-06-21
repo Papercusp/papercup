@@ -297,6 +297,7 @@ describe('design primitive lint', () => {
         join(OPERATOR_ROOT, 'app/admin/dogfood-substrate/page.tsx'),
         join(OPERATOR_ROOT, 'app/admin/features/FeaturesAdmin.tsx'),
         join(OPERATOR_ROOT, 'app/admin/plans/NewPlanButton.tsx'),
+        join(OPERATOR_ROOT, 'app/admin/plans/PlanDetail.tsx'),
         join(OPERATOR_ROOT, 'app/admin/plans/plans.css'),
         join(OPERATOR_ROOT, 'app/admin/testing/testing.css'),
         join(OPERATOR_ROOT, 'app/cupboard'),
