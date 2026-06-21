@@ -19,8 +19,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { mergeLayered, type OverridePayload } from './config-overrides/layered-setting';
 
-export type UserPrefsPayload = Record<string, unknown>;
+export type UserPrefsPayload = OverridePayload;
 
 // workspace-data-isolation-leaks-2026-06-17 (owner D-001): user overrides are
 // PER-WORKSPACE — keyed (user_id, workspace_id) (migration 304). A user's
@@ -83,19 +84,18 @@ export async function clearUserPreferenceKey(userId: string, key: string): Promi
  * so the user can explicitly clear an override by setting null AND we
  * fall through to workspace. (Truly "use null" cases don't exist in
  * our pref schema — every override-eligible field has a defined type.)
+ *
+ * Now a thin wrapper over the generalized `mergeLayered` helper (P-038):
+ * any concern can layer a per-user override over a workspace base with
+ * the SAME rule — voice-prefs is just the first consumer. The voice
+ * semantics are unchanged (this delegates 1:1).
  */
 export function mergeUserOverWorkspace<W extends Record<string, unknown>>(
   workspace: W,
   user: UserPrefsPayload,
   overrideKeys: ReadonlyArray<keyof W & string>,
 ): W {
-  const merged: Record<string, unknown> = { ...workspace };
-  for (const k of overrideKeys) {
-    if (k in user && user[k] !== null && user[k] !== undefined) {
-      merged[k] = user[k];
-    }
-  }
-  return merged as W;
+  return mergeLayered(workspace, user, overrideKeys);
 }
 
 /**

@@ -28,7 +28,7 @@
 .pc-dev-section-label {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute, #94a3b8);
   margin-bottom: 8px;
@@ -160,7 +160,7 @@
 .pc-dev-api-group-label {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute, #94a3b8);
   padding: 4px 6px;
@@ -239,7 +239,7 @@
 .pc-dev-api-args legend {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute, #94a3b8);
   padding: 0 6px;
@@ -317,7 +317,7 @@
 .pc-dev-rail-h {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute, #94a3b8);
   margin: 0 0 8px 0;
@@ -378,7 +378,7 @@
 .pc-dev-table th {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute, #94a3b8);
 }
@@ -555,7 +555,7 @@
 .pc-dev-backups-metric-label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: rgba(255,255,255,0.55);
 }
 .pc-dev-backups-metric-value { font-size: 16px; font-weight: 600; }
@@ -632,7 +632,7 @@
 .pc-dev-backups-events { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; }
 .pc-dev-backups-events table { width: 100%; font-size: 12px; border-collapse: collapse; }
 .pc-dev-backups-events th, .pc-dev-backups-events td { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); }
-.pc-dev-backups-events th { color: rgba(255,255,255,0.55); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.pc-dev-backups-events th { color: rgba(255,255,255,0.55); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0; }
 .pc-dev-backups-events code { font-size: 11px; color: rgba(255,255,255,0.75); }
 /* ── Kill modal + danger buttons ───────────────────── */
 
@@ -725,7 +725,7 @@
   color: var(--fg, #e2e8f0);
   font-size: 17px;
   font-weight: 600;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 .pc-studio-state-body {
   margin: 0;
@@ -768,7 +768,7 @@
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   transition: filter 120ms;
 }
 .pc-studio-start-btn:hover:not(:disabled) { filter: brightness(1.10); }
@@ -877,7 +877,7 @@
   padding: 10px 14px 4px;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   font-weight: 600;
 }
@@ -980,7 +980,7 @@
   margin: 0 0 8px;
   font-size: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   font-weight: 600;
   color: var(--fg-mute, #94a3b8);
 }
@@ -995,7 +995,7 @@
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
 }
@@ -1095,7 +1095,7 @@
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   white-space: nowrap;
@@ -1256,7 +1256,7 @@
 }
 .pc-tables-composer-label {
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   font-size: 10px;
   color: var(--fg-mute, #94a3b8);
   font-weight: 600;
@@ -1456,7 +1456,7 @@
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   white-space: nowrap;
@@ -1539,7 +1539,7 @@
 .pc-dev-section-label,
 .pc-dev-rail-h {
   color: var(--pc-dev-muted);
-  letter-spacing: 0.11em;
+  letter-spacing: 0;
 }
 
 .pc-dev-nav {
@@ -1680,7 +1680,7 @@
 .pc-dev-tab-header h2 {
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .pc-dev-muted {
@@ -2105,7 +2105,7 @@
 .pc-studio-toolbar-title {
   color: #edf6ff;
   font-size: 13px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .pc-sql-title span {
@@ -2141,7 +2141,7 @@
   color: #fca5a5;
   font-family: var(--pc-dev-mono);
   font-size: 10px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   line-height: 1.4;
   text-transform: uppercase;
 }
