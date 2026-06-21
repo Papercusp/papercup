@@ -3,6 +3,12 @@ title: Pi (oh-my-pi) integration
 description: Two-track integration — pi as worker-role CLI (Option #2) and embedded pi TUI as a peer pane in the desktop app (Option #3).
 sidebar:
   order: 5
+plans:
+  - native-terminal-desktop-2026-06-06
+  - structured-streams-not-terminals-2026-06-05
+  - desktop-ipc-transport-completion-2026-05-20
+  - dockview-migration-plan-v4-2026-05-13
+  - omp-power-user-bundle-2026-05-20
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -79,7 +85,7 @@ Surface an interactive pi TUI inside the Papercusp Desktop harness UI alongside 
 
 1. **PTY runs in the Node sidecar, not the Tauri Rust process.** The same sidecar code runs in desktop (Tauri) and cloud (container) modes. A Rust-side PTY would fork the codebase. Use `node-pty` from inside the sidecar.
 
-2. **I/O transport: Server-Sent Events + POST, not WebSockets.** Next.js's standalone server (`node server.js`) does not natively support raw WS-upgrade on arbitrary routes; SSE + POST works out-of-the-box in Next.js / Hono and is plenty for terminal I/O. WS is a future optimization.
+2. **I/O transport: WebSocket preferred, SSE + POST fallback.** A full-duplex WebSocket transport shipped: `PiPanel.tsx` connects via `ptyWsUrlForId()` and attaches xterm's `AttachAddon` (binary frames, no base64), backed by the `packages/operator-core/lib/pty-ws.ts` WS server. It falls back to SSE output + POST input only when the WS server is unreachable (proxy doesn't pass upgrades, `PAPERCUSP_PTY_WS=0`, etc.). The HTTP control plane (`POST /spawn`, `/kill`, …) is identical either way — only the data channel differs. SSE was the original v1 transport (Next.js's standalone server didn't natively support raw WS-upgrade on arbitrary routes); WS is now primary and SSE is the compatibility path.
 
 3. **`pi` is a user-installed prerequisite, not bundled.** Matches the existing `claude` pattern. The desktop preflight UI already surfaces missing-prereq state — extend with a `pi` check.
 

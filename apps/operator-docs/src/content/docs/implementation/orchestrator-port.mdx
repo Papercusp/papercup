@@ -3,6 +3,10 @@ title: Run.sh → TS orchestrator port (handoff)
 description: TypeScript port of the bash autonomous-harness orchestrator. State as of 2026-04-27.
 sidebar:
   order: 3
+plans:
+  - archive-legacy-orchestrator-deadcode-2026-06-06
+  - dbos-retire-legacy-orchestrator-2026-05-31
+  - papercusp-dogfood-phase6-orchestrator-claim-2026-05-24
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -13,10 +17,24 @@ This is a **historical handoff doc**. The TS run-loop this port produced
 cluster) was retired and archived to `libs/papercusp/_retired/orchestrator-run-loop/`
 (plan `archive-legacy-orchestrator-deadcode-2026-06-06`; git tag
 `legacy-orchestrator-run-loop-retired-2026-06-06`) — superseded by the **DBOS
-durable pipeline** (`packages/operator-core/lib/dbos/`). Parts of the port live
-on inside that pipeline: `invoke.ts`, `lanes.ts`, the worker chunk-loop,
-`cost-cap.ts`, `decision-parse.ts`. The `papercusp-orchestrate` bin and the
-`PAPERCUSP_USE_TS_ORCHESTRATOR` fall-through described below no longer exist.
+durable pipeline** (`packages/operator-core/lib/dbos/`).
+
+Parts of the port were deliberately kept LIVE rather than moved: `invoke.ts`,
+`lanes.ts`, the worker chunk-loop (`worker-chunk-loop.ts` /
+`chunk-loop-driver.ts`), `cost-cap.ts`, and `decision-parse.ts` all remain in
+the `@papercusp/orchestrator` package (`libs/papercusp/packages/orchestrator/src/`)
+and are **consumed** by the DBOS pipeline via `@papercusp/orchestrator` imports
+(e.g. `parseDecision`, `parseDecisionFor`, `DECISION_VERBS`, `buildInvokeOnce` in
+`packages/operator-core/lib/dbos/`). They do **not** live inside the
+`packages/operator-core/lib/dbos/` directory.
+
+The `papercusp-orchestrate` bin and the `PAPERCUSP_USE_TS_ORCHESTRATOR`
+fall-through described below no longer exist. Note also that `bash run.sh` itself
+was deleted entirely (2026-05-30): the TS path became the canonical, only
+main-loop driver well before this retirement, and `PAPERCUSP_USE_TS_ORCHESTRATOR=0`
+is now a warning-only no-op, **not** a working bash fallback. The body below —
+describing `run.sh` as the live fall-through target and the flag as opt-in — is
+historical and no longer accurate.
 </Aside>
 
 ## Why this exists

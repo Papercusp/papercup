@@ -3,6 +3,13 @@ title: Marketplace implementation
 description: Ship state of papercuspai.com — what's live, what's planned, what's still missing.
 sidebar:
   order: 2
+plans:
+  - retire-snapshots-instance-spec-2026-06-09
+  - harness-blueprint-distribution-2026-06-03
+  - learning-packs-2026-06-11
+  - revive-cupboard-distribution-2026-06-04
+  - official-blueprints-cupboard-publish-2026-06-05
+  - tool-distribution-discovery-2026-06-08
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -18,11 +25,16 @@ marketplace surface is **no longer the current distribution path.**
 
 What replaced it: the in-app **Cupboard** — a GitHub-backed listing service
 served by `apps/operator-public` (Cloudflare Workers + Hono + D1), with the
-desktop operator owning the listing UI. Listings span four kinds
-(`harness | blueprint | snapshot | plugin`); publish/install flow through the
+desktop operator owning the listing UI. Listings span five kinds
+(`harness | blueprint | plugin | tool-pack | learning-pack`); the `snapshot`
+kind was retired (Cupboard migration 008 drops it from the `listing_kind`
+CHECK constraint — see `retire-snapshots-instance-spec-2026-06-09`). Publish/install
+flow through the
 `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` operator routes
 and the `apps/papercusp-publish` Worker, with agent verbs `blueprint:*`
-(`catalog`/`create`/`extend`/`validate`) and `snapshots:*` (`get`/`list`).
+(`catalog`/`create`/`extend`/`validate`/`publish`). There is no `snapshots:*`
+verb — the reproducible clone is the lightweight InstanceSpec, not a published
+snapshot.
 Read the rest of this page as a historical record of the earlier design, not
 the current system.
 </Aside>

@@ -37,10 +37,10 @@ Three publishable kinds (`plugin`, `template`, `snapshot`) share one marketplace
 | What | Where |
 |---|---|
 | Plugin SDK (types, capability strings, manifest schema) | `packages/plugin-sdk/` |
-| Plugin loader (manifest validate, capability check, hookbus, action registry, audit) | `packages/plugin-loader/` |
+| Plugin loader (manifest validate, capability check, reaction rules, action registry, audit) | `packages/plugin-loader/` |
 | Plugin host runtime in operator | `apps/operator/lib/plugin-host-runtime.ts` |
-| Per-(plugin, harness) grants | `apps/operator/lib/plugin-grants.ts` + Migration `051-plugin-capability-grants.sql` |
-| Audit log (PG writer) | `apps/operator/lib/plugin-audit-writer.ts` + Migration `052-…` |
+| Per-(plugin, harness) grants | `apps/operator/lib/plugin-grants.ts` + `harness_shared.plugin_capability_grants` in `000-baseline.sql` |
+| Audit log (PG writer) | `apps/operator/lib/plugin-audit-writer.ts` |
 | Marketplace API routes | `apps/operator/app/api/{marketplace,plugins,templates,snapshots,harness/[slug]/save-as-template}/` |
 | Marketplace UI components | `libs/marketplace-public-ui/src/` (shared with public site) |
 | Operator-side marketplace pages | `apps/operator/app/marketplace/{,templates,plugins,snapshots}/` |
