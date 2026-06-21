@@ -236,7 +236,7 @@ export default function HarnessTopBar({ slug }: Props) {
           border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
           border-radius: 999px;
           font-weight: 700;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
         }
         .pc-adv-topbar__add-panel:hover {
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 72%);
@@ -328,7 +328,7 @@ function RegisterSubsButton({ slug }: { slug: string }) {
           color: var(--fg, #e7f7ff);
           font-size: 11px;
           font-weight: 700;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
           cursor: pointer;
         }
         .pc-adv-topbar__register-subs:hover:not(:disabled) {

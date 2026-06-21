@@ -45,6 +45,7 @@ afterEach(() => cleanup());
 const TAB_HREFS = [
   '/admin/run',
   '/admin/features',
+  '/admin/recipes',
   '/admin/git',
   '/admin/dogfood-substrate',
   '/admin/dbos',
@@ -92,7 +93,7 @@ describe('AdminShell', () => {
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual(TAB_HREFS);
 
     // Static (non-lexicon) labels render verbatim.
-    for (const label of ['Run', 'Features', 'Git', 'Substrate', 'DBOS']) {
+    for (const label of ['Run', 'Features', 'Recipes', 'Git', 'Substrate', 'DBOS']) {
       expect(screen.getByRole('tab', { name: label })).toBeTruthy();
     }
   });

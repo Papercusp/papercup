@@ -119,7 +119,7 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
 
   return (
     <div style={panel}>
-      <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--fg-mute)' }}>
+      <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', letterSpacing: "0", color: 'var(--fg-mute)' }}>
         Provisioning
       </h4>
 

@@ -251,6 +251,12 @@ export async function captureRecipe(
       reused: false,
     });
 
+    // Live-update the /admin/recipes dashboard (code-recipes-2026-06-21 P-009):
+    // a fresh capture / re-run shifts the recipe list AND the candidate worklist,
+    // so invalidate both sync queries. Best-effort + lazy-imported so the pure
+    // capture helper stays PG-only and unit-testable without the sync-sse bus.
+    await notifyRecipesChanged(log);
+
     return { row, similarRecipes };
   } catch (err) {
     log(`code:run recipe capture failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
@@ -263,5 +269,25 @@ function safe<T>(fn: () => T, fallback: T): T {
     return fn();
   } catch {
     return fallback;
+  }
+}
+
+/**
+ * Fire the sync-invalidation for BOTH recipe dashboard queries after a recipe
+ * write (capture, sweep, or merge) commits — the SINGLE invalidate point so every
+ * write site stays consistent (code-recipes-2026-06-21 P-009). A list change can
+ * also change the candidate worklist (a swept/merged recipe drops out, a re-run
+ * crosses the promote threshold), so both names are invalidated together. Lazy
+ * import + best-effort: a missing/erroring bus must NEVER break the underlying
+ * write (the capture path is already wrapped in try/catch; the tools call this
+ * AFTER their commit returns).
+ */
+export async function notifyRecipesChanged(log: (msg: string) => void = () => {}): Promise<void> {
+  try {
+    const { notifySyncInvalidate } = await import('../../sync-sse');
+    await notifySyncInvalidate('codeRecipes');
+    await notifySyncInvalidate('recipeCandidates');
+  } catch (err) {
+    log(`recipe sync-invalidate failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
   }
 }

@@ -247,7 +247,7 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
         }
         .pc-adv-docs__navdir {
           padding: 6px 14px 4px; font-size: 10.5px; text-transform: uppercase;
-          letter-spacing: .07em; color: var(--fg-mute, #7f9bb4);
+          letter-spacing: 0; color: var(--fg-mute, #7f9bb4);
         }
         .pc-adv-docs__nav ul { list-style: none; margin: 0; padding: 0; }
         .pc-adv-docs__navlink {
@@ -289,7 +289,7 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
         .pc-adv-docs__subject code { font-size: 11px; color: var(--fg-dim, #b9d4e8); }
         .pc-doc-badge {
           display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
-          font-size: 10.5px; font-weight: 700; letter-spacing: .03em; white-space: nowrap;
+          font-size: 10.5px; font-weight: 700; letter-spacing: 0; white-space: nowrap;
           border: 1px solid transparent;
         }
         .pc-doc-badge--src-generated { color: #7dd3fc; background: rgba(56,189,248,.14); border-color: rgba(56,189,248,.38); }
@@ -300,7 +300,7 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
         .pc-doc-badge--st-unknown { color: #c4b5fd; background: rgba(167,139,250,.12); border-color: rgba(167,139,250,.32); }
         .pc-doc-action {
           display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; font-size: 11px; font-weight: 700;
-          letter-spacing: .03em; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+          letter-spacing: 0; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
         }
         .pc-doc-action:disabled { opacity: .55; cursor: default; }
         .pc-doc-action--regen { color: #c4b5fd; background: rgba(167,139,250,.16); border-color: rgba(167,139,250,.4); }
@@ -312,7 +312,7 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
           border: 1px solid rgba(167,139,250,.32); background: rgba(167,139,250,.07);
         }
         .pc-adv-docs__overlay-label {
-          font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+          font-size: 10.5px; text-transform: uppercase; letter-spacing: 0; font-weight: 700;
           color: #c4b5fd; margin-bottom: 6px;
         }
         @media (max-width: 760px) {

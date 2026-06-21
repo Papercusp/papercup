@@ -262,7 +262,7 @@ function PanelStyles() {
   return (
     <style>{`
       .pc-adv-memberwork { display: flex; flex-direction: column; height: 100%; }
-      .pc-memberwork__title { font-size: 11px; font-weight: 700; color: var(--fg, #e7f7ff); text-transform: uppercase; letter-spacing: 0.05em; }
+      .pc-memberwork__title { font-size: 11px; font-weight: 700; color: var(--fg, #e7f7ff); text-transform: uppercase; letter-spacing: 0; }
       .pc-memberwork__scroll { flex: 1; min-height: 0; overflow: auto; }
       .pc-memberwork__member { border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 88%)); }
       .pc-memberwork__mhead {
@@ -275,7 +275,7 @@ function PanelStyles() {
       }
       .pc-memberwork__mname { font-size: 12px; font-weight: 700; color: var(--fg, #e7f7ff); }
       .pc-memberwork__youbadge {
-        font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+        font-size: 9px; font-weight: 700; letter-spacing: 0; text-transform: uppercase;
         padding: 1px 6px; border-radius: 999px;
         color: var(--fg-dim, #b9d4e8);
         background: color-mix(in oklab, var(--accent), transparent 82%);

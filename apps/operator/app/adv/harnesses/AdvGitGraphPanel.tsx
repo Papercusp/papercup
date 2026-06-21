@@ -450,7 +450,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
               borderBottom: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
               fontSize: 10,
               textTransform: 'uppercase',
-              letterSpacing: '0.06em',
+              letterSpacing: "0",
             }}
             empty={<div className="pc-adv-gitgrid__empty">No commits match this view.</div>}
           />
@@ -575,7 +575,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
         }
         .pc-adv-gitgrid__merge {
           flex-shrink: 0; padding: 1px 6px; border-radius: 999px; font-size: 9px; font-weight: 700;
-          text-transform: uppercase; letter-spacing: 0.04em;
+          text-transform: uppercase; letter-spacing: 0;
           color: var(--accent, #38bdf8);
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
           border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);

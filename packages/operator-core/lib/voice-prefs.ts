@@ -310,6 +310,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   speakEscalations: true,
   speakCadenceStatus: false,
   speakNudges: true,
+  silenceVoice: false,
   wakeWordIntents: true,
   speakOpenCards: true,
   cardAnsweringEnabled: true,

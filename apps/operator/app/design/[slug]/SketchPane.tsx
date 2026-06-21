@@ -320,7 +320,7 @@ export default function SketchPane({
           overflowY: 'auto',
         }}
       >
-        <h3 style={{ fontSize: 12, fontWeight: 600, color: token.fgDim, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        <h3 style={{ fontSize: 12, fontWeight: 600, color: token.fgDim, textTransform: 'uppercase', letterSpacing: 0 }}>
           Prior sketches{' '}
           <span style={{ color: token.fgMuted, fontWeight: 400 }}>({priors.length})</span>
         </h3>

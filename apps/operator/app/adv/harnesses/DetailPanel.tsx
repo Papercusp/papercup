@@ -1143,7 +1143,7 @@ function DetailStyles() {
         font-size: 11px;
         font-weight: 700;
         color: var(--fg-mute, #7f9bb4);
-        letter-spacing: 0.04em;
+        letter-spacing: 0;
       }
       .pc-adv-detail__title {
         font-size: 16px;
@@ -1217,14 +1217,14 @@ function DetailStyles() {
         font-size: 10.5px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0;
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__kind-chip {
         font-size: 9.5px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         padding: 1px 5px;
         border-radius: 4px;
         background: var(--bg-3, rgba(255, 255, 255, 0.075));
@@ -1241,7 +1241,7 @@ function DetailStyles() {
         font-size: 10px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.11em;
+        letter-spacing: 0;
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__collapse {
@@ -1250,7 +1250,7 @@ function DetailStyles() {
         padding: 0;
         font: inherit;
         text-transform: uppercase;
-        letter-spacing: 0.11em;
+        letter-spacing: 0;
         color: var(--fg-mute, #7f9bb4);
         cursor: pointer;
       }
@@ -1324,7 +1324,7 @@ function DetailStyles() {
         font-size: 10px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0;
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__related-row {
@@ -1397,7 +1397,7 @@ function DetailStyles() {
       .pc-adv-detail__run-outcome {
         font-size: 10.5px;
         font-weight: 700;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         padding: 1px 7px;
         border-radius: 999px;
         white-space: nowrap;

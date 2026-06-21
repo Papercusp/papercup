@@ -19,13 +19,13 @@ export default defineTool({
   name: 'rubrics:trend',
   profile: 'engineer',
   description:
-    'The qualitative health TREND for a rubric — aggregate the every-turn Overwatch scorecard rating time-series per criterion over time, each with a direction (improving | worsening | stable | unknown), a rating distribution, first/latest rating, and the full chronological series. The health-over-time view ("queen-placement-health: degraded, worsening over 5 ratings"). Reads the scorecards (P-013) — no new data.',
+    'The qualitative health TREND for a rubric — aggregate the every-turn Overwatch scorecard rating time-series per criterion over time, each with a direction (improving | worsening | stable | unknown), a rating distribution, first/latest rating, and the full chronological series. The health-over-time view ("queen-placement-health: degraded, worsening over 5 ratings"). Also returns a `staleness` signal (P-011): criteria the Overwatch persistently CANNOT assess (rated "unknown") — the rubric\'s model may have drifted from reality and should re-enter the queen↔scout loop for re-ratification. Reads the scorecards (P-013) — no new data.',
   guidance: {
-    when: 'You want to see how a rubric\'s criteria have trended OVER TIME — is a characteristic improving or worsening? which criteria are degrading across recent wakes? The qualitative health-over-time view, vs a single point-in-time scorecard.',
+    when: 'You want to see how a rubric\'s criteria have trended OVER TIME — is a characteristic improving or worsening? which criteria are degrading across recent wakes? Or whether the rubric ITSELF is STALE (its model drifted — `staleness.stale`). The qualitative health-over-time view, vs a single point-in-time scorecard.',
     notWhen:
       'You want the raw recent scorecards (point-in-time standing + completeness via missingKeys) — scorecards:list. You want the rubric DEFINITION (criteria/model/method) — rubrics:get. You want the cross-corpus ideation rollup — curation:state-of-hive.',
     chaining:
-      'rubrics:list { status: "active" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId.',
+      'rubrics:list { status: "active" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId. If `staleness.stale`, re-ratify the rubric via the queen↔scout loop (revise template_data → plans:set-plan-status).',
   },
   capability: 'coord:read',
   requirePrincipal: false,

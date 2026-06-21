@@ -222,7 +222,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
           color: var(--fg-dim, #b9d4e8);
           font-size: 12px;
           font-weight: 600;
-          letter-spacing: 0.01em;
+          letter-spacing: 0;
           white-space: nowrap;
         }
         .pc-adv-tab.is-pinned {

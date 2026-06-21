@@ -350,7 +350,7 @@ function HeaderStyles() {
         font-size: 10px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         padding: 1px 7px;
         border-radius: 999px;
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
@@ -362,7 +362,7 @@ function HeaderStyles() {
         font-size: 10px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         padding: 1px 7px;
         border-radius: 999px;
         border: 1px solid color-mix(in oklab, var(--fg-mute, #7f9bb4), transparent 60%);

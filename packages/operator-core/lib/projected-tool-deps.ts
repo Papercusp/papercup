@@ -39,6 +39,9 @@ import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelop
 // live-configurability-audit-2026-06-20 P-009 — runtime envelope overrides (D-010 sync-cache).
 // Getters return empty when the dark flag is off ⇒ byte-identical envelope resolution.
 import { envelopeRoleOverrides, envelopeProtectedAdditions } from './capability-envelope-overrides';
+// live-configurability-audit-2026-06-20 P-020 — runtime telemetry-buffer sizing (D-010 sync-cache).
+// Returns the baked defaults when the kill-switch flag is off / no override ⇒ byte-identical.
+import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { recordDecisionLedger } from './decision-ledger/emit';
 
 /**
@@ -172,9 +175,9 @@ const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
          $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24)`;
 
-const TELEMETRY_MAX_PENDING = 5000; // hard cap → drop-oldest on PG stall, never OOM
-const TELEMETRY_FLUSH_DEBOUNCE_MS = 10;
-const TELEMETRY_MAX_BATCH = 200;
+// P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
+// via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
+// telemetry-buffer-config.ts). Kill-switch OFF / empty override ⇒ those defaults ⇒ byte-identical.
 
 let telemetryQueue: TelemetryRow[] = [];
 let telemetryFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -186,7 +189,7 @@ function scheduleTelemetryFlush(): void {
   telemetryFlushTimer = setTimeout(() => {
     telemetryFlushTimer = null;
     void flushPendingTelemetry();
-  }, TELEMETRY_FLUSH_DEBOUNCE_MS);
+  }, telemetryBufferConfig().debounceMs);
   // Never keep the event loop alive just for a pending telemetry flush.
   (telemetryFlushTimer as unknown as { unref?: () => void }).unref?.();
 }
@@ -205,7 +208,7 @@ export async function flushPendingTelemetry(): Promise<void> {
     try {
       const { sql } = getOrgPg();
       while (telemetryQueue.length > 0) {
-        const batch = telemetryQueue.splice(0, TELEMETRY_MAX_BATCH);
+        const batch = telemetryQueue.splice(0, telemetryBufferConfig().maxBatch);
         // Group by workspace — RLS needs one set_config('app.workspace_id') per tx.
         const byWorkspace = new Map<string, TelemetryRow[]>();
         for (const row of batch) {
@@ -370,10 +373,11 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
   const row = buildTelemetryRow(input);
   if (!row) return;
   telemetryQueue.push(row);
-  if (telemetryQueue.length > TELEMETRY_MAX_PENDING) {
+  const maxPending = telemetryBufferConfig().maxPending;
+  if (telemetryQueue.length > maxPending) {
     // Producer outran the PG writer (stall/backpressure) — shed oldest to keep
     // memory bounded. Telemetry is best-effort; a dropped row is acceptable.
-    telemetryQueue.splice(0, telemetryQueue.length - TELEMETRY_MAX_PENDING);
+    telemetryQueue.splice(0, telemetryQueue.length - maxPending);
     telemetryDropped++;
     if (telemetryDropped === 1 || telemetryDropped % 1000 === 0) {
       // eslint-disable-next-line no-console

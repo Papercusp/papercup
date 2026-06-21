@@ -1036,7 +1036,7 @@ const S: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 8,
   },
-  sectionHead: { fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
+  sectionHead: { fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0, marginBottom: 2 },
   harnessHint: { fontSize: 11, color: '#64748b', marginBottom: 4, fontStyle: 'italic' },
   harnessList: { display: 'flex', flexDirection: 'column', gap: 2 },
   harnessRow: {
@@ -1066,7 +1066,7 @@ const S: Record<string, React.CSSProperties> = {
     textAlign: 'left',
   },
   harnessSlug: { fontFamily: 'ui-monospace, monospace', fontSize: 12 },
-  harnessState: { fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: 0.4 },
+  harnessState: { fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: 0 },
   harnessClear: {
     background: 'transparent',
     color: '#64748b',
@@ -1091,7 +1091,7 @@ const S: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     borderTop: '1px solid rgba(255,255,255,0.05)',
     textTransform: 'uppercase' as const,
-    letterSpacing: 0.5,
+    letterSpacing: 0,
   },
   streamStatus: { fontSize: 10, color: '#64748b', textTransform: 'lowercase' as const, letterSpacing: 0 },
   streamPanel: {
@@ -1120,7 +1120,7 @@ const S: Record<string, React.CSSProperties> = {
     marginBottom: 12,
     flexWrap: 'wrap' as const,
   },
-  filterLabel: { fontSize: 11, color: '#94a3b8', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  filterLabel: { fontSize: 11, color: '#94a3b8', textTransform: 'uppercase' as const, letterSpacing: 0 },
   filterChip: {
     fontSize: 12,
     background: 'rgba(255,255,255,0.06)',
@@ -1286,7 +1286,7 @@ const S: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: '#64748b',
     textTransform: 'uppercase' as const,
-    letterSpacing: 0.5,
+    letterSpacing: 0,
     marginBottom: 4,
     paddingBottom: 4,
     borderBottom: '1px solid rgba(255,255,255,0.04)',
@@ -1380,7 +1380,7 @@ const S: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: '#94a3b8',
     textTransform: 'uppercase' as const,
-    letterSpacing: 0.5,
+    letterSpacing: 0,
     marginBottom: 8,
   },
   modalTitle: { fontSize: 18, fontWeight: 600, marginBottom: 20 },

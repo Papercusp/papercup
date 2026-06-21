@@ -18,7 +18,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { DEFAULT_WORKSPACE_ID, activeWorkspaceId } from '../../workspace-registry';
 import { resolveCtxHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -187,11 +187,17 @@ export default defineTool({
     // (the Queen places them). Behind the default-OFF flag papercusp-plan-workitem-
     // promotion (the runner reads it). Idempotent + fire-and-forget + never-throw, so
     // the start path is unaffected whether the flag is on or off.
+    // P-003 fix (dogfood 2026-06-21): promote against the ACTIVE workspace, NOT the
+    // DEFAULT_WORKSPACE_ID constant ('default'). Plans live in the caller's workspace
+    // (e.g. papercusp-workspace); reading items under 'default' found nothing and minted
+    // zero (the dogfood's no-mint). Captured synchronously here — the .then() runs after
+    // the request's async-context may have unwound, so resolve the workspace up front.
+    const promoWorkspaceId = activeWorkspaceId();
     void import('../../plan-workitem-promotion-run')
       .then(async (m) => {
         const { resolveAgentIdentity } = await import('../coordination/identity');
         await m.promotePlanItems({
-          workspaceId: DEFAULT_WORKSPACE_ID,
+          workspaceId: promoWorkspaceId,
           harnessSlug,
           planSlug: args.slug,
           createdBy: resolveAgentIdentity(ctx).ownerId,

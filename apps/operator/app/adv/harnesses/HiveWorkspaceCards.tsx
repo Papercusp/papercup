@@ -177,7 +177,7 @@ function CardStyles() {
         font-size: 11px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
+        letter-spacing: 0;
       }
       .pc-hive-cards__ws-name {
         color: var(--fg, #e7f7ff);
@@ -292,7 +292,7 @@ function CardStyles() {
         font-size: 9.5px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         padding: 1px 5px;
         border-radius: 4px;
         background: var(--bg-3, rgba(255, 255, 255, 0.075));

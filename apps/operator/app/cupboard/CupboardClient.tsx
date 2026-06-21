@@ -878,7 +878,7 @@ function MetricTile({ label, value }: { label: string; value: string }) {
         background: 'var(--bg-1)',
       }}
     >
-      <div style={{ fontFamily: FONTS.ui, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: COLORS.textDim }}>
+      <div style={{ fontFamily: FONTS.ui, fontSize: 10, letterSpacing: "0", textTransform: 'uppercase', color: COLORS.textDim }}>
         {label}
       </div>
       <div style={{ marginTop: 4, fontFamily: FONTS.ui, fontSize: 15, fontWeight: 700, color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

@@ -216,7 +216,7 @@ export default function HarnessWorkspacesButton({ slug }: Props) {
           color: #e7f7ff;
           font-size: 11px;
           font-weight: 700;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
           cursor: pointer;
         }
         .pc-hws__trigger:hover { background: color-mix(in oklab, #a855f7, transparent 70%); }
@@ -231,7 +231,7 @@ const titleStyle: React.CSSProperties = {
   color: 'var(--fg-mute, #777)',
   fontSize: 11,
   textTransform: 'uppercase',
-  letterSpacing: 0.5,
+  letterSpacing: 0,
 };
 const rowStyle: React.CSSProperties = {
   display: 'flex',
@@ -246,7 +246,7 @@ const mutedRow: React.CSSProperties = { padding: '4px 8px', color: 'var(--fg-mut
 const badgeStyle: React.CSSProperties = {
   fontSize: 10,
   textTransform: 'uppercase',
-  letterSpacing: 0.4,
+  letterSpacing: 0,
   color: '#10b981',
   border: '1px solid color-mix(in oklab, #10b981, transparent 60%)',
   borderRadius: 999,

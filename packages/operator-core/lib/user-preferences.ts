@@ -117,6 +117,11 @@ export const VOICE_USER_OVERRIDE_KEYS = [
   'speakSuggestions',
   'speakReceivingFlips',
   'speakCadenceStatus',
+  // Sentinel-as-Herald (P-029/P-030): the Sentinel sidebar tab surfaces these as
+  // per-user live overrides, so they must merge user-over-workspace to reach the brain.
+  'audienceMode',
+  'proactiveTicksEnabled',
+  'silenceVoice',
   'operatorBackstoryEnabled',
   'memoryEmbedderMode',
 ] as const;

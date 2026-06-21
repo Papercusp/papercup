@@ -203,7 +203,7 @@ function RailStyles() {
         gap: 6px;
         font-size: 11px;
         font-weight: 760;
-        letter-spacing: 0.03em;
+        letter-spacing: 0;
         text-transform: uppercase;
         color: var(--accent-strong, #7dd3fc);
       }
@@ -285,7 +285,7 @@ function RailStyles() {
         font-size: 9.5px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         padding: 1px 5px;
         border-radius: 4px;
         background: var(--bg-3, rgba(255, 255, 255, 0.075));

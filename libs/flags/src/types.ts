@@ -450,6 +450,11 @@ export const FLAGS = {
   // OFF (default) ⇒ the sync-cache stays empty ⇒ byte-identical. (Also needs CAPABILITY_ENVELOPE
   // ON for the envelope to actually bite — this flag only governs whether overrides apply.)
   CAPABILITY_ENVELOPE_OVERRIDES: "papercusp-capability-envelope-overrides",
+  // live-configurability-audit-2026-06-20 P-020 — runtime dispatch telemetry-buffer config
+  // (telemetry:set_buffer: maxPending / debounceMs / maxBatch). Default-ON kill-switch: the
+  // override store is empty by default ⇒ baked defaults ⇒ byte-identical; flip OFF to ignore any
+  // stored override and force the baked defaults. Operational (not auth/spend), so not dark.
+  TELEMETRY_BUFFER_CONFIG: "papercusp-telemetry-buffer-config",
   // agent-capability-confinement-2026-06-13 B-06 (P-011) ⨯ queen-autonomy-policy D-012/P-110:
   // the Queen decision-ledger ACTION-CHOKEPOINT emit — one append-only row per governed
   // (tier != 'low') action by a non-SU principal, from the dispatch postInvoke seam. ON by
@@ -1194,6 +1199,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // P-009 — runtime capability-envelope overrides modify AUTH on the dispatch hot path (D-010);
   // ship DARK. OFF = the sync-cache stays empty = byte-identical envelope resolution.
   [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES]: false,
+  // P-020 — telemetry-buffer config is operational + safe (empty store = byte-identical); ships
+  // ON per the default-on policy, as a kill-switch (OFF forces the baked telemetry-buffer defaults).
+  [FLAGS.TELEMETRY_BUFFER_CONFIG]: true,
   // ON by default — Phase-0 foundation record-keeping (B-06 / P-011), same call as
   // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
   // OFF is the kill-switch (the emit no-ops).

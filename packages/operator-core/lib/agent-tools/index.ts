@@ -480,6 +480,8 @@ import './db/migrate-policy';
 // live-configurability-audit-2026-06-20 P-002 — read/retune/pause the system routines (git-sync, …):
 import './routines/list';
 import './routines/set';
+// live-configurability-audit-2026-06-20 P-020 — runtime dispatch telemetry-buffer sizing:
+import './telemetry/set-buffer';
 // live-configurability-audit-2026-06-20 P-008 — runtime role→capability grants (DARK behind
 // papercusp-capability-grant-tool; D-007 owner-authority):
 import './capability/grant-role';

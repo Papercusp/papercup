@@ -231,7 +231,7 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
         .pc-adv-ov__alive { color: var(--fg-mute); font-size: 11px; }
         .pc-adv-ov__badge {
           padding: 1px 7px; font-size: 10px; font-weight: 700; border-radius: 999px;
-          letter-spacing: 0.05em; white-space: nowrap;
+          letter-spacing: 0; white-space: nowrap;
           color: color-mix(in oklab, var(--warn, #fbbf24), white 55%);
           background: color-mix(in oklab, var(--warn, #fbbf24), transparent 84%);
         }

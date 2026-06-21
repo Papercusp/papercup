@@ -161,7 +161,7 @@ function RegressionRow({ item }: { item: RegressionItem }) {
 function Cell({ label, url }: { label: string; url: string | null }) {
   return (
     <div>
-      <div style={{ fontSize: 11, color: mutedText, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+      <div style={{ fontSize: 11, color: mutedText, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0 }}>
         {label}
       </div>
       {url ? (

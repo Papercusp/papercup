@@ -957,7 +957,7 @@ export default function AdvSessionsClient() {
           color: var(--accent);
           font-size: 10px;
           font-weight: 760;
-          letter-spacing: 0.12em;
+          letter-spacing: 0;
           line-height: 1;
           text-transform: uppercase;
         }
@@ -1169,7 +1169,7 @@ export default function AdvSessionsClient() {
           color: var(--accent);
           font-size: 10px;
           font-weight: 750;
-          letter-spacing: 0.04em;
+          letter-spacing: 0;
         }
         .pc-adv-sessions__group-last-active {
           padding: 2px 7px;
@@ -1179,7 +1179,7 @@ export default function AdvSessionsClient() {
           color: var(--fg-mute);
           font-size: 10px;
           font-weight: 600;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
           font-variant-numeric: tabular-nums;
           white-space: nowrap;
         }
@@ -1240,7 +1240,7 @@ export default function AdvSessionsClient() {
           border-radius: 999px;
           font-size: 10px;
           font-weight: 780;
-          letter-spacing: 0.06em;
+          letter-spacing: 0;
           text-transform: uppercase;
         }
         .pc-adv-sessions__badge--omp {
@@ -1259,7 +1259,7 @@ export default function AdvSessionsClient() {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 10px;
           font-weight: 700;
-          letter-spacing: 0.01em;
+          letter-spacing: 0;
         }
         .pc-adv-sessions__role-chip {
           padding: 1px 6px;
@@ -1268,7 +1268,7 @@ export default function AdvSessionsClient() {
           color: #c4b5fd;
           font-size: 10px;
           font-weight: 760;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
           text-transform: uppercase;
         }
         .pc-adv-sessions__feature-chip {
@@ -1313,7 +1313,7 @@ export default function AdvSessionsClient() {
           font-family: ui-monospace, monospace;
           font-size: 10px;
           font-weight: 650;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
           white-space: nowrap;
         }
         .pc-adv-sessions__row-usage-pill--model {
@@ -1433,7 +1433,7 @@ export default function AdvSessionsClient() {
         .pc-adv-sessions__card-label {
           color: var(--fg-mute);
           font-size: 10px;
-          letter-spacing: 0.08em;
+          letter-spacing: 0;
           text-transform: uppercase;
         }
         .pc-adv-sessions__card-value {
@@ -1449,7 +1449,7 @@ export default function AdvSessionsClient() {
           margin: 0;
           color: var(--fg);
           font-size: 12px;
-          letter-spacing: 0.08em;
+          letter-spacing: 0;
           text-transform: uppercase;
         }
         .pc-adv-sessions__snippet-list {
@@ -1525,7 +1525,7 @@ export default function AdvSessionsClient() {
           color: var(--fg-mute);
           font-size: 10px;
           font-weight: 760;
-          letter-spacing: 0.08em;
+          letter-spacing: 0;
           text-transform: uppercase;
         }
         .pc-adv-sessions__data-list--tools .pc-adv-sessions__data-row {

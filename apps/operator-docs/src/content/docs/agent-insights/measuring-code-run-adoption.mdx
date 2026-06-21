@@ -137,12 +137,18 @@ What it establishes:
   is expected* — the scenario asserts a batch the no-coderun arm structurally can't make).
 - **No over-application.** S14 (two unrelated one-off calls) stayed direct — the stronger nudge did
   not make sonnet wrap a non-loop task.
-- **The remaining gap: low-N.** At **N=3** sonnet still hand-loops (3 direct gets, no `code:run`),
-  despite the "reach for it even at 2–3 calls" nudge. The win at N=12 is unambiguous; the N=3
-  threshold is where adoption still leaks. Candidate refinement (untested): sharpen the nudge from
-  "even at 2–3 calls" to "**even a 2–3 *iteration loop over items*** → `code:run`" — a loop framing
-  targets S15 while leaving S14 (different one-off calls, not a loop) untouched. Trade carefully: any
-  low-N push must keep S14 green.
+- **The remaining gap: low-N — and it is NOT nudge-movable.** At **N=3** sonnet still hand-loops
+  (3 direct gets, no `code:run`); the win at N=12 is unambiguous, the N=3 threshold is where adoption
+  leaks. A loop-framing refinement was **tried and reverted** (2026-06-21): sharpening the nudge to
+  "even a 2–3 *iteration loop over items* → `code:run`, no minimum N" did **not** move S15 (the
+  deterministic `does-not-hand-loop-small-batch` assert still failed — model judgment, not wording),
+  and the S13 sample regressed to *reach `code:run` AND also hand-loop* — zero upside, possible
+  downside, so it was reverted to the known-good nudge. Conclusion: **N=3 adoption is
+  capability/judgment-gated** (sonnet decides three simple `get`s aren't worth a script), not a prompt
+  lever. Don't keep tinkering the nudge for it; the real win is already locked at higher N. (Method
+  caveat surfaced by this run: a haiku judge flagged S14 *fail* on a sequence identical to its prior
+  *pass* — the deterministic asserts, not the judge, are the verdict; single-run + cheap-judge is too
+  noisy for a marginal low-N delta. Use an N≥3 matrix + a same-class judge if ever re-measured.)
 
 \* "fail" on the no-coderun arm is the *intended* control — it proves the tool's absence forces the
 expensive path; it is not a regression.

@@ -3443,6 +3443,93 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return accountStatus(workspace ?? activeWorkspaceId());
     },
   },
+  // codeRecipes — the hive-scoped corpus of reusable code:run RECIPES for the
+  // /admin/recipes dashboard (code-recipes-2026-06-21 P-009). One row per recipe
+  // (the CodeRecipeRow shape: title/description/run+success counts/last_run/status/
+  // tools_used/author_role/promoted_tool/...), newest-run then most-run first —
+  // exactly listRecipes()'s order. Hive defaults to the operator-home hive (the
+  // sharing boundary, D-005); pass `harnessSlug` to scope another hive, or
+  // `allHives: true` for the whole workspace. The capture path (capture-recipe.ts),
+  // recipes:sweep, and recipes:merge fire notifySyncInvalidate('codeRecipes') after
+  // committing, so the tab is live over desktop SSE with no polling.
+  codeRecipes: {
+    argsSchema: z
+      .object({
+        harnessSlug: z.string().min(1).optional(),
+        allHives: z.boolean().optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const { harnessSlug, allHives } = (args ?? {}) as { harnessSlug?: string; allHives?: boolean };
+      const [{ getOrgPg }, { listRecipes }, { activeWorkspaceId }, { hiveHomeSlugForHarness }] =
+        await Promise.all([
+          import('@papercusp/db-org'),
+          import('../code-recipes-store'),
+          import('../workspace-registry'),
+          import('../hive-federation'),
+        ]);
+      const workspaceId = activeWorkspaceId();
+      if (allHives) {
+        return (await listRecipes(getOrgPg().sql, workspaceId)) as unknown[];
+      }
+      const slug = harnessSlug ?? operatorHomeHarnessSlug();
+      const hiveSlug = await hiveHomeSlugForHarness(workspaceId, slug).catch(() => null);
+      return (await listRecipes(getOrgPg().sql, workspaceId, { hiveSlug })) as unknown[];
+    },
+  },
+
+  // recipeCandidates — the Queen's deterministic graduation worklist for the
+  // /admin/recipes dashboard's Candidates section (code-recipes-2026-06-21 P-009;
+  // the read behind recipes:candidates). Returns a SINGLE envelope row
+  // { promoteCandidates[], mergeClusters[] } (wrapped in a 1-elem array per the
+  // resolver's flat-row contract — the same shape evals.benchEstimate uses). NO
+  // LLM: the rubric scoring + the merge-cluster similarity legs (embedder +
+  // tool-cooccurrence) run server-side, exactly like the tool handler. Invalidated
+  // alongside codeRecipes on every recipe write (a sweep/merge/capture shifts the
+  // candidate set), so the dashboard's worklist stays live.
+  recipeCandidates: {
+    argsSchema: z
+      .object({
+        harnessSlug: z.string().min(1).optional(),
+        minRunCount: z.number().int().min(1).max(1000).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const { harnessSlug, minRunCount, limit } = (args ?? {}) as {
+        harnessSlug?: string;
+        minRunCount?: number;
+        limit?: number;
+      };
+      const [
+        { getOrgPg },
+        { recipeCandidates },
+        { activeWorkspaceId },
+        { hiveHomeSlugForHarness },
+        { buildQueryEmbedder },
+        { buildRecipeCooccurrenceDep },
+      ] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../code-recipes-candidates'),
+        import('../workspace-registry'),
+        import('../hive-federation'),
+        import('../agent-tools/search/embedder'),
+        import('../recipe-cooccurrence-leg'),
+      ]);
+      const workspaceId = activeWorkspaceId();
+      const slug = harnessSlug ?? operatorHomeHarnessSlug();
+      const hiveSlug = await hiveHomeSlugForHarness(workspaceId, slug).catch(() => null);
+      const embedder = await buildQueryEmbedder().catch(() => null);
+      const toolCooccurrence = await buildRecipeCooccurrenceDep(workspaceId).catch(() => null);
+      const { promoteCandidates, mergeClusters } = await recipeCandidates(
+        getOrgPg().sql,
+        { workspaceId, hiveSlug, minRunCount, limit },
+        { embedder, toolCooccurrence },
+      );
+      return [{ promoteCandidates, mergeClusters }] as unknown[];
+    },
+  },
+
   // agentConfig.modelTiersBaseline — the effective workspace model-tier menu
   // for the Queen sidebar's session override editor. Settings writes invalidate
   // this query, so the sidebar tracks workspace-tier edits without raw fetches.

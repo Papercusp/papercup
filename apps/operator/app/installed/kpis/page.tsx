@@ -93,7 +93,7 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
       background: 'rgba(255,255,255,0.04)',
       border: '1px solid rgba(255,255,255,0.08)',
     }}>
-      <div className="pc-kpi-stat-label" style={{ fontSize: 12, color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div className="pc-kpi-stat-label" style={{ fontSize: 12, color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: 0 }}>{label}</div>
       <div className="pc-kpi-stat-value" style={{ fontSize: 32, fontWeight: 700, marginTop: 4 }}>{value}</div>
       {sub && <div className="pc-kpi-stat-sub" style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 4 }}>{sub}</div>}
     </div>

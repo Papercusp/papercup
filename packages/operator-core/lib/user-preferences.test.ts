@@ -107,6 +107,9 @@ describe('VOICE_USER_OVERRIDE_KEYS', () => {
       'speakSuggestions',
       'speakReceivingFlips',
       'speakCadenceStatus',
+      'audienceMode',
+      'proactiveTicksEnabled',
+      'silenceVoice',
       'operatorBackstoryEnabled',
       'memoryEmbedderMode',
     ]);
