@@ -21,16 +21,20 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('work_items:observe handler', () => {
-  it('spreads the observation when the item exists', async () => {
+describe('work_items:observe handler (bulk keyed-array)', () => {
+  it('spreads the observation as the item\'s result when it exists', async () => {
     obsM.mockResolvedValue({ id: 'WI-1', claimable: true, assignee: null } as never);
-    expect(body(await call())).toMatchObject({ ok: true, id: 'WI-1', claimable: true });
+    const b = body(await call());
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimable: true });
   });
 
-  it('maps a missing item to { ok:false, error }', async () => {
+  it('maps a missing item to that item\'s { ok:false, id, error } without failing the batch', async () => {
     obsM.mockResolvedValue(null as never);
     const b = body(await call());
-    expect(b.ok).toBe(false);
-    expect(String(b.error)).toMatch(/WI-1.*not found/i);
+    expect(b.ok).toBe(true); // the batch ran
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0].ok).toBe(false);
+    expect(String(b.results[0].error)).toMatch(/WI-1.*not found/i);
   });
 });

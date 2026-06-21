@@ -35,12 +35,14 @@ beforeEach(() => {
   listM.mockResolvedValue([] as never);
 });
 
-describe('work_items:redundancy_status handler', () => {
-  it('maps a missing/non-redundant item to not found', async () => {
+describe('work_items:redundancy_status handler (bulk keyed-array)', () => {
+  it('maps a missing/non-redundant item to that item\'s not-found result', async () => {
     redM.mockResolvedValue(null as never);
     const b = body(await call());
-    expect(b.ok).toBe(false);
-    expect(String(b.error)).toMatch(/not found/i);
+    expect(b.ok).toBe(true); // the batch ran
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0].ok).toBe(false);
+    expect(String(b.results[0].error)).toMatch(/not found/i);
   });
 
   it('computes highStakes, completeCount, judgeable=true (>=2 complete)', async () => {
@@ -51,16 +53,16 @@ describe('work_items:redundancy_status handler', () => {
       { replicaIndex: 1, owner: 'b', status: 'complete', expired: false, expiresTs: 't' },
       { replicaIndex: 2, owner: 'c', status: 'claimed', expired: false, expiresTs: 't' },
     ] as never);
-    const b = body(await call());
-    expect(b).toMatchObject({ ok: true, redundancy: 3, highStakes: true, active: true, completeCount: 2, judgeable: true });
-    expect(b.replicas).toHaveLength(3);
-    expect(b.replicas[0]).not.toHaveProperty('extra'); // projected, not leaked
+    const r0 = body(await call()).results[0];
+    expect(r0).toMatchObject({ ok: true, id: 'F-1', redundancy: 3, highStakes: true, active: true, completeCount: 2, judgeable: true });
+    expect(r0.replicas).toHaveLength(3);
+    expect(r0.replicas[0]).not.toHaveProperty('extra'); // projected, not leaked
   });
 
   it('judgeable=false with only one complete replica; redundancy 1 is not high-stakes', async () => {
     redM.mockResolvedValue(1 as never);
     listM.mockResolvedValue([{ replicaIndex: 0, owner: 'a', status: 'complete' }, { replicaIndex: 1, owner: 'b', status: 'claimed' }] as never);
-    const b = body(await call());
-    expect(b).toMatchObject({ ok: true, highStakes: false, completeCount: 1, judgeable: false });
+    const r0 = body(await call()).results[0];
+    expect(r0).toMatchObject({ ok: true, highStakes: false, completeCount: 1, judgeable: false });
   });
 });

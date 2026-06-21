@@ -35,6 +35,7 @@ import {
 } from './audit-anchors';
 import { pgClientFields } from './mem0-connection';
 import { detectPapercupRoot } from '../harness/register-papercusp';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 interface CliOptions {
   dryRun: boolean;
@@ -48,8 +49,10 @@ function parseArgs(argv: string[]): CliOptions {
   // packages/operator-core/lib/memory/ → FOUR levels up is the repo root. (The old
   // `..×3` calc was a stale carry-over from when the CLI lived at apps/operator/bin/;
   // it resolved to `…/packages` and made the fileChecker stat anchors against the
-  // wrong root — every file anchor false-flagged.)
-  const repoRoot = detectPapercupRoot() ?? path.resolve(__dirname, '..', '..', '..', '..');
+  // wrong root — every file anchor false-flagged.) operator-core is "type":"module",
+  // so `__dirname` isn't defined under ESM — derive the dir from import.meta.url.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = detectPapercupRoot() ?? path.resolve(here, '..', '..', '..', '..');
   return { dryRun, repoRoot };
 }
 
@@ -249,8 +252,16 @@ export async function runMemoryAnchorAuditOnce(opts: {
   return auditFn({ dryRun: opts.dryRun ?? false, repoRoot });
 }
 
-// CLI entry (only when invoked directly, not when imported by tests)
-if (require.main === module) {
+// CLI entry — ESM-safe (operator-core is "type":"module"). The old
+// `require.main === module` threw `require is not defined` under ESM, so the
+// module crashed the instant it was *imported* (e.g. by the DBOS periodic
+// registry) — which would have taken down every scheduled timer. import.meta.url
+// is the ESM equivalent: fires only on a direct `tsx …/audit-memory-anchors.ts`
+// invocation, never on import (scheduler / tests).
+const invokedDirectly =
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
   const opts = parseArgs(process.argv.slice(2));
   audit(opts).then(
     (r) => process.exit(r.skipped ? 0 : (r.ok ? 0 : 1)),
