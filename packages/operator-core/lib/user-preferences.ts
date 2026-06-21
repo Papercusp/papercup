@@ -124,6 +124,9 @@ export const VOICE_USER_OVERRIDE_KEYS = [
   'silenceVoice',
   'operatorBackstoryEnabled',
   'memoryEmbedderMode',
+  // sentinel-herald P-011: per-user repoint of the live converse brain
+  // (voice host + text + device) to the Sentinel persona. Default 'operator'.
+  'humanFacingRole',
 ] as const;
 
 export type VoiceUserOverrideKey = (typeof VOICE_USER_OVERRIDE_KEYS)[number];

@@ -40,31 +40,46 @@ vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'ws-test',
 }));
 
+// P-012: the device route reads the `humanFacingRole` voice pref to repoint the
+// brain to the Sentinel persona. Mutated per-test.
+let humanFacingRole: 'operator' | 'sentinel' = 'operator';
+vi.mock('../../voice-prefs', () => ({
+  loadVoicePrefs: vi.fn(async () => ({ humanFacingRole })),
+}));
+
 // The route side-effect-imports the full tool registry; stub it out so the
 // test doesn't drag in (and register) every agent tool.
 vi.mock('../../agent-tools/index', () => ({}));
+
+const lookupByMcpName = vi.fn((name: string) => ({ name }));
+const dispatchProjectedToolStream = vi.fn(async function* (
+  _tool: unknown,
+  _toolName: string,
+  _args: unknown,
+) {
+  yield {
+    kind: 'done' as const,
+    result: {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ totalCost: 0.001, assembled: assembledTurn }),
+        },
+      ],
+    },
+  };
+});
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
   const original = await importOriginal<typeof import('@papercusp/agent-mcp')>();
   return {
     ...original,
-    lookupByMcpName: vi.fn(() => ({ name: 'operator:converse' })),
+    lookupByMcpName: (name: string) => lookupByMcpName(name),
     // Minimal stand-in for the converse tool's stream: one `done` event
     // whose result carries the assembled turn, same shape as the real
     // operator:converse return.
-    dispatchProjectedToolStream: vi.fn(async function* () {
-      yield {
-        kind: 'done' as const,
-        result: {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({ totalCost: 0.001, assembled: assembledTurn }),
-            },
-          ],
-        },
-      };
-    }),
+    dispatchProjectedToolStream: (...args: Parameters<typeof dispatchProjectedToolStream>) =>
+      dispatchProjectedToolStream(...args),
   };
 });
 
@@ -112,6 +127,9 @@ describe('POST /device/operator/converse — assistant turn persistence', () => 
   beforeEach(() => {
     appendTurn.mockClear();
     assembledTurn = '';
+    humanFacingRole = 'operator';
+    lookupByMcpName.mockClear();
+    dispatchProjectedToolStream.mockClear();
   });
 
   it('persists parsed.say, not the raw tag-wrapped turn', async () => {
@@ -177,5 +195,33 @@ describe('POST /device/operator/converse — assistant turn persistence', () => 
       .filter((input) => input.role === 'user');
     expect(users).toHaveLength(1);
     expect(users[0].text).toBe('typed on the phone');
+  });
+});
+
+describe('POST /device/operator/converse — persona role resolution (P-012)', () => {
+  beforeEach(() => {
+    appendTurn.mockClear();
+    assembledTurn = '<say>ok</say>';
+    humanFacingRole = 'operator';
+    lookupByMcpName.mockClear();
+    dispatchProjectedToolStream.mockClear();
+  });
+
+  it('loads the sentinel brain when humanFacingRole=sentinel', async () => {
+    humanFacingRole = 'sentinel';
+    await runConverse('hey');
+    expect(lookupByMcpName).toHaveBeenCalledWith('sentinel:converse');
+    const [, toolName, args] = dispatchProjectedToolStream.mock.calls[0];
+    expect(toolName).toBe('sentinel:converse');
+    expect((args as { role?: string }).role).toBe('sentinel');
+  });
+
+  it('loads the operator brain by default (humanFacingRole=operator)', async () => {
+    humanFacingRole = 'operator';
+    await runConverse('hey');
+    expect(lookupByMcpName).toHaveBeenCalledWith('operator:converse');
+    const [, toolName, args] = dispatchProjectedToolStream.mock.calls[0];
+    expect(toolName).toBe('operator:converse');
+    expect((args as { role?: string }).role).toBe('operator');
   });
 });

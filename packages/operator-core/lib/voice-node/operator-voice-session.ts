@@ -43,6 +43,12 @@ export interface ElSessionConfig {
   signedUrl: string;
   overrides: unknown | null;
   dynamicVariables: unknown;
+  /**
+   * Which human-facing brain/persona the host runs behind `ask_operator`
+   * (sentinel-herald P-011). Resolved from the `humanFacingRole` voice pref.
+   * Optional + defaults to 'operator' so the existing live path is unchanged.
+   */
+  humanFacingRole?: 'operator' | 'sentinel';
 }
 
 export interface ElSocket {
@@ -93,8 +99,9 @@ export class OperatorVoiceSession {
   private opConversationId: string | null = null;
   private elConversationId: string | null = null;
   // Which human-facing brain/persona the voice host runs: 'operator' (default) or
-  // 'sentinel' (the Herald). Set from the EL agent/persona config at start (P-011);
-  // defaults to 'operator' so the existing live voice path is byte-for-byte unchanged.
+  // 'sentinel' (the Herald). Set from the `humanFacingRole` voice pref via the
+  // resolved ElSessionConfig at start (P-011); defaults to 'operator' so the
+  // existing live voice path is byte-for-byte unchanged when the pref is unset.
   private brainRole = 'operator';
   private audioFormat: 'pcm_s16le' | 'encoded' = 'pcm_s16le';
   private sampleRate = 16000;
@@ -243,6 +250,9 @@ export class OperatorVoiceSession {
         await this.teardown(`voice init: ${resolved.error}`, 'error');
         return;
       }
+      // Repoint the live brain to the configured persona (P-011). Default
+      // 'operator' keeps the existing voice path byte-for-byte unchanged.
+      this.brainRole = resolved.config.humanFacingRole === 'sentinel' ? 'sentinel' : 'operator';
       const socket = await this.deps.connect(resolved.config.signedUrl, {
         onText: (t) => this.onElText(t),
         onClose: (reason) => void this.teardown(reason),

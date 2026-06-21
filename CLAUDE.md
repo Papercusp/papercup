@@ -157,6 +157,23 @@ work in the tree. Merge conflicts go to a `merge-resolver` agent, not you. From
 auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
+> 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
+> `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
+> `git clean -fd`, not `git stash`. The tree is edited CONCURRENTLY by the whole
+> fleet, and everyone's edits sit **unstaged** until the next git-sync tick — so a
+> tree-wide reset/checkout/clean/stash **silently and irrecoverably wipes every
+> peer's in-flight work** (it was never committed, so it is not in any git object;
+> kopia backs up only ~14KB of workspace-state, NOT the code). This is not
+> hypothetical: on 2026-06-21 a `git reset --hard HEAD` (an agent "cleaning the
+> tree" between commits) discarded a tested, in-flight fix and is the root cause of
+> the recurring "my edits got reverted/overwritten by a concurrent fixer" reports
+> that burned hours of fleet time. **To discard only your OWN change to ONE file,
+> re-edit that file by hand** (or, only after confirming via `coord:presence` /
+> `locks:list` that no peer holds it, `git checkout -- path/to/that.one.file` with
+> an explicit path — never a pathspec-less or `.`/`:/` discard). If you think you
+> need a clean tree, you don't: just stop editing and let git-sync commit. A Bash
+> guard rejects these commands on the shared checkout — do not route around it.
+
 **Never sit in a wait/poll loop for git-sync to "push your change" or the deploy to
 land — force it instead.** The pipeline is async: keep working, and locate your edit
 with `dev:pipeline_position` (not a browser). But when your *next step genuinely

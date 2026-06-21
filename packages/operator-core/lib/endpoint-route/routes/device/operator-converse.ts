@@ -129,9 +129,22 @@ const converse = defineTool({
     }
     const modality = body.modality === 'voice' ? 'voice' : 'text';
 
-    const operatorConverseTool = lookupByMcpName('operator:converse');
+    // P-012 (device/mobile parity): repoint the brain to the Sentinel persona
+    // when the `humanFacingRole` voice pref says so — same toggle the voice +
+    // text paths read. Default 'operator' keeps the live mobile path unchanged.
+    let role = 'operator';
+    try {
+      const { loadVoicePrefs } = await import('../../../voice-prefs');
+      const prefs = await loadVoicePrefs();
+      if (prefs.humanFacingRole === 'sentinel') role = 'sentinel';
+    } catch {
+      /* best-effort; fall back to operator */
+    }
+    const converseToolName = `${role}:converse`;
+    const operatorConverseTool =
+      lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {
-      return new Response('operator:converse tool not registered', { status: 500 });
+      return new Response(`${converseToolName} tool not registered`, { status: 500 });
     }
 
     const conversation = await getOrCreateActiveConversation();
@@ -181,12 +194,12 @@ const converse = defineTool({
         sink.onClose(() => ctrl.abort());
 
         const ctxBase: UnifiedToolContext = {
-          log: (msg) => { console.log(`[device/converse][tool] ${msg}`); },
+          log: (msg) => { console.log(`[${converseToolName}][tool] ${msg}`); },
           signal: ctrl.signal,
           progress: () => {},
           emit: () => { /* installed by dispatchProjectedToolStream */ },
           workspaceId,
-          role: 'operator',
+          role,
           runId: globalThis.crypto.randomUUID(),
           spawnId: globalThis.crypto.randomUUID(),
           transport: 'in_process',
@@ -198,12 +211,15 @@ const converse = defineTool({
         try {
           for await (const ev of dispatchProjectedToolStream(
             operatorConverseTool,
-            'operator:converse',
+            converseToolName,
             {
               messages,
               trigger: body.trigger ?? 'user_message',
               modality,
               sessionUser,
+              // P-012: forward the persona role so the prompt builder loads the
+              // matching persona set ('operator' default).
+              role,
               // Rolling-summary context + post-turn compaction
               // (operator-context-compaction-2026-06-05).
               conversationId: conversation.id,

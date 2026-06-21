@@ -284,6 +284,19 @@ export interface VoicePrefs {
   audienceMode: 'engineer' | 'novice';
 
   /**
+   * Which human-facing brain/persona the LIVE converse paths (voice host +
+   * text panel + device/mobile) run behind `ask_operator` / `*:converse`
+   * (sentinel-herald P-011/P-012).
+   *   'operator' (default) — the existing operator persona; live voice stays
+   *                          byte-for-byte unchanged.
+   *   'sentinel'           — the Sentinel Herald persona (loads `sentinel:converse`).
+   *
+   * DECOUPLED from the Sentinel sidebar flag (that flag shows the settings
+   * tab; this pref switches the live brain). A deliberate, reversible toggle.
+   */
+  humanFacingRole: 'operator' | 'sentinel';
+
+  /**
    * Do-not-disturb for the Sentinel herald (sentinel-as-herald-2026-06-21).
    * When true, the herald stays quiet — a single live pause lever the user
    * can flip on/off from the Sentinel sidebar tab without unwinding every
@@ -356,6 +369,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   agentLanguage: 'en',
   memoryEmbedderMode: 'auto',
   audienceMode: 'engineer',
+  humanFacingRole: 'operator',
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

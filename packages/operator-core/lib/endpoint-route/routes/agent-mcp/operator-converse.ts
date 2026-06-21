@@ -77,7 +77,21 @@ export default defineTool({
     // 'operator' is byte-identical to before; 'sentinel' resolves the
     // sentinel:converse alias (same handler, Herald persona). An unknown role
     // falls back to operator:converse so a stray value can't 500 a live turn.
-    const role = typeof body.role === 'string' && body.role.trim() ? body.role.trim() : 'operator';
+    //
+    // P-012 (text parity): an EXPLICIT body.role wins (P-006). When the caller
+    // didn't set one, fall back to the `humanFacingRole` voice pref so the
+    // Sentinel repoint is consistent with the voice + device paths. Default
+    // remains 'operator' (pref unset/'operator' → byte-for-byte unchanged).
+    let role = typeof body.role === 'string' && body.role.trim() ? body.role.trim() : '';
+    if (!role) {
+      try {
+        const { loadVoicePrefs } = await import('../../../voice-prefs');
+        const prefs = await loadVoicePrefs();
+        role = prefs.humanFacingRole === 'sentinel' ? 'sentinel' : 'operator';
+      } catch {
+        role = 'operator';
+      }
+    }
     const converseToolName = `${role}:converse`;
     const operatorConverseTool =
       lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');

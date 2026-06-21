@@ -89,7 +89,7 @@ describe('mergeUserOverWorkspace', () => {
 });
 
 describe('VOICE_USER_OVERRIDE_KEYS', () => {
-  it('includes the 15 documented voice/operator override keys', () => {
+  it('includes the documented voice/operator override keys', () => {
     // If this list changes, /settings/user/page.tsx and the user-prefs
     // resolver in voice-prefs.ts both need to track it. Snapshot to
     // catch accidental drift.
@@ -112,6 +112,7 @@ describe('VOICE_USER_OVERRIDE_KEYS', () => {
       'silenceVoice',
       'operatorBackstoryEnabled',
       'memoryEmbedderMode',
+      'humanFacingRole',
     ]);
   });
 

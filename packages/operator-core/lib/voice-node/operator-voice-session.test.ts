@@ -55,7 +55,9 @@ interface Harness {
   getEl(): FakeEl;
 }
 
-function makeHarness(opts: { leaseGranted?: boolean; configError?: string } = {}): Harness {
+function makeHarness(
+  opts: { leaseGranted?: boolean; configError?: string; humanFacingRole?: 'operator' | 'sentinel' } = {},
+): Harness {
   const out: OpVoiceMessage[] = [];
   let el: FakeEl | null = null;
 
@@ -66,7 +68,15 @@ function makeHarness(opts: { leaseGranted?: boolean; configError?: string } = {}
   const resolveConfig = vi.fn(async () =>
     opts.configError
       ? ({ ok: false as const, error: opts.configError })
-      : ({ ok: true as const, config: { signedUrl: 'wss://el/x', overrides: { agent: { language: 'en' } }, dynamicVariables: { workspace_id: 'w', surface: 'tui' } } }),
+      : ({
+          ok: true as const,
+          config: {
+            signedUrl: 'wss://el/x',
+            overrides: { agent: { language: 'en' } },
+            dynamicVariables: { workspace_id: 'w', surface: 'tui' },
+            ...(opts.humanFacingRole ? { humanFacingRole: opts.humanFacingRole } : {}),
+          },
+        }),
   );
 
   const deps: OperatorVoiceSessionDeps = {
@@ -246,6 +256,31 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
     expect(h.deps.askOperator).toHaveBeenCalledWith('how goes it', 'op_conv_1', 'operator');
     const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
     expect(result).toMatchObject({ tool_call_id: 'tc_1', is_error: false, result: '<say>here you go</say>' });
+  });
+
+  it('repoints the brain to sentinel when humanFacingRole=sentinel (P-011)', async () => {
+    const h = makeHarness({ humanFacingRole: 'sentinel' });
+    await startSession(h);
+    const before = h.getEl().sent.length;
+    h.getEl().push({
+      type: 'client_tool_call',
+      client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_s', parameters: { question: 'status?' } },
+    });
+    await flush();
+    expect(h.deps.askOperator).toHaveBeenCalledWith('status?', 'op_conv_1', 'sentinel');
+    const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
+    expect(result).toMatchObject({ tool_call_id: 'tc_s', is_error: false });
+  });
+
+  it('keeps the brain on operator when humanFacingRole is unset (default, backward-compatible)', async () => {
+    const h = makeHarness();
+    await startSession(h);
+    h.getEl().push({
+      type: 'client_tool_call',
+      client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_o', parameters: { question: 'status?' } },
+    });
+    await flush();
+    expect(h.deps.askOperator).toHaveBeenCalledWith('status?', 'op_conv_1', 'operator');
   });
 
   it('rejects an unknown tool call with an error result', async () => {

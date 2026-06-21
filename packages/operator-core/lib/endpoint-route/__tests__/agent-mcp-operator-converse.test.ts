@@ -21,6 +21,12 @@ vi.mock('../../workspace-registry', () => ({
 vi.mock('../../operator-budget', () => ({
   checkBudget: vi.fn(async () => ({ state: null, exceeded: false })),
 }));
+// P-012: the text route falls back to the `humanFacingRole` voice pref when the
+// caller didn't set an explicit body.role. Mutated per-test.
+let humanFacingRole: 'operator' | 'sentinel' = 'operator';
+vi.mock('../../voice-prefs', () => ({
+  loadVoicePrefs: vi.fn(async () => ({ humanFacingRole })),
+}));
 vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
@@ -34,15 +40,17 @@ const fakeTool = {
   fn: async () => ({ content: [{ type: 'text', text: '{"totalCost":0,"assembled":""}' }] }),
 };
 
+const lookupByMcpName = vi.fn((name: string) =>
+  name === 'operator:converse' || name === 'sentinel:converse' ? fakeTool : null,
+);
+
 vi.mock('@papercusp/agent-mcp', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/agent-mcp')>(
     '@papercusp/agent-mcp',
   );
   return {
     ...actual,
-    lookupByMcpName: vi.fn((name: string) =>
-      name === 'operator:converse' ? fakeTool : null,
-    ),
+    lookupByMcpName: (name: string) => lookupByMcpName(name),
   };
 });
 
@@ -61,6 +69,8 @@ let app: Hono;
 beforeEach(() => {
   app = new Hono().basePath('/api');
   registerAllRoutes(app);
+  humanFacingRole = 'operator';
+  lookupByMcpName.mockClear();
 });
 afterEach(() => _resetStateChannelForTests());
 
@@ -146,5 +156,31 @@ describe('POST /api/agent-mcp/operator-converse — state-snapshot fan-out', () 
     const payload = JSON.parse(events[0].split('data: ')[1]);
     expect(payload.runId).toBe('voice-run');
     expect(payload.snapshot.openCards.some((c: { fallbackText?: string }) => c.fallbackText === 'spoken text')).toBe(true);
+  });
+});
+
+describe('POST /api/agent-mcp/operator-converse — persona role resolution (P-012)', () => {
+  it('falls back to the sentinel brain when humanFacingRole=sentinel and no body role', async () => {
+    humanFacingRole = 'sentinel';
+    const res = await post({ messages: [], trigger: 'user_message' });
+    await collectEvents(res, 200);
+    expect(lookupByMcpName).toHaveBeenCalledWith('sentinel:converse');
+    expect(lookupByMcpName).not.toHaveBeenCalledWith('operator:converse');
+  });
+
+  it('defaults to the operator brain when humanFacingRole is operator', async () => {
+    humanFacingRole = 'operator';
+    const res = await post({ messages: [], trigger: 'user_message' });
+    await collectEvents(res, 200);
+    expect(lookupByMcpName).toHaveBeenCalledWith('operator:converse');
+    expect(lookupByMcpName).not.toHaveBeenCalledWith('sentinel:converse');
+  });
+
+  it('an explicit body role WINS over the pref (P-006 precedence)', async () => {
+    humanFacingRole = 'sentinel';
+    const res = await post({ messages: [], trigger: 'user_message', role: 'operator' });
+    await collectEvents(res, 200);
+    expect(lookupByMcpName).toHaveBeenCalledWith('operator:converse');
+    expect(lookupByMcpName).not.toHaveBeenCalledWith('sentinel:converse');
   });
 });
