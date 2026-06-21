@@ -87,6 +87,42 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
         "the hive's pause/status/liveness machinery can see."
     )
 
+# Destructive tree-wide git guard (hive-loop-supervision-2026-06-21): a
+# pathspec-less `git reset --hard` / `git checkout|restore .` (or `:/`) /
+# `git clean -f*` / `git stash` on the SHARED staging checkout discards EVERY
+# concurrent agent's UNCOMMITTED work — edits sit unstaged until the next
+# git-sync tick, so the loss is UNRECOVERABLE (git never made a blob; kopia
+# backs up workspace-state, ~14KB, NOT the code). Confirmed wiping a tested
+# in-flight fix on 2026-06-21 (an agent "cleaning the tree" between commits) —
+# the root of the recurring "my edits got reverted/overwritten" reports. Agent
+# sessions get the safe per-file alternative; the owner's own sessions (no
+# PAPERCUSP_AGENT_SESSION marker) are deliberately exempt, mirroring the
+# scheduler lockout above. Local decision, no HTTP. Per-segment + start-anchored
+# (re.match after splitting on ;&|newline and stripping sudo) so `cd x && git
+# reset --hard` is caught but `echo "git reset --hard"` is not.
+if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1':
+    _GIT = r'git\b(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--git-dir\S*|\s+--work-tree\S*)*\s+'
+    _git_deny = (
+        'shared-tree guard: `{op}` would discard EVERY concurrent agent\'s '
+        'UNCOMMITTED work on the shared staging checkout — edits sit unstaged '
+        'until the next git-sync tick, so the loss is UNRECOVERABLE (no git blob; '
+        'kopia backs up workspace-state, not code). This wiped a tested in-flight '
+        'fix on 2026-06-21. To discard only YOUR change to ONE file, re-edit it by '
+        'hand or run `git checkout -- <that.one.file>` with an EXPLICIT path — '
+        'never a pathspec-less reset/checkout/clean/stash. If you wanted a clean '
+        "tree, you don't need one: stop editing and let git-sync commit."
+    )
+    for _seg in re.split(r'[;&|\n]', command):
+        _s = re.sub(r'^\s*sudo\s+', '', _seg.strip())
+        if re.match(_GIT + r'reset\b.*--hard\b', _s):
+            deny(_git_deny.format(op='git reset --hard'))
+        if re.match(_GIT + r'clean\b.*-\w*f', _s):
+            deny(_git_deny.format(op='git clean -f'))
+        if re.match(_GIT + r'(?:checkout|restore)\b.*\s(?:\.|:/)(?:\s|$)', _s):
+            deny(_git_deny.format(op='git checkout/restore .'))
+        if re.match(_GIT + r'stash\b(?!\s+(?:pop|apply|list|show|drop|branch|clear))', _s) and ' -- ' not in _s:
+            deny(_git_deny.format(op='git stash'))
+
 # Cheap local pre-filter — skip the HTTP round-trip for the 99% of commands
 # that can't touch a registered resource. Tokens mirror the seeded patterns.
 if not re.search(r'systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(dev|build)', command):

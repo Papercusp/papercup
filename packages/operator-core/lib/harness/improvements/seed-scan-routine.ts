@@ -1,23 +1,26 @@
 /**
- * Seed the proactive `scan` launch routine — unify-agent-launches-as-blueprints-2026-06-04
- * (P1, D-003 / D-005).
+ * RETIRED — the scheduled `scan` cadence is gone (sentinel-herald-2026-06-21 D-018 / P-023).
  *
- * The scan reframe (D-005): the bespoke `operator_scanner_session` + operator-card
- * recommendation stream dissolve into a SCHEDULED LAUNCH of the `scan` blueprint
- * whose findings land as `work_items[kind=change|improvement]` in the
- * self-improvement triage backlog (one triage surface, not a separate card stream).
+ * This script used to seed the proactive `scan` launch routine (a 4-hourly
+ * `system:blueprint-run { blueprintId: 'scan' }` cadence whose findings landed in the
+ * self-improvement triage backlog). The OLD operator workspace-scan is retired: the
+ * Queen is now the constant scanner/placer, and the Sentinel reads live workspace state
+ * DIRECTLY (curation:state-of-hive / curation:feed / Overwatch compute-brief —
+ * packages/operator-core/lib/sentinel/sentinel-context.ts), so a separate scheduled
+ * "sweep + capture" surface is no longer run as a competing cadence.
  *
- * Unlike the bespoke `system:*` release/improvement actions, this routine needs NO
- * bespoke handler — it rides the generic `system:blueprint-run` action with a
- * `payload_template.blueprintId: 'scan'`, which the launch-blueprint primitive fires
- * (resolving the scanner role from the blueprint). That is the unification: a pure
- * cadence launch is a declared blueprint + a generic routine, no hand-wired caller.
+ * What stayed: the `scan` blueprint + its scanner role survive as an ON-DEMAND launch
+ * (`system:blueprint-run { blueprintId: 'scan' }`) for a manual one-off sweep, and the
+ * `improvements:capture` curation/triage path is UNCHANGED. Only the CLOCK is removed
+ * (the blueprint's `triggers.schedule` was dropped, so nothing materializes the routine).
  *
- * SEEDED INACTIVE by default (mirrors seed-release-routines.ts /
- * seed-improvement-routines.ts) — bring-up is human-confirmed. Idempotent (upsert).
+ * Running this script now DEACTIVATES (does not re-create) any lingering `scan` routine —
+ * a defensive, idempotent cleanup so an old seeded row can't tick. It NEVER arms a cadence;
+ * the `--active` flag is intentionally gone. To bring a manual cadence back, re-add a
+ * `triggers.schedule` entry to the scan blueprint (prefer `singleton: true` so it seeds
+ * INACTIVE/dark) rather than reviving this seed.
  *
- *   tsx seed-scan-routine.ts            # seed INACTIVE
- *   tsx seed-scan-routine.ts --active   # seed + enable the cadence
+ *   tsx seed-scan-routine.ts            # deactivate any lingering scan routine (no-op if none)
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -25,43 +28,25 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.SCAN_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
-/** Every 4 hours — matches the `scan` blueprint's declared `triggers.schedule`. */
-const CRON = '0 0 */4 * * *';
-const KICKOFF =
-  'Proactively scan the workspace for latent problems + improvement opportunities no ' +
-  'agent has flagged. Capture each finding via improvements:capture (kind=bug for a ' +
-  'defect, change for an improvement) so it lands as a tracked work-item in the ' +
-  'self-improvement triage backlog — do NOT emit operator cards.';
 
 async function main(): Promise<void> {
-  const active = process.argv.includes('--active');
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
   const name = 'scan';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  // timeoutMs: a real workspace scan runs many turns — far past the invoke
-  // route's 90s default (P-009 smoke: 300s SIGTERMed a scan with zero output).
-  // blueprint-run-action forwards this to fireLaunchBlueprint → the route.
-  const payloadTemplate = { blueprintId: 'scan', mode: 'run', kickoff: KICKOFF, timeoutMs: 900_000 };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       payload_template, concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify({ cron: CRON })}::text::jsonb,
-            'system:blueprint-run', ${JSON.stringify(payloadTemplate)}::text::jsonb,
-            'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      payload_template = EXCLUDED.payload_template,
-      active = EXCLUDED.active,
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
+  // Defensive cleanup: darken any old scan cadence row left behind by a prior seed.
+  // No INSERT — the retired surface must never be (re-)created here.
+  const rows = await sql<{ id: string }[]>`
+    UPDATE harness_shared.routines
+       SET active = false, updated_at = now()
+     WHERE install_slug = ${SLUG} AND name = ${name} AND active = true
+    RETURNING id
   `;
   console.log(
-    `[seed-scan-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `fires the scan blueprint via system:blueprint-run; findings → self-improvement backlog. ` +
-      (active ? 'Cadence LIVE.' : 'Inactive — enable with --active or the routines admin.'),
+    `[seed-scan-routine] RETIRED (D-018). Scheduled scan cadence removed — the Queen scans ` +
+      `and the Sentinel reads live state directly. ` +
+      (rows.length
+        ? `Deactivated a lingering "${name}" routine for "${SLUG}" (ws=${ws}).`
+        : `No active "${name}" routine to deactivate for "${SLUG}" (ws=${ws}) — nothing to do.`),
   );
 }
 
