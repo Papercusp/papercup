@@ -48,6 +48,12 @@ function shouldEnableNow(): boolean {
   });
 }
 
+function readCssToken(name: string): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || undefined;
+}
+
 export function ChatwootWidget() {
   const [enabled, setEnabled] = useState(shouldEnableNow);
 
@@ -73,6 +79,7 @@ export function ChatwootWidget() {
     const baseUrl = process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL ?? DEFAULT_BASE_URL;
     const websiteToken = process.env.NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN ?? DEFAULT_TOKEN;
     if (!websiteToken) return;
+    const widgetColor = readCssToken('--accent');
 
     window.chatwootSettings = {
       hideMessageBubble: true,
@@ -81,7 +88,7 @@ export function ChatwootWidget() {
       type: 'standard',
       launcherTitle: 'Papercusp Support',
       darkMode: 'dark',
-      widgetColor: '#38bdf8',
+      ...(widgetColor ? { widgetColor } : {}),
       widgetStyle: 'flat',
       showUnreadMessagesDialog: false,
       showPopoutButton: false,

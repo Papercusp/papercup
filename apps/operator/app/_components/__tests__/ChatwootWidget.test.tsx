@@ -21,6 +21,7 @@ afterEach(() => {
   cleanup();
   document.head.innerHTML = '';
   document.body.innerHTML = '';
+  document.documentElement.style.removeProperty('--accent');
   vi.unstubAllGlobals();
   shouldEnableSupportWidget.mockReset();
 });
@@ -61,5 +62,14 @@ describe('ChatwootWidget', () => {
     render(<ChatwootWidget />);
 
     expect(document.querySelector('script[src*="chat.papercupai.com/packs/js/sdk.js"]')).not.toBeNull();
+  });
+
+  it('uses the app accent token for the Chatwoot widget color', () => {
+    shouldEnableSupportWidget.mockReturnValue(true);
+    document.documentElement.style.setProperty('--accent', 'rgb(1, 2, 3)');
+
+    render(<ChatwootWidget />);
+
+    expect(window.chatwootSettings?.widgetColor).toBe('rgb(1, 2, 3)');
   });
 });

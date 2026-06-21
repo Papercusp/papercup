@@ -448,9 +448,15 @@ autonomous-fleet agent.
   (`BORROWABLE.md`). Tell the user what changed; don't ask permission to do
   it right.
 - **New feature flags DEFAULT TO ENABLED** (`FLAG_DEFAULTS` in
-  `libs/flags/src/types.ts` = `true`). Default-OFF only for genuinely
-  incomplete/unsafe work or an explicit owner ask — then surface the pending
-  flip loudly in the plan's **Next** line + your completion report.
+  `libs/flags/src/types.ts` = `true`) — flipping a finished feature ON is the
+  LAST STEP of the task, not a someday. A capability built then left gated OFF —
+  by a flag OR a `process.env.PAPERCUSP_*` boolean (never gate a feature on env;
+  it dodges the default-on guard + the dark-flag expiry) — is INCOMPLETE, not
+  done; "built + proven in isolation + left off" is the #1 way good work silently
+  dies (the PgBouncer-stayed-dark class). Default-OFF only for genuinely
+  incomplete/unsafe work or an explicit owner ask — then register it in
+  `KNOWN_DARK_FLAGS` (with a review-by) and surface the pending flip loudly in
+  the plan's **Next** line + your completion report.
 - **Data fetching → `@papercusp/sync`** (`useSyncQuery`/`useSyncMutate`/…) —
   never hand-rolled fetch/SWR/React-Query. **Endpoints → `defineTool`** —
   never a raw route handler. Both per `CLAUDE.md` +

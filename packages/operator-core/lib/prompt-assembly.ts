@@ -54,6 +54,7 @@ import { renderConcurrencyFirstNote } from './concurrency-first-policy';
 import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 import { renderCodeRunNudge } from './code-run-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
+import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
@@ -536,6 +537,17 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (codeRunNudge) {
     parts.push(codeRunNudge);
     sections.push({ name: 'code-run-note', chars: codeRunNudge.length });
+  }
+
+  // Finish-the-rollout note (flags-default-on-reach-2026-06-21) — the SHARED base every
+  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). A capability
+  // built then left gated OFF (flag or env boolean) is INCOMPLETE, not done — turning the gate on is
+  // the last step of the task. Sourced from the one FINISH_THE_ROLLOUT_NOTE constant (orchestrator) so
+  // this base, the spawned-bee base, the su playbooks, and CLAUDE.md's flags section can't desync.
+  const finishTheRolloutNote = renderFinishTheRolloutNote();
+  if (finishTheRolloutNote) {
+    parts.push(finishTheRolloutNote);
+    sections.push({ name: 'finish-the-rollout-note', chars: finishTheRolloutNote.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

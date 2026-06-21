@@ -328,9 +328,15 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   never ships dark. A flag you create for a feature gets its `FLAG_DEFAULTS`
   entry (`libs/flags/src/types.ts`) set to `true` so the feature is ACTIVE on
   deploy; flags exist so the owner can switch a feature OFF, not so completed
-  work waits for a flip he was never told about. Default-OFF only for
-  genuinely incomplete/unsafe work or an explicit owner ask — and then
-  surface the pending flip loudly in the plan + your report.
+  work waits for a flip he was never told about. Flipping a finished feature ON
+  is the LAST STEP of the task, not a someday: a capability built then left
+  gated OFF — by a flag OR a `process.env.PAPERCUSP_*` boolean (never gate a
+  feature on env; it dodges the default-on guard + the dark-flag expiry) — is
+  INCOMPLETE, not done; "built + proven in isolation + left off" is the #1 way
+  good work silently dies (the PgBouncer-stayed-dark class). Default-OFF only for
+  genuinely incomplete/unsafe work or an explicit owner ask — and then register
+  it (`KNOWN_DARK_FLAGS` + review-by) and surface the pending flip loudly in the
+  plan + your report.
 - **Data fetching → `@papercusp/sync`.** Route ALL client data reads/writes
   through `@papercusp/sync` (`useSyncQuery` / `useSyncMutate` / `useOwnedSyncEntity`
   / `selectOwnedData`) — never hand-roll `fetch` / SWR / React-Query / direct-Zero

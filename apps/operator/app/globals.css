@@ -949,7 +949,7 @@ html[data-route-pending="true"] .pc-header::after {
 .pc-header-quote {
   --pc-quote-ink: color-mix(in oklab, var(--fg), #c7a46a 10%);
   --pc-quote-bleed: rgb(from var(--accent-strong) r g b / 0.48);
-  --pc-quote-neon-cyan: rgba(34, 211, 238, 0.74);
+  --pc-quote-neon-cyan: rgb(from var(--accent) r g b / 0.74);
   --pc-quote-neon-gold: rgb(from var(--amber-400) r g b / 0.62);
   --pc-quote-neon-magenta: rgba(217, 70, 239, 0.38);
   --pc-quote-metal: linear-gradient(
@@ -2381,7 +2381,7 @@ p {
 
 .oracle-tab-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .oracle-tab-dot-busy { background: var(--accent); animation: oracle-thinking-bounce 1.2s infinite ease-in-out both; }
-.oracle-tab-dot-unread { background: var(--good, #22d3ee); }
+.oracle-tab-dot-unread { background: var(--good, var(--accent)); }
 .oracle-tab-close {
   width: 20px;
   height: 20px;
@@ -5137,7 +5137,7 @@ body.h-harness-top-collapsed .pc-header {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
     0 16px 36px rgba(0, 0, 0, 0.54),
-    0 0 34px rgba(34, 211, 238, 0.34),
+    0 0 34px rgb(from var(--accent) r g b / 0.34),
     inset 0 1px 0 rgba(255, 255, 255, 0.30),
     inset 0 -1px 0 rgba(0, 0, 0, 0.90);
 }
@@ -5149,7 +5149,7 @@ body.h-harness-top-collapsed .pc-header {
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 12%),
     0 16px 36px rgba(0, 0, 0, 0.58),
     0 0 32px rgba(239, 68, 68, 0.30),
-    0 0 20px rgba(34, 211, 238, 0.18),
+    0 0 20px rgb(from var(--accent) r g b / 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
@@ -6705,7 +6705,7 @@ body.h-harness-top-collapsed .pc-header {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
     0 11px 24px rgba(0, 0, 0, 0.34),
-    0 0 14px rgba(34, 211, 238, 0.12),
+    0 0 14px rgb(from var(--accent) r g b / 0.12),
     inset 0 1px 0 rgba(255,255,255,0.09);
   cursor: pointer;
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background 140ms ease, opacity 140ms ease;
@@ -6717,7 +6717,7 @@ body.h-harness-top-collapsed .pc-header {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
     0 14px 28px rgba(0, 0, 0, 0.42),
-    0 0 20px rgba(34, 211, 238, 0.20),
+    0 0 20px rgb(from var(--accent) r g b / 0.20),
     inset 0 1px 0 rgba(255,255,255,0.13);
   transform: translateY(-1px);
   outline: none;
@@ -7347,8 +7347,8 @@ body.h-harness-top-collapsed .pc-header {
   text-transform: uppercase;
   padding: 2px 5px;
   border-radius: 999px;
-  background: rgba(34, 211, 238, 0.14);
-  color: #22d3ee;
+  background: rgb(from var(--accent) r g b / 0.14);
+  color: var(--accent);
 }
 .kbd-settings-row-controls {
   grid-area: controls;
@@ -7370,8 +7370,8 @@ body.h-harness-top-collapsed .pc-header {
   color: var(--fg);
 }
 .kbd-settings-input.is-recording {
-  border-color: rgba(34, 211, 238, 0.5);
-  background: rgba(34, 211, 238, 0.08);
+  border-color: rgb(from var(--accent) r g b / 0.5);
+  background: rgb(from var(--accent) r g b / 0.08);
   font-style: italic;
 }
 .kbd-settings-record,
@@ -9763,8 +9763,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   border-color: color-mix(in oklab, var(--good), var(--accent) 28%);
   box-shadow:
     0 18px 46px rgba(0, 0, 0, 0.42),
-    0 0 0 1px rgba(34, 211, 238, 0.12),
-    0 0 26px rgba(34, 211, 238, 0.11);
+    0 0 0 1px rgb(from var(--accent) r g b / 0.12),
+    0 0 26px rgb(from var(--accent) r g b / 0.11);
 }
 .oracle-fab-badge {
   position: absolute;
@@ -9774,8 +9774,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   height: 10px;
   border-radius: 999px;
   border: 2px solid var(--bg);
-  background: linear-gradient(180deg, #67e8f9, #22d3ee);
-  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.12);
+  background: linear-gradient(180deg, #67e8f9, var(--accent));
+  box-shadow: 0 0 0 4px rgb(from var(--accent) r g b / 0.12);
 }
 .oracle-fab.has-unread .oracle-fab-badge {
   animation: pc-header-cta-pulse 1.6s var(--ease-out) infinite;
@@ -11523,44 +11523,44 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   background:
     radial-gradient(circle at 50% -8%, rgb(from var(--accent-strong) r g b / 0.16), transparent 22rem),
     radial-gradient(circle at 14% 14%, rgba(217, 70, 239, 0.12), transparent 16rem),
-    radial-gradient(circle at 88% 10%, rgba(34, 211, 238, 0.12), transparent 18rem),
-    linear-gradient(135deg, rgba(217, 70, 239, 0.04), transparent 24% 72%, rgba(34, 211, 238, 0.045)),
+    radial-gradient(circle at 88% 10%, rgb(from var(--accent) r g b / 0.12), transparent 18rem),
+    linear-gradient(135deg, rgba(217, 70, 239, 0.04), transparent 24% 72%, rgb(from var(--accent) r g b / 0.045)),
     linear-gradient(180deg, color-mix(in srgb, var(--bg-deep), transparent 0.5%), color-mix(in srgb, var(--bg-deepest), transparent 0.5%)) !important;
   box-shadow:
     0 0 0 100vmax color-mix(in srgb, var(--bg-deepest), transparent 46%),
     0 52px 148px rgba(0, 0, 0, 0.82),
     0 0 0 1px rgb(from var(--accent-strong) r g b / 0.12),
-    0 0 54px rgba(34, 211, 238, 0.12),
+    0 0 54px rgb(from var(--accent) r g b / 0.12),
     0 0 28px rgba(217, 70, 239, 0.08),
-    inset 0 0 26px rgba(34, 211, 238, 0.026) !important;
+    inset 0 0 26px rgb(from var(--accent) r g b / 0.026) !important;
 }
 
 .operator-panel::before {
   background:
-    linear-gradient(90deg, transparent 6%, rgba(34, 211, 238, 0.92) 8% 19%, rgba(217, 70, 239, 0.78) 19% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.78) 80% 81%, rgba(34, 211, 238, 0.92) 81% 92%, transparent 94%) top 0 left / 100% 1px no-repeat,
-    linear-gradient(90deg, transparent 10%, rgba(217, 70, 239, 0.40) 10% 18%, transparent 18% 82%, rgba(34, 211, 238, 0.40) 82% 90%, transparent 90%) bottom 0 left / 100% 1px no-repeat,
-    linear-gradient(180deg, transparent 10%, rgba(34, 211, 238, 0.62) 10% 30%, transparent 30% 70%, rgba(217, 70, 239, 0.38) 70% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
-    linear-gradient(180deg, transparent 10%, rgba(217, 70, 239, 0.38) 10% 30%, transparent 30% 70%, rgba(34, 211, 238, 0.62) 70% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
-    repeating-linear-gradient(90deg, rgba(34, 211, 238, 0.22) 0 1px, transparent 1px 9px) top 3px center / calc(100% - 42px) 1px no-repeat,
+    linear-gradient(90deg, transparent 6%, rgb(from var(--accent) r g b / 0.92) 8% 19%, rgba(217, 70, 239, 0.78) 19% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.78) 80% 81%, rgb(from var(--accent) r g b / 0.92) 81% 92%, transparent 94%) top 0 left / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 10%, rgba(217, 70, 239, 0.40) 10% 18%, transparent 18% 82%, rgb(from var(--accent) r g b / 0.40) 82% 90%, transparent 90%) bottom 0 left / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 10%, rgb(from var(--accent) r g b / 0.62) 10% 30%, transparent 30% 70%, rgba(217, 70, 239, 0.38) 70% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(217, 70, 239, 0.38) 10% 30%, transparent 30% 70%, rgb(from var(--accent) r g b / 0.62) 70% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+    repeating-linear-gradient(90deg, rgb(from var(--accent) r g b / 0.22) 0 1px, transparent 1px 9px) top 3px center / calc(100% - 42px) 1px no-repeat,
     repeating-linear-gradient(90deg, rgba(217, 70, 239, 0.16) 0 1px, transparent 1px 10px) bottom 3px center / calc(100% - 54px) 1px no-repeat,
-    radial-gradient(circle at 20px 20px, rgba(255,255,255,0.90) 0 1px, rgba(34, 211, 238, 0.78) 2px 3px, color-mix(in srgb, var(--bg-deeper), transparent 2%) 4px 6px, transparent 7px),
+    radial-gradient(circle at 20px 20px, rgba(255,255,255,0.90) 0 1px, rgb(from var(--accent) r g b / 0.78) 2px 3px, color-mix(in srgb, var(--bg-deeper), transparent 2%) 4px 6px, transparent 7px),
     radial-gradient(circle at calc(100% - 20px) 20px, rgba(255,255,255,0.90) 0 1px, rgba(217, 70, 239, 0.78) 2px 3px, color-mix(in srgb, var(--bg-deeper), transparent 2%) 4px 6px, transparent 7px),
     radial-gradient(circle at 20px calc(100% - 20px), rgba(255,255,255,0.74) 0 1px, rgba(217, 70, 239, 0.62) 2px 3px, color-mix(in srgb, var(--bg-deeper), transparent 2%) 4px 6px, transparent 7px),
-    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.74) 0 1px, rgba(34, 211, 238, 0.62) 2px 3px, color-mix(in srgb, var(--bg-deeper), transparent 2%) 4px 6px, transparent 7px),
-    linear-gradient(135deg, rgba(201, 236, 255, 0.84), rgba(43, 80, 106, 0.62) 10%, color-mix(in srgb, var(--bg-deep), transparent 1%) 28%, rgba(34, 211, 238, 0.22) 46%, rgba(217, 70, 239, 0.18) 54%, color-mix(in srgb, var(--bg), transparent 1%) 72%, rgba(120, 53, 15, 0.12) 100%) !important;
+    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.74) 0 1px, rgb(from var(--accent) r g b / 0.62) 2px 3px, color-mix(in srgb, var(--bg-deeper), transparent 2%) 4px 6px, transparent 7px),
+    linear-gradient(135deg, rgba(201, 236, 255, 0.84), rgba(43, 80, 106, 0.62) 10%, color-mix(in srgb, var(--bg-deep), transparent 1%) 28%, rgb(from var(--accent) r g b / 0.22) 46%, rgba(217, 70, 239, 0.18) 54%, color-mix(in srgb, var(--bg), transparent 1%) 72%, rgba(120, 53, 15, 0.12) 100%) !important;
   filter:
-    drop-shadow(0 0 10px rgba(34, 211, 238, 0.16))
+    drop-shadow(0 0 10px rgb(from var(--accent) r g b / 0.16))
     drop-shadow(0 0 16px rgba(217, 70, 239, 0.10));
 }
 
 .operator-panel::after {
   background:
-    linear-gradient(90deg, transparent 8%, rgba(34, 211, 238, 0.68) 8% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.68) 80% 92%, transparent 92%) top 0 left / 100% 1px no-repeat,
-    linear-gradient(180deg, transparent 12%, rgba(217, 70, 239, 0.28) 12% 32%, transparent 32% 68%, rgba(34, 211, 238, 0.28) 68% 88%, transparent 88%) left 0 center / 1px 100% no-repeat,
-    linear-gradient(180deg, transparent 12%, rgba(34, 211, 238, 0.28) 12% 32%, transparent 32% 68%, rgba(217, 70, 239, 0.28) 68% 88%, transparent 88%) right 0 center / 1px 100% no-repeat,
-    linear-gradient(135deg, rgba(255,255,255,0.12), rgba(34, 211, 238, 0.10) 24%, rgba(217, 70, 239, 0.08) 52%, color-mix(in srgb, var(--bg), transparent 6%) 100%) !important;
+    linear-gradient(90deg, transparent 8%, rgb(from var(--accent) r g b / 0.68) 8% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.68) 80% 92%, transparent 92%) top 0 left / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(217, 70, 239, 0.28) 12% 32%, transparent 32% 68%, rgb(from var(--accent) r g b / 0.28) 68% 88%, transparent 88%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 12%, rgb(from var(--accent) r g b / 0.28) 12% 32%, transparent 32% 68%, rgba(217, 70, 239, 0.28) 68% 88%, transparent 88%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(255,255,255,0.12), rgb(from var(--accent) r g b / 0.10) 24%, rgba(217, 70, 239, 0.08) 52%, color-mix(in srgb, var(--bg), transparent 6%) 100%) !important;
   box-shadow:
-    0 0 18px rgba(34, 211, 238, 0.08),
+    0 0 18px rgb(from var(--accent) r g b / 0.08),
     0 0 12px rgba(217, 70, 239, 0.05),
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.10) !important;
 }
@@ -11568,11 +11568,11 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 @media (max-width: 760px) {
   .operator-panel::before {
     background:
-      linear-gradient(90deg, transparent 6%, rgba(34, 211, 238, 0.92) 8% 19%, rgba(217, 70, 239, 0.78) 19% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.78) 80% 81%, rgba(34, 211, 238, 0.92) 81% 92%, transparent 94%) top 0 left / 100% 1px no-repeat,
-      linear-gradient(90deg, transparent 10%, rgba(217, 70, 239, 0.40) 10% 18%, transparent 18% 82%, rgba(34, 211, 238, 0.40) 82% 90%, transparent 90%) bottom 0 left / 100% 1px no-repeat,
-      linear-gradient(180deg, transparent 10%, rgba(34, 211, 238, 0.62) 10% 30%, transparent 30% 70%, rgba(217, 70, 239, 0.38) 70% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
-      linear-gradient(180deg, transparent 10%, rgba(217, 70, 239, 0.38) 10% 30%, transparent 30% 70%, rgba(34, 211, 238, 0.62) 70% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
-      linear-gradient(135deg, rgba(201, 236, 255, 0.84), rgba(43, 80, 106, 0.62) 10%, color-mix(in srgb, var(--bg-deep), transparent 1%) 28%, rgba(34, 211, 238, 0.22) 46%, rgba(217, 70, 239, 0.18) 54%, color-mix(in srgb, var(--bg), transparent 1%) 72%, rgba(120, 53, 15, 0.12) 100%) !important;
+      linear-gradient(90deg, transparent 6%, rgb(from var(--accent) r g b / 0.92) 8% 19%, rgba(217, 70, 239, 0.78) 19% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.78) 80% 81%, rgb(from var(--accent) r g b / 0.92) 81% 92%, transparent 94%) top 0 left / 100% 1px no-repeat,
+      linear-gradient(90deg, transparent 10%, rgba(217, 70, 239, 0.40) 10% 18%, transparent 18% 82%, rgb(from var(--accent) r g b / 0.40) 82% 90%, transparent 90%) bottom 0 left / 100% 1px no-repeat,
+      linear-gradient(180deg, transparent 10%, rgb(from var(--accent) r g b / 0.62) 10% 30%, transparent 30% 70%, rgba(217, 70, 239, 0.38) 70% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+      linear-gradient(180deg, transparent 10%, rgba(217, 70, 239, 0.38) 10% 30%, transparent 30% 70%, rgb(from var(--accent) r g b / 0.62) 70% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+      linear-gradient(135deg, rgba(201, 236, 255, 0.84), rgba(43, 80, 106, 0.62) 10%, color-mix(in srgb, var(--bg-deep), transparent 1%) 28%, rgb(from var(--accent) r g b / 0.22) 46%, rgba(217, 70, 239, 0.18) 54%, color-mix(in srgb, var(--bg), transparent 1%) 72%, rgba(120, 53, 15, 0.12) 100%) !important;
   }
 }
 
@@ -11639,9 +11639,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   background:
     radial-gradient(ellipse at 50% -10%, rgba(103, 232, 249, 0.34), transparent 25rem),
     radial-gradient(ellipse at 18% 7%, rgb(from var(--amber-400) r g b / 0.24), transparent 18rem),
-    radial-gradient(ellipse at 88% 10%, rgba(34, 211, 238, 0.26), transparent 20rem),
+    radial-gradient(ellipse at 88% 10%, rgb(from var(--accent) r g b / 0.26), transparent 20rem),
     radial-gradient(ellipse at 82% 100%, rgba(251, 146, 60, 0.16), transparent 26rem),
-    linear-gradient(125deg, rgba(251, 146, 60, 0.07), transparent 20% 72%, rgba(34, 211, 238, 0.075)),
+    linear-gradient(125deg, rgba(251, 146, 60, 0.07), transparent 20% 72%, rgb(from var(--accent) r g b / 0.075)),
     linear-gradient(180deg, color-mix(in srgb, var(--bg-deeper), transparent 0.2%), color-mix(in srgb, var(--bg-deepest), transparent 0.2%)) !important;
   box-shadow:
     0 0 0 100vmax color-mix(in srgb, var(--bg-deepest), transparent 40%),
@@ -11649,10 +11649,10 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
     0 0 0 1px rgba(219, 251, 255, 0.78),
     0 0 8px rgba(219, 251, 255, 0.72),
     0 0 24px rgba(103, 232, 249, 0.58),
-    0 0 56px rgba(34, 211, 238, 0.42),
+    0 0 56px rgb(from var(--accent) r g b / 0.42),
     0 0 82px rgba(251, 146, 60, 0.28),
     inset 0 0 0 1px rgba(255, 244, 214, 0.30),
-    inset 0 0 30px rgba(34, 211, 238, 0.10) !important;
+    inset 0 0 30px rgb(from var(--accent) r g b / 0.10) !important;
 }
 
 .operator-panel::before {
@@ -11667,15 +11667,15 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
     linear-gradient(180deg, transparent 4%, rgba(255, 216, 97, 0.98) 5% 32%, rgba(103, 232, 249, 0.88) 32% 45%, transparent 45% 56%, rgba(103, 232, 249, 0.88) 56% 69%, rgba(255, 216, 97, 0.98) 69% 94%, transparent 96%) right 0 center / 3px 100% no-repeat,
     repeating-linear-gradient(102deg, rgba(236, 254, 255, 0.62) 0 1px, rgba(103, 232, 249, 0.30) 1px 2px, transparent 2px 10px) top 7px center / calc(100% - 44px) 2px no-repeat,
     repeating-linear-gradient(102deg, rgba(255, 216, 97, 0.50) 0 1px, rgba(251, 146, 60, 0.22) 1px 2px, transparent 2px 11px) bottom 7px center / calc(100% - 54px) 2px no-repeat,
-    radial-gradient(circle at 20px 20px, rgba(255,255,255,1) 0 2px, rgba(103, 232, 249, 1) 3px 6px, rgba(34, 211, 238, 0.55) 7px 18px, transparent 21px),
+    radial-gradient(circle at 20px 20px, rgba(255,255,255,1) 0 2px, rgba(103, 232, 249, 1) 3px 6px, rgb(from var(--accent) r g b / 0.55) 7px 18px, transparent 21px),
     radial-gradient(circle at calc(100% - 20px) 20px, rgba(255,255,255,1) 0 2px, rgba(255, 216, 97, 1) 3px 6px, rgba(251, 146, 60, 0.50) 7px 18px, transparent 21px),
     radial-gradient(circle at 20px calc(100% - 20px), rgba(255,255,255,0.96) 0 2px, rgba(255, 216, 97, 0.95) 3px 6px, rgba(251, 146, 60, 0.42) 7px 18px, transparent 21px),
-    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.96) 0 2px, rgba(103, 232, 249, 0.95) 3px 6px, rgba(34, 211, 238, 0.44) 7px 18px, transparent 21px),
-    linear-gradient(135deg, color-mix(in srgb, var(--bg-deeper), transparent 2%), rgba(34, 211, 238, 0.44) 14%, color-mix(in srgb, var(--bg-deep), transparent 1%) 32%, rgba(255, 186, 73, 0.32) 52%, color-mix(in srgb, var(--bg-deep), transparent 1%) 74%, rgba(103, 232, 249, 0.34) 100%) !important;
+    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.96) 0 2px, rgba(103, 232, 249, 0.95) 3px 6px, rgb(from var(--accent) r g b / 0.44) 7px 18px, transparent 21px),
+    linear-gradient(135deg, color-mix(in srgb, var(--bg-deeper), transparent 2%), rgb(from var(--accent) r g b / 0.44) 14%, color-mix(in srgb, var(--bg-deep), transparent 1%) 32%, rgba(255, 186, 73, 0.32) 52%, color-mix(in srgb, var(--bg-deep), transparent 1%) 74%, rgba(103, 232, 249, 0.34) 100%) !important;
   filter:
     drop-shadow(0 0 4px rgba(236, 254, 255, 0.86))
     drop-shadow(0 0 13px rgba(103, 232, 249, 0.80))
-    drop-shadow(0 0 28px rgba(34, 211, 238, 0.58))
+    drop-shadow(0 0 28px rgb(from var(--accent) r g b / 0.58))
     drop-shadow(0 0 34px rgba(251, 146, 60, 0.42)) !important;
 }
 
@@ -11688,11 +11688,11 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
     linear-gradient(90deg, transparent 7%, rgba(255, 216, 97, 0.70) 7% 24%, transparent 24% 76%, rgba(103, 232, 249, 0.72) 76% 93%, transparent 93%) bottom 0 left / 100% 2px no-repeat,
     linear-gradient(180deg, transparent 9%, rgba(255, 216, 97, 0.52) 9% 33%, transparent 33% 67%, rgba(103, 232, 249, 0.56) 67% 91%, transparent 91%) left 0 center / 2px 100% no-repeat,
     linear-gradient(180deg, transparent 9%, rgba(103, 232, 249, 0.56) 9% 33%, transparent 33% 67%, rgba(255, 216, 97, 0.52) 67% 91%, transparent 91%) right 0 center / 2px 100% no-repeat,
-    linear-gradient(135deg, rgba(255,255,255,0.16), rgba(34, 211, 238, 0.16) 24%, rgba(251, 146, 60, 0.14) 54%, color-mix(in srgb, var(--bg), transparent 5%) 100%) !important;
+    linear-gradient(135deg, rgba(255,255,255,0.16), rgb(from var(--accent) r g b / 0.16) 24%, rgba(251, 146, 60, 0.14) 54%, color-mix(in srgb, var(--bg), transparent 5%) 100%) !important;
   box-shadow:
     0 0 12px rgba(236, 254, 255, 0.36),
     0 0 24px rgba(103, 232, 249, 0.34),
-    0 0 34px rgba(34, 211, 238, 0.26),
+    0 0 34px rgb(from var(--accent) r g b / 0.26),
     0 0 28px rgba(251, 146, 60, 0.24),
     inset 0 0 0 1px rgba(219, 251, 255, 0.42) !important;
 }
@@ -11856,7 +11856,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
       linear-gradient(90deg, transparent 4%, rgba(255, 216, 97, 0.98) 5% 27%, rgba(103, 232, 249, 0.88) 27% 38%, transparent 38% 62%, rgba(103, 232, 249, 0.88) 62% 73%, rgba(255, 216, 97, 0.98) 73% 95%, transparent 96%) bottom 0 left / 100% 3px no-repeat,
       linear-gradient(180deg, transparent 4%, rgba(236, 254, 255, 1) 5% 9%, rgba(103, 232, 249, 0.98) 9% 37%, rgba(255, 186, 73, 0.76) 37% 48%, transparent 48% 57%, rgba(255, 186, 73, 0.76) 57% 68%, rgba(103, 232, 249, 0.98) 68% 92%, rgba(236, 254, 255, 0.90) 92% 96%, transparent 97%) left 0 center / 3px 100% no-repeat,
       linear-gradient(180deg, transparent 4%, rgba(255, 216, 97, 0.98) 5% 32%, rgba(103, 232, 249, 0.88) 32% 45%, transparent 45% 56%, rgba(103, 232, 249, 0.88) 56% 69%, rgba(255, 216, 97, 0.98) 69% 94%, transparent 96%) right 0 center / 3px 100% no-repeat,
-      linear-gradient(135deg, color-mix(in srgb, var(--bg-deeper), transparent 2%), rgba(34, 211, 238, 0.44) 14%, color-mix(in srgb, var(--bg-deep), transparent 1%) 32%, rgba(255, 186, 73, 0.32) 52%, color-mix(in srgb, var(--bg-deep), transparent 1%) 74%, rgba(103, 232, 249, 0.34) 100%) !important;
+      linear-gradient(135deg, color-mix(in srgb, var(--bg-deeper), transparent 2%), rgb(from var(--accent) r g b / 0.44) 14%, color-mix(in srgb, var(--bg-deep), transparent 1%) 32%, rgba(255, 186, 73, 0.32) 52%, color-mix(in srgb, var(--bg-deep), transparent 1%) 74%, rgba(103, 232, 249, 0.34) 100%) !important;
   }
 
   .operator-feed-head {
@@ -12025,7 +12025,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   height: 26px;
   border-color: rgba(190, 243, 255, 0.78);
   border-style: solid;
-  filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.22));
+  filter: drop-shadow(0 0 12px rgb(from var(--accent) r g b / 0.22));
 }
 .hud-frame-corners__corner--tl { top: 0; left: 0; border-width: 1px 0 0 1px; }
 .hud-frame-corners__corner--tr { top: 0; right: 0; border-width: 1px 1px 0 0; }
@@ -12096,7 +12096,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   letter-spacing: 0;
   text-transform: uppercase;
   white-space: nowrap;
-  text-shadow: 0 0 10px rgba(34, 211, 238, 0.18);
+  text-shadow: 0 0 10px rgb(from var(--accent) r g b / 0.18);
 }
 
 .operator-panel--maximal-hud {
@@ -12400,13 +12400,13 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   to   { transform: translateX(-12%); }
 }
 .pc-header-brand-wrap {
-  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.12));
+  filter: drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.12));
 }
 .pc-header-quote--hud {
   color: var(--pc-quote-ink);
   text-shadow:
     0 0 1px rgba(255, 255, 255, 0.72),
-    0 0 9px rgba(34, 211, 238, 0.30),
+    0 0 9px rgb(from var(--accent) r g b / 0.30),
     0 0 18px rgb(from var(--amber-400) r g b / 0.12);
 }
 
@@ -12438,8 +12438,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   color: var(--pc-quote-neon-cyan);
   filter:
     blur(0.9px)
-    drop-shadow(0 0 5px rgba(34, 211, 238, 0.72))
-    drop-shadow(0 0 14px rgba(34, 211, 238, 0.26));
+    drop-shadow(0 0 5px rgb(from var(--accent) r g b / 0.72))
+    drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.26));
   opacity: 0.32;
   transform: translate3d(0.2px, 0, 0) scaleX(1.004);
   transform-origin: left center;
@@ -12474,23 +12474,23 @@ html[data-visual-effects='full'] .pc-header-quote--hud::after {
     background-position: 0% 50%;
     text-shadow:
       0 0 1px rgba(255, 255, 255, 0.56),
-      0 0 8px rgba(34, 211, 238, 0.25),
+      0 0 8px rgb(from var(--accent) r g b / 0.25),
       0 0 18px rgb(from var(--amber-400) r g b / 0.10);
-    filter: drop-shadow(0 0 0 rgba(34, 211, 238, 0));
+    filter: drop-shadow(0 0 0 rgb(from var(--accent) r g b / 0));
   }
   7% {
     background-position: 60% 50%;
     text-shadow:
       0 0 1px rgba(255, 255, 255, 0.68),
-      0 0 8px rgba(34, 211, 238, 0.34),
+      0 0 8px rgb(from var(--accent) r g b / 0.34),
       0 0 16px rgb(from var(--amber-400) r g b / 0.16);
-    filter: drop-shadow(0 0 2px rgba(34, 211, 238, 0.16));
+    filter: drop-shadow(0 0 2px rgb(from var(--accent) r g b / 0.16));
   }
   12% {
     background-position: 42% 50%;
     text-shadow:
       0 0 1px rgba(255, 255, 255, 0.64),
-      0 0 7px rgba(34, 211, 238, 0.26),
+      0 0 7px rgb(from var(--accent) r g b / 0.26),
       0 0 16px rgb(from var(--amber-400) r g b / 0.16);
     filter: drop-shadow(0 0 2px rgb(from var(--amber-400) r g b / 0.18));
   }
@@ -12501,8 +12501,8 @@ html[data-visual-effects='full'] .pc-header-quote--hud::after {
     opacity: 0.24;
     filter:
       blur(0.8px)
-      drop-shadow(0 0 5px rgba(34, 211, 238, 0.46))
-      drop-shadow(0 0 13px rgba(34, 211, 238, 0.18));
+      drop-shadow(0 0 5px rgb(from var(--accent) r g b / 0.46))
+      drop-shadow(0 0 13px rgb(from var(--accent) r g b / 0.18));
     transform: translate3d(0.1px, 0, 0) scaleX(1.003);
     letter-spacing: 0;
   }
@@ -12510,8 +12510,8 @@ html[data-visual-effects='full'] .pc-header-quote--hud::after {
     opacity: 0.42;
     filter:
       blur(1.2px)
-      drop-shadow(0 0 6px rgba(34, 211, 238, 0.54))
-      drop-shadow(0 0 15px rgba(34, 211, 238, 0.20));
+      drop-shadow(0 0 6px rgb(from var(--accent) r g b / 0.54))
+      drop-shadow(0 0 15px rgb(from var(--accent) r g b / 0.20));
     transform: translate3d(0.35px, 0.35px, 0) scaleX(1.006);
     letter-spacing: 0;
   }
@@ -12519,8 +12519,8 @@ html[data-visual-effects='full'] .pc-header-quote--hud::after {
     opacity: 0.38;
     filter:
       blur(1px)
-      drop-shadow(0 0 5px rgba(34, 211, 238, 0.46))
-      drop-shadow(0 0 13px rgba(34, 211, 238, 0.18));
+      drop-shadow(0 0 5px rgb(from var(--accent) r g b / 0.46))
+      drop-shadow(0 0 13px rgb(from var(--accent) r g b / 0.18));
     transform: translate3d(-0.3px, 0.2px, 0) scaleX(1.004);
     letter-spacing: 0;
   }
@@ -12635,7 +12635,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   width: 86px;
   height: 86px;
   opacity: 0.72;
-  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.18));
+  filter: drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.18));
 }
 .oracle-hud-frame {
   inset: 8px;
@@ -12705,11 +12705,11 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   transform: translateY(-4px) scale(1.01);
 }
 .pc-marketplace-list--maximal-hud .pc-marketplace-card-title {
-  text-shadow: 0 0 16px rgba(34, 211, 238, 0.14);
+  text-shadow: 0 0 16px rgb(from var(--accent) r g b / 0.14);
 }
 .pc-marketplace-list--maximal-hud .pc-marketplace-enabled code,
 .pc-marketplace-list--maximal-hud .pc-marketplace-meta span {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 14px rgba(34, 211, 238, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 14px rgb(from var(--accent) r g b / 0.06);
 }
 .pc-marketplace-list--maximal-hud .pc-marketplace-dialog-actions .pc-button {
   position: relative;
@@ -12787,7 +12787,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   z-index: 1;
 }
 .pc-support-shell .pc-support-resources a {
-  text-shadow: 0 0 10px rgba(34, 211, 238, 0.14);
+  text-shadow: 0 0 10px rgb(from var(--accent) r g b / 0.14);
 }
 
 @media (max-width: 1100px) {
@@ -12892,7 +12892,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 50% 50%, rgba(34, 211, 238, 0.18), transparent 30%),
+    radial-gradient(circle at 50% 50%, rgb(from var(--accent) r g b / 0.18), transparent 30%),
     radial-gradient(circle at 18% 22%, rgba(59, 130, 246, 0.20), transparent 24%),
     radial-gradient(circle at 82% 76%, rgba(16, 185, 129, 0.16), transparent 28%),
     linear-gradient(135deg, color-mix(in srgb, var(--bg-deepest), transparent 4%), color-mix(in srgb, var(--bg-deep), transparent 2%) 48%, color-mix(in srgb, var(--bg-deepest), transparent 3%));
@@ -12910,7 +12910,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   background:
     linear-gradient(rgba(103, 232, 249, 0.16) 1px, transparent 1px),
     linear-gradient(90deg, rgba(103, 232, 249, 0.12) 1px, transparent 1px),
-    linear-gradient(115deg, transparent 0 47%, rgba(34, 211, 238, 0.10) 48% 49%, transparent 50% 100%);
+    linear-gradient(115deg, transparent 0 47%, rgb(from var(--accent) r g b / 0.10) 48% 49%, transparent 50% 100%);
   background-size: 42px 42px, 42px 42px, 220px 220px;
   mask-image: radial-gradient(circle at 50% 50%, #000 0 48%, transparent 78%);
   opacity: 0.36;
@@ -12933,10 +12933,10 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   right: -5vw;
   height: 53vh;
   background:
-    linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.26) 18%, transparent 19% 24%, rgba(34, 211, 238, 0.18) 25%, transparent 26%),
+    linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.26) 18%, transparent 19% 24%, rgb(from var(--accent) r g b / 0.18) 25%, transparent 26%),
     linear-gradient(135deg, color-mix(in srgb, var(--bg), transparent 2%), color-mix(in srgb, var(--bg-raised), transparent 3%) 45%, color-mix(in srgb, var(--bg-deeper), transparent 1%));
   box-shadow:
-    0 0 44px rgba(34, 211, 238, 0.22),
+    0 0 44px rgb(from var(--accent) r g b / 0.22),
     inset 0 0 54px rgba(103, 232, 249, 0.12),
     inset 0 1px 0 rgba(255,255,255,0.08);
 }
@@ -12949,7 +12949,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   right: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgb(from var(--accent-strong) r g b / 0.95), rgb(from var(--emerald-400) r g b / 0.78), transparent);
-  box-shadow: 0 0 24px rgba(34, 211, 238, 0.72);
+  box-shadow: 0 0 24px rgb(from var(--accent) r g b / 0.72);
 }
 
 .pc-route-transition__blade--top {
@@ -13041,8 +13041,8 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.72);
   background:
     conic-gradient(from 10deg, transparent 0 8%, rgba(103, 232, 249, 0.55) 9% 11%, transparent 12% 28%, rgb(from var(--emerald-400) r g b / 0.44) 29% 31%, transparent 32% 100%),
-    radial-gradient(circle, transparent 58%, rgba(34, 211, 238, 0.08) 59% 62%, transparent 63%);
-  box-shadow: 0 0 42px rgba(34, 211, 238, 0.38), inset 0 0 32px rgba(34, 211, 238, 0.10);
+    radial-gradient(circle, transparent 58%, rgb(from var(--accent) r g b / 0.08) 59% 62%, transparent 63%);
+  box-shadow: 0 0 42px rgb(from var(--accent) r g b / 0.38), inset 0 0 32px rgb(from var(--accent) r g b / 0.10);
   animation: pcRouteRingSpin 7s linear infinite;
 }
 
@@ -13117,7 +13117,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   background:
     linear-gradient(90deg, rgba(103, 232, 249, 0.12), transparent),
     color-mix(in srgb, var(--bg), transparent 30%);
-  box-shadow: 0 0 30px rgba(34, 211, 238, 0.14), inset 0 1px 0 rgba(255,255,255,0.08);
+  box-shadow: 0 0 30px rgb(from var(--accent) r g b / 0.14), inset 0 1px 0 rgba(255,255,255,0.08);
   transform: translateY(-50%);
   backdrop-filter: blur(16px);
 }
@@ -13224,7 +13224,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   width: 4px;
   height: 28px;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(34, 211, 238, 0.45));
+  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgb(from var(--accent) r g b / 0.45));
   box-shadow: 0 0 16px rgba(103, 232, 249, 0.68);
   transform-origin: 50% 100%;
 }
@@ -13375,7 +13375,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   background:
     conic-gradient(from 0deg, transparent 0 6%, rgba(103, 232, 249, 0.44) 7% 8%, transparent 9% 20%, rgb(from var(--emerald-400) r g b / 0.36) 21% 22%, transparent 23% 100%),
     radial-gradient(circle, rgba(103, 232, 249, 0.16), transparent 56%);
-  filter: blur(0.2px) drop-shadow(0 0 38px rgba(34, 211, 238, 0.28));
+  filter: blur(0.2px) drop-shadow(0 0 38px rgb(from var(--accent) r g b / 0.28));
   opacity: 0.74;
   animation: pcRouteCoreVectorSpin 2.9s linear infinite;
 }
@@ -13387,7 +13387,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   background:
     radial-gradient(circle, transparent 0 36%, rgba(103, 232, 249, 0.13) 37% 37.6%, transparent 38% 100%),
     radial-gradient(circle, rgb(from var(--emerald-400) r g b / 0.10), transparent 62%);
-  box-shadow: 0 0 60px rgba(34, 211, 238, 0.18);
+  box-shadow: 0 0 60px rgb(from var(--accent) r g b / 0.18);
   animation: pcRouteShockwave 1.18s ease-out infinite;
 }
 
@@ -14168,7 +14168,7 @@ body:not(.papercusp-chromeless) .pc-header {
   box-shadow:
     0 24px 54px rgba(0, 0, 0, 0.28),
     0 0 0 1px rgb(from var(--accent-strong) r g b / 0.10),
-    0 0 38px rgba(34, 211, 238, 0.11),
+    0 0 38px rgb(from var(--accent) r g b / 0.11),
     inset 0 1px 0 rgba(255,255,255,0.07);
 }
 
@@ -14348,7 +14348,7 @@ body:not(.papercusp-chromeless) .pc-header {
   box-shadow:
     0 24px 54px rgba(0, 0, 0, 0.28),
     0 0 0 1px rgb(from var(--accent-strong) r g b / 0.10),
-    0 0 38px rgba(34, 211, 238, 0.11),
+    0 0 38px rgb(from var(--accent) r g b / 0.11),
     inset 0 1px 0 rgba(255,255,255,0.07);
 }
 
@@ -14604,7 +14604,7 @@ body:not(.papercusp-chromeless) .pc-header {
     color-mix(in srgb, var(--bg-deep), transparent 18%);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.06),
-    0 0 28px rgba(34, 211, 238, 0.08);
+    0 0 28px rgb(from var(--accent) r g b / 0.08);
 }
 
 .pc-setup-shell .pc-code::after {
@@ -15808,7 +15808,7 @@ div[class*="grid-area:toc"]::before {
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
-    0 0 14px rgba(34, 211, 238, 0.06);
+    0 0 14px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-marketplace-detail .pc-card {
@@ -15919,7 +15919,7 @@ div[class*="grid-area:toc"]::before {
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.06),
     0 20px 54px rgba(0, 0, 0, 0.18),
-    0 0 36px rgba(34, 211, 238, 0.06);
+    0 0 36px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-login-shell .pc-card::after {
@@ -15942,7 +15942,7 @@ div[class*="grid-area:toc"]::before {
     color-mix(in srgb, var(--bg-deep), transparent 18%);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
-    0 0 22px rgba(34, 211, 238, 0.06);
+    0 0 22px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-login-shell .pc-button {
@@ -15950,7 +15950,7 @@ div[class*="grid-area:toc"]::before {
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.10),
-    0 0 24px rgba(34, 211, 238, 0.12);
+    0 0 24px rgb(from var(--accent) r g b / 0.12);
 }
 
 .pc-login-shell .pc-button::after {
@@ -16092,7 +16092,7 @@ body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc
     color-mix(in srgb, var(--bg-deep), transparent 18%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
-    0 0 22px rgba(34, 211, 238, 0.06) !important;
+    0 0 22px rgb(from var(--accent) r g b / 0.06) !important;
 }
 
 body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc-settings-shell button {
@@ -16101,7 +16101,7 @@ body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc
   border-color: rgb(from var(--accent-strong) r g b / 0.24) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.08),
-    0 0 20px rgba(34, 211, 238, 0.08);
+    0 0 20px rgb(from var(--accent) r g b / 0.08);
 }
 
 body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc-settings-shell button::after {
@@ -16648,7 +16648,7 @@ body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) 
   border-color: rgb(from var(--accent-strong) r g b / 0.24) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
-    0 0 28px rgba(34, 211, 238, 0.08);
+    0 0 28px rgb(from var(--accent) r g b / 0.08);
 }
 
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell section > div[style*="grid-template-columns"] > div,
@@ -16660,7 +16660,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     color-mix(in srgb, var(--bg-deep), transparent 30%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.052),
-    0 0 20px rgba(34, 211, 238, 0.06) !important;
+    0 0 20px rgb(from var(--accent) r g b / 0.06) !important;
 }
 
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell section > div[style*="grid-template-columns"] > div {
@@ -16669,7 +16669,7 @@ body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) 
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.14),
     inset 0 1px 0 rgba(255,255,255,0.040),
-    0 0 18px rgba(34, 211, 238, 0.045) !important;
+    0 0 18px rgb(from var(--accent) r g b / 0.045) !important;
 }
 
 body:has(.pc-settings-nav-link[href="/settings/publishing"][aria-current="page"]) .pc-settings-shell .pc-defs code,
@@ -16944,7 +16944,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.08),
     0 0 0 1px rgb(from var(--accent-strong) r g b / 0.08),
-    0 0 22px rgba(34, 211, 238, 0.08);
+    0 0 22px rgb(from var(--accent) r g b / 0.08);
 }
 
 .pc-marketplace-hero-v2,
@@ -17016,7 +17016,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.05),
     0 16px 34px rgba(0, 0, 0, 0.12),
-    0 0 24px rgba(34, 211, 238, 0.05);
+    0 0 24px rgb(from var(--accent) r g b / 0.05);
 }
 
 .pc-marketplace-mini-stats div::after {
@@ -17054,7 +17054,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   isolation: isolate;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.14),
-    0 0 20px rgba(34, 211, 238, 0.16);
+    0 0 20px rgb(from var(--accent) r g b / 0.16);
 }
 
 .pc-marketplace-category-icon::after {
@@ -17176,7 +17176,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
     0 18px 44px rgba(0, 0, 0, 0.14),
-    0 0 24px rgba(34, 211, 238, 0.05) !important;
+    0 0 24px rgb(from var(--accent) r g b / 0.05) !important;
 }
 
 .pc-installed-template-card::before {
@@ -17213,7 +17213,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.04),
-    0 0 14px rgba(34, 211, 238, 0.05);
+    0 0 14px rgb(from var(--accent) r g b / 0.05);
 }
 
 .pc-installed-template-actions {
@@ -17228,7 +17228,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.07),
-    0 0 18px rgba(34, 211, 238, 0.06);
+    0 0 18px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-installed-template-link::after,
@@ -17369,7 +17369,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-color: rgba(167, 139, 250, 0.22) !important;
   background:
     radial-gradient(circle at 18% 0%, rgba(167, 139, 250, 0.10), transparent 12rem),
-    radial-gradient(circle at 100% 18%, rgba(34, 211, 238, 0.08), transparent 13rem),
+    radial-gradient(circle at 100% 18%, rgb(from var(--accent) r g b / 0.08), transparent 13rem),
     linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.008)),
     color-mix(in srgb, var(--bg-deep), transparent 28%) !important;
   box-shadow:
@@ -17426,7 +17426,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   position: relative;
   isolation: isolate;
   background:
-    radial-gradient(circle at 18% -8%, rgba(34, 211, 238, 0.11), transparent 18rem),
+    radial-gradient(circle at 18% -8%, rgb(from var(--accent) r g b / 0.11), transparent 18rem),
     radial-gradient(circle at 92% 8%, rgb(from var(--emerald-400) r g b / 0.09), transparent 20rem),
     linear-gradient(180deg, color-mix(in srgb, var(--bg-deeper), transparent 8%), color-mix(in srgb, var(--bg-deep), transparent 4%)) !important;
 }
@@ -17462,7 +17462,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.16),
     inset 0 1px 0 rgba(255,255,255,0.07),
     0 18px 46px rgba(0, 0, 0, 0.16),
-    0 0 24px rgba(34,211,238,0.06);
+    0 0 24px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-template-editor-topbar::before,
@@ -17487,7 +17487,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-color: rgb(from var(--accent-strong) r g b / 0.18) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.07),
-    0 0 16px rgba(34,211,238,0.06);
+    0 0 16px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-template-editor-published {
@@ -17531,8 +17531,8 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   width: 1px;
   height: 100%;
   pointer-events: none;
-  background: linear-gradient(to bottom, transparent, rgba(34,211,238,0.72), transparent);
-  box-shadow: 0 0 18px rgba(34,211,238,0.36);
+  background: linear-gradient(to bottom, transparent, rgb(from var(--accent) r g b / 0.72), transparent);
+  box-shadow: 0 0 18px rgb(from var(--accent) r g b / 0.36);
   animation: pcTemplateForgePulse 3.2s ease-in-out infinite;
 }
 
@@ -17543,13 +17543,13 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 }
 
 .pc-template-editor-file.is-active {
-  border-left-color: rgba(34,211,238,0.92) !important;
+  border-left-color: rgb(from var(--accent) r g b / 0.92) !important;
   background:
-    linear-gradient(90deg, rgba(34,211,238,0.12), rgba(255,255,255,0.025)),
+    linear-gradient(90deg, rgb(from var(--accent) r g b / 0.12), rgba(255,255,255,0.025)),
     rgba(255,255,255,0.035) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.05),
-    0 0 20px rgba(34,211,238,0.10);
+    0 0 20px rgb(from var(--accent) r g b / 0.10);
 }
 
 .pc-template-editor-file.is-dirty .pc-template-editor-dirty-dot {
@@ -17571,12 +17571,12 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   isolation: isolate;
   border-color: rgb(from var(--accent-strong) r g b / 0.20) !important;
   background:
-    radial-gradient(circle at 100% 0%, rgba(34,211,238,0.07), transparent 17rem),
+    radial-gradient(circle at 100% 0%, rgb(from var(--accent) r g b / 0.07), transparent 17rem),
     color-mix(in srgb, var(--bg-deeper), transparent 28%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.05),
     0 24px 62px rgba(0,0,0,0.22),
-    0 0 32px rgba(34,211,238,0.07);
+    0 0 32px rgb(from var(--accent) r g b / 0.07);
 }
 
 .pc-template-editor-frame > * {
@@ -17607,7 +17607,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.13),
     inset 0 1px 0 rgba(255,255,255,0.045),
-    0 0 18px rgba(34,211,238,0.045);
+    0 0 18px rgb(from var(--accent) r g b / 0.045);
 }
 
 .pc-template-manifest-section::before,
@@ -17616,7 +17616,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(90deg, rgba(34,211,238,0.12), transparent 24%);
+  background: linear-gradient(90deg, rgb(from var(--accent) r g b / 0.12), transparent 24%);
   opacity: 0.35;
 }
 
@@ -17630,12 +17630,12 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     color-mix(in srgb, var(--bg-deeper), transparent 38%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.05),
-    0 0 16px rgba(34,211,238,0.04);
+    0 0 16px rgb(from var(--accent) r g b / 0.04);
 }
 
 .pc-template-manifest-structured input[type="checkbox"] {
-  accent-color: #22d3ee;
-  filter: drop-shadow(0 0 6px rgba(34,211,238,0.32));
+  accent-color: var(--accent);
+  filter: drop-shadow(0 0 6px rgb(from var(--accent) r g b / 0.32));
 }
 
 .pc-template-manifest-add,
@@ -17645,7 +17645,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-color: rgb(from var(--accent-strong) r g b / 0.18) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.06),
-    0 0 16px rgba(34,211,238,0.055);
+    0 0 16px rgb(from var(--accent) r g b / 0.055);
 }
 
 .pc-template-manifest-remove {
@@ -18068,7 +18068,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 10% 0%, rgba(34,211,238,0.12), transparent 18rem),
+    radial-gradient(circle at 10% 0%, rgb(from var(--accent) r g b / 0.12), transparent 18rem),
     radial-gradient(circle at 92% 10%, rgb(from var(--emerald-400) r g b / 0.09), transparent 20rem),
     linear-gradient(rgb(from var(--accent-strong) r g b / 0.045) 1px, transparent 1px),
     linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.035) 1px, transparent 1px);
@@ -18097,7 +18097,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
     0 18px 48px rgba(0,0,0,0.16),
-    0 0 24px rgba(34,211,238,0.055);
+    0 0 24px rgb(from var(--accent) r g b / 0.055);
 }
 
 .pc-installed-ops-header::before,
@@ -18132,7 +18132,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.16),
     inset 0 1px 0 rgba(255,255,255,0.06),
     0 18px 48px rgba(0,0,0,0.16),
-    0 0 30px rgba(34,211,238,0.07);
+    0 0 30px rgb(from var(--accent) r g b / 0.07);
 }
 
 .pc-installed-ops-header h1,
@@ -18153,7 +18153,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     color-mix(in srgb, var(--bg-deeper), transparent 46%);
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.12),
-    0 0 20px rgba(34,211,238,0.045);
+    0 0 20px rgb(from var(--accent) r g b / 0.045);
 }
 
 .pc-installed-harness-grid {
@@ -18190,7 +18190,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-color: rgb(from var(--accent-strong) r g b / 0.22) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.07),
-    0 0 18px rgba(34,211,238,0.07) !important;
+    0 0 18px rgb(from var(--accent) r g b / 0.07) !important;
 }
 
 .pc-installed-harness-open::after,
@@ -18225,11 +18225,11 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  filter: drop-shadow(0 0 14px rgba(34,211,238,0.14));
+  filter: drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.14));
 }
 
 .pc-kpi-stat-sub {
-  text-shadow: 0 0 8px rgba(34,211,238,0.08);
+  text-shadow: 0 0 8px rgb(from var(--accent) r g b / 0.08);
 }
 
 .pc-kpi-panel {
@@ -18249,9 +18249,9 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 
 .pc-kpi-bar-fill {
   background:
-    linear-gradient(90deg, #22d3ee, #3b82f6 52%, #34d399) !important;
+    linear-gradient(90deg, var(--accent), #3b82f6 52%, #34d399) !important;
   box-shadow:
-    0 0 12px rgba(34,211,238,0.28),
+    0 0 12px rgb(from var(--accent) r g b / 0.28),
     0 0 24px rgb(from var(--emerald-400) r g b / 0.12);
 }
 
@@ -18259,7 +18259,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-radius: 10px;
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.12),
-    0 0 16px rgba(34,211,238,0.045);
+    0 0 16px rgb(from var(--accent) r g b / 0.045);
 }
 
 .pc-kpi-parent-row {
@@ -18271,7 +18271,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   overflow: hidden;
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.10),
-    0 0 18px rgba(34,211,238,0.045);
+    0 0 18px rgb(from var(--accent) r g b / 0.045);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -18642,7 +18642,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   pointer-events: none;
   background:
     radial-gradient(circle at 14% 0%, rgba(59,130,246,0.13), transparent 18rem),
-    radial-gradient(circle at 92% 8%, rgba(34,211,238,0.10), transparent 20rem),
+    radial-gradient(circle at 92% 8%, rgb(from var(--accent) r g b / 0.10), transparent 20rem),
     linear-gradient(rgb(from var(--accent-strong) r g b / 0.045) 1px, transparent 1px),
     linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.035) 1px, transparent 1px);
   background-size: 100% 100%, 100% 100%, 44px 44px, 44px 44px;
@@ -18675,7 +18675,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.16),
     inset 0 1px 0 rgba(255,255,255,0.055),
     0 18px 48px rgba(0,0,0,0.16),
-    0 0 26px rgba(34,211,238,0.055);
+    0 0 26px rgb(from var(--accent) r g b / 0.055);
 }
 
 .pc-snapshot-forge-topbar::before,
@@ -18744,7 +18744,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.07),
-    0 0 18px rgba(34,211,238,0.07) !important;
+    0 0 18px rgb(from var(--accent) r g b / 0.07) !important;
 }
 
 .pc-snapshot-refresh.h-btn::after,
@@ -18783,7 +18783,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   width: fit-content;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
-    0 0 14px rgba(34,211,238,0.055);
+    0 0 14px rgb(from var(--accent) r g b / 0.055);
   text-shadow: 0 0 10px currentColor;
 }
 
@@ -18822,7 +18822,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-color: rgb(from var(--accent-strong) r g b / 0.18) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.045),
-    0 0 16px rgba(34,211,238,0.045);
+    0 0 16px rgb(from var(--accent) r g b / 0.045);
 }
 
 .pc-fork-advisory-banner {
@@ -18866,7 +18866,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-radius: 12px;
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.12),
-    0 0 24px rgba(34,211,238,0.06);
+    0 0 24px rgb(from var(--accent) r g b / 0.06);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -19105,7 +19105,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
     0 18px 48px rgba(0,0,0,0.16),
-    0 0 28px rgba(34,211,238,0.055) !important;
+    0 0 28px rgb(from var(--accent) r g b / 0.055) !important;
 }
 
 .project-docs-sidebar {
@@ -19171,7 +19171,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   text-shadow: 0 0 12px rgb(from var(--accent-strong) r g b / 0.22);
   box-shadow:
     inset 2px 0 0 rgb(from var(--accent-strong) r g b / 0.60),
-    0 0 18px rgba(34,211,238,0.07) !important;
+    0 0 18px rgb(from var(--accent) r g b / 0.07) !important;
 }
 
 .project-docs-breadcrumb {
@@ -19179,7 +19179,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
-    0 0 18px rgba(34,211,238,0.06);
+    0 0 18px rgb(from var(--accent) r g b / 0.06);
   text-shadow: 0 0 10px rgb(from var(--accent-strong) r g b / 0.16);
 }
 
@@ -19201,7 +19201,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.055),
     0 16px 42px rgba(0,0,0,0.18),
-    0 0 24px rgba(34,211,238,0.055) !important;
+    0 0 24px rgb(from var(--accent) r g b / 0.055) !important;
 }
 
 .project-docs-empty,
@@ -19238,14 +19238,14 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 .pc-wiki-missing-target {
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.16),
-    0 0 18px rgba(34,211,238,0.06);
+    0 0 18px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-wiki-missing-list {
   border-radius: 12px;
   box-shadow:
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.10),
-    0 0 22px rgba(34,211,238,0.045);
+    0 0 22px rgb(from var(--accent) r g b / 0.045);
 }
 
 .pc-wiki-missing-item {
@@ -19269,7 +19269,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 .pc-wiki-missing-link--back {
   box-shadow:
     inset 0 -1px 0 rgb(from var(--accent-strong) r g b / 0.28),
-    0 0 18px rgba(34,211,238,0.06);
+    0 0 18px rgb(from var(--accent) r g b / 0.06);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -19853,11 +19853,11 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   border-bottom: none !important;
   background:
     radial-gradient(circle at 50% 38%, rgba(236, 254, 255, 0.28), transparent 48%),
-    linear-gradient(180deg, rgba(34, 211, 238, 0.24), color-mix(in srgb, var(--bg-1), transparent 6%)) !important;
+    linear-gradient(180deg, rgb(from var(--accent) r g b / 0.24), color-mix(in srgb, var(--bg-1), transparent 6%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.24),
     0 0 0 1px color-mix(in srgb, var(--bg-1), transparent 18%),
-    0 0 14px rgba(34, 211, 238, 0.30),
+    0 0 14px rgb(from var(--accent) r g b / 0.30),
     0 0 22px rgb(from var(--accent-strong) r g b / 0.13) !important;
   text-shadow: 0 0 10px rgba(236, 254, 255, 0.42);
 }
@@ -19881,7 +19881,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.32),
     0 0 0 1px color-mix(in srgb, var(--bg-1), transparent 12%),
-    0 0 18px rgba(34, 211, 238, 0.44),
+    0 0 18px rgb(from var(--accent) r g b / 0.44),
     0 0 30px rgb(from var(--accent-strong) r g b / 0.20) !important;
 }
 
@@ -19893,7 +19893,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   stroke-width: 2.8px;
   filter:
     drop-shadow(0 0 4px rgba(236, 254, 255, 0.88))
-    drop-shadow(0 0 8px rgba(34, 211, 238, 0.46));
+    drop-shadow(0 0 8px rgb(from var(--accent) r g b / 0.46));
 }
 
 .oracle-dock--maximal-hud .oracle-hud-reticle {
@@ -19902,7 +19902,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   left: 50%;
   translate: -50% -50%;
   opacity: 0.36 !important;
-  filter: drop-shadow(0 0 18px rgba(34, 211, 238, 0.12));
+  filter: drop-shadow(0 0 18px rgb(from var(--accent) r g b / 0.12));
 }
 
 /* Oracle chat popup correction: restore the original large HUD reticle,
@@ -19921,7 +19921,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   translate: 0 0;
   opacity: 0.72 !important;
   mix-blend-mode: screen;
-  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.18));
+  filter: drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.18));
 }
 
 /* Oracle chat popup button finish: match the dark metal sheen used by the
@@ -19989,7 +19989,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
     0 12px 28px rgba(0, 0, 0, 0.38),
-    0 0 24px rgba(34, 211, 238, 0.22),
+    0 0 24px rgb(from var(--accent) r g b / 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.24),
     inset 0 -1px 0 rgba(0, 0, 0, 0.80) !important;
 }
@@ -24708,7 +24708,7 @@ body:has(.operator-panel) {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
     0 14px 28px rgba(0, 0, 0, 0.42),
-    0 0 20px rgba(34, 211, 238, 0.20),
+    0 0 20px rgb(from var(--accent) r g b / 0.20),
     inset 0 1px 0 rgba(255,255,255,0.13);
   transform: translateY(-1px);
   outline: none;

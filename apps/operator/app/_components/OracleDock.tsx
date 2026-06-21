@@ -133,28 +133,37 @@ const CHATWOOT_BASE_URL =
 const CHATWOOT_WEBSITE_TOKEN =
   process.env.NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN ?? 'CT5CTToo11YtPN3CVkhvbFs9';
 const CHATWOOT_WIDGET_SRC = `${CHATWOOT_BASE_URL}/widget?website_token=${encodeURIComponent(CHATWOOT_WEBSITE_TOKEN)}`;
-const CHATWOOT_WIDGET_COLOR = '#38bdf8';
 const CHATWOOT_TARGET_ORIGIN = (() => {
   try { return new URL(CHATWOOT_BASE_URL).origin; } catch { return '*'; }
 })();
-const CHATWOOT_FRAME_THEME = {
-  event: 'config-set',
-  locale: 'en',
-  position: 'right',
-  hideMessageBubble: true,
-  showPopoutButton: false,
-  showUnreadMessagesDialog: false,
-  widgetStyle: 'flat',
-  darkMode: 'dark',
-  widgetColor: CHATWOOT_WIDGET_COLOR,
-  welcomeTitle: 'Papercusp Support',
-  welcomeDescription: 'Chat with a human from Papercusp.',
-  availableMessage: '',
-  unavailableMessage: '',
-  enableFileUpload: true,
-  enableEmojiPicker: true,
-  enableEndConversation: true,
-};
+
+function readCssToken(name: string): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || undefined;
+}
+
+function chatwootFrameTheme() {
+  const widgetColor = readCssToken('--accent');
+  return {
+    event: 'config-set',
+    locale: 'en',
+    position: 'right',
+    hideMessageBubble: true,
+    showPopoutButton: false,
+    showUnreadMessagesDialog: false,
+    widgetStyle: 'flat',
+    darkMode: 'dark',
+    ...(widgetColor ? { widgetColor } : {}),
+    welcomeTitle: 'Papercusp Support',
+    welcomeDescription: 'Chat with a human from Papercusp.',
+    availableMessage: '',
+    unavailableMessage: '',
+    enableFileUpload: true,
+    enableEmojiPicker: true,
+    enableEndConversation: true,
+  };
+}
 function postChatwootFrameMessage(frame: HTMLIFrameElement | null, message: Record<string, unknown>) {
   frame?.contentWindow?.postMessage(`chatwoot-widget:${JSON.stringify(message)}`, CHATWOOT_TARGET_ORIGIN);
 }
@@ -894,7 +903,7 @@ export function OracleDock() {
 
   const sendChatwootFrameTheme = useCallback(() => {
     const frame = chatwootFrameRef.current;
-    postChatwootFrameMessage(frame, CHATWOOT_FRAME_THEME);
+    postChatwootFrameMessage(frame, chatwootFrameTheme());
     postChatwootFrameMessage(frame, { event: 'set-color-scheme', darkMode: 'dark' });
   }, []);
 
@@ -1028,7 +1037,7 @@ export function OracleDock() {
     );
     run(
       sel('.oracle-tab.is-active'),
-      { boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%), 0 0 24px rgba(34, 211, 238, 0.18)' },
+      { boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%), 0 0 24px color-mix(in srgb, var(--accent), transparent 82%)' },
       { duration: 1.2, ease: 'easeInOut', repeat: Infinity, repeatType: 'mirror' },
     );
 

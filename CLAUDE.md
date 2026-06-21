@@ -254,10 +254,13 @@ via `/admin/features`, not JSON or PostHog directly. Gate cuttable features from
 day one (`requireFlag` / `useFlag` / `gateApiRoute` / Hono middleware / MCP
 registration) — **a feature toggle is a `FLAGS` entry, never an ad-hoc
 `process.env.PAPERCUSP_*` boolean** (an env gate ships dark, dodges the default-on
-guard, and can't be flipped at runtime; `lint:env-feature-gates` enforces this in
-CI — env stays for launch-time/test/dev config only). **New flags DEFAULT TO
-ENABLED — finished work never ships dark.** Default-OFF only for genuinely
-incomplete/unsafe work or an explicit owner ask — and then (a) add it to
+guard + the dark-flag expiry, and can't be flipped at runtime; `lint:env-feature-gates`
+enforces this in CI — env stays for launch-time/test/dev config only). **New flags
+DEFAULT TO ENABLED — finished work never ships dark; flipping a finished feature ON is
+the LAST STEP of the task, not a someday. A capability built then left gated OFF — by a
+flag OR an env boolean — is INCOMPLETE, not done: "built + proven in isolation + left
+off" is the #1 way good work silently dies (the PgBouncer-stayed-dark class).** Default-OFF
+only for genuinely incomplete/unsafe work or an explicit owner ask — and then (a) add it to
 `KNOWN_DARK_FLAGS` in `libs/flags/src/production-defaults.test.ts` with a
 justification (CI fails otherwise), and (b) surface the pending flip loudly in the
 plan's `## Now` + your completion report. The dark allowlist carries a
