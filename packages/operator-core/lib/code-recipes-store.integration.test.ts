@@ -19,6 +19,8 @@ import {
   recordRecipeRun,
   getRecipe,
   listRecipes,
+  mergeRecipes,
+  sweepRecipes,
 } from './code-recipes-store';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -184,5 +186,188 @@ describe('code_recipes store (real PG)', () => {
     expect((await listRecipes(db.adminSql, 'ws-cr-iso-a'))[0].title).toBe('A');
     // getRecipe is workspace-scoped: the other ws's id is invisible
     expect(await getRecipe(db.adminSql, 'ws-cr-iso-a', 'p2')).toBeNull();
+  });
+
+  // ── mergeRecipes (Phase 4, P-010 / D-015) ───────────────────────────────────
+  describe('mergeRecipes', () => {
+    it('folds duplicates into the survivor: status=merged, merged_into set, counts summed', async () => {
+      const ws = 'ws-cr-merge';
+      // Survivor with some usage.
+      await upsertRecipe(db.adminSql, { id: 'survivor', workspaceId: ws, hiveSlug: 'alpha', title: 'Survivor', description: 'd', script: 's' });
+      // Two near-duplicates with their own usage.
+      await upsertRecipe(db.adminSql, { id: 'dup-1', workspaceId: ws, hiveSlug: 'alpha', title: 'Dup 1', description: 'd', script: 's' });
+      await upsertRecipe(db.adminSql, { id: 'dup-2', workspaceId: ws, hiveSlug: 'alpha', title: 'Dup 2', description: 'd', script: 's' });
+      // Survivor: 2 runs / 2 success; dup-1: 3 runs / 2 success; dup-2: 1 run / 0 success.
+      for (let i = 0; i < 2; i++) await recordRecipeRun(db.adminSql, { recipeId: 'survivor', workspaceId: ws, hiveSlug: 'alpha', success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, hiveSlug: 'alpha', success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, hiveSlug: 'alpha', success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, hiveSlug: 'alpha', success: false });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-2', workspaceId: ws, hiveSlug: 'alpha', success: false });
+
+      const { survivor, mergedIds } = await mergeRecipes(db.adminSql, {
+        workspaceId: ws,
+        survivorId: 'survivor',
+        duplicateIds: ['dup-1', 'dup-2'],
+      });
+
+      // Survivor's counts = its own + both duplicates'. runs: 2+3+1=6, success: 2+2+0=4.
+      expect(mergedIds.sort()).toEqual(['dup-1', 'dup-2']);
+      expect(survivor.id).toBe('survivor');
+      expect(survivor.status).toBe('active'); // survivor stays active
+      expect(survivor.runCount).toBe(6);
+      expect(survivor.successCount).toBe(4);
+
+      // Duplicates are merged + point at the survivor.
+      const d1 = await getRecipe(db.adminSql, ws, 'dup-1');
+      const d2 = await getRecipe(db.adminSql, ws, 'dup-2');
+      expect(d1?.status).toBe('merged');
+      expect(d1?.mergedInto).toBe('survivor');
+      expect(d2?.status).toBe('merged');
+      expect(d2?.mergedInto).toBe('survivor');
+    });
+
+    it('never merges a recipe into itself + skips ids not in the workspace', async () => {
+      const ws = 'ws-cr-merge-self';
+      await upsertRecipe(db.adminSql, { id: 'keep', workspaceId: ws, hiveSlug: null, title: 'Keep', description: 'd', script: 's' });
+      await upsertRecipe(db.adminSql, { id: 'real-dup', workspaceId: ws, hiveSlug: null, title: 'Dup', description: 'd', script: 's' });
+      // A decoy recipe in ANOTHER workspace with the same-ish id we'll try to pass.
+      await upsertRecipe(db.adminSql, { id: 'foreign', workspaceId: 'ws-cr-merge-other', hiveSlug: null, title: 'Foreign', description: 'd', script: 's' });
+      await recordRecipeRun(db.adminSql, { recipeId: 'keep', workspaceId: ws, hiveSlug: null, success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'real-dup', workspaceId: ws, hiveSlug: null, success: true });
+
+      const { survivor, mergedIds } = await mergeRecipes(db.adminSql, {
+        workspaceId: ws,
+        survivorId: 'keep',
+        // includes the survivor itself (must be ignored) + a foreign-workspace id (must be skipped).
+        duplicateIds: ['keep', 'real-dup', 'foreign'],
+      });
+
+      expect(mergedIds).toEqual(['real-dup']); // only the in-workspace, non-self dup
+      // counts: keep 1 + real-dup 1 = 2 (the foreign + self contribute nothing)
+      expect(survivor.runCount).toBe(2);
+      // The survivor was NOT marked merged (self-merge guarded).
+      expect(survivor.status).toBe('active');
+      expect((await getRecipe(db.adminSql, ws, 'keep'))?.mergedInto).toBeNull();
+      // The foreign recipe in the other workspace is untouched.
+      expect((await getRecipe(db.adminSql, 'ws-cr-merge-other', 'foreign'))?.status).toBe('active');
+    });
+
+    it('is idempotent — re-merging the same duplicate into the same survivor is a true no-op', async () => {
+      const ws = 'ws-cr-merge-idem';
+      await upsertRecipe(db.adminSql, { id: 's', workspaceId: ws, hiveSlug: null, title: 'S', description: 'd', script: 's' });
+      await upsertRecipe(db.adminSql, { id: 'd', workspaceId: ws, hiveSlug: null, title: 'D', description: 'd', script: 's' });
+      await recordRecipeRun(db.adminSql, { recipeId: 'd', workspaceId: ws, hiveSlug: null, success: true });
+
+      const first = await mergeRecipes(db.adminSql, { workspaceId: ws, survivorId: 's', duplicateIds: ['d'] });
+      expect(first.mergedIds).toEqual(['d']);
+      expect(first.survivor.runCount).toBe(1); // s(0) + d(1)
+
+      // Replay: 'd' is already merged INTO 's', so it is skipped — counters are
+      // NOT re-folded (no double-count) and it stays merged→s.
+      const second = await mergeRecipes(db.adminSql, { workspaceId: ws, survivorId: 's', duplicateIds: ['d'] });
+      expect(second.mergedIds).toEqual([]); // nothing re-merged
+      expect(second.survivor.runCount).toBe(1); // unchanged — the replay added nothing
+      expect((await getRecipe(db.adminSql, ws, 'd'))?.status).toBe('merged');
+      expect((await getRecipe(db.adminSql, ws, 'd'))?.mergedInto).toBe('s');
+    });
+  });
+
+  // ── sweepRecipes (Phase 4, P-010) ───────────────────────────────────────────
+  describe('sweepRecipes', () => {
+    /** Make a recipe + force its last_run_at + run_count to simulate age/usage. */
+    async function seedAged(
+      ws: string,
+      id: string,
+      opts: { hiveSlug?: string | null; runCount: number; daysAgo: number | null; status?: string },
+    ) {
+      await upsertRecipe(db.adminSql, {
+        id,
+        workspaceId: ws,
+        hiveSlug: opts.hiveSlug ?? null,
+        title: id,
+        description: 'd',
+        script: 's',
+      });
+      const status = opts.status ?? 'active';
+      if (opts.daysAgo == null) {
+        await db.adminSql`
+          UPDATE harness_shared.code_recipes
+             SET run_count = ${opts.runCount}, last_run_at = NULL, status = ${status}
+           WHERE workspace_id = ${ws} AND id = ${id}`;
+      } else {
+        await db.adminSql`
+          UPDATE harness_shared.code_recipes
+             SET run_count   = ${opts.runCount},
+                 last_run_at = now() - make_interval(days => ${opts.daysAgo}),
+                 status      = ${status}
+           WHERE workspace_id = ${ws} AND id = ${id}`;
+      }
+    }
+
+    it('retires a stale 0/1-run recipe but NOT a hot one or a recently-run one', async () => {
+      const ws = 'ws-cr-sweep';
+      await seedAged(ws, 'stale-oneoff', { runCount: 1, daysAgo: 45 }); // SWEEP: stale + one-off
+      await seedAged(ws, 'stale-zero', { runCount: 0, daysAgo: 60 }); // SWEEP: stale, never-rerun (but ran once long ago)
+      await seedAged(ws, 'hot', { runCount: 12, daysAgo: 90 }); // KEEP: hot (over the cap) even though old
+      await seedAged(ws, 'recent', { runCount: 1, daysAgo: 2 }); // KEEP: recent
+
+      const { swept, dryRun } = await sweepRecipes(db.adminSql, { workspaceId: ws, staleDays: 30, maxRunCount: 1 });
+      expect(dryRun).toBe(false);
+      expect(swept.map((r) => r.id).sort()).toEqual(['stale-oneoff', 'stale-zero']);
+      for (const r of swept) expect(r.status).toBe('retired');
+
+      expect((await getRecipe(db.adminSql, ws, 'stale-oneoff'))?.status).toBe('retired');
+      expect((await getRecipe(db.adminSql, ws, 'stale-zero'))?.status).toBe('retired');
+      expect((await getRecipe(db.adminSql, ws, 'hot'))?.status).toBe('active');
+      expect((await getRecipe(db.adminSql, ws, 'recent'))?.status).toBe('active');
+    });
+
+    it('NEVER touches a promoted or merged recipe even when stale + one-off', async () => {
+      const ws = 'ws-cr-sweep-protected';
+      await seedAged(ws, 'promoted', { runCount: 1, daysAgo: 99, status: 'promoted' });
+      await seedAged(ws, 'already-merged', { runCount: 1, daysAgo: 99, status: 'merged' });
+      await seedAged(ws, 'plain-stale', { runCount: 1, daysAgo: 99, status: 'active' });
+
+      const { swept } = await sweepRecipes(db.adminSql, { workspaceId: ws, staleDays: 30, maxRunCount: 1 });
+      expect(swept.map((r) => r.id)).toEqual(['plain-stale']); // only the active one
+      expect((await getRecipe(db.adminSql, ws, 'promoted'))?.status).toBe('promoted');
+      expect((await getRecipe(db.adminSql, ws, 'already-merged'))?.status).toBe('merged');
+    });
+
+    it('does NOT sweep a never-run recipe (NULL last_run_at has no staleness clock)', async () => {
+      const ws = 'ws-cr-sweep-null';
+      await seedAged(ws, 'never-run', { runCount: 0, daysAgo: null });
+      const { swept } = await sweepRecipes(db.adminSql, { workspaceId: ws, staleDays: 30, maxRunCount: 1 });
+      expect(swept).toHaveLength(0);
+      expect((await getRecipe(db.adminSql, ws, 'never-run'))?.status).toBe('active');
+    });
+
+    it('dryRun changes NOTHING — returns the candidates, leaves status active', async () => {
+      const ws = 'ws-cr-sweep-dry';
+      await seedAged(ws, 'cand', { runCount: 1, daysAgo: 50 });
+
+      const preview = await sweepRecipes(db.adminSql, { workspaceId: ws, staleDays: 30, maxRunCount: 1, dryRun: true });
+      expect(preview.dryRun).toBe(true);
+      expect(preview.swept.map((r) => r.id)).toEqual(['cand']);
+      // The candidate row in the preview reflects its CURRENT (still active) status.
+      expect(preview.swept[0].status).toBe('active');
+      // Nothing was mutated.
+      expect((await getRecipe(db.adminSql, ws, 'cand'))?.status).toBe('active');
+
+      // A real run then actually retires it.
+      const real = await sweepRecipes(db.adminSql, { workspaceId: ws, staleDays: 30, maxRunCount: 1, dryRun: false });
+      expect(real.swept.map((r) => r.id)).toEqual(['cand']);
+      expect((await getRecipe(db.adminSql, ws, 'cand'))?.status).toBe('retired');
+    });
+
+    it('narrows to a hive when hiveSlug is passed', async () => {
+      const ws = 'ws-cr-sweep-hive';
+      await seedAged(ws, 'alpha-stale', { hiveSlug: 'alpha', runCount: 1, daysAgo: 50 });
+      await seedAged(ws, 'beta-stale', { hiveSlug: 'beta', runCount: 1, daysAgo: 50 });
+
+      const { swept } = await sweepRecipes(db.adminSql, { workspaceId: ws, hiveSlug: 'alpha', staleDays: 30, maxRunCount: 1 });
+      expect(swept.map((r) => r.id)).toEqual(['alpha-stale']);
+      expect((await getRecipe(db.adminSql, ws, 'beta-stale'))?.status).toBe('active'); // other hive untouched
+    });
   });
 });

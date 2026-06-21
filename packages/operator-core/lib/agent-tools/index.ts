@@ -37,6 +37,10 @@ import './recipes/run';
 // code-recipes-2026-06-21 Phase 3 (P-013 / D-017) — the Queen's deterministic
 // graduation worklist: ranked promote candidates + near-duplicate merge clusters.
 import './recipes/candidates';
+// code-recipes-2026-06-21 Phase 4 (P-010 / D-015) — the hygiene actions: merge
+// near-duplicate clusters into one survivor, sweep the stale never-reused one-offs.
+import './recipes/merge';
+import './recipes/sweep';
 
 import './operator/stats';
 import './operator/converse';

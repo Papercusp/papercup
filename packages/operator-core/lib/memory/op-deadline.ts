@@ -44,18 +44,35 @@ export function memoryToolTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
 }
 
-let memoryDegraded = false;
+/**
+ * How long a memory timeout quiets the auto-inject path. SELF-HEALING: the latch
+ * was previously a permanent boolean cleared only on restart — so ONE transient
+ * timeout (a load spike, a client cold-init window) disabled memory auto-injection
+ * for the whole process lifetime, even after the backend fully recovered. That
+ * silently starved every later turn of injected memory context. Now the latch is a
+ * timestamp: a timeout quiets injection for a COOLDOWN, after which the inject path
+ * retries; if the backend recovered, injection resumes; if it is still wedged, the
+ * next inject times out and re-arms the cooldown (so a sustained outage costs at most
+ * one timed-out probe per cooldown, not one per turn). Env-tunable for tests/ops.
+ */
+export function memoryDegradedCooldownMs(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_DEGRADED_COOLDOWN_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+}
 
-/** True once any memory backend call has timed out this process. The
- *  auto-inject path reads this to go quiet; the explicit tools do NOT (they
- *  keep attempting under their deadline so they recover). */
+/** Epoch ms until which the auto-inject path stays quiet (0 = not degraded). */
+let memoryDegradedUntil = 0;
+
+/** True while inside the post-timeout cooldown — the auto-inject path reads this to
+ *  go quiet; the explicit tools do NOT (they keep attempting under their deadline so
+ *  they recover). Self-clears once the cooldown elapses (no restart required). */
 export function isMemoryDegraded(): boolean {
-  return memoryDegraded;
+  return Date.now() < memoryDegradedUntil;
 }
 
 /** Test-only: clear the process-level degraded latch. */
 export function resetMemoryDegradedForTest(): void {
-  memoryDegraded = false;
+  memoryDegradedUntil = 0;
 }
 
 /**
@@ -101,12 +118,16 @@ export function withMemoryToolTimeout<T>(p: Promise<T>, label: string): Promise<
  *  inject path. */
 export function noteMemoryFailure(err: unknown): void {
   if (err instanceof MemoryTimeoutError) {
-    memoryDegraded = true;
-    // NODE_ENV guard mirrors injection.ts — the latch still flips; only the log
+    const wasDegraded = isMemoryDegraded();
+    memoryDegradedUntil = Date.now() + memoryDegradedCooldownMs();
+    // NODE_ENV guard mirrors injection.ts — the latch still arms; only the log
     // line is suppressed under vitest (the repo's fail-on-console treats any
-    // console.warn as a test failure).
-    if (process.env.NODE_ENV !== 'test') {
-      console.warn(`[memory] ${err.message} — auto-inject disabled for this process (degraded)`);
+    // console.warn as a test failure). Log only on the LEADING edge so a sustained
+    // outage doesn't spam one line per re-arm.
+    if (!wasDegraded && process.env.NODE_ENV !== 'test') {
+      console.warn(
+        `[memory] ${err.message} — auto-inject quieted for ${Math.round(memoryDegradedCooldownMs() / 1000)}s (will retry; explicit tools keep attempting)`,
+      );
     }
   }
 }

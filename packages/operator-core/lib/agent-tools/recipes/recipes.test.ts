@@ -56,6 +56,8 @@ import './get';
 import './search';
 import './run';
 import './candidates';
+import './merge';
+import './sweep';
 
 const findTool = (name: string) => {
   const t = listAllProjectedTools().find((x) => x.expose.mcp?.name === name);
@@ -83,6 +85,20 @@ describe('recipes:* registration (P-005, P-013)', () => {
     expect(tool.effect).toBe('read');
     expect(tool.capabilities).toContain('intel:read');
   });
+
+  // Phase 4 hygiene tools (P-010 / D-015): curation actions, SU-only (no bee), write-effect.
+  for (const name of ['recipes:merge', 'recipes:sweep']) {
+    it(`registers ${name} as an SU-only write-effect curation tool`, () => {
+      const tool = findTool(name);
+      expect(tool).toBeDefined();
+      expect((tool.agentRoles?.length ?? 0)).toBeGreaterThan(0);
+      // A review/curation action — NOT bee-authored (unlike recipes:run/get/list).
+      expect(tool.agentRoles).not.toContain('bee');
+      // Mutates the recipe corpus.
+      expect(tool.effect).toBe('write');
+      expect(tool.capabilities).toContain('intel:write');
+    });
+  }
 });
 
 describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
