@@ -61,8 +61,14 @@ const AUDITED_DIRECT_CYAN_FILES = [
   'operator/app/adv/harnesses/AdvDocsTab.tsx',
   'operator/app/adv/harnesses/AdvGitGraphPanel.tsx',
   'operator/app/harness/TrustBadge.tsx',
+  'operator/app/harness/PrsTab.tsx',
   'operator/app/harness/theme.ts',
+  'operator/app/eval-viz/MastBreakdown.tsx',
+  'operator/app/eval-viz/arms.ts',
+  'operator-vite/src/components/adv/AdvEvalsTab.tsx',
   'operator/app/operator-mock/page.tsx',
+  'operator/app/dev/dev.css',
+  'operator/app/dev/swarm-identity/swarm-identity.module.css',
 ];
 
 function walk(dir: string, out: string[]): void {
