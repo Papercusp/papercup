@@ -110,7 +110,6 @@ const stubTools = {
   operator_approve_pending: async () => JSON.stringify({ ok: true }),
   operator_across_workspaces: async () => JSON.stringify({ ok: true }),
   navigate: async ({ path }) => JSON.stringify({ path }),
-  delegate_to_claude: async ({ task }) => JSON.stringify({ ok: true, task: task ?? '' }),
 };
 
 const conv = await Conversation.startSession({

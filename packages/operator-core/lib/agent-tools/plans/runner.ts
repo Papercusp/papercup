@@ -4,7 +4,7 @@
  * A launched plan agent is a NEW sibling surface over the shared
  * `runAgentChat` primitive (D-004), in the mould of `oracle/chat.ts` /
  * `operator/converse.ts`. It is NOT built on `lib/delegates` or
- * `operator:delegate` — that is the voice feature; this module never
+ * the retired delegate voice feature; this module never
  * imports it, so plan agents carry zero coupling to and zero blast
  * radius on voice.
  *

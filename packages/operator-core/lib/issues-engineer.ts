@@ -48,7 +48,7 @@ export type IssueState = 'open' | 'resolved' | 'closed';
  *  (unify-work-items D-002). bug|change are the user-facing issue kinds. */
 export type IssueKind = 'bug' | 'change';
 /** Every kind physically stored in engineer_issues (collapse-delegate D-001):
- *  the issue-surface kinds PLUS `task` — a delegated unit of work (operator:delegate's
+ *  the issue-surface kinds PLUS `task` — a delegated unit of work (retired delegate
  *  durable record). `task` is a work_item kind only; the issues:* surface excludes it. */
 export type IssueStoreKind = IssueKind | 'task';
 
@@ -684,7 +684,7 @@ export async function promoteIssue(
 
 /**
  * Find the open delegated-task (kind=task) work-item carrying this delegate
- * session id in its payload (collapse-delegate D-001). Used by the operator:delegate
+ * session id in its payload (collapse-delegate D-001). Used by the historical delegate
  * resume path to re-attach a follow-up turn to its existing work-item.
  */
 export async function findTaskBySessionId(agentSessionId: string): Promise<EngineerIssue | null> {

@@ -1,11 +1,10 @@
 /**
- * The canonical BRAIN session pointer (native-terminal-desktop-2026-06-06 D-013),
- * SCOPED PER WORKSPACE (EI-908).
+ * Retired canonical BRAIN session pointer
+ * (native-terminal-desktop-2026-06-06 D-013), scoped per workspace (EI-908).
  *
- * The desktop chat dock's RIGHT pane is "the brain" — ONE persistent psu
- * engineer session resumed on every launch. The pointer to that session
- * (the agent's NATIVE session uuid — the same handle `psu --resume <uuid>`
- * takes) lives in `harness_shared.operator_settings`.
+ * `psu --brain` was retired 2026-06-21. These helpers remain only so old
+ * pinned rows can be read/migrated/cleaned without reintroducing the launch
+ * path.
  *
  * EI-908 (root fix): the pin was ONE global unscoped `brain_session_id` row.
  * A `.papercusp-hive-demo` instance brain launch overwrote it (last-write-wins),
@@ -17,13 +16,8 @@
  * the ACTIVE workspace; a demo hive instance launches against a different
  * workspace, landing under a different key.
  *
- * Written by POST bootstrap-su on a `brain: true` launch (scoped to that
- * launch's workspace) — the server mints the uuid and forces it via claude
- * `--session-id`, so the pin exists BEFORE the session's first turn. Read by
- * GET bootstrap-su/brain (defaulting to the active workspace) and the
- * `wake-brain` routine (scoped to its own `ctx.workspaceId`), which
- * `psu --brain` resolves to an exact resume (picker-free; falls back to a
- * fresh re-pinning launch when unset/stale).
+ * Historical behavior: POST bootstrap-su with `brain: true` wrote the pin,
+ * GET bootstrap-su/brain read it, and the wake-brain routine woke it.
  */
 import { getOrgPg } from '@papercusp/db-org';
 

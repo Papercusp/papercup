@@ -2,7 +2,8 @@
  * agent.dispatch / agent.follow-up — direct chat-with-agent commands.
  *
  * Tagged for oracle + palette but NOT operator: the voice operator
- * routes anything that touches another agent through delegate_to_claude
+ * routes anything that touches another agent through the operator brain/work-item
+ * surfaces
  * (per Plan v6 phase C — the delegate writes a smarter prompt). These
  * exist so the user can fire a known dispatch from ⌘K without paying
  * the 5-10s delegate spawn cost.

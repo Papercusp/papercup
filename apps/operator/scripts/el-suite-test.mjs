@@ -247,48 +247,6 @@ function makeStubs() {
       const hit = all.find((r) => String(r.id) === String(id) || r.agentSessionId.includes(id));
       return JSON.stringify({ session: hit ?? null });
     },
-    // Default delegate stub: returns sync-shaped result for short
-    // tasks, started-shape (async) when the task contains the magic
-    // string ASYNC_LONG_TASK so the delegate-async-started-ack
-    // scenario can exercise the async-return persona rule. clientTools
-    // can't be swapped mid-session in EL Conv AI, hence the in-band
-    // signal.
-    delegate_to_claude: async ({ task }) => {
-      if (typeof task === 'string' && /ASYNC_LONG_TASK/.test(task)) {
-        return JSON.stringify({
-          status: 'started',
-          agentSessionId: 'test-async-1',
-          message: 'Delegate is running; result will arrive shortly.',
-        });
-      }
-      return JSON.stringify({
-      // Match the shape returned by lib/commands/defs/delegation.ts so
-      // the agent gets the same fullText structure it sees in prod.
-      // Use a long, multi-section response on purpose — short responses
-      // got summarized fine; the bug was the agent BAILING to "details
-      // in the panel" with no summary on long responses.
-      status: 'complete',
-      agentSessionId: 'test-session-id',
-      costUsd: 0.01,
-      fullText:
-        `Looking at the harness changes in this workspace, I found five files with active edits. ` +
-        `Here's the breakdown:\n\n` +
-        `## ProposalsPanel.tsx\nLargest change — about 200 lines of refactor adding a Tabs primitive ` +
-        `and reorganizing the proposal lifecycle states. Looks in-progress; STATUS_HINT constant is ` +
-        `imported but not yet used in the JSX.\n\n` +
-        `## InsightsPanel.tsx\nAdded a new metrics section with three counters: pending, in-flight, ` +
-        `and resolved. Wires through to the same operator-shared-state we already publish from ` +
-        `OperatorPanel.\n\n` +
-        `## FeatureList.tsx\nMinor — adjusted column widths for the new feature-tier column.\n\n` +
-        `## issues/IssuesList.tsx\nMoved the action menu from a hover popover to a click-to-open ` +
-        `dropdown. Better mobile UX, consistent with the proposals panel pattern.\n\n` +
-        `## globals.css\n100+ lines of new harness-related styles, mostly for the ProposalsPanel ` +
-        `tabs and the new IssuesList dropdown.\n\n` +
-        `Open question for the user: ProposalsPanel imports STATUS_HINT but doesn't render it — ` +
-        `intentional placeholder for an unfinished feature, or leftover from a removed section?` +
-        ` (task echoed back: ${task ?? ''})`,
-      });
-    },
   };
 }
 
@@ -657,34 +615,6 @@ const SCENARIOS = [
     },
   },
   {
-    name: 'delegate-to-claude',
-    run: async (conv) => {
-      const out = [];
-      const t = await turn(
-        conv,
-        'tell the sheets architect to scope the new pivot table feature',
-        { timeoutMs: 12_000 },
-      );
-      const dispatchCall = t.newToolCalls.find((c) => c.name === 'delegate_to_claude');
-      out.push({
-        label: 'called delegate_to_claude',
-        pass: !!dispatchCall,
-        detail: t.newToolCalls.map((c) => c.name).join(',') || '(none)',
-      });
-      out.push({
-        label: 'task arg mentions pivot table / scope',
-        pass: !!dispatchCall && /pivot|scope/i.test(JSON.stringify(dispatchCall.args ?? {})),
-        detail: dispatchCall ? JSON.stringify(dispatchCall.args) : '(no call)',
-      });
-      out.push({
-        label: 'targets the sheets harness (not forms/billing)',
-        pass: !!dispatchCall && /sheets/i.test(JSON.stringify(dispatchCall.args ?? {})),
-        detail: dispatchCall ? JSON.stringify(dispatchCall.args) : '(no call)',
-      });
-      return out;
-    },
-  },
-  {
     name: 'operator-scan-trigger',
     run: async (conv) => {
       const out = [];
@@ -741,52 +671,6 @@ const SCENARIOS = [
         label: 'never addresses user as literal "{name}"',
         pass: !/\{name\}/i.test(allText),
         detail: allText.slice(0, 250),
-      });
-      return out;
-    },
-  },
-  {
-    name: 'delegate-always-summarizes',
-    run: async (conv) => {
-      const out = [];
-      // Make the delegate stub return a long multi-section response,
-      // since that's the case where the agent was bailing to "details
-      // in the panel" without summarizing. Override the stub for this
-      // session via sendContextualUpdate (can't replace clientTools
-      // mid-session, but the agent will pull the response we hand it
-      // through delegate_to_claude when it fires).
-      // First trigger a real delegate call to a Claude task that
-      // returns something LONG so we exercise the long-response path.
-      const t = await turn(
-        conv,
-        'have claude review the modified harness files and tell me what is in progress',
-        { timeoutMs: 30_000 },
-      );
-      out.push({
-        label: 'called delegate_to_claude',
-        pass: t.newToolCalls.some((c) => c.name === 'delegate_to_claude'),
-        detail: t.newToolCalls.map((c) => c.name).join(',') || '(none)',
-      });
-      out.push({
-        label: 'response is NOT just "details in the panel" / "looking into that"',
-        pass: !/^\s*(looking into that|details in the panel|i'?ll put the details in the panel|on it[,.]\s*details? in the panel)[.\s]*$/i
-          .test(t.agentText.trim()),
-        detail: t.agentText.slice(0, 250),
-      });
-      out.push({
-        label: 'mentions "details in the panel" (or close variant)',
-        pass: /details? .*panel|put .*details? .*panel|in the panel/i.test(t.agentText),
-        detail: t.agentText.slice(0, 250),
-      });
-      out.push({
-        label: 'speaks SOMETHING beyond the canned line (≥1 substantive sentence)',
-        // Strip the canned phrases and check the remaining text length.
-        pass: t.agentText
-          .replace(/(looking into that|i'?ll put the details? in the panel|details? in the panel)[.,]?/gi, '')
-          .replace(/[.,!?]/g, '')
-          .trim()
-          .length > 25,
-        detail: t.agentText.slice(0, 250),
       });
       return out;
     },

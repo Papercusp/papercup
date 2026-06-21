@@ -1,18 +1,8 @@
 /**
- * Seed the `wake-brain` routine — the autonomous-Queen cadence
- * (hive-agent-tabs-psu-tui-2026-06-09 P-005 / D-006 / D-002; handler in
- * `wake-brain-action.ts`).
+ * Seed the retired `wake-brain` routine tombstone.
  *
- *   - `wake-brain` (every 30 min): fire the pinned `psu --brain` session's
- *     inbox-wake so the Queen takes one autonomous supervision turn. No spawn,
- *     no parallel driver — just the shipped wake machinery (D-002).
- *
- * SEEDED ACTIVE by default — but the ACTION is flag-gated on HIVE_AGENT_TABS
- * (off → the handler no-ops, the brain stays a responsive engineer session),
- * so the routine costs nothing until the owner flips the flag. That makes the
- * FLAG the single activation lever for the whole hive-agent-tabs experience,
- * Queen cadence included — no second switch to forget (alpha policy: finished
- * work never ships dark behind an extra toggle).
+ * `psu --brain` was retired 2026-06-21. The action remains registered as a
+ * no-op so old rows are harmless until a routine cleanup removes them.
  *
  *   tsx seed-wake-brain-routine.ts              # seed ACTIVE (flag still gates)
  *   tsx seed-wake-brain-routine.ts --inactive   # seed but leave the cron off

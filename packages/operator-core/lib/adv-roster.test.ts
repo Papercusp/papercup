@@ -345,11 +345,11 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     expect(pendingLaunchesToRosterEntries([row], 'box-1')[0].pendingWakes).toBe(0);
   });
 
-  it('pending entry: a --brain launch argv → queen even with a null role', () => {
+  it('pending entry: a retired --brain launch argv no longer implies queen', () => {
     const row = adv({ id: 9, display: 'workbench', role: null, launchArgv: ['psu', '--brain'] });
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
-    expect(e.agentPaneKind).toBe('queen');
-    expect(e.driveMode).toBe('auto');
+    expect(e.agentPaneKind).toBe('session');
+    expect(e.driveMode).toBe('manual');
   });
 
   it('pending entry: worker role → bee', () => {

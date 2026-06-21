@@ -245,14 +245,13 @@ export function scopePresenceToWorkspace(
 
 /**
  * Derive the AgentLaunchHint for classifyAgentPane from a pending launch's psu
- * argv: `--brain` marks the Queen; `--role=planner` marks a Create → New-plan
+ * argv: `--role=planner` marks a Create → New-plan
  * Planner launch (P-006 — covers argv-only rows; launch-su also records
  * role='planner' on the adv row, which classifies on its own). Role-based
  * classification covers the rest, so undefined is the common case.
  */
 function launchHintFromArgv(argv: string[] | null | undefined): 'brain' | 'planner' | undefined {
   if (!argv?.length) return undefined;
-  if (argv.includes('--brain')) return 'brain';
   if (argv.includes('--role=planner')) return 'planner';
   return undefined;
 }

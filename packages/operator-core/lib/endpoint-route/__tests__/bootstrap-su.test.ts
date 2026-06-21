@@ -339,30 +339,12 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex', sessionId: null }));
   });
 
-  it('D-013: brain launch pins the minted native session id before returning', async () => {
+  it('retired brain launches are rejected before recording a session', async () => {
     const res = await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, brain: true });
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(json.status).toBe('ok');
-    // The pin IS the forced --session-id uuid — set server-side pre-exec.
-    // EI-908: pinned under the launch's workspace-scoped key (workspace, uuid).
-    expect(setBrainSessionMock).toHaveBeenCalledTimes(1);
-    expect(setBrainSessionMock).toHaveBeenCalledWith(expect.any(String), json.nativeSessionId);
-    expect(json.nativeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  it('D-013: brain launches reject non-claude agents (no forceable session id to pin)', async () => {
-    const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null, brain: true });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(410);
+    expect((await res.json()).error).toMatch(/deprecated/);
     expect(setBrainSessionMock).not.toHaveBeenCalled();
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
-  });
-
-  it('D-013: a failed pin fails the launch (no silent unpinned brain)', async () => {
-    setBrainSessionMock.mockRejectedValueOnce(new Error('pg down'));
-    const res = await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, brain: true });
-    expect(res.status).toBe(500);
-    expect((await res.json()).error).toMatch(/brain pin failed/);
   });
 
   it('D-013: non-brain launches never touch the pin', async () => {
@@ -371,49 +353,11 @@ describe('bootstrap-su', () => {
     expect(setBrainSessionMock).not.toHaveBeenCalled();
   });
 
-  it('D-013: GET /brain returns the pin (null until one is set)', async () => {
-    const empty = await (await callBrainGet()).json();
-    // EI-908: the response echoes the resolved workspace (active = 'default' here).
-    expect(empty).toEqual({ brainSessionId: null, workspace: 'default' });
-
-    getBrainSessionMock.mockResolvedValueOnce('11111111-2222-3333-4444-555555555555');
-    const pinned = await (await callBrainGet()).json();
-    expect(pinned).toEqual({ brainSessionId: '11111111-2222-3333-4444-555555555555', workspace: 'default' });
-  });
-
-  it('D-013/P-003: GET /brain reports no pin when fresh-context is ON (psu --brain mints fresh)', async () => {
-    // Even with a pin set, fresh-context ON forces null so `psu --brain` takes
-    // its fresh mint-launch path — the pin is never consulted.
-    getFlagMock.mockResolvedValueOnce(true);
-    getBrainSessionMock.mockResolvedValueOnce('11111111-2222-3333-4444-555555555555');
-    const res = await (await callBrainGet()).json();
-    expect(res).toEqual({ brainSessionId: null, workspace: 'default' });
+  it('retired GET /brain returns a 410 tombstone', async () => {
+    const res = await callBrainGet();
+    expect(res.status).toBe(410);
+    expect((await res.json()).error).toMatch(/deprecated/);
     expect(getBrainSessionMock).not.toHaveBeenCalled();
-  });
-
-  it('P-002: a fresh-context brain launch appends the computed Queen brief to the prompt file', async () => {
-    getFlagMock.mockResolvedValue(true); // QUEEN_BRAIN_FRESH ON
-    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    // The brief was computed for the resolved started hive (the launch harness).
-    expect(computeQueenWakeBriefMock).toHaveBeenCalledTimes(1);
-    // The launch-context prompt = playbook + the appended brief.
-    const prompt = readFileSync(json.promptFile, 'utf8');
-    expect(prompt).toContain('PLAYBOOK + CTX BODY');
-    expect(prompt).toContain('## QUEEN WAKE BRIEF');
-    expect(prompt).toContain('- frontier: wi-1');
-    // The brief is appended after the playbook, not spliced in.
-    expect(prompt.indexOf('PLAYBOOK')).toBeLessThan(prompt.indexOf('QUEEN WAKE BRIEF'));
-  });
-
-  it('P-002: flag OFF → a brain launch does NOT compute or append a brief', async () => {
-    getFlagMock.mockResolvedValue(false); // QUEEN_BRAIN_FRESH OFF (resume-the-pin world)
-    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(computeQueenWakeBriefMock).not.toHaveBeenCalled();
-    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
   });
 
   it('P-002: a non-brain launch never computes a brief even with the flag ON', async () => {
@@ -421,37 +365,6 @@ describe('bootstrap-su', () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null });
     expect(res.status).toBe(200);
     expect(computeQueenWakeBriefMock).not.toHaveBeenCalled();
-  });
-
-  it('P-002: no brief computed (no hive woke / none ready) → playbook-only, fail-soft', async () => {
-    getFlagMock.mockResolvedValue(true);
-    computeQueenWakeBriefMock.mockResolvedValue(null); // no brief
-    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    // Still launches — just the su launch-context, no tail.
-    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
-  });
-
-  it('P-002: no started hive → no brief (resolveBrainHiveSlug null), launch still succeeds', async () => {
-    getFlagMock.mockResolvedValue(true);
-    listStartedHivesMock.mockResolvedValue([]); // nothing started
-    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(computeQueenWakeBriefMock).not.toHaveBeenCalled();
-    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
-  });
-
-  it('P-002: a brief computation that throws is fail-soft — the launch still succeeds with the playbook', async () => {
-    getFlagMock.mockResolvedValue(true);
-    computeQueenWakeBriefMock.mockRejectedValue(new Error('survey db down'));
-    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
-    // The pin still landed — only the brief degraded.
-    expect(setBrainSessionMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an unknown agent kind', async () => {

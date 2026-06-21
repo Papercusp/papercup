@@ -526,13 +526,11 @@ const TOOLS = [
   {
     name: 'delegates_list', type: 'client', expects_response: true,
     description:
-      'List Claude conversation sessions (delegates) the user has run. ' +
+      'List retired delegate conversation sessions the user has run. ' +
       'Returns [{id, title, summary, lastActiveAt, turnCount, agentSessionId, status}, ...]. ' +
       "IMPORTANT: status='open' means 'available to resume', NOT 'currently running'. " +
-      "Delegates do not run in the background — every delegate_to_claude call is synchronous and " +
-      "complete by the time it returns. Use this when the user asks 'what delegates have I run?', " +
-      "'is there a previous one about X?', or to find a session id to pass to delegate_to_claude " +
-      "for a follow-up. Match by title/topic. Default returns open; pass status:'all' or 'archived'.",
+      "Delegate launch/resume is retired. Use this only when the user asks about historical " +
+      "delegate records. Default returns open; pass status:'all' or 'archived'.",
     parameters: {
       type: 'object',
       properties: {
@@ -549,9 +547,8 @@ const TOOLS = [
     name: 'delegates_get', type: 'client', expects_response: true,
     description:
       'Get full metadata for a single delegate session by id (numeric or agent_session_id UUID). ' +
-      'Returns the title, summary, last-activity, and full transcript. Use when picking a delegate ' +
-      'by title alone is ambiguous and you want to see the actual recent context before deciding to ' +
-      'follow up. Do not read the transcript verbatim aloud — the panel renders it.',
+      'Returns the title, summary, last-activity, and full transcript. Use only to answer questions ' +
+      'about historical delegate records. Do not read the transcript verbatim aloud.',
     parameters: {
       type: 'object',
       properties: { id: prop('string', 'Session id (numeric or agent_session_id UUID).') },
@@ -563,9 +560,8 @@ const TOOLS = [
     name: 'delegates_search', type: 'client', expects_response: true,
     description:
       'Search past delegate sessions by free-text. Matches against title, summary, and the ' +
-      "kickoff message. Use when the user names a topic and you want to find a related past " +
-      "delegate without paging through delegates_list. After picking a hit, pass its " +
-      "agentSessionId to delegate_to_claude to resume — and CONFIRM with the user before resuming.",
+      "kickoff message. Use only when the user asks about historical delegate records. " +
+      "Delegate launch/resume is retired.",
     parameters: {
       type: 'object',
       properties: {
@@ -574,39 +570,6 @@ const TOOLS = [
       },
       required: ['query'],
       description: 'Search filters.',
-    },
-  },
-  {
-    name: 'delegate_to_claude', type: 'client', expects_response: true,
-    // 15s gives the tool's internal 10s race-with-timeout some slack
-    // before EL would otherwise mark this as failed — but in the
-    // async path the tool returns ack-shaped data well within the
-    // window, so the timeout never fires in practice.
-    response_timeout_secs: 15,
-    description:
-      'Spawn or resume a Claude delegate for anything beyond reflexive UI: research, multi-step work, asking another agent. ' +
-      'The tool returns one of two shapes:\n\n' +
-      "(A) status:'complete' — the delegate finished synchronously (<10s). Returns " +
-      "{ status:'complete', fullText, agentSessionId, costUsd }. Speak a ONE-SENTENCE " +
-      "summary of fullText, then say 'details in the panel.' Never read fullText verbatim.\n\n" +
-      "(B) status:'started' — the delegate is running in the background (>10s expected). " +
-      "Returns { status:'started', agentSessionId, message }. Speak ONE short line " +
-      "('On it, I'll let you know what comes back.' or similar) and STOP. Do NOT say " +
-      "'details in the panel' yet — there are no details yet. Do NOT fabricate the result. " +
-      "When the delegate finishes you'll receive a system contextual update of the form " +
-      "'[Delegate <id> completed] <summary>. Full text in the panel.' Speak that summary on " +
-      "the next turn — that's the deferred moment for the headline you'd give on a sync return.\n\n" +
-      "If the user asks 'is it done yet?' between the 'started' return and the completion " +
-      "update, answer truthfully: 'still working — should hear back any moment.'",
-    parameters: {
-      type: 'object',
-      properties: {
-        task: prop('string', 'The user request, paraphrased.'),
-        sessionId: prop('string', 'Optional existing claude-session id to continue.'),
-        newSession: prop('boolean', 'Set true to force a fresh delegate.'),
-      },
-      required: ['task'],
-      description: 'Delegation request.',
     },
   },
   {

@@ -45,9 +45,9 @@ const TOOL_ROUTING = [
   '',
   '  IMPORTANT: ALWAYS call the tool when the user asks for an action — even if you think you already did it. The user can change UI state manually (close the panel by clicking the X, navigate away with the back button, etc.) without you knowing. Your conversation memory is NOT the source of truth for UI state. Tool calls are idempotent — calling panel_open when already open is harmless. Calling panel_state first to check is also fine. NEVER respond "it\'s already open" or "you\'re already there" from memory; call the tool and act on the result.',
   '',
-  '  DELEGATE — for anything beyond reflexive UI: research, multi-step work, asking another agent, "what\'s happening with X", any request that needs Claude-grade reasoning or your own tools can\'t satisfy. Call delegate_to_claude with the user\'s request as the \'task\' arg. The delegate will use its own MCP tools (cross-harness agent dispatch, search, audit, hindsight, etc.) and surface results in the operator panel. After delegating, briefly tell the user "looking into that, details in the panel" and stop — the panel auto-opens when the delegate is done.',
+  '  EXTENDED WORK — for anything beyond reflexive UI: research, multi-step work, asking another agent, or workspace investigation, use ask_operator when available or tell the user the request needs the operator panel/full agent session. The old delegate_to_claude/delegate_to_agent tools are retired.',
   '',
-  'When in doubt, prefer delegate_to_claude over guessing. You are the low-latency voice front-end; the delegate is the local Claude brain.',
+  'When in doubt, do not guess. You are the low-latency voice front-end; route substantive work to the operator brain/panel instead of inventing an answer.',
   '',
   'The user may say a wake word ("hey operator") followed by a command — strip the wake word and act on the command.',
 ].join('\n');

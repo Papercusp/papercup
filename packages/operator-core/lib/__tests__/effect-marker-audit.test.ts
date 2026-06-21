@@ -24,7 +24,6 @@ import { lookupByMcpName } from '@papercusp/tooldef';
 // explicit per-tool override (the two `*:read`-capability file-writers).
 const NON_SUFFIX_MUTATORS = [
   'operator:converse', // operator:converse — brain turn (spawns, spend, mem0)
-  'operator:delegate', // operator:delegate — spawns a delegate agent
   'turn:interrupt', // turn:interrupt — ends a peer's turn
   'ui:dispatch', // ui:dispatch — performs a UI intent in a browser tab
   'tui:dispatch', // tui:dispatch — performs a control intent against a pui workbench

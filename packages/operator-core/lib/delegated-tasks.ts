@@ -3,7 +3,7 @@
  * (plan collapse-delegate-into-workitems-2026-06-04, D-001).
  *
  * A delegated task IS a work_item: an operator-scoped issue-family item of kind
- * `task`. This module is the thin domain layer the operator:delegate verb uses —
+ * `task`. This module preserves historical delegate task records —
  * it replaces the bespoke `delegates` session registry. The durable, fleet-visible,
  * subscribe-able record is the work_item; the conversational resume key + origin/
  * backend live in its payload; the transcript lives in its coord thread (comments).

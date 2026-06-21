@@ -133,7 +133,7 @@ export interface VoicePrefs {
    */
   elevenLabsAgentId: string;
   /**
-   * Auto-open the operator panel when delegate_to_claude completes
+   * Historical: auto-open the operator panel when a delegate completed
    * with a result that should be shown.
    */
   voicePanelAutoOpen: boolean;

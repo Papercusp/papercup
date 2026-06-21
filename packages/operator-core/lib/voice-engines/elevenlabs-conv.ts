@@ -703,50 +703,14 @@ function zodToJsonSchemaFor(_schema: unknown): unknown {
   return {};
 }
 
-/**
- * Build the "you have these Claude conversations open" context block
- * for voice. Voice picks which session to pass to delegate_to_claude
- * based on title relevance. Refreshed at every EL session-start.
- */
-async function fetchDelegatesBlock(workspace: string): Promise<string | null> {
-  try {
-    const r = await fetch(`/api/agent-mcp/delegates?status=open&limit=10`, {
-      headers: { 'x-workspace': workspace },
-    });
-    if (!r.ok) return null;
-    const data = await r.json() as {
-      sessions: Array<{ id: number; title: string | null; lastActiveAt: string; turnCount: number; agentSessionId: string }>;
-    };
-    const routingPreamble = [
-      'You are the Operator — the low-latency voice front-end.',
-      'Your reflexive tools (panel toggle, navigate, scan, approve, across-workspaces) execute UI actions instantly.',
-      'For ANYTHING ELSE — research, multi-step work, asking another agent, "what\'s happening with X" — call delegate_to_claude with the user request as `task`. The delegate is your local Claude brain; it has cross-harness MCP tools you don\'t.',
-      'After delegating, briefly say "looking into that, details in the panel" — the operator panel auto-opens when the delegate is done.',
-      'When in doubt, delegate. Never guess answers about the codebase, agents, or workspace state.',
-      '',
-    ].join('\n');
-
-    if (!data.sessions?.length) {
-      return routingPreamble +
-        'You have no open delegate conversations yet. Call delegate_to_claude with newSession:true to start one.';
-    }
-    const lines = data.sessions.map((s) => {
-      const title = s.title ?? '(untitled)';
-      const minsAgo = Math.round((Date.now() - new Date(s.lastActiveAt).getTime()) / 60000);
-      return `  - id:${s.agentSessionId.slice(0, 8)} "${title}" (${s.turnCount} turns, ${minsAgo}m ago)`;
-    });
-    return [
-      routingPreamble,
-      'Existing delegate conversations in this workspace:',
-      ...lines,
-      '',
-      'When delegating: pass `sessionId` (the id from the list above) if the user\'s task',
-      'relates to one of these conversations; pass `newSession:true` for a clean slate;',
-      'pass neither and the server picks (most recent if <5min, else new).',
-    ].join('\n');
-  } catch {
-    return null;
-  }
+/** Build the voice routing context. Delegate launch was retired 2026-06-21. */
+async function fetchDelegatesBlock(_workspace: string): Promise<string | null> {
+  return [
+    'You are the Operator — the low-latency voice front-end.',
+    'Your reflexive tools (panel toggle, navigate, scan, approve, across-workspaces) execute UI actions instantly.',
+    'The old delegate_to_claude/delegate_to_agent tools are retired. Do not ask for or start delegate sessions.',
+    'For work beyond your reflexive tools, use ask_operator when available or tell the user the request needs the operator panel/full agent session.',
+  ].join('\n');
 }
 
 /**

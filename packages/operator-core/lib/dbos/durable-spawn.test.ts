@@ -184,6 +184,45 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     ).resolves.toBeUndefined();
     expect(h.loopbackFetch).toHaveBeenCalledTimes(1); // fired anyway
   });
+
+  // D-007/D-010 fail-loud: HTTP 200 but the agent never produced a turn (host dead/unstable)
+  // must be recorded `failed` (infra_loss marker), NOT silently `done`.
+  const okBody = (b: Record<string, unknown>) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(b),
+  });
+
+  it('records `failed` + infra_loss when the fire returns 200 but the invoke body reports ok:false', async () => {
+    h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: '', timedOut: false }));
+    await expect(
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+    ).resolves.toBeUndefined(); // infra_loss does NOT throw (no DBOS recovery storm)
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1); // and does NOT retry the fire
+    const fin = h.finishSpawn.mock.calls[0][1];
+    expect(fin.status).toBe('failed');
+    expect(String(fin.errorMessage)).toContain('infra_loss');
+  });
+
+  it('records `failed` + infra_loss when 200 + ok:true but agentOutput is empty (0-token wake)', async () => {
+    h.loopbackFetch.mockResolvedValue(okBody({ ok: true, exitCode: 0, agentOutput: '   ', timedOut: false }));
+    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } });
+    const fin = h.finishSpawn.mock.calls[0][1];
+    expect(fin.status).toBe('failed');
+    expect(String(fin.errorMessage)).toContain('infra_loss');
+  });
+
+  it('keeps `done` when the agent actually ran (ok:true + non-empty output) — no false positive', async () => {
+    h.loopbackFetch.mockResolvedValue(okBody({ ok: true, exitCode: 0, agentOutput: 'DONE\nplaced 5 items', timedOut: false }));
+    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } });
+    expect(h.finishSpawn.mock.calls[0][1].status).toBe('done');
+  });
+
+  it('keeps `done` when the body is unparseable/unreadable (never flip on uncertainty)', async () => {
+    h.loopbackFetch.mockResolvedValue({ ok: true, status: 200, text: async () => 'not json' });
+    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } });
+    expect(h.finishSpawn.mock.calls[0][1].status).toBe('done');
+  });
 });
 
 // A deleted harness 404s its /invoke route forever. The fire used to treat any

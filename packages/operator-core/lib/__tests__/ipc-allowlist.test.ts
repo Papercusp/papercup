@@ -40,7 +40,6 @@ const EXPECTED_IPC_ELIGIBLE = new Set<string>([
   // persona differs (role=sentinel). So it inherits operator:converse's self-containment
   // and is IPC-safe by the same justification. (Sentinel-as-Herald; sentinel-converse.ts.)
   'sentinel:converse',
-  'operator:delegate', // self-contained since the IPC-allowlist migration (2026-05-12)
   'architect:chat', // self-contained since the IPC-allowlist migration (2026-05-12)
   'brainstorm:chat', // self-contained since the IPC-allowlist migration (2026-05-12)
 ]);

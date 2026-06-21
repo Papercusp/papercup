@@ -1551,74 +1551,11 @@ async function resumeFlow(args = {}) {
   launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: { env: acct.env, notice: acct.notice } });
 }
 
-// `psu --brain` (native-terminal-desktop D-013): the desktop chat dock's
-// brain pane. Resume THE canonical pinned brain session exactly — no picker,
-// no prompt (the dock pane launches non-interactively) — falling back to a
-// fresh claude SU launch that the server pins as the new brain when no pin
-// exists or the pinned session no longer resolves. The pin is the native
-// session uuid in harness_shared.operator_settings (`brain_session_id`),
-// written by POST bootstrap-su `brain: true` BEFORE the session's first turn
-// (the uuid is server-minted and forced via claude --session-id).
+// `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old
+// scripts fail clearly instead of accidentally launching a normal SU session.
 async function brainFlow(args = {}) {
-  let pin = null;
-  try {
-    // EI-908: the brain pin is workspace-scoped. Pass our workspace when one
-    // was given so a non-active-workspace `psu --brain` resolves ITS pin;
-    // omitted → the server defaults to the active workspace (the dock case).
-    const brainQ = args.workspace ? `?workspace=${encodeURIComponent(args.workspace)}` : '';
-    pin = (await api(`/api/agent-mcp/console/bootstrap-su/brain${brainQ}`))?.brainSessionId ?? null;
-  } catch (e) {
-    // Pin endpoint unavailable (an operator predating D-013, or a DB error).
-    // Do NOT fresh-launch here — a server that can't read the pin can't WRITE
-    // it either, so every dock open would fork a new unpinned "brain".
-    // Degrade to the pre-D-013 behavior: the recent-session resume picker.
-    console.error(`psu: brain pin unavailable (${e?.message ?? e}) — falling back to the resume picker.`);
-    await resumeFlow(args);
-    return;
-  }
-  if (pin) {
-    const data = await api('/api/adv/sessions/resumable');
-    const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
-    // The pin is the recorded NATIVE session id of a psu-tracked launch.
-    const tracked = sessions.find((s) => s.sessionId && s.sessionId === pin);
-    // A tracked adv row alone doesn't prove the session is RESUMABLE: a brain
-    // launch that died before its first persisted turn leaves the pin + adv
-    // row behind with no claude transcript, and `claude --resume` then fails
-    // "No conversation found" on EVERY dock open — a permanent wedge, since
-    // the pane is non-interactive (observed 2026-06-06). Verify claude's own
-    // store first; a transcript-less session has zero turns, so falling
-    // through to the fresh+re-pin path loses nothing.
-    // EI-155: the brain's transcript lives in its per-session isolated config dir
-    // (keyed by coordOwnerId), not the shared ~/.claude — check there, else every
-    // dock open would see "no transcript" and fork a fresh brain forever.
-    const brainConfigDir = tracked?.coordOwnerId ? sessionClaudeConfigDir(tracked.coordOwnerId) : null;
-    if (tracked && (tracked.agent !== 'claude' || claudeStoreHasSession(pin, { configDir: brainConfigDir }))) {
-      launchResume(tracked, { brain: true });
-      return;
-    }
-    if (tracked) {
-      console.error(`psu: pinned brain ${pin} is adv-tracked but claude has no transcript for it — launching a fresh brain (re-pinning).`);
-    } else {
-      // Tracked row gone but the agent's own store still has the transcript
-      // (e.g. the adv row was pruned): it IS the brain psu launched — resume it
-      // without the untracked-confirm (the dock pane can't drive a prompt).
-      const untracked = findUntrackedSession(pin);
-      if (untracked) {
-        console.error(`psu: brain ${pin} lost its tracked row — resuming from the ${untracked.agent} session store.`);
-        launchResume(untracked, { brain: true });
-        return;
-      }
-      console.error(`psu: pinned brain ${pin} no longer resolves anywhere — launching a fresh brain (re-pinning).`);
-    }
-  }
-  // Fresh brain: claude (the pin needs claude's forceable --session-id),
-  // server-default workspace unless overridden, no plan. The server records
-  // the pin before we exec, so the NEXT `psu --brain` resumes exactly this.
-  await launchFreshSu(
-    { agent: 'claude', workspace: args.workspace || null, harness: args.harness || null, plan: null },
-    args,
-    { brain: true },
-  );
+  console.error('psu: --brain is deprecated and no longer launches a pinned brain session. Use the live operator/sentinel converse surface or a normal `psu` session.');
+  process.exitCode = 2;
 }
 
 // `psu --role=<role>` (or picking a non-su role): an interactive,

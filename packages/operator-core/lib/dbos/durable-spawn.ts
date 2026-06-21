@@ -146,7 +146,54 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(input.body),
         });
-        if (r.ok) return { ok: true } as const;
+        if (r.ok) {
+          // D-007/D-010 fail-loud: the fire holds the connection for the agent's run, so r.ok
+          // ≈ "the run finished" — but HTTP 200 does NOT mean the agent actually RAN. On an
+          // unstable/restarting launcher host the invoke returns ok-shaped while the agent
+          // never produced a turn (the ~3s, 0-token Queen/overwatch wakes that were recorded
+          // 'done' → silent placement/scorecard stalls). Inspect the invoke body (the route
+          // returns { ok: exitCode===0 && !timedOut, agentOutput, ... }): treat a parseable
+          // result reporting the agent did NOT complete a turn (route ok:false, OR empty
+          // agentOutput — blueprint roles ALWAYS emit a decision line, so empty ⇒ no turn) as
+          // an infra-loss recorded `failed`, not `done`. An unreadable/unparseable body ⇒ keep
+          // the OLD 'done' behavior — never flip on uncertainty (most load-bearing path).
+          const bodyText = typeof r.text === 'function' ? await r.text().catch(() => '') : '';
+          if (bodyText) {
+            try {
+              const b = JSON.parse(bodyText) as {
+                ok?: unknown;
+                agentOutput?: unknown;
+                stdout?: unknown;
+                exitCode?: unknown;
+                timedOut?: unknown;
+              };
+              // Only judge when the body carries the invoke-result shape (a boolean `ok`).
+              if (typeof b.ok === 'boolean') {
+                const out =
+                  typeof b.agentOutput === 'string'
+                    ? b.agentOutput
+                    : typeof b.stdout === 'string'
+                      ? b.stdout
+                      : '';
+                const agentRan = b.ok === true && out.trim().length > 0;
+                if (!agentRan) {
+                  return {
+                    ok: false,
+                    infraLoss: true,
+                    detail: ` ${input.label ?? ''} returned HTTP 200 but the agent produced no turn (ok=${String(
+                      b.ok,
+                    )}, exitCode=${String(b.exitCode)}, timedOut=${String(
+                      b.timedOut,
+                    )}, outLen=${out.trim().length}) — launcher host dead/unstable; recorded failed, not retried (host stability is the fix)`,
+                  } as const;
+                }
+              }
+            } catch {
+              /* unparseable body ⇒ assume done (the old behavior) */
+            }
+          }
+          return { ok: true } as const;
+        }
         // Capture the response body so a non-2xx fire is self-diagnosing: the bare
         // status (`→ HTTP 400`) tells the watchdog/operator nothing about WHICH
         // install or WHY the /invoke route rejected the spawn, so a recurring 400
@@ -180,7 +227,9 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   // fleet:tree row close `failed` below.
   const permanentMsg =
     fireResult && !fireResult.ok
-      ? `durable-spawn fire ${input.label ?? ''} → HTTP ${fireResult.permanentStatus}${fireResult.detail} (permanent client/target error — not retried)`
+      ? 'infraLoss' in fireResult
+        ? `infra_loss:${fireResult.detail}`
+        : `durable-spawn fire ${input.label ?? ''} → HTTP ${fireResult.permanentStatus}${fireResult.detail} (permanent client/target error — not retried)`
       : null;
   if (permanentMsg) {
     console.warn(`[durable-spawn] ${permanentMsg}`);
