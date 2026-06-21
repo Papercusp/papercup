@@ -186,10 +186,15 @@ going idle never strands you. Model:
 `/internal/docs/agent-insights/always-armed-inbox-wake`.
 
 **A message is only communication if the recipient WAKES to read it — own the
-delivery.** Injecting to an idle agent's inbox is NOT delivery: they read it only
-on their next natural turn, which for a long-idle agent may be never. So when a
-`coord:send` needs to be read or acted on, send it with `wake:'required'` — then
-CHECK the result. A wake needs the recipient's **EXACT, FULL ownerId**: a short
+delivery.** Handing work to an IDLE agent only counts if it WAKES — `coord:send`
+**defaults to inject-only** (lands in the inbox, does NOT re-invoke): they read it
+only on their next natural turn, which for a long-idle agent may be never, so a
+bare inject to a sleeping agent silently stalls the work. The default path now
+flags this — a plain `coord:send` returns `notWoken: { idleRecipients }` when no
+live session is watching an addressee's inbox; treat that as a "this was NOT
+picked up" signal, not an ok. So when a `coord:send` needs to be read or acted on,
+send it with `wake:'required'` and VERIFY pickup (`woken` / `recipient_absent`) —
+then CHECK the result. A wake needs the recipient's **EXACT, FULL ownerId**: a short
 prefix (e.g. `su-df00939e`) injects the message but MISSES the inbox-wake key,
 which is keyed on the full id (`coord:inbox-wake:<full-ownerId>`), so it returns
 `woken:0` / `recipient_absent` even though the agent IS wakeable. `woken:0` /

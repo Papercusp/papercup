@@ -17,7 +17,12 @@
  *     rows the per-scope inline GC never reaches), and
  *   - any UNDRAINED row older than ORPHAN_UNDRAINED_RETENTION_MS — a healthy
  *     drain marks a row within seconds, so a row left undrained this long is, by
- *     definition, not being drained (orphaned / mis-routed / unmapped table).
+ *     definition, not being drained (orphaned / mis-routed / unmapped table), and
+ *   - any UNDRAINED row from a one-shot EPHEMERAL test-hive slug
+ *     (EPHEMERAL_SLUG_PATTERNS, e.g. contract-test-*) older than the much shorter
+ *     EPHEMERAL_UNDRAINED_RETENTION_MS — these never drain (the hive is torn down
+ *     after capture) and would otherwise sit the full 48h, so they are reaped
+ *     promptly (infra-fail-fast-build-integrity-2026-06-19 P-010).
  *
  * It only touches the federation-event QUEUE (substrate_outbox), never the
  * canonical tables (harness_plans / *_consolidated / …). The conservative
@@ -38,9 +43,48 @@ export const DRAINED_RETENTION_MS = 24 * 60 * 60 * 1000;
  *  within seconds, so 48h cannot evict an in-flight row of a healthy scope. */
 export const ORPHAN_UNDRAINED_RETENTION_MS = 48 * 60 * 60 * 1000;
 
+/** Undrained rows from a one-shot EPHEMERAL test-hive slug are GC'd on this much
+ *  shorter TTL. The contract-test integration suite (and similar) creates a hive,
+ *  captures a couple of outbox rows, then tears the hive down — so those rows NEVER
+ *  drain (no booted substrate owns them) and would otherwise sit for the full 48h
+ *  ORPHAN_UNDRAINED_RETENTION_MS window. They are known-dead the moment they're
+ *  captured. (infra-fail-fast-build-integrity-2026-06-19 P-010: ~132 dead
+ *  contract-test hives × ~2 rows accumulating continuously.) 2h is still vastly
+ *  longer than the ~1s drain cadence, so it can never drop an in-flight row of a
+ *  real scope that merely shares the prefix. */
+export const EPHEMERAL_UNDRAINED_RETENTION_MS = 2 * 60 * 60 * 1000;
+
+/** SQL LIKE patterns identifying one-shot EPHEMERAL test-hive slugs whose captures
+ *  will never drain. Kept deliberately narrow (only the unambiguous one-shot
+ *  contract-test pattern) — recurring test routines (xbench/p016/canary) legitimately
+ *  boot + drain, so they are NOT matched and fall to the normal 48h orphan TTL. */
+export const EPHEMERAL_SLUG_PATTERNS: readonly string[] = ['contract-test-%'];
+
 /** Max rows deleted per sweep — bounded so a first/large sweep holds row locks
  *  briefly; the next tick clears any remainder. */
 export const BACKSTOP_GC_BATCH = 50_000;
+
+export interface BackstopGcCutoffs {
+  /** drained rows older than this (epoch-ms) are GC'd. */
+  drainedBefore: number;
+  /** undrained rows (any scope) older than this are GC'd as orphaned. */
+  undrainedBefore: number;
+  /** undrained rows from an ephemeral test-hive slug older than this are GC'd. */
+  ephemeralUndrainedBefore: number;
+  /** the ephemeral-slug LIKE patterns the ephemeral cutoff applies to. */
+  ephemeralSlugPatterns: readonly string[];
+}
+
+/** Pure: derive the three retention cutoffs from a clock. Unit-testable without PG;
+ *  the SQL in runSubstrateOutboxBackstopGc consumes exactly these. */
+export function backstopGcCutoffs(now: number): BackstopGcCutoffs {
+  return {
+    drainedBefore: now - DRAINED_RETENTION_MS,
+    undrainedBefore: now - ORPHAN_UNDRAINED_RETENTION_MS,
+    ephemeralUndrainedBefore: now - EPHEMERAL_UNDRAINED_RETENTION_MS,
+    ephemeralSlugPatterns: EPHEMERAL_SLUG_PATTERNS,
+  };
+}
 
 export interface BackstopGcOptions {
   /** epoch-ms clock override (tests). Defaults to Date.now(). */
@@ -58,14 +102,17 @@ export async function runSubstrateOutboxBackstopGc(
 ): Promise<{ deleted: number }> {
   const now = opts.now ?? Date.now();
   const sql = opts.sql ?? getOrgPg().sql;
+  const c = backstopGcCutoffs(now);
   const rows = await sql<Array<{ n: number }>>`
     WITH del AS (
       DELETE FROM harness_shared.substrate_outbox
        WHERE id IN (
          SELECT id
            FROM harness_shared.substrate_outbox
-          WHERE (drained_at IS NOT NULL AND drained_at < ${now - DRAINED_RETENTION_MS})
-             OR (drained_at IS NULL     AND ts         < ${now - ORPHAN_UNDRAINED_RETENTION_MS})
+          WHERE (drained_at IS NOT NULL AND drained_at < ${c.drainedBefore})
+             OR (drained_at IS NULL     AND ts         < ${c.undrainedBefore})
+             OR (drained_at IS NULL     AND ts < ${c.ephemeralUndrainedBefore}
+                 AND harness_slug LIKE ANY (${[...c.ephemeralSlugPatterns]}))
           LIMIT ${BACKSTOP_GC_BATCH}
        )
       RETURNING 1

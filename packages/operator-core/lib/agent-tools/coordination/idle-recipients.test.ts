@@ -114,18 +114,26 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
   });
 
   it('DEGRADES to an empty report (send still ok) when the ROSTER read throws (invariant c)', async () => {
+    // The degrade path logs a single advisory warn — expected, so spy it out (the
+    // repo fails tests on un-asserted console.warn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(listPresence).mockRejectedValue(new Error('roster down'));
     const r = await reportIdleRecipients(['su-bee-1'], {});
     expect(r.degraded).toBe(true);
     expect(r.idle).toEqual([]); // never a FALSE idle on a read hiccup
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 
   it('DEGRADES to an empty report when an AWAIT-STORE read throws (invariant c)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(listActiveAwaitsForKey).mockRejectedValue(new Error('await store down'));
     const r = await reportIdleRecipients(['su-bee-1'], {});
     expect(r.degraded).toBe(true);
     expect(r.idle).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 
   it('returns a clean empty (NOT degraded) report when there are no concrete recipients', async () => {

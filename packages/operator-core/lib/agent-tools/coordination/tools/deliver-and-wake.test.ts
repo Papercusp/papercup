@@ -23,6 +23,17 @@ const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
   notified: [] as string[],
   msgId: null,
 }));
+// coord-dispatch-reliability P-001: the DEFAULT (no-wake) path now NON-FIRINGLY
+// probes each recipient's inbox-wake key via listActiveAwaitsForKey + the local
+// presence roster to REPORT idle recipients. Stub both so the unit test exercises
+// the report without PG. Default: a roster of su-bee-1/2/3 (so they aren't treated
+// as federated) and zero active watchers (so a plain send reports them idle).
+const listActiveAwaitsForKey = vi.fn(async (_key: string) => [] as unknown[]);
+const listPresence = vi.fn(async () => [
+  { ownerId: 'su-bee-1' },
+  { ownerId: 'su-bee-2' },
+  { ownerId: 'su-bee-3' },
+]);
 // coord:await-inbox composes the registration internals directly — stub them so
 // the unit test needs no PG / no real sweeper.
 const registerAwait = vi.fn(async (input: { eventKey: string; once?: boolean; minSleepSec?: number | null }) => ({
@@ -76,6 +87,10 @@ vi.mock('../../../events/await/store', () => ({
   registerAwait: (input: { eventKey: string }) => registerAwait(input),
   upsertInboxWakeAwait: (input: { eventKey: string }) => upsertInboxWakeAwait(input),
   cancelInboxWakeAwaits: () => cancelInboxWakeAwaits(),
+  listActiveAwaitsForKey: (key: string) => listActiveAwaitsForKey(key),
+}));
+vi.mock('../presence', () => ({
+  listPresence: () => listPresence(),
 }));
 vi.mock('../../../events/await/handle', () => ({
   captureWakeHandleForOwner: () => captureWakeHandleForOwner(),
@@ -131,6 +146,17 @@ describe('coord:send', () => {
     log = new InMemoryCoordLog();
     configureCoordLog(log);
     emitAwaitedEvent.mockClear();
+    // Reset the no-wake idle-probe seams to their defaults each test (a prior
+    // test's mockResolvedValue/mockRejectedValueOnce must not leak): roster of
+    // su-bee-1/2/3, zero active watchers.
+    listActiveAwaitsForKey.mockReset();
+    listActiveAwaitsForKey.mockResolvedValue([]);
+    listPresence.mockReset();
+    listPresence.mockResolvedValue([
+      { ownerId: 'su-bee-1' },
+      { ownerId: 'su-bee-2' },
+      { ownerId: 'su-bee-3' },
+    ]);
   });
   afterEach(() => resetCoordLog());
 
@@ -141,6 +167,59 @@ describe('coord:send', () => {
     expect(lines[0].to).toEqual(['su-bee-1']);
     expect(emitAwaitedEvent).not.toHaveBeenCalled(); // no wake fired
     expect(out(res).wake).toBeUndefined();
+  });
+
+  it('default path REPORTS an idle recipient (no watcher) as notWoken, without firing a wake (P-001)', async () => {
+    // su-bee-1 is in the roster (not federated) with zero active watchers → idle.
+    listActiveAwaitsForKey.mockResolvedValue([]);
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
+    // delivery still happened, and STILL no wake was fired (report-only).
+    expect(await log.readLines('messages')).toHaveLength(1);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    const body = out(res);
+    expect(body.ok).toBe(true);
+    expect(body.wake).toBeUndefined();
+    expect(body.notWoken.idleRecipients).toEqual(['su-bee-1']);
+    expect(typeof body.notWoken.note).toBe('string');
+  });
+
+  it('default path does NOT report a recipient with a live watcher (P-001)', async () => {
+    listActiveAwaitsForKey.mockResolvedValue([{ id: 1 }]); // one active watcher
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(out(res).notWoken).toBeUndefined();
+  });
+
+  it('default path NEVER reports a federated recipient (not in the local roster) as idle (P-001 invariant c)', async () => {
+    // su-remote isn't in the roster → unknown/advisory, never falsely flagged idle.
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-remote'], summary: 'fyi' }), ctx);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(out(res).notWoken).toBeUndefined();
+  });
+
+  it('default path DEGRADES (no notWoken, send still ok) on a roster read hiccup (P-001 invariant c)', async () => {
+    // The degrade path logs one advisory warn — expected; spy it (the repo fails
+    // tests on un-asserted console.warn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    listPresence.mockReset();
+    listPresence.mockRejectedValue(new Error('roster down'));
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
+    const body = out(res);
+    expect(body.ok).toBe(true); // the send succeeding is sacred
+    expect(body.notWoken).toBeUndefined();
+    expect(await log.readLines('messages')).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it("wake:'required' path does NOT emit a notWoken idle report (the wake path owns liveness via recipient_absent)", async () => {
+    listActiveAwaitsForKey.mockResolvedValue([]);
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: 'required' }),
+      ctx,
+    );
+    expect(out(res).notWoken).toBeUndefined();
+    // the no-wake probe must not run on the wake path
+    expect(listActiveAwaitsForKey).not.toHaveBeenCalled();
   });
 
   it('wake:true ENQUEUES the message AND fires exactly the recipient keys (P-040)', async () => {
