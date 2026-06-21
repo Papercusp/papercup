@@ -34,6 +34,9 @@ import './recipes/list';
 import './recipes/get';
 import './recipes/search';
 import './recipes/run';
+// code-recipes-2026-06-21 Phase 3 (P-013 / D-017) — the Queen's deterministic
+// graduation worklist: ranked promote candidates + near-duplicate merge clusters.
+import './recipes/candidates';
 
 import './operator/stats';
 import './operator/converse';

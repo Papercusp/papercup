@@ -55,6 +55,7 @@ import './list';
 import './get';
 import './search';
 import './run';
+import './candidates';
 
 const findTool = (name: string) => {
   const t = listAllProjectedTools().find((x) => x.expose.mcp?.name === name);
@@ -62,8 +63,8 @@ const findTool = (name: string) => {
   return t;
 };
 
-describe('recipes:* registration (P-005)', () => {
-  for (const name of ['recipes:list', 'recipes:get', 'recipes:search', 'recipes:run']) {
+describe('recipes:* registration (P-005, P-013)', () => {
+  for (const name of ['recipes:list', 'recipes:get', 'recipes:search', 'recipes:run', 'recipes:candidates']) {
     it(`registers ${name} as a role-gated tool`, () => {
       const tool = findTool(name);
       expect(tool).toBeDefined();
@@ -75,6 +76,12 @@ describe('recipes:* registration (P-005)', () => {
 
   it('recipes:run is write-effect (capability:bash) — itself dry-run-gateable', () => {
     expect(findTool('recipes:run').effect).toBe('write');
+  });
+
+  it('recipes:candidates is a READ-only graduation worklist (P-013 / D-017)', () => {
+    const tool = findTool('recipes:candidates');
+    expect(tool.effect).toBe('read');
+    expect(tool.capabilities).toContain('intel:read');
   });
 });
 

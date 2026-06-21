@@ -1,0 +1,251 @@
+/**
+ * code-recipes-candidates.integration.test.ts — the DETERMINISTIC Phase-3
+ * graduation signal layer (code-recipes-2026-06-21 Phase 3, P-013 / D-017) against
+ * real Postgres.
+ *
+ * Mirrors code-recipes-search.integration.test.ts: the module is transport-agnostic
+ * (takes the `sql` handle), so we pass the org-fixture's admin (RLS-bypass) client.
+ * Seeds recipes with varying run_count / distinct-agent reuse / tool-count + a
+ * near-duplicate pair, then asserts:
+ *   (a) the hot multi-tool broadly-reused recipe ranks top of promoteCandidates;
+ *   (b) a 1-tool recipe is EXCLUDED as redundant (never a promote candidate);
+ *   (c) the near-duplicate pair appears as a mergeCluster.
+ *
+ * No live embedder — the BM25 lexical leg + the structural tool-set leg carry the
+ * merge-cluster similarity (identical text + tools ⇒ full Jaccard ⇒ ≥ 0.8).
+ *
+ * Part of code-recipes-2026-06-21 Phase 3 (P-013, integration tier).
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { OrgTestDb } from '../test/_org-test-db';
+import type postgres from 'postgres';
+import { upsertRecipe, recordRecipeRun } from './code-recipes-store';
+import { recipeCandidates } from './code-recipes-candidates';
+
+const { createOrgTestDb } = await import('../test/_org-test-db');
+
+const seededEmbedding = (seed: number): number[] => Array.from({ length: 384 }, (_, i) => Math.sin(seed + i * 0.01));
+
+/** Record N runs for a recipe across the given distinct agent owners (round-robin). */
+async function seedRuns(
+  sql: postgres.Sql,
+  recipeId: string,
+  workspaceId: string,
+  hiveSlug: string,
+  opts: { runs: number; agents: string[]; successes?: number },
+): Promise<void> {
+  const successes = opts.successes ?? opts.runs;
+  for (let i = 0; i < opts.runs; i++) {
+    await recordRecipeRun(sql, {
+      recipeId,
+      workspaceId,
+      hiveSlug,
+      agentOwner: opts.agents[i % opts.agents.length],
+      agentRole: 'bee',
+      success: i < successes,
+    });
+  }
+}
+
+describe('recipeCandidates deterministic signals (real PG)', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('ranks the hot multi-tool broadly-reused recipe top, excludes the 1-tool wrapper, surfaces the merge cluster', async () => {
+    const ws = 'ws-cand-main';
+    const hive = 'alpha';
+
+    // ── HOT multi-tool, broadly-reused recipe — should rank TOP of promote. ──────
+    await upsertRecipe(db.adminSql, {
+      id: 'triage-and-block-stale',
+      workspaceId: ws,
+      hiveSlug: hive,
+      title: 'Triage and block stale work-items',
+      description: 'list open work-items, then mark the stale ones blocked',
+      script: 's',
+      toolsUsed: ['work_items:list', 'work_items:set_state', 'work_items:comment'],
+      embedding: seededEmbedding(1),
+    });
+    await seedRuns(db.adminSql, 'triage-and-block-stale', ws, hive, {
+      runs: 12,
+      agents: ['agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-e'], // 5 distinct
+    });
+
+    // ── A 1-tool wrapper — TRIVIAL, must be EXCLUDED as redundant. ───────────────
+    await upsertRecipe(db.adminSql, {
+      id: 'just-list-plans',
+      workspaceId: ws,
+      hiveSlug: hive,
+      title: 'List the plans',
+      description: 'just call plans list',
+      script: 's',
+      toolsUsed: ['plans:list'],
+      embedding: seededEmbedding(20),
+    });
+    await seedRuns(db.adminSql, 'just-list-plans', ws, hive, {
+      runs: 30, // hot, but a 1-tool wrapper → still excluded
+      agents: ['agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-e', 'agent-f'],
+    });
+
+    // ── A solo, low-reuse multi-tool recipe — present but should rank below hot. ──
+    await upsertRecipe(db.adminSql, {
+      id: 'deploy-and-announce',
+      workspaceId: ws,
+      hiveSlug: hive,
+      title: 'Deploy and announce',
+      description: 'deploy the harness then post to coord',
+      script: 's',
+      toolsUsed: ['deploy:harness', 'coord:send'],
+      embedding: seededEmbedding(40),
+    });
+    await seedRuns(db.adminSql, 'deploy-and-announce', ws, hive, {
+      runs: 3,
+      agents: ['agent-a'], // 1 distinct
+    });
+
+    // ── A near-duplicate PAIR (identical text + tools) — the MERGE cluster. ──────
+    for (const id of ['summarize-feedback-a', 'summarize-feedback-b']) {
+      await upsertRecipe(db.adminSql, {
+        id,
+        workspaceId: ws,
+        hiveSlug: hive,
+        title: 'Summarize the feedback queue',
+        description: 'read the feedback queue and produce a digest',
+        script: 's',
+        toolsUsed: ['feedback:list', 'feedback:digest'],
+        embedding: seededEmbedding(7),
+      });
+      await seedRuns(db.adminSql, id, ws, hive, {
+        runs: 4,
+        agents: ['agent-a', 'agent-b', 'agent-c'], // 3 distinct each
+      });
+    }
+
+    const { promoteCandidates, mergeClusters, signals } = await recipeCandidates(db.adminSql, {
+      workspaceId: ws,
+      hiveSlug: hive,
+    });
+
+    // (a) the hot, broadly-reused, multi-tool recipe ranks top of promote candidates
+    expect(promoteCandidates.length).toBeGreaterThan(0);
+    expect(promoteCandidates[0].id).toBe('triage-and-block-stale');
+    expect(promoteCandidates[0].distinctAgents).toBe(5);
+    expect(promoteCandidates[0].runCount).toBe(12);
+    expect(promoteCandidates[0].successRate).toBe(1);
+    expect(promoteCandidates[0].promotionScore).toBeGreaterThan(0);
+    expect(promoteCandidates[0].promotionScore).toBeLessThanOrEqual(1);
+    // scores are sorted descending
+    for (let i = 1; i < promoteCandidates.length; i++) {
+      expect(promoteCandidates[i - 1].promotionScore).toBeGreaterThanOrEqual(promoteCandidates[i].promotionScore);
+    }
+
+    // (b) the 1-tool wrapper is EXCLUDED as redundant — never a promote candidate
+    expect(promoteCandidates.find((c) => c.id === 'just-list-plans')).toBeUndefined();
+    const wrapperSignal = signals.find((s) => s.id === 'just-list-plans');
+    expect(wrapperSignal?.redundant).toBe(true);
+    expect(wrapperSignal?.redundancyReason).toMatch(/trivial/);
+    expect(wrapperSignal?.promotionScore).toBe(0);
+
+    // (c) the near-duplicate pair appears as a single merge cluster
+    const cluster = mergeClusters.find(
+      (m) => m.recipeIds.includes('summarize-feedback-a') && m.recipeIds.includes('summarize-feedback-b'),
+    );
+    expect(cluster).toBeDefined();
+    expect(cluster!.recipeIds).toEqual(['summarize-feedback-a', 'summarize-feedback-b']);
+  });
+
+  it('honors minRunCount — recipes below the floor are not considered', async () => {
+    const ws = 'ws-cand-floor';
+    const hive = 'alpha';
+    await upsertRecipe(db.adminSql, {
+      id: 'rarely-run',
+      workspaceId: ws,
+      hiveSlug: hive,
+      title: 'Rarely run multi-tool recipe',
+      description: 'a multi-tool recipe run only once',
+      script: 's',
+      toolsUsed: ['work_items:list', 'work_items:set_state'],
+      embedding: seededEmbedding(3),
+    });
+    await seedRuns(db.adminSql, 'rarely-run', ws, hive, { runs: 1, agents: ['agent-a'] });
+
+    const { signals } = await recipeCandidates(db.adminSql, {
+      workspaceId: ws,
+      hiveSlug: hive,
+      minRunCount: 5,
+    });
+    expect(signals.find((s) => s.id === 'rarely-run')).toBeUndefined();
+  });
+
+  it('is hive-scoped — a recipe in another hive is not considered', async () => {
+    const ws = 'ws-cand-hive';
+    await upsertRecipe(db.adminSql, {
+      id: 'alpha-only',
+      workspaceId: ws,
+      hiveSlug: 'alpha',
+      title: 'Alpha multi-tool recipe',
+      description: 'two-tool recipe in alpha',
+      script: 's',
+      toolsUsed: ['work_items:list', 'work_items:set_state'],
+      embedding: seededEmbedding(15),
+    });
+    await upsertRecipe(db.adminSql, {
+      id: 'beta-only',
+      workspaceId: ws,
+      hiveSlug: 'beta',
+      title: 'Beta multi-tool recipe',
+      description: 'two-tool recipe in beta',
+      script: 's',
+      toolsUsed: ['work_items:list', 'work_items:set_state'],
+      embedding: seededEmbedding(16),
+    });
+    await seedRuns(db.adminSql, 'alpha-only', ws, 'alpha', { runs: 4, agents: ['a', 'b'] });
+    await seedRuns(db.adminSql, 'beta-only', ws, 'beta', { runs: 4, agents: ['a', 'b'] });
+
+    const { signals } = await recipeCandidates(db.adminSql, { workspaceId: ws, hiveSlug: 'alpha' });
+    expect(signals.find((s) => s.id === 'alpha-only')).toBeDefined();
+    expect(signals.find((s) => s.id === 'beta-only')).toBeUndefined();
+  });
+
+  it('a low-success multi-tool recipe scores below a high-success one of equal usage', async () => {
+    const ws = 'ws-cand-success';
+    const hive = 'alpha';
+    await upsertRecipe(db.adminSql, {
+      id: 'stable-recipe',
+      workspaceId: ws,
+      hiveSlug: hive,
+      title: 'Stable two-tool recipe',
+      description: 'reliable',
+      script: 's',
+      toolsUsed: ['work_items:list', 'work_items:set_state'],
+      embedding: seededEmbedding(31),
+    });
+    await upsertRecipe(db.adminSql, {
+      id: 'flaky-recipe',
+      workspaceId: ws,
+      hiveSlug: hive,
+      title: 'Flaky two-tool recipe',
+      description: 'unreliable',
+      script: 's',
+      toolsUsed: ['plans:set-status', 'plans:add-item'],
+      embedding: seededEmbedding(32),
+    });
+    // Equal run_count + distinct agents; differ ONLY on success-rate.
+    await seedRuns(db.adminSql, 'stable-recipe', ws, hive, { runs: 8, agents: ['a', 'b', 'c'], successes: 8 });
+    await seedRuns(db.adminSql, 'flaky-recipe', ws, hive, { runs: 8, agents: ['a', 'b', 'c'], successes: 2 });
+
+    const { signals } = await recipeCandidates(db.adminSql, { workspaceId: ws, hiveSlug: hive });
+    const stable = signals.find((s) => s.id === 'stable-recipe');
+    const flaky = signals.find((s) => s.id === 'flaky-recipe');
+    expect(stable).toBeDefined();
+    expect(flaky).toBeDefined();
+    expect(stable!.promotionScore).toBeGreaterThan(flaky!.promotionScore);
+  });
+});

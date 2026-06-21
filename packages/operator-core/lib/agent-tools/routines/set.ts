@@ -28,7 +28,7 @@ export default defineTool({
     "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, …) without raw SQL: change its cron and/or active flag (active:false = PAUSE, active:true = RESUME). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
   capability: 'operator:write',
   guidance: {
-    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), or retune a routine\'s cadence (cron) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
+    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), or patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
     notWhen: 'For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. (These routine rows are their own store; they do not appear in config:list-overrides.)',
     chaining: 'routines:list first to get the exact name + installSlug; routines:list after to confirm the change.',
   },
@@ -40,14 +40,18 @@ export default defineTool({
     installSlug: z.string().max(120).optional().describe('Install slug owning the routine (default: the operator home harness).'),
     cron: z.string().min(1).max(120).optional().describe('New cron expression (5/6-field). Rejected if invalid.'),
     active: z.boolean().optional().describe('false = pause the routine, true = resume it.'),
+    triggerConfig: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('Merge these keys into the routine trigger_config (live-configurability-audit P-017 — e.g. the bee-transcript-cap caps max_tasks / max_carried_read_tokens / max_transcript_entries). The safe way to retune a routine CONFIG value without raw SQL. `cron` is ignored here — set it via the validated `cron` arg.'),
     dryRun: z.boolean().optional(),
   }),
   async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
       throw new Error('routines:set requires operator, architect, or queen role');
     }
-    if (args.cron === undefined && args.active === undefined) {
-      throw new Error('set requires cron and/or active');
+    if (args.cron === undefined && args.active === undefined && args.triggerConfig === undefined) {
+      throw new Error('set requires cron, active, and/or triggerConfig');
     }
     // Validate the cron BEFORE touching anything — a typo must not silently kill a routine.
     if (args.cron !== undefined && !computeNextFireAt(args.cron, new Date())) {
@@ -94,6 +98,12 @@ export default defineTool({
             triggerConfig.cron = args.cron;
             const computed = computeNextFireAt(args.cron, new Date());
             nextIso = computed ? computed.toISOString() : null;
+          }
+          if (args.triggerConfig !== undefined) {
+            // P-017: merge the config patch, but NEVER let it set `cron` here — cron only flows
+            // through the validated `cron` arg above (else a typo'd cron could silently kill the routine).
+            const { cron: _ignoredCron, ...patch } = args.triggerConfig;
+            Object.assign(triggerConfig, patch);
           }
           const next: RoutineSnap = { triggerConfig, active: args.active ?? prev.active, nextFireAtIso: nextIso };
           await writeSnap(next);
