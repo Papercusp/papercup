@@ -232,11 +232,13 @@ describe('walkHarnessTree + summarize — synthetic mini-tree', () => {
 });
 
 describe('walkHarnessTree — integration against papercup`s real libs/', () => {
-  // Plan §2 asserts: papercup has 9 .gitmodules submodules and 8 plain
-  // libs/* dirs (17 total subdirs in libs/, including holepunch-spike
-  // added during Phase 0 P-001..P-004). This test fails the audit signal
-  // if either of those numbers changes — at which point the plan doc +
-  // this test both need a synced update.
+  // Integration check against the REAL libs/ tree. `walkHarnessTree`
+  // classifies from disk (a `.git` gitdir pointer), so this asserts what is
+  // actually materialized, not merely what `.gitmodules` lists. Current real
+  // layout: 6 direct libs/* submodules + 6 plain dirs (incl. `generic/`, which
+  // holds the regrouped borrowable submodules). If a direct libs/* submodule is
+  // added, removed, or (de)materialized, update the counts + the submodule-name
+  // list below in sync.
   const papercupRoot = resolve(__dirname, '../../../..'); // apps/operator/lib/harness/../../../.. → papercup root
   // "Real" checkout = .gitmodules AND materialized submodules (a .git gitdir
   // pointer inside one). The release-gate checkpoint/release trees carry
@@ -248,7 +250,7 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
     existsSync(join(papercupRoot, 'libs', 'papercusp', '.git'));
 
   it.skipIf(!isPapercupCheckout)(
-    'matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regrouped under libs/generic/)',
+    'matches the libs/ layout: 6 submodules + 6 plain (borrowable submodules regrouped under libs/generic/)',
     () => {
       // Walk just libs/ — not the whole repo — to keep the test fast and
       // scoped to the documented assertion.
@@ -264,19 +266,21 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
       // Note: we don't assert on `worktrees` or `standalone` here because
       // libs/ isn't expected to contain either; if one shows up that's a
       // signal worth investigating (and this test will catch it).
-      // 7 direct-child submodules + 6 plain dirs (incl. `generic/`, which now
+      // 6 direct-child submodules + 6 plain dirs (incl. `generic/`, which now
       // holds the regrouped borrowable submodules — see CLAUDE.md /
       // BORROWABLE.md). History: 9s+8p pre-regroup → 5s+9p after regroup →
       // 7s+7p once `test-config` + `testing-shell` were promoted to direct
       // libs/* submodules → 7s+6p once `export-state` was retired to
-      // `_retired/snapshot-system/` (retire-snapshots-instance-spec, 2026-06-09).
+      // `_retired/snapshot-system/` (retire-snapshots-instance-spec, 2026-06-09)
+      // → 6s+6p once `zero-harness` was de-materialized (retired; still in
+      // .gitmodules but not checked out — see CLAUDE.md "Zero is retired").
       expect({ subs: summary.submodules, plain: summary.plain }).toEqual({
-        subs: 7,
+        subs: 6,
         plain: 6,
       });
       expect(summary.worktrees).toBe(0);
       expect(summary.standalone).toBe(0);
-      expect(summary.total).toBe(13);
+      expect(summary.total).toBe(12);
 
       // Sanity: each submodule has a qualified slug rooted at papercup.
       for (const n of nodes) {
@@ -300,11 +304,13 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
         .filter((n): n is ClassifiedNode & { kind: 'submodule' } => n.kind === 'submodule')
         .map((n) => n.relPath)
         .sort();
-      // The 5 .gitmodules entries DIRECTLY under libs/. The borrowable
-      // submodules (git-graph, papergrid, sync, ui-primitives, + others) were
-      // regrouped under libs/generic/* (CLAUDE.md / BORROWABLE.md), so they are
-      // no longer direct children of libs/ and `generic/` shows up as a plain
-      // dir above. If a direct libs/* submodule is added or removed, update
+      // The materialized .gitmodules entries DIRECTLY under libs/. The
+      // borrowable submodules (git-graph, papergrid, sync, ui-primitives, +
+      // others) were regrouped under libs/generic/* (CLAUDE.md / BORROWABLE.md),
+      // so they are no longer direct children of libs/ and `generic/` shows up
+      // as a plain dir above. `zero-harness` is retired — still listed in
+      // .gitmodules but not checked out — so it does not appear here. If a
+      // direct libs/* submodule is added, removed, or (de)materialized, update
       // this list in sync.
       expect(submoduleRelPaths).toEqual(
         [
@@ -314,7 +320,6 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
           'papercusp',
           'test-config',
           'testing-shell',
-          'zero-harness',
         ].sort(),
       );
     },
