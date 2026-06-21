@@ -143,7 +143,7 @@ For CI and ephemeral overrides:
 
 Env vars are checked **before** the discovery file. They never get written into the desktop binary at build time — that would defeat the privacy contract.
 
-There is also a **per-flag** dev override, independent of PostHog: `PAPERCUSP_FLAG_<KEY>=1` (or `=true`) flips a single flag on without configuring PostHog at all. The key is uppercased with `-`→`_` — e.g. `PAPERCUSP_FLAG_PAPERCUSP_ORACLE=1`. This override beats test overrides / PostHog / defaults and is applied to both the single-flag `getFlag()` path and the all-flags bootstrap payload (so `useFlag()` sees it too). Useful in dev for exercising a gated feature (e.g. the llm-testing framework running oracle scenarios) when PostHog isn't configured.
+There is also a **per-flag** dev override, independent of PostHog: `PAPERCUSP_FLAG_<KEY>=1` (or `=true`) flips a single flag on without configuring PostHog at all. The key is uppercased with `-`→`_` — e.g. `PAPERCUSP_FLAG_PAPERCUSP_DESIGN=1`. This override beats test overrides / PostHog / defaults and is applied to both the single-flag `getFlag()` path and the all-flags bootstrap payload (so `useFlag()` sees it too). Useful in dev for exercising a gated feature (e.g. running the Oracle, which gates on `papercusp-testing` — `PAPERCUSP_FLAG_PAPERCUSP_TESTING=1`) when PostHog isn't configured.
 
 ## How flags are enforced
 
@@ -342,7 +342,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 beforeEach(() => {
   setFlagOverridesForTest({
     [FLAGS.DESIGN]: true,
-    [FLAGS.ORACLE]: false,
+    [FLAGS.TESTING]: false,
   });
 });
 ```
