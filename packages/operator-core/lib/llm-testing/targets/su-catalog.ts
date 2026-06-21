@@ -339,6 +339,36 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     description: 'Pack a repo (or subset) into one LLM-friendly document for a holistic view.',
     input: obj({ path: { type: 'string' } }),
   },
+  // --- code execution / tool orchestration (code-execution-tool-orchestration B-CX) ---
+  // Descriptions mirror the real `code:run` / `code:tools` defineTool descriptions verbatim so the
+  // behavior gate (SU-S13/S14) measures whether the playbook's CODE_RUN_NUDGE + these descriptions
+  // make the model REACH for code:run on a many-tool-calls task (and NOT for a single call).
+  {
+    name: 'code:tools',
+    description:
+      'On-demand typed signatures for code:run. No args → the namespace index (cheap). ' +
+      '{ namespaces } / { names } → full TS `tools.ns.verb(args)` signatures for just those, scoped ' +
+      'to your allowed set. Read the signatures, then write a code:run script.',
+    input: obj({
+      namespaces: { type: 'array', items: { type: 'string' }, description: 'Render full signatures for just these namespaces (e.g. ["work_items","coord"]).' },
+      names: { type: 'array', items: { type: 'string' }, description: 'Render signatures for these exact tool names (e.g. ["plans:set-status"]).' },
+    }),
+  },
+  {
+    name: 'code:run',
+    description:
+      'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in one ' +
+      "call; returns ONLY the script's returned summary. Collapses many tool round-trips into one. " +
+      'Use dryRun:true to preview write-effect mutations without executing them.',
+    input: obj(
+      {
+        script: { type: 'string', description: 'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary.' },
+        dryRun: { type: 'boolean', description: 'Preview: record effect:write tool calls without executing them (reads still run).' },
+        timeoutSec: { type: 'number', description: 'Wall-clock budget (default 30s).' },
+      },
+      ['script'],
+    ),
+  },
 ];
 
 /**
