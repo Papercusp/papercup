@@ -62,6 +62,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     goal_id text,
     taken_by text,
     taken_at timestamptz,
+    last_progress_at timestamptz,
     expires_at timestamptz,
     workspace_id text NOT NULL DEFAULT 'default',
     deprecation_reason text,

@@ -70,7 +70,9 @@ export default defineTool({
           writer: ((it.writer ?? args.writer) as 'bee' | 'queen' | undefined) ?? 'bee',
           harness: it.harness ?? args.harness,
         });
-        return 'error' in result ? { ok: false as const, id: it.id, ...result } : { ok: true as const, id: it.id, ...result };
+        return 'error' in result
+          ? { ...result, ok: false as const, id: it.id }
+          : { ...result, ok: true as const, id: it.id };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );
