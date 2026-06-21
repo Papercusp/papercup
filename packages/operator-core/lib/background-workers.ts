@@ -66,3 +66,26 @@ export function reactionMatcherShouldArm(env: NodeJS.ProcessEnv = process.env): 
   if (env.PAPERCUSP_BACKGROUND_WORKERS === '0') return false;
   return true;
 }
+
+/**
+ * Whether THIS process actually LAUNCHES DBOS: a background-workers host with DBOS
+ * enabled — mirroring host-bootstrap's launch gate (`backgroundWorkers &&
+ * PAPERCUSP_DBOS_ENABLE === '1'`). Request-only hosts set PAPERCUSP_BACKGROUND_WORKERS=0
+ * (or run on the :3170 staging port) and delegate DBOS to the dedicated bg-host, so
+ * their local `dbosStarted()` is false BY DESIGN.
+ *
+ * Unlike backgroundWorkersEnabled()/reactionMatcherShouldArm(), this is a PURE
+ * predicate gating no machinery — so it deliberately has NO vitest short-circuit, and
+ * readiness handlers (/api/health/ready, /api/health/deep) that call it argless under
+ * test compute the real env-derived value. The bug it fixes: those handlers gated
+ * readiness on the bare PAPERCUSP_DBOS_ENABLE env flag (which is set in the shared
+ * .env.local that EVERY host sources), so a request-only host — which never launches
+ * DBOS — reported `ready:false`/503 forever even while perfectly able to serve.
+ */
+export function dbosLaunchesHere(env: NodeJS.ProcessEnv = process.env): boolean {
+  const backgroundHost =
+    env.PAPERCUSP_BACKGROUND_WORKERS != null
+      ? env.PAPERCUSP_BACKGROUND_WORKERS !== '0'
+      : env.PAPERCUSP_HONO_PORT !== '3170';
+  return backgroundHost && env.PAPERCUSP_DBOS_ENABLE === '1';
+}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { backgroundWorkersEnabled, reactionMatcherShouldArm, utilityHostEnabled } from './background-workers';
+import { backgroundWorkersEnabled, dbosLaunchesHere, reactionMatcherShouldArm, utilityHostEnabled } from './background-workers';
 
 const saved = {
   VITEST: process.env.VITEST,
@@ -75,5 +75,27 @@ describe('reactionMatcherShouldArm (EI-307)', () => {
 
   it('respects an explicit full-disable (PAPERCUSP_BACKGROUND_WORKERS=0)', () => {
     expect(reactionMatcherShouldArm({ PAPERCUSP_BACKGROUND_WORKERS: '0' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+  });
+});
+
+describe('dbosLaunchesHere (request-only readiness false-503 fix)', () => {
+  it('a background-workers host with DBOS enabled launches DBOS', () => {
+    expect(dbosLaunchesHere({ PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+    expect(dbosLaunchesHere({ PAPERCUSP_HONO_PORT: '3070', PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+  });
+  it('a request-only host (BACKGROUND_WORKERS=0) does NOT launch DBOS, even with DBOS enabled', () => {
+    expect(dbosLaunchesHere({ PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it('the :3170 staging host does NOT launch DBOS', () => {
+    expect(dbosLaunchesHere({ PAPERCUSP_HONO_PORT: '3170', PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it('DBOS disabled → never launches here, whatever the host', () => {
+    expect(dbosLaunchesHere({ PAPERCUSP_DBOS_ENABLE: '0' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+    expect(dbosLaunchesHere({} as unknown as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it('is vitest-guard-FREE (a pure readiness predicate, unlike backgroundWorkersEnabled)', () => {
+    // It gates a readiness DECISION, not machinery, so it must compute the real
+    // env-derived value even under vitest — the health handler tests rely on this.
+    expect(dbosLaunchesHere({ VITEST: 'true', PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
   });
 });

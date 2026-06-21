@@ -20,6 +20,7 @@
  * which is exactly how the outage manifested (available() never resolved).
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { dbosLaunchesHere } from '../../../background-workers';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { getMemoryBackend } from '../../../memory/backend';
 
@@ -84,7 +85,11 @@ export default defineTool({
   path: '/health/deep',
   auth: 'public',
   async handler() {
-    const dbosEnabled = process.env.PAPERCUSP_DBOS_ENABLE === '1';
+    // "Does THIS process run DBOS" — NOT the bare PAPERCUSP_DBOS_ENABLE env flag
+    // (set in the shared .env.local that every host sources). A request-only host
+    // (BACKGROUND_WORKERS=0, e.g. :3070) delegates DBOS to the bg-host, so its local
+    // dbosStarted() is false BY DESIGN and must not perpetually gate readiness to 503.
+    const dbosEnabled = dbosLaunchesHere();
     const dbos = dbosStarted();
 
     const [pg, memory] = await Promise.all([

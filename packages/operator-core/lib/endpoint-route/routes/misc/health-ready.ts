@@ -11,12 +11,17 @@
  * half-migrated dbos schema (EI-368).
  *
  * Semantics: ready = "the shape this host was configured for is up". A host
- * with DBOS enabled (PAPERCUSP_DBOS_ENABLE=1) is ready only once DBOS has
- * actually launched; a host without DBOS is ready as soon as HTTP serves.
+ * that actually LAUNCHES DBOS (a background-workers host with PAPERCUSP_DBOS_ENABLE=1)
+ * is ready only once DBOS has launched; a host that does not run DBOS — a request-only
+ * host (BACKGROUND_WORKERS=0 / :3170 staging) that delegates DBOS to the bg-host, or a
+ * host with DBOS disabled — is ready as soon as HTTP serves. Gating on the bare
+ * PAPERCUSP_DBOS_ENABLE env flag (set in the shared .env.local every host sources) made
+ * request-only hosts report 503 forever; dbosLaunchesHere() is the real launch gate.
  * 200 when ready, 503 while booting. Public + zero-DB for the same reason
  * /api/health is: boot supervisors hold no token yet.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { dbosLaunchesHere } from '../../../background-workers';
 import { dbosStarted } from '../../../dbos/bootstrap';
 
 /** Pure readiness predicate (exported for tests). */
@@ -29,7 +34,7 @@ export default defineTool({
   path: '/health/ready',
   auth: 'public',
   handler() {
-    const dbosEnabled = process.env.PAPERCUSP_DBOS_ENABLE === '1';
+    const dbosEnabled = dbosLaunchesHere();
     const dbos = dbosStarted();
     const ready = isReady({ dbosEnabled, dbosLaunched: dbos });
     return Response.json(
