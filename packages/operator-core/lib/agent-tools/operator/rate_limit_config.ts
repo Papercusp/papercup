@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
   RATE_LIMIT_MAX_CEILING,
   readRateLimitConfig,
@@ -43,8 +43,8 @@ export default defineTool({
     if (args.op === 'get') {
       return { content: [{ type: 'text', text: JSON.stringify({ config: await readRateLimitConfig() }) }] };
     }
-    if (ctx.role !== 'operator' && ctx.role !== 'architect') {
-      throw new Error('operator:rate_limit_config set requires operator or architect role');
+    if (!isOperatorConfigWriteRole(ctx.role)) {
+      throw new Error('operator:rate_limit_config set requires operator, architect, or queen role');
     }
     if (args.maxSimultaneousAgents === undefined && args.concurrencyFloor === undefined) {
       throw new Error('set requires maxSimultaneousAgents and/or concurrencyFloor');

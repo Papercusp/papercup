@@ -238,6 +238,40 @@ export const SU_WRITE_ROLES = [
 ] as const satisfies readonly BuiltinAgentRole[];
 
 /**
+ * The OPERATOR-CONFIG write-authority roles — the in-handler gate for tools that
+ * MUTATE fleet-wide operator config (the rate-limit knobs, operator preferences,
+ * config overrides, the db-migrate policy, watchdog tunables, scheduled routines).
+ * Those tools advertise the broad `[...SU_ROLES]` INVOKE allowlist (read/list is
+ * open to every pipeline role) but NARROW the mutating op to operator-level
+ * authority — historically a hand-rolled `ctx.role !== 'operator' && ctx.role !==
+ * 'architect'` re-spread across ~6 tools.
+ *
+ * `queen` belongs here: she is the operator SPECIALIZED for placement (local-hive
+ * D-001 — "operator-equivalent grants"). She was silently omitted from those
+ * re-spread literals when added to SU_ROLES, which is exactly EI-2204 — the Queen
+ * could INVOKE `operator:rate_limit_config` but its `set` rejected her role,
+ * blocking the clean path to reset a jammed concurrency ceiling (EI-2186).
+ * Centralizing the set here keeps the operator≡queen equivalence from drifting
+ * back out of sync across those tools (and the `isOperatorConfigWriteRole` guard
+ * fails CI if the literal is re-introduced).
+ */
+export const OPERATOR_CONFIG_WRITE_ROLES = [
+  'operator',
+  'architect',
+  'queen',
+] as const satisfies readonly BuiltinAgentRole[];
+
+/**
+ * Does `role` carry operator-config write authority (one of
+ * OPERATOR_CONFIG_WRITE_ROLES)? The single predicate the operator-config-write
+ * tools gate their mutating op on. Plugin-namespaced (`<plugin>:<role>`) and
+ * unknown roles are not operator-equivalent → false (fail-closed).
+ */
+export function isOperatorConfigWriteRole(role: string | undefined | null): boolean {
+  return role != null && (OPERATOR_CONFIG_WRITE_ROLES as readonly string[]).includes(role);
+}
+
+/**
  * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence
  * that decides whether a new agent spawn is worth it (unify-agent-spawn-chokepoint
  * P-006 / D-008). This is an RBAC role on `Principal.roles` (the fail-closed
