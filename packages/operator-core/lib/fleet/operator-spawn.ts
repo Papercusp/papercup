@@ -32,6 +32,7 @@ import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
+import { ensureStallWakerLoop } from '../inference-gateway/stall-waker-loop';
 import { evaluateOpusBudgetForSpawn, selectSpawnAccount } from '../deployment/account-pool-store';
 import { classifyRoleCriticality, type WorkCriticality } from '../opus-budget-governor';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
@@ -1050,6 +1051,9 @@ export async function spawnAgentInHarness(
   // rate-limit shed with it, and the stall-waker wakes exactly this bee (its coord ownerId == spawnId) once
   // the account recovers. Behaviour-neutral until the waker ships.
   Object.assign(extraEnv, gatewaySpawnEnv(gwOn, { accountId: routeAccountId, ownerId: spawnId }));
+  // Start the stall-waker poll loop once the gateway is in play (idempotent + unref'd): it watches the
+  // gateway for rate-limit sheds and wakes a stalled bee when its account recovers (P-003).
+  if (gwOn) ensureStallWakerLoop(input.workspaceId);
   // account-aware-rate-governor-routing Phase 1: run the bee UNDER the selected account so the
   // spawn-side governor (orchestrator-runner) keys its rate bucket PER-ACCOUNT
   // (`anthropic:opus@<id>`) instead of the account-blind global `anthropic:opus`. Without this a
