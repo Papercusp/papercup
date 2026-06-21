@@ -24,7 +24,7 @@ Parts of the port were deliberately kept LIVE rather than moved: `invoke.ts`,
 `chunk-loop-driver.ts`), `cost-cap.ts`, and `decision-parse.ts` all remain in
 the `@papercusp/orchestrator` package (`libs/papercusp/packages/orchestrator/src/`)
 and are **consumed** by the DBOS pipeline via `@papercusp/orchestrator` imports
-(e.g. `parseDecision`, `parseDecisionFor`, `DECISION_VERBS`, `buildInvokeOnce` in
+(e.g. `parseDecision`, `parseDecisionFor`, `DECISION_VERBS` in
 `packages/operator-core/lib/dbos/`). They do **not** live inside the
 `packages/operator-core/lib/dbos/` directory.
 

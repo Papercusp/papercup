@@ -29,9 +29,12 @@ import { Aside } from '@astrojs/starlight/components';
 - §1.4: `@axe-core/playwright` + `vitest-axe` adopted; first coverage
   in `libs/generic/ui-primitives` (`src/a11y.test.tsx` covers StatCard,
   StatusPill, JsonTree, MarkdownView) and `apps/operator` e2e specs.
-- Phase 3: TESTING.md present in 5 packages so far (`apps/tui`,
-  `apps/pui-zellij-plugin`, `libs/papercusp-shared`,
-  `packages/operator-core`, `packages/tooldef-mcp`) — rollout to the
+- Phase 3: TESTING.md present in 15 packages so far — `apps/tui`,
+  `apps/pui-zellij-plugin`, `packages/operator-core`, `packages/tooldef-mcp`,
+  `libs/papercusp-shared`, `libs/papercusp/packages/blueprint-distribution`,
+  and most of `libs/generic/*` (`tooldef`, `tooldef-http`, `memory`,
+  `step-program`, `pubsub-substrate`, `structured-concurrency`,
+  `result-encoding`, `debounce-coalesce`, `deployment-driver`) — rollout to the
   rest is ongoing.
 - Phase 4 (Storybook 10 + Lost Pixel): in progress across four packages —
   `libs/generic/ui-primitives` (6 stories), `libs/marketplace-public-ui`
