@@ -966,7 +966,7 @@ export default function AdvSessionsClient() {
           color: var(--fg);
           font-size: 18px;
           font-weight: 740;
-          letter-spacing: -0.02em;
+          letter-spacing: 0;
           line-height: 1.05;
         }
         .pc-adv-sessions__subhead {

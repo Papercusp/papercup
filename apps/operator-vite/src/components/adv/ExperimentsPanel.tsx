@@ -113,12 +113,12 @@ export function ExperimentsPanel() {
         .pc-experiments__refresh { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; padding: 2px; }
         .pc-experiments__refresh:disabled { opacity: 0.5; cursor: default; }
         .pc-experiments__empty { margin: 8px 0 2px; font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
-        .pc-experiments__empty code { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
+        .pc-experiments__empty code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; }
         .pc-experiments__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-experiments__row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
         .pc-experiments__test { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #06121a; background: #7dd3fc; border-radius: 4px; padding: 1px 5px; }
         .pc-experiments__tier { flex: none; font-size: 10.5px; font-weight: 600; }
-        .pc-experiments__arms { flex: 1 1 auto; min-width: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
+        .pc-experiments__arms { flex: 1 1 auto; min-width: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; }
         .pc-experiments__arm { color: var(--fg-mute, #7f9bb4); }
         .pc-experiments__arm--win { color: #34d399; font-weight: 650; }
         .pc-experiments__meta { flex: none; display: inline-flex; gap: 8px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }

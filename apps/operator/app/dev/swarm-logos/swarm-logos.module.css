@@ -50,7 +50,7 @@
   margin: 16px 0 0;
   font-size: clamp(54px, 9vw, 128px);
   line-height: 0.82;
-  letter-spacing: -0.09em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -102,7 +102,7 @@
   display: block;
   margin-top: 9px;
   font-size: 20px;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 .systemStrip p,
@@ -176,7 +176,7 @@
   display: block;
   font-size: 22px;
   line-height: 0.9;
-  letter-spacing: -0.07em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -189,7 +189,7 @@
   margin: 18px 0 0;
   font-size: 30px;
   line-height: 0.95;
-  letter-spacing: -0.07em;
+  letter-spacing: 0;
 }
 
 .logoCard p {

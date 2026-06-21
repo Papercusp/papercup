@@ -763,7 +763,7 @@
   font-size: 21px;
   font-weight: 780;
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
   color: var(--pc-plans-fg-strong);
 }
 
@@ -1596,7 +1596,7 @@
   font-size: 20px;
   font-weight: 760;
   line-height: 1.1;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   color: var(--fg);
 }
 
@@ -1827,7 +1827,7 @@
   margin: 0;
   font-size: 18px;
   font-weight: 740;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1.05;
   color: var(--fg);
 }
@@ -2274,7 +2274,7 @@
   margin: 0;
   font-size: 18px;
   font-weight: 760;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: var(--fg);
 }
 
@@ -2444,7 +2444,7 @@
   margin: 0 0 10px;
   font-size: 24px;
   font-weight: 780;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   color: var(--fg);
 }
 
@@ -2726,7 +2726,7 @@
   margin: 0;
   font-size: 18px;
   font-weight: 760;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: var(--fg);
 }
 .pc-triage__head p {

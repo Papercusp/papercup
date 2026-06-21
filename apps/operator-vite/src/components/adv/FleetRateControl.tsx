@@ -207,7 +207,7 @@ export default function FleetRateControl() {
           width: 52px; font-size: 15px; font-weight: 760; line-height: 1.1;
           font-variant-numeric: tabular-nums;
           color: var(--fg, #e7f7ff); background: transparent;
-          border: 1px solid var(--line, #24435c); border-radius: 4px; padding: 0 4px;
+          border: 1px solid var(--border, #24435c); border-radius: 4px; padding: 0 4px;
         }
         .pc-overview__rate-input:focus { outline: none; border-color: var(--accent, #57b3ff); }
         .pc-overview__rate-paused {

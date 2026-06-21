@@ -551,7 +551,7 @@
   color: var(--fg);
   font-size: 16px;
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1.18;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2798,7 +2798,7 @@
 
 .h-proposals-panel .h-proposal-row-title {
   color: color-mix(in oklab, var(--fg), white 7%) !important;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .h-proposals-panel .h-proposal-row-subtitle {

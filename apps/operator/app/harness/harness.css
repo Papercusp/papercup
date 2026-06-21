@@ -1206,7 +1206,7 @@
 .h-title {
   font-size: 19px;
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .h-project-card {
@@ -2750,7 +2750,7 @@
 .h-focus-card strong {
   color: var(--fg);
   font-size: 13px;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .h-focus-title {
@@ -6257,7 +6257,7 @@ body:has(.h-top-collapse-inline) main {
 }
 .h-title {
   font-size: 14px !important;
-  letter-spacing: -0.01em !important;
+  letter-spacing: 0 !important;
 }
 .h-project-card {
   flex: 1 1 auto !important;
@@ -6953,7 +6953,7 @@ body:has(.h-top-collapse-inline) main {
 .h-feature-row-title {
   font-size: 12.4px !important;
   font-weight: 760 !important;
-  letter-spacing: -0.012em !important;
+  letter-spacing: 0 !important;
   line-height: 1.24 !important;
   color: color-mix(in oklab, var(--fg), white 4%) !important;
 }
@@ -7084,7 +7084,7 @@ body:has(.h-top-collapse-inline) main {
   text-overflow: ellipsis !important;
   font-size: 12.4px !important;
   font-weight: 760 !important;
-  letter-spacing: -0.01em !important;
+  letter-spacing: 0 !important;
   line-height: 1.25 !important;
   color: color-mix(in oklab, var(--fg), white 4%) !important;
 }
@@ -7341,7 +7341,7 @@ body:has(.h-top-collapse-inline) main {
   font-size: 12.5px !important;
   line-height: 1.05 !important;
   font-weight: 820 !important;
-  letter-spacing: -0.015em !important;
+  letter-spacing: 0 !important;
   font-variant-numeric: tabular-nums !important;
 }
 
@@ -10261,7 +10261,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-plugin-card-title {
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .h-plugin-card-version,
@@ -11985,7 +11985,7 @@ body:has(.h-top-collapse-inline) main {
 .h-issue-title,
 .h-inbox-row-title {
   color: color-mix(in oklab, var(--fg), white 6%) !important;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
 }
 
@@ -15487,7 +15487,7 @@ html body .h-root.h-root :is(
 .h-feature-peek-drawer h2,
 .h-issue-detail-drawer h2 {
   color: color-mix(in oklab, var(--fg), white 8%) !important;
-  letter-spacing: -0.018em !important;
+  letter-spacing: 0 !important;
   text-shadow: 0 1px 18px rgba(0, 0, 0, 0.42);
 }
 
@@ -16174,7 +16174,7 @@ html body .h-root.h-root :is(
 .h-feature-peek-drawer .h-markdown-view :where(h1, h2, h3, h4),
 .h-issue-detail-drawer .h-markdown-view :where(h1, h2, h3, h4) {
   color: color-mix(in oklab, var(--fg), white 10%) !important;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .h-feature-peek-drawer .h-markdown-view :where(pre, code),
@@ -16235,7 +16235,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--fg), white 12%) !important;
   font-size: 20px !important;
   font-weight: 860 !important;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .h-insights-subtitle {
@@ -16368,7 +16368,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--fg), white 10%) !important;
   font-size: clamp(21px, 2.6vw, 28px) !important;
   font-weight: 900 !important;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .h-insights-panel .h-insights-kpi-sub {
@@ -16524,7 +16524,7 @@ html body .h-root.h-root :is(
   color: var(--fg);
   font-size: 18px;
   font-weight: 780;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1.2;
 }
 
@@ -16788,7 +16788,7 @@ html body .h-root.h-root :is(
   color: var(--fg);
   font-size: 17px;
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .d-chip {
@@ -17714,7 +17714,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   max-width: 34rem;
   font-size: clamp(1.20rem, 1.08rem + 0.34vw, 1.54rem) !important;
   line-height: 1.28 !important;
-  letter-spacing: -0.012em !important;
+  letter-spacing: 0 !important;
   text-shadow: none !important;
 }
 
@@ -20104,7 +20104,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg), white 7%) !important;
   font-size: clamp(1.08rem, 1rem + 0.25vw, 1.24rem) !important;
   line-height: 1.28 !important;
-  letter-spacing: -0.01em !important;
+  letter-spacing: 0 !important;
   text-shadow: none !important;
 }
 

@@ -967,7 +967,7 @@ html[data-route-pending="true"] .pc-header::after {
 .pc-header-quote-current {
   font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   font-weight: 650;
-  letter-spacing: -0.006em;
+  letter-spacing: 0;
   color: color-mix(in oklab, var(--fg-dim), white 8%);
 }
 
@@ -1164,7 +1164,7 @@ html[data-route-pending="true"] .pc-header::after {
 h1 {
   font-size: clamp(40px, 7vw, 78px);
   font-weight: 840;
-  letter-spacing: -0.055em;
+  letter-spacing: 0;
   line-height: 0.95;
   margin: 8px 0 14px;
 }
@@ -1178,7 +1178,7 @@ h2 {
   font-weight: 790;
   line-height: 1.05;
   margin: 0 0 14px;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 h3 {
@@ -1186,7 +1186,7 @@ h3 {
   font-weight: 740;
   margin: 0 0 10px;
   color: var(--fg);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 p {
@@ -1404,7 +1404,7 @@ p {
   color: #e0f4ff;
   font-size: clamp(19px, 2.05vw, 25px);
   line-height: 1.42;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .pc-hero-actions {
@@ -1985,7 +1985,7 @@ p {
   color: var(--accent-cool);
   font-size: 32px;
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .pc-stat span {
@@ -3434,7 +3434,7 @@ p {
   margin: 0 0 14px;
   font-size: clamp(42px, 6vw, 76px);
   line-height: 0.95;
-  letter-spacing: -0.06em;
+  letter-spacing: 0;
 }
 
 .pc-marketplace-hero p,
@@ -3544,7 +3544,7 @@ p {
   color: var(--accent-cool);
   font-size: 32px;
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .pc-marketplace-stat-row span,
@@ -5348,7 +5348,7 @@ body.h-harness-top-collapsed .pc-header {
   margin: 0;
   color: #f8fcff;
   line-height: 1.08;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   text-shadow: 0 0 18px rgba(var(--operator-arc), 0.26), 0 0 34px rgba(var(--operator-gold), 0.070);
 }
 
@@ -5970,7 +5970,7 @@ body.h-harness-top-collapsed .pc-header {
   color: #f8fcff;
   font-size: 15px;
   line-height: 1.25;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .operator-entry__action-kind {
@@ -6272,7 +6272,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-panel__metrics strong {
   font-size: 23px;
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .operator-panel__metrics em {
@@ -7127,7 +7127,7 @@ body.h-harness-top-collapsed .pc-header {
   margin: 0 0 4px;
   font-size: 16px;
   font-weight: 700;
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
 }
 .kbd-cheat-sub {
   margin: 0;
@@ -8177,7 +8177,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel__titleline h2 {
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   text-shadow: 0 0 20px rgba(var(--operator-arc), 0.34), 0 0 34px rgba(var(--operator-gold), 0.10);
 }
 
@@ -9368,7 +9368,7 @@ body.h-harness-top-collapsed .pc-header {
     linear-gradient(135deg, color-mix(in oklab, var(--accent), white 12%), color-mix(in oklab, var(--accent), var(--bg) 46%));
   color: var(--accent-ink);
   font-weight: 850;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .pc-user-avatar {
@@ -10462,7 +10462,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   color: var(--fg);
   font-size: clamp(30px, 5vw, 48px);
   font-weight: 880;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   line-height: 0.96;
   text-shadow: 0 0 24px rgba(87, 215, 255, 0.18);
 }
@@ -15085,7 +15085,7 @@ body:not(.papercusp-chromeless) .pc-header {
 .pc-settings-content h1:first-of-type {
   font-size: clamp(26px, 4vw, 36px);
   line-height: 1.05;
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
 }
 
 .pc-settings-page--voice {
@@ -15318,7 +15318,7 @@ body:has(.pc-settings-page--voice) .pc-settings-shell section section[style*="pa
   color: color-mix(in oklab, var(--operator-metric-accent), white 26%) !important;
   font-size: 23px;
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
   text-shadow: 0 0 14px var(--operator-metric-glow) !important;
 }
 
@@ -16135,7 +16135,7 @@ body:has(.pc-settings-nav-link[href="/settings/mobile"][aria-current="page"]) .p
   color: var(--fg);
   font-size: 16px !important;
   font-weight: 780;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   line-height: 1.15;
   text-transform: none !important;
 }
@@ -18440,7 +18440,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   margin: 8px 0 18px;
   font-size: clamp(48px, 6.4vw, 78px);
   line-height: 0.96;
-  letter-spacing: -0.058em;
+  letter-spacing: 0;
 }
 
 .pc-marketplace-hero-tagline {
@@ -22256,7 +22256,7 @@ body:has(.operator-panel) {
   color: rgba(248, 250, 252, 0.98);
   font-size: clamp(14px, 1.05vw, 16px);
   line-height: 1.24;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   text-shadow: 0 1px 14px rgba(0,0,0,0.30);
 }
 
@@ -22488,7 +22488,7 @@ body:has(.operator-panel) {
   color: color-mix(in oklab, var(--operator-metric-accent), white 28%) !important;
   font-size: 17px !important;
   line-height: 1.05;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .operator-panel__metric-card--tab:nth-child(1) {
@@ -22836,7 +22836,7 @@ body:has(.operator-panel) {
 .operator-panel__rail--right .operator-empty-rail em {
   color: #f8fcff;
   font-size: 18px;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .operator-panel__rail--right .operator-stream--muted {
@@ -25541,7 +25541,7 @@ body:has(.operator-panel) {
   color: #f4f8ff;
   font-weight: 760;
   line-height: 1;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .operator-wordmark__subtitle {
@@ -26053,7 +26053,7 @@ body:has(.operator-panel) {
 .pc-welcome__hello {
   font-size: clamp(28px, 4vw, 42px);
   font-weight: 700;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   line-height: 1.02;
   margin: 4px 0 0;
   color: var(--fg);
@@ -26257,7 +26257,7 @@ body:has(.operator-panel) {
 .pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__main-header h1 {
   font-size: clamp(26px, 3.2vw, 36px);
   line-height: 1.02;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__main-footer {
