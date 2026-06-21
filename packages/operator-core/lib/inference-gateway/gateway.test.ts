@@ -1272,3 +1272,41 @@ test('[B-GW-1] fail-fast SHED when the whole pool is throttled with a far-off re
   assert.equal(s.inFlight, 0, 'the admission slot was freed immediately, not held');
 });
 
+test('[#0 cache] the passive observer tallies prompt-cache READ/WRITE per account from message_start (a HIT)', async () => {
+  resetGovernorRegistry();
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":7,"cache_read_input_tokens":29000,"cache_creation_input_tokens":100,"output_tokens":1}}}\n\n',
+    );
+    res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+    res.end();
+  });
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200);
+  await r.text();
+  const s = (await (await ask('/stats')).json()) as { cache: { read: number; create: number; hits: number; misses: number; hitRate: number } };
+  assert.equal(s.cache.read, 29000, 'cache_read tokens tallied from message_start');
+  assert.equal(s.cache.create, 100, 'cache_creation tokens tallied');
+  assert.equal(s.cache.hits, 1, 'a cache_read>0 request is a HIT');
+  assert.equal(s.cache.misses, 0, 'a hit is not a miss');
+  assert.ok(s.cache.hitRate > 0.9, `hit rate reflects the big cache read (got ${s.cache.hitRate})`);
+});
+
+test('[#0 cache] a cold prefix (cache_read=0, large input) counts as a MISS', async () => {
+  resetGovernorRegistry();
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":5000,"cache_read_input_tokens":0,"cache_creation_input_tokens":4000,"output_tokens":1}}}\n\n',
+    );
+    res.end();
+  });
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  await r.text();
+  const s = (await (await ask('/stats')).json()) as { cache: { hits: number; misses: number; read: number; create: number } };
+  assert.equal(s.cache.hits, 0, 'no cache_read → not a hit');
+  assert.equal(s.cache.misses, 1, 'read=0 with a large cold prefix is a miss');
+  assert.equal(s.cache.create, 4000, 'the cold cache-creation is still tallied');
+});
+
