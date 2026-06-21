@@ -21,7 +21,7 @@ historical, not current state:
 - **Build scripts / provision lifecycle** — the runner + bwrap sandbox live
   at `packages/operator-core/lib/provision/` and run as a durable DBOS
   workflow (`lib/dbos/provision-workflow.ts`, `PAPERCUSP_DBOS_PROVISION`
-  default-on); three first-party plugins ship `provision/{setup,teardown,verify}.sh`.
+  default-on); three first-party plugins ship `provision/` scripts (`cloudflare-stack` and `github-repo` ship the full `{setup,teardown,verify}.sh` trio; `cloudflare-pages` ships only `verify.sh`).
 - **OAuth integration** — the substrate (`packages/operator-core/lib/oauth/`,
   with `/api/oauth/start|callback|verify-paste` and `ctx.oauth.token()`)
   is implemented with a GitHub provider.
@@ -144,7 +144,8 @@ sandbox live at `packages/operator-core/lib/provision/` (`runner.ts`,
 the `runtime/lib.sh` `papercusp_record_resource` FIFO bridge). It runs as a
 durable DBOS workflow (`packages/operator-core/lib/dbos/provision-workflow.ts`,
 gated by `PAPERCUSP_DBOS_PROVISION`, default-on), and three first-party plugins
-ship `provision/{setup,teardown,verify}.sh`. Per
+ship `provision/` scripts (`cloudflare-stack` and `github-repo` ship the full
+`{setup,teardown,verify}.sh` trio; `cloudflare-pages` ships only `verify.sh`). Per
 [[plugin-system-hive-port-2026-06-11]] P-010, the shipped `ProvisionScript`
 type carries `path` / `timeoutSec` / `runAt` plus consent-dialog fields
 `displayName` / `description`; the proposed `network`, `writesState`, and
@@ -188,8 +189,9 @@ are now stale:
 
 - There is no longer a live snapshot tarball/fork format to extend — the
   export-and-fork system was retired on 2026-06-09. The named identifiers
-  `requiresProvisioning` and `.shape.json` were **never implemented**: they
-  appear only in the rendered copies of this doc, never in
+  `requiresProvisioning` and `.shape.json` were **never implemented** in
+  executable code: they appear only in docs (this page — and for `.shape.json`,
+  also `cloudflare-stack`'s `README.md`), never wired into
   `packages/`/`libs/`/`apps/` source.
 - `papercusp snapshot fork` no longer reaches a working fork-source. The
   `snapshot-cli.ts` command still dispatches from `papercusp.ts`, but its
