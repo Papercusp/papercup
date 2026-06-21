@@ -345,19 +345,38 @@ export async function checkHomeHarnessResolves(
  *      null (the caller fails loud).
  */
 export async function resolveWorkspaceForHarnessSlug(slug: string): Promise<string | null> {
+  return resolveWorkspaceForHarnessSlugIn(activeWorkspaceId(), slug);
+}
+
+/**
+ * The explicit-`preferredWs` core of {@link resolveWorkspaceForHarnessSlug}: resolve
+ * a harness slug → its workspace, checking `preferredWs` FIRST (so a scoped caller
+ * resolves its OWN workspace and never a foreign one), then the collision-aware
+ * cross-workspace fallback. Same deterministic + confined-by-default contract as
+ * resolveWorkspaceForHarnessSlug (which is just this with `preferredWs = activeWorkspaceId()`).
+ *
+ * Exposed separately because the scoped-superuser dispatch clamp (P-017) must
+ * resolve a per-call `harness` arg's workspace BEFORE the request-scoped ALS is
+ * pinned to the clamped workspace — so it can't rely on `activeWorkspaceId()` and
+ * passes the session's clamped `ctx.workspaceId` explicitly (mirrors the hive-tier
+ * clamp, which likewise hands `ctx.workspaceId` to hiveHomeSlugForHarness).
+ */
+export async function resolveWorkspaceForHarnessSlugIn(
+  preferredWs: string,
+  slug: string,
+): Promise<string | null> {
   const raw = slug?.trim();
   if (!raw) return null;
-  // 1. Active-workspace-first (confined by default).
-  const activeWs = activeWorkspaceId();
+  // 1. Preferred-workspace-first (confined by default).
   try {
-    const activeReg = await loadHarnessRegistry(activeWs);
-    if (activeReg.projects.some((p) => p.slug === raw)) return activeWs;
-  } catch { /* active registry unreadable → fall through to the cross-ws scan */ }
-  // 2. Cross-workspace fallback (unscoped caller) — collision-aware.
+    const reg = await loadHarnessRegistry(preferredWs);
+    if (reg.projects.some((p) => p.slug === raw)) return preferredWs;
+  } catch { /* preferred registry unreadable → fall through to the cross-ws scan */ }
+  // 2. Cross-workspace fallback — collision-aware.
   const carriers = new Set<string>();
   try {
     for (const ws of readRegistry().workspaces) {
-      if (ws.id === activeWs) continue; // already checked in step 1
+      if (ws.id === preferredWs) continue; // already checked in step 1
       const reg = await loadHarnessRegistry(ws.id);
       if (reg.projects.some((p) => p.slug === raw)) carriers.add(ws.id);
     }
@@ -366,8 +385,8 @@ export async function resolveWorkspaceForHarnessSlug(slug: string): Promise<stri
   if (carriers.size > 1) {
     throw new Error(
       `resolveWorkspaceForHarnessSlug: harness slug '${raw}' is registered in ` +
-        `${carriers.size} workspaces (${[...carriers].join(', ')}) and none is the active ` +
-        `workspace ('${activeWs}'). Ambiguous cross-workspace collision — pass an explicit ` +
+        `${carriers.size} workspaces (${[...carriers].join(', ')}) and none is the preferred ` +
+        `workspace ('${preferredWs}'). Ambiguous cross-workspace collision — pass an explicit ` +
         `workspaceId to disambiguate.`,
     );
   }
