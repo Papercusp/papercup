@@ -285,6 +285,7 @@ describe('design primitive lint', () => {
     expectNoUnexpected(
       'Nonzero letter-spacing in audited operator app stylesheets',
       unexpectedNonzeroLetterSpacingUnderAny([
+        join(OPERATOR_ROOT, 'app/command-palette.css'),
         join(OPERATOR_ROOT, 'app/admin/_components/AdminShell.tsx'),
         join(OPERATOR_ROOT, 'app/admin/admin-ops.css'),
         join(OPERATOR_ROOT, 'app/admin/admin-tables.css'),
@@ -292,6 +293,10 @@ describe('design primitive lint', () => {
         join(OPERATOR_ROOT, 'app/admin/features/FeaturesAdmin.tsx'),
         join(OPERATOR_ROOT, 'app/admin/plans/plans.css'),
         join(OPERATOR_ROOT, 'app/admin/testing/testing.css'),
+        join(OPERATOR_ROOT, 'app/project-docs/page.tsx'),
+        join(OPERATOR_ROOT, 'app/settings/autonomy/page.tsx'),
+        join(OPERATOR_ROOT, 'app/settings/personalization/ThemeEditor.tsx'),
+        join(OPERATOR_ROOT, 'app/wiki/missing/page.tsx'),
       ]),
     );
   });
