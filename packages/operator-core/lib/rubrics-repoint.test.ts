@@ -1,16 +1,14 @@
 /**
  * rubrics-repoint.test.ts — the v2 "a rubric is a plan" re-point pure logic
- * (plan-templates-and-rubric-v2-2026-06-20 P-006).
+ * (plan-templates-and-rubric-v2-2026-06-20 P-006/P-007).
  *
- * Pins the PG-free pieces of the store re-point: the plan-status → rubric-status
- * mapping, the rubric-template-plan-row → v1 Rubric mapper (incl. degrade-on-malformed),
- * and the transitional plans ∪ table merge (plans win on a slug collision). The two
- * SQL legs + the union end-to-end are covered by the rubrics integration suite; these
- * are the error-prone pure surfaces.
+ * Pins the PG-free pieces of the plans-only store: the plan-status ↔ rubric-status
+ * mappings (both directions) and the rubric-template-plan-row → v1 Rubric mapper (incl.
+ * degrade-on-malformed). The SQL read leg + the propose/ratify write path end-to-end are
+ * covered by the rubrics integration suite; these are the error-prone pure surfaces.
  */
 import { describe, it, expect } from 'vitest';
-import { planStatusToRubricStatus, planRowToRubric, mergeRubricLegs } from './rubrics';
-import type { Rubric } from './rubrics';
+import { planStatusToRubricStatus, rubricStatusToPlanStatus, planRowToRubric } from './rubrics';
 
 const baseData = {
   characteristic: 'hive-coordination',
@@ -32,6 +30,7 @@ const baseData = {
 const planRow = (over: Partial<Parameters<typeof planRowToRubric>[0]> = {}) => ({
   plan_slug: 'hive-coordination-health',
   workspace_id: 'default',
+  harness_slug: 'papercusp',
   title: 'Hive coordination health',
   status: 'active' as string | null,
   created: '2026-06-20',
@@ -102,38 +101,19 @@ describe('planRowToRubric', () => {
   });
 });
 
-describe('mergeRubricLegs (plans ∪ table, plans win)', () => {
-  const mk = (id: string, status: Rubric['status'], from: string): Rubric => ({
-    rubricId: id,
-    workspaceId: 'default',
-    characteristic: 'c',
-    title: from,
-    description: '',
-    criteria: [],
-    ratingScale: ['healthy'],
-    methodRef: null,
-    status,
-    createdBy: null,
-    proposedBy: null,
-    ratifiedBy: null,
-    createdAt: '2026-06-20T00:00:00.000Z',
-    updatedAt: '2026-06-20T00:00:00.000Z',
+describe('rubricStatusToPlanStatus (write-path inverse)', () => {
+  it('proposed → draft (awaiting Queen ratification)', () => {
+    expect(rubricStatusToPlanStatus('proposed')).toBe('draft');
   });
-
-  it('unions non-colliding rubrics from both legs', () => {
-    const merged = mergeRubricLegs([mk('a', 'active', 'plan')], [mk('b', 'proposed', 'table')]);
-    expect(merged.map((r) => r.rubricId).sort()).toEqual(['a', 'b']);
+  it('active → active (ratified)', () => {
+    expect(rubricStatusToPlanStatus('active')).toBe('active');
   });
-
-  it('a PLAN wins over a same-id TABLE row (the new backing supersedes the legacy row)', () => {
-    const merged = mergeRubricLegs([mk('dup', 'active', 'plan')], [mk('dup', 'proposed', 'table')]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0].title).toBe('plan');
-    expect(merged[0].status).toBe('active');
+  it('retired → superseded', () => {
+    expect(rubricStatusToPlanStatus('retired')).toBe('superseded');
   });
-
-  it('table-only and plan-only both pass through', () => {
-    expect(mergeRubricLegs([], [mk('t', 'active', 'table')]).map((r) => r.rubricId)).toEqual(['t']);
-    expect(mergeRubricLegs([mk('p', 'active', 'plan')], []).map((r) => r.rubricId)).toEqual(['p']);
+  it('round-trips through planStatusToRubricStatus', () => {
+    for (const s of ['proposed', 'active', 'retired'] as const) {
+      expect(planStatusToRubricStatus(rubricStatusToPlanStatus(s))).toBe(s);
+    }
   });
 });

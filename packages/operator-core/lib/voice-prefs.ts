@@ -282,6 +282,14 @@ export interface VoicePrefs {
    */
   audienceMode: 'engineer' | 'novice';
 
+  /**
+   * Do-not-disturb for the Sentinel herald (sentinel-as-herald-2026-06-21).
+   * When true, the herald stays quiet — a single live pause lever the user
+   * can flip on/off from the Sentinel sidebar tab without unwinding every
+   * individual speak* toggle. Default false (herald speaks).
+   */
+  silenceVoice: boolean;
+
   // One-time consents
   webSpeechLeakAcked: boolean;
   kokoroSlowSuggestionDismissed: boolean;

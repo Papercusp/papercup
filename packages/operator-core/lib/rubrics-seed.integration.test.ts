@@ -1,37 +1,18 @@
 /**
- * rubrics-seed.integration.test.ts — verifies migration 327 seeds the founding
- * 'hive-coordination-health' rubric (rubric-driven-observations-2026-06-20 P-003 /
- * brief B6, su-5695e). Applies 326 (DDL) + 327 (seed) against REAL Postgres, then
- * asserts the seeded rubric is ACTIVE with the LOCKED 13 canonical criterion keys —
- * the interface the Overwatch scorecard (P-004) and Scout digest grouping (P-006)
- * reference. A drift in the criteria set (rename/drop/reorder) fails this test.
+ * rubrics-seed.integration.test.ts — verifies the founding 'hive-coordination-health'
+ * rubric is served from its migrated rubric-template PLAN
+ * (plan-templates-and-rubric-v2-2026-06-20 P-007). Migration 338 migrated the v1 table
+ * seed (326/327) → a `template: rubric` plan (harness_plans), and Stage 2 drops the v1
+ * table; this test applies the FULL migration set (createOrgTestDb) and asserts the store
+ * (getRubric — now plans-only) resolves the seed ACTIVE with the LOCKED 13 canonical
+ * criterion keys — the interface the Overwatch scorecard (P-004) and Scout digest
+ * grouping (P-006) reference. A drift in the criteria set (rename/drop/reorder) fails this.
  *
- * Docker-gated (`*.integration.test.ts`). Mirrors the rubrics.integration.test.ts
- * harness (su-7ad93's B2 store test) so the two compose without interference: that
- * test applies ONLY 326 and truncates per-test; this one applies 326+327 and keeps
- * the seeded row.
+ * Docker-gated (`*.integration.test.ts`).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
-
-// Strip psql metacommands (\set), GRANTs (no framework roles in the throwaway DB),
-// and explicit txn markers (the pooled test client rejects them). Dollar-quoted
-// multiline blocks ($desc$/$criteria$) carry none of those line shapes, so they
-// pass through intact.
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter(
-      (line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line),
-    )
-    .join('\n');
+import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -40,6 +21,7 @@ vi.mock('@papercusp/db-org', async () => {
 });
 
 const rubrics = await import('./rubrics');
+const { createOrgTestDb } = await import('../test/_org-test-db');
 
 // The locked 13-criteria interface (rubric-driven-observations D-003) — 1:1 with the
 // owner's Q1-Q13 scorecard. Kept here as the test's own copy so a seed-vs-interface
@@ -60,29 +42,30 @@ const CANONICAL_KEYS = [
   'tool-utilization',
 ];
 
-let db: FreshPgDb;
+let db: OrgTestDb;
 
 beforeAll(async () => {
-  db = await createFreshPgDb('rubrics-seed');
-  h.sql = db.sql;
-  await db.sql.unsafe(readMigration('326-rubrics-store.sql')).simple();
-  await db.sql.unsafe(readMigration('327-seed-hive-coordination-health-rubric.sql')).simple();
-}, 90_000);
+  // createOrgTestDb applies the WHOLE migration set: 326 (table) → 327 (table seed) →
+  // 338 (table → rubric-template plan) → the Stage-2 DROP TABLE — so the seed survives
+  // as a PLAN regardless of the table's fate.
+  db = await createOrgTestDb();
+  h.sql = db.adminSql;
+}, 120_000);
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
-describe('migration 327 — seed hive-coordination-health rubric', () => {
-  it('seeds the founding rubric as ACTIVE with method_ref + the default rating scale', async () => {
+describe('migration 338 — the hive-coordination-health rubric is served from its plan', () => {
+  it('resolves the founding rubric as ACTIVE with method_ref + the default rating scale', async () => {
     const r = await rubrics.getRubric('hive-coordination-health');
     expect(r).not.toBeNull();
-    expect(r!.status).toBe('active'); // owner founding rubric, seeded ratified (D-002 owner #1)
+    expect(r!.status).toBe('active'); // seeded ratified (active plan → active rubric)
     expect(r!.characteristic).toBe('hive-coordination');
     expect(r!.title).toBe('Hive coordination health');
     expect(r!.methodRef).toBe('hive-coordination-health'); // the agent-insights runbook slug
     expect(r!.ratingScale).toEqual(['healthy', 'degraded', 'broken', 'unknown']);
-    expect(r!.ratifiedBy).toBe('aviynw@gmail.com');
+    expect(r!.ratifiedBy).toBe('aviynw@gmail.com'); // the plan owner (active ⇒ ratifier)
     expect((r!.description ?? '').length).toBeGreaterThan(0);
   });
 
@@ -97,7 +80,7 @@ describe('migration 327 — seed hive-coordination-health rubric', () => {
     }
   });
 
-  it('appears in listRubrics(active) and is findable via the real FTS', async () => {
+  it('appears in listRubrics(active) and is findable via search', async () => {
     expect((await rubrics.listRubrics({ status: 'active' })).map((x) => x.rubricId)).toContain(
       'hive-coordination-health',
     );
@@ -106,8 +89,7 @@ describe('migration 327 — seed hive-coordination-health rubric', () => {
     );
   });
 
-  it('re-applying the seed is idempotent (ON CONFLICT — no duplicate row)', async () => {
-    await db.sql.unsafe(readMigration('327-seed-hive-coordination-health-rubric.sql')).simple();
+  it('is a single rubric-template plan row (the seed migration is idempotent)', async () => {
     const all = await rubrics.listRubrics({});
     expect(all.filter((x) => x.rubricId === 'hive-coordination-health')).toHaveLength(1);
   });

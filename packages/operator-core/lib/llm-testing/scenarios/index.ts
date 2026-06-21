@@ -94,6 +94,12 @@ import { SU_S13_CODE_RUN_BATCH } from './su/S13-code-run-batch';
 import { SU_S14_CODE_RUN_NOT_FOR_SINGLE } from './su/S14-code-run-not-for-single';
 import { SU_S15_CODE_RUN_SMALL_BATCH } from './su/S15-code-run-small-batch';
 import { SU_S16_CODE_RUN_BATCH_WRITE } from './su/S16-code-run-batch-write';
+// SU-S17–S20: tool-call-batching-wrappers-2026-06-21 P-008 — does the engineer REACH for the compound
+// wrappers (coord:orient S17, harness:overview S19) and NOT over-apply them to a single call (S18/S20)?
+import { SU_S17_ORIENT_BOOTSTRAP } from './su/S17-orient-bootstrap';
+import { SU_S18_ORIENT_NOT_FOR_SINGLE } from './su/S18-orient-not-for-single';
+import { SU_S19_OVERVIEW_STATE_OF_X } from './su/S19-overview-state-of-x';
+import { SU_S20_OVERVIEW_NOT_FOR_SINGLE } from './su/S20-overview-not-for-single';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
@@ -183,6 +189,10 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S14_CODE_RUN_NOT_FOR_SINGLE,
   SU_S15_CODE_RUN_SMALL_BATCH,
   SU_S16_CODE_RUN_BATCH_WRITE,
+  SU_S17_ORIENT_BOOTSTRAP,
+  SU_S18_ORIENT_NOT_FOR_SINGLE,
+  SU_S19_OVERVIEW_STATE_OF_X,
+  SU_S20_OVERVIEW_NOT_FOR_SINGLE,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

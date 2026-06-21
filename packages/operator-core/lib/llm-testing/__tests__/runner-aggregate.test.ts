@@ -98,6 +98,11 @@ describe('scenario registry', () => {
       'su-S14-code-run-not-for-single',
       'su-S15-code-run-small-batch',
       'su-S16-code-run-batch-write',
+      // compound wrappers — reach + over-application guards (tool-call-batching-wrappers-2026-06-21 P-008)
+      'su-S17-orient-bootstrap',
+      'su-S18-orient-not-for-single',
+      'su-S19-overview-state-of-x',
+      'su-S20-overview-not-for-single',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',

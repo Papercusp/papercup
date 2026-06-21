@@ -12,11 +12,22 @@
  * deterministic. Docker-gated (`*.integration.test.ts`).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+// getOrgPg for the reads; withWorkspace for the re-pointed proposeRubric write path
+// (withPlanLock → withWorkspace, P-007). The advisory xact-lock needs a real
+// transaction — `.begin` provides one against the migrated throwaway DB's admin client.
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: h.sql }),
+  withWorkspace: async <T>(ws: string, cb: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>
+    (h.sql as postgres.Sql).begin(async (tx) => {
+      await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+      return cb(tx as unknown as postgres.Sql);
+    }) as Promise<T>,
+}));
 
 const { listScorecards, scorecardTrend } = await import('./scorecards');
 const { createIssue } = await import('./issues-engineer');

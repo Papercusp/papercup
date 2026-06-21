@@ -440,3 +440,88 @@ export const HARNESS_STATUS_RESULT: ToolDispatchOverride = {
     return PASS_THROUGH;
   },
 };
+
+/**
+ * SU-S17 (reach for coord:orient at wake): a believable one-call bootstrap so the
+ * engineer who calls coord:orient { intent } once isn't punished by a stub. The
+ * fanned-out primitives PASS_THROUGH to a benign stub — the assert flags the fan;
+ * the override just lets the smart (bundle) path succeed.
+ */
+export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canonical(name) === 'coord:orient') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              me: { assignments: [{ id: 'WI-512', title: 'Gateway pool retry', state: 'wip' }], lane: ['P-003'], load: 1 },
+              claimable: [{ id: 'WI-540', title: 'Audit log NUL bytes' }, { id: 'WI-541', title: 'Palette poll → push' }],
+              inbox: { summary: { total: 1, unread: 1 }, recent: [{ from: 'queen', text: 'prioritize the gateway retry' }] },
+              planEvents: { total: 2, recent: [{ kind: 'item_status_changed', plan: 'gateway-pool', item: 'P-002' }] },
+              memory: { query: a.intent ?? '', hits: [{ id: 'mem-1', memory: 'gateway retries must route through the account pool (EI-456)' }] },
+              intentDeclared: !!a.intent,
+            }),
+          },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
+ * SU-S18 (do NOT over-apply coord:orient on a single inbox check): a believable
+ * coord:inbox result. "Any new messages?" is one direct coord:inbox call — wrapping
+ * it in coord:orient over-fetches assignments + claimable + plan-events + a memory
+ * recall + a declare, the over-application the guard catches.
+ */
+export const COORD_INBOX_RESULT: ToolDispatchOverride = {
+  override(name) {
+    if (canonical(name) === 'coord:inbox') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              summary: { total: 2, unread: 1 },
+              entries: [
+                { id: 'm-1', from: 'su-9140a', kind: 'message', text: 'rebased your branch, re-pull' },
+                { id: 'm-2', from: 'queen', kind: 'notify', text: 'gateway retry landed' },
+              ],
+            }),
+          },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
+ * SU-S19 (reach for harness:overview on "state of X"): a believable one-call overview
+ * (status + escalations + open-issues snapshot) so the engineer who calls
+ * harness:overview once isn't punished by a stub.
+ */
+export const HARNESS_OVERVIEW_RESULT: ToolDispatchOverride = {
+  override(name, args) {
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canonical(name) === 'harness:overview') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              harness: a.harness ?? 'sheets',
+              status: { phase: 'production', features: { total: 14, done: 11, in_progress: 2, blocked: 1 } },
+              escalations: [{ id: 'esc-1', summary: 'validator stuck on F-12', age_h: 3 }],
+              issues: { count: 2, recent: [{ id: 'EI-880', title: 'export picker disabled stub', severity: 'major', state: 'open' }] },
+            }),
+          },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};

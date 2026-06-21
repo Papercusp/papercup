@@ -198,8 +198,39 @@ export async function buildOperatorPrompt(
     workspaceId: activeWorkspaceId(),
     harnessSlugs,
     queryContext: lastUserContext(messages, 3),
+    // The Herald's recall heading mirrors the operator one but names its own role
+    // so an injected fact reads as the Sentinel's memory, not "Operator memory".
+    ...(role === 'sentinel' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
   });
   if (memBlock) systemSections.push(memBlock);
+
+  // SENTINEL read-context (Sentinel-as-Herald P-007). The Herald watches the WHOLE
+  // system, so it walks in already understanding the live state — escalations,
+  // anomalies, progress, "what's worth surfacing" — built from the READY-MADE
+  // digests (curation:feed salience ranking, the Overwatch anomaly brief, the
+  // state-of-hive corpus digest, the live fleet), NOT re-derived from raw coord.
+  // GUARDED on role==='sentinel' so the operator path is byte-identical (it never
+  // gathers, never imports the sentinel module). Fail-soft: a gather error degrades
+  // to no section — the turn never blocks on it (mirrors the memory block above).
+  if (role === 'sentinel') {
+    try {
+      const { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps } =
+        await import('../../sentinel/sentinel-context');
+      const wsId = activeWorkspaceId();
+      // The hive slug the context covers: the first registered harness in the
+      // workspace (the operator chat has no single harness in scope). Best-effort —
+      // an empty pool just scopes the heading generically.
+      const hiveSlug = harnessSlugs[0] ?? wsId;
+      const ctxInput = await gatherSentinelContext(buildSentinelContextDeps(wsId, hiveSlug), { hiveSlug });
+      const ctxBlock = renderSentinelContext(ctxInput);
+      if (ctxBlock.trim()) systemSections.push(ctxBlock);
+    } catch (err) {
+      console.warn(
+        '[converse-prompt] sentinel read-context build failed (omitting the section):',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 
   // USER sections (this turn's context — sent as the positional message)
   const userSections: string[] = [];
