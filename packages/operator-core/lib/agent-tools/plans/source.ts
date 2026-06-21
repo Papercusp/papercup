@@ -688,6 +688,13 @@ export async function listPlanIndexRows(
     /** Filter to per-run instances of a given template plan (template_slug
      *  back-pointer, P-005). Implies including instances. */
     templateSlug?: string;
+    /** Only plans whose row `created_at >= this` (ISO timestamp). Server-side
+     *  recency filter so callers stop fetching every plan + post-filtering. */
+    createdSince?: string;
+    /** Only plans whose row `updated_at >= this` (ISO timestamp). */
+    updatedSince?: string;
+    /** Row order: 'updated'/'created' = recency DESC, 'slug' (default) = slug ASC. */
+    order?: 'updated' | 'created' | 'slug';
   } = {},
 ): Promise<PlanIndexRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
@@ -708,6 +715,14 @@ export async function listPlanIndexRows(
       const templateSlugFilter = opts.templateSlug
         ? tx`AND template_slug = ${opts.templateSlug}`
         : tx``;
+      const createdSinceFilter = opts.createdSince ? tx`AND created_at >= ${opts.createdSince}` : tx``;
+      const updatedSinceFilter = opts.updatedSince ? tx`AND updated_at >= ${opts.updatedSince}` : tx``;
+      const orderClause =
+        opts.order === 'updated'
+          ? tx`ORDER BY updated_at DESC NULLS LAST`
+          : opts.order === 'created'
+            ? tx`ORDER BY created_at DESC NULLS LAST`
+            : tx`ORDER BY plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
@@ -723,7 +738,9 @@ export async function listPlanIndexRows(
          ${instanceFilter}
          ${templateFilter}
          ${templateSlugFilter}
-         ORDER BY plan_slug ASC
+         ${createdSinceFilter}
+         ${updatedSinceFilter}
+         ${orderClause}
          ${limitClause}
       `;
     });
