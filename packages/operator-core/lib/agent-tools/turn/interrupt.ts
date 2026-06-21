@@ -43,6 +43,11 @@ export interface InterruptInput {
   owner: string;
   mode: 'cooperative' | 'force';
   reason: string;
+  /** Force-mode keystroke for a managed-pty session: 'sigint' (Ctrl+C `\x03`, the default — the
+   *  turn:interrupt tool's behaviour) or 'esc' (`\x1b`, the claude TUI's "abort the turn, return to the
+   *  prompt"). endTurn:true / stall-recovery passes 'esc' (D-001): it's the precise keystroke for ending a
+   *  STUCK turn so the CLI re-arms its inbox-wake watch, with no Ctrl+C double-press-exit risk. */
+  key?: 'sigint' | 'esc';
 }
 
 export interface InterruptDeps {
@@ -54,8 +59,9 @@ export interface InterruptDeps {
   recentInterrupts?: (actor: string) => Promise<number>;
   /** The target's live session pid, or null when not interruptibly live. */
   liveSessionPid?: (owner: string) => Promise<number | null>;
-  /** Managed-pty Ctrl+C inject over the session control socket; true on success. */
-  ptyForce?: (owner: string) => Promise<boolean>;
+  /** Managed-pty force inject over the session control socket (Ctrl+C `\x03` for 'sigint', ESC `\x1b` for
+   *  'esc'); true on success. */
+  ptyForce?: (owner: string, key: 'sigint' | 'esc') => Promise<boolean>;
   /** Send SIGINT to a pid; true on success. */
   sigint?: (pid: number) => boolean;
   /** Append an audit row (who → whom / action / details). */
@@ -72,7 +78,7 @@ export interface InterruptResult {
   ok: boolean;
   mode: 'cooperative' | 'force';
   deferred?: boolean;
-  channel?: 'pty-ctrl-c' | 'sigint';
+  channel?: 'pty-ctrl-c' | 'pty-esc' | 'sigint';
   delivered?: string;
   error?: string;
   reason?: string;
@@ -139,13 +145,15 @@ export async function performInterrupt(input: InterruptInput, deps: InterruptDep
   }
 
   // ── force ──
-  let channel: 'pty-ctrl-c' | 'sigint' | null = null;
+  let channel: 'pty-ctrl-c' | 'pty-esc' | 'sigint' | null = null;
   let err: string | null = null;
 
-  // (1) managed-pty Ctrl+C over the session control socket (graceful for a TUI).
-  const ptyOk = (await deps.ptyForce?.(input.owner).catch(() => false)) ?? false;
+  // (1) managed-pty keystroke over the session control socket (graceful for a TUI): ESC ('esc') aborts the
+  //     turn back to the prompt; Ctrl+C ('sigint', default) interrupts. ESC is endTurn's choice (D-001).
+  const ptyKey = input.key ?? 'sigint';
+  const ptyOk = (await deps.ptyForce?.(input.owner, ptyKey).catch(() => false)) ?? false;
   if (ptyOk) {
-    channel = 'pty-ctrl-c';
+    channel = ptyKey === 'esc' ? 'pty-esc' : 'pty-ctrl-c';
   } else {
     // (2) headless SIGINT to the session pid — ends the turn; session stays resumable.
     const pid = (await deps.liveSessionPid?.(input.owner).catch(() => null)) ?? null;
@@ -228,6 +236,51 @@ async function liveSessionPid(owner: string): Promise<number | null> {
   return s.pid != null && pidAlive(s.pid) ? s.pid : null;
 }
 
+/**
+ * End a peer's CURRENT turn via a forced ESC keystroke — the shared core of `coord:send {endTurn:true}`
+ * (P-002) and the gateway stall-waker's ESC-then-wake recovery (P-003). It is the production-wired FORCE
+ * branch of {@link performInterrupt} with `key:'esc'`: ESC (`\x1b`) into a managed-pty TUI ends the turn
+ * back to the prompt (so the CLI re-arms its inbox-wake watch and a following wake can resume it), else
+ * SIGINT to the headless session pid. Reuses the SAME audit, storm rate-limit, self-interrupt refusal, and
+ * held-lock warning as the `turn:interrupt` tool. Never throws — every failure is a structured result.
+ */
+export async function forceEndTurn(input: {
+  actor: string;
+  workspaceId: string;
+  owner: string;
+  reason: string;
+  coordinationDomain?: string | null;
+}): Promise<InterruptResult> {
+  return performInterrupt(
+    { actor: input.actor, workspaceId: input.workspaceId, owner: input.owner, mode: 'force', reason: input.reason, key: 'esc' },
+    {
+      heldLockPaths: async (owner) => {
+        if (!input.coordinationDomain) return [];
+        try {
+          await ensureBootstrap();
+          const sql = getTxPool();
+          const q = await readQueue(sql, { coordinationDomain: input.coordinationDomain, owner });
+          return q.active_locks.map((l) => l.path);
+        } catch {
+          return [];
+        }
+      },
+      recentInterrupts: recentInterruptCount,
+      liveSessionPid,
+      ptyForce: (owner, key) => interruptViaPty(owner, key),
+      sigint: (pid) => {
+        try {
+          process.kill(pid, 'SIGINT');
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      audit: writeInterruptAudit,
+    },
+  );
+}
+
 export default defineTool({
   name: 'turn:interrupt',
   description:
@@ -293,8 +346,8 @@ export default defineTool({
       },
       recentInterrupts: recentInterruptCount,
       liveSessionPid,
-      // Phase-3 seam: Ctrl+C into a live managed-pty session, else false → SIGINT.
-      ptyForce: (owner) => interruptViaPty(owner, 'sigint'),
+      // Phase-3 seam: keystroke into a live managed-pty session (ESC or Ctrl+C), else false → SIGINT-to-pid.
+      ptyForce: (owner, key) => interruptViaPty(owner, key),
       sigint: (pid) => {
         try {
           process.kill(pid, 'SIGINT');

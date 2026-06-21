@@ -14,6 +14,12 @@ import { sendMessage } from '../messages';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
 import { COORD_ROLES } from '../roles';
+import { forceEndTurn } from '../../turn/interrupt';
+
+/** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
+ *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
+ *  the wake doesn't race the abort and land woken:0. Env-tunable. */
+const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 1500;
 
 export default defineTool({
   name: 'coord:send',
@@ -54,6 +60,12 @@ export default defineTool({
       .optional()
       .describe(
         "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort over a durable backstop (wake if present, shrug if not — e.g. the Queen survey re-dispatches anyway); a miss is silent. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+      ),
+    endTurn: z
+      .boolean()
+      .optional()
+      .describe(
+        "ESC each addressee's CURRENT turn (mimic pressing Escape) BEFORE delivering — the dual of wake-as-Enter. Use ONLY when a recipient's turn is STUCK (e.g. wedged on an API error so a plain wake reaches nobody / typing+Enter won't start the next turn): the ESC ends the dead turn so the CLI re-arms, then (with wake) this message starts a fresh turn. Force-ESC is audited + storm-rate-limited; only end a turn you KNOW is stuck. Skips '*'/'human'/self.",
       ),
   }),
   async handler(args, ctx) {
@@ -121,6 +133,34 @@ export default defineTool({
       ...(wakeMode ? { extra: { wake: true } } : {}),
     });
 
+    // endTurn (coord-end-turn P-002): ESC each addressed recipient's CURRENT turn BEFORE the wake. A turn
+    // STUCK on an API error is NOT sleeping on its inbox-wake key, so a plain wake reaches nobody (woken:0);
+    // the ESC ends the dead turn → the CLI returns to idle + re-arms its watch → the wake below starts a
+    // fresh turn with this message. Force-ESC reuses turn:interrupt's audit + storm rate-limit; skips
+    // '*'/'human'/self. Then SETTLE so the wake doesn't race the abort (D-003).
+    let endTurn: { ended: string[]; missed: string[] } | undefined;
+    if (args.endTurn) {
+      const targets = env.to.filter((id) => id !== '*' && id !== 'human' && id !== identity.ownerId);
+      const ended: string[] = [];
+      const missed: string[] = [];
+      for (const owner of targets) {
+        try {
+          const r = await forceEndTurn({
+            actor: identity.ownerId,
+            workspaceId: identity.workspaceId ?? '*',
+            owner,
+            reason: args.summary,
+          });
+          (r.ok ? ended : missed).push(owner);
+        } catch {
+          missed.push(owner);
+        }
+      }
+      endTurn = { ended, missed };
+      // Give each CLI a moment to finish ending its turn + re-arm its inbox-wake watch before we wake it.
+      if (wakeMode && ended.length > 0) await new Promise((r) => setTimeout(r, ENDTURN_SETTLE_MS));
+    }
+
     // Deliver-and-wake (P-040): the message already persisted to the inbox above
     // (the durable default). When the sender opted in, ALSO fire each addressed
     // recipient's OWN inbox-wake key so a SLEEPING addressee is re-invoked — one
@@ -172,7 +212,7 @@ export default defineTool({
       | { idleRecipients: string[]; note: string }
       | undefined;
     if (!wakeMode) {
-      const report = await reportIdleRecipients(env.to, { workspaceId: identity.workspaceId });
+      const report = await reportIdleRecipients(env.to, { workspaceId: identity.workspaceId ?? undefined });
       if (report.idle.length > 0) {
         notWoken = {
           idleRecipients: report.idle,
@@ -192,6 +232,7 @@ export default defineTool({
             ok: true,
             msg_id: env.msg_id,
             ts: env.ts,
+            ...(endTurn ? { endTurn } : {}),
             ...(wake ? { wake } : {}),
             ...(notWoken ? { notWoken } : {}),
           }),

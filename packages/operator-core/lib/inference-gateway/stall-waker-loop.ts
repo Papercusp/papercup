@@ -9,11 +9,15 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getSpawnPg } from '../fleet/pg-stores';
 import { accountStatus } from '../deployment/account-pool-store';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
+import { forceEndTurn } from '../agent-tools/turn/interrupt';
 
 const POLL_MS = Number(process.env.PAPERCUSP_STALL_WAKER_POLL_MS) || 20_000;
 /** A bee stream-silent this long is idle/sleeping (turn ended, waiting on its wake key) — NOT actively
  *  retrying. We only wake a CONFIRMED-idle bee, so we never interrupt one mid-recovery. */
 const IDLE_SILENCE_MS = Number(process.env.PAPERCUSP_STALL_WAKER_IDLE_MS) || 30_000;
+/** Settle window between the ESC and the wake (coord-end-turn D-003): let the bee's CLI finish ending its
+ *  dead turn + re-arm its inbox-wake watch before the wake fires. */
+const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 1500;
 
 /** Build the real deps: gateway HTTP (stalls), spawned_agents (idle), account-pool (capacity), coord (wake). */
 export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
@@ -37,6 +41,16 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       return a ? a.available === true : true; // unknown account → trust the reset time we already waited out
     },
     wake: async (ownerId, summary) => {
+      // ESC-THEN-WAKE (coord-end-turn P-003): a bee whose turn DIED on a rate limit is stuck mid-errored —
+      // NOT sleeping on its inbox-wake key — so a bare wake lands woken:0. Force-ESC ends the dead turn first
+      // (the CLI returns to idle + re-arms its watch), settle, THEN wake → a real fresh turn resumes on the
+      // now-recovered account. Best-effort; the wake proceeds even if the ESC found no live pty.
+      try {
+        await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: summary });
+        await new Promise((r) => setTimeout(r, ENDTURN_SETTLE_MS));
+      } catch {
+        /* no live turn to end (already idle) → just wake */
+      }
       const r = await wakeRecipients([ownerId], { summary, source: 'stall-waker', workspaceId });
       return { woken: r.woken };
     },

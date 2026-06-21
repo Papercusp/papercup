@@ -85,8 +85,9 @@ export function parseArgs(argv) {
     else if (a === '--brain') out.brain = true;
     // `--resume` alone → pick from the recent-session list. `--resume=<id>`
     // (or a bare id after `--resume`) → resume THAT session directly, no
-    // picker. The id is the /adv adv_sessions row id OR the agent's native
-    // session id (the claude --session-id UUID) — both match a tracked row.
+    // picker. The id is the /adv adv_sessions row id OR a backend-native handle:
+    // claude session UUID, OMP thread id, or Codex rollout UUID under a tracked
+    // CODEX_HOME.
     else if (a === '--resume') out.resume = true;
     else if (a.startsWith('--resume=')) { out.resume = true; out.resumeId = a.slice('--resume='.length) || null; }
     // Fork the resumed session instead of appending to it (claude --fork-session):
@@ -1457,19 +1458,20 @@ async function confirmUntrackedResume(session, args) {
 }
 
 // `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`
-// (direct): resume a tracked session by adv id OR its recorded native session
-// id, OR an unmatched session by the agent's native session id — cd to its
-// recorded cwd and run the agent there.
+// (direct): resume a tracked session by adv id, recorded native session id,
+// linked OMP thread id, or Codex rollout UUID under a tracked CODEX_HOME. If
+// none match, fall back to an unmatched session by the agent's native store id.
+// Either way, cd to the recorded cwd and run the agent there.
 async function resumeFlow(args = {}) {
   const data = await api('/api/adv/sessions/resumable');
   const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
 
   // Direct resume by id — skip the picker.
   if (args.resumeId) {
-    // 1. A psu-tracked session (adv_sessions row)? Match the integer adv id OR
-    //    the agent's recorded NATIVE session id (the claude --session-id UUID),
-    //    so resuming by EITHER handle finds the tracked row — and resumes the
-    //    exact session (resumeArgsFor prefers the native id) with NO false
+    // 1. A psu-tracked session (adv_sessions row)? Match the integer adv id,
+    //    the agent's recorded NATIVE session id (claude), linked native thread
+    //    id (OMP), or discovered rollout UUID in the tracked CODEX_HOME
+    //    (Codex). Resuming by any handle finds the tracked row with NO false
     //    "not started by psu" warning.
     const tracked = resolveTrackedResumeSession(sessions, args.resumeId);
     if (tracked) {

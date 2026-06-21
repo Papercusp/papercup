@@ -8,7 +8,10 @@
  * executeWake resumes it (`codex exec resume <uuid>`). The codex+session case
  * below pins the fix.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AdvSessionRow } from '../../adv-sessions';
 
 const h = vi.hoisted(() => ({
@@ -52,6 +55,10 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+afterEach(() => {
+  delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+});
+
 describe('captureWakeHandleForOwner', () => {
   it('planRunId → a plan-run handle (the plans:resume wake path), no session read', async () => {
     const r = await captureWakeHandleForOwner('su-abc', { planRunId: 99 });
@@ -92,6 +99,22 @@ describe('captureWakeHandleForOwner', () => {
     expect(r.note).not.toContain('NOT safely resumable');
   });
 
+  it('codex without a row session id but with a tracked CODEX_HOME rollout → resumable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-handle-codex-home-'));
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+    const rolloutId = '11111111-2222-3333-4444-555555555555';
+    const dir = join(root, 'session-15', 'sessions', '2026', '06', '21');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `rollout-2026-06-21T00-00-00-${rolloutId}.jsonl`), '{}\n');
+    h.latestAdvSessionByCoordOwner.mockResolvedValueOnce(
+      advRow({ id: 15, agent: 'codex', sessionId: null, ompThreadId: null }),
+    );
+
+    const r = await captureWakeHandleForOwner('su-codex');
+    expect(r.handle).toMatchObject({ kind: 'adv-session', advSessionId: 15, agent: 'codex', sessionId: rolloutId });
+    expect(r.note).toContain('injectable/resumable');
+  });
+
   it('omp + a thread id → resumable', async () => {
     h.latestAdvSessionByCoordOwner.mockResolvedValueOnce(
       advRow({ id: 13, agent: 'omp', sessionId: null, ompThreadId: 'th-9' }),
@@ -110,7 +133,8 @@ describe('captureWakeHandleForOwner', () => {
     expect(r.note).toContain('NOT safely resumable');
   });
 
-  it('codex WITHOUT a session id → NOT safely resumable (no recoverable conversation uuid on the row)', async () => {
+  it('codex WITHOUT a row session id or CODEX_HOME rollout → NOT safely resumable', async () => {
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = mkdtempSync(join(tmpdir(), 'wake-handle-codex-empty-'));
     h.latestAdvSessionByCoordOwner.mockResolvedValueOnce(
       advRow({ id: 15, agent: 'codex', sessionId: null, ompThreadId: null }),
     );

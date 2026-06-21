@@ -11,6 +11,8 @@
 
 import { latestAdvSessionByCoordOwner } from '../../adv-sessions';
 import type { WakeHandle } from './types';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { findCodexRolloutSessionId } from './wake-executor';
 
 export interface CapturedHandle {
   handle: WakeHandle | null;
@@ -35,11 +37,15 @@ export async function captureWakeHandleForOwner(
       note: 'no tracked session for your coord id — the wake degrades to an inbox notification (delivered mid-turn if you are active, on your next turn otherwise)',
     };
   }
+  const sessionId =
+    session.agent === 'codex' && !session.sessionId
+      ? findCodexRolloutSessionId(codexHomeForSessionKey(session.id))
+      : session.sessionId;
   const handle: WakeHandle = {
     kind: 'adv-session',
     advSessionId: session.id,
     agent: session.agent,
-    sessionId: session.sessionId,
+    sessionId,
     ompThreadId: session.ompThreadId,
     cwd: session.cwd,
     pid: session.pid,
@@ -47,15 +53,13 @@ export async function captureWakeHandleForOwner(
   // Which clients the wake executor can re-invoke after the process exits:
   //   - claude  → `--resume <nativeUUID>` (needs the native session id; D-003);
   //   - omp     → `-r <threadId>`;
-  //   - codex   → `exec resume <uuid>` (the executor recovers the conversation
-  //               UUID from the per-session CODEX_HOME rollout, so a row whose
-  //               sessionId is already stamped is resumable too — codex was
-  //               wrongly excluded here and a tracked codex session got the
-  //               "NOT safely resumable" note despite executeWake resuming it).
+  //   - codex   → `exec resume <uuid>` (recover the conversation UUID from
+  //               the per-session CODEX_HOME rollout when the row doesn't
+  //               already carry one, matching executeWake's delivery path).
   const resumable =
-    (session.agent === 'claude' && session.sessionId) ||
+    (session.agent === 'claude' && sessionId) ||
     (session.agent === 'omp' && session.ompThreadId) ||
-    (session.agent === 'codex' && session.sessionId);
+    (session.agent === 'codex' && sessionId);
   return {
     handle,
     note: resumable
