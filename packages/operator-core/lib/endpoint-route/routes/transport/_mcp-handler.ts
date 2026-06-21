@@ -113,8 +113,25 @@ export const dynamic = 'force-dynamic';
  *     that resolves the caller's workspace and reads only THAT workspace's autonomy
  *     policy. The Overwatch role runs workspace-scoped and its prompt mandates this
  *     tool, so the clamp made it deterministically unusable for the role (EI-1810).
+ *   - memory:* (search/list/remember/update/forget) — the memory store is partitioned
+ *     by USER-ID / HARNESS-SLUG, NOT by workspace (the handler reads getMemoryBackend,
+ *     never ctx.tx). A scoped session calling these touches only its OWN user's /
+ *     harness's memory — it never reads or writes another WORKSPACE's tenant data, so
+ *     the clamp's threat model (cross-workspace tenant-data access) simply does not
+ *     apply. They are crossWorkspace:true only so an UNSCOPED ('*') psu gets the admin
+ *     handle (EI-2378); denying them from a scoped session would break legitimate
+ *     same-user memory recall/writes for no isolation benefit. (Reads AND writes are
+ *     listed: a write lands in the caller's own user/harness memory, crossing no
+ *     workspace boundary — the "read-only" note above is autonomy:decide-specific.)
  */
-const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set(['autonomy:decide']);
+const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
+  'autonomy:decide',
+  'memory:search',
+  'memory:list',
+  'memory:remember',
+  'memory:update',
+  'memory:forget',
+]);
 
 /** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —
  *  it self-confines to the caller's own workspace and is read-only (EI-1810). */

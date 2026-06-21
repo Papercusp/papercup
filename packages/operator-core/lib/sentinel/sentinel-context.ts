@@ -227,6 +227,28 @@ export function renderSentinelContext(input: SentinelContextInput): string {
   return out.join('\n');
 }
 
+/**
+ * The heading scope LABEL for the Sentinel's standing context. When the
+ * per-hive→workspace brain re-key is ON (FLAGS.WORKSPACE_COORDINATION) the
+ * summary's digest legs already span the whole workspace — signals
+ * (buildFleetReaders), patterns (buildStateOfHiveReaders) and bees
+ * (listFleetAssignments({ workspaceId })) carry no hive filter, and the anomalies
+ * leg runs computeSystemHealth(workspaceId) (workspace-scoped, hiveSlug used only
+ * for addressing). See plan workspace-scoped-coordination-2026-06-20 D-008. So the
+ * Herald (whose persona is "you watch the whole system") should present its
+ * summary as WORKSPACE-scoped (all hives) rather than mislabeled with one
+ * arbitrary harness. OFF → the primary hive slug, byte-identical to today.
+ *
+ * Pure (the flag value is passed in) so the live-chat + proactive-sweep call sites
+ * stay consistent and it unit-tests with no DB. This changes ONLY the heading
+ * LABEL — the anomalies leg's hiveSlug (computeOverwatchBrief addressing) is left
+ * unchanged; the deeper per-hive anomaly depth rides on the overwatch/queen re-key
+ * (P-004/P-003), which the Sentinel inherits for free.
+ */
+export function sentinelScopeLabel(workspaceId: string, primaryHiveSlug: string, workspaceCoordOn: boolean): string {
+  return workspaceCoordOn ? `workspace ${workspaceId} (all hives)` : primaryHiveSlug;
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
  * The deps-wiring adapter — consumes the READY-MADE digests (P-005 reuse, never
  * fork a gatherer). Fail-soft per leg.

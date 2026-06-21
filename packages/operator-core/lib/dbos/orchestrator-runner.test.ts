@@ -8,7 +8,28 @@ import {
   invokeTimeoutMs,
   governorMaxWaitMs,
   leaseHeartbeatFailOpen,
+  useWorkerChunkLoopOp,
 } from './orchestrator-runner';
+
+describe('useWorkerChunkLoopOp — route the coding worker to the operator-hosted op (Brief 15, P-010/D-006)', () => {
+  test('routes to the op ONLY when BOTH the master flag and the per-harness opt-in are on', () => {
+    expect(useWorkerChunkLoopOp({ role: 'worker', flagEnabled: true, harnessOptIn: true })).toBe(true);
+  });
+
+  test('stays on the subprocess path when the flag is off (the dark default — no routing anywhere)', () => {
+    expect(useWorkerChunkLoopOp({ role: 'worker', flagEnabled: false, harnessOptIn: true })).toBe(false);
+  });
+
+  test('stays on the subprocess path when the harness has NOT opted in (no workspace-wide blind cutover)', () => {
+    expect(useWorkerChunkLoopOp({ role: 'worker', flagEnabled: true, harnessOptIn: false })).toBe(false);
+  });
+
+  test('never routes a non-worker role through the op even with both gates on', () => {
+    for (const role of ['validator', 'architect', 'scoper', 'director', 'reviewer']) {
+      expect(useWorkerChunkLoopOp({ role, flagEnabled: true, harnessOptIn: true })).toBe(false);
+    }
+  });
+});
 
 describe('leaseHeartbeatFailOpen — D-007 fail-open lease-heartbeat glue', () => {
   test('passes a clean heartbeat verdict (renewed true/false) straight through', async () => {

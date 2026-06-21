@@ -33,7 +33,9 @@ import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce } from '../reconcile-handoffs';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
+import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
+import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
 // spawnReclaimSweep, staleClaimSweep, learningInfraHealth, steeringChurnSweep) were
@@ -291,6 +293,30 @@ const storageGrowthAlarmWorkflow = DBOS.registerWorkflow(storageGrowthAlarmTick,
 });
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
 
+// Hourly (:40, off the :00/:50 stampede): replication-slot WAL-retention alarm
+// (infra-perf-reliability-audit-round4 P-009 / D-004). READ-ONLY pg_replication_slots
+// check; emits a notifications:recent toast when a slot pins WAL past its ceiling —
+// the silent disk-fill SPOF, since max_slot_wal_keep_size=-1 means PG never caps an
+// abandoned slot (a dropped federation subscriber / stale retired-Zero slot). Silent
+// on the normal 0-slot steady state. Default ON; kill-switch
+// PAPERCUSP_REPLICATION_SLOT_ALARM=0. Never throws → can't affect what it watches.
+async function replicationSlotAlarmTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_REPLICATION_SLOT_ALARM === '0') return;
+    if (shouldShedHeavyTick('replication-slot-alarm')) return;
+    const r = await runReplicationSlotAlarmOnce();
+    if (r.breaches.length > 0) {
+      console.log(
+        `[replication-slot-alarm] ${r.breaches.length} slot(s) over WAL ceiling: ${r.breaches.map((b) => `${b.slotName}=${(b.retainedWalBytes / 1024 ** 3).toFixed(1)}GB/${b.reason}`).join(', ')}`,
+      );
+    }
+  }, { name: 'replication-slot-alarm' });
+}
+const replicationSlotAlarmWorkflow = DBOS.registerWorkflow(replicationSlotAlarmTick, {
+  name: 'replicationSlotAlarm', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(replicationSlotAlarmWorkflow, { name: 'replicationSlotAlarm', crontab: '0 40 * * * *' });
+
 // Every 15min (:07/:22/:37/:52, off the :00 stampede): runaway/leaked TEST-desktop
 // + zombie alarm (infra-perf-reliability-audit-round4 P-006 — the host-CPU drain
 // from killed/wedged E2E webviews leaking and pegging a core). READ-ONLY /proc
@@ -316,3 +342,27 @@ const testDesktopReaperWorkflow = DBOS.registerWorkflow(testDesktopReaperTick, {
   name: 'testDesktopReaper', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(testDesktopReaperWorkflow, { name: 'testDesktopReaper', crontab: '0 7,22,37,52 * * * *' });
+
+// Every 30min (:13/:43, off the :00 stampede): disk/inode low-free-space tripwire
+// (infra-fail-fast-build-integrity P-018 / D5 — a full FS silently wedges the
+// single-Node operator behind a green health check; only one-time prunes existed).
+// READ-ONLY statfs probe of the watched filesystems; emits a notifications:recent
+// toast when free bytes/% or free inodes fall below a floor. Default ON; kill-switch
+// PAPERCUSP_DISK_SPACE_ALARM=0. Never throws → can't affect what it watches. Shed
+// under loop pressure.
+async function diskSpaceAlarmTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_DISK_SPACE_ALARM === '0') return;
+    if (shouldShedHeavyTick('disk-space-alarm')) return;
+    const r = await runDiskSpaceAlarmOnce();
+    if (r.breaches.length > 0) {
+      console.log(
+        `[disk-space-alarm] ${r.breaches.length} filesystem(s) low: ${r.breaches.map((b) => `${b.path}=${(b.freePct * 100).toFixed(1)}%`).join(', ')}`,
+      );
+    }
+  }, { name: 'disk-space-alarm' });
+}
+const diskSpaceAlarmWorkflow = DBOS.registerWorkflow(diskSpaceAlarmTick, {
+  name: 'diskSpaceAlarm', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(diskSpaceAlarmWorkflow, { name: 'diskSpaceAlarm', crontab: '0 13,43 * * * *' });

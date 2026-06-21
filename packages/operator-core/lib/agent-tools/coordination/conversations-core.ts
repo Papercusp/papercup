@@ -158,6 +158,7 @@ export async function openConversationCore(
 ): Promise<OpenConversationResult> {
   const now = deps.nowIso();
   const id = deps.newId('conv');
+  // allow-scope-default: no harness ⇒ an operator-level conversation (the explicit top scope, not a workspace).
   const scope: ConversationScope = input.harness_slug ? 'harness' : input.scope ?? 'operator';
   const harness_slug = scope === 'harness' ? input.harness_slug ?? null : null;
 

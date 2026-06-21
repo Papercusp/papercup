@@ -59,3 +59,18 @@ test('gatewaySpawnEnv — no accountId sets no routing header; disabled ignores 
   assert.equal(gatewaySpawnEnv(true).ANTHROPIC_CUSTOM_HEADERS, undefined);
   assert.deepEqual(gatewaySpawnEnv(false, { accountId: 'acct-x' }), {});
 });
+
+test('gatewaySpawnEnv — with an ownerId emits the x-papercusp-owner header (stall-autowake P-001)', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  assert.equal(gatewaySpawnEnv(true, { ownerId: 'spawn-7' }).ANTHROPIC_CUSTOM_HEADERS, 'x-papercusp-owner: spawn-7');
+});
+
+test('gatewaySpawnEnv — accountId + ownerId emit BOTH custom headers, newline-separated', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  assert.equal(
+    gatewaySpawnEnv(true, { accountId: 'acct-x', ownerId: 'spawn-7' }).ANTHROPIC_CUSTOM_HEADERS,
+    'x-papercusp-account: acct-x\nx-papercusp-owner: spawn-7',
+  );
+  // disabled still ignores everything
+  assert.deepEqual(gatewaySpawnEnv(false, { accountId: 'acct-x', ownerId: 'spawn-7' }), {});
+});

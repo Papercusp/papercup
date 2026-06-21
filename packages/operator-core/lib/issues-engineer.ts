@@ -296,6 +296,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // unified-work-item-ledger P-001: a harness-attributable item must never be
   // silently filed operator-global via a missing/blank harness. operator stays
   // valid only as the EXPLICIT default; a malformed `harness:` (empty slug) throws.
+  // allow-scope-default: 'operator' is the explicit top-level issue scope (vs harness:<slug>), not a workspace.
   const scope = input.scope ?? 'operator';
   assertScopeWellFormed(scope);
   const rows = await sql<IssueRowDb[]>`

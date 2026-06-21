@@ -163,6 +163,7 @@ export function classifyIdeaType(item: IdeaClassifierInput): IdeaTriageClassific
   }
 
   // 5. Default for the dogfood scope: a papercusp code-level fix.
+  // allow-scope-default: display fallback — "operator" is the explicit top-level scope label, not a workspace.
   return { type: 'code-bug', reason: `Scope "${item.scope ?? 'operator'}" — papercusp code-level fix (policy tier decides the lane)` };
 }
 

@@ -365,6 +365,18 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).toContain('"workspaceId": "ws-test"');
   });
 
+  it('flag ON: a scoped superuser MAY call memory:search — a scoped-safe user/harness-scoped tool (EI-2378)', async () => {
+    // After EI-2378, memory:search's crossWorkspace:true survives projection (so an
+    // unscoped psu gets the admin handle). For a SCOPED session it must NOT be clamped:
+    // the memory store is partitioned by user-id/harness-slug, not workspace, so a scoped
+    // session reads only its OWN user's memory — no cross-workspace tenant-data access.
+    // The SCOPED_SAFE_CROSSWORKSPACE allowlist exempts it (it reaches its handler rather
+    // than being denied; the handler erroring on the stubbed PG is irrelevant to the gate).
+    h.scopedClampFlag.value = true;
+    const res = await callTool('memory:search', { query: 'pricing' }, scoped('ws-test'));
+    expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
+  });
+
   it('flag ON: a scoped superuser MAY call flags:set — a GLOBAL-config meta-control exempt from the clamp (no tenant data; fixes the circular lockout)', async () => {
     // flags:set is crossWorkspace:true (it writes the global flag store + audit log), but it
     // touches NO per-workspace tenant data — and denying it would lock the operator out of the

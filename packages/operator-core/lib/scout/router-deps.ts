@@ -81,6 +81,7 @@ export function buildCapturePort(
       title: proposalTitle(proposal) || `Scout idea ${proposal.id}`,
       kind: opts.kind ?? 'change',
       body: improvementBody(proposal),
+      // allow-scope-default: an unscoped Scout idea is operator-level by design (issue scope, not a workspace).
       scope: opts.scope ?? 'operator',
       sourceRole: opts.sourceRole ?? 'Scout',
       foundDuring: opts.foundDuring ?? 'scout-loop',

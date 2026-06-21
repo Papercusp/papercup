@@ -214,14 +214,21 @@ export async function buildOperatorPrompt(
   // to no section — the turn never blocks on it (mirrors the memory block above).
   if (role === 'sentinel') {
     try {
-      const { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps } =
+      const { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps, sentinelScopeLabel } =
         await import('../../sentinel/sentinel-context');
+      const { isWorkspaceCoordinationOn } = await import('../../workspace-brain-scope');
       const wsId = activeWorkspaceId();
-      // The hive slug the context covers: the first registered harness in the
-      // workspace (the operator chat has no single harness in scope). Best-effort —
-      // an empty pool just scopes the heading generically.
-      const hiveSlug = harnessSlugs[0] ?? wsId;
-      const ctxInput = await gatherSentinelContext(buildSentinelContextDeps(wsId, hiveSlug), { hiveSlug });
+      // The primary hive the anomalies leg addresses: the first registered harness
+      // in the workspace (the operator chat has no single harness in scope).
+      // Best-effort — an empty pool falls back to the workspace id.
+      const primaryHive = harnessSlugs[0] ?? wsId;
+      // Heading scope LABEL: when the workspace-brain re-key is ON the summary's
+      // digest legs already span every hive (D-008), so present it as
+      // workspace-scoped rather than mislabeled with one harness. OFF =
+      // byte-identical (the primary hive). Only the LABEL changes — the anomalies
+      // leg's hiveSlug (overwatch addressing) stays primaryHive.
+      const scopeLabel = sentinelScopeLabel(wsId, primaryHive, await isWorkspaceCoordinationOn());
+      const ctxInput = await gatherSentinelContext(buildSentinelContextDeps(wsId, primaryHive), { hiveSlug: scopeLabel });
       const ctxBlock = renderSentinelContext(ctxInput);
       if (ctxBlock.trim()) systemSections.push(ctxBlock);
     } catch (err) {

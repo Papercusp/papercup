@@ -538,16 +538,44 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, id
     name: 'step-start', harnessSlug, featureId, role, runId,
     ...(workspaceId ? { workspaceId } : {}),
   });
+  // Brief 15 (worker-chunk-loop-operator-hosted-2026-06-14 P-010 / D-006): when the
+  // staged-rollout flag is ON *and* this harness has opted in, run the coding worker
+  // turn as the operator-hosted `worker:chunk-loop` op (the same `runWorkerChunkLoop`)
+  // instead of the subprocess. Behavior-identical for ROUTING — the op makes the same
+  // feature/repo state changes and the director re-decides from state next turn (the
+  // workflow discards a dispatch result). TWO gates so the dark-launch is a single
+  // NON-CRITICAL harness, never a workspace-wide blind cutover: the flag's stored
+  // override is workspace-scoped, so the flag is the master kill-switch and the
+  // per-harness `workerChunkLoop` config knob is the cohort. DARK by default (flag
+  // default-OFF, D-003) ⇒ the else-branch below is byte-identical to today.
+  let useWorkerOp = false;
+  if (role === 'worker') {
+    const flagEnabled = await getFlag(FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT, `harness:${harnessSlug}`);
+    if (flagEnabled) {
+      const cfg = await readEffectiveHarnessConfig(
+        harnessSlug,
+        workspaceId ?? activeWorkspaceId(),
+        project.path,
+      );
+      useWorkerOp = useWorkerChunkLoopOp({
+        role,
+        flagEnabled,
+        harnessOptIn: configGet<boolean>(cfg, 'workerChunkLoop', false) === true,
+      });
+    }
+  }
   const startedAt = Date.now();
   // HARNESS_SLUG = the registry slug (not basename(project.path)) so invoke-once's
   // pg-bootstrap resolves harness_<slug> correctly; PAPERCUSP_WORKSPACE_ID pins the
   // agent's feature reads to the pipeline's captured workspace.
-  const result = await spawnInvokeOnce(
-    project.path,
-    role,
-    extras,
-    buildPipelineExtraEnv({ harnessSlug, idempotencyKey, workspaceId }),
-  );
+  const result = useWorkerOp
+    ? await runWorkerChunkLoopOpResult(harnessSlug, featureId, workspaceId)
+    : await spawnInvokeOnce(
+        project.path,
+        role,
+        extras,
+        buildPipelineExtraEnv({ harnessSlug, idempotencyKey, workspaceId }),
+      );
   const durationMs = Date.now() - startedAt;
   if (runId) {
     void emitAgentRunCompleted(harnessSlug, runId, { role, durationMs });
@@ -564,6 +592,58 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, id
   });
   return result;
 };
+
+/**
+ * Pure routing guard (Brief 15, worker-chunk-loop-operator-hosted-2026-06-14
+ * P-010 / D-006), mirroring `debuggerGateDecision`'s pure-guard pattern: route a
+ * coding WORKER dispatch to the operator-hosted `worker:chunk-loop` op iff BOTH the
+ * workspace master flag is on AND this harness opted in. Two gates because the
+ * flag's stored override is workspace-scoped — without the per-harness opt-in one
+ * flip would route EVERY coding harness (incl. critical ones) through the op, the
+ * blind cutover the staged rollout forbids. Exported for unit testing.
+ */
+export function useWorkerChunkLoopOp(input: {
+  role: string;
+  flagEnabled: boolean;
+  harnessOptIn: boolean;
+}): boolean {
+  return input.role === 'worker' && input.flagEnabled && input.harnessOptIn;
+}
+
+/**
+ * Run one coding worker turn as the operator-hosted `worker:chunk-loop` op instead
+ * of the subprocess (Brief 15). Builds a CoordOpCtx + invokes the op — which ports
+ * `runWorkerChunkLoop` operator-side and governs the run as a unit (D-002/D-006) —
+ * then maps the bound `ChunkLoopOutcome` into the `PipelineInvokeRunner`'s
+ * `{ output, exitCode }`. The workflow DISCARDS a dispatch result, so the director
+ * re-decides from feature state next turn; `exitCode 0` means the loop RAN (an
+ * escalate/abort is a feature-state outcome, not a crash). The op + ctx modules are
+ * dynamic-imported so this runner stays test-light — the heavy operator-side ctx
+ * construction loads only when the dark path actually fires.
+ */
+async function runWorkerChunkLoopOpResult(
+  harnessSlug: string,
+  featureId: string,
+  workspaceId: string | undefined,
+): Promise<{ output: string; exitCode: number }> {
+  const { workerChunkLoopOp } = await import('../blueprint-steps/ops/worker-chunk-loop.js');
+  const { buildCoordOpCtx } = await import('../coord-ops/prod-caps.js');
+  const ctx = buildCoordOpCtx({
+    harnessSlug,
+    workspaceId: workspaceId ?? activeWorkspaceId(),
+    identity: { ownerId: `orchestrator:${harnessSlug}`, ownerLabel: 'coding-director' },
+  });
+  const res = await workerChunkLoopOp.run({ featureId }, ctx);
+  const detail =
+    res.outcome === 'completed'
+      ? ` (${res.chunksCommitted ?? 0} committed)`
+      : res.outcome === 'escalated'
+        ? ` (chunk ${res.escalatedChunkId ?? '?'}, ${res.strikes ?? 0} strikes)`
+        : res.reason ?? res.error
+          ? ` (${res.reason ?? res.error})`
+          : '';
+  return { output: `worker:chunk-loop ${featureId} → ${res.outcome}${detail}`, exitCode: 0 };
+}
 
 /**
  * Pure guard for debugger-before-worker (P-012 / D-005), mirroring the legacy

@@ -122,6 +122,8 @@
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
     "lint:env-feature-gates": "node scripts/check-env-feature-gates.mjs",
     "lint:env-feature-gates:strict": "node scripts/check-env-feature-gates.mjs --strict",
+    "lint:scope-defaults": "node scripts/check-scope-defaults.mjs",
+    "lint:scope-defaults:strict": "node scripts/check-scope-defaults.mjs --strict",
     "lint:tsc": "node scripts/lint-tsc.mjs",
     "lint:migrations": "node scripts/lint-migrations.mjs",
     "db:next-migration": "node scripts/next-migration.mjs",
