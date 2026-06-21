@@ -181,6 +181,16 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ workspace: { type: 'string' } }),
   },
   {
+    name: 'harness:overview',
+    description:
+      "One 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:status + harness:escalation [+ harness:list] + issues:list folded into ONE round-trip. Prefer it over calling those separately for a 'what's the state of X' question.",
+    input: obj({
+      harness: { type: 'string' },
+      issueState: { type: 'string' },
+      issuesLimit: { type: 'number' },
+    }),
+  },
+  {
     name: 'harness:create',
     description: 'Instantiate a harness from a blueprint.',
     input: obj({ slug: { type: 'string' }, blueprint: { type: 'string' } }, ['slug', 'blueprint']),
@@ -239,6 +249,20 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     name: 'coord:inbox',
     description: 'Read your coordination inbox (messages/handoffs/escalations).',
     input: obj({ since_ts: { type: 'string' } }),
+  },
+  {
+    name: 'coord:orient',
+    description:
+      'One wake-orientation + session-bootstrap read: your assignments + claimable backlog + inbox summary + recent plan-events, AND — when you pass `intent` — a memory recall for it + a coord:declare-intent. Folds fleet:assignments + work_items:list + coord:inbox + coord:plan-events + memory:search + coord:declare-intent into ONE round-trip. Call it at the START of a turn instead of those separately.',
+    input: obj({
+      intent: {
+        type: 'string',
+        description: 'Your one-line intent for this turn — declared to peers AND used as the memory-recall query.',
+      },
+      planSlug: { type: 'string' },
+      planItems: { type: 'array', items: { type: 'string', pattern: '^P-\\d{3,}$' } },
+      harness: { type: 'string' },
+    }),
   },
   // --- messages (durable inter-agent hand-off) ---
   {

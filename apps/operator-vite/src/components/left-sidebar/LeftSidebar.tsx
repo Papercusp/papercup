@@ -24,7 +24,7 @@ import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
-import { Users, AudioLines, Network, Crown, Eye, KeyRound, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, AudioLines, Network, Crown, Eye, Radio, KeyRound, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -45,11 +45,18 @@ const QueenTab = lazy(() => import('./QueenTab'));
 // 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
 // Health tab owns the panels). Flag-gated (OVERWATCH); hidden when the role is dark.
 const OverwatchTab = lazy(() => import('./OverwatchTab'));
+// 📣 Sentinel (the Herald) — the always-on, voice-first human-facing companion's
+// quick live-override settings (audience mode, voice, proactive nudges, DND). The
+// sidebar is the quick live-override surface; full workspace settings hold the
+// defaults. Flag-gated (SENTINEL); hidden until the role is live
+// (sentinel-herald-2026-06-21).
+const SentinelTab = lazy(() => import('./SentinelTab'));
 
 const TABS = [
   { id: 'accounts', label: 'Accounts', icon: KeyRound, render: (a: boolean) => <AccountsTab active={a} /> },
   { id: 'queen', label: 'Queen', icon: Crown, render: (a: boolean) => <QueenTab active={a} /> },
   { id: 'overwatch', label: 'Overwatch', icon: Eye, render: (a: boolean) => <OverwatchTab active={a} /> },
+  { id: 'sentinel', label: 'Sentinel', icon: Radio, render: (a: boolean) => <SentinelTab active={a} /> },
   { id: 'swarm', label: 'Swarm', icon: Users, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: 'Peers', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
   { id: 'hives', label: 'Hives', icon: Network, render: (a: boolean) => <HivesTab active={a} /> },
@@ -108,10 +115,16 @@ export default function LeftSidebar() {
   // 'overwatch' (deep-link / ui:dispatch), so snap a stale ?lst=overwatch back
   // to Queen when the flag is off (mirrors AdvShell's health/overwatch guard).
   const overwatchOn = useFlag(FLAGS.OVERWATCH);
-  const visibleTabs = TABS.filter((x) => x.id !== 'overwatch' || overwatchOn);
+  // Sentinel (the Herald) is flag-gated too (SENTINEL, default OFF until the role
+  // is live) — same hide-tab + stale-?lst snap-back treatment as overwatch.
+  const sentinelOn = useFlag(FLAGS.SENTINEL);
+  const visibleTabs = TABS.filter(
+    (x) => (x.id !== 'overwatch' || overwatchOn) && (x.id !== 'sentinel' || sentinelOn),
+  );
   useEffect(() => {
     if (!overwatchOn && tab === 'overwatch') void setRail({ lst: 'queen' });
-  }, [overwatchOn, tab, setRail]);
+    if (!sentinelOn && tab === 'sentinel') void setRail({ lst: 'queen' });
+  }, [overwatchOn, sentinelOn, tab, setRail]);
 
   const pathname = usePathname() ?? '';
   const chromeless = CHROMELESS_PREFIXES.some(

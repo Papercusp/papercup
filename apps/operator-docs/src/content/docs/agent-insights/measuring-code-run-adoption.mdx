@@ -139,3 +139,29 @@ a recipe run many times by many agents is a tool candidate with the implementati
 a better signal than scout/observation guessing at a missing tool. Complements
 `tool-call-batching-wrappers-2026-06-21` (hand-curated fixed-ritual wrappers) — shared
 `dev:tool_cooccurrence` signal + shared catalog labeling.
+
+## Reuse: coord:orient wrapper adoption (tool-call-batching-wrappers P-013)
+
+The same seam measures **compound-WRAPPER** adoption, not just `code:run`. The wrapper
+`coord:orient` (folds the 6-call session-bootstrap into one) gets the identical A/B:
+
+- **Scenarios:** `su-S17-orient-bootstrap` (reach-for-the-bundle at wake) + its guard
+  `su-S18-orient-not-for-single` (don't wrap a lone inbox read). Same pair for `harness:overview`
+  (`su-S19` / `su-S20`).
+- **Arms:** baseline (orient available) vs `orient-no-bundle`
+  (`{configDelta:{excludeTools:['coord:orient']}}`, committed at
+  `lib/llm-testing/variants/orient-no-bundle.json`) — the without-bundle cost.
+- **Run:** `cd apps/operator && PAPERCUSP_ANTHROPIC_URL=http://127.0.0.1:8788 PAPERCUSP_LLM_TEST_SKIP_CLAIM=1 LLM_TEST_SUT_MODEL=claude-haiku-4-5 LLM_TEST_JUDGE_MODEL=claude-haiku-4-5 LLM_TEST_SIM_MODEL=claude-haiku-4-5 npm run llm-test -- --scenario su-S17-orient-bootstrap [--variant @<repo>/packages/operator-core/lib/llm-testing/variants/orient-no-bundle.json] --no-matrix`
+
+**⚠ Prerequisite the smoke surfaced:** the SUT only sees the curated **`SU_CATALOG`**
+(`lib/llm-testing/targets/su-catalog.ts`), NOT the live tool registry — so a NEW wrapper must be
+ADDED there or the SUT reports *"I don't have a `coord:orient` tool in my catalog"* and the
+reach-assert can never pass. (coord:orient + harness:overview added 2026-06-21 — the smoke caught it.)
+
+**Finding (haiku, N=1 — directional):** with `coord:orient` in the catalog the engineer **reached
+for it at Turn 0** (the `reaches-for-orient` assert passed); the `no-orient` arm fanned
+coord:presence + coord:inbox + plans:search and took **6 turns / $0.042 vs the bundle's 4 turns /
+$0.036** — the same turns/cost reduction availability buys `code:run`. Both arms flopped the
+*helpfulness* judge (haiku's capability ceiling — it orients, then stalls on empty payloads), so the
+CLEAN task-completion win is model-gated: **re-run on sonnet** (drop the `LLM_TEST_*_MODEL` overrides)
+for the definitive adoption + turns/cost deltas — same caveat as the code:run A/B above.

@@ -35,6 +35,11 @@ const EXPECTED_IPC_ELIGIBLE = new Set<string>([
   'dev:ipc_echo', // pure echo test tool — no deps at all
   // (operator:scan removed with the scanner teardown — unify-agent-launches D-005)
   'operator:converse', // self-contained: prompt+budget+spend+mem0 in the handler
+  // sentinel:converse is a thin alias of operator:converse — it delegates to the SAME
+  // handler verbatim (prompt build + budget gate + LLM stream + spend + mem0), only the
+  // persona differs (role=sentinel). So it inherits operator:converse's self-containment
+  // and is IPC-safe by the same justification. (Sentinel-as-Herald; sentinel-converse.ts.)
+  'sentinel:converse',
   'operator:delegate', // self-contained since the IPC-allowlist migration (2026-05-12)
   'architect:chat', // self-contained since the IPC-allowlist migration (2026-05-12)
   'brainstorm:chat', // self-contained since the IPC-allowlist migration (2026-05-12)
