@@ -113,4 +113,33 @@ describe('substrate-outbox backstop GC', () => {
     expect(deleted).toBe(0);
     expect(await keysRemaining(sql)).toEqual(['fresh-drained', 'fresh-undrained']);
   });
+
+  it('reaps undrained one-shot ephemeral test-hive rows on the short TTL, sparing recent + non-ephemeral', async () => {
+    // A contract-test-* one-shot hive's undrained row past the 2h ephemeral TTL → reaped...
+    await seed(sql, {
+      key: 'ct-stale',
+      ts: NOW - EPHEMERAL_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      harness_slug: 'contract-test-1782049733979-v3ze7n',
+    });
+    // ...one still inside the ephemeral TTL is preserved (could be an in-flight drain)...
+    await seed(sql, {
+      key: 'ct-recent',
+      ts: NOW - 60_000,
+      drained_at: null,
+      harness_slug: 'contract-test-1782050000000-aaaaaa',
+    });
+    // ...and a NON-ephemeral real-hive undrained row at the SAME 2h+ age is NOT reaped (it keeps the 48h TTL).
+    await seed(sql, {
+      key: 'real-2h',
+      ts: NOW - EPHEMERAL_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      harness_slug: 'papercusp',
+    });
+
+    const { deleted } = await runSubstrateOutboxBackstopGc({ now: NOW, sql });
+
+    expect(deleted).toBe(1);
+    expect(await keysRemaining(sql)).toEqual(['ct-recent', 'real-2h']);
+  });
 });
