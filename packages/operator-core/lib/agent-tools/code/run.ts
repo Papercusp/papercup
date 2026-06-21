@@ -5,8 +5,10 @@ import {
   runToolOrchestration,
   roleScopedToolNames,
   SU_ROLES,
+  type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
+import { captureRecipe } from './capture-recipe';
 
 /**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
@@ -35,7 +37,9 @@ export default defineTool({
       'list N items then act per item, fan-out reads, retry-until). Orchestrate them in ONE ' +
       'code:run and return a compact summary instead of paying a round-trip per call. Call ' +
       'code:tools first to fetch the exact typed tools.ns.verb(args) signatures for the ' +
-      'namespaces you will use (fewer arg-shape errors).',
+      'namespaces you will use (fewer arg-shape errors). Pass title+description so the run is ' +
+      'saved as a reusable RECIPE other agents in your hive can find + reuse (every successful ' +
+      'run is captured; title+description make it discoverable instead of an auto-derived label).',
     notWhen:
       'A single tool call, or a step that needs YOUR judgment mid-flow (read a result, then ' +
       'decide) — call tools directly. Preview mutations with dryRun before a committing run.',
@@ -62,6 +66,23 @@ export default defineTool({
       .min(1)
       .max(20_000)
       .describe('JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary.'),
+    title: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Short title for the reusable RECIPE saved on a successful run — make it discoverable ' +
+          'by other agents (e.g. "triage stale work-items"). Optional: a fallback is derived ' +
+          'from the script when omitted.',
+      ),
+    description: z
+      .string()
+      .max(2_000)
+      .optional()
+      .describe(
+        'One/two lines on what this recipe does + when to reuse it. Optional: derived from the ' +
+          'tool-set when omitted.',
+      ),
     dryRun: z
       .boolean()
       .optional()
@@ -88,6 +109,69 @@ export default defineTool({
       timeoutMs: args.timeoutSec ? args.timeoutSec * 1000 : undefined,
     });
 
+    // CAPTURE (code-recipes-2026-06-21 P-003): every SUCCESSFUL, non-dry-run code:run is
+    // saved as a reusable recipe (D-012). Best-effort — wrapped so it can NEVER break the
+    // run (a dry-run is a preview, not an execution, so it captures nothing). DEDUP is
+    // Phase 2; this only captures. The await keeps the recipe durable before we return, but
+    // captureRecipe swallows every failure internally.
+    if (result.ok && !(args.dryRun ?? false)) {
+      await maybeCaptureRecipe(args, ctx, all, allowed);
+    }
+
     return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
   },
 });
+
+/**
+ * Resolve the capture deps (PG handle, embedder, hive resolver) + the acting
+ * agent's identity from ctx, then upsert the recipe. Lazy imports keep
+ * projected-tool-deps' early load free of db-org / embedder / hive-federation
+ * cycles, and every step is best-effort (captureRecipe itself try/catches).
+ */
+async function maybeCaptureRecipe(
+  args: { script: string; title?: string; description?: string },
+  ctx: UnifiedToolContext,
+  tools: ReturnType<typeof listAllProjectedTools>,
+  allowed: ReadonlySet<string>,
+): Promise<void> {
+  try {
+    const workspaceId = ctx.workspaceId;
+    if (!workspaceId) return; // no workspace ⇒ nothing to scope a recipe to
+
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { buildQueryEmbedder } = await import('../search/embedder');
+    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const { resolveAgentIdentity } = await import('../coordination/identity');
+
+    let ownerId: string | null = null;
+    try {
+      ownerId = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      ownerId = null; // unattributable ctx (e.g. a test/in-process call) — still capture
+    }
+
+    const embedder = await buildQueryEmbedder().catch(() => null);
+
+    await captureRecipe(
+      {
+        sql: getOrgPg().sql,
+        embed: async (text) => (embedder ? embedder(text) : null),
+        resolveHive: hiveHomeSlugForHarness,
+        log: (msg) => ctx.log(msg),
+      },
+      {
+        script: args.script,
+        workspaceId,
+        harness: ctx.harnessSlug ?? null,
+        ownerId,
+        role: ctx.role ?? null,
+        title: args.title,
+        description: args.description,
+        tools,
+        allowed,
+      },
+    );
+  } catch (err) {
+    ctx.log(`code:run recipe capture wiring failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
+  }
+}
