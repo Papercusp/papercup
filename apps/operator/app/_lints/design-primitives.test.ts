@@ -197,6 +197,27 @@ function unexpectedNonzeroLetterSpacingUnderAny(roots: string[]): string[] {
   return roots.flatMap((root) => unexpectedNonzeroLetterSpacingUnder(root));
 }
 
+function isGeneratedTokenStylesheet(path: string): boolean {
+  return /^operator\/app\/_(?:brand-primitives|semantic(?:\.[^.]+)?)\.css$/.test(path);
+}
+
+function unexpectedSkyPrimitiveReferences(): string[] {
+  const offenders: string[] = [];
+  const skyPrimitiveRe = /var\(--sky-[^)]+\)/g;
+  for (const file of collectFiles()) {
+    const path = rel(file);
+    if (isGeneratedTokenStylesheet(path)) continue;
+    const content = readFileSync(file, 'utf-8');
+    const matches = [...content.matchAll(skyPrimitiveRe)];
+    for (const match of matches) {
+      const before = content.slice(0, match.index);
+      const line = before.split('\n').length;
+      offenders.push(`${path}:${line}: ${match[0]}`);
+    }
+  }
+  return offenders;
+}
+
 function expectNoUnexpected(label: string, offenders: string[]): void {
   if (offenders.length > 0) {
     throw new Error(
@@ -267,59 +288,14 @@ describe('design primitive lint', () => {
     expectNoUnexpected('Tailwind-style utility class strings in /coord', unexpectedCoordUtilityClasses());
   });
 
-  it('keeps audited Vite surfaces on design-spec letter spacing', () => {
+  it('blocks nonzero letter spacing in app UI', () => {
     expectNoUnexpected(
-      'Nonzero letter-spacing in audited Vite surfaces',
-      unexpectedNonzeroLetterSpacingUnderAny([
-        join(APPS_ROOT, 'operator-vite/src/components/adv'),
-        join(APPS_ROOT, 'operator-vite/src/components/admin'),
-        join(APPS_ROOT, 'operator-vite/src/components/left-sidebar'),
-        join(APPS_ROOT, 'operator-vite/src/components/dev-admin-rail'),
-        join(APPS_ROOT, 'operator-vite/src/components/NotFound.tsx'),
-        join(APPS_ROOT, 'operator-vite/src/routes/admin/dogfood-substrate.tsx'),
-      ]),
+      'Nonzero letter-spacing',
+      unexpectedNonzeroLetterSpacingUnderAny(SOURCE_DIRS),
     );
   });
 
-  it('keeps audited operator app stylesheets on design-spec letter spacing', () => {
-    expectNoUnexpected(
-      'Nonzero letter-spacing in audited operator app stylesheets',
-      unexpectedNonzeroLetterSpacingUnderAny([
-        join(OPERATOR_ROOT, 'app/_components'),
-        join(OPERATOR_ROOT, 'app/globals.css'),
-        join(OPERATOR_ROOT, 'app/adv/harnesses'),
-        join(OPERATOR_ROOT, 'app/adv/plans'),
-        join(OPERATOR_ROOT, 'app/adv/sessions'),
-        join(OPERATOR_ROOT, 'app/command-palette.css'),
-        join(OPERATOR_ROOT, 'app/admin/_components/AdminShell.tsx'),
-        join(OPERATOR_ROOT, 'app/admin/admin-ops.css'),
-        join(OPERATOR_ROOT, 'app/admin/admin-tables.css'),
-        join(OPERATOR_ROOT, 'app/admin/cupboard-moderation/CupboardModerationClient.tsx'),
-        join(OPERATOR_ROOT, 'app/admin/dogfood-substrate/page.tsx'),
-        join(OPERATOR_ROOT, 'app/admin/features/FeaturesAdmin.tsx'),
-        join(OPERATOR_ROOT, 'app/admin/plans/NewPlanButton.tsx'),
-        join(OPERATOR_ROOT, 'app/admin/plans/PlanDetail.tsx'),
-        join(OPERATOR_ROOT, 'app/admin/plans/plans.css'),
-        join(OPERATOR_ROOT, 'app/admin/testing/testing.css'),
-        join(OPERATOR_ROOT, 'app/cupboard'),
-        join(OPERATOR_ROOT, 'app/design/[slug]/RegressionPane.tsx'),
-        join(OPERATOR_ROOT, 'app/design/[slug]/SketchPane.tsx'),
-        join(OPERATOR_ROOT, 'app/dev/dev.css'),
-        join(OPERATOR_ROOT, 'app/dev/operator-logo/logo-lab.module.css'),
-        join(OPERATOR_ROOT, 'app/dev/swarm-identity/swarm-identity.module.css'),
-        join(OPERATOR_ROOT, 'app/dev/swarm-logos/swarm-logos.module.css'),
-        join(OPERATOR_ROOT, 'app/dev/tokens/page.tsx'),
-        join(OPERATOR_ROOT, 'app/harness'),
-        join(OPERATOR_ROOT, 'app/installed/kpis/page.tsx'),
-        join(OPERATOR_ROOT, 'app/operator-mock'),
-        join(OPERATOR_ROOT, 'app/project-docs/page.tsx'),
-        join(OPERATOR_ROOT, 'app/settings/autonomy/page.tsx'),
-        join(OPERATOR_ROOT, 'app/settings/personalization/ThemeEditor.tsx'),
-        join(OPERATOR_ROOT, 'app/settings/plugins'),
-        join(OPERATOR_ROOT, 'app/settings/user/memory/page.tsx'),
-        join(OPERATOR_ROOT, 'app/users/github/[id]/UserProfile.tsx'),
-        join(OPERATOR_ROOT, 'app/wiki/missing/page.tsx'),
-      ]),
-    );
+  it('blocks direct sky brand primitives outside generated token stylesheets', () => {
+    expectNoUnexpected('Sky brand primitive references', unexpectedSkyPrimitiveReferences());
   });
 });
