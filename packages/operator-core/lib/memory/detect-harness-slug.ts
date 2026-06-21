@@ -76,7 +76,7 @@ function looksLikePapercupRepo(dir: string): boolean {
   // (npm-scope-stripped) name is papercup|papercusp, optionally
   // `-monorepo`, PLUS a vendored `libs/papercusp` submodule. The name is
   // matched tolerantly (anchored) so the papercup→papercusp rename — and
-  // the scoped `@papercupai/papercup-monorepo` package name — need no edit
+  // the scoped `@papercupai/papercusp-monorepo` package name — need no edit
   // here, while a foreign repo that merely contains `papercup` in its name
   // (e.g. "not-papercup") is still rejected. The libs/papercusp check keeps
   // false-positives ~zero. Detection ONLY — the returned slug is the

@@ -1026,6 +1026,46 @@ const handler = createMcpHandler(
               };
             }
           }
+          // scoped-superuser-workspace-clamp (P-017, workspace tier): a concrete per-call
+          // `harness` arg that resolves to a DIFFERENT workspace is REJECTED. The
+          // plans/work-item readers derive a harness's workspace from the harness REGISTRY
+          // (resolvePlanScope → resolveWorkspaceForHarnessSlug), NOT the clamped
+          // ctx.workspaceId — so a scoped session could otherwise name a foreign-workspace
+          // harness and read its plans even though crossWorkspace tools + harness:'all' are
+          // already denied (the gap su-c5b1c's active-ws-first fallback narrowed but left
+          // open via its cross-ws scan). We resolve the harness's workspace EXPLICITLY
+          // against the session's own workspace — the request-scoped ALS is not yet pinned
+          // to the clamped workspace at this point, so we pass ctx.workspaceId by hand
+          // (the hive-tier clamp below does the same with hiveHomeSlugForHarness). The
+          // hive tier is a FINER same-workspace/different-hive check that composes on top.
+          // Fail-OPEN on an infra error / unresolvable-or-ambiguous slug (P-006); fail-CLOSED
+          // only on a CONFIRMED foreign resolution.
+          if (scopedSuperuserClamp) {
+            const ah =
+              args && typeof args === 'object' && typeof (args as Record<string, unknown>).harness === 'string'
+                ? ((args as Record<string, unknown>).harness as string).trim()
+                : '';
+            if (ah && ah !== 'all' && ah !== '*') {
+              const { resolveWorkspaceForHarnessSlugIn } = await import('../../../harness-core');
+              let harnessWs: string | null = null;
+              try {
+                harnessWs = await resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah);
+              } catch {
+                // Ambiguous cross-workspace collision (resolver throws) or an infra error:
+                // fail OPEN — let the tool resolve/fail loud rather than block a same-name slug.
+                harnessWs = null;
+              }
+              if (harnessWs && harnessWs !== spawnRes.ctx.workspaceId) {
+                return {
+                  isError: true,
+                  content: [{
+                    type: 'text' as const,
+                    text: `harness_forbidden: harness "${ah}" belongs to workspace "${harnessWs}", but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a harness in scope, or use an unscoped (--all-workspaces) session.`,
+                  }],
+                };
+              }
+            }
+          }
           // Hive tier (P-014a; owner-ratified 2026-06-18 — AUTO-CONFINE on harness).
           // When a scoped-superuser session's concrete harness belongs to a hive,
           // it is confined to THAT hive's subtree: (a) cross_harness:* tools (which

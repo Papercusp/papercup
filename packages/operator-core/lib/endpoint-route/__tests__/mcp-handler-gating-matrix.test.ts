@@ -51,6 +51,20 @@ const h = vi.hoisted(() => {
             ? 'hiveB-home'
             : null,
     ),
+    /**
+     * Workspace-tier resolver seam (P-017): maps (preferredWs, harness) → the
+     * workspace that carries the harness. 'foreign-ws-harness' lives in another
+     * workspace; 'unregistered-harness' is nowhere; everything else resolves to
+     * the caller's OWN (preferred) workspace.
+     */
+    resolveWorkspaceForHarnessSlugIn: vi.fn(
+      async (preferredWs: string, harness: string): Promise<string | null> =>
+        harness === 'foreign-ws-harness'
+          ? 'other-ws'
+          : harness === 'unregistered-harness'
+            ? null
+            : preferredWs,
+    ),
     /** Every workspace id the (mocked) withWorkspace opened a tx for. */
     withWorkspaceCalls: [] as string[],
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
