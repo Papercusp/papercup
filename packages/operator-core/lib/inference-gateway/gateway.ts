@@ -198,6 +198,12 @@ const DEFAULT_REQUEST_CEILING_MS = Number(process.env.PAPERCUSP_GATEWAY_REQUEST_
  *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
  *  we must NOT 429-loop the bee into a $0 hang. Short, so failover is quick; cache-affinity yields. */
 const PINNED_FAILOVER_WAIT_MS = 10_000;
+/** Cap on the `retry-after` the gateway ever HANDS A BEE on a shed/admission-timeout 429. The internal
+ *  governor pause may be tens of minutes (a 7d-exhausted rolling window — see ROLLING_WINDOW_REPROBE_MAX_MS),
+ *  but that's a ROUTING horizon (keep the account parked), NOT how long the bee should sleep: telling a bee
+ *  "retry after 1800s" strands it (owner-reported 2026-06-21). Forward a short retry-after so the bee re-asks
+ *  soon — by then routing has walked to a healthy account, or the stall-waker resumes it. Env-tunable. */
+const BEE_RETRY_AFTER_CAP_S = Number(process.env.PAPERCUSP_GATEWAY_BEE_RETRY_AFTER_CAP_S) || 60;
 /** Max round-robin hops the admission router takes looking for an account whose governor has headroom
  *  RIGHT NOW before falling back to waiting on the chosen one. Bounds the walk to roughly the pool size
  *  so an UNPINNED request egresses through an account with capacity instead of hanging the full
@@ -884,7 +890,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // 200 upstream while others are 429-paused; the pool must egress through one with capacity). A
     // still-pinned request is left on its pin (it already yielded to active() above if its pin was
     // paused). `pool.active()` round-robins, so each hop advances to a different account.
-    if (active.accountId !== pinned?.accountId && gov.state.pausedUntil > Date.now()) {
+    // Walk whenever the CHOSEN account's live governor is paused — PINNED or unpinned. Gated on the GOVERNOR
+    // pause, NOT pool.active()/exhaustedUntil (which only tracks ACTUAL-429 exhaustion, never a PREDICTIVE
+    // pause): a 97%-7d account is predictively paused but not 429'd, so pool.active() still returns it — the
+    // old `active != pinned` guard (and the canFailover==(poolActive!=pin) yield) then stranded a bee PINNED
+    // to such an account on its own paused pin and 429'd it ("account X paced/paused; retry after Ns") instead
+    // of yielding to liveness (owner-reported 2026-06-21). Now a paused pin walks to a healthy account too.
+    const chosenWasPin = pinned !== null && active.accountId === pinned.accountId;
+    if (gov.state.pausedUntil > Date.now()) {
       let soonestPaused = gov.state.pausedUntil;
       let found = false;
       for (let walk = 0; walk < POOL_WALK_MAX_ATTEMPTS; walk++) {
@@ -897,6 +910,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           break;
         }
         soonestPaused = Math.min(soonestPaused, cgov.state.pausedUntil);
+      }
+      if (found && chosenWasPin) {
+        log('warn', `inference-gateway: pinned '${pinned!.accountId}' paused → routed to '${active.accountId}' (cache-affinity yields to liveness)`);
       }
       // FAIL-FAST SHED when the WHOLE reachable pool is throttled (B-GW-1 / audit P1). The walk found no
       // account with headroom AND the soonest reset is beyond maxQueueWaitMs — so gov.acquire would just
@@ -913,8 +929,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // P-002: the whole pool is out of budget until `soonestPaused` — record a stall candidate so the
         // waker can wake this bee then (only if it identified itself + its CLI doesn't recover on its own).
         recordStall(wantOwner, active.accountId, soonestPaused);
-        const retryAfterSec = Math.max(1, Math.ceil((soonestPaused - Date.now()) / 1000));
-        log('warn', `inference-gateway: whole pool throttled (soonest reset ${retryAfterSec}s > admission wait cap) → fail-fast shed 429 (slot freed, not squatted)`);
+        const retryAfterSec = Math.min(BEE_RETRY_AFTER_CAP_S, Math.max(1, Math.ceil((soonestPaused - Date.now()) / 1000)));
+        log('warn', `inference-gateway: whole pool throttled (soonest reset ${Math.ceil((soonestPaused - Date.now()) / 1000)}s > admission wait cap) → fail-fast shed 429 (slot freed; bee retry-after ${retryAfterSec}s)`);
         sendJson(
           res,
           429,
@@ -928,7 +944,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     totalRequests++;
     // A still-pinned request gets only a SHORT admission wait, then fails over to active() rather than
     // waiting the full maxQueueWaitMs and 429-looping the bee.
-    const stillPinned = canFailover && active.accountId === pinned!.accountId;
+    const stillPinned = pinned !== null && active.accountId === pinned.accountId;
     let release = await gov.acquire(est, { maxWaitMs: stillPinned ? PINNED_FAILOVER_WAIT_MS : maxQueueWaitMs });
     if (!release && stillPinned) {
       log('warn', `inference-gateway: pinned '${pinned!.accountId}' admission-timeout → failover to active '${poolActive.accountId}'`);
