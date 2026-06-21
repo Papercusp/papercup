@@ -58,6 +58,11 @@ export function operatorHomeHarnessSlug(): string {
  */
 export const RETIRED_HARNESS_SLUG_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   papercup: 'papercusp',
+  // The home HIVE's legacy slug (retired 2026-06-19 with the papercup→papercusp
+  // rebrand; the hive is now `papercusp`). A lingering queen/fire-path on
+  // `papercup-hive` 404/400'd ("unknown project") instead of self-healing — its
+  // sibling `papercup` was aliased but this one was the gap (infra-fail-fast P-014/D1).
+  'papercup-hive': 'papercusp',
 });
 
 /**
