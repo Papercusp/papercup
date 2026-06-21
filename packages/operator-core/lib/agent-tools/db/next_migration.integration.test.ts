@@ -177,4 +177,23 @@ describe('db:next-migration allocator (§A1)', () => {
     expect(r.ok).toBe(true);
     expect(r.number).toBe(501); // GREATEST(fsMax 500 via canonical, reserved 401, applied 400) + 1
   });
+
+  it('EI-2127: succeeds from a client-less superuser ctx (no uiClientId) — resolveAgentIdentity falls back instead of throwing', async () => {
+    // The exact failing shape the watchdog flagged: a superuser MCP call with no
+    // ?client= / Mcp-Session-Id. Before the resolver fix this threw
+    // "superuser context is missing uiClientId" and the allocation failed; now
+    // it resolves the stable su fallback and the reservation lands. Run last so
+    // it does not perturb the sequential reservation counter the tests above pin.
+    const clientlessSu = { isSuperuser: true } as never;
+    const res = (await tool.handler({} as never, clientlessSu)) as { content: { text: string }[] };
+    const out = JSON.parse(res.content[0]!.text) as {
+      ok: boolean;
+      number?: number;
+      reserved_by?: string;
+    };
+    expect(out.ok).toBe(true);
+    expect(typeof out.number).toBe('number');
+    // Attributed to the superuser fallback identity, not an anonymous/empty owner.
+    expect(out.reserved_by).toMatch(/^su · /);
+  });
 });

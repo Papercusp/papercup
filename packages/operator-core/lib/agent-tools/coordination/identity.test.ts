@@ -11,7 +11,7 @@
  * stable coord owner, AND that a truly unattributable ctx still hard-errors.
  */
 import { describe, expect, it } from 'vitest';
-import { resolveAgentIdentity } from './identity';
+import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID } from './identity';
 
 describe('resolveAgentIdentity — fleet:spawn child (THE UMBILICAL)', () => {
   it('attributes a role-gated signed spawn ctx to its `s-…` client id (was: threw → MUTE bee)', () => {
@@ -110,6 +110,27 @@ describe('resolveAgentIdentity — verified signed spawn without client= (invoke
     });
     expect(id.ownerId).toBe('s-1780000000000-deadbeef');
     expect(id.source).toBe('fleet-spawn');
+  });
+
+  it('EI-2127: an admitted superuser with NO uiClientId resolves the stable fallback id (was: threw → db:next-migration / coord:whoami / coord:send all failed)', () => {
+    // The client-less superuser ctx the loopback HTTP bridge / in-process
+    // superuser MCP call builds: isSuperuser true (admission already cleared the
+    // loopback + bearer gate), but no Mcp-Session-Id and no ?client= → no
+    // uiClientId. This used to throw "superuser context is missing uiClientId",
+    // which deterministically broke every identity-resolving tool.
+    const id = resolveAgentIdentity({ isSuperuser: true, workspaceId: 'ws-1' });
+    expect(id.ownerId).toBe(SUPERUSER_FALLBACK_CLIENT_ID);
+    expect(id.source).toBe('omp-hook-session');
+    expect(id.workspaceId).toBe('ws-1');
+    expect(id.ownerLabel).toMatch(/^su · /);
+  });
+
+  it('EI-2127: an explicit superuser uiClientId still wins over the fallback', () => {
+    // The fallback is the no-client case ONLY — a real per-session id always wins.
+    const id = resolveAgentIdentity({ isSuperuser: true, uiClientId: 'su-abc123' });
+    expect(id.ownerId).toBe('su-abc123');
+    expect(id.ownerId).not.toBe(SUPERUSER_FALLBACK_CLIENT_ID);
+    expect(id.source).toBe('omp-hook-session');
   });
 
   it('su / power / principal branches are unchanged by the new fields (no escalation)', () => {

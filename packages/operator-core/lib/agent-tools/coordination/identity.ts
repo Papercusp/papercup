@@ -140,6 +140,30 @@ export const COORDINATION_DEFAULT_DOMAIN = 'default';
  */
 export const ADMIN_COORD_UI_OWNER = 'pc-admin-coord-ui';
 
+/**
+ * Stable fallback coordination id for an ADMITTED superuser ctx that carries no
+ * per-session uiClientId — no Mcp-Session-Id header and no `?client=` machine id
+ * (the loopback HTTP/curl bridge, or an in-process superuser MCP call that never
+ * threaded one).
+ *
+ * By the time `ctx.isSuperuser` is true the caller has ALREADY cleared the
+ * superuser admission gate (loopback origin + the on-disk bearer token — see the
+ * http-projection `validateSuperuser` branch), so it is "the machine admin": a
+ * single fixed, attributable identity, the same stability class as a `?client=`
+ * machine UUID. The superuser branch is NOT one of the impersonation guards
+ * (those are the unverified-`client=` fleet/signed-spawn branches, EI-311/EI-318);
+ * a missing uiClientId here only ever meant "couldn't find a per-session id".
+ *
+ * EI-2127 / EI-334: the superuser branch used to THROW on a missing uiClientId,
+ * so every identity-resolving tool (db:next-migration, coord:whoami, coord:send,
+ * locks:*, plans:set-status, …) failed deterministically from a client-less
+ * superuser context. The transport-level `su-http-loopback` default
+ * (http-projection.ts) covered ONLY the JSON HTTP path; resolving the fallback
+ * HERE — in the single L1 identity primitive — covers EVERY transport uniformly
+ * so no transport can forget it.
+ */
+export const SUPERUSER_FALLBACK_CLIENT_ID = 'su-loopback';
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -187,18 +211,20 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
   // A bare ?client= machine UUID and a real per-session id are
   // indistinguishable here — both are stable per OS process, which is
   // all the coordination layer needs.
+  //
+  // EI-2127: an admitted superuser that carries NO per-session id (no
+  // Mcp-Session-Id, no ?client=) is still attributable — admission already
+  // proved the machine admin — so resolve a stable fallback id instead of
+  // throwing. Throwing here broke every identity-resolving tool (db:next-
+  // migration, coord:whoami, coord:send, …) from a client-less superuser
+  // context. See SUPERUSER_FALLBACK_CLIENT_ID. (A real per-session id, when
+  // present, always wins — the fallback is the no-client case only.)
   if (ctx.isSuperuser) {
-    if (!uiClientId) {
-      throw new Error(
-        'resolveAgentIdentity: superuser context is missing uiClientId — ' +
-          'pass ?client=<your-su-id> on the MCP request URL (the curl/HTTP bridge ' +
-          'must include it), or re-run install-standalone-mcp.sh to mint a ?client= id',
-      );
-    }
+    const suClientId = uiClientId ?? SUPERUSER_FALLBACK_CLIENT_ID;
     return {
-      ownerId: uiClientId,
-      ownerLabel: `su · ${shortId(uiClientId)}`,
-      source: looksLikeBareUuid(uiClientId)
+      ownerId: suClientId,
+      ownerLabel: `su · ${shortId(suClientId)}`,
+      source: looksLikeBareUuid(suClientId)
         ? 'static-client'
         : 'omp-hook-session',
       workspaceId: ctx.workspaceId ?? null,

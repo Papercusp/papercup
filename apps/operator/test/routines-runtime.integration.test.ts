@@ -62,7 +62,13 @@ beforeAll(async () => {
       updated_at       timestamptz NOT NULL DEFAULT now(),
       metadata         jsonb,
       workspace_id     text NOT NULL,
-      UNIQUE (install_slug, name)
+      -- migration 323 (B-LOOP-1): the loop recurrence kind. upsertRoutine's INSERT references
+      -- both, so the fixture must carry them (else every upsert throws "column does not exist").
+      reschedule_interval_sec integer,
+      target_owner_id  text,
+      UNIQUE (install_slug, name),
+      -- F-E1 migration 305: the composite unique the per-workspace ON CONFLICT can target.
+      UNIQUE (workspace_id, install_slug, name)
     )
   `);
 }, 60_000);
