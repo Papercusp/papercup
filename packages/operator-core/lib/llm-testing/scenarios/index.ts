@@ -88,6 +88,10 @@ import { SU_S10_CLAIM_BEFORE_WORK } from './su/S10-claim-before-work';
 import { SU_S11_LOCK_CONTENTION_PROTOCOL } from './su/S11-lock-contention-protocol';
 // SU-S12: same-turn insight capture (agent policies §19 timing rule; EI-328/EI-329)
 import { SU_S12_SAME_TURN_INSIGHT } from './su/S12-same-turn-insight';
+// SU-S13/S14: code-execution-tool-orchestration B-CX-3 — does the engineer REACH for code:run on a
+// "do X for each of N" loop (S13), and NOT over-apply it to a single call (S14)?
+import { SU_S13_CODE_RUN_BATCH } from './su/S13-code-run-batch';
+import { SU_S14_CODE_RUN_NOT_FOR_SINGLE } from './su/S14-code-run-not-for-single';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
@@ -173,6 +177,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S10_CLAIM_BEFORE_WORK,
   SU_S11_LOCK_CONTENTION_PROTOCOL,
   SU_S12_SAME_TURN_INSIGHT,
+  SU_S13_CODE_RUN_BATCH,
+  SU_S14_CODE_RUN_NOT_FOR_SINGLE,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

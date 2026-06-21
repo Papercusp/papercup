@@ -239,3 +239,136 @@ export const WIDGET_EXPORT_PLAN: ToolDispatchOverride = {
     return PASS_THROUGH;
   },
 };
+
+/**
+ * Realistic context for SU-S13 (code:run batch adoption,
+ * code-execution-tool-orchestration B-CX). The task is the canonical "do X for
+ * each of N" shape: `work_items:list` returns 12 open items WITHOUT the blocked
+ * detail, so answering "which are blocked and why" requires a per-item
+ * `work_items:get` over all 12 — exactly the loop the playbook's CODE_RUN_NUDGE
+ * says to collapse into ONE `code:run`. The override also gives `code:tools` a
+ * believable namespace index and `code:run` a believable summary so the smart
+ * path "succeeds" and the model isn't punished (by a stub artifact) for taking it.
+ */
+const S13_WORK_ITEMS = Array.from({ length: 12 }, (_, i) => ({
+  id: `WI-${200 + i}`,
+  title:
+    [
+      'Wire the export picker to the CSV backend',
+      'Flaky test: harness-fs-watcher debounce',
+      'Add retry to the gateway pool client',
+      'Migrate widgets table to nuqs state',
+      'Audit log row drops NUL bytes',
+      'Design token: brand-accent contrast',
+      'Bee mail inbox pagination',
+      'Coord wake-queue SSE push',
+      'Plan lint: smart-quote detector',
+      'Sandbox npm-install EROFS',
+      'Operator palette poll → push',
+      'Schema migration 331 drift',
+    ][i] ?? `Work item ${i}`,
+  kind: 'feature',
+}));
+
+export const CODE_RUN_BATCH_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'work_items:list') {
+      // Deliberately omits per-item state → the blocked check needs a get-per-item.
+      return { content: [{ text: JSON.stringify({ items: S13_WORK_ITEMS, count: S13_WORK_ITEMS.length }) }] };
+    }
+    if (canon === 'work_items:get') {
+      const id = String(a.id ?? '');
+      const n = Number(id.split('-')[1] ?? 0);
+      const blocked = n % 4 === 0; // a deterministic ~quarter are blocked
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              id,
+              state: blocked ? 'blocked' : 'open',
+              ...(blocked ? { blockedReason: 'waiting on an upstream dependency', blockedBy: [`WI-${n - 1}`] } : {}),
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'code:tools') {
+      // The cheap namespace index (no args) or typed signatures (with namespaces).
+      if (!a.namespaces && !a.names) {
+        return {
+          content: [
+            {
+              text: JSON.stringify({
+                namespaces: [
+                  { ns: 'work_items', verbs: ['list', 'get', 'setState', 'complete'] },
+                  { ns: 'coord', verbs: ['declareIntent', 'send', 'inbox'] },
+                  { ns: 'plans', verbs: ['list', 'get', 'setStatus'] },
+                ],
+                count: 10,
+                hint: 'Call code:tools { namespaces:[...] } for full typed signatures, then write a code:run script.',
+              }),
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            text:
+              'declare const tools: {\n  work_items: {\n    list(args?: { status?: string }): Promise<unknown>;\n' +
+              '    get(args: { id: string }): Promise<unknown>;\n  };\n  call(toolName: string, args?: unknown): Promise<unknown>;\n};',
+          },
+        ],
+      };
+    }
+    if (canon === 'code:run') {
+      // A believable summary for a "which are blocked" batch script.
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              summary: {
+                scanned: S13_WORK_ITEMS.length,
+                blocked: ['WI-200', 'WI-204', 'WI-208'],
+                reasons: { 'WI-200': 'waiting on an upstream dependency' },
+              },
+              dryRun: !!a.dryRun,
+              plannedMutations: [],
+            }),
+          },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
+ * Realistic single-fact result for SU-S14 (no code:run over-application): a
+ * `harness:status` snapshot. The question is answerable in ONE direct call, so
+ * the engineer must NOT wrap it in `code:run` (the nudge's "NOT WHEN: a single
+ * tool call" rule). PASS_THROUGH for anything else (incl. a benign stub for an
+ * unexpected code:run, which the assert then flags).
+ */
+export const HARNESS_STATUS_RESULT: ToolDispatchOverride = {
+  override(name) {
+    if (canonical(name) === 'harness:status') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              slug: 'sheets',
+              phase: 'production',
+              features: { total: 14, done: 11, in_progress: 2, blocked: 1 },
+              lastActivity: '2026-06-21T04:12:00Z',
+            }),
+          },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};

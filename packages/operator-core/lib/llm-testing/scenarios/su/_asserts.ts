@@ -84,6 +84,33 @@ export function assertToolCalled(specs: string[], meta: Meta): CustomAssert {
   };
 }
 
+/** ERROR if ANY of `specs` (exact or `group:*`) was called — the load-bearing
+ *  "must NOT fire" gate (the built-in `tool_not_called` is warn-only). */
+export function assertToolNotCalled(specs: string[], meta: Meta): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const hits = allToolCalls(run).filter((tc) => nameMatches(tc.name, specs));
+      return hits.length === 0 ? [] : [violation(meta)];
+    },
+  };
+}
+
+/** ERROR if `specs` (exact or `group:*`) were called MORE than `max` times in
+ *  total — catches an agent that hand-loops a per-item tool instead of batching
+ *  it into one code:run. */
+export function assertToolCallCountAtMost(specs: string[], max: number, meta: Meta): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const count = allToolCalls(run).filter((tc) => nameMatches(tc.name, specs)).length;
+      return count <= max ? [] : [violation(meta)];
+    },
+  };
+}
+
 /** ERROR unless the given predicate finds a matching tool call. Use for
  *  compound conditions (e.g. design-phase:* OR docs:* with a design-ish arg). */
 export function assertToolMatch(

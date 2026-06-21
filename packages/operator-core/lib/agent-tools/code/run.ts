@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { defineTool, listAllProjectedTools, runToolOrchestration, SU_ROLES } from '@papercusp/agent-mcp';
+import {
+  defineTool,
+  listAllProjectedTools,
+  runToolOrchestration,
+  roleScopedToolNames,
+  SU_ROLES,
+} from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 
 /**
@@ -56,17 +62,9 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const all = listAllProjectedTools();
-    const role = ctx.role;
     // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
     // exclude code:run itself so a script cannot recursively nest code-mode.
-    const allowed = new Set<string>();
-    for (const t of all) {
-      const name = t.expose?.mcp?.name;
-      if (!name || name === 'code:run') continue;
-      const roles = t.agentRoles;
-      const roleOk = !roles || roles.length === 0 || (role != null && roles.includes(role));
-      if (roleOk) allowed.add(name);
-    }
+    const allowed = roleScopedToolNames(all, ctx.role, new Set(['code:run']));
 
     const result = await runToolOrchestration(args.script, {
       ctx,

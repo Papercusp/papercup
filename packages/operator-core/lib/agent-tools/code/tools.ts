@@ -4,6 +4,7 @@ import {
   listAllProjectedTools,
   generateToolFacadeTypes,
   listFacadeNamespaces,
+  roleScopedToolNames,
   SU_ROLES,
 } from '@papercusp/agent-mcp';
 
@@ -57,17 +58,9 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const all = listAllProjectedTools();
-    const role = ctx.role;
     // Scope to tools this agent's role may call — identical to code:run's facade scoping. Exclude
     // the code-mode meta-tools so a script/catalog never surfaces code:run / code:tools themselves.
-    const allowed = new Set<string>();
-    for (const t of all) {
-      const name = t.expose?.mcp?.name;
-      if (!name || name === 'code:run' || name === 'code:tools') continue;
-      const roles = t.agentRoles;
-      const roleOk = !roles || roles.length === 0 || (role != null && roles.includes(role));
-      if (roleOk) allowed.add(name);
-    }
+    const allowed = roleScopedToolNames(all, ctx.role, new Set(['code:run', 'code:tools']));
 
     const wantNs = args.namespaces?.length ? args.namespaces : undefined;
     const wantNames = args.names?.length ? args.names : undefined;

@@ -23,6 +23,10 @@ export { defineTool } from '@papercusp/tooldef';
 // operator-core `code:run` agent tool can compose it.
 export { runToolOrchestration } from '@papercusp/tooldef';
 export type { OrchestrateOptions, OrchestrateResult, PlannedMutation } from '@papercusp/tooldef';
+// The role-scoped allowed-set helper BOTH code:run + code:tools use to build the facade envelope
+// (mirrors the dispatcher role-allowlist; the meta-tools exclude themselves so a script can't nest
+// code-mode). One definition, unit-tested in tool-facade.test.ts.
+export { roleScopedToolNames } from '@papercusp/tooldef';
 // code-execution-tool-orchestration B-CX-API: typed `tools.ns.verb(args)` signatures generated
 // from the projected registry + the on-demand namespace index — composed by the `code:tools`
 // lookup so the model loads signatures on demand instead of paying the full catalog per prompt.

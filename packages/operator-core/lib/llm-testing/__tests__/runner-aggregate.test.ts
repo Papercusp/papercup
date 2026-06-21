@@ -93,6 +93,9 @@ describe('scenario registry', () => {
       'su-S10-claim-before-work',
       'su-S11-lock-contention-protocol',
       'su-S12-same-turn-insight',
+      // code:run adoption (code-execution-tool-orchestration B-CX-3)
+      'su-S13-code-run-batch',
+      'su-S14-code-run-not-for-single',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',
