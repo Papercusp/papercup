@@ -7,7 +7,11 @@ Captured live after the round-2 design pass shipped. Acknowledges what landed, i
 This memo critiques the `OperatorPanel.tsx` card-feed surface — the
 Pending/Accepted/Ignored/Scans tabs, the HUD telemetry strip, the
 reactor orb, the "Operator MCP v0.1.0" footer. **`OperatorPanel.tsx` is
-deleted.** The operator surface is now `OperatorChat`
+orphaned dead code** — the file still exists and is git-tracked, but
+nothing imports or renders it anymore, and it is no longer importable in
+any case (it still `import`s sibling modules that have since been removed:
+`DelegatesSection`, `ScanHistorySection`, `hud/OperatorReactorCore`,
+`hud/OperatorScanOverlay`). The operator surface is now `OperatorChat`
 (`apps/operator/app/_components/OperatorChat.tsx`, a thin wrapper around
 the shared `ChatConversation`): a single chat thread where suggestions
 render inline and pending `ctx.askUser` cards surface in a

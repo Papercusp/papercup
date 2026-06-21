@@ -15,16 +15,24 @@ A harness project can have up to three phased worktrees
 (`packages/operator-core/lib/harness-phases.ts`):
 
 * **staging** → the project's main path
-* **testing / production** → a sibling checkout at `<path>--testing` /
-  `<path>--production`, or an explicit per-phase `path` override carried on
-  the project's workspace-registry entry (not read from `config.json` —
-  `deprecate-harness-config-json-2026-06-06`)
+* **testing / production** → an explicit per-phase `path` override carried on
+  the project's workspace-registry entry, falling back to a sibling checkout
+  at `<path>--testing` / `<path>--production` when no override is set. The
+  override takes precedence; the sibling is the default. The override lives on
+  the registry `phases` blob and is not read from `config.json`
+  (`deprecate-harness-config-json-2026-06-06`).
 
-Every `?phase=` API route resolves through `phasePath()`, and the FS watcher
-mirrors all three worktrees into `harness_shared.*` with a `phase` column.
-Agents resolve a phase's absolute path with the `harness:phase_path` tool.
-The multi-phase surface is gated by the `papercusp-harness-phases`
-[feature flag](/internal/docs/posthog/feature-flags).
+Every `?phase=` API route resolves through `phasePath()`. The FS watcher is
+phase-aware — it walks all three phases' `.papercusp/` directories — but as of
+`fs-watcher-retirement-2026-05-10` its only remaining mirror is proposals
+(`harness_shared.harness_proposals_shared`, keyed by `(harness_slug, phase,
+proposal_id)`). Every other former mirror (tests, escalations, git log,
+decisions, checkpoints, hook logs, screenshots, plan review, smoke, branch
+actions, and the `harness_phases` mirror itself) is now retired: that state is
+written to PG at *producer* time (POSTs to `/api/internal/*`) rather than
+mirrored from disk. Agents resolve a phase's absolute path with the
+`harness:phase_path` tool. The multi-phase surface is gated by the
+`papercusp-harness-phases` [feature flag](/internal/docs/posthog/feature-flags).
 
 ## 2. Transient scratch worktrees for verification
 
@@ -38,6 +46,13 @@ for its locked files, symlink the heavy gitignored cache dirs
 the check, tear down. Setup is \~60 ms; `git worktree prune` at setup
 self-heals orphans from crashed runs; many workers can hold scratch envs
 simultaneously.
+
+The verification check runs shell-free: the config-sourced command is
+whitespace-split into a plain argv and spawned without a shell (audit P-030).
+A command containing shell metacharacters is rejected (exit 126), and missing
+or non-executable commands map to 127 / 126 — all of which route to the
+"unrunnable / fail-open" lane. A misconfigured gate therefore never blocks a
+commit.
 
 This is the direct descendant of the legacy lane-worktree insight: parallel
 workers sharing one working tree contaminate each other's verification

@@ -128,7 +128,7 @@ that ships with the suite: **`benchmarks/README.md`** at the repo root.
 * **Decisions:** D-001 (claim framing), D-002 (superseded headline → D-010), D-003
   (families), D-004 (treatment = full substrate), D-005 (we neither author nor grade),
   D-006 (Verified retired), D-007 (Evaluation dock-tab), D-008 (two grader modalities),
-  D-009 (external-bench `extends coding`), **D-010 (benchmark the Hive)**, **D-011
+  D-009 (external-bench `extends coding-factory`), **D-010 (benchmark the Hive)**, **D-011
   (fleet-instrument go/no-go)**.
 * **Key external sources:** OpenAI "Why we no longer evaluate SWE-bench Verified"
   (2026-02); Harness-Bench (arXiv 2605.27922); SWE-bench Pro (arXiv 2509.16941);

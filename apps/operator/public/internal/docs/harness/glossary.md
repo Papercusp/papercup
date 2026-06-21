@@ -31,25 +31,35 @@ typecheck gate). — `packages/operator-core/lib/work-items.ts`
 live lease with a dead holder is an *orphaned claim*, surfaced by
 `fleet:assignments`.
 
-**Coding blueprint** · The default *execution pipeline* (`kind:'harness'`): a
-per-feature `director` drives a deterministic **spine** — scoper → architect →
-worker → validator → documenter → curator (+ opt-in tester / security /
-crosscheck / ui-qa; reviewer = the PR gate) — over one `feature` (`F-NNN`).
+**Coding blueprint** · The default *execution pipeline* (`kind:'harness'`,
+`id: coding-factory`): a per-feature `director` drives a deterministic
+**spine** — scoper → architect → worker → validator → documenter → curator
+(+ opt-in tester / security / crosscheck / ui-qa; reviewer = the PR gate) —
+over one `feature` (`F-NNN`). The 2026-06-18 rename moved this spine off the
+`coding` id (now the Hive) and onto `coding-factory`; it remains the active
+fallback pipeline and the `extends` base for repo-detected harnesses.
 Contrast the **Hive blueprint** (orchestration, *no* spine): different layers,
-not flavors. — `blueprints/coding/blueprint.yaml`,
+not flavors. — `blueprints/coding-factory/blueprint.yaml`,
 [hive-vs-coding](/internal/docs/agent-insights/hive-vs-coding-blueprint)
 
 **Curator** · The memory-compaction pipeline role; the only role that deletes
-harness memory. — [Why a curator](/internal/docs/harness/decisions/curator)
+harness memory. Its persona, like every role's, resolves under the owning
+blueprint as `blueprints/<id>/prompts/curator.md` (base default in
+`blueprints/base/`) — the legacy global `prompts/` dir is retired. —
+[Why a curator](/internal/docs/harness/decisions/curator)
 
 **Decision verb** · The single verb a deciding agent emits per iteration
 (`NEXT_WORKER` / `NEXT_ARCHITECT` / `NEXT_VALIDATOR` / `DONE` / `ESCALATE`);
 interpreted by the blueprint spine. —
 [Decision telemetry](/internal/docs/harness/decisions-timeline)
 
-**Director** · The persona that emits per-feature decision verbs in the
-durable pipeline. A prompt file, not an `AGENT_ROLES` id. —
-`libs/papercusp/packages/harness/prompts/director.md`
+**Director** · The role that emits per-feature decision verbs in the durable
+pipeline; a real `AGENT_ROLES` id (registered by blueprint-role-bundling).
+Its persona resolves under the owning blueprint as
+`blueprints/<id>/prompts/director.md` (base default:
+`blueprints/base/prompts/director.md`) — the global `prompts/` dir is retired,
+and legacy ids resolve via `BLUEPRINT_ID_ALIASES`. —
+`role-config.ts :: AGENT_ROLES`, `blueprints/base/prompts/director.md`
 
 **Dispatch** · The blueprint-declared policy for when/what the engine runs
 next; concurrency knobs resolve via their own path (not the effective-config
@@ -69,7 +79,7 @@ through the coding blueprint's spine. — `work-items.ts`
 
 **Finalize recipe** · The blueprint's `gates.finalize` step list run on
 terminal outcomes (`onDone` / `onEscalate`). —
-`blueprints/coding/blueprint.yaml`
+`blueprints/coding-factory/blueprint.yaml`
 
 **Ghost** · A deciding-agent output that fails to parse as a known decision
 verb; tracked as a rate and a health signal (`low_ghost_rate`). —
@@ -78,11 +88,14 @@ verb; tracked as a rate and a health signal (`low_ghost_rate`). —
 **Harness** · One managed work pipeline (repo + work queue + runs),
 instantiated from a blueprint; slug-identified.
 
-**Hive blueprint** · The *orchestration* layer (`kind:'hive'`, root-only, **never
-nested**): a **Queen** surveys the work frontier and *places* ranked `work_items`
-onto generic **bees** — **no spine**, self-declared wake (`hive:declare-wake`) —
-and can create coding/research harnesses. Contrast the **Coding blueprint** (one
-pipeline it runs). — `blueprints/hive/blueprint.yaml`,
+**Hive blueprint** · The *orchestration* layer (`kind:'hive'`, `id: coding`,
+root-only, **never nested**): a **Queen** surveys the work frontier and *places*
+ranked `work_items` onto generic **bees** — **no spine**, self-declared wake
+(`hive:declare-wake`) — and can create coding/research harnesses. The 2026-06-18
+rename moved this blueprint from `hive` to `coding`; the legacy `hive` id
+survives only as a runtime alias (`BLUEPRINT_ID_ALIASES = { hive: 'coding' }`).
+Contrast the **Coding blueprint** (one pipeline it runs). —
+`blueprints/coding/blueprint.yaml`,
 [hive-vs-coding](/internal/docs/agent-insights/hive-vs-coding-blueprint)
 
 **Hook** · An out-of-band shell script at `.papercusp/hooks/<name>.sh` run at
@@ -97,7 +110,14 @@ delivered via the `HARNESS_CONFIG_JSON` env transport; `.papercusp/config.json`
 is deprecated and not read. — `libs/papercusp/packages/orchestrator/src/effective-config.ts`
 
 **Knobs** · Shape-level defaults a blueprint declares (e.g.
-`debuggerThreshold: 3`). — `blueprints/coding/blueprint.yaml`
+`debuggerThreshold: 3`). — `blueprints/coding-factory/blueprint.yaml`
+
+**Overwatch** · The autonomous system-health *supervisor* (a sibling to the
+Queen): runs a sense → decide → act loop over the whole running system, but
+nudges / observes / escalates *only* — it never re-places work and its role
+envelope denies `capability:fs-write` + `capability:bash`. A built-in
+`AGENT_ROLES` id, but it ships dark behind the `papercusp-overwatch` flag
+(default OFF). — `role-config.ts`, `blueprints/coding/prompts/overwatch.md`
 
 **Params** · A blueprint's *declared tunables*, keyed by instance-config
 dot-paths, unioned across `extends`; the schema-driven settings layer
@@ -112,12 +132,15 @@ path), `testing`, `production` (sibling `<path>--<phase>` checkouts). —
 
 **Queen** · The steering intelligence of a hive/Pot — schedules, places, and
 prioritizes work (the role the lexicon surfaces as "Queen"); distinct from
-the watching `sentinel`. — `role-config.ts` (sentinel entry)
+the watching `sentinel`. — `role-config.ts :: AGENT_ROLES` (`queen` entry)
 
 **Redundancy / replica** · BOINC-style multi-dispatch of one work item to
 independent replicas with a judge step
-(`work_items:set_redundancy` / `claim_replica` / `judge_redundancy`);
-feature-family only.
+(`work_items:set_redundancy` / `claim_replica` / `record_replica_result` /
+`judge_redundancy`, plus the `work_items:redundancy_status` read view);
+feature-family only. Opt-in and **OFF by default** — a `set_redundancy`
+marker stays inert (the item still runs exactly-once) until the owner sets
+`PAPERCUSP_WORKITEM_REDUNDANCY=1`.
 
 **Role** · A named agent function with its own persona + tool surface. The
 runtime registry is `AGENT_ROLES`. —
@@ -141,6 +164,12 @@ interpreter maps (state, decision verb) → next action. —
 
 **Task** · An issue-family work-item kind recording delegated work; excluded
 from the default `issues:*` listing. — `work-items.ts`
+
+**Work blueprint** · The non-coding work Hive (`kind:'hive'`, `id: work`,
+`extends: coding`): the same Queen + bees orchestration as the coding Hive but
+for non-code work. Renamed from `generic-hive` by the 2026-06-18 rename
+(`BLUEPRINT_ID_ALIASES = { 'generic-hive': 'work' }`). —
+`blueprints/work/blueprint.yaml`
 
 **Work item** · The unified unit of work, one type discriminated by `kind`:
 feature family (`feature` / `research-task` / `chunk`) + issue family

@@ -81,9 +81,13 @@ todo → validating → passed
 * `failed` — validator's last run found a violation; validator writes
   evidence to the `Evidence:` line and leaves a note in the issue queue.
 
-The validator updates `Status:` in-place via `plans:set-content` (or
-the assertion endpoint described below). The scoper never changes
-`Status:`; it only writes `todo` at creation time.
+The validator updates `Status:` in-place via `plans:set-content` —
+editing the plan markdown is the only status-write path. The assertion
+endpoints below are not a status-write surface: the `GET
+.../assertion/:valId` lookup is read-only, and the only mutating
+assertion endpoint (`POST .../testing/assertions/:valId`) writes
+`requires_test`, not `status`. The scoper never changes `Status:`; it
+only writes `todo` at creation time.
 
 ## Tooling
 
@@ -92,12 +96,20 @@ the assertion endpoint described below). The scoper never changes
 When `plans:promote` converts a plan item into a harness feature:
 
 1. It scans the item's sub-bullets for `[VAL-…-NNN]` blocks.
-2. Each block is stored in `harness_plan_assertions`
+2. Each block is **upserted** into `harness_plan_assertions`
    (`plan_slug`, `item_id`, `val_id`, `verify_text`, `evidence_text`,
-   `status`).
+   `status`, `requires_test` — the last defaults to `true`). The insert
+   is `ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE`, so
+   re-promoting an item overwrites the existing row for a `val_id`
+   rather than rejecting it as a duplicate.
 3. The assertion IDs are written into `feature.claims` (string array).
 4. The plan item's VAL-\* blocks are not removed from the plan — they
    remain as the source-of-truth display. The PG row is a projection.
+
+The PG store is **best-effort**: features are imported with their
+`claims` before assertions are written, so a store failure does not fail
+the promote — it leaves `feature.claims` intact but the
+`/assertion/:valId` endpoint will return `404` for the un-stored rows.
 
 ### Assertion endpoint
 
@@ -113,6 +125,7 @@ Returns:
   "verify_text": "…",
   "evidence_text": "…",
   "status": "todo",
+  "requires_test": true,
   "plan_slug": "my-plan-2026-05-26",
   "item_id": "P-007"
 }
@@ -123,6 +136,23 @@ A 404 means the feature was not promoted from a plan with inline
 assertions; the validator must fail with:
 
 > `assertion not found — feature must be promoted from a plan with inline VAL-* assertions`
+
+### Assertion list and test-gate endpoints
+
+Two more endpoints round out the assertion API surface:
+
+```
+GET  /api/harness/:slug/testing/assertions[?plan=<slug>]
+POST /api/harness/:slug/testing/assertions/:valId
+```
+
+* The `GET` list endpoint returns all assertions for the harness
+  (`{ assertions: [...] }`), optionally scoped to one `plan`. If the
+  table is absent or PG is unreachable it returns an empty list.
+* The `POST` endpoint updates a single VAL's **`requires_test`** flag
+  (its JSON body requires a boolean `requires_test`). It is the only
+  assertion-mutation endpoint; it does **not** touch `status`. Returns
+  `404` if the `val_id` is unknown.
 
 ### Validator read flow
 
@@ -149,9 +179,11 @@ projection happens at `plans:promote` time.
 ```
 
 Allocation rule: the scoper must scan the existing plan for the
-highest existing `{NNN}` for this plan-slug and increment by 1. The
-`plans:promote` tool validates uniqueness at extraction time and
-rejects duplicate IDs with an error.
+highest existing `{NNN}` for this plan-slug and increment by 1.
+`plans:promote` does **not** enforce uniqueness — it upserts each
+extracted assertion by `val_id` (`ON CONFLICT … DO UPDATE`), so a
+duplicate id silently overwrites the existing assertion rather than
+raising an error. Keeping ids unique is the scoper's responsibility.
 
 ## Rules
 
@@ -165,15 +197,28 @@ rejects duplicate IDs with an error.
   scoper is responsible for always writing at least one assertion per
   chunk.
 * **Assertions are immutable after `passed`.** A `passed` assertion
-  may not be edited. To change the check, write a new VAL-\* block
-  and deprecate the old one (mark `Status: dropped` and add a note).
+  may not be edited. To change the check, write a new VAL-\* block and
+  deprecate the old one with a prose note. There is no `dropped` status:
+  `Status:` only accepts `todo` / `validating` / `passed` / `failed`
+  (the PG `CHECK` constraint rejects anything else, and the parser
+  silently coerces an unrecognized value such as `dropped` back to
+  `todo`).
 
 ## Relation to the plan format spec
 
 See [Plan format](/internal/docs/spec/plan-format) for the full plan
 item syntax. VAL-\* sub-bullets are an extension of the standard item
 line — the plan parser ignores them (they're free prose sub-bullets),
-but `plans:promote` and `plans:lint` understand the structure.
+and only `plans:promote` understands the structure (via its
+`extractAssertions` parser). `plans:lint` has no VAL-\* awareness — it
+neither parses nor reports on assertion bullets.
 
-`plans:lint` will gain a `missing_assertions` warning when an item has
-`effectiveStatus: todo` and no VAL-\* sub-bullets once P-019 ships.
+The `extractAssertions` parser is lenient about the VAL header: it
+accepts both the canonical bold `**[VAL-…]**` form and a plain
+`[VAL-…] <description>` form, and the id between the brackets may be any
+text (the `{NNN}` 3-digit sequence is an authoring convention the parser
+does not enforce).
+
+There is **no** `missing_assertions` lint warning. A check that flags a
+`todo` item with no VAL-\* sub-bullets is not implemented anywhere in the
+linter.

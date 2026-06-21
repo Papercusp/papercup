@@ -43,13 +43,14 @@ site and by the action's runtime gate, so seed time and run time can never
 disagree. `gitSyncEligibility(entry)` is pure + sync over a registry snapshot;
 reasons in precedence order:
 
-| Reason                 | Entry shape                                  | Why it never syncs                                                                                                      |
-| ---------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `remote_hive_view`     | `remote_hive: true`                          | Joiner-side hive view — a non-repo dir under `~/.papercusp/remote-hives` (checked first: views are also `kind: 'hive'`) |
-| `hive_home`            | `harness_kind: 'hive'`                       | The hive home is a non-repo state dir                                                                                   |
-| `non_local_deployment` | `deployment.target` present and ≠ `'local'`  | The checkout lives on a cloud frame, not this box's filesystem                                                          |
-| `no_path`              | No registered path, or it vanished from disk | Nothing to sync                                                                                                         |
-| `not_a_git_repo`       | Path exists but carries no `.git`            | Not a clone (`.git` may be a dir or a worktree/submodule file)                                                          |
+| Reason                 | Entry shape                                                                                                            | Why it never syncs                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ephemeral_debris`     | Slug matches the ephemeral/benchmark INSTANCE regex (xbench / `xbq<hash>` / `*instance*` / memcap / memrun / deleteme) | An ephemeral/benchmark instance harness — must never get a routine. **Checked FIRST**: it is a pure regex match (no IO) so a surviving routine fast-skips before any `stat`. Added after INCIDENT 2026-06-18 (a benchmark fleet left \~170 torn-down per-task instance harnesses each carrying an ACTIVE git-sync routine; the per-tick churn saturated the `:3070` event loop and took psu down). |
+| `remote_hive_view`     | `remote_hive: true`                                                                                                    | Joiner-side hive view — a non-repo dir under `~/.papercusp/remote-hives` (checked before `hive_home`: views are also `kind: 'hive'`)                                                                                                                                                                                                                                                               |
+| `hive_home`            | `harness_kind: 'hive'` **and** not `self_repo`                                                                         | The hive home is a non-repo state dir — **except** a hive that IS its own repo (the Option-B merge, papercup→papercusp 2026-06-20), marked `self_repo` on the merged registry entry: that entry owns a checkout, is ELIGIBLE, and must be git-synced (else origin freezes). The verdict only fires when `harness_kind === 'hive' && !self_repo`.                                                   |
+| `non_local_deployment` | `deployment.target` present and ≠ `'local'`                                                                            | The checkout lives on a cloud frame, not this box's filesystem                                                                                                                                                                                                                                                                                                                                     |
+| `no_path`              | No registered path, or it vanished from disk                                                                           | Nothing to sync                                                                                                                                                                                                                                                                                                                                                                                    |
+| `not_a_git_repo`       | Path exists but carries no `.git`                                                                                      | Not a clone (`.git` may be a dir or a worktree/submodule file)                                                                                                                                                                                                                                                                                                                                     |
 
 The same verdict also runs as a **runtime gate** at the top of every tick
 (`git-sync-action.ts`): a routine row whose target became ineligible no-ops
@@ -72,38 +73,57 @@ surfaces `upgraded: true`. Anything human-touched — active flipped, cron
 retuned, any config deviation — is never clobbered, and joiner-side or
 coords-less re-seeds still report `routine_exists`.
 
-| Producer                  | Site                                                                                               | Side                | Cron jitter key                      |
-| ------------------------- | -------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------ |
-| `hive:create_from_repo`   | `agent-tools/hive/_create_from_repo.ts` (step 7.25, new-hive **and** into-hive paths)              | creator             | member slug                          |
-| `hive:add-member`         | `agent-tools/hive/_add-member.ts` (both success paths — a re-add heals a missing row)              | creator             | member slug                          |
-| `harness:create { hive }` | `agent-tools/harness/create.ts` (step 5a)                                                          | creator             | member slug                          |
-| Hive join                 | `lib/harness/join-hive.ts` (`joinHiveAsView` per-member loop)                                      | joiner              | `<slug>:<workspaceId>`               |
-| Bare join link            | `endpoint-route/routes/harness/join-link.ts` (`handleJoinLink`, after clone registration — EI-382) | joiner              | `<slug>:<workspaceId>`               |
-| Boot reconcile            | `git-sync-reconcile.ts`, fired once per process from `lib/sync/hyperbee/boot-all.ts`               | detected per member | slug, or salted when joiner-detected |
+| Producer                  | Site                                                                                               | Side                                          | Cron jitter key                      |
+| ------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------ |
+| `hive:create_from_repo`   | `agent-tools/hive/_create_from_repo.ts` (step 7.25, new-hive **and** into-hive paths)              | creator                                       | member slug                          |
+| `hive:add-member`         | `agent-tools/hive/_add-member.ts` (both success paths — a re-add heals a missing row)              | creator                                       | member slug                          |
+| `harness:create { hive }` | `agent-tools/harness/create.ts` (step 5a)                                                          | creator                                       | member slug                          |
+| Hive join                 | `lib/harness/join-hive.ts` (`joinHiveAsView` per-member loop)                                      | joiner                                        | `<slug>:<workspaceId>`               |
+| Bare join link            | `endpoint-route/routes/harness/join-link.ts` (`handleJoinLink`, after clone registration — EI-382) | joiner                                        | `<slug>:<workspaceId>`               |
+| Boot reconcile            | `git-sync-reconcile.ts`, fired once per process from `lib/sync/hyperbee/boot-all.ts`               | detected per member (incl. `joined_via_link`) | slug, or salted when joiner-detected |
 
 The boot reconcile is the **backfill**: it walks each workspace's registry,
-visits only hive members (`hive_slug` set), detects joiner-side members by
-their home entry's `remote_hive` flag, and add-only seeds whatever is missing —
-so hives created before the seed sites existed (or members that slipped past
-them) converge on next boot.
+visits each member (its filter is `p.hive_slug || p.joined_via_link` — see the
+bare-link case below), detects joiner-side members by their home entry's
+`remote_hive` flag (or the `joined_via_link` marker, always joiner-side), and
+add-only seeds whatever is missing — so hives created before the seed sites
+existed (or members that slipped past them) converge on next boot. The same
+sweep also runs **P-014 blind-spot detection**: any NON-member registered
+checkout that is git-sync-eligible (a real local repo) yet carries no routine
+row is surfaced in the boot log as `⚠ eligible-but-UNSEEDED` — it is **never
+auto-seeded** (a non-member checkout is not assumed wanted-synced), so a new
+registered-checkout path that forgets to seed at creation is caught instead of
+silently never syncing.
 
 Members joined via a **bare join link** (the Entry-4 `handleJoinLink` route,
-outside `joinHiveAsView`) register a minimal `{ slug, path }` entry with no
-`hive_slug`, so the `hive_slug`-scoped reconcile never visits them. They are
-instead seeded **inline at join time** (EI-382): `handleJoinLink` seeds the
-clone joiner-side (`push: false` — a local mirror; the contribution path is the
-owner's pushes / a fork-PR) right after registration, best-effort so a seed
-failure never fails the join. The reconcile deliberately stays hive-scoped — a
-bare-link clone is a standalone shared-harness checkout, not a hive member.
+outside `joinHiveAsView`) register the clone with `joined_via_link: true` (no
+`hive_slug` — there is no local hive home). They are seeded **inline at join
+time** (EI-382): `handleJoinLink` seeds the clone joiner-side (`push: false` —
+a local mirror; the contribution path is the owner's pushes / a fork-PR) right
+after registration, best-effort so a seed failure never fails the join. That
+inline seed is the fast path; the boot reconcile is the **backfill** — since
+EI-1623 its member loop filters on `hive_slug || joined_via_link`, so it **does**
+visit bare-link clones and add-only re-seeds any whose join-time seed failed.
+(Link-joins are excluded from the P-014 unseeded scan precisely because the
+member loop already owns them.)
 
 A seeded row carries, in `trigger_config`:
 
 * **`cron`** — jittered every-10-minutes schedule (below);
 * **`push`** — from the decision table (below);
+* **`push_submodules`** — defaults `true`;
 * **`branch`** — the member's `github_default_branch` registry coord when
   known (the pipeline falls back to its own per-repo branch resolution
-  otherwise);
-* **`active`** — from the ratified all-active default (below).
+  otherwise).
+
+**`active` is not in `trigger_config`** — it is the routine row's own top-level
+`active` column (passed as a sibling of `triggerConfig`, set from the ratified
+all-active default below).
+
+The inverse of the seed is **`removeGitSyncRoutine`** (shared-hive-hardening
+P-012 leave path): a member LEAVE **deletes the routine row entirely** (the
+member is deregistered), durably — distinct from `setGitSyncRoutineActive(false)`,
+which keeps a disabled row. On leave the row should be gone, not merely inactive.
 
 ## Seed-active default (P-005 — ratified all-active, D-008)
 
@@ -237,6 +257,17 @@ per-slug naming) and db `sql/237` (papercup's `extra_lock_resources` + re-key
 of open escalation rows `'staging'` → `'git-sync'`) — which apply via the
 migration runner (`db:migrate`).
 
+**Per-agent commit attribution** is flag-gated by `GIT_SYNC_DERIVED_ATTRIBUTION`
+(default **OFF**; `git-sync-dx-hardening-2026-06-17` P-004). When ON, the action
+supplies the live coord-presence roster (active agents + their declared
+`current_files`) so the pipeline peels each declaring agent's dirty files into
+its **own** commit — intent subject + `Co-Authored-By` trailer, preserving the
+`[skip ci]` marker — before the catch-all whole-tree commit. Attribution is
+**derived from presence, never agent-authored** (agents stay git-free); with the
+flag OFF it falls back to the single whole-tree commit. The same flag also drives
+**assign-don't-broadcast** for content escalations (the human surface above
+targets the agents who edited the quarantined files instead of the whole fleet).
+
 ## Failure surfaces (links, not prose)
 
 * **`git-sync-conflict`** — merge conflict; tree aborted clean, resolver
@@ -249,6 +280,30 @@ migration runner (`db:migrate`).
   conflict escalation. Long form: plan `git-sync-system-audit-2026-06-09`.
 * Every tick also appends a pipeline event row (sync/conflict/error rates over
   time) — surfaced on the `/admin/git` tab.
+
+### Content guard (EI-438)
+
+A **second escalation+resolver path**, parallel to the conflict path: a broken
+file (an `.mdx` that won't compile, a curly quote used as code) is **quarantined**
+from the auto-commit by the content guard (`run-git-sync.ts`) so it never reaches
+`staging` — quarantine, don't stall. The action then escalates it under its
+**own phase `git-sync-content`** (kind `git-sync-content-error`), a separate
+`(harness_slug, phase)` row from the conflict/error escalation (phase `git-sync`),
+so a content quarantine and a merge conflict **coexist and clear independently**.
+
+A **`content-fixer`** agent is dispatched to repair the quarantined files,
+deduped while one is genuinely in-flight (the same posture as the merge-resolver).
+After `MAX_CONTENT_FIXER_ATTEMPTS` (**5**) consecutive failing ticks with the
+file still broken, it **stops auto-dispatching** and surfaces to a human **once**
+(on the transition) — never an infinite silent fix loop; the file stays
+quarantined regardless, so `staging` is never at risk while it waits. A clean
+re-check tick clears the escalation and resets the counter.
+
+The whole guard is flag-gated by **`GIT_SYNC_CONTENT_GUARD`** (default **ON**) —
+an instant kill-switch: when OFF, `runGitSync` is passed an empty detector set
+and commits exactly as before this plan (no quarantine/escalation/fixer), no
+deploy needed. A flag-infra error falls back to the default (ON), keeping the
+safety on. Source plan: `git-sync-content-guard-2026-06-13`.
 
 ## Verification status
 

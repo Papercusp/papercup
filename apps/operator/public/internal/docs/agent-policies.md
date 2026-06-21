@@ -355,7 +355,7 @@ Specifically:
   `install-standalone-mcp.sh` to re-render the per-client playbooks and
   refresh the `psu` launcher (the old `omp-su` / `claude-su` / `codex-su`
   wrappers are retired — `psu` assembles playbook + MCP + flags per launch). (See
-  [Superuser mode → Per-client wrappers](/internal/docs/endpoint-system/superuser-mode#per-client-wrappers-and-playbooks).)
+  [Superuser mode → The `psu` launcher and playbooks](/internal/docs/endpoint-system/superuser-mode#the-psu-launcher-and-playbooks).)
 
 ## 16. Commits, branches, PRs
 

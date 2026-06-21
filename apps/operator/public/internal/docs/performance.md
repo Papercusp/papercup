@@ -7,6 +7,8 @@ Render, bundle, network, layout, and measurement guidelines distilled from the a
 
 import { Aside } from '@astrojs/starlight/components';
 
+This page was written when the operator app was a **Next.js App Router** project, and several rules below were framed around RSC / Server Components / Next-specific tooling. **That framework is gone.** The operator is now a **Vite SPA on TanStack Router** (`apps/operator-vite`, dev server on `:3055`) fronting a **Hono host** (`apps/operator/bin/hono-host.ts`, `:3070`). There is no `next` dependency, no RSC, no Server Components, and `'use client'` is an inert vestige. The `next/*` import surface (`next/image`, `next/dynamic`, `next/link`, `next/navigation`) is satisfied by TanStack-Router-backed shims under `apps/operator/lib/router-compat/{dynamic,link,navigation}.tsx`. RSC-only advice ("ship zero JS", "push `'use client'` to the leaf") does **not** apply to a SPA — read those rules as historical context. The *measured* perf wins (parallelize fs/PG, request-scoped read caches, virtualize/memoize lists, animate only transform/opacity) still hold; only the **named cause** "Next.js dev mode" and any Next-specific tool are stale. See `apps/operator/docs/plans/finish-next-removal-2026-06-01.md` and `apps/operator/docs/plans/operator-vite-migration-2026-05-20.md`.
+
 **Every agent must read this page before changing code in this repo.** "It works" isn't the same as "it's fast." This page captures (a) practices from apps users consider best-in-class — Linear, Notion, Vercel, Figma, Discord, Stripe — and (b) **real anti-patterns we've shipped** that have caused production slowdowns. The "What not to do" section near the bottom is **load-bearing**: it lists specific traps with measured impact and the correct alternative. If a pattern in your change matches one of those traps, change the approach before continuing.
 
 A focused perf audit on `/harness` reduced warm TTFB from **18.7s to 83ms (225×)** across 14 commits. Eight separate slow endpoints were reduced to two repeating root patterns (serial fs/PG in loops; repeated reads of the same file). A new rule **A15** covers the request-scoped readJson cache pattern that produced the last 100× speedup. The "Audit findings" table further down shows every endpoint's before/after with the fix applied. Two `<body>`-frozen incidents during the session are also captured under **A8** (duplicate React keys → infinite Fast Refresh loop) and **A10** (Radix `pointer-events` leak on `<body>`).
@@ -27,28 +29,31 @@ You can verify the first three locally with React DevTools' Profiler. The last t
 
 ## Lessons from the apps that feel fastest
 
-| App          | What they do                                                                                                                                                                                                                                         | What you can copy                                                                                                                               |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Linear**   | Local-first sync — every action mutates the local store first, then syncs to the server in the background. Zero "loading…" spinners on normal operations. Fine-grained subscriptions: components only re-render when *their slice* of state changes. | Use Zero (`useSyncQuery`) the way it's already wired. Optimistic UI for every mutation. Don't subscribe to whole tables when one row is enough. |
-| **Notion**   | Block-level memoization in the editor — every block is a `React.memo` with a stable identity, and they avoid re-rendering ancestors when a block changes. Service worker for offline. View Transitions API for sidebar nav.                          | Memoize list items by stable key. Use `React.memo` + `areEqual` on FeatureList row, IssuesList row, ProposalsPanel item.                        |
-| **Vercel**   | Server Components by default; `'use client'` only at leaves. Streaming SSR with Suspense boundaries around slow data. Edge-runtime for routes that don't need Node.                                                                                  | Default new pages to RSC. Move `'use client'` to the smallest possible component. Wrap data-fetching pieces in `<Suspense>`.                    |
-| **Figma**    | UI is React (chrome only). The canvas is custom Rust→WebAssembly. They explicitly *don't* try to make React fast enough for the design surface — they use the right tool for the right surface.                                                      | When you have a hot rendering loop (canvas, graph), don't reach for React. Drop down to imperative DOM / canvas / WebGL.                        |
-| **Discord**  | Virtualized chat list. Workers for syntax highlighting and search indexing. Replaced setState chains with Flux to avoid double-renders.                                                                                                              | Virtualize any list > 50 rows (`@tanstack/react-virtual` already in deps). Move CPU-heavy work off the main thread (Web Workers).               |
-| **Stripe**   | Inline critical CSS. Defer all non-critical JS. `preconnect` to API hosts. Prerender hot paths.                                                                                                                                                      | Use Next.js's built-in `priority` on above-the-fold images. `<link rel="preconnect">` for cross-origin APIs (Anthropic, Cloudflare, etc.).      |
-| **Airtable** | Virtualized grid. WebWorker for formula compute. Optimistic UI everywhere.                                                                                                                                                                           | Same patterns. We already use `RichGrid` virtualization — keep it.                                                                              |
-| **GitHub**   | Turbo (HTML over the wire) for many surfaces, replacing SPA. View Transitions for navigation. Aggressive HTTP caching.                                                                                                                               | Don't make a hot path SPA-only when SSR + native nav would do. Use View Transitions for cross-route animations.                                 |
+| App          | What they do                                                                                                                                                                                                                                         | What you can copy                                                                                                                                                                                                                                                                                                                   |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Linear**   | Local-first sync — every action mutates the local store first, then syncs to the server in the background. Zero "loading…" spinners on normal operations. Fine-grained subscriptions: components only re-render when *their slice* of state changes. | Use `useSyncQuery` (`libs/generic/sync`) the way it's already wired — it's **transport-agnostic**, so local-first/optimistic behavior is what you get on the Zero/WebSocket transport, with REST fallback on polling/SSE. Optimistic UI for every mutation that runs on WS. Don't subscribe to whole tables when one row is enough. |
+| **Notion**   | Block-level memoization in the editor — every block is a `React.memo` with a stable identity, and they avoid re-rendering ancestors when a block changes. Service worker for offline. View Transitions API for sidebar nav.                          | Memoize list items by stable key. Use `React.memo` + `areEqual` on FeatureList row, IssuesList row, ProposalsPanel item.                                                                                                                                                                                                            |
+| **Vercel**   | Server Components by default; `'use client'` only at leaves. Streaming SSR with Suspense boundaries around slow data. Edge-runtime for routes that don't need Node.                                                                                  | *(RSC/SSR pattern — not applicable: the operator is a Vite SPA with no Server Components.)* What still transfers: keep route chunks lean and code-split heavy pieces, and wrap slow client data-fetching in `<Suspense>` with `React.lazy`.                                                                                         |
+| **Figma**    | UI is React (chrome only). The canvas is custom Rust→WebAssembly. They explicitly *don't* try to make React fast enough for the design surface — they use the right tool for the right surface.                                                      | When you have a hot rendering loop (canvas, graph), don't reach for React. Drop down to imperative DOM / canvas / WebGL.                                                                                                                                                                                                            |
+| **Discord**  | Virtualized chat list. Workers for syntax highlighting and search indexing. Replaced setState chains with Flux to avoid double-renders.                                                                                                              | Virtualize any list > 50 rows (`@tanstack/react-virtual` already in deps). Move CPU-heavy work off the main thread (Web Workers).                                                                                                                                                                                                   |
+| **Stripe**   | Inline critical CSS. Defer all non-critical JS. `preconnect` to API hosts. Prerender hot paths.                                                                                                                                                      | Eager-load (don't lazy/defer) above-the-fold images and set explicit dimensions. `<link rel="preconnect">` for cross-origin APIs (Anthropic, Cloudflare, etc.) in `apps/operator-vite/index.html`.                                                                                                                                  |
+| **Airtable** | Virtualized grid. WebWorker for formula compute. Optimistic UI everywhere.                                                                                                                                                                           | Same patterns. We already use `RichGrid` virtualization — keep it.                                                                                                                                                                                                                                                                  |
+| **GitHub**   | Turbo (HTML over the wire) for many surfaces, replacing SPA. View Transitions for navigation. Aggressive HTTP caching.                                                                                                                               | *(The operator is deliberately a SPA — the "prefer SSR + native nav" half doesn't apply here.)* What transfers: aggressive HTTP caching on the Hono API, and the View Transitions / WAAPI approach for cross-route animation (see `RouteTransitionProvider`'s jump-gate warp).                                                      |
 
 ## Hard rules — must follow
 
 These are non-negotiable. CI / review will reject violations.
 
-### 1. Default to Server Components
+### 1. (Historical — RSC no longer applies) Keep the JS you ship small
 
-Next.js App Router lets you write Server Components (RSC) by default. **Don't add `'use client'` unless the file actually needs browser APIs / hooks / event handlers.** Server Components ship zero JS to the browser; they're free.
+> **Stale on this stack.** This rule assumed Next.js App Router Server Components. The operator is now a Vite SPA on TanStack Router — **everything ships to the browser; there are no Server Components and `'use client'` is a no-op.** The rule below is kept for context and for the parts that still generalize.
 
-When you do need a client component, push `'use client'` to the **leaf**, not the route. Example:
+The SPA-era takeaway: there is no free server-only tier, so be deliberate about what each route's chunk pulls in. Code-split heavy, not-immediately-needed pieces (see rule 14 with the `dynamic` shim), keep route bundles under the per-feature delta target, and don't hoist a one-route dependency into the shared chunk.
+
+Original (Next-era) guidance, for reference only:
 
 ```tsx
+// (Next.js App Router — no longer the stack)
 // Wrong — every server-rendered child of /reports also ships to the browser
 'use client';
 export default function ReportsPage() { ... }
@@ -80,7 +85,7 @@ const FeatureRow = React.memo(function FeatureRow({ row }: { row: Feature }) {
 }, (prev, next) => prev.row === next.row);
 ```
 
-Pair with **stable identity** in the data layer — Zero's `useSyncQuery` returns the same object reference for unchanged rows. If you map the data into new objects on every render, memoization is useless.
+Pair with **stable identity** in the data layer — on the Zero/WebSocket transport `useSyncQuery` returns the same object reference for unchanged rows. If you map the data into new objects on every render, memoization is useless.
 
 ### 4. Animate only `transform` and `opacity` (and `filter` sparingly)
 
@@ -100,13 +105,15 @@ If you absolutely need to animate size, use `motion`'s `layout` prop, which uses
 
 Animation effects with unstable deps trigger re-render storms. If you find yourself writing `useEffect(() => { setTimeout(...) }, [openCount])`, you're about to fire one timeout per render. Use `motion`'s declarative API (`animate` prop) instead.
 
-### 6. `'use client'` files cannot import server-only code
+### 6. Keep server-only code out of the browser bundle
 
-If a file has `'use client'`, you can't import `lib/db.ts`, `lib/credentials.ts`, or anything in `app/api/`. The build will tree-shake, but the boundary check might not. Keep client/server-only types and functions in separate files; cross via API routes.
+> **Reframed for the SPA.** The old wording ("`'use client'` files cannot import server-only code") was a Next.js RSC boundary rule. `'use client'` no longer means anything, and `app/api/` is gone — server endpoints live in the Hono host (`apps/operator/bin/hono-host.ts` + `lib/endpoint-route/`). The underlying hazard is still real on the SPA.
+
+Everything in the operator-vite client tree gets bundled and shipped to the browser. Don't import Postgres clients, credential loaders, `node:fs`, or other host-only modules into a component or a file the client tree reaches — it bloats the bundle and can leak secrets. Keep client/server-only types and functions in separate files and cross the boundary via the Hono API (`fetch`/`useSyncQuery`), not a direct import.
 
 ### 7. Don't add a dependency you'll only use once
 
-A 50 KB lib for a single gradient effect is not a fair trade. Open the bundle analyzer (`ANALYZE=true npm run build`) before adding any dep over \~5 KB gzip and prove it's worth the cost. If the team has a stalwart utility (e.g. `tw-animate-css` for animations, `lucide-react` for icons), use it instead of pulling a parallel one.
+A 50 KB lib for a single gradient effect is not a fair trade. Inspect the route's chunk with a Vite/rollup bundle visualizer (e.g. `rollup-plugin-visualizer` against the operator-vite build) before adding any dep over \~5 KB gzip and prove it's worth the cost. (The old `ANALYZE=true npm run build` / `@next/bundle-analyzer` flow is gone with Next — `@next/bundle-analyzer` is not installed, and `apps/operator`'s `build` script just runs the operator-docs Starlight build then the operator-vite Vite build.) If the team has a stalwart utility (e.g. `@formkit/auto-animate` / `motion` for animations, `lucide-react` for icons), use it instead of pulling a parallel one.
 
 ### 8. Always test under "Slow 4G" + "4× CPU throttle" in DevTools
 
@@ -141,9 +148,9 @@ A page that needs both a fast and a slow data source should stream — the fast 
 </Page>
 ```
 
-### 12. Use `<Image>` from `next/image` for any non-icon image
+### 12. Use the `next/image` shim (`@/lib/router-compat`) for any non-icon image, and always set explicit dimensions
 
-Next handles responsive sizes, AVIF/WebP serving, lazy loading, and proper aspect-ratio CSS. Hand-rolling `<img>` skips all of that and produces a guaranteed CLS regression.
+The `next/image` import resolves to the router-compat shim (`apps/operator/lib/router-compat`), not Next's optimizer — there is no Next image server in the SPA. Whichever `<img>`/`<Image>` you use, **set explicit `width`/`height` (or an aspect-ratio box) and `loading="lazy"` for below-the-fold images.** A bare `<img>` with no reserved box is a guaranteed CLS regression.
 
 ### 13. Move heavy CPU work to a Web Worker
 
@@ -158,13 +165,13 @@ The pattern: `new Worker(new URL('./worker.ts', import.meta.url), { type: 'modul
 
 ### 14. Lazy-load above-the-fold-but-not-critical features
 
-Plugin tabs in Config aren't visible until the user clicks Config. Tutorial dock isn't visible until invoked. Use `next/dynamic` for these:
+Plugin tabs in Config aren't visible until the user clicks Config. Tutorial dock isn't visible until invoked. Use the `dynamic` shim (`@/lib/router-compat/dynamic`) — or plain `React.lazy` + `<Suspense>` — for these:
 
 ```tsx
 const ProposalsPanel = dynamic(() => import('./ProposalsPanel'), { ssr: false });
 ```
 
-Reduces initial bundle for the harness page; the chunk loads when needed.
+(The `ssr: false` option is a no-op vestige on the SPA — there is no SSR — but the shim accepts it so call sites don't have to change.) Reduces the initial chunk for the harness route; the lazy chunk loads when needed.
 
 ### 15. Prefer CSS `contain` and `content-visibility` for off-screen work
 
@@ -181,13 +188,13 @@ Tabs that are open but not visible (because their `data-state="inactive"`) still
 
 Adopting the [animation strategy](#) (see also `lib/forms` style guide for forms):
 
-| Need                                        | Use                                     | Reach for it because                                                                                                                                     |
-| ------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Modal / popover / dropdown / tab open/close | **CSS keyframes on Radix `data-state`** | Native compositor; zero JS cost. The `--ease-out` / `--ease-in` / `--dur-fast` / `--dur-normal` / `--dur-slow` tokens in `globals.css` are the standard. |
-| List item add / remove / reorder            | **`@formkit/auto-animate`**             | One-line `useAutoAnimate`. WAAPI direct; zero React re-renders.                                                                                          |
-| Counter tweens, choreography, drag, layout  | **`motion`**                            | WAAPI-backed since v10. `<motion.div>`, `AnimatePresence`, `LayoutGroup`.                                                                                |
-| Cross-route page transitions                | **`next-transition-router`**            | The shared `RouteTransitionProvider` centralizes navigation choreography and route lifecycle handling.                                                   |
-| **Don't use**                               | GSAP, Theatre, react-spring, popmotion  | Either overkill, abandoned, or duplicates of what we already have.                                                                                       |
+| Need                                        | Use                                                                                | Reach for it because                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Modal / popover / dropdown / tab open/close | **CSS keyframes on Radix `data-state`**                                            | Native compositor; zero JS cost. The `--ease-out` / `--ease-in` / `--dur-fast` / `--dur-normal` / `--dur-slow` tokens in `globals.css` are the standard.                                                                                                                                                                                                                                    |
+| List item add / remove / reorder            | **`@formkit/auto-animate`**                                                        | One-line `useAutoAnimate`. WAAPI direct; zero React re-renders.                                                                                                                                                                                                                                                                                                                             |
+| Counter tweens, choreography, drag, layout  | **`motion`**                                                                       | WAAPI-backed since v10. `<motion.div>`, `AnimatePresence`, `LayoutGroup`.                                                                                                                                                                                                                                                                                                                   |
+| Cross-route page transitions                | **plain TanStack `<Link>`** (+ the Web Animations API for the two jump-gate links) | `next-transition-router` was removed as pure overhead when the app moved to TanStack Router. Ordinary navigation is now a plain TSR `<Link>` (instant, no transition machine); `RouteTransitionProvider` only plays a WAAPI transform/opacity "warp" on the two `jump-gate` anchors (`/` and `/adv`). The route progress bar is driven by `@bprogress/react`, not `next-transition-router`. |
+| **Don't use**                               | GSAP, Theatre, react-spring, popmotion                                             | Either overkill, abandoned, or duplicates of what we already have.                                                                                                                                                                                                                                                                                                                          |
 
 **Reduced-motion is mandatory**:
 
@@ -206,11 +213,13 @@ For motion-driven JS animations, wrap the dashboard tree in `<MotionConfig reduc
 
 ### 16. Use the local cache before the network
 
-Zero (`useSyncQuery`) gives us local-first reads. Don't bypass it with `fetch` for data that's already in the replica. Spinners on data we already have are a UX bug.
+`useSyncQuery` (`libs/generic/sync`) is a **transport-agnostic** data hook — it works in any transport mode. On the **Zero/WebSocket** transport it gives us local-first, optimistic reads from the replica; on **polling/SSE** transports it falls back to REST. Don't bypass it with a raw `fetch` for data the active transport already serves. Spinners on data we already have locally are a UX bug.
+
+Mutations follow the same split: `useSyncMutate(path, restFallback)` runs **optimistically through the Zero client only on the WebSocket transport** (instant local apply, then server reconcile/rollback); on polling/SSE — where there is no Zero client — it calls your `restFallback`. Pass a stable `restFallback` so the same call site is REST-correct today and becomes optimistic for free once a WS provider is mounted. (Note: no `@rocicorp/zero` dependency is declared in any `package.json` — Zero is one configured transport, not a hard dependency of the hook.)
 
 ### 17. Pre-fetch the next likely route
 
-If clicking the harness picker is going to navigate to a different harness, `<Link prefetch>` (default in App Router) loads its JS chunk before the click. Make sure your `Link` components stay as `Link`s and aren't replaced with `router.push` (which doesn't prefetch).
+If clicking the harness picker is going to navigate to a different harness, use a TanStack `<Link>` (via the router-compat shim) so its chunk can be preloaded before the click. TanStack Router preloads on intent (hover/touch) when configured; keep navigation as `<Link>` elements rather than imperative `router.push` / `navigate()`, which don't get the same preload behavior.
 
 ### 18. Cache server responses appropriately
 
@@ -218,7 +227,7 @@ If clicking the harness picker is going to navigate to a different harness, `<Li
 
 ### 19. `preconnect` to cross-origin API hosts
 
-For Anthropic, Cloudflare, Chatwoot, etc., add `<link rel="preconnect" href="https://api.anthropic.com">` in `app/layout.tsx`. Buys you 100–300 ms on the first request.
+For Anthropic, Cloudflare, Chatwoot, etc., add `<link rel="preconnect" href="https://api.anthropic.com">` in the SPA's root HTML (`apps/operator-vite/index.html` `<head>`, or the root layout component). Buys you 100–300 ms on the first request.
 
 ## Layout / paint rules
 
@@ -282,7 +291,7 @@ When an animation feels janky:
 
 ### 26. Bundle analyzer before merging a dep
 
-`ANALYZE=true npm run build` (Next.js built-in via `@next/bundle-analyzer`). Look at the route's chunk for unexpected size. Anything > 100 KB on a single route is suspect.
+Run a Vite/rollup bundle visualizer (e.g. `rollup-plugin-visualizer`) against the operator-vite build and look at the route's chunk for unexpected size. Anything > 100 KB on a single route is suspect. (The old `ANALYZE=true npm run build` / `@next/bundle-analyzer` path is gone — `@next/bundle-analyzer` is not installed and the build is no longer a Next build.)
 
 ## Anti-patterns we've fallen into before — frontend
 
@@ -301,16 +310,16 @@ The 2026-05-03 perf audit found these patterns *had been shipped* and were causi
 
 ### A1. Don't `await` filesystem operations in a serial `for` loop
 
-If you read N files sequentially, **Next.js dev mode adds \~150ms per `fs.readFile`** (HMR file-tracking instrumentation wraps every fs call). 68 files × 150ms = 10 seconds **just from the loop shape**. The same code in plain Node is 14ms.
+If you read N files sequentially, the per-call latency multiplies: in the audited environment \~150ms per `fs.readFile` × 68 files = 10 seconds **just from the loop shape**, where the same code parallelized was \~14ms. (The audit measured this under the old Next.js dev server, whose HMR file-tracking instrumentation wrapped every fs call; that named cause is **stale** — dev now runs the Vite SPA on `:3055` plus a tsx/Hono host on `:3070`, with no Next dev server wrapping fs. The parallelize-the-reads advice still stands regardless of the runtime.)
 
 ```ts
-// ❌ Wrong — measured 10.9s in Next.js dev for 68 files
+// ❌ Wrong — measured 10.9s for 68 files (serial loop shape)
 for (const h of harnesses) {
   const raw = await fs.readFile(join(dir, h, 'config.json'), 'utf8');
   out[h] = JSON.parse(raw);
 }
 
-// ✅ Right — same files, ~150ms (10× speedup, single-call latency)
+// ✅ Right — same files, ~single-call latency (10×+ speedup)
 const results = await Promise.all(harnesses.map(async (h) => {
   const raw = await fs.readFile(join(dir, h, 'config.json'), 'utf8');
   return [h, JSON.parse(raw)] as const;
@@ -347,11 +356,13 @@ const results = await Promise.all(projects.map(p => {
 
 ### A4. Don't shell out to `psql` / `pg_dump` from runtime code
 
-Replaced with `postgres-js` + `@electric-sql/pglite-tools` in 2026-05-03 (commits `a979073`, `0915a96`, `599755d`). Lint guard at `libs/papercusp-export-state/src/no-psql-shellout.test.ts` blocks regressions. **If you find yourself wanting `spawn('psql', ...)`**, you almost certainly want postgres-js's `sql.unsafe(text)` for SQL apply or `sql\`COPY ... TO STDOUT\`.readable()`for COPY. The only allowlisted exception is`pg-dump.ts`(gated dev fallback) — see memory`project\_psql\_bundling\_deferred.md\`.
+Replaced with `postgres-js` + `@electric-sql/pglite-tools` in 2026-05-03 (commits `a979073`, `0915a96`, `599755d`). **If you find yourself wanting `spawn('psql', ...)`**, you almost certainly want postgres-js's `sql.unsafe(text)` for SQL apply or `sql\`COPY ... TO STDOUT\`.readable()`for COPY. (Historical note: the lint guard and the one allowlisted`pg-dump.ts`dev-fallback exception lived in the`@papercusp/export-state`package —`libs/papercusp-export-state`no longer exists; that package has been retired to`\_retired/snapshot-system/papercusp-export-state/\`, so the cited guard path is dead.)
 
-### A5. Don't put module-init side effects inside catch-all route handlers
+### A5. Don't put module-init side effects on a hot, re-evaluated path
 
-`apps/operator/app/api/[[...route]]/route.ts` has `mountPluginApiRoutes(plugins).then(log)` at module top level. The work is cached via `globalThis`, but **the `.then(log)` always runs**, and Next.js dev mode re-evaluates the module per request, producing log spam (`[plugin-mount] mounted=4 skipped=6 errors=2` repeated dozens of times). Move side effects behind a "first request" guard, not module top-level.
+> **Artifact moved.** The original offender was a Next.js catch-all route, `apps/operator/app/api/[[...route]]/route.ts`, with `mountPluginApiRoutes(plugins).then(log)` at module top level — re-evaluated per request by Next dev, producing `[plugin-mount]` log spam. That route is **gone** (`apps/operator/app/api/` is empty), and `mountPluginApiRoutes().then(...)` now lives in the one-time boot script `apps/operator/bin/host-bootstrap.ts` (the Hono host), so the "re-evaluated per request" premise no longer applies.
+
+The lesson generalizes: keep boot-time side effects (route mounting, pool warmup, log statements) in a script that runs **once at process start**, not at module top level on a path that can be re-imported/re-evaluated. If a `.then(log)` runs on every request, you've put init work somewhere hot. Guard it behind a "first call" sentinel or hoist it into the host bootstrap.
 
 ### A6. Don't use `<details>` to gate "lazy" rendering
 
@@ -425,13 +436,15 @@ unfreeze the page when the lock leaks.
 
 ### A11. Don't fan out from N `useEffect` hooks fetching the same endpoint
 
-The audit captured `/checkpoints` ×2, `/reviews` ×3, `/agents` ×2 in a single dashboard load — one fetch per `useEffect`-mount, no dedup. Each request also pays a 1-2s baseline overhead in Next.js dev mode. Cumulative: 30-60s of wasted server work on page load.
+The audit captured `/checkpoints` ×2, `/reviews` ×3, `/agents` ×2 in a single dashboard load — one fetch per `useEffect`-mount, no dedup. In the audited environment each request also paid a 1-2s baseline overhead (then under Next.js dev; that named cause is stale now that the API is served by the Hono host on `:3070`). Cumulative: 30-60s of wasted server work on page load. The duplicate-fetch problem is runtime-independent — fan-out from N effects to the same endpoint is wasteful on any backend.
 
 **Pattern to use**: one `useSyncQuery` in a parent component, propagate via context or props. Or migrate to Zero (already wired for many of these tables).
 
-### A12. Don't ship `experimental` Next.js config for features the version doesn't recognize
+### A12. (Historical — Next removed) Don't carry flag-style config across major framework upgrades
 
-`experimental.turbopackFileSystemCacheForDev: false` was set for a Next 15 Turbopack bug. Next 16 doesn't recognize it (`⨯ turbopackFileSystemCacheForDev` at boot). Audit before retaining flag-style configs across major Next upgrades; remove ones that show up as `⨯` in the dev log.
+> **No longer applies to this stack.** Next.js has been removed, so there is no `next.config` and no `experimental.*` flags to audit. Kept as a general lesson.
+
+The original incident: `experimental.turbopackFileSystemCacheForDev: false` was set for a Next 15 Turbopack bug; Next 16 didn't recognize it (`⨯ turbopackFileSystemCacheForDev` at boot). The transferable rule: when you bump any build tool across a major version (now Vite/rollup rather than Next), re-audit flag-style config you set to work around an old version's bug and drop anything the new version warns about.
 
 ### A17. Don't fetch the same per-slug data N times in a Promise.all that varies by sub-key
 
@@ -457,13 +470,13 @@ Sounds obvious in isolation but easy to miss when the per-iteration helper hides
 
 ### A18. Don't pin per-process caches to module scope without a globalThis sentinel
 
-Caches declared `const __cache = new Map()` at module top level look durable but **reset every time Next.js dev re-evaluates the module** (visible as repeated `[plugin-mount]` log lines on the catch-all route). The cache key looks like a key but it's effectively per-request because the Map itself is re-allocated.
+Caches declared `const __cache = new Map()` at module top level look durable but **reset every time the runtime re-evaluates the module** (historically visible as repeated `[plugin-mount]` log lines under the old Next.js dev catch-all route; any HMR / module-reload setup can do this). The cache key looks like a key but it's effectively per-request because the Map itself is re-allocated.
 
 Fix: pin the cache on `globalThis` so HMR / module re-eval reuses the same Map.
 
 ```ts
-// ❌ Wrong — Map gets recreated on every module re-eval (Next.js dev
-//             with the [[...route]] catch-all does this per request)
+// ❌ Wrong — Map gets recreated on every module re-eval (HMR / module
+//             reload does this; the old Next dev catch-all did it per request)
 const __costCache = new Map<string, CacheEntry>();
 
 // ✅ Right — pinned to globalThis; survives module re-eval
@@ -476,11 +489,11 @@ const __costCache: Map<string, CacheEntry> = (() => {
 })();
 ```
 
-This is the durable-cache idiom Next.js itself uses for things like the Postgres connection pool. Use it for any Map/cache you want to survive across requests in dev mode.
+This is the durable-cache idiom commonly used for things like a Postgres connection pool. Use it for any Map/cache you want to survive across module re-evals in dev mode.
 
 ### A19. Don't shell-walk `/proc` per request without a cache
 
-Walking `/proc` to find live processes (e.g., to compute `alive` state for a harness) means N+ sync `readFileSync` calls per request, where N is the total process count on the host (4000+ on a busy dev box). In standalone Node this is \~50-100ms; under Next.js dev's fs instrumentation it can be 5-10 seconds.
+Walking `/proc` to find live processes (e.g., to compute `alive` state for a harness) means N+ sync `readFileSync` calls per request, where N is the total process count on the host (4000+ on a busy dev box). In standalone Node this is \~50-100ms; under the old Next.js dev fs instrumentation the audit saw 5-10 seconds (that named cause is stale now that the host runs under tsx/Hono, but the per-request `/proc` walk is still wasteful enough to cache).
 
 Fix: 5-second `globalThis`-pinned cache (alive state doesn't need sub-second freshness).
 
@@ -503,22 +516,29 @@ For dashboard "is this thing running?" status indicators, 5 seconds is well with
 
 ### A16. Don't enforce a minimum-visible debounce on a progress indicator
 
-A page-transition library was integrated with `bprogress` to show a
-loading bar during route changes. Two constants in `RouteLink.tsx` +
-`RouteProgressProvider.tsx` controlled how the bar behaved:
+The route progress bar (`@bprogress/react`, driven by `RouteProgressProvider`)
+shows a loading bar during route changes. Its timing constants now live in
+`apps/operator/app/_components/routePending.ts`:
 
 ```ts
 // ❌ Wrong — measured: every nav showed the bar 3s minimum, regardless of
-//             how fast the route actually loaded. With Next.js dev's
+//             how fast the route actually loaded. With the old Next.js dev
 //             cold-compile (~3s), perceived nav was 6+s.
 const ROUTE_PROGRESS_MIN_VISIBLE_MS = 3000;
 const ROUTE_PROGRESS_FALLBACK_MS    = 8000;
 
 // ✅ Right — bar reflects actual pending state; gone the instant the
 //            route lands. Cuts ~3s off every navigation.
-const ROUTE_PROGRESS_MIN_VISIBLE_MS = 0;
-const ROUTE_PROGRESS_FALLBACK_MS    = 1500;
+const ROUTE_PROGRESS_FALLBACK_MS = 1500;            // matches routePending.ts
+const ROUTE_PROGRESS_GENERIC_MIN_VISIBLE_MS = 0;    // generic routes: no debounce
+const ROUTE_PROGRESS_HARNESS_MIN_VISIBLE_MS = 360;  // /harness/* keeps a deliberate floor
 ```
+
+**Per-target min-visible (the one intentional exception):** the min-visible
+debounce is **0ms for generic routes** but **360ms specifically for
+`/harness/*`** navigations; `routePendingMinVisibleMs()` picks per target.
+So the "always 0" rule below holds for ordinary navigation, with the harness
+floor as the documented, deliberate carve-out.
 
 A "minimum-visible debounce" on a progress bar conflates two things:
 
@@ -633,7 +653,7 @@ A third pattern is harder to catch but biggest in absolute pain:
 
 ### What this session demonstrated
 
-* **20-second mystery endpoints are usually one of the patterns above.** Don't reach for "Next.js dev mode is just slow"; instrument the handler with `t0/t1` markers, find the actual bottleneck, parallelize.
+* **20-second mystery endpoints are usually one of the patterns above.** Don't reach for "the dev server is just slow" (the audit's original culprit was Next.js dev, now retired); instrument the handler with `t0/t1` markers, find the actual bottleneck, parallelize.
 * **The `/lite` endpoint pattern is a smell.** If you have `/things` and `/things/lite`, every callsite using `/things` "just in case" is overpaying. Default to `/lite`; justify each upgrade.
 * **Lint guards beat memory.** Patterns added to `perf-anti-patterns.test.ts` are caught at CI time. Patterns that only live in this doc require humans to remember.
 * **The BASELINE ratchet works.** Started at 9 grandfathered offenders, now at 1. The stale-baseline check forces the list to shrink as fixes land, so this isn't "permanent debt" — it's a queue.
@@ -687,18 +707,18 @@ To intentionally allow a single line, append `// perf:allow A<N> <reason>` to it
    ```
    verdict goto http://localhost:3055/harness && verdict console error
    ```
-4. **Watch the dev server log** for new `⚠ Fast Refresh full reload` lines — those signal the duplicate-key issue we fixed in A8. Also watch for `[plugin-mount]` log spam, which signals A5 module re-evaluation.
+4. **Watch the dev server log** for HMR full-reload loops (the Vite equivalent of the Next "Fast Refresh full reload" the audit saw) — those signal the duplicate-key issue we fixed in A8. The old per-request `[plugin-mount]` log spam (A5) is no longer expected: plugin mounting now happens once in `apps/operator/bin/host-bootstrap.ts`, so seeing it repeat means init work has crept back onto a hot path.
 5. **If the page goes "totally frozen"**: it's almost certainly A10 — either inline `pointer-events: auto` left on a closed Radix dialog (covers clicks) or inline `pointer-events: none` left on `<body>` (entire page unclickable). Both fixes are `!important` overrides; see A10 for the snippets.
 
 ## Cheat sheet — what to do, in order
 
 When you're about to write or change a component:
 
-1. Can it be a Server Component? **Default to yes.**
-2. If client, can the `'use client'` boundary be smaller?
+1. Is everything in this chunk actually needed up front? **Code-split the heavy, not-immediately-visible parts** (`dynamic` shim / `React.lazy`). *(No Server Components on this SPA — there's no "make it server-only" option.)*
+2. Did you accidentally pull a host-only module (Postgres, `node:fs`, credentials) into the client tree? **Keep it on the Hono side; cross via the API.**
 3. Will it render in a list of more than 50 items? **Virtualize and memoize.**
 4. Does it have an animation? **CSS first; auto-animate for lists; motion last.**
-5. Does it fetch data? **Use Zero or `<Suspense>`. Optimistic on mutations.**
+5. Does it fetch data? **Use `useSyncQuery` (transport-agnostic) or `<Suspense>`. Optimistic via `useSyncMutate` on the WS transport.**
 6. Did you measure with React DevTools Profiler? **Do it before merging.**
 
 Adopting these is what makes the difference between "okay app" and "feels like Linear." Every rule on this page came from a real regression we've shipped or fixed; none of them are speculative.
@@ -708,5 +728,6 @@ Adopting these is what makes the difference between "okay app" and "feels like L
 * [Library reference](/internal/docs/design/libraries) — the canonical libs
 * [Gotchas](/internal/docs/design/gotchas) — sharp edges in the existing UI
 * React docs: [`memo`](https://react.dev/reference/react/memo), [`useMemo`](https://react.dev/reference/react/useMemo), [`useDeferredValue`](https://react.dev/reference/react/useDeferredValue), [`useTransition`](https://react.dev/reference/react/useTransition), [`Suspense`](https://react.dev/reference/react/Suspense)
-* Next.js: [optimizing](https://nextjs.org/docs/app/building-your-application/optimizing)
+* Vite: [performance](https://vite.dev/guide/performance), [build options](https://vite.dev/guide/build)
+* TanStack Router: [preloading](https://tanstack.com/router/latest/docs/framework/react/guide/preloading)
 * Web Vitals: [INP](https://web.dev/articles/inp), [LCP](https://web.dev/articles/lcp), [CLS](https://web.dev/articles/cls)

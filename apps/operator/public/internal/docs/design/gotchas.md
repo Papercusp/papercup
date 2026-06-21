@@ -75,7 +75,7 @@ A tell that `<details>` is correct: the content is prose (or auto-generated text
 
 ## Native checkbox / radio / range — `accent-color` is the carve-out, NOT the migration
 
-`globals.css` applies `accent-color: var(--accent)` to native `<input type="checkbox|radio|range">`. This makes the OS-rendered control's tint match the app accent without breaking semantics — a strict improvement, never a workaround.
+When a native `<input type="checkbox|radio|range">` legitimately can't be wrapped, `accent-color` recolors the OS-rendered control's tint to match the app accent without breaking semantics — a strict improvement, never a workaround. There's **no global baseline rule** for this: `accent-color` is applied only by narrowly-scoped rules at each carve-out site (e.g. `.pc-toggle input { accent-color: var(--accent) }` in `globals.css`, `.h-proposal-item input` in `h-proposals.css`, and `.pc-template-manifest-structured input[type="checkbox"]` which uses a literal hex). Don't assume native radio/range pick up the accent automatically — add a scoped rule when you reach for one.
 
 **Do not read this as "native checkboxes are fine now."** HR2 is still absolute for harness UI: use `<Checkbox>`. The wrapper exposes `indeterminate` declaratively, gives us a stable `data-state` hook, and owns focus styling. None of that comes from `accent-color`.
 
@@ -83,7 +83,7 @@ The carve-out is narrow: native checkboxes that legitimately can't be wrapped (m
 
 ## Floating widgets that pin to a viewport corner are NOT centered Modals
 
-A few surfaces — the Deck (`OperatorChatSidebar`, the fixed-left full-height `.operator-panel` chat) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, `motion` `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).
+A few surfaces — the Deck (`OperatorPanel`, the fixed `.operator-panel` HUD whose wordmark reads "Deck"; not to be confused with `OperatorChatSidebar`, which renders the separate `.op-chat-sidebar` "Papercup chat" surface sitting in front of it) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, `motion` `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).
 
 For these, the correct pattern is a hand-written `role="dialog"` + `aria-label` on the container, with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat the Deck and OracleDock as the canonical exceptions; if you add a new floating-corner-widget pattern, document it next to them.
 
@@ -176,7 +176,9 @@ If you find yourself reaching for a NEW library not in this list, ask first. Mos
 
 ## Per-field-settings pages — don't reach for RHF
 
-If you're looking at `/settings/voice`, `/settings/backups`, `/settings/operator`, or any other settings page where each control persists independently (no Submit button, no atomic "save the whole form" gesture), **do not migrate it to `useFormWith`**. That conflates the page's model with what RHF was built for. Use `useDebouncedSave(value, persist)` per field instead — full pattern is in [libraries: Form patterns](/internal/docs/design/libraries#form-patterns--picking-the-right-model).
+If you're looking at `/settings/voice`, `/settings/backups`, or any other settings page where each control persists independently (no Submit button, no atomic "save the whole form" gesture), **do not migrate it to `useFormWith`**. That conflates the page's model with what RHF was built for. Use `useDebouncedSave(value, persist)` per field instead — full pattern is in [libraries: Form patterns](/internal/docs/design/libraries#form-patterns--picking-the-right-model).
+
+The inverse is also a trap: `/settings/operator` looks similar but is a genuine atomic form — it uses `useFormWith(ConfigSchema)` with a single `<form onSubmit={submit(onSave)}>` and a "Save prompt + preferences" submit button. Don't "fix" it to per-field auto-save; it's RHF on purpose. The distinction is the save gesture, not the URL.
 
 Symptoms that mean you've picked the wrong pattern:
 
@@ -188,7 +190,9 @@ If any of those, stop and switch to `useDebouncedSave`. HR1/HR2/HR3/HR6 still ap
 
 ## CSS-token lint catches undefined `var(--X)` references
 
-Every `var(--X)` reference in a `.tsx` file must resolve to a token defined in `app/globals.css`, `app/_semantic.css`, or `app/_brand-primitives.css` — or be in the runtime-allowlist (`--radix-*`, `--op-chat-w`).
+Every `var(--X)` reference in a `.tsx` file must resolve to a token defined in `app/globals.css`, `app/_semantic.css`, or `app/_brand-primitives.css` — or be in the runtime-allowlist, which is the exact pair `--radix-select-trigger-width` and `--op-chat-w` (a literal set, **not** a `--radix-*` wildcard, so a new `--radix-...` token still has to be added to `RUNTIME_TOKENS`).
+
+The lint also satisfies **component-local** custom properties: a `--name:` that is both defined and used inside the same `.tsx` (e.g. inside a styled-jsx `<style>` block) counts as defined without any global definition — the global CSS-source scan can't see definitions that live in a `.tsx`, so the lint collects each file's own `--name:` definitions and treats self-references as resolved.
 
 The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operator's unit test suite. When it fails the error message lists every undefined token + the files using it, plus the canonical operator vocabulary to map to (`--bg`, `--bg-2`, `--bg-3`, `--fg`, `--fg-dim`, `--fg-mute`, `--border`, `--accent`, `--good`, `--warn`, `--bad`, etc.).
 
@@ -199,7 +203,7 @@ The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operat
 * Inverted re-use of swept names: `--text-1`, `--text-2`, `--text-3`, `--pc-*`
 * Starlight tokens in operator code: `--sl-color-*`
 
-**If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from `design-tokens/` via `npm run tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don't add it to the runtime allowlist unless a framework genuinely sets it at runtime.
+**If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from the root `design-tokens/` via `pnpm tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don't add it to the runtime allowlist unless a framework genuinely sets it at runtime.
 
 **Raw color carve-out:** user-authored media values are not UI chrome. A sketch canvas's persisted paper color or a color-picker's current ink value can be a literal CSS color because it is saved drawing content, not app styling. Keep that carve-out narrow: if the color affects a panel, button, label, border, status badge, or layout surface, it must be a semantic token.
 

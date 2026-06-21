@@ -203,7 +203,10 @@ DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile',
 async function handoffReconcileTick(): Promise<void> {
   await DBOS.runStep(async () => {
     if (shouldShedHeavyTick('handoff-reconcile')) return;
-    await reconcileStalePendingHandoffsOnce();
+    // live-configurability-audit P-014: apply the handoff-TTL override (undefined ⇒ 12h default).
+    const { readCoordLivenessConfig } = await import('../coord-liveness-config');
+    const livenessCfg = await readCoordLivenessConfig();
+    await reconcileStalePendingHandoffsOnce({ ttlMs: livenessCfg.handoffTtlMs });
   }, { name: 'handoff-reconcile' });
 }
 const handoffReconcileWorkflow = DBOS.registerWorkflow(handoffReconcileTick, {

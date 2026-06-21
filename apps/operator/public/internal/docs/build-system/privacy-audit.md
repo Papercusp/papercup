@@ -8,7 +8,7 @@ The V1 ship contract, how bin/audit-bundle.sh enforces it, and how to extend it 
 A freshly installed production binary must:
 
 1. Make **zero network requests** to `flags.papercuspai.com` under any usage.
-2. Resolve every feature flag to its `FLAG_DEFAULTS` ship value with `source: "defaults"` — i.e. PostHog must not be configured. (The defaults are the V1 ship state: `papercusp-snapshots` is `true` by design; cloudflare-publish / oracle / harness-phases / design / testing / the-hive / video / voice / improvement-auto-implement / inbox-durable-escalations are all `false`.)
+2. Resolve every feature flag to its `FLAG_DEFAULTS` ship value with `source: "defaults"` — i.e. the flag-eval server must not reach out to PostHog. The flag *values* themselves are no longer all-off: under the current **alpha flags-default-ON policy** a clean install serves the bundled defaults, and a large majority of them ship `true` (e.g. `papercusp-the-hive`, `papercusp-video-channels`, `papercusp-voice-channels`). What the contract guarantees is that those values come from the baked-in `FLAG_DEFAULTS` with no network call — not that they are uniformly `false`. The deliberately-off subset (unverified / destructive / security / dark) includes `papercusp-cloudflare-publish`, `papercusp-harness-phases`, `papercusp-design`, `papercusp-testing` (which now also gates the Oracle — the separate `papercusp-oracle` key was folded into it by owner ask 2026-06-10), `papercusp-improvement-auto-implement`, and `papercusp-inbox-durable-escalations`. (There is no `papercusp-snapshots` flag — SNAPSHOTS was retired in `retire-snapshots-instance-spec-2026-06-09`; the reproducible clone is now the ungated `InstanceSpec`.)
 
 Both must hold without anyone configuring anything post-install.
 
@@ -17,12 +17,23 @@ Both must hold without anyone configuring anything post-install.
 `packages/operator-core/lib/posthog-config.ts` resolves the active PostHog configuration in this priority order:
 
 1. **Env vars** — `PAPERCUSP_POSTHOG_HOST`, `PAPERCUSP_POSTHOG_KEY`, `PAPERCUSP_POSTHOG_PERSONAL_KEY`, `PAPERCUSP_POSTHOG_TESTING_FEATURES`
-2. **Discovery file** — `~/.papercusp/posthog.json` (and `~/.papercusp/posthog-personal.json` for the personal API key)
+2. **Discovery file** — `~/.papercusp/posthog.json`. The personal API key is read from the `personalApiKey` field *inside that one file*; there is no separate `posthog-personal.json` discovery file (any prose mention of one is stale).
 3. **Default** — testing-features disabled → the `/api/flags/bootstrap` layer returns `source: "defaults"`
 
-`packages/operator-core/lib/flag-bus.ts` only initializes the PostHog client when `isTestingFeaturesEnabled() === true`. So on a clean install (no env vars, no discovery files), the PostHog SDK never starts. **Zero network requests by construction.**
+`packages/operator-core/lib/flag-bus.ts` only initializes the PostHog client when `isTestingFeaturesEnabled() === true`. So on a clean install (no env vars, no discovery files), the PostHog SDK never starts for the **flag-eval path**. **Zero flag-network requests by construction.**
 
-`libs/flags/src/types.ts` exports `FLAG_DEFAULTS` with every flag defaulting `false`. These are baked into the bundle. On a clean install they are the values returned.
+### Two-track design
+
+Privacy reasoning here has to separate two PostHog consumers:
+
+* **Server-side flag evaluation** (`posthog-config.ts` / `flag-bus.ts`) stays `unconfigured` / `null` on a clean install — no SDK, zero outbound flag requests, every flag served from the bundled `FLAG_DEFAULTS`.
+* **Browser telemetry** (`telemetry-flush.ts`, the desktop `telemetry-config` route) consumes the **bundled public defaults** (`POSTHOG_PUBLIC_DEFAULTS` — see below), so a user's opt-in *alone* enables forwarding. It only fires after explicit opt-in (default off).
+
+`libs/flags/src/types.ts` exports `FLAG_DEFAULTS`, baked into the bundle. Under the alpha **flags-default-ON** policy most flags default `true`; only a deliberate subset (unverified / destructive / security / dark) defaults `false`. On a clean install these baked values are exactly what's returned — the privacy guarantee is the *absence of a flag-network call*, not a uniform-off value set.
+
+### Bundled public PostHog defaults
+
+Every public build also bundles `POSTHOG_PUBLIC_DEFAULTS` (`packages/operator-core/lib/posthog-public-defaults.ts`): the public `host` (`https://flags.papercuspai.com`) and an anonymous-capture `phc_` projectKey (`phc_tnwKu5QTgaHi6hyrHwA3EUQFKhskJES4c4zAzHCUrPFv`). This is a deliberate loosening of the original "zero PostHog references in the artifact" V1 contract (`mac-desktop-release-readiness-2026-06-11` D-010): the key is a read-only/anonymous-capture client credential (it cannot read events or mutate flag definitions), shipped so a user's opt-in is the only step needed to forward telemetry — no "drop a JSON file" dance. The write-side keys (`personalApiKey`, `webhookSecret`) are *never* bundled. Because that one public key now legitimately appears in every artifact, the auditor was patched to mask it before scanning (see below).
 
 ## What the auditor scans for
 
@@ -35,6 +46,8 @@ phc_[A-Za-z0-9_]{30,}
 
 These are `REGEX_NEEDLES`. Placeholders like `phx_xxx` or path/prose references (`posthog.json`, `PAPERCUSP_POSTHOG_KEY`) deliberately do **not** match — earlier versions used those literal strings as needles and false-positived on source/docs/code, so the literal `NEEDLES` array is now empty.
 
+**The one allowed exception:** the bundled public projectKey (`POSTHOG_PUBLIC_DEFAULTS.projectKey`, kept in the script as `PUBLIC_PROJECT_KEY` and synced to `posthog-public-defaults.ts`) is `sed`-masked out of every candidate file *before* the regex runs. A file whose only `phc_`/`phx_` match is that public key therefore does **not** fail; any **other** `phc_`/`phx_` key — especially a write-side `phx_` personal key — still FAILs. So the contract the auditor now enforces is "no PostHog secret *other than* the deliberately-public anonymous-capture key."
+
 It also has **soft `WARN_NEEDLES`** that surface (but do *not* fail) when the browser SDK is in the bundle:
 
 ```
@@ -44,7 +57,7 @@ posthog-js@
 
 `posthog-js` is dynamic-imported only when the user opts into telemetry (default off), so its presence isn't a leak per se — but a hostile fork could strip the opt-in gate, so it's worth flagging. WARN, not FAIL.
 
-Documentation paths (`content/docs`, `*.mdx`, `*.md`, `*.rsc`, prerendered `app/docs/*.html`) are excluded from the FAIL scan via an `exclude_re` so legitimate prose mentions of the needles don't trip it.
+Documentation paths (`content/docs`, any `/docs/` path segment, `*.mdx`, `*.md`, `*.rsc`, prerendered `app/docs/*.html`) are excluded from the FAIL scan via an `exclude_re` so legitimate prose mentions of the needles don't trip it.
 
 ## Supported artifact formats
 
@@ -72,7 +85,7 @@ bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
 Exit codes:
 
 * `0` — all clean (`OK: N/N artifacts clean`)
-* `1` — at least one artifact had a match
+* `1` — at least one artifact had a match, or a named artifact was not found. A missing/`not found` artifact is counted as a failure (`FAIL: <artifact> (not found)`), and the exit-1 summary line reads `FAIL: N of M artifacts contain PostHog leaks`.
 * `2` — usage error
 
 ## /admin integration

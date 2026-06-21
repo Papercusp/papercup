@@ -25,5 +25,5 @@ for any long-running mission — coding, research, marketing, ops, anything. The
 &#x20;drift control (fresh contexts, named decisions, file-based handoff). It's unopinionated about
 what mission the harness runs. Anyone publishes a "harness config" via the marketplace; the best ones win.
 
-Papercup is one reference install — a 5-director autonomous AI company demo. It's not the framework's purpose;
-it's an example of what one can ship on top.
+Papercup was a reference install — a 5-director autonomous AI company demo, now preserved-not-active in
+\_retired/papercup. It was never the framework's purpose; just an example of what one can ship on top.

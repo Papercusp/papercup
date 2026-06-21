@@ -26,7 +26,7 @@ Manifest schema, error codes, file map, capability conventions. Lookup material.
   "replayBufferSize":  100,                    // Ring-buffer size for Last-Event-ID resume. Default 0 = no replay.
   "idleTimeoutSec":    120,                    // Abort if no event emitted for N seconds. Default unset.
   "state":             { /* JSON-Schema for ctx.publishState payload */ },  // Declares state-shaped tool (auto opt-out of replay buffer; auto-streamable)
-  "modality":          ["text", "voice"],      // Surface filter for prompt-assembly catalog. Default ["text"].
+  "modality":          ["text", "voice"],      // Surface filter for prompt-assembly catalog. Default (absent) = ["text", "voice"] — visible in both catalogs.
   "guidance": {                                // Rendered into prompt-assembly tools catalog
     "when":      "User asks to <X>; pair with <Y> for the chained-list case.",
     "notWhen":   "Not for <Z> — use <other_tool> instead.",
@@ -168,17 +168,18 @@ Null window means no quota check (and no telemetry insert path that requires the
 
 ### Secrets / telemetry / catalog
 
-| Concern                                                                   | Module                                                                                                                                                             |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Search-provider key reader (orchestrator-side)                            | `libs/papercusp/packages/orchestrator/src/spawn-env-from-pg.ts`                                                                                                    |
-| Search-provider key reader (operator-side)                                | `packages/operator-core/lib/search-provider-credentials.ts`                                                                                                        |
-| Telemetry schema (`harness_shared.tool_invocations`, incl. `event_count`) | `libs/papercusp/libs/db/sql/000-baseline.sql` (the old `046`/`066` migrations were squashed into the baseline; see `self-contained-migration-baseline-2026-06-02`) |
-| Search-provider keys schema (`operator_search_provider_credentials`)      | `libs/papercusp/libs/db/sql/000-baseline.sql` (squashed from old `047`)                                                                                            |
-| `system:operator` `chat:write` backfill                                   | `libs/papercusp/libs/db/sql/000-baseline.sql` (squashed from old `067`)                                                                                            |
-| Read-only catalog page                                                    | `apps/operator/app/settings/plugins/tools/page.tsx` (served at `/settings/plugins/tools`)                                                                          |
-| Host status / refresh endpoint                                            | `packages/operator-core/lib/endpoint-route/routes/plugins/host-refresh.ts`                                                                                         |
-| Tool catalog endpoint                                                     | `packages/operator-core/lib/endpoint-route/routes/plugins/tools.ts`                                                                                                |
-| Provision system principals                                               | `packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts` (calls `provisionSystemPrincipal` in `packages/agent-mcp/src/provisioning.ts`)           |
+| Concern                                                                     | Module                                                                                                                                                                         |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Search-provider key reader (orchestrator-side)                              | `libs/papercusp/packages/orchestrator/src/spawn-env-from-pg.ts`                                                                                                                |
+| Search-provider key reader (operator-side)                                  | `packages/operator-core/lib/search-provider-credentials.ts`                                                                                                                    |
+| Telemetry schema (`harness_shared.tool_invocations`, incl. `event_count`)   | `libs/papercusp/libs/db/sql/000-baseline.sql` (the old `046`/`066` migrations were squashed into the baseline; see `self-contained-migration-baseline-2026-06-02`)             |
+| Search-provider keys schema (`operator_search_provider_credentials`)        | `libs/papercusp/libs/db/sql/000-baseline.sql` (squashed from old `047`)                                                                                                        |
+| `system:operator` `chat:write` grant (new principals)                       | `packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts` (in the default capability list)                                                                     |
+| `system:operator` `chat:write` backfill (one-time, pre-existing principals) | `libs/papercusp/libs/db/sql/archive/067-operator-chat-write-cap.sql` (a data `UPDATE`, **not** in the baseline — a row backfill isn't schema, so the squash didn't capture it) |
+| Read-only catalog page                                                      | `apps/operator/app/settings/plugins/tools/page.tsx` (served at `/settings/plugins/tools`)                                                                                      |
+| Host status / refresh endpoint                                              | `packages/operator-core/lib/endpoint-route/routes/plugins/host-refresh.ts`                                                                                                     |
+| Tool catalog endpoint                                                       | `packages/operator-core/lib/endpoint-route/routes/plugins/tools.ts`                                                                                                            |
+| Provision system principals                                                 | `packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts` (calls `provisionSystemPrincipal` in `packages/agent-mcp/src/provisioning.ts`)                       |
 
 ## URL spawn params
 
@@ -194,8 +195,11 @@ Read by `buildHttpSpawnContext` in `http-projection.ts` and the equivalent on th
 | `run`          | `X-Papercusp-Run`          | `ctx.runId`                                             |
 | `spawn`        | `X-Papercusp-Spawn`        | `ctx.spawnId`                                           |
 | `parent_spawn` | `X-Papercusp-Parent-Spawn` | `ctx.parentSpawnId`                                     |
+| `client`       | `X-Papercusp-Client`       | `ctx.uiClientId`                                        |
 
 Header form takes precedence over query form when both are present. The orchestrator uses query form when writing per-spawn `.mcp.json` because mcp-handler clients don't have a clean way to attach custom headers.
+
+`client` carries the per-session SID used for coordination ownership (locks, plan edits, `agent_chats`). It is required for superuser / power-user identity attribution: a client-less superuser/power-user call reaches `resolveAgentIdentity` with `uiClientId=null` and **throws**, so identity-resolving tools fail for those callers. It follows the same header-first precedence as the others (the `X-Papercusp-Client` header overrides a static `?client=` query value).
 
 ## Operations endpoints
 

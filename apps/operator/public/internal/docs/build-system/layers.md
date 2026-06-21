@@ -1,15 +1,19 @@
 # TypeScript Layers
 URL: /internal/docs/build-system/layers
 
-The four-layer model the operator is migrating toward — core / host / routes / client — and the empty tsconfig scaffold under apps/operator/layers/ that names them.
+The four-layer model — core / host / routes / client — and the inert tsconfig scaffold under apps/operator/layers/ that names them. The scaffold (Phase 6a) was dropped 2026-06-14; the boundary is now enforced physically by the package split.
+
+:::caution\[Status — dropped 2026-06-14]
+This scaffold (Phase 6a) was **dropped** per owner decision P-004 in [host-architecture-2026-05-20-v2](https://github.com/papercusp/papercusp/blob/main/apps/operator/docs/plans/host-architecture-2026-05-20-v2.md). Next has been removed and `apps/operator/app/api` is empty (zero `route.ts` files, `_hono/` deleted); the client moved to `apps/operator-vite`. The core/host/client boundary is now enforced **physically** by the package split (`tooldef` / `@papercusp/host-platform` / `operator-core` vs `apps`), so the tsconfig-projects layering described below is no longer planned — a `tsc`-projects scaffold would only fight Vite aliasing and duplicate the package boundary. The tsconfigs under `apps/operator/layers/` remain as inert scaffolding, and the route-migration narrative (Phase 4) below was superseded wholesale. Read the rest as design intent, not a live migration path.
+:::
 
 ## What this is
 
-`apps/operator/` will eventually be partitioned into four compile units. Each one is a tsconfig with its own `include` glob, and the layers reference each other in a one-directional dependency graph. The build invariant is: nothing in `core` can import from `host`, `routes`, or `client`; nothing in `host` can import from `routes` or `client`; etc.
+The original design split `apps/operator/` into four compile units. Each one is a tsconfig with its own `include` glob, and the layers reference each other in a one-directional dependency graph. The build invariant was: nothing in `core` can import from `host`, `routes`, or `client`; nothing in `host` can import from `routes` or `client`; etc. That invariant is now satisfied by the package split rather than by these tsconfigs (see the status banner).
 
-Today the partition is **scaffolded but empty**. The four layer tsconfigs exist under `apps/operator/layers/` with `include: []`. `tsc --build apps/operator/layers/tsconfig.layers.json` resolves cleanly but checks no files. Files migrate into a layer's `include` glob as the route-migration work (Phase 4) and the layering-enforcement work (Phase 6b) progress.
+The partition is **scaffolded but empty**. The four layer tsconfigs exist under `apps/operator/layers/` with `include: []`. `tsc --build apps/operator/layers/tsconfig.layers.json` resolves cleanly but checks no files. The original plan was for files to migrate into a layer's `include` glob as the route-migration work (Phase 4) and the layering-enforcement work (Phase 6b) progressed — but **that migration is no longer expected** (see the status banner above). Phase 4 was superseded, and the layering-scaffold phase (6a) was dropped because the boundary is already enforced by the package split.
 
-This is by design — the alternative was to globs-up the existing tree and lie about which files belong where. The layers describe the **target**, not the current state.
+This was by design — the alternative was to glob up the existing tree and lie about which files belong where. The layers describe a **target** that the package split (`tooldef` / `@papercusp/host-platform` / `operator-core` vs `apps`) now realizes directly, without these include globs ever being populated.
 
 ## The four layers
 
@@ -30,7 +34,7 @@ This is by design — the alternative was to globs-up the existing tree and lie 
 
 ### core
 
-**What lives here:** typed business logic with no host coupling. `define_tool` handlers (the host-clean ones), the endpoint system's pipeline + dispatch stack, schemas, pure helpers, type definitions.
+**What lives here:** typed business logic with no host coupling. `defineTool` handlers (the host-clean ones), the endpoint system's pipeline + dispatch stack, schemas, pure helpers, type definitions.
 
 **What may be imported:** anything from `libs/*`, `packages/*`, and host-clean third-party packages (`zod`, `date-fns`, `postgres`, `@modelcontextprotocol/sdk`, etc.).
 
@@ -41,11 +45,11 @@ This is by design — the alternative was to globs-up the existing tree and lie 
 * DOM types implicitly
 * React
 
-If you find yourself wanting to reach for `node:fs` in core code, the answer is to take a `HostPlatform` parameter (or call `getHostPlatform()`) — see [host-platform](/internal/docs/build-system/architecture) coverage in the host-platform package source.
+If you find yourself wanting to reach for `node:fs` in core code, the answer is to take a `HostPlatform` parameter (or call `getHostPlatform()`) — see [host-platform](/internal/docs/build-system/architecture) coverage in the host-platform package source. The `HostPlatform` interface, `getHostPlatform()`, `registerHostPlatform()`, and `desktopHostPlatform` already live in the standalone `@papercusp/host-platform` package (`libs/host-platform/src/`, wired into `apps/operator` as a `file:` dependency), so the host abstraction `core` depends on is a real package boundary today — not a future tsconfig include. That existing physical boundary is precisely why the layer scaffold below was deemed redundant.
 
 ### host
 
-**What lives here:** host-specific glue that the desktop needs but a future web host might not. `desktopHostPlatform`'s body, IPC bridge code (`packages/operator-core/lib/endpoint-ipc/`), embedded-PG discovery, plugin runtime (`packages/operator-core/lib/plugin-host-runtime.ts`), FS watchers, background sweepers, socket lifecycle.
+**What lives here:** host-specific glue that the desktop needs but a future web host might not. `desktopHostPlatform`'s body (which already lives in `libs/host-platform/src/desktop.ts`, not under `apps/operator`), IPC bridge code (`packages/operator-core/lib/endpoint-ipc/`), embedded-PG discovery, plugin runtime (`packages/operator-core/lib/plugin-host-runtime.ts`), FS watchers, background sweepers, socket lifecycle.
 
 **What may be imported:** `core`, anything in `libs/*` and `packages/*`, Node stdlib (`node:fs`, `node:child_process`, `node:net`, etc.).
 
@@ -53,13 +57,13 @@ If you find yourself wanting to reach for `node:fs` in core code, the answer is 
 
 ### routes
 
-**What lives here:** transport-shaped code — Next route handlers (`app/api/.../route.ts`) and Hono routers (`app/api/_hono/*.ts`). Thin shims that map an HTTP request into a `core` or `host` function call.
+**What lives here:** transport-shaped code — thin shims that map an HTTP request into a `core` or `host` function call. As originally drafted this meant Next route handlers (`app/api/.../route.ts`) and the Hono routers. Neither shape survives in the live tree: Next has been removed, `apps/operator/app/api` is empty (zero `route.ts` files), and `_hono/` was deleted — the Hono routers now live under `apps/operator/bin/` (`host-app.ts`, `hono-host.ts`, etc.), referenced internally by the logical name `_hono/app.ts`. The `~245`-route surface this layer was meant to receive no longer exists.
 
-**What may be imported:** `core`, `host`, `next/*` (`NextRequest`, `cookies()`, etc.), Hono types.
+**What may be imported:** `core`, `host`, Hono types (and, when Next was still present, `next/*` request/response shapes).
 
 **What may NOT be imported:** React; client-only browser APIs.
 
-A handler that holds non-transport state (cookies, cost caps, feature locks, transcript persistence) is A1-class — it stays as a substantive shim and doesn't migrate to a `define_tool` projection. See [agent-policies §endpoint-system migration](/internal/docs/agent-policies) for the audit axes.
+A handler that holds non-transport state (cookies, cost caps, feature locks, transcript persistence) is A1-class — it stays as a substantive shim and doesn't migrate to a `defineTool` projection. See [agent-policies §endpoint-system migration](/internal/docs/agent-policies) for the audit axes.
 
 ### client
 
@@ -82,26 +86,26 @@ npx tsc --build apps/operator/layers/tsconfig.layers.json
 
 Exit code 0 with no output means all four layers' include globs resolved + every cross-layer reference is satisfied. Today this trivially succeeds because every `include` is empty.
 
-When files start moving in (Phase 4, Phase 6b), the build will start checking them and a violation — say, a file in `client/include` importing `host/some-thing` — will surface as a `tsc --build` error.
+Had files moved in (Phase 4, Phase 6b), the build would have started checking them and a violation — say, a file in `client/include` importing `host/some-thing` — would surface as a `tsc --build` error. That migration was dropped (P-004); the include globs stay empty.
 
-## What this scaffold doesn't do (yet)
+## What this scaffold doesn't do
 
-* **No enforcement.** Phase 6a (this) ships the structural slots. Phase 6b adds ESLint `no-restricted-imports` rules + dependency-cruiser; that lands once Phase 4 has disentangled routes from `core` enough that the rules wouldn't be a wall of red.
-* **No code moves.** The four `include` arrays are `[]`. Files migrate in by per-handler audit, not en masse.
-* **No replacement of Next's tsconfig.** `apps/operator/tsconfig.json` is what Next + the IDE consume; it's untouched. The layered build is a parallel surface that runs independently.
+* **No enforcement.** Phase 6a (this) shipped the structural slots only. Phase 6b would have added ESLint `no-restricted-imports` rules + dependency-cruiser, gated on Phase 4 disentangling routes from `core` first. Both are moot now — 6a was dropped and 6b never started.
+* **No code moves.** The four `include` arrays are `[]` and stay that way; the boundary is enforced by the package split instead.
+* **No replacement of the app tsconfig.** `apps/operator/tsconfig.json` is what the IDE consumes; it's untouched. The layered build is a parallel surface that runs independently.
 
-## How a file gets added to a layer
+## How a file would have been added to a layer
 
-When a route migration (Phase 4) determines that a handler is host-clean and projectable, the worker:
+This was the intended procedure before P-004 dropped the scaffold; it never ran at scale. When a route migration (Phase 4) determined that a handler was host-clean and projectable, the worker would:
 
-1. Moves the handler file to its target location (often `packages/operator-core/lib/agent-tools/<feature>/<name>.ts`).
-2. Adds the file's path to the appropriate layer's `include` glob in `apps/operator/layers/tsconfig.core.json` (or `host.json`, etc.).
-3. Runs `tsc --build apps/operator/layers/tsconfig.layers.json` locally; addresses any reported violations before committing.
+1. Move the handler file to its target location (often `packages/operator-core/lib/agent-tools/<feature>/<name>.ts` — that directory is real and now holds the migrated handlers).
+2. Add the file's path to the appropriate layer's `include` glob in `apps/operator/layers/tsconfig.core.json` (or `host.json`, etc.).
+3. Run `tsc --build apps/operator/layers/tsconfig.layers.json` locally; address any reported violations before committing.
 
-The first few migrations will likely uncover edge cases (DOM types leaking into core via a stale .d.ts, a tsbuildinfo path that needs gitignoring, etc.). Those get fixed as found; the scaffold's job is to make the violation visible early instead of letting it ship.
+In practice the handler moves (step 1) happened — `agent-tools/<feature>/<name>.ts` is populated — but the include-glob registration (step 2) never did, because the package split already enforces the boundary that step 3 was meant to catch.
 
-## When to revisit
+## When this was revisited
 
-When ≥75% of `app/api/*/route.ts` files have been audited (Phase 4 milestone), or when an enforcement violation appears that the scaffold should have caught — whichever comes first. At that point Phase 6b adds the ESLint rules + builds fail on cross-layer imports.
+The original trigger was: when ≥75% of the `app/api/*/route.ts` files had been audited (the Phase 4 milestone), or when an enforcement violation appeared that the scaffold should have caught. Neither happened on that path — Phase 4 was superseded by the endpoint-unification + hono-elimination arcs (`app/api` is now empty), and on 2026-06-14 the owner dropped Phase 6a outright (P-004). The tsconfigs stay as inert scaffolding.
 
 Sister doc: the [host-platform](https://github.com/papercusp/papercusp/tree/main/libs/host-platform) interface that `core` and `host` share, and [agent-policies §endpoint-system migration](/internal/docs/agent-policies) for the per-route audit rules.

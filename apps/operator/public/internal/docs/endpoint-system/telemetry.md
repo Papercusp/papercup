@@ -31,31 +31,42 @@ CREATE TABLE harness_shared.tool_invocations (
   transport       TEXT NULL,                 -- 'http' | 'mcp' | 'ipc' | 'in_process'
   event_count     INT NULL,                  -- number of ctx.emit calls during the run
   metadata_json   JSONB NULL,                -- ctx.metadata() payload + reaction cause-chain
+  error_code      TEXT NULL,                 -- dispatcher error CLASS (NULL on success); see below
   principal_kind        TEXT NULL,           -- Principal audit fields (bearer/MCP path only;
   principal_auth_method TEXT NULL,           -- NULL → surfaces as 'unknown' in /dev)
   principal_trust       TEXT NULL
 );
 ```
 
-The squashed schema also ships two views over the table: `tool_invocations_artifacts` (successful calls that wrote a scratch `output_ref` — feeds the Intel Pack/Diff sub-tabs) and `tool_invocations_spawn_tree` (recursive `parent_spawn_id` lineage, `depth=0` for roots).
+The squashed schema also ships two views over the table: `tool_invocations_artifacts` (successful calls that wrote a scratch `output_ref` — feeds the Intel Pack/Diff sub-tabs) and `tool_invocations_spawn_tree` (recursive `parent_spawn_id` lineage, `depth=0` for roots). The spawn-tree view **caps recursion at depth 16** — the recursive join stops at `c.depth < 16`, so a runaway spawn-of-spawn chain can't blow up the CTE.
 
-Two indexes:
+Four indexes:
 
 * `tool_invocations_quota_idx` on `(workspace_id, tool_name, role, window_key) WHERE status='ok'` — partial index, makes the dispatcher's quota read O(log n) per call.
 * `tool_invocations_telemetry_idx` on `(workspace_id, harness_slug, invoked_at DESC)` — feed for Intel UI's recent-activity panel.
+* `tool_invocations_error_code_idx` on `(error_code, invoked_at) WHERE error_code IS NOT NULL` (migration 205) — partial index over *failing* rows only, backing the improvement-watchdog's grouped-by-`error_code` scan; success rows (the vast majority, `error_code IS NULL`) are excluded.
+* `tool_invocations_invoked_at_cov_idx` on `(invoked_at DESC) INCLUDE (tool_name, duration_ms, status)` (migration 315) — covering index leading on `invoked_at` so `dev:telemetry`'s **cross-workspace** 24h rollup runs as an Index-Only Scan instead of broad-scanning the whole table (the quota index leads on `workspace_id`, so it can't range-scan `invoked_at` across workspaces).
 
 ## The status enum
 
-| Status             | Meaning                                                                                                                      |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `ok`               | Function returned successfully. Counts against quota.                                                                        |
-| `error`            | Function threw. Doesn't count against quota. `error_message` populated.                                                      |
-| `timeout`          | Dispatcher's AbortController fired before function returned.                                                                 |
-| `quota-exceeded`   | Pre-dispatch quota check rejected. Function never ran.                                                                       |
-| `role-not-allowed` | Pre-dispatch role check rejected. Function never ran. Also covers the `missing_capability` denial (both map to this status). |
-| `invalid-input`    | Function threw a typed input-validation error (`invalid_input`).                                                             |
+| Status             | Meaning                                                                                                                                                                                                                                   |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`               | Function returned successfully. Counts against quota.                                                                                                                                                                                     |
+| `error`            | Function threw. Doesn't count against quota. `error_message` populated.                                                                                                                                                                   |
+| `timeout`          | Dispatcher's AbortController fired before function returned.                                                                                                                                                                              |
+| `quota-exceeded`   | Pre-dispatch quota check rejected. Function never ran.                                                                                                                                                                                    |
+| `role-not-allowed` | Pre-dispatch authorization rejected. Function never ran. Three dispatcher error codes collapse into this status: `role_not_allowed`, `missing_capability`, and `capability_denied` (the resource-authorize / capability-envelope denial). |
+| `invalid-input`    | Function threw a typed input-validation error (`invalid_input`).                                                                                                                                                                          |
 
 Add a new status only by editing the dispatcher; do not let tool functions return arbitrary status values.
+
+### `error_code` — the un-collapsed error class
+
+`status` is a *lossy* collapse: three codes fold into `role-not-allowed`, a handful of distinct failure modes fold into `error`. The `error_code` column (migration 205, `watchdog-robustness`) preserves the dispatcher's full error CLASS that `status` throws away. It's a low-cardinality string, `NULL` on success rows (and on legacy rows written before migration 205):
+
+`unauthorized` · `handler_error` · `harness_required` · `role_not_allowed` · `missing_capability` · `quota_exceeded` · `timeout` · `invalid_input` · `invalid_args`
+
+`recordTelemetry` already computes this code to pick the `status`; persisting it means the **improvement-watchdog** can separate a deterministic config bug (an `unauthorized` that recurs identically — a real bug, fire on few) from a transient crash (`timeout` under load — volume-gated) without fragile `error_message LIKE` matching. The watchdog scans `error_code` grouped by tool, backed by the partial `tool_invocations_error_code_idx`.
 
 ## Reading the table
 
@@ -145,16 +156,31 @@ The `harness_shared.tool_invocations_spawn_tree` view (recursive CTE over `paren
 
 ## How the row is written
 
-`recordTelemetry` runs in the `finally` of `runDispatchStack` (`dispatch-stack.ts`) on every termination path and calls the host-injected `deps.recordInvocation` — whose Papercusp implementation (`recordInvocationImpl` in `packages/operator-core/lib/projected-tool-deps.ts`) does the actual `INSERT`:
+`recordTelemetry` runs in the `finally` of `runDispatchStack` (`dispatch-stack.ts`) on every termination path and calls the host-injected `deps.recordInvocation` — whose Papercusp implementation is `recordInvocationImpl` in `packages/operator-core/lib/projected-tool-deps.ts`. Each terminal path produces a row:
 
-* After every successful tool execution: insert `(status='ok', duration_ms, output_size, ...)`.
-* After every thrown error: insert `(status='error', duration_ms, error_message)`.
-* After a quota check rejection: insert `(status='quota-exceeded', error_message='quota X/Y for role Z in window W')`. Function did not run.
-* After a role rejection: insert `(status='role-not-allowed', error_message)`. Function did not run.
+* After every successful tool execution: `(status='ok', duration_ms, output_size, ...)`.
+* After every thrown error: `(status='error', duration_ms, error_message, error_code)`.
+* After a quota check rejection: `(status='quota-exceeded')` with `error_message` of the form `Tool "<toolName>" exceeded quota (<count>/<limit>) in window "<windowKey>"` (and `error_code='quota_exceeded'`). Function did not run.
+* After an authorization rejection: `(status='role-not-allowed')` with the dispatcher's `error_code` (`role_not_allowed` / `missing_capability` / `capability_denied`). Function did not run.
 
-Best-effort: every insert is wrapped in try/catch. A PG outage doesn't break the dispatcher; the call still resolves, but the row is lost. The HTTP catch-all logs a warning when this happens.
+### Deferred, batched writes (P-003)
 
-The `app.workspace_id` GUC is set before every insert via `SELECT set_config('app.workspace_id', $1, true)` — never `SET LOCAL = $1` (PG doesn't accept binds in SET, audit-2 silently broke this for two days before we caught it).
+`recordInvocationImpl` does **not** `INSERT` synchronously. `recordTelemetry` is *awaited* in the dispatcher's `finally`, so a per-call PG round-trip (\~10–50ms) was the dominant overhead on a tight `capability:bash` loop. Since `route-everything-through-definetool` P-003 the write moves off the hot path:
+
+* **Snapshot + enqueue.** `recordInvocationImpl` calls `buildTelemetryRow` to snapshot the row synchronously (just a `JSON.stringify` of args), pushes it onto an in-process `telemetryQueue`, and returns in microseconds. No `await` of PG on the dispatch path.
+* **Debounced background flush.** A 10ms-debounced flusher (`flushPendingTelemetry`) drains the queue in **batched, per-workspace transactions** of up to 200 rows each: it groups the batch by `workspace_id`, then runs one `BEGIN` / `set_config('app.workspace_id', …)` / many-`INSERT`s / `COMMIT` per workspace group. So the GUC is set **once per batch transaction grouped by workspace** — not once per row.
+* **Bounded queue.** The queue is hard-capped at 5000 rows (`TELEMETRY_MAX_PENDING`); if the producer outruns PG (a stall), it sheds **oldest** rows so a PG outage can never OOM the host.
+* **Quota correctness.** `readQuotaState` calls `flushPendingTelemetry()` *first*, draining any queued `ok` rows before counting — so a quota'd tool never under-counts despite the deferral. Tests and telemetry consumers needing synchronous visibility can `await flushPendingTelemetry()`.
+
+Best-effort throughout. `recordTelemetry`'s own `catch` in `dispatch-stack.ts` is silent — a snapshot/enqueue failure never breaks the dispatcher. The warnings come from the background flusher, not any HTTP catch-all: a failed batch logs `[projected-tool-deps] telemetry flush batch failed (<n> rows): …` and the row is dropped; queue overflow logs `[projected-tool-deps] telemetry queue overflow — dropped <n> row(s)` (rate-limited to the first drop and every 1000th after).
+
+The `app.workspace_id` GUC inside each batch transaction is set via `SELECT set_config('app.workspace_id', $1, true)` (the local/`true` form) — never `SET LOCAL = $1` (PG doesn't accept binds in `SET`, audit-2 silently broke this for two days before we caught it).
+
+### `args_json` / `metadata_json` serialization gotchas
+
+* **NUL bytes are stripped.** Both JSONB columns are serialized through `jsonbSafeStringify`, which removes NUL bytes (`U+0000`) from every string value. Postgres `jsonb` cannot represent `U+0000` and rejects the whole `::jsonb` cast — before this fix a single NUL in a tool's args (binary-ish payloads, truncated file reads, terminal output) silently dropped that call's *entire* telemetry row.
+* **Large `args_json` becomes a sentinel.** When the serialized args exceed 32768 bytes (32 KB), `args_json` is replaced with the sentinel object `{"_truncated": true, "_size": <byteLen>}` — not a truncated string. Queries against `args_json` on large calls should expect that shape, not the original args.
+* **`metadata_json` reaction chain.** On a reaction-triggered call, `metadata_json` carries `metadata.reaction = { depth, chain, ruleId, rootRunId }` (the cause-chain from `event-reaction-system` D-010, so "why did this fire?" is answerable). When `ctx.uiClientId` is present it is also injected into `metadata_json` (via `finalizeMetadata`).
 
 ## Where to read in code
 

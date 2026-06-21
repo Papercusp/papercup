@@ -35,12 +35,12 @@ its `papercusp.json` and providing a `subprojects` array.
 
 Each subproject entry is:
 
-| Field             | Meaning                                                                                                        |
-| ----------------- | -------------------------------------------------------------------------------------------------------------- |
-| `suffix`          | Appended to the install-time `<slug>` to derive the child slug. Empty string means "this entry IS the parent". |
-| `kind`            | One of `org`, `department`, `coding`. Persisted in the registry as `harness_kind`.                             |
-| `department_slug` | Optional — used when `kind === 'department'`. Persisted as `department_slug`.                                  |
-| `dir`             | Path inside the tarball to copy into the resulting project directory.                                          |
+| Field             | Meaning                                                                                                                                                                                                                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `suffix`          | Appended to the install-time `<slug>` to derive the child slug. Empty string means "this entry IS the parent".                                                                                                                                                          |
+| `kind`            | One of `org`, `department`, `coding`. Persisted in the registry as `harness_kind` for `org` and `department` only — for `coding` the registry entry omits `harness_kind`. (The per-project `.papercusp/config.json` always records `harness_kind`, including `coding`.) |
+| `department_slug` | Optional — used when `kind === 'department'`. Persisted as `department_slug`.                                                                                                                                                                                           |
+| `dir`             | Path inside the tarball to copy into the resulting project directory.                                                                                                                                                                                                   |
 
 If the manifest has no `topology` field, behavior defaults to `single`
 (today's flow).
@@ -86,8 +86,8 @@ The init command:
 3. For each subproject, calls a `scaffoldSubproject` helper that:
    * Creates `<path>/.papercusp/`
    * Copies template files from `<harness-dir>/<dir>/` (excluding manifest + tarballs)
-   * Writes a default `.papercusp/config.json` if the template didn't bundle one (with `harness_kind` keyed off the entry's `kind` and `dept` set when applicable)
-   * Adds a registry entry with the appropriate `harness_kind` + `department_slug`
+   * Writes a default `.papercusp/config.json` if the template didn't bundle one. It sets `phase` (`org` → `'org'`, `department` → `'department'`, otherwise `'staging'`), `harness_kind` keyed off the entry's `kind`, and `dept` when `kind === 'department'` and a `department_slug` is present.
+   * Adds a registry entry with `department_slug` (for departments) and `harness_kind` — but `harness_kind` is written to the registry only for `org` and `department`; a `coding` entry omits it.
 4. Emits a summary listing all created sub-harnesses + a per-subproject
    `scaffold-schema <slug><suffix>` next step for each (and `run <slug>`
    to start the parent loop). The `--recursive` form (§5) scaffolds them
@@ -104,7 +104,9 @@ anything. **A partial topology can never be left on disk.**
 
 Once validation passes, scaffolding is sequential. If a later
 subproject fails to scaffold (e.g. permission error), prior siblings
-remain — but the user's CLI exit code reflects the failure.
+remain — but the user's CLI exit code reflects the failure. A thrown
+scaffold error propagates to the CLI's top-level `main().catch(…)`,
+which logs `fatal: …` and exits the process with code `1`.
 
 ## §5. Schema scaffolding
 
@@ -119,6 +121,10 @@ papercusp scaffold-schema my-org --recursive
 `--recursive` walks the registry for any project whose slug starts
 with `<parent>-` and applies framework DDL to each. Non-recursive use
 (`papercusp scaffold-schema my-org-business`) is unchanged.
+
+When run recursively, the command scaffolds every child in sequence
+and exits with the first failing child's exit code (or `0` if all
+succeed) — a later failure does not mask an earlier one.
 
 ## §6. Cross-topology shared schemas
 
@@ -135,9 +141,27 @@ applied once for the whole topology:
 }
 ```
 
-The install runtime applies these to the framework DB during
-`papercusp install`, before any per-harness schema is provisioned.
-Reapplication is idempotent (DDL files MUST use `CREATE … IF NOT EXISTS`).
+`schema` is not multi-topology-specific: it is the generic
+install-time DDL mechanism shared with plugins, and it runs for ANY
+install. Besides the bare string-array form shown above, it also
+accepts canonical `{ schemaName, ddlPath }` objects — a single object
+or an array of them (a legacy bare string is normalized to
+`{ ddlPath }`):
+
+```json
+{
+  "schema": [
+    { "schemaName": "msgbus", "ddlPath": "sql/003-papercusp-shared.sql" }
+  ]
+}
+```
+
+The install runtime applies these to the framework DB (`papercusp`)
+during `papercusp install`, before any per-harness schema is
+provisioned. Each file runs via `psql` with `ON_ERROR_STOP=1` in
+declared order; missing files are skipped with a warning rather than
+failing the install. Reapplication is idempotent (DDL files MUST use
+`CREATE … IF NOT EXISTS`).
 
 ## §7. Open questions
 
@@ -157,6 +181,13 @@ Reapplication is idempotent (DDL files MUST use `CREATE … IF NOT EXISTS`).
 
 The reference multi-topology template is **papercup-org**, shipping in
 the default marketplace at version 0.1.0. It declares 7 sub-harnesses
-(1 parent + 6 departments) with the exact shape the original `org`
-runtime uses (`harness_kind`, `department_slug`, primaryRole='director'
-for departments, primaryRole='coordinator' for the parent).
+(1 parent + 6 departments) carrying the registry/config shape the
+install path writes (`harness_kind`, `department_slug`).
+
+The decider role for each harness is **not** a config key — it comes
+from the harness's blueprint spine. `SpineSchema.decider` is a string
+with a zod default of `'director'`, and the pipeline reads
+`spine.decider` (falling back to that default) to pick the
+orchestrator role; the coding-factory spine therefore deciders as
+`'director'`. (`primaryRole` is a retired concept — no live code
+references it.)

@@ -465,6 +465,11 @@ import './accounts/scale-policy';
 import './improvements/set-auto-policy';
 // live-configurability-audit-2026-06-20 P-012 — settable per-harness gym promotion gates:
 import './gym/set-gates';
+// live-configurability-audit-2026-06-20 P-014 — coordination liveness/reclaim config (reclaim tool):
+import './work_items/reclaim-config';
+// live-configurability-audit-2026-06-20 P-014 — handoff TTL + session-reaper grace config tools:
+import './coordination/handoff-config';
+import './coordination/session-reaper-config';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

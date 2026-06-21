@@ -12,16 +12,27 @@ recommendations. Verified against the current `layout.tsx`:
 "Identity & devices", "Assistants", "Keys & OAuth", "App preferences",
 and "Advanced". **C3 (search) shipped** — a keyword-mapped "Search"
 input sits atop the rail. **C9 (Advanced tagging) shipped** — an
-"Advanced" group carries the diagnostic pages (`advanced: true`).
-**C2 renames partly shipped** — Oracle → "Oracle assistant", Voice →
-"Voice & speech", Agent backend → "AI backend" (Operator is "Papercup
-agent", not the suggested "Operator agent"; API keys is now "Keys &
-OAuth"). The page set also changed: the **Orchestrator** page is gone,
-and new pages were added (Setup Wizard, User preferences, Memory,
-Oh-My-Pi (omp), OMP integration, Backups), so this is no longer "13
-pages". The surviving per-page notes (Voice density, Mobile access
-device naming, Plugin runtime, etc.) still apply where those slugs
-exist; the C1/C3/C9 cross-cutting items are addressed.
+"Advanced" group carries the diagnostic pages (`advanced: true`), and
+C9 also shipped *in-page*: every Advanced rail link renders a literal
+"Advanced" chip (`pc-settings-nav-chip`, `layout.tsx`), and the
+operator stats report is now a default-collapsed diagnostics section
+(see the Operator note below). **C10 (mobile) shipped** — below 720px
+`.pc-settings-shell` collapses to a single column and the rail's
+search + groups are hidden in favor of a `<select>`-style page-picker
+(`.pc-settings-mobile-picker`, built from the `Select` component); the
+content renders full-width below. **C2 renames partly shipped** —
+Oracle → "Oracle assistant", Voice → "Voice & speech", Agent backend →
+"AI backend" (Operator is "Papercup agent", not the suggested
+"Operator agent"; API keys is now "Keys & OAuth"). The page set also
+changed: the **Orchestrator** page is gone, and new pages were added
+(Setup Wizard, User preferences, Memory, Oh-My-Pi (omp), OMP
+integration, Backups), so this is no longer "13 pages". The C1, C3,
+C9, and C10 cross-cutting items are addressed.
+
+The **top-priority per-page fix (Operator §) has also substantially
+shipped** — see that section. The remaining surviving per-page notes
+(Voice density, Mobile access device naming, Plugin runtime, etc.)
+still apply where those slugs exist.
 :::
 
 Captured live by walking every page in `/settings/*` against the
@@ -220,6 +231,15 @@ Minimal"). As a top-level rail item it feels heavyweight; under
 *"Account & preferences"*. Or keep separate but expand — what about
 theme, density, language? At single-control depth it's not a page.
 
+:::note\[Expanded since]
+The "expand" path was taken. Personalization is no longer a single
+dropdown — it now hosts theme selection plus a full custom-theme
+editor (`ThemeEditor`) and a saved-prompts section
+(`SavedPromptsSection`) alongside the visual-effects control, so the
+"single dropdown / not a page" framing (and the page table's "1
+control") no longer matches the current page.
+:::
+
 ## Oracle
 
 **Issue:** very long uneditable-looking system prompt + memory area.
@@ -258,6 +278,20 @@ a settings page.
 * Move the stats panel to the operator panel itself (footer or new
   /operator/stats route).
 * Keep this page focused on prompt + budget + behavior controls.
+
+:::note\[Substantially shipped]
+This top-priority per-page fix has landed. The visual-effects toggle
+is gone from this page (grep for `visual.effect` over
+`app/settings/operator/` returns nothing; the control now lives only
+on the canonical Personalization page). The 7-day stats are no longer
+a flat report on the page — they're wrapped in a Radix
+`Collapsible` "Papercup diagnostics" section, collapsed by default
+(`statsOpen` defaults to `false`), with the explicit copy *"collapsed
+by default because it is a report, not a setting."* The page H1 is
+also now "Papercup", not "Operator" (C7's information-bearing-title
+spirit). Moving stats off the settings surface entirely (to an
+`/operator/stats` route) remains an open option.
+:::
 
 ## Voice
 

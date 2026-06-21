@@ -3,6 +3,32 @@ URL: /internal/docs/agent-insights/adding-a-sync-query
 
 How to add a new useSyncQuery name to the v2 dispatcher. ~15 LOC drizzle entry, registry-style, no ZQL. Pairs with the reactive-table insight.
 
+import { Aside } from '@astrojs/starlight/components';
+
+:::caution\[Superseded — Step 4 is stale]
+Step 4 below tells you to bump exact-count `toHaveLength(N)` assertions in
+two test files. **Those assertions no longer exist** — both were deliberately
+deleted and replaced with non-shrinking floor checks specifically *because*
+bumping them on every add/remove flapped CI red. There is no count to bump.
+
+* `packages/operator-core/lib/sync-resolver/index.test.ts:149` now asserts
+  `expect(names.length).toBeGreaterThanOrEqual(61)` (the comment at `:141`
+  calls the old `toHaveLength(63)` a "brittle exact-count that flapped red").
+* `packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts:102`
+  now asserts `expect(names.length).toBeGreaterThanOrEqual(45)` (the comment at
+  `:92`–`:100` calls the old exact count of 56 "brittle" and states the floor
+  is "set WELL BELOW the current count ... so a routine add/remove doesn't flap
+  it red").
+
+**What to actually do for a registry add today:** add your new name to the
+relevant `toContain(...)` family assertion(s) in `index.test.ts` (the
+exact-set assertions are what catch real drift now) and, if it's bridged, to
+the corresponding membership assertion in `table-to-query-names.test.ts`. The
+floor checks (`toBeGreaterThanOrEqual`) only fire if the registry *shrinks*
+below the floor — leave them alone. The `FORWARD_DEFINED` guidance later in
+Step 4 is still correct.
+:::
+
 ## What
 
 The operator serves `useSyncQuery({ queryName: '<name>' })` reads

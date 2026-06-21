@@ -202,7 +202,10 @@ const staleClaimSweepCheck: PeriodicCheck = {
     const sql = getOrgPg().sql;
 
     const { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims } = await import('../work-items-stale-claims');
-    const r = await reclaimStaleWorkItemClaims(sql);
+    // live-configurability-audit P-014: apply the stale-claim reclaim overrides (undefined ⇒ baked default).
+    const { readCoordLivenessConfig } = await import('../coord-liveness-config');
+    const livenessCfg = await readCoordLivenessConfig();
+    const r = await reclaimStaleWorkItemClaims(sql, { graceMs: livenessCfg.reclaimGraceMs, requeueCap: livenessCfg.reclaimRequeueCap });
     if (r.released.length > 0) {
       const byAction = r.released.reduce<Record<string, number>>((acc, c) => {
         acc[c.action] = (acc[c.action] ?? 0) + 1;

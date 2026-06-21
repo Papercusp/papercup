@@ -1,7 +1,7 @@
 # Voice mode
 URL: /internal/docs/spec/voice-mode
 
-Browser-side voice runtime for app-level + Operator-panel voice control. STT/TTS via the Web Speech API, no backend.
+Browser-side voice runtime for app-level + Operator-panel voice control. STT/TTS across a selectable engine matrix (Web Speech, local Whisper/Kokoro, ElevenLabs, OpenAI, Deepgram, Cartesia).
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -18,19 +18,19 @@ Voice mode lets a user direct the app by speech instead of (or alongside) clicks
 off ──click──▶ push-to-talk ──click──▶ always-on ──click──▶ off
 ```
 
-* **off**: STT/TTS disabled. Voice button shows 🎤 with no border tint.
+* **off**: STT/TTS disabled. Voice button shows 🚫. (The 🎤 icon is the `idle` status, once voice is on; the button styles itself via `pc-voice-btn--mode-*` / `pc-voice-btn--status-*` classes, not a border tint.)
 * **push-to-talk** (PTT): hold the voice button; STT runs while held; release submits.
 * **always-on**: continuous wake-word listening. When the wake phrase is detected, the runtime switches to active listening for the rest of the utterance, then submits.
 
 ## Wake word
 
-Default: `"hey operator"`. Configurable per-browser at `/settings/voice`.
+Default: `"hey papercup"` (`DEFAULT_CONFIG.wakeWord`). Configurable per-browser at `/settings/voice`. (`"hey operator"` is only an illustrative example string in a settings hint, not the runtime default.)
 
 A 3-syllable phrase that doesn't appear in normal speech works best. Single-word wake words misfire often (per round-2 design discussion). The phrase must be in the user's spoken sentence; everything after it is captured as the utterance.
 
 ## Barge-in
 
-User starting to speak (always-on or PTT) cancels any TTS that is currently playing. Implementation: every utterance start calls `cancelAllSpeech()` before recognition begins.
+A new always-on utterance cancels any TTS that is currently playing. Implementation: `cancelAllSpeech()` runs on the always-on activation paths — the wake-word fast path and `activateListening()` — and on mode-off teardown. Push-to-talk's primary capture path (`startPushToTalk` → `maybeStartCaptureForPtt`, raw/Deepgram capture) does **not** call it directly; PTT only cancels TTS via its Web-Speech last-ditch fallback, which routes through `activateListening('')`.
 
 ## Per-role voices
 
@@ -51,6 +51,8 @@ Only one utterance plays at a time, FIFO. If multiple agents emit text concurren
 
 This prevents overlapping voices.
 
+The queue is hard-capped at 8 items (`SYNTH_QUEUE_MAX`); `speak()` trims to the newest 8 and drops the oldest beyond that, so a stuck TTS engine can't accumulate a runaway backlog.
+
 ## Consumer priority
 
 The chrome runs both Operator panel and the VoiceAppBridge. Only one should consume utterances at a time:
@@ -63,17 +65,39 @@ So utterances go to:
 * Operator panel when open.
 * Oracle (via VoiceAppBridge) when Operator is closed.
 
-## Browser support
+## Engines
 
-The runtime uses the Web Speech API (`SpeechRecognition`, `SpeechSynthesis`). Chrome, Edge, and Safari support it; Firefox does not as of writing. The voice button shows a degraded state with `cursor: not-allowed` when unsupported.
+Voice mode is **not** Web-Speech-only. STT, TTS, and the realtime full-agent shell each route through a selectable engine, chosen from `/settings/voice` and read from voice-prefs at init:
 
-No external service is required. STT and TTS run entirely in the browser.
+* **STT** (`prefs.sttEngine`): `web-speech` (browser `SpeechRecognition`), `voicemode` (local Whisper server at `http://localhost:2022`), or `deepgram` (cloud streaming, BYO key). Each path falls back to wake-word Web-Speech listening if its engine is unavailable.
+* **TTS** (`prefs.ttsEngine`, via `fetchPreferredEngine()`, default `kokoro`): `kokoro` (local), `openai`, `elevenlabs`, `cartesia`, or `browser` (Web Speech `SpeechSynthesis`). The adapter route POSTs to `/api/agent-mcp/operator-tts-preview`; each engine has its own per-role voice pool (`voiceForEngineRole`).
+* **Full-agent realtime** (`prefs.fullAgentEngine`): `elevenlabs-conv` (ElevenLabs Conversational AI) or `openai-realtime`.
+
+Because the local (Voicemode/Whisper + Kokoro) and cloud engines cover runtimes that lack Web Speech (e.g. the WebKitGTK desktop webview), the runtime sets `supported: true` unconditionally — the `is-unsupported` / `cursor: not-allowed` degraded button state exists but is never reached in practice. Web Speech is one path among several, not a requirement, and server-side routes back several engines, so this is **not** a purely in-browser, no-backend runtime.
 
 ## Privacy
 
-* STT audio is processed by the browser's speech engine (Chrome routes to Google's cloud transcription; Safari uses Apple's; Edge uses Microsoft's). No traffic touches the operator backend.
-* The runtime does not record or persist audio.
-* TTS is synthesized locally by the browser.
+* The processing path depends on the selected STT/TTS engine: Web Speech routes to the browser vendor's cloud (Chrome → Google, Safari → Apple, Edge → Microsoft); Voicemode/Kokoro/Whisper run on a local server; Deepgram, ElevenLabs, OpenAI, and Cartesia are cloud services reached via app routes.
+* The runtime does not record or persist raw audio.
+* See **Privacy modes** below for `wake-word-gated`, which keeps the mic on-device until a local wake-word engine fires.
+
+## Privacy modes
+
+`prefs.voicePrivacyMode = 'wake-word-gated'` runs a **local, on-device** wake-word engine (Porcupine via `@picovoice/porcupine-web`, or openWakeWord) so no audio streams to a cloud full-agent until the wake word fires:
+
+* `startWakeWordGate()` boots the engine named by `prefs.wakeWordEngine` (`porcupine` | `openwakeword`); `off` is rejected with a toast.
+* Porcupine requires a Picovoice key (bootstrapped via `/api/agent-mcp/operator-picovoice-bootstrap`); openWakeWord runs without a key.
+* On wake-fire, the local listener is torn down (it shares the mic) and the ElevenLabs Conv-AI session is brought up. The mic only streams to EL **between** wake-fire and idle-disconnect.
+* The gated session uses its own idle budget, `prefs.wakeGatedIdleTimeoutSec` (clamped 5–300s), instead of the always-on default.
+
+## Session lifecycle
+
+Realtime full-agent sessions (EL / OpenAI Realtime) are bounded so an abandoned tab can't run the meter indefinitely:
+
+* **Idle disconnect** — auto-disconnect after `prefs.fullAgentIdleTimeoutMin` of inactivity (default 2 min).
+* **Hard session-max** — a ceiling regardless of activity, `prefs.fullAgentSessionMaxMin` (default 30 min; `0` = no max). Backstop for stuck-session edge cases.
+* **Single-leader-tab election** — a cross-tab voice-lease (`requestVoiceLead` / `getVoiceLeaderState`) elects one tab to own mic capture, STT, and TTS, so audio never doubles across tabs. (This is the per-tab leader, distinct from the cross-surface Model-A host below.)
+* **ElevenLabs spend cap** — before opening an EL session, the runtime checks `/api/agent-mcp/operator-el-spend`; it refuses to connect when over the monthly cap and warns past 80%.
 
 ## Surfaces
 
@@ -100,11 +124,10 @@ The realtime path (ElevenLabs Conv-AI shell + the `operator:converse` brain) run
 ## Tests
 
 * `voice-mode.test.ts` — 6 tests: init, support detection, voice listing, persistence, wake word config, voice assignment.
-* `voice-consumers.test.ts` — 3 tests: register/deregister, multiple consumers, idempotency.
+* `voice-consumers.test.ts` — 5 tests across two describe blocks: register returns a deregister fn, multiple consumers concurrently, deregister idempotency, back-compat name-only defaults to panel-open, and accepts explicit priority + `onUtterance` handler.
 
 ## Out of scope (deferred)
 
-* **Custom wake-word models** (e.g. Porcupine) for higher accuracy and lower CPU than browser STT-based detection. v1.5.
 * **Multi-lingual voice** (current default is `en-US`). v1.5.
 * **Voice-only login / lock-screen control**. Out of scope.
 * **Per-harness voice override** (currently per-role only). Possible v1.5 if useful.

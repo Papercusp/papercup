@@ -3,6 +3,15 @@ URL: /internal/docs/agent-insights/claude-oauth-authorize-url
 
 Linking a Claude Max account by having the owner click a hand-built claude.ai authorize URL does NOT work — claude.ai returns "Authorization failed Invalid request format" even for a URL byte-for-byte identical to what `claude setup-token` generates. claude.ai requires the claude-code client's own handshake, which a plain browser click can't reproduce. The ONLY working path is `claude setup-token` (the CLI does the handshake) → paste the sk-ant-oat token / .credentials.json. Stop re-attempting the in-app OAuth link.
 
+import { Aside } from '@astrojs/starlight/components';
+
+The title/description on this page still say "you CANNOT hand-build a Claude Max OAuth link" / the in-app OAuth link "does NOT work" / "Stop re-attempting the in-app OAuth link." **That is no longer true.** The in-app one-click OAuth link is now the **working default**. The historical dead-end narrative below is preserved intentionally (it is the WHY the current flow exists), but read it as history.
+
+* **The in-app one-click OAuth IS the working default.** `apps/operator/app/settings/deploy-accounts/page.tsx:68` defaults `linkMode` to `'oauth'` (the "🔗 One-click (browser login)" tab), not the paste path. It works because it spawns the **real `claude setup-token` CLI in a pty server-side** and relays the URL the CLI itself prints, so claude.ai accepts it (`packages/operator-core/lib/deployment/account-link-cli.ts:2-3` header "the WORKING …flow"; `:139` `spawn(process.env.CLAUDE_BIN || 'claude', ['setup-token'], …)`).
+* **`account-link-store.ts` no longer exists.** The "Where it lives" section below cites it as the place the OAuth URL is built; it was removed as orphaned dead code and replaced by `packages/operator-core/lib/deployment/account-link-cli.ts` (`account-link-cli.ts:6-8` records the removal). The hand-built-URL approach it embodied is gone.
+
+The pty-driven CLI flow, the D-017 Enter-after-settle fix, the `OUTCOME_RE` fast-fail, the paste fallback, and the `client_id 9d1c250a-…` are all still accurate — see the CURRENT STATE header immediately below.
+
 ## CURRENT STATE (2026-06-17, D-016/D-017) — the in-app one-click WORKS; the real stall was the code→token Enter
 
 The hand-built-URL dead-end (below) is HISTORY. **D-016** replaced it: the in-app
@@ -80,6 +89,7 @@ mechanism that does the claude-code handshake (not just a prettier URL).
 
 ## Where it lives
 
-`account-link-store.ts` builds the (non-working-standalone) OAuth URL; `deploy-accounts-register.ts`
-is the working paste path. Both surfaced in Settings → Deploy Accounts + the /adv Accounts tab,
-both defaulting to the paste path. (accounts-pool-tab-2026-06-15 D-005/D-013/D-014/D-015.)
+`account-link-cli.ts` now drives the working one-click OAuth flow (pty `claude setup-token`); it
+replaced the removed `account-link-store.ts`, which built the non-working-standalone hand-built URL.
+`deploy-accounts-register.ts` is the working paste path. Both surface in Settings → Deploy Accounts +
+the /adv Accounts tab. (accounts-pool-tab-2026-06-15 D-005/D-013/D-014/D-015/D-016/D-017.)

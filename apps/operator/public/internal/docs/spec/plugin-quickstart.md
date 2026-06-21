@@ -18,17 +18,22 @@ papercusp plugin init my-tool
 cd my-tool
 ```
 
-`init` copies `@papercupai/cloudflare-stack` (the most-thoroughly-exercised first-party plugin) and rewrites every reference to your new slug. You'll get:
+`init` copies the default template `cloudflare-stack` (the most-thoroughly-exercised first-party plugin) and rewrites every reference to your new slug. That template is **provision-only and declarative** — it ships no JS entry point. You'll get:
 
 ```
 my-tool/
 ├── papercusp.json          # manifest — declared capabilities + UI surfaces
-├── index.js                # entry point — exports a Plugin object
 ├── README.md               # user-facing description
-└── ...
+├── provision/              # setup.sh / teardown.sh / verify.sh — infra lifecycle
+├── examples/               # *.tmpl files rendered at fork time
+└── roles/                  # reviewer role markdown
 ```
 
-Use `--template <slug>` to pick a different starter (e.g. `--template @papercupai/jira-sync` for an OAuth plugin), or `--from-path <dir>` to fork a local checkout.
+There is **no `index.js`** in the default scaffold. A JS entry point is optional — only `runtime.kind: "js"` plugins ship one. `init`'s own next-steps tell you to edit `provision/setup.sh` and the `configSchema`, not an entry point.
+
+The plugin name is always **scoped to a publisher**. `init my-tool` defaults the scope to `@local`, so the generated manifest `name` is `@local/my-tool`. Pass `--publisher <@scope>` (or edit the name afterward) to change it, and use the scoped slug everywhere downstream (publish/install).
+
+Use `--template <slug>` to pick a different starter (e.g. `--template @papercupai/jira-sync` for an OAuth plugin), or `--from-path <dir>` to fork a local checkout. The target directory (`./<name>`) must be empty.
 
 ## 2. Edit the manifest
 
@@ -36,7 +41,7 @@ Open `papercusp.json`. The fields that matter for your first plugin:
 
 ```json
 {
-  "name": "my-tool",
+  "name": "@local/my-tool",
   "version": "0.1.0",
   "kind": "plugin",
   "description": "What this does in one sentence.",
@@ -117,7 +122,7 @@ The optional `"runtime"` field declares which host runtime your plugin needs. It
 
 * `"js"` (default) — in-process Node host. Plugin literals exported from `index.cjs`. Omit `runtime` entirely.
 * `"wasm"` — WASM component, run via `jco` (TS host) or `wasmtime` (Rust host). See `@papercusp/plugin-wit` for the WIT contract. Requires `wasmPath` relative to the manifest dir. Default `memoryBudgetMb: 64`.
-* `"daemon"` — sandboxed subprocess. Requires `daemonCommand`. Reserved for the upcoming subprocess host.
+* `"daemon"` — sandboxed subprocess (bubblewrap `bwrap` on Linux) speaking a JSON-RPC stdio bridge to the host. Requires `daemonCommand` (the daemon binary's argv). Optional `daemonRestart` policy. Run by `@papercusp/plugin-loader/daemon`; the loader and operator host runtime instantiate daemon manifests the same way they do WASM ones.
 
 ## 3. Lint
 
@@ -190,19 +195,23 @@ hooks: {
 
 ## 4. Test locally
 
+`init` is a **scaffold-new** command — `--from-path .` forks your checkout into a *new*, empty plugin dir, it does not iterate in place. For in-place dev, symlink the checkout into the active workspace's `global-plugins` and enable it:
+
 ```bash
-papercusp plugin init my-tool --from-path .          # if you're iterating
-# OR symlink for fast dev:
-ln -sf "$PWD" ~/.papercusp/global-plugins/my-tool
-papercusp plugin enable my-tool --harness <your-harness-slug>
+# Symlink for fast dev. Use the resolved workspace root, NOT ~/.papercusp —
+# the substrate now lives under ~/.papercusp-workspaces/<workspace>/.papercusp/.
+ln -sf "$PWD" ~/.papercusp-workspaces/<workspace>/.papercusp/global-plugins/@local/my-tool
+papercusp plugin enable @local/my-tool --harness <your-harness-slug>
 ```
 
-Open the operator's harness dashboard. Your plugin's actions show up in the toolbar (per the `surfaces[]` you declared). Hot reload: edit your code, restart the operator (`systemctl --user restart papercup-dev`), the loader re-discovers from disk.
+(`~/.papercusp/global-plugins` is only the legacy fallback used when no workspace registry exists; on a current install the loader discovers plugins under the resolved workspace root.)
+
+Open the operator's harness dashboard. Your plugin's actions show up in the toolbar (per the `surfaces[]` you declared). Hot reload: edit your code, then restart the **API host** unit that runs the plugin loader — `systemctl --user restart papercup-dev-api` (the Hono host on `:3070`), not the frontend `papercup-dev` (`:3055`). The loader re-discovers from disk on restart.
 
 To run an action without the UI:
 
 ```bash
-papercusp plugin invoke my-tool ping --harness <your-harness-slug>
+papercusp plugin invoke @local/my-tool ping --harness <your-harness-slug>
 ```
 
 ## React to host events (optional)
@@ -242,10 +251,18 @@ function `when`/`args`. Trigger vocabulary + the full capability contract:
 papercusp publish .
 ```
 
-This packs the directory, signs the tarball, and POSTs to the marketplace at `localhost:3057`. The catalog refreshes immediately; install on another harness with:
+This command, in order: auto-compiles `index.ts` → `index.js` (CommonJS, for the substrate loader); scans the tree for secrets; packs a gzip tarball; optionally generates a CycloneDX SBOM; and POSTs a multipart form (manifest + tarball + optional README) to the marketplace at `localhost:3057` with a Bearer auth header. The CLI does **not** sign the tarball — tarball integrity is a `sha256-` hash computed at *install* time, not a signature at publish.
+
+Author-facing flags:
+
+* `--no-compile` — skip the TS → JS compile.
+* `--acknowledge-secrets` — the secret scan **blocks publish** on any finding; pass this to substitute placeholders and proceed anyway.
+* `--no-sbom` / `--sbom <file>` — skip SBOM generation, or upload a pre-built one.
+
+The catalog refreshes immediately; install on another harness with the scoped slug:
 
 ```bash
-papercusp install my-tool
+papercusp install @local/my-tool
 ```
 
 For a hosted marketplace publish (papercuspai.com), see [Marketplace publishing](/internal/docs/implementation/marketplace).

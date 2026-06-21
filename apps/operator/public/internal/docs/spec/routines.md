@@ -3,7 +3,7 @@ URL: /internal/docs/spec/routines
 
 
 
-A routine is a scheduled or triggered event source. Routines insert into `pending_events`; the orchestrator decides what to do with them.
+A routine is a scheduled event source. The durable DBOS tick (`routinesTick`, every \~30s) claims a due routine and enqueues a per-routine durable fire that dispatches the action directly — a `system:&lt;action&gt;` handler inline, an agent role via the harness invoke route, or a warm `coord` wake for a loop. The legacy "routine → `pending_events` → orchestrator" hop is retired for cron routines.
 
 Implemented (with evolution). The routines engine shipped as a durable DBOS scheduled
 workflow (`packages/operator-core/lib/dbos/routines-workflow.ts`) reading the
@@ -19,35 +19,66 @@ the shipped fire telemetry is the autoloop `recordFire` / `checkFireGate` error-
 (`packages/operator-core/lib/autoloop.ts`), not a dedicated `audit` schema.
 
 ```
-CREATE TABLE routines (
-  id              text PRIMARY KEY,
-  install_slug    text NOT NULL,
-  name            text NOT NULL,
-  trigger_kind    text NOT NULL,    -- 'cron' | 'webhook' | 'api'
-  trigger_config  jsonb NOT NULL,   -- { cron: '0 9 * * MON' } | { webhook_token: '...' }
-  target_role     text NOT NULL,    -- e.g. 'narrator', or 'orchestrator' for ticks
-  payload_template jsonb,            -- additional context to pass to the role
-  concurrency     text NOT NULL DEFAULT 'queue',     -- 'queue' | 'skip' | 'cancel-prev'
-  catchup         text NOT NULL DEFAULT 'skip-old',  -- 'skip-old' | 'run-all-backlog'
-  active          boolean NOT NULL DEFAULT true,
-  last_fired_at   timestamptz,
-  next_fire_at    timestamptz
+CREATE TABLE harness_shared.routines (
+  id                      text NOT NULL,
+  install_slug            text NOT NULL,
+  name                    text NOT NULL,
+  trigger_kind            text NOT NULL,    -- only 'cron' is dispatched today; webhook/api are an unused annotation
+  trigger_config          jsonb NOT NULL,   -- { cron: '0 9 * * MON' } | { rrule: 'FREQ=WEEKLY;...', dtstart, tzid, rdate, exdate }
+  target_role             text NOT NULL,    -- 'system:<action>' (e.g. system:git-sync, system:blueprint-run) | an agent role
+  payload_template        jsonb,            -- additional context to pass to the target
+  concurrency             text NOT NULL DEFAULT 'queue',     -- 'queue' | 'skip' | 'cancel-prev'
+  catchup                 text NOT NULL DEFAULT 'skip-old',  -- 'skip-old' | 'run-all-backlog'
+  active                  boolean NOT NULL DEFAULT true,
+  last_fired_at           timestamptz,
+  next_fire_at            timestamptz,
+  reschedule_interval_sec integer,          -- loop kind: re-fire N sec AFTER the previous turn completes
+  target_owner_id         text,             -- loop kind: the coord ownerId of the warm session the loop wakes
+  metadata                jsonb,
+  workspace_id            text NOT NULL,    -- CHECK (workspace_id <> '')
+  created_at              timestamptz NOT NULL DEFAULT now(),
+  updated_at              timestamptz NOT NULL DEFAULT now()
 );
 ```
 
+Recurrence kinds. A routine recurs one of three ways: cron (a 5/6-field
+crontab in `trigger_config.cron`), rrule (an RFC 5545 RRULE set in `trigger_config.rrule`
+with optional `dtstart`/`tzid`/`rdate`/`exdate` — computed natively, never converted to cron), or
+loop (the dedicated `reschedule_interval_sec` + `target_owner_id` columns). The engine
+computes `next_fire_at` from whichever recurrence is present (`schedule-next.ts`; RRULE takes precedence
+over cron when both appear). A cron-kind routine carrying neither a cron nor an rrule nor a loop
+interval is a one-shot: it fires once at its explicit `next_fire_at` and is deactivated
+(`active = FALSE`) on claim — used for self-declared wakes (e.g. `hive-wake`, a plan-schedule fire, the
+pot's `pot-wake`); a plan-schedule one-shot also un-arms its owning plan. The loop kind is
+the engine-managed replacement for Claude `/loop`: instead of spawning a role or running a system action,
+its fire delivers a warm `coord` wake to a pinned session, and the routine parks at
+`next_fire_at = 'infinity'` while its turn is in flight, re-arming `reschedule_interval_sec` seconds after
+the turn completes. (`trigger_kind` itself is always `'cron'` today — the engine hard-filters
+`trigger_kind = 'cron'`; the `webhook`/`api` annotation has no live receipt path.)
+
 ### 9.1 Lifecycle
 
-Register — plugin manifest declares routines OR user creates one via UI
-Tick — substrate's "routine ticker" runs every \~30s, evaluates cron expressions, computes `next_fire_at`
-Fire — when due (or on webhook receipt / API trigger), insert into `pending_events`
-Orchestrator picks up — sees the event on its next tick, decides whether to dispatch (or queue / defer)
-Substrate dispatches the target role; marks the event consumed; updates routine's `last_fired_at`
+Register — a harness blueprint declares `triggers.schedule` (materialized into `harness_shared.routines` on `harness:create`) OR a routine is upserted directly
+Tick — the durable DBOS `routinesTick` runs every \~30s (default `*/30 * * * * *`, skip-missed), lists due cron routines across every workspace
+Claim — each due routine is claimed with a conditional `next_fire_at` advance (so two racing ticks can't both fire it): a recurrence advances to its next time, a one-shot deactivates, a loop parks at `'infinity'`
+Fire — the claim enqueues a per-routine durable `routineFireWorkflow` that dispatches the target directly — `system:&lt;action&gt;` runs its registered handler inline, an agent role spawns via the harness invoke route, and a loop delivers a warm `coord` wake. No `pending_events` insert, no orchestrator pickup.
+
+Durable-fire model. Fires run on a `WorkflowQueue('routines')` with concurrency 4 and a
+per-routine dedup ID `routine:&lt;id&gt;` — this collapses an overlapping fire while the previous one is
+still running (single-fire + natural back-pressure). A `ROUTINE_FIRE_TIMEOUT_MS` of 2h is the dead-executor
+release valve: a fire wedged on a crashed executor would otherwise hold the dedup ID forever (the routine
+looks alive but never runs), so DBOS cancels it at the deadline to free the dedup.
+
+Opt-in. The DBOS routines engine only runs when `dbosRoutinesActive()` is true
+(`PAPERCUSP_DBOS_ROUTINES=1`) and the workflow module is imported by `bootstrap.ts`. While the engine is
+new, a host restart never auto-fires stale routines unsupervised. (The legacy `fireRoutine()` /
+`insertPendingEvent()` helpers still exist in `routines-runtime.ts` but the engine no longer calls them.)
 
 ### 9.2 What routines replace
 
-Today's `auto-loop: on/off + intervalSeconds` per harness becomes one routine: \{\{kind: 'cron', expr: '\*/30 \* \* \* \* \*', target\_role: 'orchestrator'}}
-Webhook handlers (e.g., GitHub PR opened → wake the reviewer) become webhook routines
-Scheduled work (weekly briefings, daily cost reports, hourly health checks) is now first-class
+The legacy per-harness `.papercusp/director-config.json` `autoLoop:true` enablement (and its in-process / DBOS ticker twins) is gone. Cadence now rides the blueprint: a harness blueprint declares `triggers.schedule`, materialized into `harness_shared.routines`, and the tick fires `system:blueprint-run` (→ the blueprint's decider) or an agent role directly.
+Scheduled work (weekly briefings, daily cost reports, hourly health checks) is first-class — authored as cron or rrule recurrence on a routine.
+An agent that needs to re-run interval-after-completion (the old Claude `/loop`) becomes a loop routine — engine-managed, tracked, and crash-recoverable.
 
 ### 9.3 Why this matters
 
@@ -55,26 +86,35 @@ Without routines, the orchestrator's prompt has to know about every scheduled th
 
 ### 9.4 Cost containment & kill switches
 
-Routines are dangerous: a plugin that registers `cron: '* * * * * *'` (every second) and spawns an LLM call per fire can drain a budget overnight. The substrate enforces three layers, all per-install:
+Routines are dangerous: a routine that registers `cron: '* * * * * *'` (every second) and spawns an LLM
+call per fire can drain a budget overnight. The backstops that ship today are the failure-streak
+error backoff / circuit breaker (§9.4.3) and the concurrency-4 fire queue (§9.4.5). The per-routine rate
+floor, per-plugin and global budget caps, and the dedicated audit telemetry described below are
+design intent, flagged per section.
 
-9.4.1 Per-routine rate limit
+9.4.1 Per-routine rate limit (design intent — unimplemented)
 
-Every routine has a `min_interval_seconds` (default 60) regardless of what the cron expression says. A routine that asks for `cron: '* * * * * *'` will fire at most once per minute. Plugins can request a tighter limit via the `routines:rate-limit-bypass` capability — the user must approve at install time.
+Not built. There is no `min_interval_seconds` column or per-routine rate-limit floor in the
+engine, and no `routines:rate-limit-bypass` capability enforcement in operator-core. A cron (or rrule)
+expression is honored as authored — `claimDueRoutine` computes `next_fire_at` straight from the recurrence
+with no min-interval clamp. The intended design below is retained as a future direction; the live backstop
+against a runaway fire is the failure-streak fire-gate in §9.4.3, not a frequency floor.
 
-```typescript
-const routine: RoutineDefinition = {
-name: 'high-frequency-poll',
-trigger: { kind: 'cron', expr: '*/5 * * * * *' },
-// Substrate ignores the cron's "every 5s" and uses min_interval_seconds.
-// To actually fire every 5s, plugin manifest must declare:
-//   capabilities: ['routines:rate-limit-bypass:high-frequency-poll']
-target_role: 'orchestrator',
-};
-```
+Intended design: every routine would carry a `min_interval_seconds` (default 60) regardless of what
+the cron expression says, so a routine asking for `cron: '* * * * * *'` would fire at most once per minute,
+with a tighter limit gated behind a `routines:rate-limit-bypass` capability the user approves at install
+time.
 
-9.4.2 Per-plugin budget cap
+9.4.2 Per-plugin budget cap (design intent — unimplemented)
 
-Each plugin has a daily LLM-spend budget enforced by the substrate's existing budget guard (§3.7). Default cap is $5/day per plugin. Plugins request a higher cap via `budget:daily:&lt;n&gt;-usd` capability. When a plugin's daily spend hits the cap, all of its routines and role invocations are paused for the remainder of the UTC day. The substrate emits a `plugin.budget-exhausted` event that other plugins (or the user UI) can react to.
+Not built. There is no per-plugin `$5/day` daily LLM-spend cap, no `budget:daily:&lt;n&gt;-usd`
+capability, and no `plugin.budget-exhausted` event in operator-core. The intended design below is retained
+as a future direction.
+
+Intended design: each plugin would have a daily LLM-spend budget enforced by the substrate's budget
+guard (§3.7), default $5/day, raisable via a `budget:daily:&lt;n&gt;-usd` capability. On
+hitting the cap, all of the plugin's routines and role invocations would pause for the remainder of the UTC
+day, and the substrate would emit a `plugin.budget-exhausted` event other plugins (or the UI) could react to.
 
 9.4.3 Kill switches
 
@@ -87,11 +127,28 @@ papercusp routines pause-plugin briefings        # all routines from briefings
 papercusp routines stats                          # see which plugins fired what, and what cost
 ```
 
-UI surface: each plugin's settings page shows live routine activity (last fired, fires/hr, $ spent today) with a one-click pause toggle. The substrate auto-pauses any routine that errors 5 times in a row — it stays paused until the user explicitly resumes.
+UI surface: each plugin's settings page shows live routine activity (last fired, fires/hr, $ spent today) with a one-click pause toggle.
 
-9.4.4 Telemetry the substrate guarantees
+Error backoff & circuit breaker (live). The shipped backstop against a repeatedly-failing
+fire is the autoloop fire-gate, not a hard pause. Each consecutive error backs off the next fire
+exponentially (`base * 2^(N-1)`, default base 60s, capped at 1h); at the circuit threshold — 8
+consecutive errors (`PAPERCUSP_AUTOLOOP_CIRCUIT_THRESHOLD`, default 8) — the circuit OPENS and the
+role degrades to \~one probe per cap window instead of full cadence. It is not a hard pause and does
+not require manual resume: a single successful fire (or `autoloop:control { op:'reset-errors' }`)
+resets the counter to 0 and closes the circuit. The gate is consulted by the agent-role fire and the
+`system:blueprint-run` decider fire; the fire is withheld, not the routine deactivated.
 
-Every routine fire is recorded in `audit.routine_fires` with: routine id, plugin name, fire timestamp, target role, dispatch outcome, total LLM cost, total wall time. This lets users (and the substrate's UI) answer "which plugin is consuming my budget?" without instrumentation in the plugin itself.
+9.4.4 Telemetry the substrate guarantees (design intent — unimplemented)
+
+Not built as described. There is no `audit.routine_fires` table. The live fire telemetry
+is the autoloop `recordFire` / `checkFireGate` state on `harness_shared.autoloop_state` (last fired, last
+status, consecutive errors per workspace/slug/role), plus a `routines.metadata.last_error` key a wedged
+`system:&lt;action&gt;` writes for the improvement watchdog to read. The dedicated per-fire audit schema below
+is design intent.
+
+Intended design: every routine fire would be recorded in `audit.routine_fires` with routine id,
+plugin name, fire timestamp, target role, dispatch outcome, total LLM cost, and total wall time — so users
+and the UI could answer "which plugin is consuming my budget?" without per-plugin instrumentation.
 
 #### 9.4.5 System-wide caps and back-pressure
 
@@ -99,16 +156,15 @@ Per-plugin caps (§9.4.1, §9.4.2) catch a single misbehaving plugin.
 They don't protect against aggregate overload — twenty
 well-behaved plugins each within their own caps can collectively
 exhaust LLM rate limits, DB connections, or wall-clock concurrency.
-The substrate enforces three system-wide caps:
+One system-wide cap ships today; the rest are design intent:
 
-Global daily LLM budget (default $50/day, configurable per install). Hits across all plugins; when exhausted, every plugin's routines pause until UTC rollover. The user's own non-plugin LLM calls (orchestrator ticks, ad-hoc queries) take priority over plugin routines once 80% of budget is consumed.
-Concurrent routine fires (default 4). The routine ticker dispatches at most N routines simultaneously; queued routines wait. Prevents 50 cron expressions all firing at minute :00 from spawning 50 simultaneous LLM calls.
-Per-minute LLM call rate (default 60/min across all plugins, calibrated to provider rate limits). When breached, routines are deferred (not failed) — the next-fire-at slips forward.
+Concurrent routine fires (live, default 4). The fire queue (`WorkflowQueue('routines', { concurrency: 4 })`) runs at most 4 routine fires at once; further fires wait. This prevents 50 cron expressions all firing at minute :00 from spawning 50 simultaneous fires.
+Global daily LLM budget (design intent — unimplemented). Intended: a default `$50/day` cap across all plugins that pauses every plugin's routines until UTC rollover when exhausted, with the user's own non-plugin calls taking priority past 80%.
+Per-minute LLM call rate (design intent — unimplemented). Intended: a default 60/min cap across all plugins; on breach, routines would be deferred (next-fire-at slips) rather than failed.
 
-All three system caps emit metrics to `audit.system_pressure` so
-operators can see when they're regularly close to the limit (signal
-to either raise the cap or prune low-value routines). The UI surfaces
-a "system at 87% of daily budget; 3 plugins competing for next fire"
-indicator when caps are stressed.
+Not built: there is no `audit.system_pressure` table, no global daily/per-minute LLM
+budget, and no "system at 87% of daily budget" UI indicator. The intended design was for all system caps to
+emit pressure metrics to `audit.system_pressure` so operators could see when they regularly run close to a
+limit and a UI could surface stress.
 
-Per-plugin caps interact with system caps multiplicatively, not additively. A plugin can hit either ceiling first; whichever triggers first stops the plugin. Authors should size their per-plugin caps assuming the system cap might constrain them earlier than their own.
+Intended: per-plugin caps would interact with system caps multiplicatively, not additively — a plugin could hit either ceiling first, and authors should size per-plugin caps assuming the (unbuilt) system cap might constrain them earlier than their own.

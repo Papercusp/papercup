@@ -4,15 +4,27 @@ URL: /internal/docs/design/operator-card-lifecycle-plan
 Final plan after design discussion. Card lifecycle collapses to 3 states (pending / dispatched / ignored) with a non-status failure chip. No harness coupling, no parent_id schema, no auto-timeout.
 
 > **Superseded (kept as design history).** The operator-card recommendation
-> stream this plan governs — and `OperatorPanel.tsx`, the panel that rendered
-> the cards (referenced throughout §3) — were **removed** in the scanner
-> teardown (`unify-agent-launches-as-blueprints-2026-06-04` D-005; the scanner
-> tables were dropped in migration 167). The live operator chat surface is now
-> `OperatorChat.tsx` / `OperatorChatSidebar.tsx` (the Deck), and proactive
-> findings land as tracked **work\_items in the self-improvement backlog**
-> (`improvements:capture` / `improvements:digest`), not as a card feed. The
-> 3-state model below (pending → accepted/ignored) was never the shipped
-> lifecycle.
+> stream this plan governs was **torn down** in the scanner teardown
+> (`unify-agent-launches-as-blueprints-2026-06-04` D-005; the scanner tables
+> were dropped in migration 167). `OperatorPanel.tsx`, the panel that rendered
+> the cards (referenced throughout §3), was **unwired/orphaned** in that
+> teardown — nothing mounts it anymore (`ChromeShell` renders only
+> `OperatorChatSidebar` behind the testing flag) — but the file itself was
+> **not deleted**: it still exists on disk (≈2,188 lines) as dead code pending
+> removal. The live operator chat surface is now `OperatorChat.tsx` /
+> `OperatorChatSidebar.tsx`. (Note: in the codebase's own naming, "the Deck" is
+> `OperatorPanel`'s root `.operator-panel` element, which sat *behind* the chat
+> sidebar — the chat surface and the Deck are distinct, so don't read the chat
+> sidebar as "the Deck.") Proactive findings land as tracked **work\_items in the
+> self-improvement backlog** (`improvements:capture` / `improvements:digest`),
+> not as a card feed.
+>
+> The 3-state model below (pending → accepted/ignored) did reach code:
+> `OperatorPanel.tsx` defines `LifecycleState` as exactly
+> `'pending' | 'accepted' | 'ignored'` and `SuggestionCard` carries the §2
+> failure-chip fields (`failedAttempts`, `lastFailureReason`, `lastFailureAt`).
+> That surface was then orphaned by the scanner teardown — so the lifecycle was
+> shipped, then unwired, rather than never shipped.
 
 This is the final shape after the back-and-forth in chat. Earlier
 audit + 8-phase plan is superseded; the model is dramatically smaller

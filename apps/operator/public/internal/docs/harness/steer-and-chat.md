@@ -14,7 +14,7 @@ them.
 | ------------------------------------------------------------------- | --------------------------------------------------------------- |
 | Leave durable direction/context for whoever works a feature next    | `messages:send` (work-item-scoped)                              |
 | Have an interactive conversation with a role agent inside a harness | `agent_chats:*`                                                 |
-| Nudge a *live* agent right now (or wake an idle one)                | `coord:send` (with `wake: true`)                                |
+| Nudge a *live* agent right now (or wake an idle one)                | `coord:send` (with `wake: 'required'`/`'optimistic'`)           |
 | Make a running agent stop / wrap up                                 | `turn:interrupt`                                                |
 | Answer a question an agent asked                                    | the decision card / `conversations:answer` / `coord` escalation |
 | Steer the whole Pot (not one agent)                                 | the operator chat surface                                       |
@@ -45,22 +45,41 @@ by autonomous dispatches. Use this when you want a conversation; use
 ## Live coordination — `coord:*`
 
 `coord:send` reaches a *live* (or wakeable) agent's coordination inbox;
-deltas are injected into the recipient mid-turn after its tool calls. With
-`wake: true` it re-invokes an idle agent — agents are armed for inbox-wake at
-session start, and a wake that woke nobody returns a `woken: 0` warning
-rather than failing silently. `coord:escalate` raises a durable escalation a
-human (or the operator) must resolve. Don't use coord for state that must
-outlive the session — that's what messages and work items are for.
+deltas are injected into the recipient mid-turn after its tool calls. The
+default (no `wake`) is inject-only — the message lands in the inbox and is
+seen on the recipient's next natural turn. Set `wake` to *also* re-invoke an
+idle recipient now; agents are armed for inbox-wake at session start. The arg
+carries an intent (`'required' | 'optimistic'`), not a plain toggle:
+
+* `wake: 'required'` — the wake MUST land. A clean miss (it reached wakeable
+  addressees but no awake/watching session, and none were staged for a Pause)
+  returns `recipient_absent: true` plus an explanatory note rather than
+  failing silently. The message is still injected to the inbox for the next
+  turn; only the re-invoke missed.
+* `wake: 'optimistic'` — silent best-effort over a durable backstop (wake if
+  present, shrug if not — e.g. the Queen survey re-dispatches anyway). A miss
+  is *not* surfaced; the inbox row persisted regardless.
+
+The legacy boolean still coerces: `true` → `'required'`, `false`/omitted → no
+wake. `coord:escalate` raises a durable escalation a human (or the operator)
+must resolve. Don't use coord for state that must outlive the session —
+that's what messages and work items are for.
 
 ## Turn interruption — `turn:interrupt`
 
 To make a running agent stop, `turn:interrupt`
 (`packages/operator-core/lib/agent-tools/turn/interrupt.ts`) supports two
-modes — operator-mediated, reason-required, audited, and storm-rate-limited:
+modes — operator-mediated, reason-required, audited, and storm-rate-limited
+(max 10 interrupts per actor in a rolling 60s window, sourced from the audit
+log):
 
 * **cooperative** — injects a high-priority `yield` line into the target's
   coord stream; the agent finishes its atomic step, releases locks,
-  checkpoints state, and ends its turn.
+  checkpoints state, and ends its turn. But when the target holds file locks
+  (a critical section), the cooperative interrupt **DEFERS** — it returns
+  `deferred: true` and injects *no* yield, so the peer can finish its atomic
+  edit and release its locks. Retry shortly, or escalate to `force` (which
+  warns it may orphan a half-written edit).
 * **force** — ends the turn *now*, mid-thought (Ctrl+C to a managed pty /
   SIGINT headless); no checkpoint is guaranteed.
 

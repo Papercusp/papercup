@@ -115,33 +115,44 @@ shareholder-briefings) all ship the TS form.
 
 ### 8.4 The DI container (host services)
 
-Plugins consume host state via typed services. The container only returns services the plugin's manifest has declared capabilities for:
+Plugins consume host state via typed services. The
+PapercuspApi exposes each service as a direct property
+(api.tasks, api.goals,
+api.routines, api.comments,
+api.secrets, api.storage,
+api.db, api.fetch,
+api.capabilities); each call is a capability-gated proxy
+that throws MissingCapabilityError when the plugin's
+manifest hasn't declared the matching capability:
 
 ```
-// What plugins use:
-const tasks = api.useService(TasksService);  // only works if plugin declared 'tasks:read'
-const completedTasks = await tasks.list({ status: 'passed' });
+// What plugins use — services are direct properties, not a useService() lookup:
+const completedTasks = await api.tasks.list({ status: 'passed' });  // throws unless 'tasks:read' granted
 
-// Service definitions (in plugin SDK):
-export const TasksService = defineService({
+// Service definitions live in @papercusp/plugin-loader (api-factory.ts),
+// not the SDK; the SDK only exports the `defineService` helper + TS interfaces:
+export const TasksServiceDef = defineService({
   name: 'tasks',
   methods: {
-    list:     { capability: 'tasks:read',  returns: TaskListSchema },
-    get:      { capability: 'tasks:read',  returns: TaskSchema },
-    comment:  { capability: 'comments:write', returns: CommentSchema },
-    // (write methods only available if 'tasks:write' is granted)
+    list:      { capability: 'tasks:read' },
+    get:       { capability: 'tasks:read' },
+    lineage:   { capability: 'tasks:read' },
+    create:    { capability: 'tasks:write' },
+    setStatus: { capability: 'tasks:write' },
   },
 });
 
-export const RoutinesService = defineService({
+export const RoutinesServiceDef = defineService({
   name: 'routines',
   methods: {
-    register: { capability: 'routines:write' },
-    list:     { capability: 'routines:read' },
+    list:    { capability: 'routines:read' },
+    upsert:  { capability: 'routines:write' },
+    delete:  { capability: 'routines:write' },
+    trigger: { capability: 'routines:write' },  // manually fire — inserts a pending_event
   },
 });
 
-export const SecretsService = defineService({
+export const SecretsServiceDef = defineService({
   name: 'secrets',
   methods: {
     // resource-specific cap: 'secrets:read:YOUTUBE_API_KEY'
@@ -210,19 +221,45 @@ the most common bug class.
 
 ### 8.5 The hooks system (WordPress-inspired)
 
-Implemented (current state): the shipped
-PluginHookBus (in @papercusp/plugin-sdk)
-exposes addAction(event, handler),
-addFilter(event, handler), and
-emit(event, arg), gated by
-events:listen:\<name> /
-events:emit:\<name> capabilities. The substrate
-enforces the event-namespace rule (substrate-reserved prefixes —
-mission. task. feature. proposal. worker. validator.
-orchestrator. pending\_event. — are rejected; plugin events
-must be prefixed with the plugin id). The richer ordering /
-guard / slot machinery in §8.5.1–§8.5.5 below
-(named predicates, integer priority, addGuard/VETO,
+Implemented (current state): the WordPress-style
+PluginHookBus (addAction /
+addFilter / emit) was retired
+2026-06-12 (plugin-system-hive-port-2026-06-11
+P-006 / D-003: zero registered consumers, and its invocations bypassed
+dispatch — no audit, no fire-time capability gating). It is gone from
+the loader, SDK, and host; the only surviving reference is a
+throw-only browser stub under libs/papercusp/\_retired/.
+The live model is two parts:
+
+FROZEN typed lifecycle hooks
+(PluginHooks on the Plugin interface —
+onLoad, onUnload,
+onHarnessCreated, beforeMissionStart,
+afterDone, onFeaturePassed,
+onPostWorker, etc.). The existing fire-points stay for
+back-compat, but no new ones will be added — new host fire-points
+ship as event emissions instead.
+Capability-scoped event-reaction rules
+(PluginReactionRule) — the public extension surface. A
+plugin declares reactions: PluginReactionRule\[] (code
+form) or manifest reactions (declarative subset); when a
+rule's trigger on settles (a tool invocation observed at
+the dispatcher, or a host emission like
+pipeline:step-done), the host fires the rule's
+fire target through normal dispatch —
+auth-gated, quota'd, audited, loop-protected. The
+events:listen:\<trigger> /
+events:emit:\<name> capabilities still exist, gating
+reaction-rule triggers and plugin event emissions (not a hook bus).
+
+The reaction registry enforces a different namespace rule than the old
+bus: a rule's fire target must be one of the plugin's
+own projected tools
+(\<plugin>.\<verb>) — the host throws if the
+fire target belongs to another plugin. There is no list of reserved
+event prefixes being rejected. The richer ordering / guard / slot
+machinery in §8.5.1–§8.5.5 below (named predicates, integer priority,
+addGuard/VETO,
 useSlot/declareAction) is design intent and
 is not in the shipped SDK.
 
@@ -597,18 +634,26 @@ iframe RPC will hit jank that no engineering inside the plugin can fix.
 
 ### 8.8 Iframe-host routes inside the operator app
 
-An iframe-mode dashboard tab (manifest iframeUrlConfigKey or
-iframeUrl on a dashboardTabs\[] entry) can point at any
-URL — a separate origin like localhost:8082 for code-server, or a
-route on the operator itself. The latter is the
-iframe-host route pattern: the plugin contributes nothing
-but a manifest, and the operator app renders the actual UI at a dedicated
-route. @papercupai/fumadocs follows this shape today —
-its tab declares iframeUrlConfigKey: "docsUrl", defaulting to
-[http://localhost:3055/project-docs](http://localhost:3055/project-docs). (@papercupai/pi-coding
-originally used this pattern pointing at /pi, but has since moved
-to an inline React dock — componentRoot/componentId
-with embedMode: "inline-dock" — rather than an iframe.)
+A dashboard tab (dashboardTabs\[] entry) can ship as an
+in-process React component (componentRoot +
+componentId) or an iframe
+(iframeUrl, or iframeUrlConfigKey resolved against
+the plugin's config). When both are present, the host prefers the iframe URL
+(cheaper to validate at runtime; no rebuild required to update). An
+iframe-mode tab can point at any URL — a separate origin like
+localhost:8082 for code-server, or a route on the operator
+itself. The latter is the iframe-host route pattern: the
+plugin contributes nothing but a manifest, and the operator app renders the
+actual UI at a dedicated route. @papercupai/starlight follows
+this shape today (it is the successor to the outgoing
+@papercupai/fumadocs — fumadocs the framework was migrated to
+Astro Starlight): its tab declares
+iframeUrlConfigKey: "docsUrl", defaulting to
+[http://localhost:3055/project-docs](http://localhost:3055/project-docs).
+(@papercupai/pi-coding originally used this pattern pointing at
+/pi, but has since moved to an inline React dock —
+componentRoot/componentId with
+embedMode: "inline-dock" — rather than an iframe.)
 
 Two non-obvious requirements when adding such a route:
 
@@ -626,12 +671,20 @@ iframe-tab those are noise. Drop in
 it adds the papercusp-chromeless body class, which
 globals.css uses to hide
 .pc-header, #chatwoot\_live\_chat\_widget, and
-\[data-oracle-dock]. Pass auto when the route
+the OracleDock (via its .oracle-dock /
+.oracle-fab class selectors — not the
+data-oracle-dock attribute). Pass auto when the route
 is also meaningful standalone (e.g. /project-docs,
 where direct visitors should still see chrome) — it will only apply
 chromeless when window\.self !== window\.top.
 
-The plugin manifest's replaces: \['\<built-in-id>'] array
-takes care of suppressing the legacy hard-coded tab; no env flag involved.
-See pi integration for the
+Whether plugin dashboard tabs render at all is gated by the
+PAPERCUSP\_TABS\_FROM\_PLUGINS feature flag (the "P7 plugin-tab
+cutover", set to 1 on the substrate process). Given that flag,
+the manifest's replaces: \['\<built-in-id>'] array handles
+suppression: the dashboard hides the built-in hard-coded tab (e.g.
+docs) when a plugin replacement is present and active. So the two
+concerns are distinct — the flag controls whether plugin tabs appear, and
+replaces controls which built-in tab the new one supersedes. See
+pi integration for the
 worked example.

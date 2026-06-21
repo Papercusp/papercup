@@ -203,6 +203,57 @@ endpoint you trust; a self-hosted `/ip` echo avoids a third party.)
   attempt, so when the pool fails over to a healthy account, that account's egress
   dispatcher is used for the retry. Egress and failover compose.
 
+## Dead-proxy circuit breaker (a half-dead egress IP must not wedge the gateway)
+
+Per-account egress adds a new failure mode: **the proxy itself can die.** On 2026-06-20 a
+Rayobyte squid (`aviynw6` → `216.41.233.249:3128`) went *half-dead* — its TCP port stayed
+open but every `CONNECT` **hung \~60s**. That wedged the **whole** gateway into a
+watchdog-restart storm, and the cause was subtle:
+
+* The gateway's account health/penalty signal was **429-only**. A dead/hanging proxy makes
+  the upstream `fetch` **stall or fail to connect** — a *transport* failure that never
+  reaches Anthropic, so it carries **no HTTP status** and (unlike a 429) fed **zero**
+  account-health signal.
+* So the dead-egress account accrued **no penalty** → the router scored it **"healthiest"**
+  → routed the **most** traffic to it **and** overrode session pins onto it ("yields to
+  liveness"). Pinning to good accounts didn't help; the dead account kept getting flooded.
+
+**The fix** (`gateway.ts`, the upstream-fetch `catch`): a transport failure on a
+**proxy-egress** account now feeds the **same `gov.pausedUntil` lever the 429 hard-cap
+uses**, so the existing pin-yield + cross-account selector route around it automatically. A
+**consecutive-failure streak** (`EGRESS_FAIL_CIRCUIT_THRESHOLD`, default 3) opens a longer
+**circuit** (`EGRESS_CIRCUIT_OPEN_MS`, default 60s); the request then **rotates + retries**
+on a healthy account instead of returning a terminal 502. The streak resets on any upstream
+response (so the half-open is natural: the pause expires → the next request re-probes the
+account → success closes the circuit, a failure re-opens it), plus an **active half-open
+probe** (`egress-probe.ts`) re-tests the proxy and logs/clears the streak on recovery.
+
+* **Scoping matters.** The circuit is **only** armed for accounts that egress through an
+  `http(s)` proxy — only those can have a *dead proxy*. A transport failure on a **no-proxy**
+  account is an Anthropic/network-side stall (the proxy can't be the fault), so it keeps the
+  existing **fast-502** (the bee's CLI retries; AIMD shrinks concurrency) and its healthy
+  account is **not** penalized.
+* **`pausedUntil` is take-MAX** (the shared governor's `recordPenalty` only ever *extends* a
+  pause, never shortens it — a per-account 429 streak is the real exhaustion signal). So the
+  circuit-open pause can't be *lifted* early by a probe; readmit is via pause-expiry. Keep
+  `EGRESS_CIRCUIT_OPEN_MS` modest so a *recovered* (flapping) proxy rejoins quickly.
+* **Observability:** `GET /stats` → `egressCircuitOpens` counts how many times a proxy hit
+  the threshold. A climbing value = a flapping/dead proxy IP (distinct from `upstreamErrors`,
+  which also counts Anthropic-side stalls).
+* **Diagnose a suspect proxy directly** (bypasses Anthropic + the gateway):
+  `curl -sS -x http://<ip>:3128 -m 8 https://api.ipify.org` — a healthy dedicated proxy
+  echoes **its own IP**; a dead one times out. (Sweep all N to find the bad one fast.)
+
+Regression coverage: `inference-gateway/gateway-egress-circuit.test.ts` (dead-proxy account
+fails over → 200 not 502; N consecutive failures open the circuit + return retryable 503,
+never a wedge; a success resets the streak).
+
+> **Don't just `accounts:remove` a dead-proxy account and call it fixed** — that only takes
+> effect on the next gateway restart (the pool is resolved at boot), and it's a one-off that
+> leaves the trap armed for the next dead IP. The circuit breaker is the durable fix; removal
+> is emergency mitigation. To restore the account, either swap in a fresh proxy IP (re-register
+> its `egress`) or rely on the circuit breaker to safely auto-handle the flapping one.
+
 ## Rollback
 
 Remove an account's egress and restart — it reverts to the default shared egress with no

@@ -92,19 +92,52 @@ Approve all? [y/N/per-capability]: y
 Saved to ~/.papercusp/installed/shareholder-briefings/granted-capabilities.json
 ```
 
-Permissions can be revoked per-capability later via `papercusp permissions revoke &lt;name&gt; &lt;cap&gt;`.
+Permissions can be revoked per-capability later. There is no
+`papercusp permissions revoke` CLI subcommand in the shipped
+operator — revocation runs through the HTTP route
+`POST /api/plugins/grants` with `action: 'revoke'`, backed by
+`revokeCapabilities()` in `plugin-grants.ts` (a `DELETE` of the
+specific `(plugin, version, harness, capability)` rows from
+Postgres). The matching `action: 'grant'` re-grants a cap.
 
-### 10.4 Iframe sandbox network enforcement (v2)
+### 10.4 Iframe sandbox network enforcement
+
+Outbound-domain enforcement is done host-side by
+the `makeFetchProxy` DI proxy
+(`plugin-loader/src/capabilities.ts`), not by a per-plugin CSP. The
+proxy resolves each request's hostname, builds the
+`http:fetch:&lt;host&gt;` capability, and rejects with
+`MissingCapabilityError` unless the plugin's manifest declares that
+host (exact or subdomain-wildcard — see the two-tier check in §10.7).
+The CSP-as-domain-allowlist
+sketch below is future-state (v2) and is not how the shipped
+code works:
 
 ```
+<!-- v2 (not shipped): inject manifest domains into the iframe CSP -->
 <iframe
-  src="..."
-  sandbox="allow-scripts"
-  csp="default-src 'self'; connect-src https://youtube.com https://googleapis.com"
+src="..."
+sandbox="allow-scripts"
+csp="default-src 'self'; connect-src https://youtube.com https://googleapis.com"
 />
 ```
 
-Even if a plugin's JS is malicious, it physically cannot reach an unlisted domain. Multiple defenses (manifest + DI proxy + CSP) so that bypassing any one isn't sufficient.
+The CSP the operator actually serves for the plugin iframe
+(`endpoint-route/routes/plugins/iframe-entry.ts`) is fixed and does
+not inject any manifest domains:
+
+```
+default-src 'self'; script-src 'self' 'nonce-…'; style-src 'self' 'unsafe-inline';
+connect-src 'self'; img-src 'self' data:; frame-ancestors 'self'
+```
+
+Because `connect-src` is `'self'`, iframe JS cannot make any
+cross-origin request — allowlisted or not — so plugin `http:fetch`
+traffic goes through the host fetch proxy rather than directly from
+the iframe. The host sandbox is `allow-scripts allow-forms`
+(`PluginIframe.tsx`). Multiple defenses (manifest declaration +
+host-side fetch proxy + the locked-down iframe CSP) so that bypassing
+any one isn't sufficient.
 
 ### 10.5 Cross-plugin coordination & conflict resolution
 
@@ -143,7 +176,7 @@ When two substrate installs run side-by-side (personal + work), they default to 
 
 Browser/Android permission systems all converge on the same failure mode: users blindly approve everything because the manifests are long and abstract. Papercusp mitigates with four policy choices baked into the consent flow (§10.3):
 
-Tier capabilities by impact, not count. See §10.6.1 below — the substrate caps high-impact capabilities aggressively (3 default), while low-impact ones (internal reads, UI mounts) are unlimited. This is more honest than counting raw capabilities, since "26 capabilities" can be either trivial (a reference plugin like Papercup) or alarming (a generic plugin reading every secret).
+Tier capabilities by impact, not count. See §10.6.1 below — every capability is classified low/medium/high, and the consent prompt surfaces high-impact caps (secrets, outbound network, cross-plugin reads) first. There is no per-tier count cap; the tier drives display order and the Operator's ask-vs-auto-grant decision, not a numeric limit. This is more honest than counting raw capabilities, since "26 capabilities" can be either trivial (a reference plugin like Papercup) or alarming (a generic plugin reading every secret).
 
 Group at consent. See §10.6.2 — the CLI prompt collapses related capabilities into a single user-facing decision. "Read 3 secrets: A, B, C" is one line, not three. "Network access: youtube.com, googleapis.com" is one line, not two. A plugin declaring 26 capabilities typically reduces to 5–7 user-visible decisions.
 
@@ -153,39 +186,58 @@ Default-deny new capabilities at update time. When `papercusp update` finds new 
 
 #### 10.6.1 Capability tiers
 
-Each capability declared in §10.1 has a tier assigned by the spec.
-Tiers are not configurable per-install — they're a property of the
-capability namespace itself.
+Each capability is classified low/medium/high. The tier drives two
+things: the order and grouping of the consent prompt (§10.6.2), and
+the Operator's ask-vs-auto-grant decision. It is not
+a count cap — nothing in the codebase limits how many caps of a tier
+a plugin may request, and there are no overage flags.
 
-TierExamplesDefault capOverride
+Tiers are configurable per-plugin, with one
+constraint. The manifest exposes an optional `tierMap`
+(`plugin-sdk/src/index.ts`) that lets a plugin declare a more
+permissive tier for caps it owns (e.g. mapping a safe webhook
+`http:fetch:slack.com` down to `low`). The single guardrail: a
+high-tier substrate cap cannot be downgraded — the Operator
+pipeline ignores any `tierMap` entry that maps a substrate cap below
+what the substrate table specifies. Plugin-defined caps not in the
+substrate table default to `high` (fail-safe → always ask) and can be
+lowered via `tierMap`.
 
-low
-`tasks:read`, `features:read`, `goals:read`, `ui:dashboard-tab`, `ui:sidebar-item`, `ui:harness-route`, `storage:plugin-private`, `db:plugin-schema`
-unlimited
-—
+There are three classification sources in the live code, and they do
+not perfectly agree — a reviewer reconciling them should treat the
+runtime resolver as authoritative for the Operator pipeline:
 
-medium
-`tasks:write`, `comments:write`, `routines:read`, `routines:write`, `events:emit:*`, `events:listen:*`, `roles:register:*`
-10
-`--allow-medium-cap-overage`
+Runtime resolver — `papercuspTierFor()`
+(`agent-mcp/src/capability-tiers-papercusp.ts`), registered via
+`setCapabilityTierResolver` at boot (P-012 / D-006). Prefix rules:
+`secrets:`, `http:fetch:`, and `data:read:` → high;
+`events:` and `roles:register:` → medium; anything
+unclassified → medium (fail-safe default).
 
-high
-`secrets:read:*`, `secrets:write:*`, `http:fetch:*`, `data:read:<plugin>:*` (cross-plugin), `events:guard:*`, `routines:rate-limit-bypass:*`, `budget:daily:*-usd`
-3
-`--allow-high-cap-overage` (with explicit user confirmation per cap above the cap)
+Substrate tier table — `tier-table.json`, consumed
+by the Operator pipeline's `lookupTier()`. It classifies most
+`:read` caps `low` and most `:write` caps `medium`; notable entries
+are `comments:write` → `low`, `data:read:*:*` → `medium`,
+`secrets:read:*` / `secrets:write:*` / `harness:dispatch:*` /
+`pending_events:write` → `high`.
 
-A plugin requesting 4 high-impact capabilities (e.g. 3 outbound
-domains plus 1 secret) hits the high-tier cap and triggers a
-dedicated "this plugin requests substantial trust" warning before
-the regular consent prompt. A plugin requesting 26 low-tier
-capabilities (Papercup) sails through with no overage prompt at all.
+CLI display — `tierOf()` in the CLI
+(`cli/src/consent.ts`) is display-only (it groups caps under
+high/medium/low headings, it does not count or gate). It differs
+from the resolver: `events:emit:`/`events:listen:` → `low`, and a
+non-wildcard `http:fetch:&lt;host&gt;` → `medium` while a wildcard
+`http:fetch:*` → `high`.
 
-The reference plugin Papercup declares 26 capabilities total, broken
-down as \~16 low (read access + UI surfaces +
-plugin-private storage), \~7 medium (writes +
-routines + role registrations), and \~3 high
-(cross-plugin reads + outbound network) — fitting cleanly under all
-three tier caps without any overage flags.
+Tier names like `events:guard:*`, `routines:rate-limit-bypass:*`, and
+`budget:daily:*-usd` are not declared anywhere in the substrate today;
+they are illustrative of the high tier's intent, not shipped caps.
+
+The reference plugin Papercup declares a large capability set
+dominated by low-tier reads, UI surfaces, and plugin-private storage,
+with a handful of medium (writes, routines, role registrations) and a
+few high (cross-plugin reads + outbound network). Because there is no
+count cap, the only consent-flow consequence is ordering and grouping
+— the high-impact caps surface first.
 
 #### 10.6.2 Grouped consent
 
@@ -232,64 +284,112 @@ is purely a presentation concern.
 
 ### 10.7 Capability lifecycle and revocation
 
-Capability state is read from in-memory state on every method
-invocation through the DI proxy — never from disk on the hot
-path. The substrate maintains a per-install `Set<Capability>`
-in memory; revocation events (CLI command, UI toggle, programmatic
-revoke) update both that in-memory set and the install's
-`granted-capabilities.json` file atomically. A long-lived
-plugin reference like `const tasks = api.tasks` does not
-cache the granted state — but reading the in-memory Set is O(1) per
-call, not a disk read.
+Capability state is read from an in-memory cache on every
+method invocation through the DI proxy — never from disk on
+the hot path. In the shipped operator the cache is per-host:
+`state.grants` is a `Map<key, string[] | undefined>` keyed by
+`(plugin, install)`, loaded once at plugin init from
+Postgres (`plugin-host-runtime.ts`) and read O(1) per call. The
+durable record-of-truth is Postgres —
+`harness_shared.plugin_capability_grants` (the table originally landed
+as Migration 051, now in `000-baseline.sql`), not a file. The CLI
+consent flow (§10.3) still writes
+`~/.papercusp/granted-capabilities.json`, but the operator treats that
+file as a read-only legacy fallback for installs that
+predate the PG store.
 
-Substrate authors implementing this: keep a durable record-of-truth
-(survives restart), but treat the in-memory Set as the runtime
-authority. On startup, load the durable record into memory; on
-revocation, update memory first, then persist.
+Revocation is not live in the running plugin. The
+`state.grants` cache is invalidated only on a full plugin reload (the
+same path that clears `initialized`); it is not re-read on a
+revoke event. A revoke (`POST /api/plugins/grants` with
+`action: 'revoke'` → `DELETE` from PG, §10.3) therefore does not
+propagate to an already-running plugin until it reloads. The next
+method call after a revoke uses the cached grant and does not
+throw immediately — the new state takes effect on reload, not
+mid-call.
 
-Implementation note: in the shipped operator the durable
-record-of-truth is Postgres — harness\_shared.plugin\_capability\_grants
-(Migration 051), not the file. The CLI consent flow (§10.3) still writes
-\~/.papercusp/granted-capabilities.json, but the operator
-treats that file as a read-only legacy fallback for installs that predate
-the PG store; runtime checks go through plugin-grants.ts's
-hasCapability(), which ANDs the manifest caps with the
-granted set from PG.
+How grants come to exist matters as much as how they're checked. At
+operator boot, `backfillGrantsFromEnabledPluginsAndLegacyFile()`
+replays the legacy file verbatim and silently grants every
+`enabled-plugins.json` plugin its manifest-declared caps (system
+grants, revocable later from the consent UI). When a harness is
+forked, `copyGrantsToNewHarness()` copies the parent's grants to the
+new install so the fork inherits its trust decisions instead of
+degrading on first invocation.
 
 ```typescript
-// User runs: papercusp permissions revoke briefings tasks:read
+// Revocation runs through the HTTP route, not a CLI subcommand:
+//   POST /api/plugins/grants { action: 'revoke', ... } → revokeCapabilities()
 // Mid-session, while briefings has an open `api.tasks` reference:
 
-const tasks = api.tasks;     // proxy created with current grants
-await tasks.list();          // ✓ if tasks:read still granted
-// ... user revokes tasks:read ...
-await tasks.list();          // throws MissingCapabilityError immediately
+const tasks = api.tasks;     // proxy reads the per-host state.grants cache
+await tasks.list();          // ✓ if tasks:read in the cached grant set
+// ... user revokes tasks:read (deletes the PG row) ...
+await tasks.list();          // STILL ✓ — cache is unchanged until reload
+// On next plugin reload the cache is rebuilt from PG; tasks:read now denied.
 ```
 
-Plugins should always wrap DI calls in try/catch and degrade
-gracefully when capabilities are revoked mid-session — same pattern
-as a network call failing. The substrate will not auto-pause a plugin
-on first revocation error; that's a routine-level concern (§9.4).
+Plugins should still wrap DI calls in try/catch and degrade gracefully
+— same pattern as a network call failing. The substrate will not
+auto-pause a plugin on a revocation error; that's a routine-level
+concern (§9.4).
+
+The two-tier capability check
+
+The load-bearing enforcement (gestured at by the §10.2 pseudocode) is
+a two-tier AND in `hasCapability()`
+(`plugin-loader/src/capabilities.ts`):
+
+Tier 1 — manifest. The plugin's `capabilities[]`
+must declare the cap (exact match or a wildcard pattern that covers
+it). Fails → denied.
+
+Tier 2 — user-granted set. The cached granted set
+must also contain the cap (exact or wildcard). Both tiers must pass.
+
+Legacy fallback. When the granted set is
+`undefined` the host short-circuits to manifest-only (single-tier)
+semantics and returns `true` after Tier 1. An empty PG result loads
+as `undefined` (not `[]`), so a missing or never-run grant load does
+not deny — it falls through to manifest-only. A real revoke
+is expressed by deleting specific caps, never as an empty array.
+
+Wildcard matching (`matchWildcardCap`) is what scopes `http:fetch` and
+`secrets:read`: a declared `*.host` subdomain pattern matches any
+`&lt;sub&gt;.host`, and a `head*` prefix pattern matches any resource
+starting with the non-empty `head`. The prefix segment (e.g.
+`http:fetch`) must match exactly, so a `*` cap can never cross
+namespaces.
 
 ### 10.8 Capability changes across plugin updates
 
-When `papercusp update &lt;plugin&gt;` finds capability
-changes in the new version, the substrate handles each change class
-differently:
+When an update finds capability changes in the new version, the
+shipped substrate handles two change classes — add and remove —
+computed by `netNewCapabilitiesSinceGrant()` /
+`diffCapabilitiesSinceGrant()` in `cli/src/consent.ts` against the
+most recent prior grant for the (slug, harness) pair:
 
 ChangeSubstrate behaviour
 
 Capability added
-Prompt user for the new capability only. If denied, install runs at old version's grants — plugin must check `api.hasCapability()` and degrade.
+Prompt user for the new capability only (the diff). If denied, install runs at the old version's grants — plugin must check its granted set and degrade.
 
 Capability removed
-Silently drop from granted-capabilities.json. No prompt. Plugin no longer has access (or needs access). Audit log records the removal.
+Dropped from the granted set; no prompt. Plugin no longer has (or needs) access.
 
-Capability renamed (via manifest `aliases` field)
-Substrate honors the alias mapping during update. User sees no prompt; the granted state migrates automatically. Plugin authors declare an alias map in their manifest, e.g. mapping `tasks:read-old` to `tasks:read`.
+Not implemented. The spec previously described three
+further mechanisms that do not exist in the code and are future-state:
 
-Major version bump (`1.x → 2.0`)
-All capabilities re-prompted from scratch. The `aliases` field is ignored. This is the "clean slate" path — equivalent to Android's targetSdkVersion increment forcing permission re-consent.
+Capability rename via aliases. There is no
+capability-rename alias mechanism. The only manifest `aliases` field
+belongs to configSchema and handles config-field
+schema-evolution rename/removal, not capabilities. A renamed cap is
+seen as an add of the new name plus a remove of the old.
 
-Tier escalation (a cap moved from medium to high in spec)
-Substrate flags the change, prompts user to reapprove explicitly. This is rare (the spec rarely re-tiers caps) but the escalation path matters when it happens.
+Major-version "clean slate" re-prompt. There is no
+`1.x → 2.0` re-prompt-from-scratch path and no targetSdk-style reset;
+updates always diff against the prior grant regardless of version.
+
+Tier-escalation reapproval. Nothing detects a cap
+moving from medium to high and forces re-consent; only add/remove
+drive the prompt.

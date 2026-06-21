@@ -33,13 +33,13 @@ corpus synthesis → divergent generation → adversarial critics
    → debate + recombine → routing → (Queen-triage cadence)
 ```
 
-| Stage                       | What it does                                                                                                                                                                                                      | Module                                                                 |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **1. Corpus synthesis**     | Roll up cross-corpus *meta-patterns* (recurring friction, time/token sinks, chronic deferrals, capability gaps) over the change feed + completions + reverts — the introspection the idea queue can't do (D-003). | `corpus-digest.ts` (`synthesizeStateOfHive`) + `corpus-digest-deps.ts` |
-| **2. Divergent generation** | N ideators, each a *distinct* `CreativeLens` (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one "be creative" prompt (D-004).               | `ideators.ts` (`runIdeators`) + `lenses.ts`                            |
-| **3. Adversarial critics**  | A **novelty** critic (search-first vs the corpus — reject the already-tried) and a **feasibility** critic, in tension, plus a high-novelty/low-feasibility **moonshot bucket** so leaps survive (D-005).          | `critics.ts` (`critiqueIdeas`) + `critique-core.ts` (the pure spine)   |
-| **4. Debate + recombine**   | Merge surviving critiques (A's mechanism + B's framing) into proposals, each carrying a **required, structured cheap experiment** — the anti-bullshit gate (D-006).                                               | `recombine.ts` (`recombineProposals`)                                  |
-| **5. Routing**              | Dispatch each proposal into exactly one existing rail: broad → `plans:new` draft / testable → the gym / concrete → `improvements:capture` (D-007).                                                                | `router.ts` (`routeProposals`) + `router-deps.ts`                      |
+| Stage                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Module                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| **1. Corpus synthesis**     | Roll up cross-corpus *meta-patterns* over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth **`rubric-rating`** lane folding in structured rubric measurements grouped by `(rubric, source-hive, criterion)` (rubric-driven-observations-2026-06-20), so ideators leap from *measurements*, not just free-text clusters — the introspection the idea queue can't do (D-003). | `corpus-digest.ts` (`synthesizeStateOfHive`, `buildRubricRatings`) + `corpus-digest-deps.ts` |
+| **2. Divergent generation** | N ideators, each a *distinct* `CreativeLens` (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one "be creative" prompt (D-004).                                                                                                                                                                                                                                                                                  | `ideators.ts` (`runIdeators`) + `lenses.ts`                                                  |
+| **3. Adversarial critics**  | A **novelty** critic (search-first vs the corpus — reject the already-tried) and a **feasibility** critic, in tension, plus a high-novelty/low-feasibility **moonshot bucket** so leaps survive (D-005).                                                                                                                                                                                                                                                                             | `critics.ts` (`critiqueIdeas`) + `critique-core.ts` (the pure spine)                         |
+| **4. Debate + recombine**   | Merge surviving critiques (A's mechanism + B's framing) into proposals, each carrying a **required, structured cheap experiment** — the anti-bullshit gate (D-006).                                                                                                                                                                                                                                                                                                                  | `recombine.ts` (`recombineProposals`)                                                        |
+| **5. Routing**              | Dispatch each proposal into exactly one rail: broad → `plans:new` draft / testable *component* → the gym / concrete → `improvements:capture` (D-007) / testable *whole-system* → the eval-battery **`instance`** rail.                                                                                                                                                                                                                                                               | `router.ts` (`routeProposals`) + `router-deps.ts`                                            |
 
 ## The contract chain
 
@@ -58,6 +58,12 @@ CorpusDigest → Idea[] → ScoredIdea[] → Proposal[] → RoutingDecision[] �
   cheapExperiment: { hypothesis, method, falsifiableSignal }, sourceIdeaIds[], routeHint? }`.
   `cheapExperiment` is **required** and structured so "bettable" is machine-checkable.
 * **`RoutingDecision`** — per proposal: `{ proposalId, sourceIdeaIds[], rail, routedRef, reason }`.
+  `rail` is one of `plan` | `gym` | `improvement` | `instance` — the last being a
+  testable *whole-system* proposal (a genome delta over the interacting wholes)
+  routed to the eval-battery **InstanceSubject** via `makeWholeSystemInstanceOverride`,
+  distinct from the per-component gym rail. The instance rail is batched and
+  **acknowledge-only** (a routed-idea ledger row with `rail='instance'`,
+  `routedRef` `instance:<id>`) until the apiary intake queue exists.
 * **`RoutedIdeaProvenance`** — per *idea*: `{ ideaId, lens, rail, routedRef }` — the ledger
   rows P-013 reads back to weight winning lenses (D-009).
 
@@ -87,8 +93,11 @@ Three behaviours the composition owns:
   dropped (the moonshot bucket survives so leaps aren't over-pruned).
 * **Per-cycle budget (D-010).** `limits.maxCostUsd` halts the cycle before the next
   LLM-spending step; `limits.maxIdeators` clamps the ideator roster.
-* **Empty-digest guard (EI-303).** A digest with zero meta-patterns in every lane
-  (`digestIsEmpty`) early-exits `stop: 'empty-digest'` before the first costed
+* **Empty-digest guard (EI-303).** A digest with zero meta-patterns in the **four
+  friction lanes** (`digestIsEmpty` checks `recurringFriction` /
+  `timeTokenSinks` / `chronicDeferrals` / `capabilityGaps` only — it does *not*
+  inspect the `rubricRatings` lane, so a digest carrying only rubric measurements
+  still reads as empty) early-exits `stop: 'empty-digest'` before the first costed
   step — a fresh/quiet hive spends $0 instead of paying the full ideator roster
   to reach `no-ideas`. `headline`/`generatedAt` don't count; only patterns ground
   ideas.
@@ -117,8 +126,21 @@ irreducibly injected by the caller (a slug alone can't produce them in a pure li
 
 Everything else (the digest readers, the search-first novelty corpus over prior
 plans + decisions, and the ideator/critic/recombine/route wiring) is assembled
-there. The `system:scout-cycle` action calls
-`buildScoutCycleDeps(...) → runScoutCycle(deps)`.
+there.
+
+> **Scout runs as a deterministic blueprint, not a bespoke action (P-130,
+> deterministic-blueprints-migration-2026-06-13).** The old `system:scout-cycle`
+> system action is **retired** — nothing self-registers for Scout anymore. The
+> per-hive seed fires `system:blueprint-run {blueprintId:'scout'}` → the
+> `scout:cycle` deterministic step → `runScoutCycleTick` → `productionScoutRunner`,
+> which is what calls `buildScoutCycleDeps(...) → runScoutCycle(deps)`.
+> `register-scout-action.ts` stays only as the home of `productionScoutRunner`.
+
+**Dark Scout→experiment rail (`SCOUT_EXPERIMENT_RAIL`, default OFF).** Behind a
+flag, the route stage *additively* forks each testable (gym-rail) proposal into a
+dry-run `experiment:run` spec (`forkTestableToExperiments` + `generateExperimentRequest`)
+— closing the Scout→experiment loop. It is best-effort: with the flag off (or on
+any failure) there is **no spend and no change to gym routing**.
 
 ## Autonomy + the gym reframe
 
@@ -128,6 +150,14 @@ there. The `system:scout-cycle` action calls
   promoting the draft. Cadence is **idle-capacity + friction-triggered** (a
   self-gating `shouldRunScoutCycle` gate, not a bare cron) — `cadence.ts` /
   `scheduler.ts` / `budget.ts`.
+* **Queen revision loop (queen-scout-feedback-loop).** The cadence gate also fires
+  **out-of-cadence**, preempting idle/friction: a pending Queen revision request
+  (`queenWakePending`) bypasses the min-interval floor and fires `reason:
+  'queen-feedback'` immediately. Scout then iterates the routed draft via
+  `runScoutRevisionCycle` and notifies the Queen (`queen-notify.ts` —
+  `notifyQueenDraftRouted` / `notifyQueenRevised`). The revision loop's runaway
+  bound is the per-cycle Scout budget + the autoloop fire-gate, **not** the
+  cadence interval.
 * **Gym quality-diversity (D-008).** In parallel, the gym gains a MAP-Elites
   **novelty/diversity archive** (best idea per niche across scope / domain / risk)
   and selects partly for *distance from the archive*, not fitness alone — so the
@@ -136,8 +166,12 @@ there. The `system:scout-cycle` action calls
   * `scout/gym-bridge.ts`.
 * **Outcome feedback (D-009).** The routed-idea ledger
   (`harness_shared.scout_routed_ideas`) tracks which generated ideas panned out via
-  the change feed → weights the lenses that win for this Hive. Source:
-  `outcome-feedback.ts` / `routed-ledger.ts`.
+  the change feed → weights the lenses that win for this Hive. Owner/Queen **idea
+  grades** (`scout-idea-grading`, C-4/C-5) layer on top: a present 1–5 grade
+  **dominates** the change-feed-derived outcome in the per-lens weighting, and
+  recently-graded ideas **prime** the next cycle's ideators
+  (`gatherGraderFeedbackPriming`, concatenated below the gym stepping-stones).
+  Source: `outcome-feedback.ts` / `routed-ledger.ts` / `ideator-feedback-priming.ts`.
 
 ## Testing
 

@@ -13,8 +13,11 @@ renames to keep in mind when reading:
 * `apps/papercup/**` and `apps/papercusp/**` → the operator now lives at
   **`apps/operator/`**; its Next.js `app/api/**` routes were ported to **Hono
   routers under `packages/operator-core/lib/endpoint-route/routes/**`**.
-* Operator-side `lib/*` (e.g. `lib/plugin-host-runtime.ts`,
-  `lib/plugin-runtime.ts`) now lives under **`packages/operator-core/lib/`**.
+* The operator-side process-level lifecycle host moved to
+  **`packages/operator-core/lib/plugin-host-runtime.ts`**. The React-render
+  layer named below (`lib/plugin-runtime.ts`, `lib/PluginTabs.tsx`,
+  `lib/PluginReactTab.tsx`) did **not** move — it still lives under
+  **`apps/operator/lib/`**.
 * The `run.sh` → TS orchestrator port shipped and its ported run-loop was
   later **retired** (see [orchestrator-port](/internal/docs/implementation/orchestrator-port));
   the live pipeline is the DBOS runner in `packages/operator-core/lib/dbos/`.

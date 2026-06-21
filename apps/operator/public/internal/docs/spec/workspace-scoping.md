@@ -32,12 +32,12 @@ In scope:
 * RLS policies on every workspace-scoped table.
 * Migration script that backfills `workspace_id` from the on-disk workspace registry and is **idempotent**, **dry-runnable**, and **loud-fails on indeterminate rows** (no default-tag).
 * Retrofit existing Tier 3 REST endpoints and substrate services to use the GUC contract.
-* Hindsight bank derivation: `workspace → company_id` registry config; bank ID auth-derived.
+* Workspace registry `companyId` field (retained for future auth-derived scoping; see [Hindsight bank derivation](#hindsight-bank-derivation-deprecated)).
 
 Out of scope:
 
 * Per-harness schemas (`harness_<slug>`). These are already isolated by name; reads route through DI services that resolve workspace from session.
-* Single-workspace desktop modes. The default desktop backend (`embedded-postgres`) and the legacy backend (`pglite`) each run their own per-workspace data directory; both are isolated by process + data dir, so the GUC contract is a no-op there but does not interfere.
+* Single-workspace desktop modes. The desktop ships a single `embedded-postgres` backend (real PG over TCP) that runs its own per-workspace data directory; it is isolated by process + data dir, so the GUC contract is a no-op there but does not interfere.
 * Cross-workspace queries. Not exposed through any v1 surface.
 
 ## Schema
@@ -64,7 +64,11 @@ Tables in scope (initial enumeration):
 * `harness_shared.project_spec_revisions`
 * `harness_shared.token_index`
 
-Default `''` on the column lets the migration land additively before backfill; the migration script populates real values, after which `''` is rejected.
+Two more tables — `harness_shared.system_principals` and `harness_shared.pi_sessions` — were created with a built-in `workspace_id NOT NULL` column and gained workspace-isolation RLS plus a `<table>_workspace_nonempty` CHECK constraint in the same rollout.
+
+This 10-table list was the initial Phase-A enumeration. Workspace-scoping/RLS has since been rolled out to the broad majority of `harness_shared.*` tables — the realized scope is roughly 150 `*_workspace_isolation` policies (e.g. `adv_sessions`, `agent_chats_consolidated`, `feature_audit_consolidated`, `harness_plan_status`, `harness_project_files`, and many more), an order of magnitude beyond the original ten.
+
+Default `''` on the column lets the migration land additively before backfill; the migration script populates real values, after which `''` is rejected. A runtime trigger (`harness_shared.fill_workspace_id_from_projects()`) also resolves `workspace_id` from `projects` (by `harness_slug`) on insert, falling back to `'default'` when it cannot be resolved — see [Migration script](#migration-script).
 
 ## Session GUC contract
 
@@ -72,12 +76,12 @@ Every read or write against a workspace-scoped table must execute inside a trans
 
 ```ts
 await db.transaction(async (tx) => {
-  await tx.execute(sql`SET LOCAL app.workspace_id = ${workspaceId}`);
+  await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
   // ... queries via tx ...
 });
 ```
 
-`SET LOCAL` is reset at transaction end. **Bare-pool checkouts are not allowed for workspace-scoped queries** — a checkout without the GUC bypasses RLS silently. This is the canonical Drizzle/Knex RLS regression. Enforcement:
+The canonical wrapper sets the GUC via `set_config('app.workspace_id', <ws>, true)` rather than the literal `SET LOCAL app.workspace_id = …`, because `SET LOCAL` cannot take a bind parameter. The two are semantically equivalent: the `true` third argument makes the setting transaction-local, so it is reset at transaction end. **Bare-pool checkouts are not allowed for workspace-scoped queries** — a checkout without the GUC bypasses RLS silently. This is the canonical Drizzle/Knex RLS regression. Enforcement:
 
 1. **Tx-only ESLint rule** on the Agent-MCP package and substrate service code paths: bare-`db.X()` calls inside a `transaction()` callback are flagged. The callback must use the `tx` parameter.
 2. **CI cross-workspace probe**: programmatic test authenticates as workspace B, attempts to read workspace A's data through every endpoint, asserts denial.
@@ -112,9 +116,13 @@ Properties:
 
 Operator runs the script via `tsx libs/db/scripts/backfill-workspace-id.ts --dry-run` first, reviews the output, then re-runs with `--apply`. After `--apply` succeeds, the column default is altered from `''` to RAISE on insert (a CHECK constraint), enforcing future correctness.
 
-## Hindsight bank derivation
+The **no default-tag** rule applies to this one-time backfill, which loud-fails on indeterminate rows rather than guessing. At **runtime**, a separate fill trigger (`harness_shared.fill_workspace_id_from_projects()`) resolves `workspace_id` from `projects` by `harness_slug` for new inserts and, failing that, falls back to `'default'` — so freshly inserted rows always carry a non-empty `workspace_id` without relying on the backfill.
 
-Hindsight banks are `paperclip::<COMPANY_ID>`, a global namespace. The mapping is added to the workspace registry:
+## Hindsight bank derivation (deprecated)
+
+**No longer a live surface.** This amendment originally specified auth-derived Hindsight bank scoping via a `hindsight:recall` tool. That tool was deprecated 2026-05-09 (degraded-empty ever since, with zero callers) and **removed from the agent-mcp catalog** in audit P-047. No current tool derives a Hindsight bank from workspace scope, so the bank-derivation and degraded-result behavior described below is not implemented anywhere today. The section is retained for design context.
+
+The workspace registry still carries a `companyId` field — added per this amendment and retained for any future auth-derived scoping — even though its only former consumer (`hindsight:recall`) is gone:
 
 ```json
 {
@@ -130,11 +138,7 @@ Hindsight banks are `paperclip::<COMPANY_ID>`, a global namespace. The mapping i
 }
 ```
 
-`hindsight:recall` derives the bank from the calling principal's workspace's `companyId`. Body-supplied scope is rejected.
-
-If `companyId` is null, `hindsight:recall` returns `degraded: true, degradedReasons: ["hindsight_not_configured_for_workspace"]` with empty results. It does not throw.
-
-v1 enforces 1:1 — workspace registry rejects multi-company configuration.
+The original design (no longer realized in code): Hindsight banks were a global namespace keyed on `<COMPANY_ID>`, and `hindsight:recall` would derive the bank from the calling principal's workspace's `companyId`, reject body-supplied scope, and — when `companyId` was null — return `degraded: true` with `degradedReasons: ["hindsight_not_configured_for_workspace"]` and empty results rather than throwing. The 1:1 workspace→company intent (registry rejects multi-company configuration) likewise has no enforcing tool today.
 
 ## Observable invariants (post-migration)
 
@@ -149,13 +153,13 @@ These hold by construction once the migration completes:
 
 * **Cross-workspace data leak.** Today's dominant failure mode. Closed by RLS.
 * **Future plugin/agent leak.** A plugin querying `harness_shared.audit_log` directly inherits the same RLS. There is no surface that bypasses the policy.
-* **Hindsight cross-bank read.** Auth-derived bank ID prevents an agent in workspace A from recalling memories scoped to workspace B's company.
+* **Hindsight cross-bank read.** The original design used an auth-derived bank ID to prevent an agent in workspace A from recalling memories scoped to workspace B's company. The deriving tool (`hindsight:recall`) has since been removed (audit P-047), so this is no longer an active surface — see [Hindsight bank derivation](#hindsight-bank-derivation-deprecated).
 
 ## Threats it does not address
 
 * **A compromised `harness_admin` role.** Admin bypasses RLS by design (migrations).
 * **A leaked workspace bearer token.** Token holder can act as that workspace; recovery is workspace-level (analogous to the per-harness recovery in `auth-and-identity`).
-* **Single-workspace desktop modes.** Both the default `embedded-postgres` backend and the legacy `pglite` backend run one PG instance per workspace, so RLS is redundant but not harmful.
+* **Single-workspace desktop modes.** The desktop's sole `embedded-postgres` backend runs one PG instance per workspace, so RLS is redundant but not harmful.
 
 ## Compatibility
 

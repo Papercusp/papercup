@@ -1,7 +1,7 @@
 # Gating
 URL: /internal/docs/endpoint-system/gating
 
-The ordered gates every tool call runs through — signature, default-deny, roles, capabilities, RBAC, harness, quota, resource authorization, declarative preconditions, timeout — and the error codes they emit.
+The ordered gates every tool call runs through — signature, default-deny, roles, capabilities, capability-envelope, RBAC, harness, quota, resource authorization, declarative preconditions, timeout — and the error codes they emit.
 
 ## The gates, in order
 
@@ -17,23 +17,25 @@ Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProje
 ├────────────────────────────────────────────────┤
 │ 3. Capability check (principal capabilities)    │  → unauthorized (401) | missing_capability (403)
 ├────────────────────────────────────────────────┤
-│ 4. RBAC role requirement (tool.requireRoles)    │  → missing_role (403)
+│ 4. Capability envelope (per-role "may at all")  │  → capability_denied (enforce mode only)
 ├────────────────────────────────────────────────┤
-│ 5. Harness-required gate                        │  → harness_required (400)
+│ 5. RBAC role requirement (tool.requireRoles)    │  → missing_role (403)
 ├────────────────────────────────────────────────┤
-│ 6. Per-window quota                             │  → quota_exceeded (429)
+│ 6. Harness-required gate                        │  → harness_required (400)
 ├────────────────────────────────────────────────┤
-│ 7. Resource authorization (tool.authorize)      │  → authorization_denied (403)
+│ 7. Per-window quota                             │  → quota_exceeded (429)
 ├────────────────────────────────────────────────┤
-│ 8. Declarative preconditions (tool.requires)    │  → precondition_failed (412)
+│ 8. Resource authorization (tool.authorize)      │  → authorization_denied (403)
 ├────────────────────────────────────────────────┤
-│ 9. Per-tool timeout (during execution)          │  → timeout (504)
+│ 9. Declarative preconditions (tool.requires)    │  → precondition_failed (412)
+├────────────────────────────────────────────────┤
+│ 10. Per-tool timeout (during execution)         │  → timeout (504)
 └────────────────────────────────────────────────┘
 ```
 
 If every gate passes, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
 
-Gates **1, 4, 7** and the **authorization audit trail** are the [RFC tooldef-auth](/internal/docs/spec/plan-format) layer: a fail-closed default-deny posture, declarative RBAC roles, resource-level "can THIS principal act on THIS resource", and an audit event for every authz decision. Gates 0, 2, 3, 5, 6, 8 are the original coarse checks. Each is detailed below.
+Gates **1, 5, 8** and the **authorization audit trail** are the [RFC tooldef-auth](/internal/docs/spec/plan-format) layer: a fail-closed default-deny posture, declarative RBAC roles, resource-level "can THIS principal act on THIS resource", and an audit event for every authz decision. Gate **4** (capability envelope) is the [agent-capability-confinement](/internal/docs/spec/plan-format) layer (B-06 / P-012). Gates 0, 2, 3, 6, 7, 9 are the original coarse checks. Each is detailed below.
 
 ## Signature verification (gate 0)
 
@@ -87,7 +89,21 @@ Two distinct failure modes:
 
 The check is skipped when there is no principal (the agent path gates via the role allowlist instead) or when `GateBypass.capability` is set. Plugin tools have `capabilities[]` declared too, but they're descriptive-only today — used by the Intel UI and tooling, not enforced.
 
-## RBAC role requirement (gate 4)
+## Capability envelope (gate 4)
+
+A cheap, static, **per-role "may this caller do X *at all*"** gate (agent-capability-confinement B-06 / P-012). It runs right after the capability check (both are cheap capability gates) and before the costlier RBAC / authorize / precondition gates. Unlike gate 3 (which asks "does this principal hold the capability"), the envelope asks "is this tool even *inside* the envelope of what this role is ever allowed to reach".
+
+It is **host-supplied** through `deps.checkCapabilityEnvelope` and is a **no-op when unwired** (no port ⇒ behavior-neutral). Papercusp wires it via `PROJECTED_DEPS.checkCapabilityEnvelope`, but it is in **OBSERVE / shadow mode by default** today: the `CAPABILITY_ENVELOPE` flag defaults to **off** (`libs/flags/src/types.ts`), which means *observe-only* — the evaluator runs and annotates the decision-ledger posture but **never blocks**. Enforcement only begins when the flag is flipped on (the B-18 arming act).
+
+* **Within envelope** → `allow`, pass.
+* **Beyond envelope, flag off (default)** → `observe` — logged/annotated, call proceeds.
+* **Beyond envelope, flag on** → `deny` with error code `capability_denied`.
+* **Evaluator throws** → **fail-open** (`return null`, call proceeds) — the OS sandbox is the containment backstop, so an evaluator bug must never wedge the fleet (matches the quota gate's fail-open-on-error posture).
+* **Exempt callers** — SU / power-user / non-fleet / roleless principals are exempt; the evaluator returns no verdict and the gate no-ops.
+
+Note the HTTP mapping caveat: `capability_denied` has **no explicit case** in `statusForErrorCode`, so over HTTP it currently falls through to the default **500** (see the table below) — likely itself a defect, since it is a 403-class authz denial.
+
+## RBAC role requirement (gate 5)
 
 A tool declaring `requireRoles` is callable only by a principal whose **RBAC `roles`** (`principal.roles`) include at least **one** of them (any-of). This is the typed, declarative, audited replacement for ad-hoc `requireAdminKey` / `requireStaff`-style checks.
 
@@ -103,16 +119,17 @@ A tool declaring `requireRoles` is callable only by a principal whose **RBAC `ro
 
 Every denial emits an authorization audit event (see below).
 
-## Harness-required gate (gate 5)
+## Harness-required gate (gate 6)
 
-A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. This gate **fails closed even for privileged callers** — `GateBypass.papercusp` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can't function without a harness; the point is to return the uniform "harness required" hint rather than push the failure into the handler.
+A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. "No harness in scope" means `ctx.harnessSlug` is unset/empty **or** the literal `'*'` wildcard sentinel — the superuser "no harness picked" case (a harness that is present-but-unselected), not only a missing slug (`if (slug && slug !== '*') return null`). This gate **fails closed even for privileged callers** — `GateBypass.papercusp` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can't function without a harness; the point is to return the uniform "harness required" hint rather than push the failure into the handler.
 
-## Per-window quota (gate 6)
+## Per-window quota (gate 7)
 
-A window is a counter scoped by `(workspace, tool, role, window_key)` against `harness_shared.tool_invocations`. The window key depends on role:
+A window is a counter scoped by `(workspace, tool, role, window_key)` against `harness_shared.tool_invocations`. The window key depends on role (the Papercusp policy in `packages/agent-mcp/src/quota-policy.ts`, wired via `PROJECTED_DEPS.computeQuotaWindow`):
 
-* **Worker** → `chunk:<chunkId>` (resets per chunk)
-* **Anyone else** → `run:<runId>` (resets per orchestrator run)
+* **Worker** → `chunk:<chunkId>` (resets per chunk; capped by `perChunk`)
+* **Power-user session** (`?power_user=1`) → `power-user:<uiClientId>` (the `auth_session_id`; capped by `perRun`) — a power-user MCP call gets a fresh `runId` per request, so a run-keyed window would never accumulate; it keys on the stable session instead.
+* **Anyone else** → `run:<runId>` (resets per orchestrator run; capped by `perRun`)
 
 `tool_invocations` rows that count against quota have `status='ok'` only. Failures (`error`, `timeout`, `quota-exceeded`, `role-not-allowed`) don't consume a slot, so a tool that returns 500 doesn't burn the budget.
 
@@ -134,7 +151,7 @@ When a call exceeds, the dispatcher returns:
 {
   "error": {
     "code": "quota_exceeded",
-    "message": "Tool \"plugin.tool\" exceeded worker quota (1/1) in window \"chunk:Q1\"",
+    "message": "Tool \"plugin.tool\" exceeded quota (1/1) in window \"chunk:Q1\"",
     "meta": { "tool": "plugin.tool", "role": "worker", "windowKey": "chunk:Q1", "used": 1, "limit": 1 }
   }
 }
@@ -152,7 +169,7 @@ There is a theoretical TOCTOU window: all five readers could see `count=0` befor
 
 Read-only tools (`roles:list`, `snapshots:get`) shouldn't have a `rolesQuota`. Quotas exist for: external API spend, PG write bursts, subprocess fan-out. Counting every read produces noise without protection.
 
-## Resource authorization (gate 7)
+## Resource authorization (gate 8)
 
 The coarse gates above answer "may this *kind* of caller use this tool". The `authorize` hook answers the **fine-grained** question the others can't express: "may THIS principal act on THIS *resource*" (ownership / ReBAC / ABAC).
 
@@ -176,7 +193,7 @@ The framework is the **policy-enforcement point**; it ships the contract (`Authz
 
 Unlike the role/capability/quota bypasses, the resource-`authorize` gate is **not** skipped by them — resource ownership is a separate decision a host opts out of explicitly, per call, via `GateBypass.policy` (default off). And even then **the bypass is audited**: skipping the hook still emits an authz audit event recording the bypass. Break-glass best practice is "policy-governed *and* mandatorily logged" — a bypassed check that isn't logged is the silent super-admin the standard forbids.
 
-## Declarative preconditions (gate 8): `requires:`
+## Declarative preconditions (gate 9): `requires:`
 
 The **preInvoke mirror of `emits:`** (autoloop-pot-operator-rebuild-2026-06-05 D-006). A tool declares `requires: [ToolRequireSpec, …]` — each spec a declarative condition (a `@papercusp/rules` MatchMap / `all`/`any`/`not` combinator over `{ tool, args, ctx, state }`) that must **hold** for the call to proceed, plus a response when it doesn't:
 
@@ -199,7 +216,7 @@ defineTool({
 });
 ```
 
-Host state enters through the spec's optional `state(args, ctx)` resolver (re-resolved before the retry); conditions are **declarative only** — there is deliberately no JS-predicate hatch here, because inspectability/serializability is the point of the lift. Everything fails **closed**: a throwing resolver, a malformed condition, a missing fire port, or a failed retry all deny. Denials and auto-corrections are audited with `gate: 'precondition'` through the same `deps.auditAuth` sink as gates 4/7 (first-try passes are not audited — they're the overwhelmingly common case).
+Host state enters through the spec's optional `state(args, ctx)` resolver (re-resolved before the retry); conditions are **declarative only** — there is deliberately no JS-predicate hatch here, because inspectability/serializability is the point of the lift. Everything fails **closed**: a throwing resolver, a malformed condition, a missing fire port, or a failed retry all deny. Denials and auto-corrections are audited with `gate: 'precondition'` through the same `deps.auditAuth` sink as gates 5/8 (first-try passes are not audited — they're the overwhelmingly common case).
 
 It runs **after** `authorize` — a corrective fire must only happen for an authorized caller, and a functional gap must not mask an auth denial — and **before** `timeout` (it's a gate; no timers or buffers exist yet on the deny path).
 
@@ -213,17 +230,23 @@ It runs **after** `authorize` — a corrective fire must only happen for an auth
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | **Don't-deploy-on-red** | `apps/operator/lib/release/green-checkpoint.ts` (ready advances only on green) + `deploy-cli.ts` (refuses un-green targets)                                                                                                                | coord broadcast per checkpoint/deploy                               | `--force` / `--deploy-commit` — loudly audited (`🚨 FORCED un-green deploy`) |
 | **Protected-paths**     | `packages/operator-core/lib/harness/improvements/policy.ts` `classifyImprovement()` — glob patterns route protected surfaces to the human queue                                                                                            | tier decision in the improvements digest/queue                      | none (kind-graduation only widens `auto` kinds, never the protected paths)   |
-| **Budget / quota caps** | `libs/papercusp/libs/db/src/budget-enforcement.ts` (row-locked atomic budget check, fail-closed) + `orchestrator-loop.ts` `SAFETY_CEILING` (hard constant; blueprint `dispatch.safetyCeiling` may only tighten) + the quota gate (6) above | `tool_invocations` (quota); `BudgetExceededError` carries detail    | quota: `GateBypass.quota`; budget/ceiling: none                              |
-| **Auth perimeter**      | gates 0–4 + 7 above (`dispatch-stack.ts`, `tryBuildSpawnContext`)                                                                                                                                                                          | `harness_shared.tool_authz_log` + `spawn_sig_verification_failures` | per-gate `GateBypass`, `policy` bypass audited                               |
+| **Budget / quota caps** | `libs/papercusp/libs/db/src/budget-enforcement.ts` (row-locked atomic budget check, fail-closed) + `orchestrator-loop.ts` `SAFETY_CEILING` (hard constant; blueprint `dispatch.safetyCeiling` may only tighten) + the quota gate (7) above | `tool_invocations` (quota); `BudgetExceededError` carries detail    | quota: `GateBypass.quota`; budget/ceiling: none                              |
+| **Auth perimeter**      | gates 0–5 + 8 above (`dispatch-stack.ts`, `tryBuildSpawnContext`)                                                                                                                                                                          | `harness_shared.tool_authz_log` + `spawn_sig_verification_failures` | per-gate `GateBypass`, `policy` bypass audited                               |
 | **No-double-allocate**  | `work-items.ts` atomic CAS (`UPDATE … WHERE taken_by IS NULL`), `orchestrator/feature-claim.ts` append-only claim log, `authority/lock-authority.ts`                                                                                       | `harness_shared.claim_audit` (won/lost/timeout/error)               | none — atomic by construction                                                |
 
 None of the five flows through `@papercusp/rules`, the event-reaction tables, or `requires:` — and that's load-bearing, not an accident. When migrating a hardcoded guard to `requires:` (or a reaction to `emits:`), first ask: *is this gate's failure mode harm?* If yes, it stays code.
 
 ## The authorization audit trail
 
-Gates 4 and 7, and every `GateBypass.policy` bypass, emit an `AuthAuditEvent` through the optional `deps.auditAuth` sink — every allow, deny, and bypass. The Papercusp host persists them to `harness_shared.tool_authz_log` (`packages/operator-core/lib/tool-authz-audit.ts`), a security-decision stream distinct from the login-scoped `auth_audit_log` and the per-call `tool_invocations` telemetry. It answers "show me every denial / every break-glass bypass / everything this principal was denied".
+Gates **5** (RBAC), **8** (authorize), and **9** (preconditions), plus every `GateBypass.policy` bypass, emit an `AuthAuditEvent` through the optional `deps.auditAuth` sink. What each emits differs:
 
-## Per-tool timeout (gate 9)
+* **Gate 5 (RBAC role requirement)** audits **denials only** — the pass path returns without an emit; only the missing-role branch records `decision: 'deny'`.
+* **Gate 8 (authorize)** is the one that audits **every allow, deny, *and* bypass** — its allow path, deny path, and the `GateBypass.policy` break-glass all emit.
+* **Gate 9 (preconditions, `gate: 'precondition'`)** audits both **denials** and **successful auto-corrections** (the auto-correct allow on a `{ fire, then: 'retry' }` spec); first-try passes are not audited.
+
+The Papercusp host persists them to `harness_shared.tool_authz_log` (`packages/operator-core/lib/tool-authz-audit.ts`), a security-decision stream distinct from the login-scoped `auth_audit_log` and the per-call `tool_invocations` telemetry. It answers "show me every denial / every break-glass bypass / everything this principal was denied".
+
+## Per-tool timeout (gate 10)
 
 Each manifest entry has `timeoutSec` (default 60). The dispatcher creates an `AbortController`, hands `controller.signal` to the function as `ctx.signal`, and aborts after the configured time. Functions doing long work should watch `ctx.signal.aborted` and bail.
 
@@ -241,22 +264,23 @@ HTTP status: 504. The `tool_invocations` row records `status='timeout'`.
 
 For HTTP transport, `statusForErrorCode` in `http-projection.ts` maps:
 
-| Error code             | HTTP | Source                                                                                              |
-| ---------------------- | ---- | --------------------------------------------------------------------------------------------------- |
-| `ungated`              | 403  | Default-deny on; tool declares no gate and isn't `public`                                           |
-| `unauthorized`         | 401  | Built-in tool, no bearer / invalid bearer                                                           |
-| `role_not_allowed`     | 403  | Agent role not in the tool's allowlist                                                              |
-| `missing_capability`   | 403  | Principal missing required capability                                                               |
-| `missing_role`         | 403  | Principal missing a required RBAC role (`requireRoles`)                                             |
-| `harness_required`     | 400  | `harness:'required'` tool with no harness in scope                                                  |
-| `quota_exceeded`       | 429  | Window count ≥ limit                                                                                |
-| `authorization_denied` | 403  | The tool's `authorize` hook denied (or threw → fail-closed)                                         |
-| `precondition_failed`  | 412  | A declarative `requires:` precondition failed (after the auto-correct retry, when one was declared) |
-| `invalid_input`        | 400  | Function threw a typed input-validation error                                                       |
-| `timeout`              | 504  | AbortController fired before function returned                                                      |
-| `unknown_tool`         | 404  | No projection registered at this path/name                                                          |
-| `method_not_allowed`   | 405  | HTTP method not in `expose.http.methods`                                                            |
-| anything else          | 500  | Function threw an unhandled error → `handler_error`                                                 |
+| Error code             | HTTP                                     | Source                                                                                                                                      |
+| ---------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ungated`              | 403                                      | Default-deny on; tool declares no gate and isn't `public`                                                                                   |
+| `unauthorized`         | 401                                      | Built-in tool, no bearer / invalid bearer                                                                                                   |
+| `role_not_allowed`     | 403                                      | Agent role not in the tool's allowlist                                                                                                      |
+| `missing_capability`   | 403                                      | Principal missing required capability                                                                                                       |
+| `capability_denied`    | 500 (no explicit case; falls to default) | Capability-envelope gate denied (enforce mode). The missing 403-class case means this authz denial is currently surfaced as a 500 over HTTP |
+| `missing_role`         | 403                                      | Principal missing a required RBAC role (`requireRoles`)                                                                                     |
+| `harness_required`     | 400                                      | `harness:'required'` tool with no harness in scope                                                                                          |
+| `quota_exceeded`       | 429                                      | Window count ≥ limit                                                                                                                        |
+| `authorization_denied` | 403                                      | The tool's `authorize` hook denied (or threw → fail-closed)                                                                                 |
+| `precondition_failed`  | 412                                      | A declarative `requires:` precondition failed (after the auto-correct retry, when one was declared)                                         |
+| `invalid_input`        | 400                                      | Function threw a typed input-validation error                                                                                               |
+| `timeout`              | 504                                      | AbortController fired before function returned                                                                                              |
+| `unknown_tool`         | 404                                      | No projection registered at this path/name                                                                                                  |
+| `method_not_allowed`   | 405                                      | HTTP method not in `expose.http.methods`                                                                                                    |
+| anything else          | 500                                      | Function threw an unhandled error → `handler_error`                                                                                         |
 
 For MCP transport, errors are returned as a normal `tools/call` result with `isError: true` and a `content[].text` describing the error. There's no JSON-RPC-level rejection — the MCP spec puts tool errors in the result envelope.
 
@@ -267,15 +291,16 @@ Here's what happens when a `worker` tries to call `firecrawl.scrape` with `chunk
 1. **Default-deny.** On in Papercusp (`defaultDeny: true`), but `firecrawl.scrape` declares a role allowlist, so it's gated → pass.
 2. **Role check.** `firecrawl.scrape.roles = [scoper, architect, operator, reviewer, debugger, worker]`. Worker is in. Pass.
 3. **Capability check.** Plugin tool — no principal — skipped.
-4. **RBAC role requirement.** No `requireRoles` → skip.
-5. **Harness gate.** Not `harness:'required'` → skip.
-6. **Quota check.** Window `chunk:Q1`, role `worker`. Manifest says `worker: { perChunk: 2 }`. Read state: `count=1` (the first call already landed as ok). 1 \< 2, pass.
-7. **Resource authorization.** No `authorize` hook → skip.
-8. **Preconditions.** No `requires:` declared → skip.
-9. **Timeout.** AbortController set to 60s.
-10. **Execute + record.** `scrape` runs, completes in 800ms; insert `tool_invocations` row with `status='ok', duration_ms=800`.
+4. **Capability envelope.** `CAPABILITY_ENVELOPE` flag off (default) → observe mode: the evaluator may annotate the decision-ledger posture but never blocks → pass.
+5. **RBAC role requirement.** No `requireRoles` → skip.
+6. **Harness gate.** Not `harness:'required'` → skip.
+7. **Quota check.** Window `chunk:Q1`, role `worker`. Manifest says `worker: { perChunk: 2 }`. Read state: `count=1` (the first call already landed as ok). 1 \< 2, pass.
+8. **Resource authorization.** No `authorize` hook → skip.
+9. **Preconditions.** No `requires:` declared → skip.
+10. **Timeout.** AbortController set to 60s.
+11. **Execute + record.** `scrape` runs, completes in 800ms; insert `tool_invocations` row with `status='ok', duration_ms=800`.
 
-Same call a third time: gates 1–5 pass/skip as before, then the quota check reads `count=2`, `2 ≥ 2`, **fails**, inserts a quota-exceeded row, returns 429.
+Same call a third time: gates 1–6 pass/skip as before, then the quota check reads `count=2`, `2 ≥ 2`, **fails**, inserts a quota-exceeded row, returns 429 with `message: "Tool \"firecrawl.scrape\" exceeded quota (2/2) in window \"chunk:Q1\""` (the role lives in `meta`, not the message).
 
 ## Where the dispatcher lives
 

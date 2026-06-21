@@ -1,21 +1,32 @@
 # Observability
 URL: /internal/docs/agent-spawning/observability
 
-How to see what spawns happened — Intel panel, useful PG queries, and what you can't see (yet).
+How to see what spawns happened — the spawn-tree feed, useful PG queries, and what you can't see (yet).
 
-## Intel panel — Spawns sub-tab
+## Spawn-tree feed
 
-The harness dashboard's **Intel** modal (open via the command palette → "Intel — tool-invocation telemetry", or `?intel=1` URL param) has a **Spawns** sub-tab that's the primary visual surface.
+The standalone **Intel** modal with a Spawns sub-tab no longer exists — it was
+deleted along with the legacy `HarnessDashboard` monolith. The surviving
+spawn-tree surfaces are programmatic: the agent-MCP tool `intel:spawn_tree` and
+the HTTP route `GET /api/harness/:slug/intel/spawn-tree` (see
+[Built-in tools for agents](#built-in-tools-for-agents) below). Both feed the
+same data.
 
-What you see:
+What the feed returns:
 
-* Every `tool_invocations` row scoped to the current harness, last 24h
-* `· `-prefixed indent shows depth (parent\_spawn\_id chain) — depth 0 is at the left margin, depth 1 is `· toolName`, depth 2 is `· · toolName`, …
-* Status filter chips at the top (ok / error / timeout / quota-exceeded / role-not-allowed)
-* Per-row: when, tool, role, status, duration, output size + ref, feature/chunk attribution, spawnId
-* Auto-refreshes every 30s while the panel is open; manual refresh button
+* Every `tool_invocations` row scoped to one harness, last 24h by default
+* A `depth` per row (parent\_spawn\_id chain) — depth 0 is a top-level tool call,
+  depth 1 is a child agent's call, depth 2 is a grandchild's, … Indent by
+  `depth` to render the lineage (the PG query below does `repeat('  ', depth)`).
+* Per-row: when, tool, role, status, duration, output size + ref, feature/chunk
+  attribution, spawnId
+* An optional `status` filter — note these are **tool-invocation** statuses
+  (`ok` / `error` / `timeout` / `quota-exceeded` / `role-not-allowed`), a
+  different set from the `spawned_agents` lifecycle statuses
+  (`running` / `restarting` / `done` / `failed` / `cancelled` / `reaped`).
 
-The view is built from `harness_shared.tool_invocations_spawn_tree`, so depth>0 rows appear automatically when a spawned child agent makes its own tool calls.
+The feed is built from `harness_shared.tool_invocations_spawn_tree`, so depth>0
+rows appear automatically when a spawned child agent makes its own tool calls.
 
 ## PG queries
 
@@ -71,6 +82,9 @@ WHERE root_spawn_id = 's-1778408605532-16080170'
 ORDER BY invoked_at;
 ```
 
+The view's recursion is capped at depth 16 (`c.depth < 16` in the recursive
+CTE), so a lineage chain deeper than 16 spawn levels is silently truncated.
+
 ### Spawn fan-out per role
 
 Who spawns a lot? Who never spawns?
@@ -88,6 +102,12 @@ WHERE started_at > now() - interval '7 days'
 GROUP BY parent_role
 ORDER BY total DESC;
 ```
+
+A spawn's `status` is one of six values — the two active ones
+(`running`, `restarting`) and the four terminal ones
+(`done`, `failed`, `cancelled`, `reaped`). The fan-out query above counts only
+the terminal outcomes; it skips `running` (still in flight) and `restarting`
+(a transient, non-terminal supervised restart) on purpose.
 
 ### Spawn pairs (caller → child distribution)
 
@@ -136,8 +156,12 @@ ORDER BY 1 DESC;
 ```
 
 If `still_running` is consistently near the fleet ceiling
-(`maxSimultaneousAgents`, default 16, clamped ≤ 64), raise the cap
-(`operator:rate_limit_config`) or stagger launches.
+(`maxSimultaneousAgents`), raise the cap (`operator:rate_limit_config`) or
+stagger launches. The default isn't a fixed number — it's seeded per-host from
+the resource profile (roughly `0.5 × cores`, halved with an embedded Postgres,
+halved again on battery) and clamped to `[1, 16]`, so a laptop seeds far below
+16\. The user's persisted live config (`operator_rate_limit_config`) overrides
+the seed and is clamped to `[1, 64]` (`RATE_LIMIT_MAX_CEILING = 64`).
 
 ### Output-tail one-liner
 
@@ -153,12 +177,12 @@ Returns the last 2 KB of the child's stdout. Truncated by design — the full st
 
 ## What you cannot see (yet)
 
-| Thing                                                   | Why                                               | When                                                                                         |
-| ------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| The child agent's full stdout                           | We only persist the last 2 KB                     | Read the per-spawn `.jsonl` directly: `<projectDir>/.papercusp/logs/<runId>-<spawnId>.jsonl` |
-| Per-spawn token cost                                    | Not persisted on `spawned_agents`                 | Available in `harness_shared.agent_runs_consolidated` joined by `runId`                      |
-| Cancellation reason                                     | Plugin-side cancel just sets `status='cancelled'` | Acceptable today; future enhancement                                                         |
-| Cross-restart cancel — did the OS process actually die? | We have no way to confirm                         | The `reaped` status flags this honestly                                                      |
+| Thing                                                   | Why                                               | When                                                                               |
+| ------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| The child agent's full stdout                           | We only persist the last 2 KB                     | Read the per-spawn `.jsonl` directly: `<projectDir>/.papercusp/logs/<runId>.jsonl` |
+| Per-spawn token cost                                    | Not persisted on `spawned_agents`                 | Available in `harness_shared.agent_runs_consolidated` joined by `runId`            |
+| Cancellation reason                                     | Plugin-side cancel just sets `status='cancelled'` | Acceptable today; future enhancement                                               |
+| Cross-restart cancel — did the OS process actually die? | We have no way to confirm                         | The `reaped` status flags this honestly                                            |
 
 ## Built-in tools for agents
 
@@ -167,4 +191,15 @@ Agents themselves can read the same telemetry — useful when an architect wants
 * `intel:spawn_tree` — recursive view feed
 * `intel:artifacts` — pack/diff outputs
 
-Both require bearer auth (built-ins, `intel:read` capability). Use `/api/agent-tools/intel/spawn_tree` over HTTP from the dashboard, or `intel:spawn_tree` via MCP from a spawned agent.
+There are two transports, with **different auth**:
+
+* **MCP** — call `intel:spawn_tree` from a spawned agent. This path is bearer
+  authed and gated by the `intel:read` capability.
+* **HTTP** — `GET /api/harness/:slug/intel/spawn-tree` (harness-scoped, note the
+  hyphen). This route is declared `auth: 'public'`; it does **not** require a
+  bearer token. (There is no `/api/agent-tools/...` intel path.)
+
+Both transports take the same args: the harness slug, `sinceMs` (epoch ms,
+default last 24h), `limit` (default 200, max 2000), and an optional `status`
+from the tool-invocation allowlist (`ok` / `error` / `timeout` /
+`quota-exceeded` / `role-not-allowed`).

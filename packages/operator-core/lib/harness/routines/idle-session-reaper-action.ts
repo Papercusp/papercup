@@ -14,6 +14,7 @@
  * trigger_config (optional): `dry_run` — plan + log, mark nothing.
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { readCoordLivenessConfig } from '../../coord-liveness-config';
 import {
   runIdleSessionReap,
   findIdleLiveSessions,
@@ -73,7 +74,9 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
   }
 
   // Dead-process ghost reap (slice 1) — flag-gated DEFAULT-OFF.
-  const r = await runIdleSessionReap({ dryRun });
+  // live-configurability-audit P-014: apply the session-reaper grace override (undefined ⇒ default).
+  const livenessCfg = await readCoordLivenessConfig();
+  const r = await runIdleSessionReap({ dryRun, graceMs: livenessCfg.sessionReaperGraceMs });
   if (!r.enabled) {
     console.log('[idle-session-reaper] reap flag off (papercusp-idle-session-reaper) — ghost reap skipped');
     return;

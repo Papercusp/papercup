@@ -15,11 +15,24 @@ This is the acceptance test for Phase-1b bidirectional federation: two
 over the Model B Hyperswarm substrate. It is the gate that closes implementation
 **Open-Risk R-1** (see below) — the one thing that cannot be asserted offline.
 
-Design: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`.
+Design: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`
+(now **superseded** — admission moved off the shared-repo contributor file).
 The deterministic offline proof (module + transport, gate stubbed) already exists at
 `packages/operator-core/lib/sync/hyperbee/__tests__/two-peer-swarm-bidi.test.ts`; this runbook
 covers what that test *can't*: the real GitHub publish→verify loop with two real
 identities.
+
+The whole flow is governed by the **write-free join** model
+(`non-collaborator-join-fork-pr-2026-06-02`). A peer is admitted **purely from its
+SIGNED announce** — `device_pubkey` + `github_user_id` + `attestation_gist_id` —
+plus the **public attestation gist**, verified by `verifyAttestation`:
+`gist.owner.id === claimed github_user_id`, the gist body's `device_pubkey` matches
+the announced key, and a valid device Ed25519 signature. There is **no shared-repo
+contributor file** and **no repo write at join** (the prior `verifyChannel2` over
+`{repoOwner, repoName, token}` is gone). Any `gh`-authenticated GitHub identity can
+join; GitHub's own PR-merge rules are the real authority over what lands. The
+verification commands below therefore inspect the **announced attestation gist**, not
+a `user/<id>` contributor branch (those branches no longer exist).
 
 The **whole identity path** — not just the gist crux — now runs **in-process with
 two real GitHub identities** as a creds-gated acceptance test:
@@ -27,20 +40,23 @@ two real GitHub identities** as a creds-gated acceptance test:
 (`P079_LIVE=1 npx vitest run p079-live-federation.live`). With both accounts authed
 on one box, "two machines" collapses to "two distinct GitHub identities", which IS
 automatable. The test stubs **nothing** on the identity path: real OAuth
-`verifyChannel1` (`GET /user`), real attestation gists owned by each account, real
-device-signed contributor files on `user/<id>` branches of a real shared repo, the
-**real `verifyChannel2` (no override)** admitting each peer **both ways**, forgery
-rejection (`oauth_user_id_mismatch` + `github_user_id_mismatch`), and a
-**real-Hyperswarm bidirectional feature federation gated by the real `verifyChannel2`
-adapter** (local testnet DHT). It self-cleans its gists + `user/<id>` branches +
-throwaway keychain entries. The **manual** steps below are now only needed for
-**Mode B** — two real *machines*, where NAT/firewall/public-DHT reachability is the
-thing that can't be faked on one host.
+`verifyChannel1` (`GET /user`) and real attestation gists owned by each account.
+Consistent with the write-free model, it deliberately provisions **only** the
+per-account attestation gists + signed announces and creates **no shared repo, no
+`user/<id>` contributor-file branches, and needs no collaborator grant**. The
+admission gate is the **write-free `verifyAttestation` adapter**
+(`buildVerifyBindingAdapter()`, no override) admitting each peer **both ways**,
+forgery rejection (`oauth_user_id_mismatch` + `github_user_id_mismatch`), and a
+**real-Hyperswarm bidirectional feature federation gated by that real adapter**
+(local testnet DHT). It self-cleans its gists + throwaway keychain entries. The
+**manual** steps below are now only needed for **Mode B** — two real *machines*,
+where NAT/firewall/public-DHT reachability is the thing that can't be faked on one
+host.
 
-The **channel-2 publish→verify loop** — the offline-impossible crux — was first run
+The **gist publish→verify loop** — the offline-impossible crux — was first run
 live 2026-06-01 with two genuinely distinct GitHub accounts (`papercupai` +
 `aviynw`): each created a real attestation **gist** under its own account, and the
-**real** `verifyAttestation` / `verifyChannel2` accepted each peer for the correct
+**real** `verifyAttestation` accepted each peer for the correct
 identity **bidirectionally**, while a *forged* identity claim (one account's gist
 claimed as the other's id) was rejected with `github_user_id_mismatch` (D-006 holds
 live). That run also surfaced + fixed a real bug: the attestation **gist filename**
@@ -49,10 +65,10 @@ device keys) — fixed in `attestationGistFilename` (commit `ae5e25be3`).
 
 On **2026-06-02** this was extended to a **full in-process Mode-A pass** and
 captured as the gated `p079-live-federation.live.test.ts` (above): the same two real
-identities published real gists **and** real signed contributor files to a real
-shared repo, the **real `verifyChannel2` (no override)** admitted each peer both
-ways, and they **federated a feature bidirectionally over the real Hyperswarm
-transport with the real channel-2 adapter as the admission gate** — i.e. the
+identities published real gists + signed announces (no shared repo, no contributor
+files), the **real write-free `verifyAttestation` adapter (no override)** admitted
+each peer both ways, and they **federated a feature bidirectionally over the real
+Hyperswarm transport with that real adapter as the admission gate** — i.e. the
 swarm/transport half (steps 4–7) is now exercised against the real gate, not just
 the `two-peer-swarm-bidi` stub. The only thing left for a *true* Mode-B pass is two
 real **machines** (public-DHT/NAT reachability).
@@ -61,11 +77,12 @@ real **machines** (public-DHT/NAT reachability).
 GitHub-**verified** (`commit.verification.verified === true`). A live probe found
 Contents-API commits come back **unverified** (`reason: unsigned`) in the real
 gh-token context, so that check was unsatisfiable and would have blocked **all**
-admission. **R-1 is resolved** by re-anchoring channel-2 step (c) on **gist
-ownership**: the contributor file embeds a `device_attestation_gist_id`, and
-`verifyAttestation` checks that gist is **owned by the claimed `github_user_id`**
-(GitHub reports `gist.owner.id`), attests the announced `device_pubkey`, and carries
-a valid device Ed25519 signature. No commit-verification is required anywhere. The
+admission. **R-1 is resolved** by re-anchoring on **gist ownership**: the signed
+announce carries the `attestation_gist_id`, and `verifyAttestation` checks that gist
+is **owned by the claimed `github_user_id`** (GitHub reports `gist.owner.id`), attests
+the announced `device_pubkey`, and carries a valid device Ed25519 signature. No
+commit-verification is required anywhere. (The later write-free-join work removed the
+contributor-file commit path entirely, so this anchor is now the *only* gate.) The
 2026-06-01 live run above confirms the gist-ownership anchor works with two real
 identities.
 
@@ -90,7 +107,8 @@ directions.
   real GitHub identity is admissible — there is **no** repo-collaborator gate at
   the substrate; GitHub's own write/branch-protection rules gate the actual PR
   merge. So Alice and Bob each just need to be real, `gh`-authenticated GitHub
-  users who can push a `user/<id>` branch to the repo.
+  users — join is **write-free**, so neither needs push access to the repo (only
+  read, to clone the harness).
 * Each side authenticated: `gh auth status` shows the intended account (Alice on
   her instance, Bob on his). The join/share flow resolves identity **server-side**
   from this — you do **not** type credentials into the UI.
@@ -98,8 +116,8 @@ directions.
 A peer's device key lives in the OS keychain under
 `<github_user_id>:<machine-fingerprint>`. Two *different* GitHub accounts
 get distinct keychain ids → distinct device keys → two genuinely distinct peers,
-even on one machine. The same account on two machines would currently collide on
-the login-keyed contributor file (see the
+even on one machine. The same account on two machines is the open multi-device case
+(see the
 [multi-device limitation](/internal/docs/agent-insights/phase1b-federation-limitations)).
 
 ### Mode A — isolating two instances on one laptop
@@ -129,37 +147,46 @@ what makes "data crossed the wire" verifiable.
 
 ## The 7-step walkthrough
 
-1. **Alice shares the harness.** In Alice's Tauri shell, open the harness's
-   **Share** wizard (ShareWizard) and finalize. This writes
-   `.papercusp/shared.json`, **publishes Alice's attestation gist + contributor file**
-   (the file via the Contents API, embedding the gist id), boots Alice's substrate (joins the swarm topic derived
-   from the repo id) and announces. Note the **join link** the wizard shows
-   ("Send this link to contributors…").
+1. **Alice shares the harness.** Sharing is now **hive-level**: in Alice's Tauri
+   shell, share the hive via the **Share-Hive** form (`PublishHiveCard` /
+   `ShareHiveDialog` — the old per-harness `ShareWizard` and its
+   share-finalize/binding-resolve/cupboard-publish routes were retired in
+   `comb-retire-per-harness-sharing-2026-06-11`). This **publishes Alice's
+   attestation gist** (no shared-repo contributor file is written — the gist id
+   rides Alice's signed announce), boots Alice's substrate (joins the swarm topic
+   derived from the repo id) and announces. Note the **hive invite**
+   (`papercusp://hive` link) to send to contributors.
 
-2. **Confirm Alice's binding: contributor file + an owned attestation gist
-   (channel-2 gate).** On the shared repo, the `user/<alice_id>` branch should now
-   have `.papercusp/contributors/<alice_login>.json`. That file embeds a
-   `device_attestation_gist_id`; confirm the gist exists and is **owned by Alice's
-   account** (the channel-2(c) anchor — no commit-verification is involved):
+2. **Confirm Alice's binding: an owned attestation gist (the admission gate).**
+   There is **no** `user/<id>` contributor branch under the write-free model — the
+   binding is the attestation gist carried on Alice's signed announce. Take the
+   `attestation_gist_id` Alice announced (visible in her boot-history / substrate
+   diagnostic) and confirm the gist exists and is **owned by Alice's account** (the
+   `verifyAttestation` anchor — `gist.owner.id === github_user_id`; no
+   commit-verification is involved):
 
    ```sh
-   # gist id from the contributor file
-   gh api repos/<owner>/<repo>/contents/.papercusp/contributors/<alice_login>.json?ref=user/<alice_id> \
-     --jq '.content' | base64 -d | jq -r '.device_attestation_gist_id'
    # confirm that gist's owner id === Alice's github user id
    gh api gists/<gist_id> --jq '.owner.id, .owner.login'
    # expect:  <alice_id>   <alice_login>
    ```
 
-   **If the gist is missing or owned by a different id, channel-2 won't admit** —
-   see *Troubleshooting*.
+   **If the gist is missing or owned by a different id, `verifyAttestation` won't
+   admit** — see *Troubleshooting*.
 
-3. **Bob joins via the link.** In Bob's shell, open the create-harness picker →
-   **Entry 4 (harness link)**, paste Alice's link, and join. Bob's identity is
-   resolved server-side from his `gh` auth (no creds typed). Watch the join
-   progress through the 6 steps: `oauth_attest → clone_repo → publish_binding →
-   boot_federate → await_admission_merge → route_insights`. After `publish_binding`,
-   repeat the Step-2 gist-ownership check for **Bob's** file on `user/<bob_id>`.
+3. **Bob joins via the link.** In Bob's shell, paste Alice's link to join. The
+   create-harness picker has **no discrete "harness link" entry** — its entries are
+   New local directory, Existing local repo, Search GitHub or enter URL, Start a
+   work hive, Search the Comb (blueprint), Browse the Comb, and Hive invite
+   (`papercusp://hive`). Harness-link join (`POST /api/harness/join-link`) is reached
+   through the GitHub-search / Comb hive flow (`EntryGithubUrlForm`); a
+   `papercusp://hive` invite goes through the Hive-invite card. Bob's identity is
+   resolved server-side from his `gh` auth (no creds typed). Watch the join progress
+   through the 6 steps: `oauth_attest → clone_repo → publish_binding → boot_federate
+   → await_admission_merge → route_insights`. `publish_binding` performs **no repo
+   write** (write-free) — it just carries forward Bob's attestation gist id, so
+   there is no `user/<bob_id>` file to re-check; instead repeat the Step-2
+   gist-ownership check against the `attestation_gist_id` **Bob** announced.
    * If join returns **"GitHub authentication required"**, Bob's `gh` isn't
      authenticated in that instance's `GH_CONFIG_DIR` — fix and retry.
 
@@ -205,12 +232,15 @@ Phase-11 plan).
 
 ## Troubleshooting
 
-* **`announce_rejected` with `binding_invalid`** → channel-2 couldn't verify the
-  peer's binding. Most likely the peer's **attestation gist is missing or owned by a
-  different GitHub id** (channel-2(c)), the contributor file is missing on the
-  `user/<id>` branch (a+b), or the `device_pubkey` in the file/gist doesn't match the
-  announced key (e.g. a multi-device collision — same login on two machines). Note:
-  a deleted gist is *also the revocation signal* (`channel2_attestation_missing`).
+* **`announce_rejected` with `binding_invalid`** → `verifyAttestation` couldn't
+  verify the peer's binding. Most likely the peer's **attestation gist is missing or
+  owned by a different GitHub id** (`gist.owner.id !== github_user_id`), or the
+  `device_pubkey` in the gist doesn't match the announced key (e.g. a multi-device
+  collision — same login on two machines). Note: a deleted gist surfaces at runtime
+  as `gist_not_found`, which the adapter maps to `'fail'` and `reverifyAdmitted`
+  treats as the **owner/self revocation signal** (the peer is dropped). (The
+  `channel2_attestation_missing` identifier is only a leftover enum member from the
+  removed `verifyBoth` runtime — it does not name the live signal.)
 * **Stuck `announce_pending`** → GitHub hasn't propagated the just-pushed file yet;
   it self-heals within the 30-min grace. If it never clears, the file/branch is
   missing or the API read is failing.
@@ -218,9 +248,25 @@ Phase-11 plan).
   the DHT port). Confirm both booted with a non-null `swarm` and the **same**
   `topicHex`.
 * **Federation only one way** → the silent side's binding isn't verifiable by the
-  other (re-check that side's Step-2 gist-ownership + that its contributor file
-  exists, AND that the *reading* peer can actually read the shared repo — a private
-  repo the other peer can't access reads as 404 → stuck `pending`).
+  other (re-check that side's Step-2 gist-ownership, and that the announced
+  `device_pubkey` matches the gist body). Attestation gists are **public**, so no
+  repo-read access is needed to verify — but if the gist is unreachable the verify
+  call throws and the binding sits `pending` rather than `fail`.
+
+## Revocation
+
+Two levers, both consistent with the write-free model (the old "delete the
+`user/<id>` branch" lever is a silent no-op now, and deleting another user's gist is
+infeasible):
+
+* **Owner revocation** — `revokeContributorViaGithub` (gated on GitHub repo-**admin**
+  authority) unions the target's device pubkeys into the **owner's own**
+  contributor-row `revoked_pubkeys` and federates it. Read-admission unions
+  `revoked_pubkeys` across all contributor rows, so every peer honors it.
+* **Self-revocation** — the contributor deletes its own attestation gist; the next
+  verify returns `gist_not_found` → `'fail'` → `reverifyAdmitted` drops the peer.
+
+Either path records a `peer_revoked` entry in the boot-history.
 
 ## Escalation — channel-2 gist anchor (R-1 history)
 

@@ -19,15 +19,24 @@ import { Aside } from '@astrojs/starlight/components';
   (testcontainers-per-worker is deterministic).
 * §1.4: `vitest-fail-on-console` now wired by default in shared config.
 * §1.4: `@axe-core/playwright` + `vitest-axe` adopted; first coverage
-  in `libs/ui-primitives` (4 components) and `apps/operator` (2 e2e specs).
-* Phase 3: TESTING.md present in 16/16 packages.
-* Phase 4 (Storybook 10 + Lost Pixel): shipped in 4 packages —
-  `libs/ui-primitives` (18 stories), `libs/marketplace-public-ui`
-  (9 stories), `libs/agent-chat` (7 stories), `apps/operator`
-  (10 stories). 47 total baselines (\~5 MB). CI workflow runs all four
-  via `run-visual` PR label (auto-applied on story file changes by
-  `.github/labeler.yml`). See [`testing/visual-regression`](./visual-regression)
-  for the operational guide.
+  in `libs/generic/ui-primitives` (`src/a11y.test.tsx` covers StatCard,
+  StatusPill, JsonTree, MarkdownView) and `apps/operator` e2e specs.
+* Phase 3: TESTING.md present in 15 packages so far — `apps/tui`,
+  `apps/pui-zellij-plugin`, `packages/operator-core`, `packages/tooldef-mcp`,
+  `libs/papercusp-shared`, `libs/papercusp/packages/blueprint-distribution`,
+  and most of `libs/generic/*` (`tooldef`, `tooldef-http`, `memory`,
+  `step-program`, `pubsub-substrate`, `structured-concurrency`,
+  `result-encoding`, `debounce-coalesce`, `deployment-driver`) — rollout to the
+  rest is ongoing.
+* Phase 4 (Storybook 10 + Lost Pixel): in progress across four packages —
+  `libs/generic/ui-primitives` (6 stories), `libs/marketplace-public-ui`
+  (3 stories), `libs/agent-chat` (2 stories), `apps/operator`
+  (3 stories). 15 `*.stories.ts(x)` files repo-wide today. CI's visual
+  job builds Storybook per package (the `ui-primitives` job runs from
+  `libs/generic/ui-primitives`) and runs via the `run-visual` PR label
+  (auto-applied on story file changes by `.github/labeler.yml`). See
+  [`testing/visual-regression`](./visual-regression) for the operational
+  guide.
 
 This page is the active design document for the **Papercusp testing
 framework** — what we build, what we adopt off-the-shelf, how agents
@@ -45,12 +54,12 @@ plugs into.
 Per `admin-testing-tab-restructure-2026-05-24` D-006: **only four**
 test frameworks ship new tests. Everything else is being migrated out.
 
-| Framework         | File shape                     | Where                                               | Discovered by                                       |
-| ----------------- | ------------------------------ | --------------------------------------------------- | --------------------------------------------------- |
-| **Vitest**        | `*.test.ts` next to source     | per-package                                         | Tests-tab registry globs                            |
-| **Playwright**    | `*.spec.ts`                    | `apps/operator/e2e/`                                | `harness` / domain-specific E2E sections            |
-| **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                                      | `cargo test --message-format=json` reporter (P-012) |
-| **LLM scenarios** | `.ts` / `.yaml`                | `packages/operator-core/lib/llm-testing/scenarios/` | LLM testing tab                                     |
+| Framework         | File shape                     | Where                                               | Discovered by                                                                              |
+| ----------------- | ------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| **Vitest**        | `*.test.ts` next to source     | per-package                                         | Tests-tab registry globs                                                                   |
+| **Playwright**    | `*.spec.ts`                    | `apps/operator/e2e/`                                | `harness` / domain-specific E2E sections                                                   |
+| **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                                      | `rust` (`Rust (Cargo)`) domain, via `shell` runners (`bash -c 'cd <crate> && cargo test'`) |
+| **LLM scenarios** | `.ts`                          | `packages/operator-core/lib/llm-testing/scenarios/` | LLM testing tab                                                                            |
 
 **Where tests appear in the UI:** drop a test file under one of the
 glob-matched paths in `packages/operator-core/lib/testing-domains-registry.ts`
@@ -80,6 +89,18 @@ the tab. This caught the 2026-06-02 audit finding that 614 of 1168
 tests were orphaned. When it fires, widen a domain's globs (or add a
 domain) in the registry (`packages/operator-core/lib/testing-domains-registry.ts`),
 then `npm run gen:contract`.
+
+**Cargo runs through a shell runner, not a `cargo` runner kind.** The
+repo has **no root Cargo workspace**, so a `cargo test -p <crate>`
+invocation from the repo root can't resolve any crate. The `rust`
+(`Rust (Cargo)`) domain in `testing-domains-registry.ts` therefore `cd`s
+into each crate via `kind:'shell'` runners (`bash -c 'cd <crate> &&
+cargo test'`), covering the pui/TUI workbench (`apps/tui`), the pui
+companion proto + zellij plugin, and the `papercusp-desktop` Tauri shell.
+The standalone `cargo --message-format=json` reporter (P-012) was
+**dropped** — there is no such reporter file. Rust files are `.rs`, so
+they're never canonical-test orphans; the gap the `rust` domain closes
+was that nothing *ran* them.
 
 **Live smokes that can't be Vitest** (need a running operator / external
 service) are surfaced via `node` / `shell` **runners** on a domain
@@ -187,6 +208,14 @@ fail at module-import time because the pure-Vitest config doesn't load
 the testcontainers global setup. This is intentional — the pattern
 mismatch surfaces as a clear error, not silent slowdown.
 
+**A fourth Vitest mode — `browser`.** Alongside unit and integration,
+the shared config supports a `browser` layer for component tests run in
+real browser mode (`*.browser.test.ts` under `vitest.browser.config.ts`,
+`pool: 'threads'`). It is the Vitest-side counterpart of Storybook's
+component tests; the misroute guard treats `*.browser.test.*` the same
+way it treats `*.integration.test.*`. E2E (`*.spec.ts`, Playwright)
+remains the separate, browser-driving layer.
+
 ## 1.3 Test database strategy
 
 **Decision: testcontainers-node + ephemeral Postgres per Vitest worker.**
@@ -263,27 +292,27 @@ behind a single helper.
 
 ## 1.4 The OSS stack
 
-| Concern                                   | Tool                                                 | Why this one                                                                                                                                                                                                                                                                                                                                                                                                        | License          |
-| ----------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| Test runner (all layers)                  | **Vitest 4**                                         | Already in repo. Workspaces fit NX. Native TS, Jest-compat API, browser mode.                                                                                                                                                                                                                                                                                                                                       | MIT              |
-| Database for integration                  | **testcontainers-node**                              | Real Postgres; no mocking lies. \~2s startup per worker.                                                                                                                                                                                                                                                                                                                                                            | MIT              |
-| API/HTTP mocking                          | **MSW** (Mock Service Worker)                        | Intercepts at fetch boundary; same handlers in node + browser. WebSocket handlers (added 2024) cover Zero sync. Industry standard.                                                                                                                                                                                                                                                                                  | MIT              |
-| Browser / E2E                             | **Playwright**                                       | Trace viewer, Chromium + Firefox + WebKit, parallel, `--trace=on-first-retry`. Auth fixtures via `storageState`; native `toHaveScreenshot()` for ad-hoc visual diffs.                                                                                                                                                                                                                                               | Apache 2.0       |
-| Accessibility                             | **@axe-core/playwright** + **vitest-axe**            | One axe pass per E2E spec; component-level a11y assertions in Vitest. Catches what manual review misses.                                                                                                                                                                                                                                                                                                            | MPL-2.0          |
-| Desktop (Tauri) E2E — automated suite     | **tauri-driver** + Playwright WebDriver              | The supported CI path for `apps/papercusp-desktop`. Browser-only matrix doesn't reach the Tauri shell. Linux + Windows; macOS still blocked on tauri-apps#7068.                                                                                                                                                                                                                                                     | Apache 2.0 / MIT |
-| Desktop (Tauri) E2E — agent-driven manual | **tauri-agent-tools** (`npm i -g tauri-agent-tools`) | Primary tool when an AI agent verifies the operator UI ad-hoc. Talks to a debug-only Rust dev-bridge inside `papercusp-desktop` (`src-tauri/src/dev_bridge.rs`, `#[cfg(debug_assertions)]`). Real DOM access, JS `eval`, `click`, `type`, `ipc-monitor`, console capture, Rust logs, `check`-style assertions — without focus-stealing and without OCR. See [agent-e2e playbook](/internal/docs/testing/agent-e2e). | MIT              |
-| Load / perf regression                    | **k6** (HTTP) + **Vitest bench** (micro)             | k6 for nightly baseline on hot paths (wholesale grid, Typesense queries); Vitest bench for `libs/papergrid` render-path micro-benchmarks.                                                                                                                                                                                                                                                                           | AGPL-3.0 / MIT   |
-| Test-data factories                       | **drizzle-seed** + **@snaplet/copycat**              | Schema-aware seeding from Drizzle definitions; deterministic fake data keyed off seeds. Closes §1.16 Q2.                                                                                                                                                                                                                                                                                                            | MIT              |
-| Public-page / ad-hoc                      | **verdict** (already adopted)                        | Token-efficient agent-driven verification of **arbitrary external web pages** (marketing site, third-party links, MDX renderer hitting an external URL). For operator-side checks use **tauri-agent-tools** instead — the operator only renders correctly inside the Tauri shell.                                                                                                                                   | —                |
-| Component testing                         | **Storybook 10 + Test addon**                        | Components in isolation, doubles as "see all components" UI; addon runs Vitest in browser.                                                                                                                                                                                                                                                                                                                          | MIT              |
-| Visual regression                         | **Lost Pixel**                                       | OSS, integrates with Storybook + Playwright, runs locally; no SaaS lock-in.                                                                                                                                                                                                                                                                                                                                         | MIT              |
-| React / DOM assertions                    | **@testing-library/react** + **user-event**          | Standard React testing utilities.                                                                                                                                                                                                                                                                                                                                                                                   | MIT              |
-| Property-based                            | **fast-check**                                       | For payload encoders, validators, slug rewriters — anywhere example tests undercount.                                                                                                                                                                                                                                                                                                                               | MIT              |
-| Mutation testing (quarterly)              | **Stryker**                                          | Health check on critical libs (`@restart/com`, `libs/papergrid`). Not in PR gate.                                                                                                                                                                                                                                                                                                                                   | Apache 2.0       |
-| Dead-test detection                       | **Knip**                                             | Finds unused exports, files, deps, tests. Soft warning in CI.                                                                                                                                                                                                                                                                                                                                                       | ISC              |
-| Coverage                                  | **@vitest/coverage-v8**                              | Native to Vitest, tracks trend without gating %.                                                                                                                                                                                                                                                                                                                                                                    | MIT              |
-| Orchestration                             | **NX** (`nx affected -t test`)                       | Already adopted; computes the dependency graph.                                                                                                                                                                                                                                                                                                                                                                     | MIT              |
-| Best-practices reference                  | **goldbergyoni/javascript-testing-best-practices**   | Style canon for `CLAUDE.md` to cite.                                                                                                                                                                                                                                                                                                                                                                                | CC-BY-SA         |
+| Concern                                   | Tool                                                          | Why this one                                                                                                                                                                                                                                                                                                                                                                                                        | License          |
+| ----------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| Test runner (all layers)                  | **Vitest 4**                                                  | Already in repo. Workspaces fit NX. Native TS, Jest-compat API, browser mode.                                                                                                                                                                                                                                                                                                                                       | MIT              |
+| Database for integration                  | **testcontainers-node**                                       | Real Postgres; no mocking lies. \~2s startup per worker.                                                                                                                                                                                                                                                                                                                                                            | MIT              |
+| API/HTTP mocking                          | **MSW** (Mock Service Worker)                                 | Intercepts at fetch boundary; same handlers in node + browser. WebSocket handlers (added 2024) cover Zero sync. Industry standard.                                                                                                                                                                                                                                                                                  | MIT              |
+| Browser / E2E                             | **Playwright**                                                | Trace viewer, Chromium + Firefox + WebKit, parallel, `--trace=on-first-retry`. Auth fixtures via `storageState`; native `toHaveScreenshot()` for ad-hoc visual diffs.                                                                                                                                                                                                                                               | Apache 2.0       |
+| Accessibility                             | **@axe-core/playwright** + **vitest-axe**                     | One axe pass per E2E spec; component-level a11y assertions in Vitest. Catches what manual review misses.                                                                                                                                                                                                                                                                                                            | MPL-2.0          |
+| Desktop (Tauri) E2E — automated suite     | **tauri-driver** + Playwright WebDriver                       | The supported CI path for `apps/papercusp-desktop`. Browser-only matrix doesn't reach the Tauri shell. Linux + Windows; macOS still blocked on tauri-apps#7068.                                                                                                                                                                                                                                                     | Apache 2.0 / MIT |
+| Desktop (Tauri) E2E — agent-driven manual | **tauri-agent-tools** (`npm i -g tauri-agent-tools`)          | Primary tool when an AI agent verifies the operator UI ad-hoc. Talks to a debug-only Rust dev-bridge inside `papercusp-desktop` (`src-tauri/src/dev_bridge.rs`, `#[cfg(debug_assertions)]`). Real DOM access, JS `eval`, `click`, `type`, `ipc-monitor`, console capture, Rust logs, `check`-style assertions — without focus-stealing and without OCR. See [agent-e2e playbook](/internal/docs/testing/agent-e2e). | MIT              |
+| Load / perf regression                    | **k6** (HTTP) + **Vitest bench** (micro)                      | k6 for nightly baseline on hot paths (wholesale grid, Typesense queries); Vitest bench for `libs/papergrid` render-path micro-benchmarks.                                                                                                                                                                                                                                                                           | AGPL-3.0 / MIT   |
+| Test-data factories                       | **`makeFixture` / `makeFixtures`** (`@papercusp/test-config`) | Shipped primitive — counter-keyed fixture builders in `libs/test-config/src/make-fixture.ts`. `drizzle-seed` / `@snaplet/copycat` remain aspirational (not installed); see §1.16 Q2.                                                                                                                                                                                                                                | MIT              |
+| Public-page / ad-hoc                      | **verdict** (already adopted)                                 | Token-efficient agent-driven verification of **arbitrary external web pages** (marketing site, third-party links, MDX renderer hitting an external URL). For operator-side checks use **tauri-agent-tools** instead — the operator only renders correctly inside the Tauri shell.                                                                                                                                   | —                |
+| Component testing                         | **Storybook 10 + Test addon**                                 | Components in isolation, doubles as "see all components" UI; addon runs Vitest in browser.                                                                                                                                                                                                                                                                                                                          | MIT              |
+| Visual regression                         | **Lost Pixel**                                                | OSS, integrates with Storybook + Playwright, runs locally; no SaaS lock-in.                                                                                                                                                                                                                                                                                                                                         | MIT              |
+| React / DOM assertions                    | **@testing-library/react** + **user-event**                   | Standard React testing utilities.                                                                                                                                                                                                                                                                                                                                                                                   | MIT              |
+| Property-based                            | **fast-check**                                                | For payload encoders, validators, slug rewriters — anywhere example tests undercount.                                                                                                                                                                                                                                                                                                                               | MIT              |
+| Mutation testing (quarterly)              | **Stryker**                                                   | Health check on critical libs (`@restart/com`, `libs/papergrid`). Not in PR gate.                                                                                                                                                                                                                                                                                                                                   | Apache 2.0       |
+| Dead-test detection                       | **Knip**                                                      | Finds unused exports, files, deps, tests. Soft warning in CI.                                                                                                                                                                                                                                                                                                                                                       | ISC              |
+| Coverage                                  | **@vitest/coverage-v8**                                       | Native to Vitest, tracks trend without gating %.                                                                                                                                                                                                                                                                                                                                                                    | MIT              |
+| Orchestration                             | **NX** (`nx affected -t test`)                                | Already adopted; computes the dependency graph.                                                                                                                                                                                                                                                                                                                                                                     | MIT              |
+| Best-practices reference                  | **goldbergyoni/javascript-testing-best-practices**            | Style canon for `CLAUDE.md` to cite.                                                                                                                                                                                                                                                                                                                                                                                | CC-BY-SA         |
 
 **Versions**: pin to `latest` at install time; renovate-bot or weekly
 dependabot keeps them current. We do not pin individual minor
@@ -310,14 +339,31 @@ versions — the test stack moves as a unit.
 
 ## 1.5 Shared `libs/test-config` library
 
-A new library at `libs/test-config/` exports the shared bits every
-project consumes. **Three exports**, no more:
+A library at `libs/test-config/` exports the shared bits every project
+consumes. The shipped surface grew past the original three-export goal —
+it now covers config, three testcontainers (PG/Redis/Typesense), the
+baseline-schema globalSetup + admin-test-runs reporter paths, MSW,
+fixture factories, and the hono/nest test clients:
 
 ```ts
-// libs/test-config/src/index.ts
+// libs/test-config/src/index.ts (abridged)
 export { defineVitestConfig } from './vitest-config';
-export { getTestPg, teardownTestPg } from './pg-container';
+export type { TestLayer, DefineVitestConfigOptions } from './vitest-config';
+// globalSetup + reporter paths (defineVitestConfig auto-wires the reporter)
+export const BASELINE_SCHEMA_GLOBAL_SETUP_PATH = …;
+export const ADMIN_TEST_RUNS_REPORTER_PATH = …;
+// Postgres
+export { getTestPg, teardownTestPg, withTestSchema } from './pg-container';
+export { createFreshTestDb, createMigratedTestDb, provisionRestartTestDb } from './pg-migrate';
+// Redis + Typesense
+export { getTestRedis, teardownTestRedis } from './redis-container';
+export { getTestTypesense, teardownTestTypesense } from './typesense-container';
+// HTTP mocking
 export { setupMsw, msw } from './msw';
+// fixture factories
+export { makeFixture, makeFixtures, _resetFixtureCounters } from './make-fixture';
+// hono test client (Nest client via the '/nest' subpath: bootNestTestApp)
+export { honoTestClient } from './hono-test-client';
 ```
 
 ### `defineVitestConfig`
@@ -340,19 +386,37 @@ provider, `pool: 'forks'` for integration (process isolation per file),
 `pool: 'threads'` for unit (faster), JUnit XML reporter for CI, default
 timeouts (5s unit, 30s integration, 60s E2E).
 
-### `getTestPg` / `teardownTestPg`
+The `layer` accepts `'unit' | 'integration' | 'browser'` — the third,
+`browser`, runs component tests in Vitest browser mode (`*.browser.test.ts`
+under `vitest.browser.config.ts`). The misroute guard in `vitest-config.ts`
+also routes a stray `*.browser.test.*` run to the browser config rather
+than failing it under the unit config.
 
-Worker-scoped Postgres container management. Used by the Vitest
-`globalSetup` for integration projects.
+### Testcontainers — `getTestPg` / `getTestRedis` / `getTestTypesense`
+
+Worker-scoped container management for Postgres (`getTestPg` /
+`teardownTestPg` / `withTestSchema`, plus `createFreshTestDb` /
+`createMigratedTestDb` / `provisionRestartTestDb`), Redis (`getTestRedis`
+/ `teardownTestRedis`), and Typesense (`getTestTypesense` /
+`teardownTestTypesense`). Used by the Vitest `globalSetup` for
+integration projects. Integration projects also pull
+`BASELINE_SCHEMA_GLOBAL_SETUP_PATH` (stands up the shared schema once,
+exposes `inject('baselineSchemaDsn')`) and the auto-wired
+`ADMIN_TEST_RUNS_REPORTER_PATH` (one `test_runs` row per file → the admin
+status chips).
 
 ### `setupMsw` / `msw`
 
 MSW server bootstrap with a shared handler registry. Per-test handler
 overrides via `msw.use(...)`.
 
-**No other exports.** If a project needs more than these three things,
-it's project-specific and lives in the project — not in
-`libs/test-config`.
+### Fixtures + test clients
+
+`makeFixture` / `makeFixtures` (counter-keyed builders, resettable via
+`_resetFixtureCounters`) are the shipped test-data primitive. HTTP-level
+testing uses `honoTestClient`; NestJS apps import `bootNestTestApp` from
+the `@papercusp/test-config/nest` subpath (kept off the main entry so
+non-Nest projects never load `@nestjs/*`).
 
 ## 1.6 File and directory conventions
 
@@ -416,7 +480,7 @@ Each project's `project.json` declares three test targets:
 Per-PR CI runs:
 
 ```bash
-nx affected -t lint test test:integration --base=origin/master
+nx affected -t lint test test:integration --base=origin/main
 ```
 
 Nightly runs:
@@ -431,10 +495,10 @@ dependency graph plus file-touch detection. Agents do not need to
 guess which tests apply — NX computes it.
 
 **One caveat**: NX's affected graph misses changes to files outside
-the dependency graph (e.g., a Drizzle migration in `libs/db/sql/` that
-no project explicitly imports as a TS module). The fix is in §1.8 —
-per-project `TESTING.md` lists "what to also run when these files
-touch."
+the dependency graph (e.g., a Drizzle migration in
+`libs/papercusp/libs/db/sql/` that no project explicitly imports as a
+TS module). The fix is in §1.8 — per-project `TESTING.md` lists "what to
+also run when these files touch."
 
 The shipped runner is **`scripts/affected-tests.mjs`**, not raw `nx affected`.
 It reads the same git-diff signal but skips the NX CLI bootstrap (\~2s
@@ -488,18 +552,19 @@ npm run test:affected               # unit only — fast, default
 npm run test:affected:integration   # adds *.integration.test.ts
 ````
 
-The script wraps `nx affected` in spirit. Conceptual equivalent:
-`nx affected -t test test:integration --base=$(git merge-base HEAD origin/master)`.
+The script is git-diff based (`scripts/affected-tests.mjs`), defaulting
+its base to `origin/main` (override via the `AFFECTED_BASE` env var).
 
 If your edit touches:
 
-* `libs/db/sql/**` — also run `npm run test:all:integration`
-* `libs/com/**` — also run `nx run-many -t test:integration`
+* `libs/papercusp/libs/db/**` (schema / migrations under
+  `libs/papercusp/libs/db/sql`) — also run `npm run
+  test:all:integration`; the dependency graph won't catch them.
 * `infra/**` or `Procfile*` — manually verify; no automated coverage
 
 Consult the project's `TESTING.md` for what's covered and what to run
-for non-graph file changes. Do NOT run `npm test` or
-`nx run-many -t test` for routine edits — it's slow and produces noise.
+for non-graph file changes. Do NOT run `npm run test:all` for routine
+edits — it's slow and produces noise.
 
 ````
 
@@ -546,6 +611,29 @@ E2E is **opt-in via PR label** (`run-e2e`) by default — full E2E on
 every PR is too slow for routine doc/copy/refactor work. CODEOWNERS
 for `apps/**/e2e/**` adds the label automatically when a spec file
 itself is touched.
+
+### What the shipped per-PR pipeline actually runs
+
+The YAML above is illustrative. The real `.github/workflows/test.yml`
+affected job does far more than `nx affected -t test`, and it provisions
+Postgres rather than relying solely on testcontainers:
+
+* **Generated-surface drift gates** — `gen:contract:check`,
+  `gen:borrowable:check`, and the `gen:doc-*` checks
+  (`gen:doc-blueprint-catalog:check`, `gen:doc-role-registry:check`,
+  `gen:doc-tool-catalog:check`, `gen:doc-insights-index:check`,
+  `gen:doc-plans-index:check`) fail if a committed artifact drifted from
+  its generator. Drizzle / Zero schema-drift checks run here too.
+* **Code-hygiene + plan lints** — `lint:plans`, `lint:plans-pg`,
+  `lint:tests` (the coverage guard from §1.0a), `lint:mdx`,
+  `lint:env-feature-gates:strict`, `lint:no-restart`, `lint:no-sql-json`,
+  `lint:no-conflict-markers`, `lint:smart-quotes`, and a baseline-gated
+  `lint:tsc`. `knip` runs as a soft warning (§1.14).
+* **Dev-box-parity Postgres** — a `pgvector/pgvector:pg16` **service**
+  container on `5432:5432`, provisioned by `scripts/ci-provision-pg.mjs`,
+  so the \~unit-tier suites that transitively resolve the default
+  `:5432/papercusp` URL hit a real Postgres. Integration suites still
+  use testcontainers on top of this.
 
 ### Nightly workflow
 
@@ -677,17 +765,30 @@ For:
 * Date / timezone math anywhere it appears.
 * Drizzle schema validators with custom regex.
 
-Pattern:
+Pattern — files are named `*.property.test.ts` (so they sit in the unit
+layer's glob) and import **plain `fast-check`** (the `@fast-check/vitest`
+wrapper is *not* a dependency; only `fast-check` itself is installed, in
+4 `package.json`s):
 
 ```ts
-import { fc, test } from '@fast-check/vitest';
+// e.g. libs/generic/plan-parser/src/parser.property.test.ts
+import fc from 'fast-check';
+import { test, expect } from 'vitest';
 
-test.prop([fc.string(), fc.string()])('rewrite handles arbitrary slugs', (a, b) => {
-  expect(rewriteSlug(rewriteSlug(text, a, b), b, a)).toBe(text);
+test('rewrite handles arbitrary slugs', () => {
+  fc.assert(
+    fc.property(fc.string(), fc.string(), (a, b) => {
+      expect(rewriteSlug(rewriteSlug(text, a, b), b, a)).toBe(text);
+    }),
+  );
 });
 ```
 
 One property test catches what twenty hand-rolled examples would miss.
+Existing property suites live across the repo (e.g.
+`libs/generic/plan-parser/src/parser.property.test.ts`,
+`libs/papercusp-publish-auth/src/jcs.property.test.ts`,
+`packages/operator-core/lib/device-jwt.property.test.ts`).
 
 ### Stryker
 
@@ -763,9 +864,12 @@ nightly full run on a clean container.
 **Coverage theater.** Mitigated by the no-gate policy (§1.13). If a
 team starts gating coverage anyway, the policy explicitly says not to.
 
-**`@papercusp/test-config` library bloat.** This library has a
-documented three-export limit (§1.5). Pressure will exist to add more.
-Resist; project-specific helpers belong in the project.
+**`@papercusp/test-config` library bloat.** The library has already
+grown well past its original three-export goal (§1.5) — config,
+PG/Redis/Typesense containers, globalSetup + reporter paths, MSW,
+fixtures, and the hono/nest clients. The discipline now is: keep it to
+*cross-project* testing primitives. Project-specific helpers belong in
+the project, not here.
 
 **Slow PR CI.** If the affected-graph runs creep past 5 min, parallel
 worker count goes up before scope shrinks. Affected scope is already
@@ -883,13 +987,15 @@ parallelize Phase 3 across projects further.
    break. Likely answer: stay on GH Actions for the foreseeable
    future; document the Docker dependency.
 
-2. **Test-data factories.** *Resolved.* Use **`drizzle-seed`** for
-   schema-aware seeding (it reads the Drizzle schema directly — no
-   second source of truth) and **`@snaplet/copycat`** for deterministic
-   fake values keyed off a seed (so tests are reproducible across
-   workers). `fishery` is rejected: another dep, and the Drizzle-aware
-   path is cheaper. Per-project factories still allowed for
-   project-specific composition; the two libs are the primitives.
+2. **Test-data factories.** *Shipped primitive is `makeFixture` /
+   `makeFixtures`* exported from `@papercusp/test-config`
+   (`libs/test-config/src/make-fixture.ts`) — counter-keyed builders
+   with `_resetFixtureCounters` for deterministic-across-workers reuse.
+   The originally-proposed **`drizzle-seed`** (schema-aware seeding) +
+   **`@snaplet/copycat`** (deterministic fakes) are **not installed in
+   any `package.json`** — aspirational, not adopted. `fishery` was also
+   rejected. Per-project factories remain allowed for project-specific
+   composition.
 
 3. **Browser matrix in nightly E2E.** Do we run Chromium only (fast,
    \~80 % of users), or Chromium + Firefox + WebKit (slow, complete)?

@@ -1,7 +1,34 @@
 # Attention push-notification delivery
 URL: /internal/docs/agent-insights/attention-push-delivery
 
-How needs-human / escalation / smoke / plan-review notifications get delivered — event-driven at the source (notifyAttention), to mobile push + a native desktop notification. No more 60s poll.
+How needs-human / escalation / smoke notifications get delivered — event-driven at the source (notifyAttention), to mobile push + an in-app toast (native desktop OS notification now opt-in). No more 60s poll.
+
+:::caution\[Superseded — two changes after this was written]
+This runbook still describes the original (2026-05-31) shape. Two parts now mislead:
+
+1. **Plan-review is no longer a push source — there is no 4th producer.** The
+   `harness_plan_review` source and its `POST /api/internal/plan-review-event`
+   endpoint were **retired by B-14/P-101**. There is no live writer and no such
+   `defineTool` — only stale comments remain in `harness-fs-watcher.ts`. There are
+   now **three** producer call-sites (escalation, smoke-fail, needs-human), not
+   four, and `plan-review` is **not** a notify kind (`AttentionNotifyKind` is
+   `'needs-human' | 'intervention' | 'smoke-fail'`). needs-human plan items are the
+   review gate now. See `packages/operator-core/lib/agent-tools/plans/attention.ts:184`,
+   `apps/operator/bin/host-bootstrap.ts:310`,
+   `packages/operator-core/lib/harness-state/table-registry.ts:238`. Ignore the
+   `plan-review` row in the importance table and the `plan-review` row in the
+   "four producer call-sites" table below.
+2. **The native desktop OS notification is now opt-in (disabled by default).** Since
+   the 2026-06-18 owner request it fires only when
+   `localStorage['papercusp:desktopOsNotifications'] === '1'` **and** running in the
+   Tauri shell. The in-app sonner toast still fires **always** — only the OS-level
+   popup changed. See `apps/operator/app/_components/DesktopAttentionNotifier.tsx:62-79`.
+
+Path note: the internal `*-event` endpoints moved from app routes to
+`packages/operator-core/lib/endpoint-route/routes/internal/`. Everything else
+(the `notifyAttention` two-channel fail-safe, the escalation/smoke-fail/needs-human
+gating, the importance map for live kinds, the deleted 60s poll) still holds.
+:::
 
 ## What it is
 
@@ -71,12 +98,12 @@ high, so the watcher never pushed low-importance noise to begin with.
 `notifyAttention()` is called at exactly the points that *create* a ≥high
 attention item — there's no poll, so each must fire **once per genuine event**:
 
-| Source      | Where                           | Fire condition                                                                                 |
-| ----------- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| escalation  | `internal/escalation-event.ts`  | `escalation != null` (skip notes-only updates)                                                 |
-| smoke-fail  | `internal/smoke-test-event.ts`  | **transition** into failing — reads prior `status`, fires only on `pass→fail` / first fail     |
-| plan-review | `internal/plan-review-event.ts` | every call (the producer posts once per completed review)                                      |
-| needs-human | `plans:set-status`              | transition INTO `needs-human` at importance ≥ high (`shouldPushNeedsHuman` + `itemImportance`) |
+| Source      | Where                                                | Fire condition                                                                                 |
+| ----------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| escalation  | `endpoint-route/routes/internal/escalation-event.ts` | `escalation != null` (skip notes-only updates)                                                 |
+| smoke-fail  | `endpoint-route/routes/internal/smoke-test-event.ts` | **transition** into failing — reads prior `status`, fires only on `pass→fail` / first fail     |
+| plan-review | `internal/plan-review-event.ts`                      | every call (the producer posts once per completed review)                                      |
+| needs-human | `plans:set-status`                                   | transition INTO `needs-human` at importance ≥ high (`shouldPushNeedsHuman` + `itemImportance`) |
 
 Why this was safe to do at once: each source is its own chokepoint, so there's
 **no double-fire** (the poll that used to also push escalation/smoke/plan-review

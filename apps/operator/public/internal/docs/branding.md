@@ -47,45 +47,57 @@ The Swarm direction is engineered swarm intelligence: honey-amber signal color o
 The Swarm skin is selected by `FLAGS.THE_HIVE` / `papercusp-the-hive`.
 
 * Logo components switch from the classic cup marks to The Swarm primary mark via `useLexiconPackId()`.
-* `HiveThemeBridge` forces `data-theme="honeycomb"`, sets the title to `The Swarm`, and injects the Hive favicon while the flag is on.
-* When the flag turns off, `HiveThemeBridge` restores the user’s saved active theme and the classic title.
-* The selectable Honeycomb theme is generated from `design-tokens/honeycomb.semantic.tokens.json` into `apps/operator/app/_semantic.honeycomb.css`.
+* `HiveThemeBridge` forces `data-theme="honeycomb"`, sets `document.title` to the literal `HIVE_TITLE = 'The Swarm'`, and injects the Hive favicon while the flag is on.
+* When the flag turns off, `HiveThemeBridge` restores the user’s saved active theme and the classic title `CLASSIC_TITLE = 'Papercusp Operator'`.
+* The selectable Honeycomb theme is generated from the repo-root `design-tokens/honeycomb.semantic.tokens.json` into `apps/operator/app/_semantic.honeycomb.css` by the repo-root `npm run tokens` script (style-dictionary), which emits the CSS under the `[data-theme="honeycomb"]` selector.
 * The legacy `hive` selector remains as an implementation-pack alias; new runtime usage should prefer `honeycomb`.
 * The Swarm desktop icons are parallel exports only. `tauri.conf.json` still points to the classic icon set until packaging explicitly opts into the Swarm pack.
+
+The flag-on `document.title`/wordmark renders `The Swarm`. EI-230 weighed this against D-005 (classic runtime titles) and D-007 (`Swarm` = deployment unit); the owner **resolved** it on 2026-06-10 (D-008 in `the-hive-lexicon-2026-06-06`, status: shipped): `The Swarm` is ratified as the product sub-brand, so `HIVE_TITLE` / `OperatorWordmarkLockup` stay pointed at `The Swarm` (deliberately **not** repointed to `The Hive`).
 
 ## Lexicon
 
 The flag-on nouns are presentation-only:
 
-| Classic concept                    | Flag-on term |
-| ---------------------------------- | ------------ |
-| Project / deployable group         | Hive         |
-| Live set of working agents         | Swarm        |
-| Brain / high-judgment orchestrator | Queen        |
-| Always-on operator                 | Sentinel Bee |
-| AI agent                           | Bee          |
-| Human member                       | Keeper       |
-| Unit of work                       | Cell         |
-| Shared store                       | Comb         |
-| Machine / region                   | Frame        |
-| Collaboration substrate            | Hive Mind    |
+| Classic concept                          | Flag-on term |
+| ---------------------------------------- | ------------ |
+| Project / deployable group               | Hive         |
+| Live set of working agents               | Colony       |
+| Brain / high-judgment orchestrator       | Queen        |
+| Always-on operator                       | Sentinel     |
+| AI agent                                 | Bee          |
+| Human member                             | Keeper       |
+| Unit of work                             | Cell         |
+| Shared store                             | Comb         |
+| Machine / deployment instance            | Swarm        |
+| Agent signal / handoff (optional flavor) | Waggle       |
+| Collaboration substrate                  | Hive Mind    |
+
+The live agent collective is the **Colony** (term key `fleet`); **Swarm** (term key `node`) is the deployment-to-instance unit — a deployment of a Hive to a single machine. Owner revision D-007 (plan P-009) reassigned `Swarm` from the live-agent row to the deployment row and folded the earlier `Frame` machine/region term into `Swarm`. `Sentinel` was renamed from `Sentinel Bee` by owner directive 2026-06-09 (hive-agent-tabs P-003). The shaping icon file is still named `icons/sentinel-bee.svg`, but the lexicon term is `Sentinel`. This is consistent with the note above that, inside a Hive, many Swarms can run.
 
 ## Color Tokens
 
-The Swarm token pack is dark-first and WCAG-oriented:
+There are three distinct The Swarm color sources — do not conflate them:
 
-| Token          |     Value | Use                  |
-| -------------- | --------: | -------------------- |
-| Background     | `#050505` | app shell base       |
-| Surface        | `#10100B` | cards and panels     |
-| Raised surface | `#17130A` | elevated chrome      |
-| Text           | `#FFF7DF` | primary foreground   |
-| Muted text     | `#B9AA86` | secondary foreground |
-| Primary accent | `#EAB308` | honey action color   |
-| Strong accent  | `#FDE68A` | hover/highlight      |
-| Accent ink     | `#130D03` | text on honey        |
+* **Shipped Honeycomb theme tokens** — the values the selectable `honeycomb` theme actually emits at runtime, from `design-tokens/honeycomb.semantic.tokens.json` (muted honey, accent `#C68E24`). Documented in the table below.
+* **SVG mark palette** — `HIVE_BRAND_COLORS` in `apps/operator/app/_components/HiveVisualIdentity.tsx` (honey `#F6B72F`, deep honey `#B97812`, cream `#FFF2C2`). These are the colors the brand SVGs (`primary-mark.svg`, `queen-mark.svg`, `favicon.svg`) actually render with.
+* **Prototype demo palette** — the brighter `#EAB308`/`#FDE68A` honey used only in the `/dev/swarm-logos` exploration page (`swarm-logos.module.css`). Not a runtime theme.
 
-Semantic colors remain distinct from the primary honey accent: success green, danger rose, info blue, and warning honey.
+The shipped Honeycomb token pack is dark-first and WCAG-oriented (values are the runtime CSS variables emitted under `[data-theme="honeycomb"]`):
+
+| Token              |     Value | Use                       |
+| ------------------ | --------: | ------------------------- |
+| Background         | `#070704` | app shell base            |
+| Deepest background | `#030303` | maximum depth             |
+| Popover surface    | `#11100B` | cards and elevated panels |
+| Raised surface     | `#15130B` | elevated chrome           |
+| Text               | `#F4EBD4` | primary foreground        |
+| Muted text         | `#9F9378` | secondary foreground      |
+| Primary accent     | `#C68E24` | muted honey action color  |
+| Strong accent      | `#D6A64A` | hover/focus accent        |
+| Accent ink         | `#130D03` | text on honey             |
+
+Semantic colors remain distinct from the primary honey accent: success green (`#68D391`), danger rose (`#E06F69`), and warning honey (`#D6A64A`).
 
 ## Motif Rules
 

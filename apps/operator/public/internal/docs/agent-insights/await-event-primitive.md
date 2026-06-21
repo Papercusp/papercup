@@ -3,6 +3,26 @@ URL: /internal/docs/agent-insights/await-event-primitive
 
 The universal subscription primitive (events:await/emit/cancel/status + locks:acquire{wake_on_grant}): durable one-shot wake subscriptions with liveness-adaptive delivery (pty-inject / session-resume / inbox-park). What to await, what never wakes, and the cost discipline.
 
+:::caution\[Superseded — codex now resumes, not parks]
+The **"codex sessions park instead of resuming"** gotcha below (formerly the
+per-session `CODEX_HOME` "isn't re-derivable yet" claim) is now the OPPOSITE of
+the code. Since `turn-lifecycle-control-2026-06-08`, codex wakes **resume**:
+`executeWake` derives the per-session home with
+`codexHomeForAdvSession(handle.advSessionId)`, recovers the conversation UUID
+from that home's rollout via `findCodexRolloutSessionId(home)`, and delivers the
+wake through `codex exec resume <uuid> <prompt>` with `env.CODEX_HOME` set
+(`packages/operator-core/lib/events/await/wake-executor.ts:201-223`,
+`:461-469`, `:521`). codex only falls back to park if the home dir is missing or
+no session id can be recovered — parking is no longer the default for codex.
+
+Everything else in this runbook still checks out against the code; only that one
+gotcha is reversed. (See also the framing note: `events:await {key}` is now
+named sugar over a unified `events:watch` primitive —
+`events:await {key}` == `watch(key, { wake: true, once: true })`, at
+`packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake
+semantics are unchanged.)
+:::
+
 ## What it is
 
 Agents that needed X-to-happen-before-proceeding used to **poll, block, or
@@ -107,4 +127,4 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
 * The store + engine live at
   `packages/operator-core/lib/events/await/` (migration 163:
   `event_awaits` + `event_wake_deliveries`); the lock bridge at
-  `agent-tools/locks/lock-grant-bridge.ts`.
+  `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.

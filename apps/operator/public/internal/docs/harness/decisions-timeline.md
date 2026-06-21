@@ -11,23 +11,36 @@ saw no decision at all.
 
 ## The decision-verb model today
 
-The per-feature **director** (`libs/papercusp/packages/harness/prompts/director.md`)
+The per-feature **director**
+(`libs/papercusp/packages/harness/blueprints/base/prompts/director.md`)
 emits `NEXT_WORKER` / `NEXT_ARCHITECT` / `NEXT_VALIDATOR` / `DONE` /
 `ESCALATE`. The durable pipeline interprets the parsed verb through the
 blueprint spine's `deriveNext` interpreter
 (`packages/operator-core/lib/dbos/orchestrator-workflow.ts`), so what each
 verb *does* is declared by the blueprint, not hardcoded.
 
+The director spine is the built-in **`coding-factory`** blueprint
+(`spine.decider: director`, the strict scoper → architect → worker →
+validator loop this page describes). The `coding` id no longer points
+here: the 2026-06-18 HIVE rename repurposed it into the HIVE/Queen operator
+blueprint (`kind: hive`, `spine.decider: queen`), so a reader looking for
+the director spine under `coding` will find the Queen instead. The durable
+workflow loads `coding-factory` as its behavior-preserving default spine.
+
 The full verb vocabulary (including legacy/global verbs) is still classified
 defensively in `classifyDecision`
 (`packages/operator-core/lib/dbos/orchestrator-decide.ts`) so a stray verb
 never dead-ends a pipeline: lifecycle verbs dispatch a role, `DONE`/`ESCALATE`
 finalize, benign global verbs stop cleanly, and genuinely unsupported verbs
-(parallel-lane forms, `NEXT_HARNESS`) warn and stop. `classifyDecision` is
-retained as the **golden-reference oracle**: `derive-next-equivalence.test.ts`
-asserts the `coding` blueprint's spine never silently drifts from it.
-`CHECKPOINT` is deprecated — it now finalizes as an escalation (milestone
-gates became `needs-human` plan items).
+(parallel-lane forms, `NEXT_HARNESS`, `NEXT_WORKER_CEO_MODE`) stop. In the
+live durable workflow those unsupported verbs are recorded as the terminal
+`lastVerb` (`UNSUPPORTED:<verb>`) and break the pipeline cleanly — no console
+warning. The "warn and stop" framing belonged to the legacy bash main-loop;
+`classifyDecision` itself just returns `{ kind: 'unsupported' }`.
+`classifyDecision` is retained as the **golden-reference oracle**:
+`derive-next-equivalence.test.ts` asserts the `coding-factory` blueprint's
+spine never silently drifts from it. `CHECKPOINT` is deprecated — it now
+finalizes as an escalation (milestone gates became `needs-human` plan items).
 
 ## Persistence: the decisions timeline
 

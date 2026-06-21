@@ -3,6 +3,31 @@ URL: /internal/docs/agent-insights/admin-route-tool-proxy
 
 defineTool projections register POST-only and require identity via readIdentity(ctx). An admin route proxying them needs a synthesized POST + ?superuser=1 + ?client= + validateSuperuser, not a passthrough.
 
+import { Aside } from '@astrojs/starlight/components';
+
+Trap 3 and the entire "Required upstream support" section below are built
+on `resolveAgentIdentity` **throwing** `"superuser context is missing
+uiClientId"` for a client-less superuser ctx. **That throw was removed
+(EI-2127).** The superuser branch now resolves a stable fallback id
+instead:
+
+* `resolveAgentIdentity` does `const suClientId = uiClientId ?? SUPERUSER_FALLBACK_CLIENT_ID` and returns a valid identity — no throw — at `packages/operator-core/lib/agent-tools/coordination/identity.ts:222-233`, with `SUPERUSER_FALLBACK_CLIENT_ID = 'su-loopback'` at `:165`.
+* The HTTP transport mirrors this: a missing `uiClientId` is defaulted to `'su-http-loopback'` before identity resolution at `libs/generic/tooldef-http/src/http-projection.ts:286`.
+* The string `"superuser context is missing uiClientId"` no longer exists as a live throw anywhere — it survives only in a test corpus fixture (`packages/operator-core/lib/harness/improvements/tool-error-corpus.fixture.ts`) documenting the OLD behavior.
+
+So `?superuser=1` **alone** (no `?client=`) now resolves fine; it does
+**not** hit a throw. Sending `?client=` is still good practice and the
+live admin proxy still does it, but it is no longer load-bearing, and the
+"If you're on an older revision and see that error" symptom below now
+describes a dead code path.
+
+The rest of the runbook still matches code: POST-only registration
+(`define-tool.ts:574,654`), the 405 methods gate
+(`http-projection.ts:248`), args-from-`req.body`
+(`http-projection.ts:420`), `?client=`→`uiClientId`
+(`http-projection.ts:122-123`), and the proxy shape itself
+(`packages/operator-core/lib/endpoint-route/routes/admin/plans.ts`).
+
 ## What
 
 When an admin route (loopback-only, `auth: 'public'`) wants to call a
@@ -28,9 +53,11 @@ Three traps:
 3. **Writes (and `locks:queue`) need identity.** Tools using
    `with-plan-lock` or `readIdentity(ctx)` call into
    `resolveAgentIdentity`, which throws if ctx carries none of
-   `isPowerUser` / `isSuperuser` / `principal`. The superuser branch
-   *also* requires `ctx.uiClientId` to be set — otherwise it throws
-   `"superuser context is missing uiClientId"`.
+   `isPowerUser` / `isSuperuser` / `principal`. (Historical: the
+   superuser branch *also* required `ctx.uiClientId` to be set — else it
+   threw `"superuser context is missing uiClientId"`. **No longer true —
+   see the Superseded note above:** the superuser branch now falls back
+   to `SUPERUSER_FALLBACK_CLIENT_ID` and does not throw.)
 
 ## The shape that works
 

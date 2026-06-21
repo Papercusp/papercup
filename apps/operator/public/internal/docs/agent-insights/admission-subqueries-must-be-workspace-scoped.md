@@ -6,7 +6,7 @@ The G2 admission/trust predicate runs on the getOrgPg() admin handle, which BYPA
 ## The trap
 
 `harness_shared.user_trust_list` ships with RLS (`migration 276`,
-`POLICY workspace_isolation` keyed on `workspace_id`). It is tempting to lean on
+`POLICY user_trust_list_workspace_isolation` keyed on `workspace_id`). It is tempting to lean on
 that policy for isolation and write the trust fast-path of the G2 admission
 predicate as:
 

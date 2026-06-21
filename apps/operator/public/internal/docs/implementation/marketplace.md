@@ -14,11 +14,16 @@ marketplace surface is **no longer the current distribution path.**
 
 What replaced it: the in-app **Cupboard** — a GitHub-backed listing service
 served by `apps/operator-public` (Cloudflare Workers + Hono + D1), with the
-desktop operator owning the listing UI. Listings span four kinds
-(`harness | blueprint | snapshot | plugin`); publish/install flow through the
+desktop operator owning the listing UI. Listings span five kinds
+(`harness | blueprint | plugin | tool-pack | learning-pack`); the `snapshot`
+kind was retired (Cupboard migration 008 drops it from the `listing_kind`
+CHECK constraint — see `retire-snapshots-instance-spec-2026-06-09`). Publish/install
+flow through the
 `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` operator routes
 and the `apps/papercusp-publish` Worker, with agent verbs `blueprint:*`
-(`catalog`/`create`/`extend`/`validate`) and `snapshots:*` (`get`/`list`).
+(`catalog`/`create`/`extend`/`validate`/`publish`). There is no `snapshots:*`
+verb — the reproducible clone is the lightweight InstanceSpec, not a published
+snapshot.
 Read the rest of this page as a historical record of the earlier design, not
 the current system.
 

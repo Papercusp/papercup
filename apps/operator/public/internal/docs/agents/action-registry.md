@@ -8,6 +8,31 @@ import { Aside } from '@astrojs/starlight/components';
 This is the canonical plan — earlier iterations (v2-v4) are preserved at
 `apps/operator/docs/plans/archive/agent-action-registry-plan-v{2,3,4}-2026-05-03.md` for design history.
 
+This page is a forward-looking plan; several settled-looking details diverged
+once the registry shipped. The corrections below are reflected inline where they
+matter, but the load-bearing ones:
+
+* **The registry lives at `packages/operator-core/lib/commands/`** (the operator-core
+  carve), not `apps/operator/lib/commands/`.
+* **The delegation endpoint is `/api/agent-mcp/delegate-chat`** (a GET SSE shim into
+  the `operator:delegate` tool). There is no `operator-chat` or `operator-scan` API
+  route — those names never landed.
+* **`delegate_to_claude` is a client-side tool tagged `browser: 'required'`**, not a
+  webhook tool, and it has a live backend-neutral alias `delegate_to_agent`.
+* **The default `fullAgentEngine` is `'off'`**, not `'elevenlabs-conv'`. The OpenAI
+  engine value is `'openai-realtime'` (no `'gpt-realtime'` exists).
+* **The claude-sessions table was renamed to `harness_shared.delegates`** (migration
+  003\); its queries are `delegates.list` / `delegates.get` / `delegates.search`.
+* **There is no `panel.*`/`harness.start`/`palette.toggle` surface in this registry** —
+  panel/palette toggles live in the separate `lib/shortcut-registry.ts`.
+* **EL Conv AI is a transport shell** that proxies every turn to the local
+  `/api/agent-mcp/operator-converse` brain via an `ask_operator` tool — the BYO-Haiku
+  reasoning story (§6/§8/§9) is largely moot. See the §9 as-built note.
+
+See `apps/operator/docs/plans/` (linked in frontmatter) for the plans that drove
+each delta — notably `unify-agent-launches-as-blueprints-2026-06-04` (D-005 retired
+the panel/scanner cards) and `collapse-delegate-into-workitems-2026-06-04`.
+
 # Agent Action Registry — Implementation Plan v5 (final, implementation-ready)
 
 **Status:** v5 — final, implementation-ready. Earlier iterations preserved as
@@ -20,33 +45,38 @@ with a clear architectural split between:
 
 * **reflexive UI control** — fast, local, low-stakes; runs in the voice layer
   via ElevenLabs Conv AI client-side tools or directly via shortcuts/palette
-* **deep reasoning** — slow, agent-backed, high-context; lives in the
-  existing `operator-scan`/`operator-chat` endpoints (`claude -p` under
-  `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p`, which
-  routes through its own Meridian router + Claude Max OAuth),
-  accessed via the `delegate_to_agent` (alias `delegate_to_claude`) tool
+* **deep reasoning** — slow, agent-backed, high-context; lives behind the
+  `/api/agent-mcp/delegate-chat` SSE endpoint, which shims into the
+  `operator:delegate` tool (`claude -p` under `AGENT_BACKEND=claude-code` —
+  the deployed default — or `omp -p`, which routes through its own Meridian
+  router + Claude Max OAuth), accessed via the `delegate_to_claude` tool
+  (live backend-neutral alias: `delegate_to_agent`)
+
+As built, the endpoint is `delegate-chat`, not `operator-chat`/`operator-scan`
+(neither route ever existed). The `delegate_to_agent` alias is real — both ids
+are registered so in-flight EL agents keep working through the rename.
 
 **Non-goals:** generic DOM clicker, free-text input tools, drag/resize
-gestures, multi-step workflows in the registry. Deep-reasoning lives in
-the `operator-chat` endpoint, not in the registry.
+gestures, multi-step workflows in the registry. Deep-reasoning lives behind
+the `delegate-chat` endpoint, not in the registry.
 
 **Decisions made through iteration** (see §9 for the full log):
 
-| Decision                                      | Resolution                                                                                                                                                                                                 |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Voice provider                                | **ElevenLabs Conversational AI** (primary) + OpenAI Realtime (manual fallback in settings)                                                                                                                 |
-| Voice underlying LLM                          | **Claude Haiku 4.5** via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports)                                                                                                |
-| Deep reasoning                                | **agent CLI per-turn** (`claude -p` under `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p` via its Meridian router; existing pattern from `operator-scan`); persistent subprocess rejected |
-| Conversation memory                           | `claude-sessions` table; voice picks via injected list; auto-archive at 24h idle                                                                                                                           |
-| Tool surface for voice                        | \~22 tools: 12 reflexive commands + 9 fast queries + `delegate_to_claude` + claude-sessions list/get                                                                                                       |
-| Audit                                         | Two tables: `agent_actions` (full) + `agent_queries` (sampled per-def)                                                                                                                                     |
-| Aliases for renamed tools                     | None — hard cutover with prompt update in same PR                                                                                                                                                          |
-| Browser-routing                               | Tristate `browser: 'required' \| 'optional' \| 'none'` per def                                                                                                                                             |
-| Concurrency                                   | Per-def `concurrent: 'allow' \| 'queue' \| 'deny'`                                                                                                                                                         |
-| Workspace scoping                             | `ctx.workspace`, never threaded through args                                                                                                                                                               |
-| Cross-process                                 | Leader-bridge SSE pressure-tested in PR 1                                                                                                                                                                  |
-| Auto-fallback to OpenAI on ElevenLabs failure | **Manual** for v1. Auto-fallback rejected as premature complexity                                                                                                                                          |
-| `runMany` / batch tool calls                  | Deferred until concrete need                                                                                                                                                                               |
+| Decision                                      | Resolution                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Voice provider                                | **ElevenLabs Conversational AI** (primary) + OpenAI Realtime (manual fallback in settings)                                                                                                                                                                  |
+| Voice underlying LLM                          | **Claude Haiku 4.5** via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports)                                                                                                                                                 |
+| Deep reasoning                                | **agent CLI per-turn** (`claude -p` under `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p` via its Meridian router; existing pattern from `operator-scan`); persistent subprocess rejected                                                  |
+| Conversation memory                           | `claude-sessions` table; voice picks via injected list; auto-archive at 24h idle                                                                                                                                                                            |
+| Tool surface for voice                        | **As built: 25 EL client tools** — see §4 for the full list. (The plan's "12 reflexive + 9 fast queries + claude-sessions list/get" did not match the shipped set; there is no `panel.*` surface, and the session queries are `delegates.list/get/search`.) |
+| Audit                                         | Two tables: `agent_actions` (full) + `agent_queries` (sampled per-def)                                                                                                                                                                                      |
+| Aliases for renamed tools                     | **As built: one alias kept.** `delegate_to_agent` is registered as a live alias of `delegate_to_claude` (both stay live so in-flight EL agents keep working). The plan's "None — hard cutover" was reversed for the delegate rename.                        |
+| Browser-routing                               | Tristate `browser: 'required' \| 'optional' \| 'none'` per def                                                                                                                                                                                              |
+| Concurrency                                   | Per-def `concurrent: 'allow' \| 'queue' \| 'deny'`                                                                                                                                                                                                          |
+| Workspace scoping                             | `ctx.workspace`, never threaded through args                                                                                                                                                                                                                |
+| Cross-process                                 | Leader-bridge SSE pressure-tested in PR 1                                                                                                                                                                                                                   |
+| Auto-fallback to OpenAI on ElevenLabs failure | **Manual** for v1. Auto-fallback rejected as premature complexity                                                                                                                                                                                           |
+| `runMany` / batch tool calls                  | Deferred until concrete need                                                                                                                                                                                                                                |
 
 ***
 
@@ -61,22 +91,25 @@ the `operator-chat` endpoint, not in the registry.
             ▼                                     ▼
    ┌───────────────────┐                ┌────────────────────────┐
    │ ElevenLabs Conv AI│                │ Action Registry        │
-   │ + Claude Haiku    │                │  (in-process, typed)   │
-   │ (BYO LLM)         │                │                        │
+   │ (transport shell) │                │  (in-process, typed)   │
+   │                   │                │                        │
    │                   │ ◀──tools──────▶│  Reflexive commands:   │
-   │ • <300ms latency  │                │   panel.*, navigate,   │
-   │ • best TTS        │                │   harness.start/stop,  │
+   │ • <300ms latency  │                │   navigate, nav.*,     │
+   │ • best TTS        │                │   operator.scan,       │
    │ • server-side     │                │   workspace.switch …   │
    │   state           │                │                        │
    │ • barge-in        │                │  Fast queries:         │
    └────────┬──────────┘                │   harness.status,      │
             │                           │   chat.list, …         │
             │ delegate_to_claude        └────────────────────────┘
-            │ (webhook tool)
+            │ (client tool, browser:'required';
+            │  handler proxies to the SSE endpoint)
             ▼
    ┌───────────────────┐
-   │ POST /api/agent-  │
-   │ mcp/operator-chat │
+   │ GET /api/agent-   │
+   │ mcp/delegate-chat │
+   │ (SSE shim →       │
+   │  operator:delegate)│
    │                   │
    │ spawn `claude -p` │
    │ (Sonnet/Opus)     │
@@ -119,6 +152,17 @@ agent-mcp tools is multi-second. Don't put the slow brain in the voice
 critical path. Don't pay GPT-4o tier prices for routing decisions Haiku
 handles. Don't TTS through a model whose voices sound robotic when a TTS
 specialist exists.
+
+The shipped EL Conv AI integration does **not** rely on a BYO Haiku LLM inside
+ElevenLabs to do the decide-to-delegate / summarize / route work. EL's own LLM
+is a transport shell: it calls a single `ask_operator` client tool for every
+user turn, and the actual operator reply (persona, reasoning, routing) is
+generated by the **local omp + Claude Max stack via
+`/api/agent-mcp/operator-converse`**; EL speaks the returned text verbatim. The
+"Voice front-end LLM" row above is therefore largely moot — whatever model EL is
+configured with is only moving audio in and text out. (Reflexive commands and
+fast queries are still answered client-side via the registry; the brain delegate
+is for everything else.) See the §9 as-built note for the full picture.
 
 ***
 
@@ -392,9 +436,14 @@ object. Catches misuse at import time.
 ### 3.1 Process boundaries
 
 Pi runs in a separate process from the browser (`node-pty` subprocess →
-`claude`/`omp` → `papercusp-mcp-server`). Side-effect commands land in
-the right process based on the `browser:` tristate and where the shim
-runs:
+`claude`/`omp` → the projected-tool dispatcher at the transport route).
+Side-effect commands land in the right process based on the `browser:`
+tristate and where the shim runs:
+
+As built, there is no `papercusp-mcp-server` (or `oracle-mcp-server`) package.
+The old stdio shim was deleted 2026-05-09; Pi/omp now hit the same projected-tool
+dispatcher at the transport route (`/api/[transport]/route.ts`) that every other
+caller uses — this registry plus the projected tool catalog supersede it.
 
 | Command class                                     | Browser-only?            | Where the handler lives                                    | Same-process from Oracle?                                      | From Operator?             | From Pi?                              |
 | ------------------------------------------------- | ------------------------ | ---------------------------------------------------------- | -------------------------------------------------------------- | -------------------------- | ------------------------------------- |
@@ -459,15 +508,51 @@ command in tab B, tab A sees the side-effect through `operator-shared-state.broa
 ## §4. What the voice LLM has access to
 
 This is the central new material. Catalog of what Operator's voice
-layer (OpenAI Realtime) gets in its tool list, with reasoning.
+layer gets in its tool list, with reasoning.
+
+The plan's `panel.*` / `harness.start` / `palette.toggle` surface was never built.
+The shipped registry has **no `panel.*` surface at all** (panel/palette toggles live
+in the separate `lib/shortcut-registry.ts`), and the scanner-card queries
+(`harness.last-scan`, `harness.recent-suggestions`, `panel.state`) were retired with
+the scanner card stream (unify-agent-launches D-005). The reflexive/scan command is
+`operator.scan`; the approval command is `operator.approve-pending`. The session
+queries are `delegates.list/get/search`, not `claude-sessions.*`.
+
+**Actual registered set** (`packages/operator-core/lib/commands/defs/*.ts`):
+
+* **Commands:** `navigate`, the eight `nav.*` (papercusp, cupboard, installed-harnesses,
+  settings, settings-voice, settings-api-keys, settings-shortcuts, docs), `operator.scan`,
+  `operator.approve-pending`, `workspace.switch`, `chat.open-pane`, `voice.set-mode`,
+  `agent.dispatch`, `agent.follow-up`, `delegate_to_claude`, `delegate_to_agent` (alias).
+* **Queries:** `harness.status`, `harness.list`, `harness.list-features`, `issues.list`,
+  `escalations.get`, `pending-reviews.list`, `harness.health`, `actions.recent`,
+  `notifications.recent`, `agents.across-workspace`, `chat.list`, `voice.prefs`,
+  `workspace.list`, `delegates.list`, `delegates.get`, `delegates.search`.
+
+Note `agent.dispatch` / `agent.follow-up` are tagged `agents: ['oracle','palette']`
+(NOT `operator`) — the voice operator routes agent-touching work through
+`delegate_to_claude` instead. The new authority queries (`issues.list`,
+`escalations.get`, `pending-reviews.list`, `harness.health`, `actions.recent`,
+`notifications.recent`) and `agent.dispatch/follow-up` postdate v5 (Plan v6 phases C/E,
+audit unlock 2026-05-07).
+
+**The EL Conv AI client-tool set as pushed by `el-agent-sync.mjs` is 25 tools**, two of
+which have no registry-def equivalent — the EL transport tools `ask_operator` (proxies
+every turn to the local brain at `/api/agent-mcp/operator-converse`) and
+`end_conversation` (lets the agent hang up). The full pushed set:
+`ask_operator`, `operator_scan`, `operator_approve_pending`, `navigate`,
+`workspace_list`, `workspace_switch`, `harness_list`, `harness_status`,
+`harness_list_features`, `harness_health`, `agents_across_workspace`, `chat_list`,
+`chat_open_pane`, `voice_set_mode`, `voice_prefs`, `issues_list`, `escalations_get`,
+`pending_reviews_list`, `actions_recent`, `notifications_recent`, `delegates_list`,
+`delegates_get`, `delegates_search`, `delegate_to_claude`, `end_conversation`.
 
 ### Design principles
 
 1. **Voice gets fast paths for things the user asks about often.** "What's
    the current state?" should not delegate to Claude.
-2. **Voice gets reflexive controls that don't need reasoning.** Open the
-   panel, navigate, change voice mode, start/stop a harness — all
-   one-shot tools.
+2. **Voice gets reflexive controls that don't need reasoning.** Navigate,
+   change voice mode, switch workspaces, fire a scan — all one-shot tools.
 3. **Voice does NOT get file reads, code analysis, multi-step planning,
    or anything requiring filesystem walking.** Those go through
    `delegate_to_claude`.
@@ -476,47 +561,54 @@ layer (OpenAI Realtime) gets in its tool list, with reasoning.
    call `delegate_to_claude` — don't try to fake it from your training
    data."
 
-### Catalog — reflexive commands
+### Catalog — reflexive commands (as built)
 
-| Command                                   | What it does                                                                                                         | Why voice gets it directly                                                                                          |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `panel.open({panel})`                     | Opens an app panel (operator, oracle)                                                                                | Reflexive UI; sub-50ms, conversational ("open the operator panel for me")                                           |
-| `panel.close({panel})`                    | Closes an app panel                                                                                                  | Same reason; fixes the original Operator-can't-close-itself complaint                                               |
-| `panel.toggle({panel})`                   | Toggles visibility                                                                                                   | User says "show me the operator" = same                                                                             |
-| `navigate({path})`                        | Browser router push                                                                                                  | "Take me to settings" — common, reflexive                                                                           |
-| `voice.set-mode({mode})`                  | off / push-to-talk / always-on                                                                                       | User says "stop listening" — should not need to delegate                                                            |
-| `voice.set-engine({stt? tts? wakeWord?})` | Change engine selection                                                                                              | Same                                                                                                                |
-| `workspace.switch({id})`                  | Switch workspace                                                                                                     | Common command, reflexive                                                                                           |
-| `harness.start({slug?})`                  | Start the harness                                                                                                    | Long-running but kicked off in one call; result is async                                                            |
-| `harness.stop({slug?})`                   | Stop the harness                                                                                                     | Same                                                                                                                |
-| `harness.scan({slug?, request?})`         | Trigger an Operator scan (the existing button-driven flow). Returns delegationId immediately, streams result via SSE | Deliberately exposed to voice — user might ask "scan the harness" and expect the same result the panel button gives |
-| `harness.approve({slug, capability?})`    | Approve a pending capability                                                                                         | Already in Operator's existing tool set; keep it reflexive                                                          |
-| `chat.open-pane({chatId})`                | Open an existing chat pane                                                                                           | Reflexive — comes after `chat.list`                                                                                 |
-| `palette.toggle()`                        | Open ⌘K                                                                                                              | Reflexive                                                                                                           |
+| Command                                         | What it does                                                                                                      | Why voice gets it directly                                 |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `navigate({path})`                              | Browser router push                                                                                               | "Take me to settings" — common, reflexive                  |
+| `nav.*` (8 fixed targets)                       | Jump to harness / cupboard / settings / docs etc.                                                                 | Named destinations, one tool each, palette-backed          |
+| `operator.scan({query?})`                       | Fire a workspace scan (the `scan` launch blueprint). Findings land as work\_items in the self-improvement backlog | "Scan the workspace" — same result the panel button gives  |
+| `operator.approve-pending({slug, capability?})` | Approve a pending capability for a harness                                                                        | Single decision, same authority the user has via the panel |
+| `voice.set-mode({mode})`                        | off / push-to-talk / always-on                                                                                    | User says "stop listening" — should not need to delegate   |
+| `workspace.switch({id})`                        | Switch workspace and reload                                                                                       | Common command, reflexive                                  |
+| `chat.open-pane({slug, chatId})`                | Open an existing chat pane                                                                                        | Reflexive — comes after `chat.list`                        |
 
-### Catalog — fast queries
+`agent.dispatch` / `agent.follow-up` are also registered commands, but tagged for
+oracle + palette only (not the voice operator). They start / continue a role-scoped
+agent chat from ⌘K without paying the delegate-spawn cost; `audit: 'full'`.
 
-These let voice answer questions reflexively, without delegating.
+### Catalog — fast queries (as built)
 
-| Query                                         | Returns                                                           | Reason voice has it                                               |
-| --------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `harness.status({slug?})`                     | Current iteration, last decision, alive/paused                    | "Is the harness running?" — voice answers immediately             |
-| `harness.list-features({slug?, status?})`     | Feature queue (passed/in-progress/failed/blocked counts + titles) | "What's in the queue?"                                            |
-| `harness.list({workspace?})`                  | Slugs + paths + alive                                             | "What harnesses do I have?"                                       |
-| `harness.recent-suggestions({slug?, limit?})` | Last N Operator scan suggestions cached in PG                     | Voice can refer to what Operator said earlier without re-scanning |
-| `harness.last-scan({slug?})`                  | The Operator's last scan summary (cached, not re-run)             | "What did the Operator find?" — much cheaper than re-scanning     |
-| `chat.list({slug?, role?, limit?})`           | Recent chats with id, title, role, last activity                  | "What chats do I have open?"                                      |
-| `workspace.list()`                            | All workspaces with current marker                                | "Which workspace am I on?"                                        |
-| `voice.prefs()`                               | Current voice prefs (mode, engines, wake word)                    | Voice can answer "what's my wake word?"                           |
-| `panel.state({panel?})`                       | Open/closed for each panel                                        | "Is the operator open?"                                           |
+These let voice answer questions reflexively, without delegating. `slug` is
+**required** (`z.string().min(1)`) on `harness.status`, `harness.list-features`,
+and `chat.list` — it is not optional.
+
+| Query                                            | Returns                                                                | Reason voice has it                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `harness.status({slug})`                         | alive/paused, iteration, last decision, feature counts                 | "Is the harness running?" — voice answers immediately            |
+| `harness.list-features({slug, status?, limit?})` | Feature queue rows (filterable by status; default 50, cap 200)         | "What's in the queue?"                                           |
+| `harness.list()`                                 | Slugs + paths + state flags                                            | "What harnesses do I have?"                                      |
+| `harness.health({slug})`                         | Fast snapshot: alive, escalated, feature-status counts                 | "Is sheets healthy?" — one call instead of status + escalations  |
+| `issues.list({slug?, limit?})`                   | Open issues / features needing human review (cross-harness if no slug) | "Any open issues?" / "what needs my approval?"                   |
+| `escalations.get({slug})`                        | Active escalation + supervisor notes (if any)                          | "Any escalations?" / "what's wrong with sheets?"                 |
+| `pending-reviews.list({slug, limit?})`           | Pending capability approvals / plan reviews                            | "Anything waiting on me?" — pair with `operator.approve-pending` |
+| `actions.recent({slug, limit?})`                 | Recent long-running user actions (replan, cleanup, snapshot)           | "Did the cleanup finish?"                                        |
+| `notifications.recent({level?, limit?})`         | Recent toast notifications across the app                              | "Any errors recently?" / "what's the bell showing?"              |
+| `agents.across-workspace({slug?, limit?})`       | Role-scoped agents with recent chat activity across the workspace      | "Which agents are working in this workspace?"                    |
+| `chat.list({slug, role?, limit?})`               | Recent chats with id, role, title, last activity (default 20, cap 100) | "What chats do I have open?"                                     |
+| `workspace.list()`                               | All workspaces with current marker                                     | "Which workspace am I on?"                                       |
+| `voice.prefs()`                                  | Current voice prefs (mode, engines, wake word)                         | Voice can answer "what's my wake word?"                          |
+| `delegates.list({status?, limit?})`              | Delegate (Claude-session) list for the workspace                       | Pick which session a delegation lands in                         |
+| `delegates.get({id})`                            | Full metadata for one delegate session                                 | Read a session's recent context before resuming it               |
+| `delegates.search({query, limit?})`              | Free-text search over delegate title/summary/kickoff                   | Find a related past delegate by topic                            |
 
 ### Catalog — delegation tool
 
-Exactly one entry, special-cased:
+Exactly one entry, special-cased (plus its `delegate_to_agent` alias):
 
-| Tool                                   | What it does                                                                                                          |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `delegate_to_claude({task, context?})` | POSTs `task` to `/api/agent-mcp/operator-scan?request=&lt;task&gt;`. Streams the result back. See §5 for full design. |
+| Tool                                                            | What it does                                                                                                                                                                                                                    |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `delegate_to_claude({task, context?, sessionId?, newSession?})` | Client tool tagged `browser: 'required'`; its handler GETs `/api/agent-mcp/delegate-chat?request=<task>` with `accept: text/event-stream` and consumes the SSE stream. See §5 for the full sync-race / background-drain design. |
 
 ### What's deliberately NOT in voice's catalog
 
@@ -524,22 +616,20 @@ Exactly one entry, special-cased:
   user asks "what does the spec say?", voice delegates to Claude. Claude
   has filesystem access via its MCP tools; voice does not.
 * **No mutations to feature queue, proposals, decisions.** Approving a
-  capability via voice is OK (`harness.approve` — single decision, same
-  authority the user has via the panel). Bulk changes go through Claude.
+  capability via voice is OK (`operator.approve-pending` — single decision,
+  same authority the user has via the panel). Bulk changes go through Claude.
 * **No code analysis, no grep, no git inspection.** Voice doesn't have
   these tools. If the user asks anything code-shaped, delegate.
-* **No `chat.dispatch` from voice.** Starting a new agent chat is a
-  decision worth Claude's context. Voice delegates with the user's
-  request as `task` and Claude decides whether to dispatch.
-
-**Total surface for voice:** \~13 reflexive commands + \~9 fast queries +
-1 delegation tool = **23 tools.** Same order of magnitude as Realtime
-LLMs handle well; not so big the model gets lost in tool selection.
+* **No `agent.dispatch` from the voice operator.** Starting a new agent
+  chat is a decision worth Claude's context. The voice operator delegates
+  with the user's request as `task` and Claude decides whether to dispatch.
+  (`agent.dispatch`/`follow-up` are available to oracle + palette directly.)
 
 ### What Pi has access to (kept from v2)
 
-Pi's tool surface stays as today — read-only data tools via
-`papercusp-mcp-server`:
+Pi's tool surface stays as today — read-only data tools through the same
+projected-tool dispatcher every caller hits (the `papercusp-mcp-server` stdio
+shim was deleted 2026-05-09):
 
 * All the harness queries above (status, list\_features, lineage, audit,
   proposals, decisions, issues)
@@ -565,7 +655,94 @@ Oracle's tool surface stays as today — list/navigate/dispatch:
 
 The single tool that bridges voice (fast/shallow) → Claude (slow/deep).
 
-### Signature
+The shipped handler does not implement the `{status:'thinking', delegationId}`
+partial, the `panelDelegationId` / `toolCallsClaudeMade` / `durationMs` fields, or a
+`/operator-delegation/:id/complete` endpoint — none of those exist. The real design
+is a **10s sync race with a background drain**, and completion is signalled via browser
+`CustomEvent`s, not an SSE push-back endpoint. The blocks below show the as-built
+shape; the original §5 prose is preserved beneath the line for design-history context.
+
+### Signature (as built)
+
+```ts
+{
+  id: 'delegate_to_claude',                 // alias: delegate_to_agent
+  kind: 'command',
+  browser: 'required',                      // client tool; handler proxies to SSE
+  concurrent: 'queue',
+  tier: 'delegation',
+  schema: z.object({
+    task: z.string().min(1),                // user's request, paraphrased if helpful
+    context: z.string().optional(),         // extra context to attach
+    sessionId: z.string().optional(),       // existing delegate session to continue
+    newSession: z.boolean().default(false).optional(),  // force a fresh conversation
+  }),
+  // handler executes:
+  // GET /api/agent-mcp/delegate-chat?request=<task>[&context=…][&sessionId=…][&newSession=1]
+  //   with { headers: { accept: 'text/event-stream' } }, then consumes the SSE stream
+}
+```
+
+### Server side
+
+The endpoint is `/api/agent-mcp/delegate-chat` (a `GET` SSE shim into the
+`operator:delegate` tool, `auth: 'public'`) — **not** an `operator-chat` route. It
+streams `session` / `delegate` / `done` / `error` SSE events; the handler accumulates
+`delta` text into `fullText` and captures `agentSessionId` + `costUsd`.
+
+Conversation continuity is by `sessionId` (omit + `newSession:true` for a fresh
+conversation; pass neither and the server picks recent-if-\<5min, else new). Same
+agent-mcp tool surface, same `system:operator` principal, same budget enforcement.
+
+### Streaming + voice timing (as built)
+
+Tool-call latency is the hard part: delegates run 5-30s, and EL's tool-call wall is
+\~120s. The handler uses a **race-with-timeout**:
+
+1. The handler opens the SSE stream and (in-page) fires an
+   `operator:delegation-start` `CustomEvent`.
+2. It pumps events for a **10s sync deadline** (`SYNC_DEADLINE_MS = 10_000`). If the
+   `done` event arrives within that window, it returns the full result synchronously
+   so the agent summarizes on the same turn.
+3. If the deadline passes first, it returns early with
+   `{ status: 'started', agentSessionId, message: 'Delegate is running; result will
+   arrive shortly.' }` and **drains the rest of the stream in the background**.
+
+On completion (sync or async) it dispatches two browser `CustomEvent`s:
+`operator:delegation-complete` (panel-targeted) and
+`operator:delegation-async-complete` (voice-targeted — the voice-mode listener
+`sendSystem()`s it into the live EL session so the agent can speak about it on its
+next turn). Errors surface through the same `*-async-complete` channel with
+`{ status: 'error', message }`.
+
+### Response shape voice receives (as built)
+
+```ts
+// Sync win (stream finished within 10s):
+{
+  status: 'complete',
+  fullText: "<claude's full response>",
+  agentSessionId: 's_abc' | null,
+  costUsd: 0.012,
+}
+
+// Async path (blew past the 10s deadline):
+{
+  status: 'started',
+  agentSessionId: 's_abc' | null,
+  message: 'Delegate is running; result will arrive shortly.',
+}
+```
+
+The agent should speak a one-sentence gist of `fullText` and announce that the
+details are in the operator panel; it should not read `fullText` verbatim. (There is
+no `panelDelegationId` / `toolCallsClaudeMade` / `durationMs` in the real result.)
+
+Below this point §5 preserves the original plan prose (two-phase protocol, the
+`/operator-delegation/:id/complete` push, the `showInPanel` param). Treat it as
+design history — the as-built blocks above are authoritative.
+
+### Signature (original plan)
 
 ```ts
 {
@@ -582,7 +759,7 @@ The single tool that bridges voice (fast/shallow) → Claude (slow/deep).
 }
 ```
 
-### Server side
+### Server side (original plan)
 
 New endpoint `/api/agent-mcp/operator-chat/route.ts` — sibling of
 `operator-scan`, copies its `runClaudeChat` invocation pattern with two
@@ -601,7 +778,7 @@ Same agent-mcp tools attached. Same `system:operator` principal. Same
 budget enforcement. Same conversation continuity via `--resume &lt;session&gt;`
 keyed on `(workspace, conversation-id)`.
 
-### Streaming + voice timing
+### Streaming + voice timing (original plan)
 
 Tool call latency is the hard part. Claude scans take 5-30s.
 
@@ -622,7 +799,7 @@ tool returns within one user-turn are normal. The "thinking" message
 gives the user audible feedback during the wait, and barge-in still
 works (user can interrupt by speaking).
 
-### Response shape voice receives
+### Response shape voice receives (original plan)
 
 ```ts
 {
@@ -691,9 +868,12 @@ Test this prompt in practice — ambiguity will surface real cases. Iterate.
 
 ### 6.1 Primary: ElevenLabs Conversational AI
 
-`fullAgentEngine: 'elevenlabs-conv'` is the default. Voice goes through
-ElevenLabs' agent platform with **Claude Haiku 4.5** as the underlying
-LLM (via BYO LLM). See §8 for full integration shape.
+`'elevenlabs-conv'` is the primary `fullAgentEngine` option a user selects in
+`/settings/voice`, but it is **not** the shipped default — the default
+`fullAgentEngine` is `'off'` (`voice-prefs.ts` defaults). Voice goes through
+ElevenLabs' agent platform; per the §9 as-built note, EL is a transport shell that
+proxies every turn to the local brain via `ask_operator`, so the "Claude Haiku 4.5
+via BYO LLM" framing here is largely moot. See §8/§9 for the integration shape.
 
 ### 6.2 Fallback: OpenAI Realtime
 
@@ -704,8 +884,10 @@ in `/settings/voice`. Implementation:
 * `lib/commands/shims/realtime-shim.ts` generates the same registry-derived
   tool catalog for the OpenAI Realtime SDK shape (Zod schemas accepted
   directly, no JSON Schema conversion needed)
-* `delegate_to_claude` works identically — it's a webhook tool from EL,
-  a regular tool from Realtime; both POST to `/api/agent-mcp/operator-chat`
+* `delegate_to_claude` works identically — as built it's a **client-side tool
+  tagged `browser: 'required'`** on EL (its handler proxies to the SSE endpoint),
+  and a regular tool from Realtime; both route to `/api/agent-mcp/delegate-chat`
+  (not `operator-chat`, which does not exist)
 
 ### 6.3 No automatic fallback
 
@@ -744,9 +926,12 @@ the delegation pattern because:
    and goes quiet for 8 seconds, the user knows something deep is
    happening. That's the right UX cue.
 
-`fullAgentEngine` choices stay as today: `'off'`, `'gpt-realtime'`,
-plus future `'gemini-live'` / `'elevenlabs-conversational'`. No
-`'claude'` mode added.
+As built, the `FullAgentEngineKind` union is
+`'off' | 'openai-realtime' | 'gemini-live' | 'elevenlabs-conversational' | 'elevenlabs-conv'`
+(`voice-prefs.ts`). The OpenAI engine value is `'openai-realtime'` — there is no
+`'gpt-realtime'` literal anywhere in operator-core/operator (the only `gpt-realtime`
+string in the source is the OpenAI **model** id `'gpt-realtime-1.5'`, not an engine
+value). No `'claude'` mode was added.
 
 ***
 
@@ -775,6 +960,7 @@ in place.
 * `lib/commands/defs/voice.ts` — voice.set-mode, voice.set-engine
 * `lib/commands/defs/workspace.ts` — workspace.switch, workspace.list
 * New `app/api/agent-mcp/run-command/route.ts` returns 503 for cross-process
+  (*as built this is fully wired, not a 503 stub* — see the §7 as-built note)
 * Leader-bridge SSE skeleton from v2 §4 PR 1
 
 **ElevenLabs Conv AI integration:**
@@ -805,33 +991,39 @@ itself is the bulk; registry is \~500).
 
 ### PR 2 — Fast queries + Pi/Oracle read-side unification
 
-* `lib/commands/defs/harness.ts` — status, list-features, list,
-  last-scan, recent-suggestions (queries)
+* `lib/commands/defs/harness.ts` — status, list-features, list (queries).
+  (*As built `harness.last-scan` / `harness.recent-suggestions` were never
+  built / were retired with the scanner card stream — unify-agent-launches
+  D-005; `panel-state.ts` does not exist.*)
 * `lib/commands/defs/chat.ts` — chat.list, chat.open-pane
-* `lib/commands/defs/panel-state.ts` — panel.state
-* Pi shim emits these via papercusp-mcp-server (replaces hand-coded
-  tools).
-* Oracle shim emits these via oracle-mcp-server.
-* ElevenLabs shim re-pushes updated tool configuration to the agent.
+* Pi emits these through the shared projected-tool dispatcher (the
+  `papercusp-mcp-server` stdio shim was deleted 2026-05-09 — no such package).
+* Oracle emits these through the same dispatcher (no `oracle-mcp-server`
+  package exists).
+* ElevenLabs sync (`el-agent-sync.mjs`) re-pushes the updated tool set to the
+  agent.
 * Operator's voice catalog gains these queries.
 
 Outcome: voice can answer "what's the harness doing", "what chats do I
 have", etc., without delegating. \~500 LoC.
 
-### PR 3 — `delegate_to_claude` + claude-sessions
+### PR 3 — `delegate_to_claude` + delegate sessions
 
 * `lib/commands/defs/delegation.ts` — defines the `delegate_to_claude`
-  tool plus `claude-sessions.list` and `claude-sessions.get` queries
-* `lib/claude-sessions.ts` — DB read/write helpers + title/summary
-  generators (haiku-4-5 calls)
-* New `harness_shared.claude_sessions` table migration in
-  `harness-state/migrations/`
-* `app/api/agent-mcp/operator-chat/route.ts` — new sibling of operator-scan
-  with conversational prompt; respects `sessionId` arg for `--resume`
-* `app/api/agent-mcp/operator-delegation/:id/complete/route.ts` — push
-  result back to ElevenLabs webhook layer
-* ElevenLabs agent prompt gets the claude-sessions injection block
-  (refreshed every \~30s during active session)
+  tool (plus the `delegate_to_agent` alias) and the `delegates.list` /
+  `delegates.get` / `delegates.search` queries.
+* DB read/write helpers + title/summary generators (haiku calls).
+* The sessions table is `harness_shared.delegates` — migration 003 renamed
+  it from `claude_sessions` (`ALTER TABLE … RENAME TO delegates`). Migrations
+  live in `packages/operator-core/lib/commands/migrations/`; there is **no**
+  `harness-state/migrations/` directory.
+* `app/api/agent-mcp/delegate-chat` — the GET SSE shim into `operator:delegate`
+  that the handler proxies to (there is **no** `operator-chat` route).
+* Completion is signalled via the `operator:delegation-complete` /
+  `operator:delegation-async-complete` browser `CustomEvent`s — there is no
+  `operator-delegation/:id/complete` endpoint.
+* ElevenLabs agent prompt gets the delegate-session injection block
+  (refreshed during the active session).
 * Panel auto-open hook: subscribe to delegation-complete events, open
   panel if `voicePanelAutoOpen` pref is true
 * Voice settings adds `voicePanelAutoOpen` toggle under "Output behavior"
@@ -859,6 +1051,17 @@ panel. The UX described in §0 is fully wired. \~800 LoC.
 
 Same six-PR cadence as v2 with the delegation tool slotting in as PR 3.
 Voice gains useful capability after each PR.
+
+* **The cross-process `run-command` bridge is live, not a 503 stub.** For a
+  `browser: 'required'` command it round-trips to the workspace's leader tab via
+  the session-registry (`deliverToTab`) and audits the result. Sibling routes
+  `run-command-sse.ts` and `run-command-result.ts` also exist.
+* **New authority surfaces landed post-v5 (Plan v6).** `agent.dispatch` /
+  `agent.follow-up` (start/continue a role-scoped agent chat; oracle + palette;
+  `audit: 'full'`) and the read queries `issues.list`, `escalations.get`,
+  `pending-reviews.list`, `harness.health`, `actions.recent`, `notifications.recent`,
+  `agents.across-workspace` are all registered (Plan v6 phases C/E; audit unlock
+  2026-05-07). See the §4 as-built catalog.
 
 ***
 
@@ -905,6 +1108,26 @@ carry forward unchanged.
 
 ## §9. ElevenLabs Conversational AI integration shape
 
+This section's central premise — that ElevenLabs runs Claude Haiku as a BYO LLM doing
+the decide-to-delegate / summarize / route work — is **not how the integration
+shipped**. As built, EL's own LLM is a transport shell: it is told (in its system
+prompt) to call a single `ask_operator` client tool for **every** user turn and speak
+the returned text verbatim. The actual operator reply (persona, reasoning, routing) is
+generated by the **local omp + Claude Max stack via `/api/agent-mcp/operator-converse`**
+(`elevenlabs-conv.ts`: "EL's own LLM is the transport shell; the actual operator reply
+is generated by our local omp + Claude Max stack"). The persona/character lives on the
+local brain (`el-agent-sync.mjs`). So:
+
+* The "Why the BYO-LLM choice (Haiku) is load-bearing" subsection below is moot — the
+  EL-configured model does not do the four reasoning duties it lists.
+* Reflexive commands and fast queries are still answered client-side via the registry
+  (those tools are pushed real, not proxied through `ask_operator`).
+* EL also gets an `end_conversation` transport tool (let the agent hang up) with no
+  registry-def equivalent.
+
+The rest of §9 (account setup, conversation-state lifecycle) is broadly accurate; read
+the tool-routing subsection with the correction below.
+
 ### Account + agent setup (one-time, dashboard work)
 
 Before any code lands, the user needs to:
@@ -921,28 +1144,24 @@ Before any code lands, the user needs to:
 The agent ID + ElevenLabs API key are the two credentials. Both stored in
 voice-credentials, mirrored to env where the server endpoints need them.
 
-### Tool routing — two flavors
+### Tool routing — client tools only (as built)
 
-ElevenLabs Conv AI supports two tool-calling modes, and we use both:
+The plan's two-flavor split (client-side for `browser:'required'`, webhooks for
+`browser:'none'|'optional'`) is **not** what shipped. The EL agent's tool list is
+built by `buildClientTools`, which only exposes `browser: 'required'` defs (see
+`elevenlabs-conv.ts`: `list({ kind: 'command', agent: 'operator', browser: ['required'] })`).
+So both `delegate_to_claude` and `operator.approve-pending` had to be tagged
+`browser: 'required'` precisely so the agent can call them client-side without
+crashing with *"Client tool with name … is not defined on client"*. The `browser` tag
+is about *where the handler runs*; a `'required'` handler may still do a server-side
+`fetch` (delegate's handler proxies the SSE call to `/api/agent-mcp/delegate-chat`).
+There is no `/api/elevenlabs/webhook/delegate` path in this flow.
 
-**Client-side tools** — for reflexive UI controls. The browser-side
-ElevenLabs SDK receives the tool call, invokes the registry's
-`runCommand` directly in-page, returns the result over WebRTC.
-Sub-100ms latency. Used for: `panel.*`, `navigate`, `voice.set-mode`,
-`workspace.switch`, all queries.
-
-**Webhook tools** — for `delegate_to_claude`. ElevenLabs POSTs the tool
-call to a public-facing webhook (`/api/elevenlabs/webhook/delegate`).
-The webhook fires off the existing `operator-chat` endpoint, streams the
-result back to ElevenLabs which feeds it to the agent. Latency includes a
-Cloudflare/server hop, so this is for things that already take seconds —
-fine for delegation. Tool calls for `harness.start/stop/scan` similarly
-go through webhooks because they're server-side actions.
-
-The split is automatic from the registry: `browser: 'required'` →
-client-side; `browser: 'none' | 'optional'` → webhook. Same `browser`
-field that v2 introduced for cross-process routing now also drives
-ElevenLabs tool-routing decisions. Same property, second use case.
+ElevenLabs Conv AI receives the tool call browser-side; the SDK invokes the registry's
+`runCommand` / `runQuery` in-page and returns the result over WebRTC (sub-100ms for the
+reflexive surface). Used for: `navigate`, `nav.*`, `operator.scan`,
+`operator.approve-pending`, `voice.set-mode`, `workspace.switch`, `chat.open-pane`, all
+queries, and `delegate_to_claude` (whose handler then proxies to the SSE endpoint).
 
 ### Server-side agent state
 
@@ -1005,31 +1224,31 @@ unchanged. That's intentional: the architecture is provider-agnostic.
 
 Settled questions and their resolutions, in resolution order:
 
-| #  | Question                                         | Resolution                                                                                                                       |
-| -- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| 1  | Voice provider for v1                            | **ElevenLabs Conv AI** primary; OpenAI Realtime kept as manual fallback                                                          |
-| 2  | Underlying LLM for voice routing                 | **Claude Haiku 4.5** via EL BYO LLM (fallback: cheapest+fastest model EL supports if Haiku unavailable)                          |
-| 3  | Voice-as-Claude (full agent)                     | Rejected — latency budget too tight; delegation pattern instead                                                                  |
-| 4  | Auto-fallback EL→OpenAI on outage                | Rejected — manual flip in voice settings is sufficient. Revisit if uptime issues materialize                                     |
-| 5  | `harness.scan` in voice catalog                  | Removed — voice is conversational front-end, not card-producer. Cards come from panel button or delegation                       |
-| 6  | Aliases for renamed tools                        | Rejected — hard cutover with prompt diff in same PR                                                                              |
-| 7  | Tool aliases for backward compatibility          | Rejected — same as #6, prompt is the source of truth                                                                             |
-| 8  | `runMany`/batch tool calls                       | Deferred — `request_id` foreign key allows future grouping; not needed day 1                                                     |
-| 9  | Browser-only flag shape                          | Tristate `'required' \| 'optional' \| 'none'` (not boolean)                                                                      |
-| 10 | Concurrent runs of the same command              | Per-def `'allow' \| 'queue' \| 'deny'`; registry serializes per-id                                                               |
-| 11 | Workspace scoping mechanism                      | `ctx.workspace`, never an LLM-visible arg                                                                                        |
-| 12 | Multi-tab arbitration                            | Reuse voice-leader-election; leader tab paired with EL conversation                                                              |
-| 13 | Cross-process pressure-test timing               | PR 1 (not deferred) — adds 503-returning endpoint + leader-bridge skeleton                                                       |
-| 14 | Audit query inclusion                            | Two tables: `agent_actions` (commands, full) + `agent_queries` (sampled). Per-def policy `'none' \| 'sample' \| 'full'`          |
-| 15 | Audit retention                                  | 30 days for actions, 7 days for queries (env-tunable)                                                                            |
-| 16 | Default query limits                             | `chat.list` default 20 / cap 100; `harness.list-features` default 50 / cap 200; `harness.recent-suggestions` default 10 / cap 50 |
-| 17 | Conversation continuity for `delegate_to_claude` | Voice picks via `claude-sessions.list` injected into context; layered title (haiku) + summary (haiku) + 24h auto-archive         |
-| 18 | Panel auto-open on delegation completion         | On by default; toggle in voice settings under new "Output behavior" subsection                                                   |
-| 19 | Panel auto-open toggle location                  | `/settings/voice` → Output behavior                                                                                              |
-| 20 | `harness.last-scan` voice readout                | Speak verbatim if ≤120 words; gist + panel for longer. `voiceMaxSpokenWords: 120` voice pref, env-tunable                        |
-| 21 | Voice's archive authority                        | Voice can archive a claude-session only when explicitly told ("archive that auth conversation"); never unilaterally              |
-| 22 | Pi expansion timing                              | PR 7 deliberately separate; whitelist a small starting set (`chat.dispatch`, `harness.scan`) and expand                          |
-| 23 | Pi browser back-channel                          | Skeleton in PR 1 (returns 503); full wiring deferred to optional PR 8                                                            |
+| #  | Question                                         | Resolution                                                                                                                                                                        |
+| -- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1  | Voice provider for v1                            | **ElevenLabs Conv AI** primary; OpenAI Realtime kept as manual fallback                                                                                                           |
+| 2  | Underlying LLM for voice routing                 | **Claude Haiku 4.5** via EL BYO LLM (fallback: cheapest+fastest model EL supports if Haiku unavailable)                                                                           |
+| 3  | Voice-as-Claude (full agent)                     | Rejected — latency budget too tight; delegation pattern instead                                                                                                                   |
+| 4  | Auto-fallback EL→OpenAI on outage                | Rejected — manual flip in voice settings is sufficient. Revisit if uptime issues materialize                                                                                      |
+| 5  | `harness.scan` in voice catalog                  | Removed — voice is conversational front-end, not card-producer. Cards come from panel button or delegation                                                                        |
+| 6  | Aliases for renamed tools                        | *Reversed as built:* one alias is kept — `delegate_to_agent` is a live alias of `delegate_to_claude` (both registered) so in-flight EL agents survive the rename                  |
+| 7  | Tool aliases for backward compatibility          | *Reversed as built for the delegate rename — see #6.* The hard-cutover rule held everywhere else                                                                                  |
+| 8  | `runMany`/batch tool calls                       | Deferred — `request_id` foreign key allows future grouping; not needed day 1                                                                                                      |
+| 9  | Browser-only flag shape                          | Tristate `'required' \| 'optional' \| 'none'` (not boolean)                                                                                                                       |
+| 10 | Concurrent runs of the same command              | Per-def `'allow' \| 'queue' \| 'deny'`; registry serializes per-id                                                                                                                |
+| 11 | Workspace scoping mechanism                      | `ctx.workspace`, never an LLM-visible arg                                                                                                                                         |
+| 12 | Multi-tab arbitration                            | Reuse voice-leader-election; leader tab paired with EL conversation                                                                                                               |
+| 13 | Cross-process pressure-test timing               | PR 1 (not deferred) — adds 503-returning endpoint + leader-bridge skeleton                                                                                                        |
+| 14 | Audit query inclusion                            | Two tables: `agent_actions` (commands, full) + `agent_queries` (sampled). Per-def policy `'none' \| 'sample' \| 'full'`                                                           |
+| 15 | Audit retention                                  | 30 days for actions, **14 days** for queries (env-tunable via `ACTIONS_DAYS` / `QUERIES_DAYS`; the plan said 7 days for queries — as built it's 14, see `prune-audit-tables.mjs`) |
+| 16 | Default query limits                             | `chat.list` default 20 / cap 100; `harness.list-features` default 50 / cap 200; `harness.recent-suggestions` default 10 / cap 50                                                  |
+| 17 | Conversation continuity for `delegate_to_claude` | Voice picks via `claude-sessions.list` injected into context; layered title (haiku) + summary (haiku) + 24h auto-archive                                                          |
+| 18 | Panel auto-open on delegation completion         | On by default; toggle in voice settings under new "Output behavior" subsection                                                                                                    |
+| 19 | Panel auto-open toggle location                  | `/settings/voice` → Output behavior                                                                                                                                               |
+| 20 | `harness.last-scan` voice readout                | Speak verbatim if ≤120 words; gist + panel for longer. `voiceMaxSpokenWords: 120` voice pref, env-tunable                                                                         |
+| 21 | Voice's archive authority                        | Voice can archive a claude-session only when explicitly told ("archive that auth conversation"); never unilaterally                                                               |
+| 22 | Pi expansion timing                              | PR 7 deliberately separate; whitelist a small starting set (`chat.dispatch`, `harness.scan`) and expand                                                                           |
+| 23 | Pi browser back-channel                          | Skeleton in PR 1 (returns 503); full wiring deferred to optional PR 8                                                                                                             |
 
 No remaining open questions.
 

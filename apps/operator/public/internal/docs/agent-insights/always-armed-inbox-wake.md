@@ -3,6 +3,34 @@ URL: /internal/docs/agent-insights/always-armed-inbox-wake
 
 The two halves of turn-lifecycle control. WAKE: arming your inbox-wake watch is automatic at SessionStart — you are wakeable even if you never call coord:await-inbox (standing-row model, the woken:0 warning, the migration-183-rides-the-deploy hazard, why you still must not poll). INTERRUPT: turn:interrupt ends a RUNNING peer's turn — cooperative yield (glyph |) vs force, operator-mediated + audited + storm-limited.
 
+:::caution\[Superseded — the wake API was redesigned (directed-wake-honesty)]
+Two parts of this runbook's wake surface no longer match the code. The
+always-arm wiring, the standing-row upsert + migration 183, the `await-inbox`
+annotation, the full `turn:interrupt` dual, and both EI-151 owner-scoping rungs
+all still verify — only the `coord:send` wake API drifted.
+
+* **No more `wake.warning` / `woken:0` warning.** The "woken:0 warning" section
+  below quotes a `wake.warning` string for the fired-but-woke-nobody case. That
+  field was **renamed and redesigned**: a `required` wake that reached wakeable
+  targets but woke nobody (and staged nobody) now returns
+  `wake.recipient_absent: true` plus a `wake.note` — see
+  `packages/operator-core/lib/agent-tools/coordination/tools/send.ts:152-157`
+  (the comment at `:147-151` says this is "replacing the old silent woken:0
+  warning"). There is no `wake.warning` field anywhere in `send.ts`.
+
+* **`wake` is no longer a boolean.** The body writes the API as
+  `coord:send {wake:true}`. `wake` is now a tri-value intent union
+  `boolean | 'required' | 'optimistic'`
+  (`send.ts:52-57`), coerced at `send.ts:65-66` (`true → 'required'`,
+  `false`/omit → no wake). Legacy `{wake:true}` examples still **function**, but
+  the documented intent surface and the warning text they reference are stale —
+  prefer `wake:'required'` (loud miss → `recipient_absent`) or
+  `wake:'optimistic'` (silent best-effort over a durable backstop).
+
+See plan `directed-wake-honesty-and-spawn-handoff-2026-06-14`. The original
+narrative below is preserved.
+:::
+
 ## What changed
 
 You no longer have to *remember* to make yourself wakeable. The operator now

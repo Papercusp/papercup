@@ -49,17 +49,32 @@ Verified against the current engine:
   [fresh-contexts](/internal/docs/harness/decisions/fresh-contexts),
   [prompt-cache](/internal/docs/harness/decisions/prompt-cache),
   [curator](/internal/docs/harness/decisions/curator).
-* **Per-role markdown prompts** — survive at
-  `libs/papercusp/packages/harness/prompts/<role>.md` with layered
-  resolution (see [Roles](/internal/docs/harness/roles)).
-* **Validator disciplines** — the **default-reject disposition** and the
-  **evidence rule** survive verbatim in the validator persona
-  (`prompts/validator.md`: "Your default is *reject*"; "EVIDENCE RULE" —
-  every positive claim backed by quoted executable evidence, else `[FAIL]`).
+* **Per-role markdown prompts** — survive, but the global
+  `prompts/<role>.md` tier is gone (deleted in Phase 5, D-012). A role's
+  persona now resolves by walking the blueprint **extends-chain** —
+  `blueprints/<id>/prompts/<role>.md` (the blueprint's own override and
+  each ancestor), always terminating at
+  `blueprints/base/prompts/<role>.md`, the universal role library that is
+  consulted for every blueprint (see [Roles](/internal/docs/harness/roles)).
+* **Validator disciplines** — survive in the layered validator persona
+  (`blueprints/base/prompts/validator.base.md` + `validator.md`). The
+  **default-reject disposition** is there verbatim ("Your default is
+  *reject*"). The **evidence rule** survives as discipline, not as a named
+  clause: "Generate independent evidence. Don't trust the worker's claims"
+  and "Record each assertion `[PASS]` / `[FAIL]` with evidence" — the old
+  "EVIDENCE RULE" label is no longer a literal heading in the persona. The
+  validator also carries a curator-maintained, append-only
+  `identity/validator.md` it reads at startup — the concrete instance of
+  the surviving "Identity file per role" decision (cross-mission memory of
+  prior-mission lessons).
 * **Debugger + crosscheck** — survive as blueprint roles in
-  `blueprints/coding/blueprint.yaml`: the debugger is a *reactive overlay*
-  that fires before a worker retry once `knobs.debuggerThreshold` attempts
-  accrue; crosscheck is an opt-in quality gate (`NEXT_CROSSCHECK`).
+  `blueprints/coding-factory/blueprint.yaml`: the debugger is a *reactive
+  overlay* that fires before a worker retry once `knobs.debuggerThreshold`
+  (default `3`) attempts accrue (`reactive: { beforeRole: worker,
+  minAttempts: 3 }`); crosscheck is an opt-in quality gate
+  (`NEXT_CROSSCHECK`). Note the blueprint name: the per-feature
+  director spine moved to `coding-factory` in the 2026-06-18 rename — see
+  the blueprint-rename note below.
 * **Decision telemetry + ghost rate** — survives;
   see [Decision telemetry](/internal/docs/harness/decisions-timeline).
 * **Named checkpoints** — **deprecated**: `CHECKPOINT` now finalizes as an
@@ -67,9 +82,31 @@ Verified against the current engine:
 * **Competition mode** — removed (replaced by the synthesizer pre-cutover,
   itself dormant since the run-loop retirement); lane-style isolation lives
   on — see [Worktrees & isolation](/internal/docs/harness/worktrees).
+  Parallelism is now two-tiered: at the fleet level the Hive/Queen places
+  ranked tasks onto bee slots (free slot / graceful-evict+fresh /
+  warm-inject), and the per-feature `coding-factory` pipeline carries
+  `dispatch.concurrency: 4` (`priority: plan-order`) for parallel feature
+  pipelines.
 * **Disk-only state** — superseded: Postgres is the runtime store-of-record
   (see [Storage policy](/internal/docs/system/storage-policy)); the
   fresh-shell re-derivability *goal* survives, now via PG + the operator API.
+
+## A note on the blueprint rename (`coding` is now the Hive)
+
+This page was written when `coding` *was* the per-feature director spine.
+The 2026-06-18 domain-generic-hive-architecture rename
+(D-011/D-024) shuffled the blueprint ids, so the names mean different
+things today:
+
+* The bash-era per-feature spine — scoper → architect → worker → validator
+  → reviewer → documenter → curator, with the debugger/crosscheck overlays
+  — survives as **`blueprints/coding-factory/blueprint.yaml`** (the retired
+  per-feature director loop, lifted into declared spine edges).
+* **`blueprints/coding/blueprint.yaml`** is now a different system entirely:
+  the **Hive/Queen operator blueprint** (`kind: hive`, roles `operator` and
+  `queen`) — the judgment layer over the bee fleet, not a validation spine.
+  Following the old pointer expecting validator/debugger/crosscheck will
+  land you on the Queen instead.
 
 ## Later eras (condensed)
 

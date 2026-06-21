@@ -71,11 +71,16 @@ vocab on the per-task `TaskRunResult`, the fleet vocab (`hive` · `queen-ablated
 
 ### L1 per-task arms (locked vocab)
 
-* **`papercusp`** — the full `coding` spine (scoper → architect → worker → validator
-  → reviewer → documenter → curator) run as a throwaway harness. This is the
-  `external-bench` blueprint, which **`extends: coding` and overrides nothing**
+* **`papercusp`** — the full coding-factory spine (scoper → architect → worker →
+  validator → reviewer → documenter → curator) run as a throwaway harness. This is the
+  `external-bench` blueprint, which **`extends: coding-factory` and overrides nothing**
   (D-009) — so a fairness auditor confirms *"the benchmark arm is the shipped
-  product"* by diffing two blueprint files.
+  product"* by diffing `external-bench` against `coding-factory` (the shipped default
+  coding-factory spine). Note: after the generic-hive refactor
+  (`domain-generic-hive-architecture-2026-06-18`), `coding` is a generic queen-decider
+  hive parent (`extends: base`) and the classic per-feature-director spine now lives in
+  `coding-factory` — so `coding-factory`, not `coding`, is the parent that diff must
+  compare against.
 * **`baseline-a-ablation`** — the spine collapsed to a single worker (`coding-solo`,
   which `extends: single-agent`): identical tools / model / infra / budget, the
   **only** difference being orchestration OFF vs ON. Both arms are spun by **one
@@ -372,7 +377,7 @@ complete set + a redistribution license.
 
 ## How it maps onto Papercusp machinery
 
-* **L1 per-task unit** — `external-bench` (`extends: coding`, overrides nothing =
+* **L1 per-task unit** — `external-bench` (`extends: coding-factory`, overrides nothing =
   `papercusp` arm) and `coding-solo` (`extends: single-agent` = ablation arm); one
   shared `instantiateBenchHarness` port (`external-bench/run-loop.ts`), arms differ
   only by `blueprintId`. The clone→diff→grade→emit loop is `arm-generation.ts`
@@ -448,7 +453,11 @@ The authoritative types live in `@papercusp/bench-metrics` (`TaskRunResult`, `P-
 records + `emitRollout`, `P-010`), backed by migration
 `291-benchmark-reproducibility.sql`. The L2 hive layer adds `emitFleetRun` /
 `emitCoordEvents` (`reproducibility/fleet.ts`) and migration
-`292-benchmark-hive-layer.sql`. Sync reads: `evals.suites` + `evals.runs` + `evals.fleet`
+`292-benchmark-hive-layer.sql`. **Naming:** the schema table above lists the PG column
+names (snake\_case); the `@papercusp/bench-metrics` `TaskRunResult` TS fields are the
+camelCase equivalents (`tokens_total` ↔ `tokensTotal`, `cost_usd` ↔ `costUsd`,
+`generation_status` ↔ `generationStatus`), and `emitRollout` returns
+`{ rolloutId, runId }` in TS. Sync reads: `evals.suites` + `evals.runs` + `evals.fleet`
 
 * `evals.coordTrace` (`P-010`), `evals.report` = pass\@1 / CI / Pareto / delta (`P-011`).
   This table is the documented contract, kept in sync with that code.

@@ -5,9 +5,24 @@ Plugins flag each configSchema field as secret (credential, stripped on snapshot
 
 import { Aside } from '@astrojs/starlight/components';
 
+The entire harness-snapshot system was **retired on 2026-06-09** (plan
+`retire-snapshots-instance-spec-2026-06-09`, Phase B). Its three jobs were
+re-homed: **distribution → blueprints** (the Cupboard now distributes recipes),
+**backup → git + PG** (code + state are already durable), and the one remaining
+**reproducible-clone** job became the lightweight `InstanceSpec` at
+`packages/operator-core/lib/instance-spec/` (`capture` / `boot` / `vary`).
+
+This page documents the now-retired snapshot share-semantics *design*. None of
+the live code paths it cites still exist at the locations shown — they were moved
+to `_retired/snapshot-system/` (`lint:no-retired` guards re-imports). What **did**
+land and remains valid: the share-semantics flags on plugin `configSchema`s
+(`secret` / `shareable` / `oauth` / `aliases` / `pattern`) shipped on the
+reference plugins. The advisory-check helper (`security-advisories.ts`) also
+survives as live code — see the note in [Security advisories at fork time](#security-advisories-at-fork-time).
+
 * `aliases` is a per-property array covering renames AND removals (`null` = removed)
 * `snapshotPolicy: "include" \| "strip" \| "warn-and-prompt"` for secret-but-shareable cases
-* **`versionPin: { mode: "exact" }` is the reproducible default** — snapshots fork against the exact version they were published with, eliminating most alias-walk burden (legacy `pluginVersionPinned: true` maps to `mode: "exact"`)
+* **`versionPin: { mode: "exact" }` is the reproducible convention** that reference plugins explicitly declare — snapshots fork against the exact version they were published with, eliminating most alias-walk burden (legacy `pluginVersionPinned: true` maps to `mode: "exact"`). Note the substrate's hardcoded *fallback* when a plugin omits both fields is `{ mode: "semver" }`, not `"exact"`.
 * **`securityAdvisories` field on the marketplace catalog** — fork-time substrate prompts loudly if pinned version has a known CVE
 * `shareable: false` fields use JSON-Schema `pattern` for format validation by convention
 * Tarball format change (additive `.shape.json` companions) explicitly acknowledged
@@ -23,9 +38,10 @@ fails two ways:
 2. **Identifiers force-share**: a plugin config containing `accountId: f896...` (the publisher's Cloudflare account) lands in the forker's plugin-config. The fork is configured to deploy to the publisher's CF account, which the forker doesn't have access to.
 
 Today's baseline mitigation is the `uiSchema`-driven redactor in the
-snapshot exporter (`packages/operator-core/lib/snapshot-config-redact.ts`,
-`redactPluginConfig`) that replaces every field whose plugin `uiSchema`
-marks `{"ui:widget":"password"}` with `[REDACTED]`. This is fragile:
+snapshot exporter (`redactPluginConfig`, since retired to
+`_retired/snapshot-system/operator-core/snapshot-config-redact.ts`) that
+replaces every field whose plugin `uiSchema` marks `{"ui:widget":"password"}`
+with `[REDACTED]`. This is fragile:
 
 * Misses any sensitive field the plugin author didn't tag as a password widget.
 * Only handles credentials — has no notion of "publisher's identifier".
@@ -167,47 +183,48 @@ they're doing.
 
 ## Snapshot tarball structure
 
-A snapshot's tarball already contains `harnesses/<slug>/plugin-configs/<plugin>.json`. With share-semantics, it gains a sibling:
+A snapshot's tarball stages project files under `source/` and per-harness PG
+state under `state/`. Per-plugin redacted config and its share-shape are **not**
+written as sibling files in the tarball — they ride inside `manifest.json` as
+per-plugin string fields (`plugins[].configJson` holds the redacted config,
+`plugins[].shapeJson` holds the shape). The shape route reads them back from the
+manifest, not from tarball files.
 
 ```text
 snapshot.tar.gz
-├── manifest.json
-├── project/
+├── manifest.json            ← plugins[].configJson (redacted) + plugins[].shapeJson
+├── source/
 │   └── ... (project files)
-├── harness-state.sql        (per-harness DB schema dump)
-└── harnesses/
-    └── <slug>/
-        ├── enabled-plugins.json
-        └── plugin-configs/
-            ├── github-repo.json          ← redacted: { repo, visibility, defaultBranch }
-            ├── github-repo.shape.json    ← describes what's missing: [github_token (oauth), owner]
-            ├── cloudflare-pages.json     ← redacted: { exportDir, branch }
-            └── cloudflare-pages.shape.json
+└── state/
+    ├── shared-<table>.csv    (one CSV per captured shared PG table)
+    └── harness/             (subset copy of the harness's .papercusp/ dir)
 ```
 
-The `.shape.json` companion file lists every field the original config had
-but the snapshot stripped, with the relevant configSchema metadata so the
-fork-time UI can render the right input ("Connect with GitHub" button vs
-plain text input).
+The `shapeJson` payload (the `SnapshotShape` produced by `extractShape()`)
+describes every field the original config carried but the snapshot stripped,
+with the configSchema metadata the fork-time UI needs to render the right input
+("Connect with GitHub" button vs plain text input). Its shape is a
+`fields` map keyed by field name plus a top-level `warnings` array — each entry
+carries a `reason` (one of `secret-strip`, `secret-include`, `secret-warn`,
+`shareable-false`, `pattern-fallback`) and optional `oauth` / `pattern` /
+`description`. Fields that travelled in plaintext are simply absent from the map.
 
 ```json
-// github-repo.shape.json
+// plugins[].shapeJson for github-repo (parsed)
 {
-  "missingFields": [
-    {
-      "key": "github_token",
-      "type": "string",
-      "secret": true,
+  "fields": {
+    "github_token": {
+      "reason": "secret-strip",
       "oauth": { "provider": "github", "scopes": ["repo"] },
       "description": "GitHub PAT or OAuth token. Stripped from snapshots..."
     },
-    {
-      "key": "owner",
-      "type": "string",
-      "shareable": false,
+    "owner": {
+      "reason": "shareable-false",
+      "pattern": "...",
       "description": "GitHub user or org..."
     }
-  ]
+  },
+  "warnings": []
 }
 ```
 
@@ -238,21 +255,23 @@ The "Connect with GitHub" buttons go through the OAuth flow (see [OAuth integrat
 
 ## Implementation
 
-| Surface                                                                     | Change                                                                                                                          | LOC   |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| `@papercusp/plugin-sdk`                                                     | Document field-level extensions (`secret`, `snapshotPolicy`, `shareable`, `oauth`, `aliases`) on the manifest's `configSchema`. | \~15  |
-| `packages/operator-core/lib/snapshot-shape.ts`                              | `extractShape()` — walk configSchema and apply the share-semantics filter, returning redacted config + `.shape.json` contents.  | \~80  |
-| `packages/operator-core/lib/endpoint-route/routes/snapshots/instantiate.ts` | Apply `resolveAliases()` and return list of missing-fields per plugin in the fork response.                                     | \~30  |
-| `apps/operator/app/snapshots/[id]/fork/ForkClient.tsx`                      | The fork-completion UI shown above. Reuses `/settings/plugins`'s field renderer.                                                | \~120 |
+| Surface                                                                                 | Change                                                                                                                          | LOC   |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `@papercusp/plugin-sdk`                                                                 | Document field-level extensions (`secret`, `snapshotPolicy`, `shareable`, `oauth`, `aliases`) on the manifest's `configSchema`. | \~15  |
+| `_retired/snapshot-system/operator-core/snapshot-shape.ts`                              | `extractShape()` — walk configSchema and apply the share-semantics filter, returning redacted config + shape contents.          | \~80  |
+| `_retired/snapshot-system/operator-core/endpoint-route-routes-snapshots/instantiate.ts` | Apply `resolveAliases()` and return list of missing-fields per plugin in the fork response.                                     | \~30  |
+| `_retired/snapshot-system/operator-app-ui/snapshots/[id]/fork/ForkClient.tsx`           | The fork-completion UI shown above. Reuses `/settings/plugins`'s field renderer.                                                | \~120 |
 
 Total: **\~265 lines.** Smaller than the build-script work; closer to the OAuth scope.
 
-This section has largely landed: the share-semantics filter lives in
-`packages/operator-core/lib/snapshot-shape.ts` (`extractShape` + `resolveAliases`),
-the snapshot exporter calls it from
-`packages/operator-core/lib/endpoint-route/routes/snapshots/create.ts`, the
-`.shape.json` companion is served by `routes/snapshots/shape.ts`, and the
-fork-completion UI is `apps/operator/app/snapshots/[id]/fork/ForkClient.tsx`.
+This section once landed: `extractShape` + `resolveAliases`, the exporter that
+called it, the shape route, and the fork-completion UI all shipped. They were
+**retired on 2026-06-09** with the rest of the snapshot system and now live under
+`_retired/snapshot-system/` — `snapshot-shape.ts`,
+`endpoint-route-routes-snapshots/{create,shape,instantiate}.ts`, and
+`operator-app-ui/snapshots/[id]/fork/ForkClient.tsx`. The paths in the table above
+point at their retired locations; do not expect to find them live under
+`packages/operator-core/` or `apps/operator/`.
 
 ## Migration story
 
@@ -415,7 +434,7 @@ field:
   "version": "0.1.0",
   "securityAdvisories": [
     {
-      "id": "CVE-2026-12345",
+      "cve": "CVE-2026-12345",
       "severity": "moderate",
       "fixedIn": "0.1.1",
       "summary": "OAuth state nonce reuse on rapid concurrent flows",
@@ -449,12 +468,23 @@ and uncircumventable.
 
 Severity tiers map to UI prominence:
 
-| Severity       | Prompt behavior                                         |
-| -------------- | ------------------------------------------------------- |
-| `critical`     | Modal blocking the fork until addressed                 |
-| `high`         | Prominent banner on fork-completion; recommends upgrade |
-| `moderate`     | Standard advisory prompt as above                       |
-| `low` / `info` | Listed in the fork's audit log; no prompt               |
+| Severity   | Prompt behavior                                         |
+| ---------- | ------------------------------------------------------- |
+| `critical` | Modal blocking the fork until addressed                 |
+| `high`     | Prominent banner on fork-completion; recommends upgrade |
+| `moderate` | Standard advisory prompt as above                       |
+| `low`      | Listed in the fork's audit log; no prompt               |
+
+This is the one piece of the design that outlived the snapshot retirement.
+`checkPinnedVersionAdvisories` lives at
+`packages/operator-core/lib/security-advisories.ts` and is wired to
+`POST /api/security-advisories/check`. But there is **no advisory catalog source
+configured by default** — the legacy `:3057` marketplace was retired
+(`revive-cupboard-distribution` D-004), so with no source the check reports
+`clean` and never fetches. A real source can be supplied via the
+`PAPERCUSP_MARKETPLACE_URL` http seam. Note the live `SecurityAdvisory` shape
+keys the CVE as `cve?` (optional), and `AdvisorySeverity` is the union
+`low | moderate | high | critical` — there is no `info` tier.
 
 ## Open questions
 

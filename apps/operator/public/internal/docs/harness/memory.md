@@ -16,8 +16,11 @@ Each harness keeps a small, bounded set of memory files under
 * **`MEMORY.md`** — the curated mission-scoped store (\~200-line bound),
   merged from raw observations by the curator.
 * **`summary.md`** — hard-capped at 40 lines / \~800 tokens and **auto-injected
-  into every pipeline spawn's prompt** (it rides the cacheable preamble of
-  `prompt-build.ts` — see
+  into every pipeline spawn's prompt — every role *except* the curator**, which
+  authors it (and so also skips the memory-discipline / friction clauses, since
+  the file changes between iterations). It rides the cacheable preamble of
+  `prompt-build.ts`, placed **last** in that preamble on purpose: an update
+  invalidates only itself, not the static prefix above it (see
   [Why prompt-cache-dominant](/internal/docs/harness/decisions/prompt-cache)).
 * **`identity/<role>.md`** — per-role lessons that carry *across* missions;
   the orchestrator mirrors them into Postgres
@@ -37,25 +40,44 @@ behind the `memory:remember` / `memory:search` / `memory:list` /
 * **Canonical store:** Postgres — `harness_shared.memory_canonical`
   (embedded rows; `last_surfaced_at` powers injection dedup).
 * **Swappable backend:** the store core is the generic `@papercusp/memory`
-  lib behind a `MemoryBackend` seam; the operator registers concrete
-  backends in `packages/operator-core/lib/memory/configure.ts` — `mem0`
-  (the canonical PG store), `claude-file` (the `~/.claude` topic-file
-  store), and **`hybrid`**, which fuses the claude-file lexical leg with the
-  mem0 cosine leg via cosine-gated reciprocal-rank fusion; hybrid **writes**
-  always delegate to the mem0 leg, so PG stays canonical.
+  lib behind a `MemoryBackend` seam. The lib itself seeds two built-ins in
+  its registry — `mem0` (the canonical PG store) and `noop`; the operator
+  registers the rest in `packages/operator-core/lib/memory/configure.ts` —
+  `claude-file` (the `~/.claude` topic-file store) and **`hybrid`**, which
+  fuses the claude-file lexical leg with the mem0 cosine leg via
+  reciprocal-rank fusion (default mode `floored-union`: the FP-floored cosine
+  hits *unioned* with the lexical hits that clear the identifier bar, so an
+  exact-id target the cosine leg missed is still captured; `cosine-gated` —
+  lexical re-ranks only — stays selectable as the strictest discipline, but
+  the production wiring constructs it with no opts, so it runs the default).
+  Hybrid **writes** delegate to the mem0 leg, so PG stays canonical — and the
+  same fact is *also* best-effort projected into the lexical (claude-file) leg,
+  stamped with the canonical id as `link_id` so fusion can dedupe a memory that
+  surfaces from both legs; a cold or missing lexical leg is non-fatal and recall
+  degrades cleanly to cosine-only. Selecting an unregistered backend name
+  **throws loud at first use** — a deliberate fail-fast so a typo'd
+  `PAPERCUSP_MEMORY_BACKEND` is never masked as "memory is just empty".
 * **Live selection:** which backend serves is an operator-wide setting
   (`harness_shared.operator_settings`, key `memory_backend`), changeable
   from the settings UI with no restart; resolution is persisted setting →
   `PAPERCUSP_MEMORY_BACKEND` → `mem0`
   (`packages/operator-core/lib/memory/backend-selection.ts`).
 * **Injection:** relevant memories are surfaced into a session pre-turn
-  (`packages/operator-core/lib/memory/injection.ts`), with a per-session
-  watermark over `last_surfaced_at` so the same memory isn't re-pushed
-  turn after turn.
+  (`packages/operator-core/lib/memory/injection.ts`), with a time-recency
+  window over `last_surfaced_at` so the same memory isn't re-pushed turn
+  after turn — a candidate surfaced within the last \~120s
+  (`PAPERCUSP_MEMORY_REINJECT_WINDOW_MS`, default 120000) is dropped from
+  this turn. The window is global/recency-based — it filters the turn's
+  candidate ids, not a per-session watermark.
 
-Scoping: pass a `harness_slug` for project facts; omit it for personal
-facts. Client-local file memories (e.g. Claude Code's topic files) are a
-per-client layer — the shared store is the one every agent recalls from.
+Every `memory:remember` declares one of four **kinds** — `user` /
+`feedback` / `project` / `reference`. Scoping: pass a `harness_slug` for
+project facts; omit it for personal facts; or pass a `hive_slug` (mutually
+exclusive with `harness_slug`) to write into a Hive's *shared* pool, for
+discovered conventions — test command, build path, design system — the whole
+hive should inherit. Client-local file memories (e.g. Claude Code's topic
+files) are a per-client layer — the shared store is the one every agent
+recalls from.
 
 ## 3. Procedural knowledge (agent-insights)
 

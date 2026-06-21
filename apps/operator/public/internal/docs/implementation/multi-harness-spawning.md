@@ -29,6 +29,37 @@ locations:
 * The orchestrator the plan refers to (`run.sh` → TS) was ported and its
   run-loop later retired; see
   [orchestrator-port](/internal/docs/implementation/orchestrator-port).
+* **Completion-reporting moved engine entirely.** It no longer runs through the
+  `run.sh` `afterDone.sh` bash builtin (run.sh itself is gone, so the bash
+  `run_hook` / builtins resolver the body describes in Step 4.5 no longer
+  exists). It is now the DBOS TS builtin
+  **`packages/operator-core/lib/dbos/notify-parent-done.ts`**, which fires on
+  per-feature-queue drain (a feature's DONE finalize, only when no other
+  non-terminal feature remains) and reads the server-sealed `parent_slug` from
+  `harness_shared.projects` (PG) — **not** from `.papercusp/config.json`, which
+  is deprecated as a live config source. A per-harness `hooks/afterDone.sh`
+  still overrides the builtin. (promote-spawn-child-harness-2026-05-31;
+  deprecate-harness-config-json-2026-06-06.)
+* **Several §3/§10 non-goals later shipped** in
+  `packages/operator-core/lib/execute-action.ts`: per-caller `send_message`
+  rate limiting (`PAPERCUSP_SEND_MESSAGE_RATE_LIMIT`, default 50 per 60s),
+  spawn cycle + depth detection (`PAPERCUSP_MAX_SPAWN_DEPTH`, default 8, walking
+  the `parent_slug` chain), and `dryRun: true` on `scaffold_harness`
+  (validate-only — no shell-out, no FS writes). Read the §3/§10 entries for
+  these as plan-time scope, not current state.
+* **The executeAction dispatcher grew past the four planned verbs.**
+  `dispatchAction` in `packages/operator-core/lib/execute-action.ts` now
+  implements nine verbs — beyond `send_message` / `mark_message_status` /
+  `spinup_project` / `scaffold_harness` it also handles `create_feature`,
+  `pause_project`, `resume_project`, `mark_campaign_published`, and
+  `add_directive_summary` (several of which §3 lists as non-goals).
+* **API host is `:3070`, not `:3055`.** The Tier 3 curl examples (Step 3c) and
+  the agent-facing snippets point at `:3055`, which is only the Vite SPA dev
+  server (it proxies `/api → :3070` in dev and is absent on the release
+  operator). The real Hono API host that serves `/api/admin/execute-action` and
+  the read endpoints is `:3070` (`PAPERCUSP_HONO_PORT`); internal / loopback
+  calls must target it. See
+  `packages/operator-core/lib/operator-api-base.ts`.
 
 ## 1. Goal
 
@@ -421,6 +452,13 @@ to your context. Only do so when relevant to the current task.
   - mcp__papercusp__recentActivity({limit})
   - mcp__papercusp__listSpawnableTemplates()
 ```
+
+**Host drift:** the `localhost:3055` in these examples is the plan's original
+target. On the shipped/release operator the API host is **`:3070`**
+(`PAPERCUSP_HONO_PORT`); `:3055` is only the Vite SPA dev server, which proxies
+`/api → :3070` in dev and is absent on the release operator. An agent copying
+these curls should target `:3070`. See
+`packages/operator-core/lib/operator-api-base.ts`.
 
 #### 3d — Bounded inbox in own prompt
 

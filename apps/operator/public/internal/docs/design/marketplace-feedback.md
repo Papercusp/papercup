@@ -6,16 +6,38 @@ Concrete UX feedback on /marketplace and its 4 tabs. Captured live against the r
 :::caution\[Surface superseded — the Marketplace was replaced by the Cupboard]
 The `/marketplace` UI this memo critiques no longer exists. There is no
 `app/marketplace/` directory, no `app/marketplace/layout.tsx`, no
-`MarketplaceList.tsx`, and no `/marketplace/<slug>` detail route. The
-browse/install surface is now the **Cupboard**
-(`/cupboard` → `apps/operator/app/cupboard/CupboardClient.tsx`): a
-single storefront with **kind-filter tabs** (`?kind=` nuqs param —
-All / Harnesses / Blueprints / Snapshots / Plugins / Packs / Tools),
-not the old 4-tab Overview/Templates/Plugins/Snapshots IA. A backend
-`marketplace` endpoint-route and the `@papercusp/marketplace-public-ui`
-lib still exist, but the page-level critiques below (tab strip, detail
-page, per-tab stats) describe a retired surface. Keep them only as
-historical design intent for the Cupboard rebuild.
+app-level `app/marketplace/MarketplaceList.tsx`, and no
+`/marketplace/<slug>` detail route. (A `MarketplaceList.tsx` does still
+live inside the `marketplace-public-ui` lib at
+`libs/marketplace-public-ui/src/MarketplaceList.tsx`, but it is not the
+app's browse surface.) The browse/install surface is now the
+**Cupboard** (`/cupboard` → `apps/operator/app/cupboard/CupboardClient.tsx`):
+a single storefront with **kind-filter tabs** (`?kind=` nuqs param). The
+tab set is `all / harness / blueprint / hive-blueprint / plugin /
+tool-pack / learning-pack / tools`, labelled **All / Pots** (or
+**Hives**, via the lexicon project term — not "Harnesses") **/
+Blueprints / Hive Templates / Plugins / Tool packs / Learning Packs /
+Tools**. Note there is no **Snapshots** tab: the `snapshot` kind was
+retired (`retire-snapshots-instance-spec` D-005 — the Cupboard
+distributes recipes/blueprints, not tarballs). This replaces the old
+4-tab Overview/Templates/Plugins/Snapshots IA. The per-listing detail
+route is `/cupboard/[id]` (keyed by the listing **id** —
+`router.push('/cupboard/' + listing.id)`) — the slug-based
+`/marketplace/<slug>` detail page is gone, so don't assume slug routing
+carried over.
+
+A backend `marketplace` endpoint-route and the
+`@papercup/marketplace-public-ui` lib still exist, but they are not the
+Cupboard browse path. The surviving backend routes — `GET
+/api/marketplace/catalog` and `GET /api/marketplace/spawnable` — are
+UNGATED and serve only the bundled **fallback catalog** for the internal
+`scaffold_harness` verb and prompt-build's "Available templates" section
+(the legacy `:3057` marketplace server and the `FLAGS.MARKETPLACE`-gated
+`/marketplace` UI are both retired). The Cupboard browses via
+`/api/cupboard/listings`, not `/api/marketplace`. The page-level
+critiques below (tab strip, detail page, per-tab stats) describe a
+retired surface. Keep them only as historical design intent for the
+Cupboard rebuild.
 :::
 
 Captured live by walking

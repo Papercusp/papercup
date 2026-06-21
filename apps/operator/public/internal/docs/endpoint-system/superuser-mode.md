@@ -45,8 +45,11 @@ $ apps/operator/scripts/install-standalone-mcp.sh
 
 The script:
 
-1. Generates a 32-byte random token (only on first install — a re-run
-   **reuses** the existing token so live shells keep working)
+1. Mints a random token — 24 bytes of `/dev/urandom` (192 bits of
+   entropy) base64url-encoded into a **32-character** string (not 32
+   bytes of token entropy). Only on first install — a re-run **reuses**
+   the existing token so live shells keep working. (The on-disk reader
+   only sanity-rejects tokens shorter than 16 chars.)
 2. Writes it to `~/.papercusp/superuser-token` (mode 0600, owned by you)
 3. Registers the `papercusp-su` MCP server for OMP
    (`~/.omp/agent/mcp.json`) and Claude Code (`~/.claude.json`), each
@@ -168,20 +171,63 @@ Tools that don't care about workspace (`repomix.pack`,
 `fetch_plus.fetch_clean`, `firecrawl.scrape`, `gitnexus.list_repos`)
 ignore the missing `workspace` arg — they're path-driven or URL-driven.
 
+### Scoped-superuser clamp (default OFF)
+
+Everything above describes the default behavior, where an unresolved
+superuser workspace silently becomes the cross-workspace wildcard `'*'`.
+With the `papercusp-scoped-superuser-clamp` flag **ON** (it defaults
+**OFF** — a reversible kill-switch the owner flips after an attended
+verification), a superuser session must either resolve to a **concrete**
+workspace or **explicitly** opt into unscoped god-mode via
+`?workspace=*` / `?all_workspaces=1`:
+
+* An **unresolved** workspace is no longer silently promoted to `'*'`;
+  it's rejected with `scoped_superuser_workspace_unresolved`.
+* A **scoped** session (concrete `workspaceId`) is confined to its
+  workspace. A `crossWorkspace` tool that isn't on the read-only
+  scoped-safe allowlist is denied with `workspace_forbidden`; `harness:
+  'all'` / `harness:'*'` (the global escape) and a per-call `harness`
+  that escapes the session's hive are denied with `harness_forbidden`.
+* Opting in with `?workspace=*` / `?all_workspaces=1` is the deliberate
+  cross-workspace admin path that lifts the clamp.
+
 ## What's NOT bypassed
 
 These still apply to superuser:
 
 1. **Per-tool input validation** — invalid args still return
    `invalid_input` 400.
+
 2. **Per-tool timeout** — long-running tools still get killed at the
    tool's `timeoutSec`.
+
 3. **Workspace requirement on first-party tools.** Most first-party
    tools (`harness:*`, `tasks:*`, `messages:*`, …) need a concrete
    workspace to open a PG transaction. Pass `?superuser=1&workspace=<slug>`
-   in the URL — the default `workspaceId='*'` doesn't satisfy them and
-   you'll get `handler_error: built-in tool "..." requires authenticated
-   request (bearer + workspace tx)`.
+   in the URL — the default `workspaceId='*'` doesn't satisfy them. The
+   projected wrapper throws `UnauthorizedToolError`, which the dispatcher
+   codes `unauthorized` (HTTP 401, **not** `handler_error`/500), with the
+   message `built-in tool "<name>" requires a workspace-scoped call —
+   this session has no workspace transaction. Scope the session to a
+   workspace, or pass a per-call workspace where the host/tool supports
+   one.`
+
+4. **Transport-level server-side deadline.** Independent of the per-tool
+   `timeoutSec` kill, every call also gets the transport deadline
+   (`PAPERCUSP_MCP_DEADLINE_MS`, default **55s**, under the 60s
+   `maxDuration`). A tool that exceeds it returns a clean
+   `request_timeout: tool "..." exceeded <ms>ms (still running
+   server-side...)` to the client — the tool keeps running server-side.
+   Pass a `_meta.idempotencyKey` to make a retry replay the result once
+   it completes instead of re-executing.
+
+5. **Power-profile narrowing (when `?profile=power`).** The power profile
+   narrows **both** the advertised catalog *and* the callable set: a
+   `?profile=power` (or `x-papercusp-profile: power`) superuser session
+   that names an engineer-only (Group A) tool is rejected with
+   `tool_not_available_for_profile: "<tool>" is not available in the
+   power-engineer profile`, mirroring the `tools/list` filter so a
+   direct-name call can't bypass the listing restriction.
 
 What **is** bypassed: role allowlist, capability gate (the dispatcher's
 `isSuperuser` short-circuits in both), per-window quota, and the
@@ -189,12 +235,17 @@ spawn-URL signature check (superuser has its own bearer envelope).
 
 ## Troubleshooting
 
-| Symptom                                                                                  | Cause                                                                                  | Fix                                                                                                       |
-| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `request_rejected: superuser_invalid_bearer` on `tools/call` (and an empty `tools/list`) | Token mismatch, token file missing, or `Authorization: Bearer <token>` header not sent | Re-run `install-standalone-mcp.sh`; check the header is set in `~/.omp/agent/mcp.json` / `~/.claude.json` |
-| `request_rejected: superuser_non_loopback`                                               | Request didn't originate from loopback (127.0.0.1 / ::1 / localhost)                   | Call the operator over loopback                                                                           |
-| `unknown_tool` 404                                                                       | Plugin didn't load                                                                     | `curl /api/plugins/host/refresh` to see load errors                                                       |
-| `harness_required` / `workspace required` from a tool                                    | Tool needs a real workspace/harness; `*` doesn't work for it                           | Pass `workspace: "default"` (or other slug from `list_workspaces`) explicitly                             |
+| Symptom                                                                                  | Cause                                                                                                | Fix                                                                                                       |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `request_rejected: superuser_invalid_bearer` on `tools/call` (and an empty `tools/list`) | Token mismatch, token file missing, or `Authorization: Bearer <token>` header not sent               | Re-run `install-standalone-mcp.sh`; check the header is set in `~/.omp/agent/mcp.json` / `~/.claude.json` |
+| `request_rejected: superuser_non_loopback`                                               | Request didn't originate from loopback (127.0.0.1 / ::1 / localhost)                                 | Call the operator over loopback                                                                           |
+| `unknown_tool` 404                                                                       | Plugin didn't load                                                                                   | `curl /api/plugins/host/refresh` to see load errors                                                       |
+| `harness_required` / `workspace required` from a tool                                    | Tool needs a real workspace/harness; `*` doesn't work for it                                         | Pass `workspace: "default"` (or other slug from `list_workspaces`) explicitly                             |
+| `unauthorized` 401 (`built-in tool "..." requires a workspace-scoped call`)              | A first-party tool needs a workspace tx and the session is unscoped (`workspaceId='*'`)              | Pass `?superuser=1&workspace=<slug>` (or a per-call `workspace` arg)                                      |
+| `request_timeout: tool "..." exceeded ...ms`                                             | Tool ran past the 55s transport deadline (`PAPERCUSP_MCP_DEADLINE_MS`); it keeps running server-side | Retry with the same `_meta.idempotencyKey` to replay the result, or raise the env deadline                |
+| `tool_not_available_for_profile`                                                         | A `?profile=power` session named an engineer-only (Group A) tool                                     | Drop `?profile=power` (full operator surface), or call a power-profile tool                               |
+| `scoped_superuser_workspace_unresolved`                                                  | `papercusp-scoped-superuser-clamp` is ON and the session resolved to no workspace                    | Pass `?workspace=<slug>`, or opt into god-mode with `?workspace=*` / `?all_workspaces=1`                  |
+| `workspace_forbidden` / `harness_forbidden`                                              | Clamp is ON and a scoped session tried to span workspaces, use `harness:'all'`, or escape its hive   | Use an unscoped (`?workspace=*` / `?all_workspaces=1`) session, or name a concrete in-scope harness       |
 
 ## Telemetry
 

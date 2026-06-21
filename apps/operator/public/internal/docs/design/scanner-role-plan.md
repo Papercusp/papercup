@@ -13,17 +13,32 @@ was completed under owner sign-off — the table drop landed in migration 167).
 Proactive scanning now runs as the scheduled **`scan`
 launch blueprint** (`blueprints/scan/`); the scanner persona survives as that
 blueprint's role, and findings land as tracked **work\_items in the
-self-improvement backlog** (`improvements:capture` / `improvements:digest`)
-— one triage surface, no separate card feed. The scanner DB tables were
-dropped in migration 167. This page is kept as design history only.
+self-improvement backlog** (`improvements:capture` with `kind` `bug` / `change`
+/ `feature`) — one triage surface, no separate card feed.
+
+The replacement implementation: `seed-scan-routine.ts` seeds an **INACTIVE**
+4-hourly cron routine (`0 0 */4 * * *`) that fires the generic
+`system:blueprint-run` action with `{ blueprintId: 'scan', mode: 'run',
+timeoutMs: 900_000 }`; enable it with `--active`.
+
+Migration 167 drops all **six** scanner-owned tables —
+`operator_scans`, `operator_dismissed_cards`, `operator_scan_locks`,
+`operator_last_scan`, `operator_idle_snapshot`, and
+`operator_scanner_session` — while `harness_shared.operator_paused`
+intentionally survives (the pause/resume sentinel lives on in
+`device-operator-actions.ts`). This page is kept as design history only.
 :::
 
 ## Goals
 
 1. Make the operator scanner a real **role** under the harness role
-   taxonomy — discoverable, prompt lives at
-   `libs/papercusp/packages/harness/prompts/scanner.md`, alongside
-   `architect.md` / `scoper.md` / etc.
+   taxonomy — discoverable, with a dedicated role prompt alongside the
+   other harness role files (e.g. `architect.md` / `scoper.md`).
+   *(Design-history note: the proposed flat `harness/prompts/` directory
+   was never created. As-shipped, harness role prompts live under
+   `harness/identity/` and `harness/blueprints/base/prompts/`, and the
+   `scan` blueprint's scanner persona at
+   `harness/blueprints/scan/prompts/scanner.md` — see the caution box.)*
 2. Each scan **resumes** the workspace's persistent Claude session
    (resume via `claude --resume <uuid>` or `omp -r <prefix>` per backend) so the model has continuity between scans.
 3. Each scan turn includes a **current-state bootstrap** message
@@ -47,8 +62,10 @@ dropped in migration 167. This page is kept as design history only.
 *Cosmetic refactor, zero behavior change.*
 
 * Extract the system-prompt portion of `buildOperatorPrompt()` from
-  `lib/operator-prompt.ts` into
-  `libs/papercusp/packages/harness/prompts/scanner.md`.
+  `lib/operator-prompt.ts` into a dedicated scanner role prompt file.
+  *(As shipped, the scanner persona lives at
+  `libs/papercusp/packages/harness/blueprints/scan/prompts/scanner.md`,
+  not the proposed flat `harness/prompts/` path.)*
 * `buildOperatorPrompt()` now reads that file and stitches in the
   per-call dynamic context (preferences, last decisions). The static
   portion lives in the role prompt.

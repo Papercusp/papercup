@@ -42,7 +42,7 @@ Agents conflate these. They are different mechanisms:
 
 * **DECISION gate** — `lib/autonomy/decider.ts`. "May the Queen auto-DECIDE this
   action (place an item, resolve a question, ratify) without asking the owner?"
-  Keyed by the 13-category taxonomy + risk/reversibility/authority.
+  Keyed by the 14-category taxonomy + risk/reversibility/authority.
 * **IMPLEMENT TCB** — `lib/harness/improvements/policy.ts` `classifyImprovement`.
   "May the self-improvement loop auto-IMPLEMENT this captured improvement?" A
   separate filter: `protectedPathPatterns` + `protectedKeywords` (the deploy gate,

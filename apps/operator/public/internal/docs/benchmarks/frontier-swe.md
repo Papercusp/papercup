@@ -7,8 +7,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 **FrontierSWE** ([Proximal Labs](https://github.com/Proximal-Labs/frontier-swe);
 [leaderboard](https://www.frontierswe.com)) is an *ultra-long-horizon* coding-agent
-benchmark — **17 tasks** across **implementation**, **performance-engineering**, and
-**ML-research**, with **4–20 h agent budgets per trial**. No model fully solves the
+benchmark — **17 tasks** = **7 implementation / 7 performance-engineering / 3 ML-research**,
+with **4–20 h agent budgets per trial**. No model fully solves the
 implementation tasks, so it is scored on a **continuous \[0,1]** scale over **5 trials**
 per (model, harness) and reported as **mean\@5 / best\@5**; the leaderboard ranks models
 by **AVG RANK** (mean position, lower = better) + **dominance** (win rate vs a random
@@ -27,7 +27,7 @@ byte-identical task scorer (the fairness invariant).
 | Suite vocab  | `external-bench/types.ts` (`BenchmarkFamily`), `bench-metrics/schema.ts` (`BenchSuite`), `gym/report-set-firewall.ts` (`REPORT_ON_SUITES`) | `'frontier-swe'` in all 3 lock-step places — a published, gym-fenced suite.                                                                                                                                                                    |
 | Grader       | `external-bench/grader/frontier-swe.ts`                                                                                                    | `OfficialGrader`, modality **`in-container`**. Runs the task's own `test.sh` against the arm's container, reads `reward.txt` (bare scalar) / `reward.json` (fallback) → `GradeResult.score ∈ [0,1]`; `resolved = (score === 1)` is degenerate. |
 | Live binding | `external-bench/grader/frontier-swe-live.ts`                                                                                               | `resolveFrontierSweConfigFromEnv` + `buildLiveFrontierSweGrader` + `preflightFrontierSwe` + `describeFrontierSweRun`. Drives `docker exec` shell-free.                                                                                         |
-| Task sets    | `external-bench/task-sets.ts`                                                                                                              | `frontier-swe` (full 17) · `frontier-swe-pilot` (1/bucket) · `frontier-swe-cpu` (GPU-free) · `frontier-swe-custom`. Corpus at `~/.papercusp/bench-results/frontier-swe/tasks.jsonl`.                                                           |
+| Task sets    | `external-bench/task-sets.ts`                                                                                                              | `frontier-swe` (full 17) · `frontier-swe-pilot` (1/bucket → **3 tasks**) · `frontier-swe-cpu` (GPU-free) · `frontier-swe-custom`. Corpus at `~/.papercusp/bench-results/frontier-swe/tasks.jsonl`.                                             |
 | Aggregation  | `@papercusp/bench-metrics` `frontier-rank.ts`                                                                                              | `meanAtK` / `bestAtK` (unbiased), `avgRank`, `dominance`, `frontierRankReport`. New — `pass-k` is binary, `pareto` is cost/accuracy.                                                                                                           |
 | Arms         | the shared coordination-topology runtime (su-37e53a76)                                                                                     | FrontierSWE supplies only its task-set + clone/grade; it does NOT roll its own arms (D-007).                                                                                                                                                   |
 
@@ -67,11 +67,14 @@ Every FrontierSWE number passes the **C1–C10 pre-claim audit** in
 * **GPUs** — 5 of 17 tasks need datacenter GPUs (B200: `granite-mamba2-inference-optimization`,
   `inference-system-optimization`; H100: `modular-stack-wan21`, `optimizer-design`,
   `pcqm4mv2-autoresearch`). Not runnable on a CPU host — use `frontier-swe-cpu` (12 tasks)
-  there, or run the GPU tasks on a cloud GPU.
+  there, or run the GPU tasks on a cloud GPU. Note `pcqm4mv2-autoresearch` needs **both** an
+  H100 **and** internet, so it is excluded from `frontier-swe-cpu` *and* needs network.
 * **Wall-clock + disk** — 4–20 h agent + up to 24 h verifier per trial; per-task images are
   GB-scale (`ghcr.io/proximal-labs/...`), memory up to 128 GB, storage up to 150 GB. Grade
   on a **dedicated volume**, prune between tasks.
-* **External APIs** — `frogsgame-rl` needs `TINKER_API_KEY` + internet; `pcqm4mv2` allows internet.
+* **External APIs** — only two tasks reach the network: `frogsgame-rl` needs `TINKER_API_KEY` +
+  internet (and is the only external-API task runnable on a CPU host — `gpus=0`, 8 h agent budget);
+  `pcqm4mv2-autoresearch` allows internet but also requires an H100.
 * **Reliability (D-009)** — long big-repo trials are the worst case for the slow-but-alive
   heartbeat-reclaim gap; the liveness-conditioned reclaim fix (F-FIX-038 / EI-1293) shipped,
   but infra non-completions are still counted-as-`false` + disclosed symmetrically (C6).

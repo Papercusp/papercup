@@ -3,6 +3,41 @@ URL: /internal/docs/agent-insights/adding-a-reactive-table
 
 How to make a new PG table push live updates to the UI. PG trigger → sync_invalidate → existing /api/zero-harness/sse → libs/sync invalidates the matching useSyncQuery.
 
+:::caution\[Superseded — the trigger→camelCase bridge is now LIVE]
+The section below titled **"Two name conventions exist — they don't talk to
+each other yet"** is out of date. Its central forward-looking claim — that
+PG-trigger `<schema>.<table>.changed` events are **"broadcast no-ops for
+existing clients today"** and that a name-translator bridge is **"Bridge work
+pending"** / a dormant safety net "until that lands" — no longer holds.
+
+The **P-067 bridge shipped** (plan `papercusp-dogfood-v5-2026-05-23`). Current behavior:
+
+* `packages/operator-core/lib/sync-sse.ts:49-51` constructs the invalidation bus
+  with `bridge: (name) => queryNamesForTriggerEvent(name)`.
+* `packages/operator-core/lib/sync-resolver/table-to-query-names.ts:189`
+  exports `queryNamesForTriggerEvent`, backed by the reverse map `TABLE_TO_QUERY_NAMES`
+  (e.g. `table-to-query-names.ts:43` maps
+  `'harness_shared.harness_text_artifacts' → ['harnessTextArtifact.byHarness']`).
+
+So a `harness_shared.harness_text_artifacts.changed` trigger event is **now
+translated** into the camelCase `harnessTextArtifact.byHarness` name that
+existing `useSyncQuery` consumers subscribe to. Trigger events are **no longer
+inert for existing clients** — they reach the documented camelCase consumer
+surface automatically. To add coverage for a new table, add its
+`'<schema>.<table>' → ['camelCase.scope']` entry to `TABLE_TO_QUERY_NAMES`.
+
+Two further point-in-time notes (not contradictions): the generic mechanism
+now lives in `libs/generic/sync/src/server/invalidation-bus.ts`
+(`@papercusp/sync/server`) — `sync-sse.ts` is operator wiring + re-export, but
+still exports `notifySyncInvalidate` / `subscribe` / `backfillSince` /
+`SyncEvent`, so the import examples below remain valid. And the 90-second
+dedupe window is correct (`DEFAULT_DEDUPE_WINDOW_MS = 90_000`), distinct from
+a separate 60s ring-buffer replay window (`DEFAULT_HISTORY_WINDOW_MS = 60_000`).
+
+The recipe and payload contract below are otherwise still accurate — the
+historical narrative is preserved as-is.
+:::
+
 ## What
 
 Papercusp's UI gets live updates from PG through **one channel, two

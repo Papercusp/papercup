@@ -19,8 +19,13 @@ at the **superuser tier** (prompt = playbook, scope = `?superuser=1`),
 the same builder a pipeline role uses with two parameters changed (D-001).
 :::
 
-Plain `omp` / `claude` / `codex` stay vanilla — engineer mode is opt-in,
-and you opt in by launching through `psu`.
+Plain `claude` / `codex` stay vanilla — engineer mode is opt-in, and you
+opt in by launching through `psu`. Plain `omp` is the **one** exception:
+the installer runs `omp config set memory.backend off` *globally*, so
+*every* omp invocation (plain omp included) uses the hybrid `memory:*` MCP
+tools instead of OMP's native store. That's deliberate — the hybrid memory
+is the one path — but it does mean plain `omp`'s native-memory behavior is
+changed by install regardless of psu. See [Install](#install).
 
 ## Quick start
 
@@ -54,6 +59,21 @@ psu --no-picker --agent=codex --no-plan           # active workspace root, no ha
 to the active workspace; `--harness` defaults to the workspace root if
 omitted; pass `--no-plan` for an ad-hoc session or `--plan=<slug>` to bind one.
 
+### More flags
+
+The launcher implements several other first-class flags on top of
+agent/workspace/harness/plan:
+
+| Flag                                 | Effect                                                                                                                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--profile=engineer\|power\|generic` | Which su playbook + dispatch tier (default `engineer`). Changes **both** the rendered playbook **and** the MCP dispatch gating, via `PAPERCUSP_PROFILE` — see [Profiles](#profiles).                              |
+| `--account=<id>`                     | Pin the session to a specific inference-gateway pool account; fail-soft to the default credential if the gateway is off or the id is unknown.                                                                     |
+| `--brain`                            | Resume/pin **the** canonical Queen brain session.                                                                                                                                                                 |
+| `--fork` / `--fork-session`          | claude-only, resume-only: branch the resumed conversation into a **new** session id (seeded with the original's history) with a fresh coord identity, so the fork runs concurrently with the still-live original. |
+| `--add-dir=<dir>`                    | Repeatable; maps to claude's + codex's native `--add-dir` (omp has none → warned + skipped). Both space and `=` forms.                                                                                            |
+| `--model=<m>`                        | Backend model fuzzy-match passthrough.                                                                                                                                                                            |
+| `--yes` / `-y`                       | Skip the "proceed anyway?" confirm when resuming an untracked (non-psu) session in scripts.                                                                                                                       |
+
 ## How a launch is assembled
 
 `psu` calls `POST /api/agent-mcp/console/bootstrap-su`, which builds the
@@ -72,6 +92,17 @@ the raw CLI. What each agent needs differs:
 
 `PAPERCUSP_SID` is minted per launch and exported, so each session is a
 distinct coord/lock owner (two concurrent `psu` sessions don't collide).
+
+### Profiles
+
+The su playbook comes in three profiles — `engineer` (default), `power`,
+and `generic` — selected per launch with `--profile`. Profile is **not**
+just prompt text: the chosen `prompts/papercusp-su-<profile>.tools.md`
+renders the playbook **and** the launcher exports `PAPERCUSP_PROFILE`, which
+the MCP dispatcher reads to gate the tool tier (claude expands it into the
+user-level MCP url; omp carries it via the `x-papercusp-profile` header).
+Without that export, `--profile` would change only the playbook text while
+dispatch kept gating as `engineer`.
 
 ### codex: a per-session CODEX\_HOME, and soft locks
 
@@ -97,6 +128,22 @@ omp get **hard** enforcement (their hooks fire); codex relies on playbook
 discipline until the upstream fix lands. Plain `codex` (`CODEX_HOME=~/.codex`)
 is fully vanilla.
 
+:::note\[claude su sessions get an isolated `CLAUDE_CONFIG_DIR` (EI-155)]
+An interactive claude su session doesn't run under the shared `~/.claude`:
+it gets a per-session, transcript-isolated `CLAUDE_CONFIG_DIR` (keyed by the
+session's `PAPERCUSP_SID`) — a symlink mirror of `~/.claude` with **two** things
+isolated, the transcript store `projects/` (EI-153) and the user's
+personal-memory files (`CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`,
+psu-isolation P-002/D-001), so transcripts don't collide on the shared tree and
+the user's personal memory never leaks into the psu prompt, while
+the user-level `papercusp-su` MCP, the lock/coord hooks, plugins, and
+onboarding/trust still carry through. Resume re-points `CLAUDE_CONFIG_DIR`
+to that same dir. (Materialize is best-effort — a failure falls back to the
+shared `~/.claude`, exactly as before.) This is why the "survives a raw
+launch" framing is more nuanced for *transcripts*: the MCP + hooks survive
+because they're user-level, but the transcript lives in the isolated dir.
+:::
+
 ## Resuming
 
 ```bash
@@ -107,14 +154,19 @@ psu --resume=<id>       # or: psu --resume <id>  (direct, skip the picker)
 `psu --resume` reads your recent tracked sessions, `cd`s to each one's
 recorded cwd, and execs the **raw** CLI's resume command there — no wrapper:
 
-* `claude --continue` (re-attaches the most recent conversation in the cwd)
+* `claude --resume <native-uuid>` — every modern psu claude launch forces +
+  records a native session id (`adv_sessions.session_id`), so resume
+  re-attaches that **exact** conversation. `claude --continue` (most-recent
+  in the cwd) is only the **fallback** for pre-native-id rows with no
+  recorded id. Resume also re-points `CLAUDE_CONFIG_DIR` to the session's
+  isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-and-soft-locks)).
 * `omp -r <thread>` / `-c`, re-adding `-e <coord>` (loaded per-invocation)
 * `codex … resume --last` with `CODEX_HOME` set to that session's home
   (derived from its id — the home still holds the session history)
 
 A fresh `PAPERCUSP_SID` is minted for the resumed process. MCP + claude lock
 hooks are user-level, so they survive the raw resume. You can also resume
-directly (`claude --continue` from the launch dir) or from the `/adv`
+directly (`claude --resume <uuid>` from the launch dir) or from the `/adv`
 Sessions tab, which knows the cwd.
 
 ### Resuming a session psu didn't start
@@ -181,6 +233,20 @@ installs the **claude user-level lock hooks**, writes the source playbooks
   `node_modules`). It does **not** install any `*-su` wrappers. Re-run to
   refresh; to revoke, delete the files the installer prints.
 
+It also installs two more things to `~/.local/bin`:
+
+* **`ptool`** — a `defineTool` CLI: pick a service → an endpoint → it
+  prompts for each argument (from the tool's `inputSchema`) and calls it
+  over the **same** superuser MCP surface psu uses. Scripting:
+  `ptool <group:verb> --json '<args>'` or `ptool --list [filter]`.
+* **OMP-native memory disabled** — the installer runs
+  `omp config set memory.backend off`. OMP's config is **global**, so this
+  affects **every** omp invocation (plain `omp` too, not only psu sessions):
+  omp injects no native-memory instructions and never auto-recalls/retains,
+  so the hybrid `memory:*` MCP tools are the one memory path. (Earlier
+  versions of the script *enabled* the Hindsight backend; that's been
+  removed — `memory.backend off` is the current behavior.)
+
 ## How tracking flows
 
 ```
@@ -192,3 +258,20 @@ psu ──pick──▶ bootstrap-su ──buildLaunchSpec(su)──▶ prompt f
 
 Every engineer session now goes through `psu`, so every one is tracked in
 `/adv` — there's no longer an untracked direct-wrapper path.
+
+### psu supervises the live session
+
+Interactive launches run the agent through a **managed pty** host
+(default-on; escape hatches `PAPERCUSP_PSU_PTY=0` or
+`PAPERCUSP_PSU_NO_PTY=1` fall back to plain inherited stdio). In both paths
+`psu` stays alive as the agent's parent, which lets it supervise the
+session two ways:
+
+* **Heartbeat** — a \~60s supervisor beat to `bootstrap-su/heartbeat` keeps
+  the session's `coord_presence` row warm even through long, tool-call-free
+  turns. The beat is unref'd (never holds psu open on its own) and
+  fail-soft (a down operator means missed beats, never terminal spam).
+* **End-of-session stamp** — on child exit `psu` stamps the tracked adv
+  row's `ended_at`/`exit_code` (`bootstrap-su/session-ended`), so the resume
+  picker + roster stop showing the dead session as active. Best-effort: a
+  failure is swallowed rather than holding your terminal open.

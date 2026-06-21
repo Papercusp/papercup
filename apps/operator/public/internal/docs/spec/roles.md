@@ -23,10 +23,32 @@ Implementation note: in the shipped Papercup pipeline the
 single "Planner" role above is realized as two roles — Scoper
 (scope + acceptance) followed by Architect (technical
 breakdown). The canonical role ids live in AGENT\_ROLES
-(packages/agent-mcp/src/role-config.ts): the pipeline is
-scoper → architect → worker → validator → reviewer → debugger →
-documenter → curator, plus the cross-cutting orchestrator,
-operator, and oracle roles. A
+(packages/agent-mcp/src/role-config.ts), where the registry
+list order is scoper → architect → worker → validator → reviewer →
+debugger → documenter → curator. That list order is not
+the dispatch pipeline: the executable per-feature spine lives in the
+coding-factory blueprint
+(libs/papercusp/packages/harness/blueprints/coding-factory/blueprint.yaml),
+and runs scoper → architect → worker → validator → reviewer →
+documenter → curator — with debugger excluded from
+the spine. (The coding id was reused by the 2026-06-18 rename
+for the Hive/Queen blueprint — kind: hive, only
+DONE/ESCALATE/IDLE edges — so it
+carries no scoper→…→curator spine; look at coding-factory,
+not coding, for the pipeline.) Two refinements the registry
+order hides: reviewer is not a per-feature director verb but
+a PR-boundary approval gate (gates.approvals),
+so the verbs that actually dispatch are scoper/architect/worker/validator/documenter/curator;
+and debugger is a reactive overlay that fires
+read-only before a worker retry once a feature accrues
+knobs.debuggerThreshold failed attempts (alongside the opt-in
+security-reviewer/crosscheck/ui-qa
+reactive roles). The coordinator/cross-cutting role is
+orchestrator; operator and oracle
+are chat-surface roles, grouped separately in the registry.
+On a terminal DONE the finalize recipe runs
+curator → postCuratorOutputs → documenter → archive — i.e.
+curator precedes documenter, opposite of the registry list order. A
 planner role id exists since 2026-06-09, but it is an
 interactive plan-authoring session (hive-agent-tabs), not this
 spec-level Planner pipeline role. Full current registry:
@@ -56,7 +78,9 @@ Design spec — not yet implemented as written. The shipped substrate
 configures harnesses through blueprints (see
 blueprint:create / blueprint:catalog and the
 @papercusp/orchestrator/blueprint package), which declare their
-roles, tier, spine model, triggers, and dispatch policy directly. There is no
+roles, spine model, triggers, and dispatch policy directly (per-role model
+selection rides the role-level model field / knobs.models,
+not a blueprint-level tier). There is no
 defineManifest helper and no shape enum
 (iterative/scheduled/reactive/passive)
 in code today; the section below is the original role-requirement design.

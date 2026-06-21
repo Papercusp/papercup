@@ -28,6 +28,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { harnessScope, harnessOfScope } from './work-item-scope';
 import {
   PgTaggableStore,
   PgThreadStore,
@@ -193,7 +194,7 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     id: i.id,
     kind: i.kind,
     family: 'issue',
-    harness: i.scope.startsWith('harness:') ? i.scope.slice('harness:'.length) : null,
+    harness: harnessOfScope(i.scope),
     title: i.title,
     summary: i.body,
     state: i.state,
@@ -560,7 +561,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       title: input.title,
       body: input.summary ?? '',
       severity: input.severity,
-      scope: input.harness ? `harness:${input.harness}` : 'operator',
+      scope: input.harness ? harnessScope(input.harness) : 'operator',
       topics: input.topics,
       createdBy: input.createdBy,
       assignee: input.assignee,

@@ -48,7 +48,7 @@ These are populated at startup as a side effect of:
 
 `loadPlugins` searches in this order:
 
-1. `<projectDir>/plugins/<name>/` — for in-repo bundled plugins. The operator wires this via `findBundledPluginsParent()` in `packages/operator-core/lib/plugin-host-runtime.ts`.
+1. `<projectDir>/plugins/<name>/` — for in-repo bundled plugins. The operator wires this via `findBundledPluginsParent()` in `packages/operator-core/lib/plugin-host-runtime.ts`. In dev, `projectDir` isn't an arbitrary repo root: `findBundledPluginsParent()` walks up looking for `libs/papercusp/plugins` and returns `libs/papercusp` itself, so source #1 is concretely `libs/papercusp/plugins/<name>/`. In installed builds where that path doesn't exist it returns `null` and this source is skipped.
 2. `~/.papercusp/harnesses/<slug>/plugins/<name>/` — per-harness plugins.
 3. `~/.papercusp/global-plugins/<name>/` — globally installed plugins.
 
@@ -58,15 +58,22 @@ This is why you don't need to symlink plugins into `~/.papercusp/global-plugins/
 
 ## Hot-reload watcher
 
-`watchPluginsForReload` (in `plugin-host-runtime.ts`) sets up a debounced fs.watch over the global-plugins directory. Triggers on changes to `papercusp.json`, `index.{js,mjs,ts}`, or `dist/index.js`. On a hit, it calls `_resetPluginHostForTests()` which clears the host cache; next request to the host re-runs discovery.
+`watchPluginsForReload` (in `plugin-host-runtime.ts`) sets up a debounced fs.watch over the global-plugins directory. The match regex is `/papercusp\.json$|\/index\.(?:m?js|ts)$|\/dist\/index\.js$/`, so it triggers on changes to `papercusp.json`, `index.js`, `index.mjs`, `index.ts`, or `dist/index.js`. On a hit, it calls `_resetPluginHostForTests()` which clears the host cache; next request to the host re-runs discovery.
+
+**Gotcha:** a compiled `index.cjs` entry is **not** matched (the regex covers `index.js`/`.mjs`/`.ts` and `dist/index.js`, but not `.cjs`). Editing a `.cjs` entry won't trigger auto-reload — POST `/api/plugins/host/refresh` manually.
 
 It's gated behind `PAPERCUSP_DEV_PLUGIN_WATCH=1`. Off by default because filesystem-watch overhead is unwanted on shared hosts. Turn it on for plugin development if you don't want to keep curling `/api/plugins/host/refresh`.
 
-## Migrations don't run on the system PG
+## Migrations on the system PG
 
-The embedded-postgres-server has a migration runner that walks `libs/papercusp/libs/db/sql/*.sql` on boot and applies missing files via `harness_shared.schema_migrations`. The system PG (`localhost:5432`) does not — there's no boot hook.
+The embedded-postgres-server has a migration runner that walks `libs/papercusp/libs/db/sql/*.sql` on boot and applies missing files via `harness_shared.schema_migrations`. The native system PG (`localhost:5432`) **used to have no equivalent boot hook** — every new SQL file required a manual `psql -f` plus a manual `schema_migrations` INSERT, and a missed migration could silently go dark. That gap is closed: `applyPendingMigrationsAtBoot()` (`packages/operator-core/lib/db-boot-migrate.ts`) now runs the **same idempotent runner** against the operator's admin DB on host boot. It's wired into `apps/operator/bin/host-bootstrap.ts` and **awaited before the boot-gate flips**, so a new SQL file is auto-applied on the next operator restart on the native box.
 
-Every new SQL file requires manual application:
+Two caveats:
+
+* **It runs only on the primary host.** The boot apply sits inside the `PAPERCUSP_BACKGROUND_WORKERS`-gated block. A secondary host (`PAPERCUSP_BACKGROUND_WORKERS=0`) **skips** boot migrations entirely — so if you're on a secondary host, a brand-new migration may still need manual application.
+* **It's log-and-continue, not fail-loud.** A migration that fails to apply is logged + coord-broadcast and left pending (retried next boot) rather than halting the shared dev-api. So a broken migration won't wedge boot — but it also won't have applied.
+
+Manual application is the fallback when auto-apply hasn't happened (you don't want to restart, or you're on a secondary host):
 
 ```bash
 PGPASSWORD=harness_admin_pwd psql -h localhost -p 5432 -U harness_admin -d papercusp \
@@ -76,7 +83,7 @@ PGPASSWORD=harness_admin_pwd psql -h localhost -p 5432 -U harness_admin -d paper
   -tAc "SELECT to_regclass('harness_shared.my_table')"
 ```
 
-This bites every time. If your tool depends on a table that doesn't exist, the queries throw, the dispatcher catches and continues, the tool returns 200 with `output` text — and your quota tracking + telemetry are silently dead until you apply the migration. **Verify with `to_regclass` before testing the tool.**
+If your tool depends on a table that doesn't exist, the queries throw, the dispatcher catches and continues, the tool returns 200 with `output` text — and your quota tracking + telemetry are silently dead until the migration applies. **Verify with `to_regclass` before testing the tool.**
 
 ## Common failure modes
 
@@ -123,7 +130,7 @@ The operator harness-launch path does this independently: `packages/operator-cor
 
 ## Spawn-signing admin endpoints
 
-The HMAC signing scheme (see [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing)) ships with two loopback + superuser-bearer-gated admin routes for incident response and observability.
+The HMAC signing scheme (see [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing)) ships with two admin routes for incident response and observability. Both are gated `auth: { trust: ['trusted'] }` — the gate is the **trust tier**, not the bearer specifically. The documented loopback + superuser-bearer is the canonical way an operator obtains a `trusted` principal (a valid superuser bearer on a loopback request resolves to `kind: 'system'`, `trust: 'trusted'`), but any other `trusted` principal (e.g. a process-internal/system caller) also passes the gate.
 
 ### Rotate the signing key
 
@@ -155,7 +162,7 @@ You should stop and ask before doing any of these:
 * You want to extend the manifest contract with a new field. Each existing field corresponds to a dispatcher behavior; adding one is an architecture decision, not a cleanup.
 * You hit one of the known open issues and need to work around it. The workaround usually masks a real bug — better to surface it and get the framework fix.
 * The handler signature you'd want isn't `(input, ctx) => ToolResult`. The framework can't accommodate exotic shapes. If you want a callback-based contract, a multi-response stream, or anything else non-request/response, it doesn't belong here.
-* You're tempted to delete a legacy `app/api/agent-mcp/*/route.ts` route that the dashboard fetches from. **Always grep for UI callers first.** The same JSON is now served at `/api/plugins/<plugin>/<tool>`; UI can switch URLs in the same PR. Delete only when zero UI callers remain.
+* You're tempted to delete a route a UI surface still fetches from. **Always grep for UI callers first.** The legacy Next app-router routes are gone — `apps/operator/app/api` is now an empty leftover directory with no `route.ts` files anywhere under `apps/operator`; everything is now a `defineTool` route under `packages/operator-core/lib/endpoint-route/routes`, served at `/api/plugins/<plugin>/<tool>`. The migration is complete, but the rule stands for any route you're about to remove: switch UI URLs in the same PR, and delete only when zero callers remain.
 
 ## Per-tool migration checklist
 

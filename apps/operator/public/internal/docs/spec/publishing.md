@@ -6,12 +6,21 @@ URL: /internal/docs/spec/publishing
 import { Aside } from '@astrojs/starlight/components';
 
 **Publishing** — one-click public publishing from coding harnesses.
-Worker (`apps/papercusp-publish/`), shared auth lib
-(`libs/papercusp-publish-auth/`), substrate plugin
-(`@papercupai/cloudflare-pages-hosted`), and Settings UI all landed
-2026-04-28. Live deployment waits on \`wrangler d1/kv create + secret put
+The hosted publish Worker (`apps/papercusp-publish/`) and its shared
+auth lib (`libs/papercusp-publish-auth/`) are built and largely match
+the data-model/endpoint shapes below. Live deployment waits on
+`wrangler d1/kv create + secret put + deploy` and a wildcard cert on
+`*.preview.papercuspai.com`.
 
-* deploy`and a wildcard cert on`\*.preview\.papercuspai.com\`.
+The hosted-publish substrate plugin originally specced here
+(`@papercupai/cloudflare-pages-hosted`) was **deleted** — it shipped
+with no manifest (revive-plugin-system-2026-06-04 D-005). The surviving
+plugin is `@papercupai/cloudflare-pages`, a **BYO-Cloudflare
+direct-upload** plugin: it talks to `api.cloudflare.com` directly with
+the user's own token and never contacts `publish.papercuspai.com`. The
+hosted Worker and the live plugin are therefore two separate code
+paths; §§15.2–15.8 below describe the hosted Worker, and the
+BYO-direct-upload plugin is noted inline where the two diverge.
 
 Three rounds of architectural review have been incorporated (v1 → v2 →
 v3). Once a real user publishes their first project this page folds into
@@ -70,11 +79,11 @@ content's served on a vanity subdomain we control.
 │  canonical manifest        │ manifest│  ├─ ensure CF project (D1 cache)  │         │                 │
 │  POSTs                     │         │  └─ returns deploymentId +        │         │                 │
 │   ↓                        │         │      missing-files upload URLs    │         │                 │
-│  PUT each file             ├ stream ►│  proxy stream (no buffer)         ├ master ►│  /files         │
-│  (only the missing ones)   │         │  ┌─ verify per-file sha256        │  token  │                 │
+│  PUT file/<dep>/<sha>      ├ stream ►│  buffer body, verify sha256       ├ master ►│  /file          │
+│  (only the missing ones)   │         │  ├─ upload to CF + write R2 .bin   │  token  │                 │
 │   ↓                        │         │                                   │         │                 │
 │  POST /publish/finalize    ├────────►│  ├─ create CF deployment          ├────────►│  deployments    │
-│                            │         │  └─ archive manifest+files to R2  │         │                 │
+│                            │         │  └─ archive manifest.json to R2   │         │                 │
 │   ↓                        │         │                                   │  status │                 │
 │  poll /status/:depId       ├────────►│  ── returns CF status             │◄────────┤                 │
 │   ↓                        │         │                                   │         │                 │
@@ -91,8 +100,8 @@ content's served on a vanity subdomain we control.
 ```sql
 CREATE TABLE tenants (
   id              text primary key,           -- tnt_<10-base32>
-  secret_hash     text not null,              -- HMAC-SHA256(secret, HASH_PEPPER)
-  secret_hash_v   int  not null default 1,    -- KDF version, for rotation
+  secret_b64      text not null,              -- raw tenantSecret (base64url, 32 bytes); stored directly, NOT hashed
+  secret_v        int  not null default 1,    -- secret-format version, for rotation
   rotated_from    text,                       -- previous tenant id, audit
   created_at      int  not null,              -- epoch ms
   last_used_at    int,
@@ -101,6 +110,11 @@ CREATE TABLE tenants (
   tier            text default 'free',        -- free | paid | self-host-byo
   notes           text                        -- admin notes
 );
+-- secret_b64 stores the secret in cleartext (base64url), relying on D1's
+-- at-rest encryption. The spec's earlier HMAC(secret, HASH_PEPPER) design
+-- is one-way and can't verify the per-publish JWT (HMAC-signed with the
+-- secret), so v1 stores the secret directly. v1.1 hardening: AES-GCM
+-- envelope keyed by HASH_PEPPER.
 
 CREATE TABLE projects (
   tenant_id        text not null references tenants(id),
@@ -116,17 +130,29 @@ CREATE TABLE deployments (
   id               text primary key,           -- dep_<8-base32>
   tenant_id        text not null references tenants(id),
   harness_slug     text not null,
-  cf_deployment_id text not null,              -- NOT NULL: row only inserted after CF returns
+  cf_deployment_id text,                        -- nullable: row inserted at /publish/start (status='uploading'); filled at /publish/finalize once CF returns
   vanity_url       text,
   manifest_sha     text,                       -- canonical manifest sha256, audit + dedup
-  archive_path     text,                       -- R2 key: "<tenant>/<deployment>/" prefix
+  archive_path     text,                       -- R2 key: "publish/<tenant>/<deployment>/" prefix
   bytes_total      int,
   files_count      int,
-  status           text default 'building',    -- pending_create | uploading | building | live | failed
+  status           text not null default 'pending_create', -- pending_create | uploading | building | live | failed
   failure_reason   text,
   created_at       int not null,
   completed_at     int
 );
+
+-- Per-file upload tracking, resumability, and finalize completeness gate.
+CREATE TABLE deployment_files (
+  deployment_id   text not null references deployments(id),
+  path            text not null,
+  sha256          text not null,
+  bytes           int  not null,
+  uploaded        int  not null default 0,     -- 0 = not yet PUT, 1 = uploaded+verified
+  primary key (deployment_id, sha256)
+);
+-- `missing[]` (returned by /publish/start) is every row with uploaded=0;
+-- /publish/finalize rejects with 409 if any row is still uploaded=0.
 
 -- Replay protection — atomic via PRIMARY KEY (D1's serializable per-DB transactions)
 CREATE TABLE jti_used (
@@ -165,16 +191,21 @@ CREATE INDEX idx_audit_ip_ts          ON audit_publishes(ip, ts);
 
 ### R2 — artifact retention (the eject path's fire exit)
 
-Bucket `papercusp-publish-archive`. At `/publish/finalize` *after* CF
-deployment succeeds, write:
+The Worker binds the **existing** bucket `papercusp-marketplace-tarballs`
+(binding `ARCHIVE`) and namespaces publish archives under the prefix
+`publish/` (`R2_PREFIX`). There is no separate `papercusp-publish-archive`
+bucket. Per-file `.bin` blobs are written during each PUT (see §15.6);
+`manifest.json` is written at `/publish/finalize` *after* CF deployment
+succeeds:
 
 ```
-<bucket>/<tenantId>/<deploymentId>/manifest.json
-<bucket>/<tenantId>/<deploymentId>/files/<sha256>.bin    ← per file
+papercusp-marketplace-tarballs/publish/<tenantId>/<deploymentId>/manifest.json
+papercusp-marketplace-tarballs/publish/<tenantId>/<deploymentId>/files/<sha256>.bin    ← per file, at PUT time
 ```
 
-Lifecycle: **30 days for free tier, 1 year for paid**. Cron deletes
-expired prefixes.
+Lifecycle: **30 days for free tier, 1 year for paid**. The
+`/admin/gc/expired-archives` cron deletes expired prefixes and nulls
+`deployments.archive_path`.
 
 The eject script reads from R2, *not* CF Pages API. R2 is a separate
 product on the same account; suspension scopes can differ. If both R2
@@ -197,10 +228,16 @@ auth header binds the tenant to a user account). Returns:
 { "tenantId": "tnt_a3kf9xe2pq", "tenantSecret": "<32-byte base64url>" }
 ```
 
-Stored in `~/.papercusp/publish-credentials.json` (chmod 600). The
-`tenantSecret` is high-entropy machine-generated — argon2's slow-hash
-advantage doesn't apply here, so we use HMAC-SHA256 with a server-side
-`HASH_PEPPER` for \~µs verification.
+The substrate persists `{ tenantId, tenantSecret }` in Postgres
+(`harness_shared.operator_publish_credentials`, migration 022) — read
+over authenticated REST only, never broadcast over WS. (The previous
+location, `~/.papercusp/publish-credentials.json` mode 0600, is
+deprecated.) On the Worker side the `tenantSecret` is stored **directly**
+in `tenants.secret_b64` (base64url, cleartext, relying on D1 at-rest
+encryption), not hashed — the JWT is HMAC-signed with a key derived from
+the secret, which a one-way HMAC-pepper hash couldn't verify. (An
+HMAC-pepper helper exists in the auth lib but is unused by the Worker;
+v1.1 hardening adds an AES-GCM envelope keyed by `HASH_PEPPER`.)
 
 ### Per-publish JWT
 
@@ -211,20 +248,48 @@ claims  {
   iat:    <epoch-sec>,
   exp:    iat + 60,
   jti:    <16-byte random base64url>,
-  sha256: <hex of canonical-manifest-sha256>     // binds JWT to upload body
+  sha256: <hex of canonical-manifest-sha256>,    // binds JWT to upload body
+  aud:    "publish" | "snapshot"                 // scopes the token to one endpoint family
 }
-sig     HMAC-SHA256(header.claims, tenantSecret)
+sig     HMAC-SHA256(header.claims, publishKey)
 ```
+
+The signing key is **not** the raw `tenantSecret`: it is an HKDF-SHA256
+subkey, `publishKey = HKDF(tenantSecret, info="papercusp-publish-v1")`.
+The same secret derives a separate `snapshotKey`
+(`info="papercusp-snapshot-v1"`), and the required `aud` claim is checked
+on verify — so a `publish` token can't be replayed against snapshot
+endpoints, and vice versa (see §15.4 *HKDF subkeys* below).
 
 Worker validation order:
 
-1. Verify HMAC signature against tenant's `secret_hash` (lookup by `sub`).
-2. Reject if `now > exp` or `now < iat - 5s` (clock skew tolerance).
+1. Parse the JWT, look up the tenant by `sub`, reject if missing or
+   `status !== 'active'`. Derive `publishKey = derivePublishKey(secret_b64)`
+   and verify the HMAC signature against it.
+2. Reject if `now > exp`, `now < iat - 5s` (clock skew tolerance), or
+   `aud !== <expected audience>`.
 3. `INSERT INTO jti_used (jti, exp) VALUES (?, ?)` — duplicate primary
    key throws → 401. **D1 PRIMARY KEY constraint is the atomic
    replay guard, not KV `put`.**
 4. On `/publish/start`, recompute canonical manifest sha256 from the
    request body; reject if `!== claims.sha256`.
+
+### HKDF subkeys + `aud` scoping
+
+The shared auth lib derives a per-feature subkey from the one
+`tenantSecret` via HKDF-SHA256 (RFC 5869, empty salt — the secret is
+already high-entropy):
+
+```
+publishKey  = HKDF(tenantSecret, info="papercusp-publish-v1")
+snapshotKey = HKDF(tenantSecret, info="papercusp-snapshot-v1")
+```
+
+Each JWT carries an `aud` claim (`"publish"` or `"snapshot"`); verify
+rejects on mismatch. A publish token therefore can't be replayed against
+snapshot endpoints even though both keys descend from the same secret —
+the subkeys are domain-separated and the audience is bound into the
+signed claims.
 
 ### Canonical manifest (RFC 8785 / JCS)
 
@@ -246,7 +311,7 @@ validation and burn debug hours.
 ### Tenant lifecycle
 
 * **Rotate:** `POST /rotate-secret` with old secret → returns new secret.
-  Old secret invalidated immediately (`secret_hash` updated atomically;
+  Old secret invalidated immediately (`secret_b64` updated atomically;
   `rotated_from` records the previous tenant id for audit).
 * **Revoke:** admin sets `tenants.status = 'revoked'`; every subsequent
   publish returns 401. User must re-register from a fresh substrate
@@ -276,8 +341,8 @@ validation and burn debug hours.
 
 * **Auth:** none (v1) / GitHub OAuth (v1.1).
 * **Body:** `{}` for v1.
-* **Returns:** `{ tenantId, tenantSecret }`. Substrate writes to
-  `~/.papercusp/publish-credentials.json`.
+* **Returns:** `{ tenantId, tenantSecret }`. Substrate persists both in
+  Postgres (`harness_shared.operator_publish_credentials`, migration 022).
 * **Rate limit:** 10/hour per IP.
 
 ### `POST /publish/start`
@@ -289,7 +354,7 @@ validation and burn debug hours.
   {
     "deploymentId": "dep_<8>",
     "missing": [
-      { "path": "index.html", "sha256": "...", "uploadUrl": "https://publish.papercuspai.com/publish/file/<id>?token=..." }
+      { "path": "index.html", "sha256": "abc...", "uploadUrl": "https://publish.papercuspai.com/publish/file/<depId>/abc...?token=..." }
     ],
     "vanityUrl": "https://sheets2-a4f9c.preview.papercuspai.com",
     "createdProject": false
@@ -299,15 +364,21 @@ validation and burn debug hours.
   within 30 minutes returns the same `deploymentId` with `missing[]`
   filtered to still-not-uploaded files. **Resumable uploads.**
 
-### `PUT /publish/file/<deploymentId>?token=<signedUrlToken>`
+### `PUT /publish/file/<deploymentId>/<sha256>?token=<signedUrlToken>`
 
-* **Auth:** signed-URL HMAC token (`HMAC(JWT_SECRET, deploymentId+sha256+exp)`).
+* **Auth:** signed-URL HMAC token. The token signs the colon-joined
+  string `deploymentId + ":" + sha256 + ":" + exp` with `JWT_SECRET`,
+  and the wire format is `b64u(sig) + "." + exp.toString(36)` (the
+  `exp` suffix is appended outside the HMAC and re-folded into the input
+  on verify). The per-file `sha256` is a path segment, not a query param.
 * **Body:** raw file bytes.
-* **Worker behavior:** streams body to CF `/pages/projects/<n>/files`
-  using the master token, *without buffering* (Workers Streams API).
-  No bandwidth cost on the Worker; no subrequest budget cost beyond 1
-  per file. **Verifies sha256(body) === claimed sha256** before
-  forwarding; rejects on mismatch.
+* **Worker behavior:** **buffers** the entire body into memory
+  (`≤25 MB` per §15.5 cap, well under the Worker's 128 MB limit) so it
+  can verify `sha256(body) === <path sha256>` before forwarding; rejects
+  on mismatch. It then fans out the buffered bytes in parallel: streams
+  them to CF `/pages/projects/<n>/file` using the master token, and
+  writes the same bytes to the R2 archive as `files/<sha256>.bin`. This
+  is not a zero-buffer proxy.
 * **Workers Paid prerequisite:** $5/mo plan provides 1,000 subrequests
   per Worker invocation, vs 50 on Free. Required for ≥40-file
   deployments.
@@ -317,10 +388,18 @@ validation and burn debug hours.
 * **Auth:** JWT.
 * **Body:** `{ deploymentId }`.
 * **Worker behavior:**
-  1. Verify all `missing[]` files have been uploaded.
+  1. Verify every `deployment_files` row is `uploaded=1` (else 409 with
+     `missingCount`). The per-file `.bin` blobs were already written to
+     R2 during each PUT (§15.6 PUT route), so finalize doesn't re-upload
+     content.
   2. Call CF `/pages/projects/<name>/deployments` to publish.
-  3. Insert `deployments` row with `status='building', cf_deployment_id=<...>`.
-  4. Asynchronously archive `manifest.json` + each `<sha256>.bin` to R2.
+  3. Update the existing `deployments` row to
+     `status='building', cf_deployment_id=<...>, archive_path=<...>`.
+     (The row was inserted earlier at `/publish/start` with
+     `status='uploading'` and a null `cf_deployment_id`.)
+  4. Fire-and-forget (`waitUntil`) write of `manifest.json` to the R2
+     archive — only the manifest, since the `.bin` files already landed
+     at PUT time.
   5. Return `{ vanityUrl, status: 'building' }`.
 
 ### `GET /publish/status/<deploymentId>`
@@ -342,42 +421,69 @@ validation and burn debug hours.
 * **Effect:** removes the deployment, frees the project, GCs R2 archive.
   Plugin gets an Unpublish row in config→Plugins.
 
-### `GET /admin/gc` *(cron, internal)*
+### `POST /admin/gc/*` *(cron, internal)*
 
-* Deletes `deployments` rows in `status='uploading' AND created_at <
-  now-1h`. Calls CF `DELETE /deployments/<id>` for each abandoned half-
-  upload to free the CF project. Deletes R2 prefixes past retention TTL.
+The daily cron (`scheduled()`, 06:00 UTC) POSTs three separate internal
+endpoints — there is no single `GET /admin/gc`:
 
-## 15.7 Eject-to-own-CF (data model v1, button v1.1)
+* **`POST /admin/gc/abandoned-uploads`** — deployments stuck in
+  `status='uploading'` for > 1h are marked `status='failed'`
+  (`failure_reason='abandoned (gc)'`). The row is **not** deleted and
+  **no** CF `DELETE` is issued — CF auto-expires its own upload tokens.
+* **`POST /admin/gc/expired-archives`** — for deployments past their
+  retention TTL (30d free / 1y paid), deletes the R2 prefix and nulls
+  `deployments.archive_path`.
+* **`POST /admin/gc/jti`** — deletes `jti_used` rows whose `exp` has
+  passed.
 
-The fire exit. Designed v1 because designing it later is too late; the
-button ships v1.1.
+## 15.7 BYO-Cloudflare + eject-to-own-CF
 
-### Plugin config schema additions
+The fire exit. As built, the live `@papercupai/cloudflare-pages` plugin
+is **BYO-only** — it is the eject path. It always calls CF Pages directly
+with the user's own token and never contacts `publish.papercuspai.com`.
+(The hosted-default mode lives only in the `apps/papercusp-publish`
+Worker; the deleted `-hosted` plugin would have been its client.)
+
+### Plugin config schema (live manifest)
 
 ```json
 {
-  "byoCloudflareToken":     "<user's Pages:Edit token, optional>",
-  "byoCloudflareAccountId": "<user's CF account UUID, optional>"
+  "accountId":           "<user's CF account UUID, required, 32 hex>",
+  "projectName":         "<existing Pages project, required>",
+  "byoCloudflareToken":  "<user's Pages:Edit token; secret, snapshotPolicy=strip>",
+  "exportDir":           "out",
+  "branch":              "main"
 }
 ```
 
-When both are present, the plugin **bypasses** `publish.papercuspai.com`
-entirely and calls CF Pages directly with the user's own token. Same
-plugin, two configurations. Free forever for self-hosters who bring their
-own credentials.
+`accountId` and `projectName` are required; `exportDir` defaults to
+`"out"` and `branch` to `"main"`. The token is read from
+`~/.papercusp/secrets/CLOUDFLARE_API_TOKEN` (or the env var) under the
+`secrets:read:CLOUDFLARE_API_TOKEN` capability. The plugin runs the CF
+Direct Upload flow: `GET upload-token` → `POST assets/check-missing` →
+`POST assets/upload` (BLAKE3 content-addressed, with SHA-256 fallback) →
+`POST deployments`.
 
-### Eject migration script
+Beyond the explicit **`publish`** action (with a `dryRun` param that
+reports what *would* deploy without uploading), the plugin auto-publishes
+on mission completion via an `afterDone` hook — silently skipping when
+`accountId`/`projectName` aren't configured, and logging (never failing
+the mission) on a real CF error.
 
-`apps/papercusp-publish/scripts/eject.ts` — admin-runnable. For each
-tenant's projects:
+### Eject migration script *(unbuilt — design only)*
+
+The admin-runnable eject migration (`apps/papercusp-publish/scripts/eject.ts`)
+is **not yet built** — `apps/papercusp-publish/scripts/` currently holds
+only `install-secrets.sh` and `smoke-test.mjs`. The data-model
+groundwork exists (R2 archive + `deletePrefix`), but the migration
+script itself is future work. Its design, for each tenant's projects:
 
 1. Read manifest + per-file content from **R2**, not CF Pages API.
    (R2 is the fire exit's load-bearing component. CF Pages API is
    unavailable when the master account is suspended; that's the entire
    problem.)
 2. Re-upload to user's BYO CF account using their token.
-3. Rewrite plugin config: set `byoCloudflareToken` + `byoCloudflareAccountId`.
+3. Rewrite plugin config: set `accountId` + `byoCloudflareToken`.
 4. Delete the now-orphaned R2 prefix.
 
 **Tertiary fallback:** if R2 retention has expired, the substrate's
@@ -395,14 +501,16 @@ That's a tolerable degradation; permanent loss is not.
 
 ## 15.8 Plugin scoping — `requiresTemplateKinds`
 
-The hosted-publish plugin is coding-harness-only by design. Other
-templates don't show the Publish button. Three places enforce this:
+The publish plugin is coding-harness-only by design. Other templates
+don't show the Publish button. The `requiresTemplateKinds` machinery is
+built (template-kind resolver, CLI enable check, endpoint enable check,
+and the plugin-manifest schema field). Three places enforce it:
 
-### Plugin manifest gains a new field
+### Plugin manifest field
 
 ```json
 {
-  "name": "@papercupai/cloudflare-pages-hosted",
+  "name": "@papercupai/cloudflare-pages",
   "kind": "plugin",
   "requiresTemplateKinds": ["coding"]
 }
@@ -412,13 +520,18 @@ Plural — `["coding", "department"]` is supported; a plugin that works
 on multiple template kinds declares them all. Singular form was rejected
 because it'd need to grow to plural day two.
 
+The live `@papercupai/cloudflare-pages` manifest does **not** currently
+declare `requiresTemplateKinds` — so the gate above is not yet active for
+this specific plugin even though the enforcement machinery exists. Adding
+the field to the manifest is the remaining step.
+
 ### Enforcement points
 
-| Where                            | Behavior                                                                                                                                |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `papercusp plugin enable <slug>` | Refuses with: `error: plugin "@papercupai/cloudflare-pages-hosted" requires templateKinds=[coding]; harness "papercup-org" is kind=org` |
-| Substrate UI plugin cards        | Disabled "Enable" button + tooltip: "Requires a coding harness."                                                                        |
-| Marketplace listings             | Constraint pill: `🪧 coding harnesses only` next to the plugin name.                                                                    |
+| Where                            | Behavior                                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `papercusp plugin enable <slug>` | Refuses when the harness kind isn't allowed (CLI message of the form `kind="org"` vs required template kinds). |
+| Substrate UI plugin cards        | Disabled "Enable" button + tooltip: "Requires a coding harness."                                               |
+| Marketplace listings             | Constraint pill: `🪧 coding harnesses only` next to the plugin name.                                           |
 
 Templates declare their kind via `papercusp.json`:
 
@@ -467,16 +580,16 @@ to the user.
 
 ## 15.10 What gets built
 
-| # | Component                                                                                                    | LOC         |
-| - | ------------------------------------------------------------------------------------------------------------ | ----------- |
-| 1 | `apps/papercusp-publish/` Worker — D1 + KV + JCS canonicalizer + JWT + signed-URL helpers + R2 archive write | 1,000-1,400 |
-| 2 | `@papercupai/cloudflare-pages-hosted` plugin — JCS manifest, retry/resume on partial upload, BYO-CF fallback | \~500       |
-| 3 | Substrate "Publishing" settings page — mode selector, tenant info, rotate-secret button                      | \~250       |
-| 4 | `papercup-coding` template — adds `recommendedPlugins`                                                       | 5 lines     |
-| 5 | DNS — wildcard cert + Worker route on `*.preview.papercuspai.com` + `publish.papercuspai.com`                | \~3 hours   |
-| 6 | Eject script reading from R2                                                                                 | \~200       |
-| 7 | `requiresTemplateKinds` field — spec + CLI loader + UI gating + marketplace pill                             | \~300       |
-| 8 | R2 bucket setup + lifecycle rules + cleanup cron                                                             | \~150       |
+| # | Component                                                                                                                                                              | LOC         |
+| - | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| 1 | `apps/papercusp-publish/` Worker — D1 + KV + JCS canonicalizer + JWT + signed-URL helpers + R2 archive write                                                           | 1,000-1,400 |
+| 2 | `@papercupai/cloudflare-pages` plugin — CF Direct Upload (check-missing/resume on partial upload), BYO-CF direct publish, `afterDone` auto-publish                     | \~500       |
+| 3 | Substrate "Publishing" settings page — masked tenant info, **Rotate secret** + **Forget credentials** buttons, collapsible BYO-Cloudflare explainer (no mode selector) | \~250       |
+| 4 | `papercup-coding` template `recommendedPlugins` — *not built*; no such template/field found under `libs/papercusp/packages/harness/templates`                          | 5 lines     |
+| 5 | DNS — wildcard cert + Worker route on `*.preview.papercuspai.com` + `publish.papercuspai.com`                                                                          | \~3 hours   |
+| 6 | Eject script reading from R2 — *not built* (`scripts/` has only `install-secrets.sh` + `smoke-test.mjs`)                                                               | \~200       |
+| 7 | `requiresTemplateKinds` field — schema + CLI loader + UI gating + marketplace pill (machinery built; cloudflare-pages manifest doesn't declare it yet)                 | \~300       |
+| 8 | R2 bucket setup + lifecycle rules + cleanup cron                                                                                                                       | \~150       |
 
 **Total: \~2.5 days.**
 
@@ -484,8 +597,10 @@ to the user.
 
 1. **Cloudflare master account:** scope a `Pages:Edit` token (verify no
    DNS/Workers/R2 perms). Save as `CF_MASTER_TOKEN`.
-2. **Cloudflare R2:** create bucket `papercusp-publish-archive`,
-   generate scoped R2 token. Save as `R2_ACCESS_KEY` / `R2_SECRET_KEY`.
+2. **Cloudflare R2:** bind the existing bucket
+   `papercusp-marketplace-tarballs` (binding `ARCHIVE`, prefix
+   `publish/`) — no separate publish bucket is created. Generate a
+   scoped R2 token if direct S3-API access is needed.
 3. **Generate `JWT_SECRET`** — 32 random bytes, base64.
 4. **Generate `HASH_PEPPER`** — 32 random bytes, base64. Separate from
    `JWT_SECRET`.
@@ -495,8 +610,15 @@ to the user.
 8. `wrangler deploy` Worker.
 9. DNS: `*.preview.papercuspai.com` and `publish.papercuspai.com` → Worker
    route. Wildcard cert via CF managed cert (1-click in dashboard).
-10. Cron: daily `/admin/gc` for stale uploads + R2 archive expiry.
+10. Cron: daily (06:00 UTC) POST to `/admin/gc/abandoned-uploads`,
+    `/admin/gc/expired-archives`, and `/admin/gc/jti`.
 11. Smoke test from a clean machine.
+
+The Worker has a local-dev short-circuit: when `CF_MASTER_TOKEN` is set
+to the literal value `local-stub`, `ensureProject`/`uploadFile`/
+`createDeployment`/`getDeployment` fabricate Cloudflare responses so the
+full publish flow (`/publish/start` → PUT files → `/publish/finalize` →
+status) runs under `wrangler dev` without real Cloudflare credentials.
 
 ## 15.12 What's NOT in v1
 
@@ -539,22 +661,22 @@ to the user.
 
 **Day 1**
 
-* Worker scaffold + D1 schema (tenants, projects, deployments, jti\_used,
-  audit\_publishes) + KV bindings + R2 binding (\~5h)
-* JWT (HS256+jti+sha256) + JCS canonicalizer + HMAC-pepper secret
-  hashing (\~3h)
+* Worker scaffold + D1 schema (tenants, projects, deployments,
+  deployment\_files, jti\_used, audit\_publishes) + KV bindings + R2 binding (\~5h)
+* JWT (HS256+jti+sha256+aud, HKDF-derived publish subkey) + JCS
+  canonicalizer + signed-URL helpers (\~3h)
 * `/register-tenant` + `/publish/start` + per-IP & per-tenant rate
   limits (\~3h)
 
 **Day 2**
 
-* File-PUT proxy (Worker streams body to CF without buffering) (\~3h)
-* `/publish/finalize` + R2 archive write + status polling endpoint (\~4h)
-* `/publish/start` resume semantics + GC cron (\~2h)
+* File-PUT route (buffer body, verify sha256, fan out to CF + R2 .bin) (\~3h)
+* `/publish/finalize` + R2 manifest write + status polling endpoint (\~4h)
+* `/publish/start` resume semantics + three-endpoint GC cron (\~2h)
 
 **Day 2.5**
 
 * DNS + URL-rewrite Worker route on `*.preview.papercuspai.com` (\~3h)
-* Plugin (JCS manifest, resume on partial upload, polling, BYO-CF
-  fallback) (\~4h)
-* Settings UI + eject script + smoke test + docs (\~3h)
+* `@papercupai/cloudflare-pages` plugin (CF Direct Upload, resume on
+  partial upload, `afterDone` auto-publish) (\~4h)
+* Settings UI + smoke test + docs (\~3h)

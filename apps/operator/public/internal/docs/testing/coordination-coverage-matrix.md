@@ -132,24 +132,25 @@ Files: `lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts` (6,
 
 ### Lock authority — failover mid-hold + fencing (C2/C3)
 
-Files: `lib/authority/__tests__/cross-machine-lock-failover.integration.test.ts` (7, plan `coord-system-e2e-testing-2026-06-10` P-007 — the two-instances-one-box rung; the two-physical-box variant is P-010, owner-gated) + `authority-failover-flood.integration.test.ts` (2, P-003 — sustained flood across a mid-flood authority crash). Shared rig `_two-instance-authority-rig.ts`: two simulated machines with per-instance stores + the REAL handlers (`buildFileLockAuthorityHandlers`), hardened verification (`resolveHardenedAuthority`), and the D-005 `LockSetReconstructor` handover, driven over real loopback HTTP via the boot-wired transport; injected clock + roster (deterministic, no sleeps).
+Files: `lib/authority/__tests__/cross-machine-lock-failover.integration.test.ts` (8, plan `coord-system-e2e-testing-2026-06-10` P-007 — the two-instances-one-box rung; the two-physical-box variant is P-010, owner-gated) + `authority-failover-flood.integration.test.ts` (2, P-003 — sustained flood across a mid-flood authority crash). Shared rig `_two-instance-authority-rig.ts`: two simulated machines with per-instance stores + the REAL handlers (`buildFileLockAuthorityHandlers`), hardened verification (`resolveHardenedAuthority`), and the D-005 `LockSetReconstructor` handover, driven over real loopback HTTP via the boot-wired transport; injected clock + roster (deterministic, no sleeps).
 
-| Cell                                                                                                                                                    | Before            | Now                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------- |
-| authority failover MID-HOLD → holder re-asserts to the new authority; contender refused across the wire                                                 | ❌ pure parts only | 🔴 composed over the wire                                                                           |
-| epoch bumps on takeover; deposed authority's stale-epoch grant fenced out downstream (`fenceValid`)                                                     | 🟢 pure           | ✅ E2E                                                                                               |
-| deposed authority refuses mis-routed ops (`not_authority`) → requester fails open loud                                                                  | ❌                 | 🔴                                                                                                  |
-| optimistic grant of UNCONTENDED paths during the rebuild window (the designed D-004 gap, asserted as such)                                              | ❌                 | 🔴                                                                                                  |
-| cross-wire release at the NEW authority frees the contender post-rebuild                                                                                | ❌                 | 🔴                                                                                                  |
-| anti-flap: returning lower peer cannot preempt within cooldown (no double grant); clean preemption + fresh epoch after                                  | 🟢 pure           | ✅ E2E                                                                                               |
-| FLOOD across a crash: zero contender grants on a contended path over 30 rounds × concurrent traffic (before/during/after failover)                      | ❌                 | 🔴 flood test                                                                                       |
-| re-election within the staleness window under flood — fail-open window starts at the crash, bounded by staleMs, full remote service resumes after       | ❌                 | 🔴 flood test                                                                                       |
-| fencing under flood: remote grant epochs non-decreasing across the takeover; liveness (workers keep getting granted whenever an authority is reachable) | ❌                 | 🔴 flood test                                                                                       |
-| holder→authority heartbeat re-assert op over the production transport                                                                                   | ❌                 | ⚪ rig-local `lock.assert` op kind — the production heartbeat-op wiring is a residual (logged below) |
+| Cell                                                                                                                                                                                  | Before            | Now                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------- |
+| authority failover MID-HOLD → holder re-asserts to the new authority; contender refused across the wire                                                                               | ❌ pure parts only | 🔴 composed over the wire                                                                           |
+| epoch bumps on takeover; deposed authority's stale-epoch grant fenced out downstream (`fenceValid`)                                                                                   | 🟢 pure           | ✅ E2E                                                                                               |
+| a deposed authority's stale-epoch **re-assert** at the NEW authority is fenced out (a late heartbeat minted under the old epoch cannot clobber the new authority's truth — B1, D-006) | ❌                 | 🔴                                                                                                  |
+| deposed authority refuses mis-routed ops (`not_authority`) → requester fails open loud                                                                                                | ❌                 | 🔴                                                                                                  |
+| optimistic grant of UNCONTENDED paths during the rebuild window (the designed D-004 gap, asserted as such)                                                                            | ❌                 | 🔴                                                                                                  |
+| cross-wire release at the NEW authority frees the contender post-rebuild                                                                                                              | ❌                 | 🔴                                                                                                  |
+| anti-flap: returning lower peer cannot preempt within cooldown (no double grant); clean preemption + fresh epoch after                                                                | 🟢 pure           | ✅ E2E                                                                                               |
+| FLOOD across a crash: zero contender grants on a contended path over 30 rounds × concurrent traffic (before/during/after failover)                                                    | ❌                 | 🔴 flood test                                                                                       |
+| re-election within the staleness window under flood — fail-open window starts at the crash, bounded by staleMs, full remote service resumes after                                     | ❌                 | 🔴 flood test                                                                                       |
+| fencing under flood: remote grant epochs non-decreasing across the takeover; liveness (workers keep getting granted whenever an authority is reachable)                               | ❌                 | 🔴 flood test                                                                                       |
+| holder→authority heartbeat re-assert op over the production transport                                                                                                                 | ❌                 | ⚪ rig-local `lock.assert` op kind — the production heartbeat-op wiring is a residual (logged below) |
 
 ### Federation (C2/C3)
 
-File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 tests, real two-peer DHT).
+File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (8 tests, real two-peer DHT).
 
 | Cell                                                                                                                                                                                                                                                     | Before        | Now                                      |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ---------------------------------------- |
@@ -158,11 +159,12 @@ File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 te
 | admission gate (rejecting peer never federates)                                                                                                                                                                                                          | partial       | ✅                                        |
 | revocation drops a peer mid-session                                                                                                                                                                                                                      | partial       | 🔴                                       |
 | no duplication (one op merged twice → one row)                                                                                                                                                                                                           | 🟢            | ✅                                        |
+| **poisoning/DoS resilience** — a malformed-op barrage (NaN ts / oversized payload / junk schema / null value) cannot crash or wedge an honest peer's merge pipeline; a later valid op still federates                                                    | ❌             | 🔴                                       |
 | **3-peer partition/rejoin** (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo) | ❌ 2-peer only | 🔴 `three-peer-partition-rejoin.test.ts` |
 
 ### Coord verb lifecycle ACROSS instances (C2/C3)
 
-File: `shared-hive-loop/coord-verb-lifecycle-two-cell.integration.test.ts` (4 tests, plan `coord-system-e2e-testing-2026-06-10` P-005 — the brief-11 composition rig + the real coord\_event\_log (mig-150 capture verbatim) + the real coord-messages projection + the real PgWatermarkStore; real Hyperswarm over a local testnet DHT, own PG per cell).
+File: `shared-hive-loop/coord-verb-lifecycle-two-cell.integration.test.ts` (5 tests, plan `coord-system-e2e-testing-2026-06-10` P-005 — the brief-11 composition rig + the real coord\_event\_log (mig-150 capture verbatim) + the real coord-messages projection + the real PgWatermarkStore; real Hyperswarm over a local testnet DHT, own PG per cell).
 
 | Cell                                                                                                                                                                 | Before                               | Now                                                                                                                                                                                                                                                                                                                                                                                                     |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -187,7 +189,7 @@ File: `sync/hyperbee/__tests__/swarm-chaos.test.ts` (plan `coord-system-e2e-test
 
 ### work\_items claim/lease (C3)
 
-File: `work-item-claims-concurrency.integration.test.ts` (7 tests, real PG).
+File: `work-item-claims-concurrency.integration.test.ts` (12 tests, real PG).
 
 | Cell                                                                                                                                                                                                                                           | Before                                             | Now                                                                                                                          |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -196,6 +198,9 @@ File: `work-item-claims-concurrency.integration.test.ts` (7 tests, real PG).
 | lease ttl expiry → reclaimable (claim\_id rotates)                                                                                                                                                                                             | 🟢                                                 | ✅                                                                                                                            |
 | heartbeat extends lease; foreign heartbeat no-op                                                                                                                                                                                               | 🟢                                                 | ✅                                                                                                                            |
 | fail-open reconcile under partition (deterministic)                                                                                                                                                                                            | 🟢 pure                                            | ✅ partition-heal                                                                                                             |
+| **G16 — REAL-clock lease expiry**: a short ttl lapses on the wall clock (no manual DB edit) and is then stealable                                                                                                                              | ❌                                                  | 🔴                                                                                                                           |
+| **G17 — heartbeat renewal blocks a steal**: a renewing owner holds against concurrent steals, then loses only after heartbeats stop                                                                                                            | ❌                                                  | 🔴                                                                                                                           |
+| **G18 — priority-ordered claiming**: equal `feature_order` tie-breaks on `created_ts` (oldest first); N claimers over M priorities drain in priority order, all distinct; serial claiming drains strictly lowest-`feature_order` first         | ❌                                                  | 🔴                                                                                                                           |
 | **caller-standing gate (EI-284)**: a REVOKED swarm's acquire/heartbeat RPC is refused (`refused:'caller_revoked'` / `reason:'caller_revoked'`); release stays ungated (zombie relinquish is wanted); no-pubkey + check-error fail open (D-004) | ❌ revoked swarm stole leases + blocked live swarms | 🔴 `work-item-claim-authority-ops.test.ts` (6 gate cells) + the flipped `shared-hive-loop/revoked-swarm.integration.test.ts` |
 | caller-standing residual: the RPC envelope is UNAUTHENTICATED — `holderPubkey` is self-reported, so the gate is defense-in-depth against well-behaved-but-revoked peers, not spoofing                                                          | —                                                  | ⚪ on EI-284's thread (authenticated-envelope follow-on)                                                                      |
 
@@ -232,15 +237,20 @@ interactive `psu` claude sessions shared one `~/.claude`. The fix (`bootstrap-su
 
 * `bootstrap-role` → `writeInteractiveClaudeConfig`, keyed by `sid` via the same
   `sessionClaudeConfigDir` helper the resume leg reads) materializes a **symlink
-  mirror** of `~/.claude` with exactly one thing isolated — the `projects/`
-  transcript store — and the sibling `~/.claude.json` symlinked in. That is what
-  makes it credential-/onboarding-safe where a creds-only dir is not: the
+  mirror** of `~/.claude` with **two** things isolated — the `projects/`
+  transcript store (EI-153) and the launching user's **personal global-memory**
+  files (`CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`, deliberately *not*
+  symlinked in so a psu session loads no personal memory — the psu-isolation
+  P-002 / D-001 leak fix) — plus the sibling `~/.claude.json` symlinked in. That
+  is what makes it credential-/onboarding-safe where a creds-only dir is not: the
   user-level `papercusp-su` MCP (lives in `~/.claude.json`), the file-lock + coord
   hooks (`settings.json`), plugins/skills, and onboarding/trust all carry through;
-  only the conversation transcripts are private (so `/resume` + wake-by-uuid never
-  reach a peer's session — the EI-153 root). Verified live on claude-code 2.1.169
-  (a creds-only dir lost the MCP + hooks; the mirror restores them). Covered by
-  `interactive-claude-config.test.ts` (7) + the `bootstrap-su`/`bootstrap-role`
+  the conversation transcripts and personal memory are private (so `/resume` +
+  wake-by-uuid never reach a peer's session — the EI-153 root — and the session
+  is governed only by the psu playbook + the P-001 project-guide splice). Verified
+  live on claude-code 2.1.169 (a creds-only dir lost the MCP + hooks; the mirror
+  restores them). Covered by `interactive-claude-config.test.ts` (8 — including
+  the personal-memory leak-fix test) + the `bootstrap-su`/`bootstrap-role`
   route assertions (CLAUDE\_CONFIG\_DIR present for claude, absent for omp/codex,
   non-fatal on materialize failure).
 

@@ -10,10 +10,10 @@ Extension pointWhat it addsPlugin SDK type
 Lifecycle hooksCode that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)`PluginHooks`
 Event-reaction rulesDeclarative "when X settles, fire my tool" rules over the one reaction registry — the live pipeline extension surface (§7.0)`PluginReactionRule`
 UI (full-route)A complete React panel mounted at `/harness/&lt;slug&gt;` — see §8`UiContribution`
-API routesHTTP endpoints under `/api/plugins/&lt;name&gt;/*``ApiRoute[]`
-DB schemaPostgres migrations under the plugin's own schema`SchemaMigration[]`
+API routesA Hono sub-app the runtime mounts at `/api/plugins/&lt;name&gt;/``PluginApiRoutes`
+DB schemaPostgres DDL (schemaName + ddlPath, or a bare DDL-path array) applied at install under the plugin's own schema`PluginSchemaField`
 
-Retired axes (2026-06-12, plugin-system-hive-port D-004): Roles (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and Routines (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). A manifest-level `roles` entry remains schema-tolerated as inert declarative data.
+Retired axes (2026-06-12, plugin-system-hive-port D-004): Roles (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and Routines (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). Both manifest-level `roles` and `routines` entries remain schema-tolerated as inert `array<object>` declarative data — the loader ignores them; there are no `RoleDefinition` / `RoutineDefinition` SDK types.
 
 Plugins also declare capabilities (§10) — a permission manifest that the runtime enforces at the DI boundary. Sections 7.1–7.5 below describe the substrate-level concerns that apply to every plugin regardless of which axes it extends.
 
@@ -21,12 +21,23 @@ Plugins also declare capabilities (§10) — a permission manifest that the runt
 
 The hybrid hook model (plugin-system-hive-port-2026-06-11 D-003, ratified 2026-06-12):
 the typed PluginHooks fire-points that survived the run-loop retirement
-(beforeMissionStart, onFeaturePassed, afterDone, …) are
+(beforeMissionStart, onFeaturePassed, afterDone) are
 FROZEN — they keep firing in-process for back-compat but no new typed fire-point will
 ever be added, and their invocations bypass dispatch (no audit, no capability gate). The WordPress-style
 hook bus (addAction/addFilter, the old PluginHookBus) is
 retired (it had zero registered consumers). New pipeline fire-points are
 event emissions only, and plugins subscribe by declaring reaction rules.
+
+The PluginHooks interface declares more fire-points than
+the host wires today. Of the typed surface, only
+onLoad and restoreFromReload (at init) plus
+beforeMissionStart, onFeaturePassed, and
+afterDone (via firePluginLifecycle) are
+actually invoked by the pipeline. The remaining declared hooks —
+onHarnessCreated, onProposalAccepted,
+onPostOrchestrator, onPostWorker,
+onPostValidator, contributeOperatorSuggestions —
+exist on the type but have no fire site yet; they are declared-but-not-fired.
 
 A rule is {`{ id, on, when?, fire, args?, onlyOnSuccess?, capability? }`} —
 declared in the manifest (reactions\[], the declarative subset: when is a
@@ -64,50 +75,42 @@ plugins:runtime\_status (reactionRules) and events:graph.
 
 ### 7.1 Inter-plugin dependencies
 
-Plugins frequently rely on services or hooks declared by other
-plugins. The substrate makes this dependency explicit in the
-manifest so install-time resolution can refuse incoherent
-configurations rather than fail at runtime.
+Plugins frequently rely on services or tools declared by other
+plugins. The manifest carries this dependency as plugin-slug
+metadata so lock-resolve can build a dependency graph at
+Cupboard install time.
+
+Today `requires` is a bare array of plugin slug strings (hard
+dependencies, used by `papercusp install` / `papercusp plugin
+        install` to build the lock-resolve graph), with a sibling
+`recommends` array for soft dependencies — surfaced to the user
+during install but never auto-installed. There is no
+name→version-range object form and no per-entry `{ version,
+        optional }` shape; both fields are arrays of slugs like
+`"@org/dep-plugin"`. (The manifest's top-level is
+`additionalProperties: false`, so only schema-known keys are
+accepted.)
 
 ```json
 // papercusp.json:
 {
 "name": "shareholder-briefings",
 "version": "1.2.0",
-"requires": {
-// Hard dependency — install fails if not satisfied.
-"audit-log": "^1.0",
-// Optional — plugin loads either way; check `api.hasPlugin('papercup')` at runtime.
-"papercup": { "version": "^0.0.3", "optional": true }
-}
+// Hard dependencies — slugs lock-resolve includes in the graph.
+"requires": ["@org/audit-log"],
+// Soft dependencies — surfaced at install, never auto-installed.
+"recommends": ["@org/papercup"]
 // ...
 }
 ```
 
-Resolution at install time.
-
-```
-$ papercusp install shareholder-briefings@1.2.0
-
-shareholder-briefings@1.2.0 requires:
-audit-log    ^1.0    ✓ found (audit-log@1.4.2 installed)
-papercup     ^0.0.3  ⚠ not installed (optional)
-
-Continue? [Y/n]: y
-```
-
-If a hard `requires` entry is missing or version-incompatible,
-the install aborts with a one-line `papercusp install &lt;dep&gt;`
-suggestion. Optional dependencies surface as warnings only;
-the plugin must check `api.hasPlugin(name)` at runtime and
-degrade gracefully when absent.
-
-Cascading uninstall. Removing plugin A while
-plugin B has `requires: { 'A': '^1.0' }` aborts by default; the
-user must explicitly `papercusp uninstall A --cascade` (which
-uninstalls B too, after a per-plugin confirmation) or
-`--orphan` (which leaves B installed but disabled, with a banner
-in the UI explaining why).
+Note: there is no implemented version-range dependency resolver
+or `api.hasPlugin(name)` presence-check API today — `requires`
+and `recommends` are schema-tolerated metadata that lock-resolve
+reads to order installs, not a runtime semver gate. The
+per-version-range resolution, cascading-uninstall, and
+`--orphan` behaviors described in earlier drafts are design
+intent tracked in the plugin-system plans, not shipped code.
 
 Runtime version pinning. Independently of
 plugin-to-plugin deps, every manifest declares the substrate
@@ -127,175 +130,127 @@ This is the same versioning shape as service ABI pinning
 satisfies(PAPERCUSP\_RUNTIME\_VERSION, manifest.papercusp)
 on every load and rejects out-of-range plugins, catching the case
 where a plugin built against an old runtime would otherwise hit
-subtle API drift bugs. (A separate protocol field
-pins the plugin-wire protocol — see the runtime roadmap.)
+subtle API drift bugs. (PAPERCUSP\_RUNTIME\_VERSION is
+0.1.1 today.)
 
-### 7.2 Plugin lifecycle states
+A separate protocol field pins the plugin
+wire-protocol version, independent of the
+runtime release cycle so hooks can evolve without bumping the
+whole runtime. It is enforced identically at load: the loader
+runs satisfies(PROTOCOL\_VERSION, manifest.protocol)
+and refuses out-of-range plugins. PROTOCOL\_VERSION
+is fixed at 1.0.0 today; future bumps will refuse
+loads from plugins that don't declare a compatible range.
 
-Every installed plugin is in exactly one of these states. The
-substrate tracks state for plugins installed under
-\~/.papercusp/global-plugins/\<name>/ and exposes it
-via papercusp plugin list.
+### 7.2 Plugin lifecycle — enable / disable
+
+A plugin lives on disk under
+\~/.papercusp/global-plugins/\<slug>/ (installed by
+the Cupboard git-clone above, or symlinked for local dev). Its
+runtime presence is binary per harness: enabled
+or disabled. There is no six-state machine and
+no per-plugin runtime quarantined/updating/uninstalling
+state tracked in code today — those, along with a crash circuit
+breaker and a transition audit log, are design intent in the
+plugin-system plans, not shipped substrate.
 
 StateMeaningHooks fire?UI mounted?
 
-installed
-Tarball extracted, migrations run, capabilities granted, but never activated yet (or has been disabled).
-No
-No
-
-active
-Normal running state. Listening to hooks, mounting UI, accepting role dispatches.
-Yes
-Yes
-
 disabled
-User-initiated. Configuration and DB schema retained.
+On disk under global-plugins/\<slug>/ but not wired into a harness. Config and any DB schema are retained.
 No
 No
 
-quarantined
-Substrate-initiated after the crash circuit breaker (§7.3) trips. Same as disabled but with a UI banner explaining why and a "re-enable after fix" button.
-No
-No
+enabled
+Wired into the harness: tools projected, reaction rules registered, typed hooks live, UI route mounted at /harness/\<slug>.
+Yes
+Yes
 
-updating
-Transient. New version downloaded; capability diff being prompted; migrations running. Old version's hooks paused, UI replaced with a spinner.
-Paused (queued)
-Spinner
+The CLI wires both transitions:
+papercusp plugin enable \<slug> \[--harness \<slug>]
+records the manifest's capabilities as grants for the target
+harness (after consent) and brings the plugin into the host;
+papercusp plugin disable \<slug> \[--harness \<slug>]
+unwires it. (A quarantined/withdrawn
+concept does exist, but only at the Cupboard lock/version
+layer — papercusp lock upgrade-pin/upgrade-all
+operate over withdrawn or quarantined package versions,
+not a per-plugin runtime circuit-breaker.)
 
-uninstalling
-Transient. Hooks unregistered; UI unmounted; routines stopped; schema dropped (after confirmation).
-No
-No
+Hot-reload state. When a plugin reloads (a file
+change in dev, a config edit), the host can preserve in-flight
+state across the swap. If the manifest opts in
+(hotReload: {`{ preserveState: true }`}), the host
+calls the plugin's getStateForReload(ctx) before
+unloading and restoreFromReload(ctx, state) after the
+new module's init() — before any other hook. The
+stashed value (JSON, ≤ 64 KiB, keyed by plugin + harness) lives in
+harness\_shared.plugin\_reload\_state (Migration 055).
 
-Allowed transitions:
+### 7.3 Host hook-error handling
 
-```
-        install
-           │
-           ▼
-      installed ─────────► uninstalling ─► (gone)
-           │  ▲
-  activate │  │ disable
-           ▼  │
-        active ◄─────► quarantined
-           │  ▲
-           │  │
-           ▼  │
-        updating
-           │
-           ▼
-        active (or rolled back to installed if migration fails)
-```
+Plugins fail. The host must not let one plugin's bug take down a
+harness run. The typed-hook invoker
+(firePluginLifecycle) wraps each handler call in
+try/catch: a throw is caught, logged to the harness run log
+(hook "\<name>" threw: \<message>), and the
+pipeline continues. The throw never propagates to the host's main
+loop.
 
-Substrate guarantees. While a plugin is in
-a transient state (updating, uninstalling),
-the substrate enqueues hook fires for it; on transition back to
-active within a 30-second window, queued events are
-delivered. After 30s they're dropped with an entry in
-audit.hook\_executions. This avoids both the silent-loss
-footgun and the unbounded queue growth footgun.
+That is the whole of the shipped fault-isolation story for typed
+hooks today — catch, log, continue. There is no
+throw/timeout counting, no per-fault-class threshold, no
+quarantine transition, and no audit row. The per-plugin crash
+circuit breaker (5-throws-in-60s thresholds, handler eviction,
+a circuitBreaker manifest field) described in earlier
+drafts is unbuilt design intent: there is no
+circuitBreaker key in the SDK manifest type or the
+JSON schema (whose top-level is additionalProperties:
+false), so a manifest declaring one is rejected outright.
 
-State changes never silently fail. Every
-transition writes a row to audit.plugin\_lifecycle
-with the trigger, the actor (substrate vs user), and any error.
-papercusp status \<name> shows the current
-state and the last 5 transitions inline.
-
-### 7.3 Crash circuit breaker
-
-Plugins fail. The substrate must not let one plugin's bugs take
-down the whole install. The circuit breaker is per-plugin,
-per-fault-class:
-
-Fault classThresholdAction
-
-Hook handler throws
-5 throws within any 60s window for the same hook
-That hook handler is removed from the chain. The plugin stays active; other handlers and hooks are unaffected. Audit row written.
-
-Hook handler hangs past timeout
-3 timeouts within any 60s window
-Same: handler removed, plugin stays active.
-
-Init function throws
-Any throw on onLoad() during activation
-Plugin transitions to quarantined. UI shows the throw + stack. papercusp enable \<name> retries init.
-
-Migration throws
-Any throw during papercusp install or update
-Substrate rolls back the partial migration (transactional DDL where supported), plugin stays in installed at the prior version. User sees the migration error.
-
-UI component renders error 5x in a row
-5 consecutive React error-boundary catches
-UI surface unmounted; rest of the plugin (hooks, routines) keeps running. UI shows a "this surface crashed — see logs" inline placeholder.
-
-Iframe widget fails to load
-3 load failures in 60s
-Iframe widget hidden; placeholder shown. Plugin's other surfaces continue.
-
-Defaults are spec-defined; per-plugin overrides via
-manifest circuitBreaker field require user opt-in
-at install consent (treated as a medium-tier capability).
-A plugin author cannot silently raise their own thresholds.
-
-All circuit-breaker actions are audit-logged with the fault
-history. `papercusp logs &lt;name&gt; --circuit-breaker`
-shows recent trips for debugging.
+Reaction rules (§7.0) are the path that does get the full
+substrate treatment — they run through normal dispatch, so auth,
+quota, audit, and the cause-chain loop guard all apply. New
+fault-tolerance work targets that surface, not the frozen typed
+hooks.
 
 ### 7.4 Failure-mode taxonomy
 
-Substrate behavior must be defined for every failure class —
-otherwise authors guess and the install feels flaky. The
-substrate enumerates these and documents the response:
+The implemented substrate behavior for the failure classes that
+exist in code today:
 
 FailureSubstrate behaviorWhat the plugin author does about it
 
-Capability revoked mid-call
-DI proxy throws MissingCapabilityError (§10.7).
-Wrap DI calls in try/catch; degrade to a no-op or prompt the user to re-grant.
+Capability missing / revoked at call
+The DI proxy / dispatch refuses the call — the capability AND-check fails (§10).
+Declare the capability in the manifest; wrap optional calls in try/catch and degrade gracefully.
 
-Required dependency uninstalled (with `--orphan`)
-Plugin transitions to quarantined; UI banner names the missing dep.
-Nothing — the user resolves by reinstalling the dep or uninstalling this plugin.
+Typed hook handler throws
+Caught and logged to the run log; the pipeline continues (§7.3). No counter, no eviction, no audit row.
+Read the run log; keep hook bodies defensive — they are advisory, not for heavy lifting.
 
-Hook handler hits a deadline
-Per-hook timeout (default 5s, override in manifest with capability `hooks:long-running`). Handler is cancelled; circuit breaker increments.
-Move long work to a routine; hooks are advisory, not for heavy lifting.
+Runtime version out of range
+The loader runs satisfies(PAPERCUSP\_RUNTIME\_VERSION, manifest.papercusp) and refuses to load with a one-line range-mismatch error.
+Bump the manifest's papercusp range and republish.
 
-Plugin's API route throws
-Substrate returns 500 with the plugin name and a request id; full stack in `audit.api_errors`.
-Standard HTTP error handling; the substrate does not retry.
+Wire-protocol version out of range
+The loader runs satisfies(PROTOCOL\_VERSION, manifest.protocol) and refuses to load.
+Bump the manifest's protocol range to include the host's PROTOCOL\_VERSION.
 
-Plugin's routine fire times out
-Marked as `failed` in `routine_fires` after the configured deadline; counts toward routine pause threshold (§9.4).
-Either reduce work, raise the deadline (via manifest), or split into smaller routines.
+Tool / handler cross-validation fails
+The loader rejects the plugin at load: every manifest tool needs a handler, no orphan handlers, and each tool's capabilities must subset the plugin's declared set.
+Keep papercusp.json tools\[] and the exported handler map in sync (or use getDynamicTools).
 
-Service ABI mismatch on substrate upgrade
-Plugin refuses to load (§8.4.1). Status: installed not active. UI shows version mismatch.
-Bump the manifest's service range and republish.
-
-Plugin claims a UI slot id another plugin owns
-Install-time abort (§10.5). User picks `--rename-id`, `--replace`, or `--supplement`.
-Author should publish with a plugin-prefixed id by default.
-
-Unhandled exception in plugin code (anywhere)
-Logged to `audit.plugin_errors` with stack + plugin version + recent context. Does not propagate to the substrate's main loop.
-Same as any production bug — read the audit log.
-
-Migration fails partway through `papercusp update`
-Substrate attempts transactional rollback. If DDL is non-transactional (e.g. some CREATE INDEX CONCURRENTLY) the substrate refuses to apply it without `--allow-non-transactional` and a confirmation. Failed update leaves the plugin at the prior version.
-Provide an explicit `down()` migration; test the up→down→up cycle locally.
-
-Plugin tarball corrupt or signature invalid
-Install aborted before any filesystem changes. Audit row in `audit.install_attempts`.
-Republish; the marketplace re-verifies on upload.
-
-Every behavior here is enforced by the substrate, not the plugin.
-A plugin author writes their code and trusts the substrate
-to handle the failure cases above — same as a Node program trusts
-the OS to handle a SIGSEGV.
+The richer taxonomy from earlier drafts — per-hook deadlines with
+a hooks:long-running capability, API-route 500s into
+audit.api\_errors, routine-fire timeouts into
+routine\_fires, transactional migration rollback, UI
+slot-id collision resolution, and the
+audit.plugin\_errors/audit.install\_attempts
+tables — describes substrate that does not exist in code. None of
+those audit tables are defined, and routines are a retired axis
+(§7). Treat that list as design intent for the plugin-runtime
+roadmap, not current behavior.
 
 ### 7.5 Developer experience
 
