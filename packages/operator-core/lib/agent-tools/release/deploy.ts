@@ -71,14 +71,14 @@ export default defineTool({
   name: 'release:deploy',
   profile: 'engineer',
   description:
-    'Manual deploy lever + "what is blocking my deploy?" diagnosis. op:status (read-only — gate red/green/stalled, release-fixer status, how far :3070 is behind the green pin, + a recommendation; call FIRST when a change is committed + gate-clean but not live). op:trigger (expedite a GREEN-but-stalled deploy; refuses unless green code is ahead; dry-run unless confirm:true; audited). op:force (operator/queen/architect ONLY, loud+audited: deploy an UN-GREEN commit past a red gate — requires acknowledgeRedTests + reason; the rare no-users-window escape, never a reflex). Wraps the existing deploy-cli chokepoint, fired DETACHED.',
+    'Manual deploy lever + "why isn\'t my change live?" diagnosis. op:status (read-only — gate red/green/stalled, release-fixer status, how far :3070 is behind the green pin, + a recommendation; call FIRST when a gate-clean change isn\'t live). op:trigger (expedite a GREEN-but-stalled deploy; refuses unless green code is ahead; dry-run unless confirm:true; audited). op:force (operator/queen/architect ONLY, loud+audited: deploy an UN-GREEN commit past a red gate — needs acknowledgeRedTests + reason; the rare no-users-window escape). Wraps the deploy-cli chokepoint, fired DETACHED.',
   guidance: {
     when:
-      'Your change is committed + gate-clean (dev:pipeline_position shows it on staging/main) but not live on :3070 — call release:deploy{op:status} to see why. If GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). If the gate is RED on UNRELATED tests → FIX the reds first (even out of your lane).',
+      'A committed, gate-clean change isn\'t live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).',
     notWhen:
-      'Do NOT force as a reflex to "get my change out" — force ships KNOWN-BROKEN code and is the route-around-the-broken-thing anti-pattern; it is operator/owner-gated for the no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand (accountably) > owner-force. Never silently wait forever. For tuning gate thresholds use release:checkpoint-config; for the per-path "where is my change" probe use dev:pipeline_position.',
+      'Never force as a reflex to "get my change out" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.',
     chaining:
-      'dev:pipeline_position{path} (is it on staging/main?) → release:deploy{op:status} (why not live?) → release:deploy{op:trigger,confirm:true} (green-but-stalled) OR fix the reds.',
+      'dev:pipeline_position{path} → release:deploy{op:status} → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds.',
   },
   capability: 'operator:write',
   requirePrincipal: false,

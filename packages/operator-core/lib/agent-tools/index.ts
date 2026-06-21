@@ -263,6 +263,7 @@ import './dev/activity';
 import './dev/pg_health';
 import './dev/pg_active_queries';
 import './dev/pg_table_sizes';
+import './dev/pg_query';
 import './dev/build_status';
 // git-sync-dx-hardening-2026-06-17 P-002 — "where is my change / is it live?" probe
 import './dev/pipeline_position';

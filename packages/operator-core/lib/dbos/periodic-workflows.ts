@@ -33,6 +33,7 @@ import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce } from '../reconcile-handoffs';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
+import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
 // spawnReclaimSweep, staleClaimSweep, learningInfraHealth, steeringChurnSweep) were
@@ -289,3 +290,29 @@ const storageGrowthAlarmWorkflow = DBOS.registerWorkflow(storageGrowthAlarmTick,
   name: 'storageGrowthAlarm', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
+
+// Every 15min (:07/:22/:37/:52, off the :00 stampede): runaway/leaked TEST-desktop
+// + zombie alarm (infra-perf-reliability-audit-round4 P-006 — the host-CPU drain
+// from killed/wedged E2E webviews leaking and pegging a core). READ-ONLY /proc
+// scan; CPU-samples only the handful of positively-identified test desktops, never
+// the live user desktop (fail-safe classifier); emits a notifications:recent toast
+// on a runaway desktop or a zombie pile. Detection-ONLY — auto-reap of a non-agent
+// host process is a separate owner-gated kill path. Default ON; kill-switch
+// PAPERCUSP_TEST_DESKTOP_REAPER=0. Never throws → can't affect what it watches.
+// Shed under loop pressure.
+async function testDesktopReaperTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_TEST_DESKTOP_REAPER === '0') return;
+    if (shouldShedHeavyTick('test-desktop-reaper')) return;
+    const r = await runTestDesktopReaperOnce();
+    if (r.alarmed) {
+      console.log(
+        `[test-desktop-reaper] alarmed: ${r.candidates.filter((c) => c.reason === 'runaway-test-desktop').length} runaway desktop(s), ${r.candidates.filter((c) => c.reason === 'zombie').length} zombie(s) (sampled ${r.sampled})`,
+      );
+    }
+  }, { name: 'test-desktop-reaper' });
+}
+const testDesktopReaperWorkflow = DBOS.registerWorkflow(testDesktopReaperTick, {
+  name: 'testDesktopReaper', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(testDesktopReaperWorkflow, { name: 'testDesktopReaper', crontab: '0 7,22,37,52 * * * *' });

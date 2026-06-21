@@ -880,16 +880,22 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
  * attempt to read A's data through every surface, assert denial." The
  * scoped-superuser-workspace-clamp is the enforcement; the synthetic-probe
  * MECHANISM is pinned above. This block wires the invariant on the REAL
- * cross-workspace READ surfaces a foreign reader would actually use:
+ * WORKSPACE-partitioned cross-workspace READ surfaces a foreign reader would use:
  *   - papercusp:list_workspaces — the workspace ENUMERATOR (reads every workspace's
  *     registry off the admin handle).
  *   - search:fulltext / search:semantic — cross-workspace prose/embedding search.
- *   - memory:search — cross-workspace memory recall.
  * Each is crossWorkspace:true (runs on the getOrgPg admin handle, which bypasses
  * per-workspace RLS) and is NOT on the scoped-safe / global-flag-admin allowlists,
  * so a SCOPED session is denied (workspace_forbidden) and only an UNSCOPED
  * (--all-workspaces) superuser may span. A NEW such read surface added without
  * confinement (or without an explicit allowlist review) makes this fail loudly.
+ *
+ * NOT asserted here (confined by a DIFFERENT axis, not the workspace clamp):
+ *   - memory:search — the memory store is partitioned by user-id/harness-slug, NOT
+ *     by workspace, so it is not a "read workspace A's data" surface. (Its declared
+ *     crossWorkspace:true also does not reach the clamp — it dispatches on a
+ *     workspace-scoped tx, not the admin-handle path; tracked separately as a
+ *     declared-vs-projected discrepancy, not a workspace leak.)
  */
 describe('cross-workspace-denial invariant (isolation-plan #4)', () => {
   const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
@@ -898,7 +904,6 @@ describe('cross-workspace-denial invariant (isolation-plan #4)', () => {
     'papercusp:list_workspaces',
     'search:fulltext',
     'search:semantic',
-    'memory:search',
   ] as const;
 
   for (const tool of FOREIGN_READ_SURFACES) {
