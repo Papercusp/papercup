@@ -39,3 +39,34 @@ export function operatorHomeHarnessSlug(): string {
   const ptr = process.env[HOME_HARNESS_ENV]?.trim();
   return ptr && ptr.length > 0 ? ptr : LEGACY_DEFAULT_HOME_HARNESS;
 }
+
+/**
+ * Retired → current harness-slug aliases. When a home/registered harness is
+ * RENAMED, lingering references to the old slug — a stale env var, persisted ctx,
+ * a fire-path/autoloop row, an un-restarted bg-host — keep resolving to a 404 long
+ * after the rename. That is exactly how EI-2224 went dark: `papercup` was renamed
+ * to `papercusp` on 2026-06-19, but `PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS=papercup`
+ * (and the home ctx) still pointed at the retired slug, so every fire / dispatch /
+ * spawn 404'd ("unknown project") and the auto-implement dispatcher sat silently
+ * dark ~34h while ~100+ auto-eligible bugs starved.
+ *
+ * This is a RENAME-COMPAT shim, not an arbitrary normalizer: only a KNOWN retired
+ * slug maps to its current name, and resolution still PREFERS a direct registry hit
+ * (see `resolveProject`), so a genuine registration under the old slug — should one
+ * ever exist — still wins. Add an entry here whenever a home/registered harness is
+ * renamed, so the rename self-heals instead of darkening a fire-path.
+ */
+export const RETIRED_HARNESS_SLUG_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  papercup: 'papercusp',
+});
+
+/**
+ * Canonicalize a (possibly retired) harness slug to its current name. Returns the
+ * trimmed input unchanged when it is not a known retired slug. Pure + sync — safe
+ * in module-level consts, arg defaults, and the registry resolver.
+ */
+export function canonicalHarnessSlug(slug: string): string {
+  const s = slug?.trim();
+  if (!s) return slug;
+  return RETIRED_HARNESS_SLUG_ALIASES[s] ?? s;
+}

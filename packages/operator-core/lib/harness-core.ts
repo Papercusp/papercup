@@ -22,6 +22,11 @@ import {
   HARNESS_SHARED_CONFIG_REL_PATH,
   isHarnessSharedConfig,
 } from './harness/harness-shared-config-types';
+import {
+  canonicalHarnessSlug,
+  operatorHomeHarnessSlug,
+  HOME_HARNESS_ENV,
+} from './harness/operator-home-harness';
 
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { readRegistry, activeWorkspaceId } from './workspace-registry';
@@ -201,7 +206,24 @@ export function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggre
  * Project lookups
  * ───────────────────────────────────────────────────────────────────── */
 
-export async function resolveProject(
+/**
+ * Inner registry lookup for an EXACT slug — active workspace first, then a
+ * cross-workspace safety-net scan (unless the caller PINNED a workspaceId). Pure
+ * over the registry; `resolveProject` layers the retired-slug alias on top.
+ *
+ * Cross-workspace fallback (resolution safety net): a harness is registered in a
+ * SPECIFIC workspace, but the active workspace flaps — multiple SU agents + the
+ * desktop switch `registry.current` under us, and each harness typically lives in
+ * only ONE workspace. Resolving a NAMED slug must not silently 404 just because the
+ * active workspace happens not to carry it: every harness route (status / prompts /
+ * features / run / …) funnels through here, so without this the operator could only
+ * ever touch the *currently-active* workspace's harnesses. Safe because results +
+ * the on-disk folder are SHARED by slug (D-1, link-not-move) — whichever workspace
+ * carries the slug resolves the same path. Skipped when the caller PINNED a
+ * workspace (durable pipelines pass workspaceId): those must stay in their fixed
+ * workspace, miss and all.
+ */
+async function findRegisteredProjectBySlug(
   slug: string,
   workspaceId?: string,
 ): Promise<ProjectEntry | null> {
@@ -212,17 +234,6 @@ export async function resolveProject(
   const hit = reg.projects.find((p) => p.slug === slug);
   if (hit) return hit;
 
-  // Cross-workspace fallback (resolution safety net). A harness is registered in
-  // a SPECIFIC workspace, but the active workspace flaps — multiple SU agents +
-  // the desktop switch `registry.current` under us, and each harness typically
-  // lives in only ONE workspace. Resolving a NAMED slug must not silently 404
-  // just because the active workspace happens not to carry it: every harness
-  // route (status / prompts / features / run / …) funnels through here, so
-  // without this the operator can only ever touch the *currently-active*
-  // workspace's harnesses. Safe because results + the on-disk folder are SHARED
-  // by slug (D-1, link-not-move) — whichever workspace carries the slug resolves
-  // the same path. Skipped when the caller PINNED a workspace (durable pipelines
-  // pass workspaceId): those must stay in their fixed workspace, miss and all.
   if (workspaceId !== undefined) return null;
   try {
     for (const ws of readRegistry().workspaces) {
@@ -232,6 +243,83 @@ export async function resolveProject(
     }
   } catch { /* registry unreadable → fall through to null */ }
   return null;
+}
+
+export async function resolveProject(
+  slug: string,
+  workspaceId?: string,
+): Promise<ProjectEntry | null> {
+  const direct = await findRegisteredProjectBySlug(slug, workspaceId);
+  if (direct) return direct;
+
+  // Retired-slug alias fallback (EI-2224). A lingering reference to a RENAMED
+  // harness (the retired `papercup` → the registered `papercusp`, 2026-06-19) must
+  // SELF-HEAL here rather than 404 every fire / dispatch / spawn into dispatcher
+  // darkness. resolveProject is the single chokepoint for both the HTTP-404
+  // "unknown project" fire-path (harness-readers / endpoint routes) AND the
+  // spawn-rejection path (operator-spawn), so the alias applied here covers them
+  // all. We only reach this branch AFTER a direct hit missed, so a genuine
+  // registration under the old slug (should one ever exist) still wins.
+  const canonical = canonicalHarnessSlug(slug);
+  if (canonical !== slug) {
+    const aliased = await findRegisteredProjectBySlug(canonical, workspaceId);
+    if (aliased) return aliased;
+  }
+  return null;
+}
+
+/** Structured verdict from {@link checkHomeHarnessResolves}. */
+export interface HomeHarnessResolutionCheck {
+  /** True when the slug resolves to a registered project (directly or via alias). */
+  ok: boolean;
+  /** The slug that was checked. */
+  slug: string;
+  /** The registered slug it resolved to, or null when it resolves to nothing. */
+  resolvedSlug: string | null;
+  /** True when it resolved ONLY via the retired-slug alias (a drift to clean up). */
+  aliased: boolean;
+  /** Human-readable, loud-enough-to-log explanation. */
+  message: string;
+}
+
+/**
+ * Recurrence guard for EI-2224: verify the configured operator-home harness slug
+ * resolves to a registered project. A RENAME that leaves the home pointer
+ * (PAPERCUSP_HIVE_HOME_SLUG) or a fire-path env on the retired slug used to 404
+ * SILENTLY at dispatch time and sit dark for hours; surfacing it at BOOT turns a
+ * 34h silent outage into a one-line boot failure. Returns a structured verdict and
+ * NEVER throws — the caller (boot path) decides whether to console.error / exit /
+ * escalate. `aliased: true` means it resolves but only through the deprecated alias
+ * (a warn-but-continue), while `ok: false` means it resolves to nothing (fail loud).
+ */
+export async function checkHomeHarnessResolves(
+  slug: string = operatorHomeHarnessSlug(),
+  workspaceId?: string,
+): Promise<HomeHarnessResolutionCheck> {
+  const project = await resolveProject(slug, workspaceId);
+  if (!project) {
+    return {
+      ok: false,
+      slug,
+      resolvedSlug: null,
+      aliased: false,
+      message:
+        `operator-home harness "${slug}" does not resolve to any registered project — ` +
+        `fire-paths, the auto-implement dispatcher, and fleet:spawn will all 404 ("unknown project"). ` +
+        `Register it, fix ${HOME_HARNESS_ENV}, or add a retired-slug alias in operator-home-harness.ts.`,
+    };
+  }
+  const aliased = project.slug !== slug;
+  return {
+    ok: true,
+    slug,
+    resolvedSlug: project.slug,
+    aliased,
+    message: aliased
+      ? `operator-home harness "${slug}" resolved via the retired-slug alias → "${project.slug}". ` +
+        `Update the pointer/env to the current slug to retire the alias.`
+      : `operator-home harness "${slug}" resolved → "${project.slug}".`,
+  };
 }
 
 /**
