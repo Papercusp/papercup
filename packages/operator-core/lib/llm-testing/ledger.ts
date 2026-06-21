@@ -51,11 +51,18 @@ function pidAlive(pid: number): boolean {
 /**
  * EI-281: a crashed runner's claim otherwise blocks its scenario for the full
  * TTL (the gate's runner-aggregate su-S11 attempt sat behind a 10-min stale
- * claim from a dead pid). Default owner ids are `${hostname()}:${pid}` — when
+ * claim from a dead pid). Owner ids are `${hostname()}:${pid}` (the ledger
+ * default) or `${hostname()}:${pid}/${runId8}` (the testing-shell runner) — when
  * the holder is on THIS host and its pid is gone, the claim is reapable now
  * rather than at expiry (the same liveness probe the lock store uses). A
  * custom owner id without the host:pid shape, or a holder on another host,
  * is never treated as dead.
+ *
+ * The pid segment may carry a trailing `/<runId8>` (the runner's owner id) — we
+ * strip it before parsing the pid. Without this strip, `Number('<pid>/<runId>')`
+ * is NaN, so the runner's claims were NEVER reapable and a killed run (timeout /
+ * rate-limit exhaustion) stranded its scenario for the full TTL (observed
+ * 2026-06-21 while iterating on the SU-S13/S14 code:run behavior gates).
  */
 export function holderIsDeadLocalPid(
   ownerId: string,
@@ -65,7 +72,8 @@ export function holderIsDeadLocalPid(
   const idx = ownerId.lastIndexOf(':');
   if (idx <= 0) return false;
   const ownerHost = ownerId.slice(0, idx);
-  const pid = Number(ownerId.slice(idx + 1));
+  // The pid segment is everything after the last ':' up to an optional '/<runId>'.
+  const pid = Number(ownerId.slice(idx + 1).split('/')[0]);
   if (ownerHost !== host || !Number.isInteger(pid) || pid <= 0) return false;
   return !isAlive(pid);
 }

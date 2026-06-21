@@ -333,17 +333,27 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
   const now = opts.now ?? (() => Date.now());
   return {
     async readCadenceState(): Promise<ScoutCadenceState> {
-      // Lazy import to keep this module's pure core free of the autoloop/PG edge.
+      // Lazy import to keep this module's pure core free of the autoloop/PG/flag edge.
       const { readFireState } = await import('../autoloop');
+      // K1 workspace-brain scope (workspace-scoped-coordination-2026-06-20 D-006/P-002):
+      // when WORKSPACE_COORDINATION is ON, the workspace-Scout is ONE brain over the
+      // whole workspace, so the idea-pipeline drain signal (the `ideas-drained` trigger)
+      // must span ALL the workspace's routed ideas, not just this install's — otherwise
+      // a single hive draining would wrongly re-trigger the workspace brain. OFF ⇒
+      // per-install, byte-identical to today. Best-effort flag read (defaults OFF on error).
+      const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
+      const wsCoordOn = await isWorkspaceCoordinationOn();
       const [idleRatio, frictionSignals, fire, ideaQueue] = await Promise.all([
         opts.readIdleRatio().catch(() => 0),
         opts.readFrictionSignals().catch(() => 0),
         readFireState(harnessSlug, SCOUT_CYCLE_ROLE).catch(() => null),
         // Idea-pipeline status powers the `ideas-drained` trigger (owner-set
         // 2026-06-18). Best-effort: a read failure falls back to total 0, which
-        // disables the drain trigger for that tick (heartbeat still fires).
+        // disables the drain trigger for that tick (heartbeat still fires). Under
+        // WORKSPACE_COORDINATION the harness filter is dropped → the workspace-wide
+        // drain signal (one brain sees the whole pipeline).
         readIdeaQueueStatus({
-          harnessSlug,
+          ...(wsCoordOn ? {} : { harnessSlug }),
           ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
         }).catch(() => ({ total: 0, pending: 0 })),
       ]);
@@ -439,9 +449,20 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
       await (opts.workspaceId ? runWithWorkspace(opts.workspaceId, ack) : ack());
     },
     async recordTick(rec) {
+      // K1 workspace-brain scope (workspace-scoped-coordination-2026-06-20 D-006/P-002):
+      // when WORKSPACE_COORDINATION is ON, the workspace-Scout's tick observability rolls
+      // up under the workspace sentinel (install_slug = workspaceId) — ONE coherent tick
+      // stream per workspace brain, the same sentinel keying the lens-weights already use
+      // (routed-ledger.refreshScoutOutcomes). OFF ⇒ the per-install slug, byte-identical
+      // to today. The sentinel needs a workspaceId; without one we keep the per-install
+      // slug (the dark/legacy path). Best-effort flag read (defaults OFF on error).
+      const { isWorkspaceCoordinationOn, workspaceBrainScopeKey } = await import('../workspace-brain-scope');
+      const installSlug = opts.workspaceId
+        ? workspaceBrainScopeKey(opts.workspaceId, harnessSlug, await isWorkspaceCoordinationOn())
+        : harnessSlug;
       await recordScoutTick({
         ...rec,
-        installSlug: harnessSlug,
+        installSlug,
         ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
       });
     },

@@ -21,6 +21,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
+import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
 
 const SU_BEE_ROLES = [...SU_ROLES, 'bee'] as const;
@@ -100,6 +101,67 @@ export function truncateInlineNote(note: string | undefined): {
   return { note: note.slice(0, NOTE_INLINE_MAX - 1) + '…', truncated: true };
 }
 
+/** A terminal status — the item is finished; it is held + assigned by no one. */
+export function isTerminalStatus(status: string): boolean {
+  return status === 'done' || status === 'dropped';
+}
+
+/**
+ * Terminal-flip cleanup (claim-discipline + EI-2298). A done/dropped item must
+ * carry NEITHER a live claim NOR a durable assignment:
+ *  - the CLAIM is the caller's live lease — only an attributable agent holds one,
+ *    so it's released by the caller's ownerId (null caller / principal → skip);
+ *  - the ASSIGNMENT is item-level and may belong to a DIFFERENT agent than the
+ *    one closing the item (e.g. a verify-first `done` set by a peer). If it is
+ *    left dangling the item sits done+assigned-idle forever and any dispatcher
+ *    that re-pokes assigned-idle items re-targets the stale assignee endlessly
+ *    (EI-2298). So clear it UNCONDITIONALLY on a terminal flip.
+ * Deps are injected so the invariant is unit-testable without the lock/PG path
+ * (mirrors shouldPushNeedsHuman / truncateInlineNote). Both legs are fail-safe:
+ * a release hiccup is logged and reported as not-released, never thrown.
+ */
+export async function releaseTerminalGrips(opts: {
+  status: string;
+  agentOwnerId: string | null;
+  scope: { workspaceId: string; harnessSlug: string };
+  slug: string;
+  itemId: string;
+  releaseClaim: (
+    workspaceId: string,
+    harnessSlug: string,
+    planSlug: string,
+    itemId: string,
+    owner: string,
+  ) => Promise<boolean>;
+  clearAssignment: (
+    workspaceId: string,
+    harnessSlug: string,
+    planSlug: string,
+    itemId: string,
+  ) => Promise<unknown | null>;
+}): Promise<{ claimReleased: boolean; assignmentReleased: boolean }> {
+  if (!isTerminalStatus(opts.status)) {
+    return { claimReleased: false, assignmentReleased: false };
+  }
+  let claimReleased = false;
+  if (opts.agentOwnerId) {
+    claimReleased = await opts
+      .releaseClaim(opts.scope.workspaceId, opts.scope.harnessSlug, opts.slug, opts.itemId, opts.agentOwnerId)
+      .catch((e) => {
+        console.warn('[plans:set-status] claim release failed:', (e as Error)?.message ?? e);
+        return false;
+      });
+  }
+  const assignmentReleased = await opts
+    .clearAssignment(opts.scope.workspaceId, opts.scope.harnessSlug, opts.slug, opts.itemId)
+    .then((released) => released != null)
+    .catch((e) => {
+      console.warn('[plans:set-status] assignment release failed:', (e as Error)?.message ?? e);
+      return false;
+    });
+  return { claimReleased, assignmentReleased };
+}
+
 export function flipStatusInBody(
   body: string,
   itemId: string,
@@ -138,7 +200,7 @@ export function flipStatusInBody(
 export default defineTool({
   name: 'plans:set-status',
   description:
-    "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); flipping to done/dropped releases your claim.",
+    "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); flipping to done/dropped releases your claim AND clears the item's assignment (a finished item is held + assigned by no one).",
   guidance: {
     when: "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked).",
     notWhen:
@@ -329,22 +391,25 @@ export default defineTool({
       );
     }
 
-    // Terminal flip → release the caller's claim (claim-discipline: done means
-    // nobody holds it). Awaited but fail-safe — a release hiccup never fails
-    // the flip, and a lapsed/absent claim is simply reported unreleased.
+    // Terminal flip → release the caller's claim AND clear the item's durable
+    // assignment (claim-discipline: done means nobody holds it; EI-2298: a
+    // done/dropped item must also be assigned to no one — otherwise it sits
+    // assigned-idle forever and a dispatcher that re-pokes assigned-idle items
+    // re-targets the stale assignee endlessly). Scope is resolved only on a
+    // terminal flip; both legs are awaited but fail-safe.
     let claimReleased = false;
-    if (agentId && (args.status === 'done' || args.status === 'dropped')) {
+    let assignmentReleased = false;
+    if (isTerminalStatus(args.status)) {
       const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
-      claimReleased = await releaseOwnClaim(
-        scope.workspaceId,
-        scope.harnessSlug,
-        args.slug,
-        args.itemId,
-        agentId.ownerId,
-      ).catch((e) => {
-        console.warn('[plans:set-status] claim release failed:', (e as Error)?.message ?? e);
-        return false;
-      });
+      ({ claimReleased, assignmentReleased } = await releaseTerminalGrips({
+        status: args.status,
+        agentOwnerId: agentId?.ownerId ?? null,
+        scope,
+        slug: args.slug,
+        itemId: args.itemId,
+        releaseClaim: releaseOwnClaim,
+        clearAssignment: unassignItem,
+      }));
     }
 
     return {
@@ -357,6 +422,7 @@ export default defineTool({
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(claim ? { claim } : {}),
             ...(claimReleased ? { claimReleased } : {}),
+            ...(assignmentReleased ? { assignmentReleased } : {}),
             ...(noteTruncated
               ? {
                   noteTruncated: true,

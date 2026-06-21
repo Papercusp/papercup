@@ -81,6 +81,32 @@ to *signal* an abort; every slot-hold await must actually *resolve on* that abor
   AIMD floor = the 429-squat (path 1; see [the admission-slot-squat doc](./inference-gateway-wedge-admission-slot-squat)).
 - `journalctl … -u papercup-inference-gateway.service --since '-15 min' | grep -oiE "STALLED|upstream 429|fetch failed" | sort | uniq -c` — STALLED dominating ⇒ stall paths; 429 dominating ⇒ path 1 or capacity.
 
+## Related admission failure: a per-account quota-429 must NOT throttle GLOBAL concurrency (2026-06-21)
+
+Symptom: bees get frequent "API error" **even though `accounts:status` shows accounts with headroom**
+(e.g. 5/8 at 9-44% 5h-util while 3 are at 98-99%). Owner: "the router should be smart enough to use the
+account with budget." It already is — this is NOT a routing bug and NOT capacity.
+
+Root cause: the AIMD controller's throttle signal was wired to EVERY upstream 429. `active()` round-robins,
+so ~3/8 of requests transiently hit a 98-99%-maxed account → a per-account **quota**-429 → which the gateway
+**routes around fine** (governor predictive-pause ≥0.95 + the route-to-capacity walk + failover rotation).
+But each of those routed-around quota-429s ALSO called `aimd.recordThrottle()`, so the GLOBAL admission
+concurrency collapsed to the AIMD **floor** (`effective=4, queued=34, decreases=3`). Requests then timed out
+in the admission queue (`maxQueueWaitMs`) → a synthetic 429 = the bee "API error" — **before the correct
+budget-aware routing ever ran.** With per-account egress IPs, one account's quota says nothing about the
+others' capacity, so shrinking GLOBAL concurrency is exactly the wrong response.
+
+The tell: `/admin/config` (or `gateway:status`) shows `aimd.effective` pinned near the floor + `queued` high
++ `decreases` climbing, while `accounts:status` shows real headroom on several accounts. Admission choke, not
+routing.
+
+Fix (`gateway.ts`): defer `aimd.recordThrottle()` from "every 429" to fire ONLY for a 429 that could NOT be
+routed around to a healthy account (a `routedAround` flag set when `pool.onExhausted` returns a different
+healthy account). A per-account quota-429 that fails over is a ROUTING event, invisible to global AIMD;
+genuine pool-wide saturation (no healthy account) still shrinks it. **Do NOT** add a redundant pool-level
+utilization-skip — the governor already pre-emptively pauses ≥0.95-util accounts (`UNIFIED_PREDICT_PAUSE_WATERMARK`),
+and a hard skip would under-utilize Max 5h/7d rolling windows that recover continuously.
+
 ## Wedge vs capacity — do NOT conflate
 
 A WEDGE is a gateway BUG (a slot-hold threshold inversion) — fix it in code and verify the watchdog stops

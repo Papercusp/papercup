@@ -42,6 +42,18 @@ describe('holderIsDeadLocalPid (EI-281)', () => {
     expect(holderIsDeadLocalPid('weird:host:42', 'weird:host', alive)).toBe(false);
   });
 
+  it("the testing-shell runner's <host>:<pid>/<runId> owner id is reapable (regression — the /runId suffix used to NaN the pid)", () => {
+    // The runner owns claims as `${hostname()}:${pid}/${runId.slice(0,8)}`. Before
+    // the strip, Number('1326356/b713ddcb') was NaN → a killed runner's claim was
+    // NEVER reaped and blocked its scenario for the full 10-min TTL.
+    expect(holderIsDeadLocalPid(`${HOST}:1326356/b713ddcb`, HOST, dead)).toBe(true);
+    expect(holderIsDeadLocalPid(`${HOST}:1234/b713ddcb`, HOST, alive)).toBe(false);
+    // host-safety still holds with the suffix present.
+    expect(holderIsDeadLocalPid('other-box:1326356/b713ddcb', HOST, dead)).toBe(false);
+    // a bad pid before the slash is still rejected.
+    expect(holderIsDeadLocalPid(`${HOST}:not-a-pid/b713ddcb`, HOST, dead)).toBe(false);
+  });
+
   it('the real default owner id reports its own (live) process as held', () => {
     // No injected probe: this process is alive, so its own id is never reaped.
     expect(holderIsDeadLocalPid(defaultOwnerId())).toBe(false);
