@@ -11,6 +11,13 @@ vi.mock('@papercusp/agent-mcp', () => ({
   // 'overwatch' included so the B-10 flag-gate (which runs AFTER the known-role
   // check) is reachable in the gate tests below.
   AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator', 'bee', 'overwatch'],
+  // operator-spawn now transitively imports ../inference-gateway/stall-waker-loop
+  // (gateway-rate-limit-stall-autowake) → ../agent-tools/turn/interrupt, which calls
+  // defineTool() at module load. The full agent-mcp module is mocked away here, so this
+  // pass-through stub (the repo-standard pattern; cf. events/emit.test.ts) lets the
+  // tool module evaluate without pulling in the real tool registry. The test never
+  // invokes turn:interrupt — it only needs the import graph to load.
+  defineTool: (def: unknown) => def,
 }));
 // @papercusp/flags itself stays REAL (FLAG_DEFAULTS / FLAGS); only the server-side
 // getFlag is mocked so the overwatch gate's flag read is controllable. The default
