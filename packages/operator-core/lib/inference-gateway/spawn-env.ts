@@ -9,7 +9,7 @@
  * flipping the flag OFF instantly reverts to direct egress with no other change.
  */
 import { DEFAULT_GATEWAY_PORT } from './launch';
-import { ACCOUNT_HEADER } from './gateway';
+import { ACCOUNT_HEADER, OWNER_HEADER } from './gateway';
 
 export const GATEWAY_BASE_URL_ENV = 'ANTHROPIC_BASE_URL';
 /** The papercusp-specific override the in-process anthropic-direct SDK transport reads
@@ -28,17 +28,20 @@ export function gatewayPort(): number {
  * (unchanged direct egress); `{ ANTHROPIC_BASE_URL }` when enabled. The caller passes the
  * resolved flag value so flag evaluation (PostHog / FLAG_DEFAULTS) stays at the chokepoint.
  */
-export function gatewaySpawnEnv(enabled: boolean, opts: { accountId?: string } = {}): Record<string, string> {
+export function gatewaySpawnEnv(enabled: boolean, opts: { accountId?: string; ownerId?: string } = {}): Record<string, string> {
   if (!enabled) return {};
   const env: Record<string, string> = { [GATEWAY_BASE_URL_ENV]: `http://127.0.0.1:${gatewayPort()}` };
-  // Multi-credential cache-affinity routing (P-004): pin this bee to its assigned pool account via a
-  // custom request header the claude CLI forwards — ANTHROPIC_CUSTOM_HEADERS is parsed as
-  // newline-separated `Name: Value` pairs (honored by claude-code 2.x). Set only when the caller
-  // resolved an account (multi-account flag on + ≥2 accounts); otherwise the gateway routes the bee
-  // to its active() account — today's behavior.
-  if (opts.accountId) {
-    env.ANTHROPIC_CUSTOM_HEADERS = `${ACCOUNT_HEADER}: ${opts.accountId}`;
-  }
+  // Custom request headers the claude CLI forwards on every call — ANTHROPIC_CUSTOM_HEADERS is parsed as
+  // newline-separated `Name: Value` pairs (honored by claude-code 2.x):
+  //  • the ACCOUNT pin (multi-credential cache-affinity routing P-004): pin this bee to its assigned pool
+  //    account. Set only when the caller resolved an account (multi-account flag on + ≥2 accounts);
+  //    otherwise the gateway routes the bee to its active() account — today's behavior.
+  //  • the OWNER id (== spawnId, gateway-rate-limit-stall-autowake P-001): so the gateway can attribute a
+  //    rate-limit shed back to THIS bee, and the stall-waker can wake it once the account recovers.
+  const customHeaders: string[] = [];
+  if (opts.accountId) customHeaders.push(`${ACCOUNT_HEADER}: ${opts.accountId}`);
+  if (opts.ownerId) customHeaders.push(`${OWNER_HEADER}: ${opts.ownerId}`);
+  if (customHeaders.length) env.ANTHROPIC_CUSTOM_HEADERS = customHeaders.join('\n');
   return env;
 }
 

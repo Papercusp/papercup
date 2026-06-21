@@ -231,9 +231,13 @@ export const ACCOUNT_HEADER = 'x-papercusp-account';
  *  stale-`local`-pool fault), or it failed over off a paced/paused account. Not forwarded upstream
  *  (it's set on the response back to the client). */
 export const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
+/** Header a spawn sets carrying its coord ownerId (== spawnId), so the gateway can attribute a
+ *  rate-limit shed back to THIS bee and a coordinator can wake it once the account recovers
+ *  (gateway-rate-limit-stall-autowake P-001). Stripped before the upstream forward. */
+export const OWNER_HEADER = 'x-papercusp-owner';
 const ANTHROPIC_VERSION = '2023-06-01';
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
-const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
+const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'x-papercusp-owner', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
 /** The account the gateway currently egresses through — its id + a fresh-token getter. */

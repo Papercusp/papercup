@@ -1046,7 +1046,10 @@ export async function spawnAgentInHarness(
   if (gwOn && (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system'))) {
     routeAccountId = await selectSpawnAccount(input.workspaceId, slug).catch(() => undefined);
   }
-  Object.assign(extraEnv, gatewaySpawnEnv(gwOn, { accountId: routeAccountId }));
+  // Pass the bee's spawnId as its OWNER id (gateway-rate-limit-stall-autowake P-001): the gateway tags a
+  // rate-limit shed with it, and the stall-waker wakes exactly this bee (its coord ownerId == spawnId) once
+  // the account recovers. Behaviour-neutral until the waker ships.
+  Object.assign(extraEnv, gatewaySpawnEnv(gwOn, { accountId: routeAccountId, ownerId: spawnId }));
   // account-aware-rate-governor-routing Phase 1: run the bee UNDER the selected account so the
   // spawn-side governor (orchestrator-runner) keys its rate bucket PER-ACCOUNT
   // (`anthropic:opus@<id>`) instead of the account-blind global `anthropic:opus`. Without this a
