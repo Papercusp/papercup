@@ -131,6 +131,25 @@ export function evaluateLivenessAlarm(
     });
   }
 
+  // 4b. Overwatch ALIVE but SKIPPING its mandated scorecard (monitor-the-monitor,
+  //     hive-loop-supervision 2026-06-21). overwatch-dark catches a NON-waking
+  //     supervisor; this catches the OTHER failure — it wakes (autoloop 'ok') yet
+  //     silently omits the Owner-#1 every-wake hive-coordination-health scorecard, so
+  //     the health-trend goes blind while everything LOOKS alive. The settled-wake grace
+  //     lives in compute.ts (the `scorecardSkipped` flag) so this stays pure.
+  const ow = health.panels.overwatch?.data;
+  if (ow?.started && ow.scorecardSkipped) {
+    const e = ow.scorecardEmission;
+    signals.push({
+      key: 'overwatch-scorecard-skipped',
+      severity: 'advisory',
+      summary:
+        e?.status === 'partial-only'
+          ? `Overwatch emitting only PARTIAL hive-coordination-health scorecards since its last wake (${e.missingCount} criteria unrated) — Owner #1 mandate (a COMPLETE scorecard EVERY wake) truncated.`
+          : `Overwatch woke but emitted NO complete hive-coordination-health scorecard since its last wake — Owner #1 mandate (a scorecard EVERY wake) skipped; the health-trend is going blind.`,
+    });
+  }
+
   // 5. LLM substrate starved — every pool account paused. ONLY trusted when the
   //    snapshot is FRESH: when the bg routine engine is frozen (tickStale →
   //    health-tick-stale already fires) the in-engine account-state read is

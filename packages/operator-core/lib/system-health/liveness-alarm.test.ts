@@ -68,6 +68,27 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('queen-dark');
   });
 
+  it('overwatch alive but skipping its scorecard → overwatch-scorecard-skipped (monitor-the-monitor)', () => {
+    const h = mkHealth({ panels: { overwatch: { data: { started: true, scorecardSkipped: true, scorecardEmission: { status: 'stale', lastCompleteAt: null, missingCount: 0 } } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).toContain('overwatch-scorecard-skipped');
+  });
+
+  it('partial-only emission names the unrated-criteria count', () => {
+    const h = mkHealth({ panels: { overwatch: { data: { started: true, scorecardSkipped: true, scorecardEmission: { status: 'partial-only', lastCompleteAt: null, missingCount: 4 } } } } });
+    const sig = evaluateLivenessAlarm(h, null).find((s) => s.key === 'overwatch-scorecard-skipped');
+    expect(sig?.summary).toContain('4 criteria unrated');
+  });
+
+  it('NOT skipped (fresh, or wake not yet settled) → no scorecard-skipped signal', () => {
+    const h = mkHealth({ panels: { overwatch: { data: { started: true, scorecardSkipped: false, scorecardEmission: { status: 'fresh', lastCompleteAt: '2026-06-21T11:00:00Z', missingCount: 0 } } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('overwatch-scorecard-skipped');
+  });
+
+  it('skipping but NOT started → no signal (a paused supervisor is not skipping)', () => {
+    const h = mkHealth({ panels: { overwatch: { data: { started: false, scorecardSkipped: true, scorecardEmission: { status: 'stale', lastCompleteAt: null, missingCount: 0 } } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('overwatch-scorecard-skipped');
+  });
+
   it('all LLM accounts paused → accounts-starved blocker', () => {
     const h = mkHealth({ panels: { tokens: { data: { accountsTotal: 9, accountsAvailable: 0 } } } });
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).toContain('accounts-starved');
