@@ -18,9 +18,11 @@ import {
   SU_PLAYBOOK_FRAMING,
   SuTarget,
   buildSuSystemBlocks,
+  filterCatalog,
   loadPlaybookBody,
   parseSuConfigDelta,
 } from '../targets/su';
+import { buildCatalog } from '../targets/su-catalog';
 
 const PLAYBOOK = '# Papercusp engineer-collaborator playbook\n...body...';
 
@@ -81,6 +83,31 @@ describe('su SUT eval-variant knob (test-gym-apiary P-001)', () => {
     expect(() => parseSuConfigDelta({ temperature: 0.7 })).toThrow(/unsupported variant configDelta key.*temperature/);
     expect(() => parseSuConfigDelta({ sutModel: '' })).toThrow(/non-empty string/);
     expect(() => parseSuConfigDelta({ sutModel: 42 as unknown as string })).toThrow(/non-empty string/);
+  });
+});
+
+describe('su SUT excludeTools — tool-availability A/B seam (code:run adoption)', () => {
+  it('parseSuConfigDelta accepts excludeTools as a string array; rejects non-arrays/empties', () => {
+    expect(parseSuConfigDelta({ excludeTools: ['code:run', 'code:tools'] })).toEqual({
+      excludeTools: ['code:run', 'code:tools'],
+    });
+    expect(() => parseSuConfigDelta({ excludeTools: 'code:run' as unknown as string[] })).toThrow(/array of non-empty/);
+    expect(() => parseSuConfigDelta({ excludeTools: [''] })).toThrow(/array of non-empty/);
+    expect(() => parseSuConfigDelta({ excludeTools: [42] as unknown as string[] })).toThrow(/array of non-empty/);
+  });
+
+  it('filterCatalog drops the named canonical tools and is identity-returning when empty', () => {
+    const full = buildCatalog();
+    const hadCodeRun = full.tools.some((t) => full.canonicalBySanitized.get(t.name) === 'code:run');
+    expect(hadCodeRun).toBe(true); // SU_CATALOG carries code:run (the A/B subject)
+    const filtered = filterCatalog(full, ['code:run', 'code:tools']);
+    const names = filtered.tools.map((t) => filtered.canonicalBySanitized.get(t.name));
+    expect(names).not.toContain('code:run');
+    expect(names).not.toContain('code:tools');
+    expect(filtered.tools.length).toBe(full.tools.length - 2);
+    // Empty/absent exclude → the SAME object (no allocation on the common path).
+    expect(filterCatalog(full, [])).toBe(full);
+    expect(filterCatalog(full, undefined)).toBe(full);
   });
 });
 

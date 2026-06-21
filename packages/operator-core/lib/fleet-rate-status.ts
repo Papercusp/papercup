@@ -15,6 +15,7 @@ import { getCachedRateLimitConfig, type RateLimitConfig } from './rate-limit-con
 import { summarizeUsage, type UsageSummary } from './agent-usage-telemetry';
 import { loadAccountPool } from './deployment/account-pool-store';
 import { summarizeOpusBudget, type OpusBudgetStatus } from './opus-budget-governor';
+import { readOpusBudgetPolicy } from './opus-budget-policy';
 
 export interface FleetRateBucket {
   key: string;
@@ -85,7 +86,7 @@ export async function buildFleetRateStatus(windowMs = 60 * 60 * 1000): Promise<F
   const usage = await summarizeUsage(windowMs).catch(() => emptyUsage());
   // Fleet opus-budget pacing state (B-GW-4) — best-effort: an unreadable pool surfaces null, never throws.
   const opusBudget = await loadAccountPool()
-    .then((pool) => summarizeOpusBudget(pool, now))
+    .then(async (pool) => summarizeOpusBudget(pool, now, await readOpusBudgetPolicy()))
     .catch(() => null);
   return {
     ok: true,

@@ -455,6 +455,10 @@ import './routines/set';
 // papercusp-capability-grant-tool; D-007 owner-authority):
 import './capability/grant-role';
 import './capability/revoke-role';
+// live-configurability-audit-2026-06-20 P-001 — per-(harness,role) prompt override (read/set/clear):
+import './prompt/role-override';
+// live-configurability-audit-2026-06-20 P-005 — settable fleet opus-budget shed bands:
+import './fleet/opus-budget';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

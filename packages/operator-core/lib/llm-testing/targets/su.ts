@@ -255,11 +255,11 @@ export function buildSuSystemBlocks(
  * Anything else throws at open() — a silently-dropped knob would mislabel a
  * baseline run as the candidate.
  */
-const SU_CONFIG_DELTA_KEYS = new Set(['sutModel', 'systemPromptText']);
+const SU_CONFIG_DELTA_KEYS = new Set(['sutModel', 'systemPromptText', 'excludeTools']);
 
 export function parseSuConfigDelta(
   delta: Record<string, unknown> | undefined,
-): { sutModel?: string; systemPromptText?: string } {
+): { sutModel?: string; systemPromptText?: string; excludeTools?: string[] } {
   if (!delta) return {};
   const unknown = Object.keys(delta).filter((k) => !SU_CONFIG_DELTA_KEYS.has(k));
   if (unknown.length > 0) {
@@ -268,7 +268,7 @@ export function parseSuConfigDelta(
         `supported: ${[...SU_CONFIG_DELTA_KEYS].join(', ')}`,
     );
   }
-  const out: { sutModel?: string; systemPromptText?: string } = {};
+  const out: { sutModel?: string; systemPromptText?: string; excludeTools?: string[] } = {};
   if (delta.sutModel !== undefined) {
     if (typeof delta.sutModel !== 'string' || !delta.sutModel.trim()) {
       throw new Error('su target: variant configDelta.sutModel must be a non-empty string');
@@ -286,7 +286,29 @@ export function parseSuConfigDelta(
     }
     out.systemPromptText = delta.systemPromptText;
   }
+  if (delta.excludeTools !== undefined) {
+    // The TOOL-AVAILABILITY seam (code-execution-tool-orchestration adoption A/B): canonical
+    // tool names (e.g. "code:run") to REMOVE from the catalog offered to the SUT for this run, so
+    // a "without code:run available" arm can be compared against the baseline to measure the
+    // token-cost delta of the tool's presence + adoption. Names are canonical colon form.
+    if (
+      !Array.isArray(delta.excludeTools) ||
+      !delta.excludeTools.every((t) => typeof t === 'string' && t.trim())
+    ) {
+      throw new Error('su target: variant configDelta.excludeTools must be an array of non-empty tool-name strings');
+    }
+    out.excludeTools = (delta.excludeTools as string[]).map((t) => t.trim());
+  }
   return out;
+}
+
+/** Filter a built catalog to drop the canonical tool names in `exclude` (the excludeTools seam).
+ *  Returns the same catalog object when `exclude` is empty so the common path allocates nothing. */
+export function filterCatalog(catalog: BuiltCatalog, exclude?: readonly string[]): BuiltCatalog {
+  if (!exclude || exclude.length === 0) return catalog;
+  const drop = new Set(exclude);
+  const tools = catalog.tools.filter((t) => !drop.has(catalog.canonicalBySanitized.get(t.name) ?? t.name));
+  return { tools, canonicalBySanitized: catalog.canonicalBySanitized };
 }
 
 export interface SuTargetOpts {
@@ -322,7 +344,8 @@ export class SuTarget implements ChatTarget {
     const delta = parseSuConfigDelta(opts.variant?.configDelta);
     return new SuSession({
       runId: opts.runId,
-      catalog: this.catalog,
+      // Drop any excludeTools from the catalog offered to the SUT (the availability A/B seam).
+      catalog: filterCatalog(this.catalog, delta.excludeTools),
       loadSystemPrompt: delta.systemPromptText !== undefined
         ? () => delta.systemPromptText!
         : this.loadSystemPrompt,

@@ -20,6 +20,7 @@ import type { DeploymentConfig, Frame, LogLevel } from '@papercusp/deployment-dr
 import { onGovernorPause, parseGovernorKey, snapshotGovernors } from '@papercusp/papercusp-shared/agent';
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
+import { readOpusBudgetPolicy } from '../opus-budget-policy';
 import {
   type AccountEgress,
   type AccountPool,
@@ -203,7 +204,7 @@ export async function evaluateOpusBudgetForSpawn(
   if (!pool) {
     return { aggregateUtil: null, headroom: null, zone: 'headroom', downgrade: false, pace: false, reason: 'opus budget: pool unreadable — admit (fail-soft)' };
   }
-  return evaluateOpusBudget({ pool, criticality, now });
+  return evaluateOpusBudget({ pool, criticality, now, policy: await readOpusBudgetPolicy() });
 }
 
 /**
