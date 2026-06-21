@@ -1,6 +1,9 @@
 ---
 title: Operator panel — visual polish pass
 description: Detailed list of element-level visual improvements after the structural redesign. Round-3 issues that survived plus new fine-grained observations.
+plans:
+  - deck-panel-design-audit-round5-2026-05-14
+  - operator-always-visible-2026-06-05
 ---
 
 :::caution[Surface superseded — the card-feed operator panel became a chat thread]
@@ -8,14 +11,21 @@ This polish pass targets `apps/operator/app/_components/OperatorPanel.tsx`
 (cited in *How I gathered this*) — the card-feed panel with its HUD
 telemetry strip, reactor orb, target-bracket card ornaments, scanline
 sweeps, Pending/Accepted/Ignored/Scans tab strip, and "Operator MCP
-v0.1.0" footer. **`OperatorPanel.tsx` is deleted.** The operator surface
-is now `OperatorChat` (a wrapper around the shared `ChatConversation`,
-`apps/operator/app/_components/OperatorChat.tsx`), where suggestions
-render inline and pending cards surface in a `PendingCardsBar`. The
-`operator-reactor` / `operator-hud-*` / `operator-entry__*` /
-`pc-operator-auto-feed` CSS still lingers in `globals.css` but is no
-longer rendered by any live component, so the element-level selectors
-below describe a retired DOM. Keep them only as historical design intent.
+v0.1.0" footer. **`OperatorPanel.tsx` still exists but is orphaned —
+no live component imports it.** The file is present at
+`apps/operator/app/_components/OperatorPanel.tsx` (still committed,
+still receiving the occasional edit), but a repo-wide grep for
+`OperatorPanel` finds only its own file and tests — nothing mounts it.
+The operator surface is now `OperatorChat` (a wrapper around the shared
+`ChatConversation`, `apps/operator/app/_components/OperatorChat.tsx`),
+mounted via `OperatorChatSidebar` in `ChromeShell.tsx`, where
+suggestions render inline and pending cards surface in a
+`PendingCardsBar`. The `operator-reactor` / `operator-hud-*` /
+`operator-entry__*` / `pc-operator-auto-feed` markup is still emitted by
+the (unmounted) `OperatorPanel.tsx` and its matching CSS still lingers in
+`globals.css`, but since nothing renders that component the element-level
+selectors below describe a dead DOM. Keep them only as historical design
+intent.
 :::
 
 After the structural redesign, the panel's information architecture is

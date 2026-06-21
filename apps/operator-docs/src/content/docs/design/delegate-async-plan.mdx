@@ -3,6 +3,8 @@ title: Delegate fire-and-forget refactor
 description: Lift the 2-minute ceiling on delegate_to_claude by making it an async dispatch + later contextual update.
 sidebar:
   order: 5
+plans:
+  - inventory-2026-05-20
 ---
 
 > **Implemented (with refinements).** The async race-with-timeout path (Q1
@@ -17,6 +19,20 @@ sidebar:
 > (not the plan's `sendContextualUpdate`). The ack shape also changed from the
 > draft below: it carries a `message` hint, not `expectedSeconds`, and the
 > session id field is `agentSessionId`, not `claudeSessionId`.
+>
+> Two further refinements vs. the draft below:
+> - **The per-delegate Haiku summary was NOT shipped.** The contextual
+>   update carries a raw `fullText.slice(0, 280)` headline (with an ellipsis
+>   when truncated) built in `OperatorDelegationListener.tsx` — there is no
+>   model call. So the "Contextual update path" step 1 and the Risk-register
+>   "extra Haiku call per delegate" cost concern no longer apply.
+> - **Q3 resolved to a hindsight-inbox (Option B-style), not the recommended
+>   panel-only Option A.** When no live EL session is present,
+>   `OperatorDelegationListener.tsx` POSTs the headline to the operator
+>   coord-inbox hindsight channel (`/api/agent-mcp/operator-hindsight`,
+>   `kind: 'delegate-complete'`). `drainHindsightOnConnect()` in `voice-mode.ts`
+>   folds pending items into a single `[While you were away, N update(s)]`
+>   `sendSystem()` on the next EL connect (cites "collapse-delegate D-003").
 
 ## Why
 
@@ -75,7 +91,7 @@ When the SSE stream completes server-side:
      `[Delegate ID-PREFIX completed] SUMMARY. Full text in the panel.`
    );
    ```
-3. The agent's persona (already updated in commit 2975423) tells
+3. The agent's persona (already updated) tells
    it: "if a contextual update mentions a delegate completing,
    speak the summary aloud and say 'details in the panel' on the
    next turn." So the user hears the update naturally.

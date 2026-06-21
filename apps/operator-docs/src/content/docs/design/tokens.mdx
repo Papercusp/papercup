@@ -3,6 +3,10 @@ title: Design tokens, themes & the theming standard
 description: The DTCG token pipeline, the semantic scale (incl. the accent-tint scale), the theme contract every agent must follow, how themes (frost/black/custom) work, and the canonical status-color tables.
 sidebar:
   order: 0
+plans:
+  - personalization-theme-selector-2026-05-30
+  - design-tokens-implementation-plan-2026-05-13
+  - design-audit-2026-05-14
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -21,8 +25,11 @@ Components must reference a **semantic `var(--…)` token**, never a brand
 primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`,
 `#7dd3fc`, `#bae6fd`, `rgba(125, 211, 252, …)`, …). A theme can only swap the
 **semantic** layer — anything hardcoded to a sky value stays blue when the user
-picks Black. This is enforced by `app/_lints/css-tokens.test.ts` and audited
-periodically. The full do/don't is the [theme contract](#the-theme-contract--what-agents-must-follow) below.
+picks Black. This rule is **audited by review**, not test-enforced:
+`app/_lints/css-tokens.test.ts` only checks that every `var(--…)` reference in
+`.tsx` resolves to a defined token (plus a vocabulary sanity check) — it does
+**not** scan for raw sky hexes or brand primitives. The full do/don't is the
+[theme contract](#the-theme-contract--what-agents-must-follow) below.
 </Aside>
 
 <Aside type="caution" title="Never hand-edit the generated CSS">
@@ -82,6 +89,7 @@ themed tree.
 | `--fg` | `#e7f7ff` | Primary text. |
 | `--fg-dim` | `#b9d4e8` | Secondary text. |
 | `--fg-mute` | `#7f9bb4` | Tertiary / metadata text. |
+| `--border-muted` | sky-300 @ 0.08 | Faintest border step — one below `--border`, e.g. table row dividers. |
 | `--border` `--border-strong` | sky-300 @ 0.15 / 0.32 | Hairline / emphasized borders (sky-tinted, the bluefrost signature). |
 | `--accent` `--accent-strong` `--accent-cool` | sky-400 / sky-300 / sky-cool | Interactive accent, hover, soft accent. |
 | `--accent-soft` `--accent-deep` `--accent-deeper` | sky-200 / sky-500 / sky-700 | The **accent-tint scale** — lighter & deeper accent shades for glows, gradients, and HUD washes. Use these instead of the raw `sky-200/500/700` they alias. |
@@ -182,13 +190,19 @@ per-component decision. It lives in three Proxy-guarded tables in
 |---|---|---|
 | `STATUS` | `todo` · `in_progress` · `validating` · `failing` · `blocked` · `passed` · `deprecated` | `<StatusPill status={…} />` |
 | `SEVERITY` | `critical` · `major` · `minor` · `nit` | `<SeverityPill severity={…} />` |
-| `ISSUE_STATUS` | `open` · `acknowledged` · `fixing` · `closed` · `wontfix` | `<IssueStatusPill status={…} />` |
+| `ISSUE_STATUS` | `open` · `acknowledged` · `fixing` · `resolved` · `closed` · `wontfix` | `<IssueStatusPill status={…} />` |
 
 Each entry is `{ solid, bg, text, label }`. The hues are semantic (red →
 amber → sky → grey for severity, etc.) and chosen to read on the bluefrost dark
 surfaces — `SEVERITY.minor` uses the sky accent rather than a legacy yellow to
 stay on-theme. The same tables back the legacy `/harness` route, so `/adv` and
 `/harness` show identical status coloring.
+
+The three tables above are scoped to *status* coloring, but the same
+`harness/theme.ts` holds the broader single-source family: the Proxy-guarded
+**`kind`** tables `WORK_ITEM_KIND` (rendered by `<KindPill>`) and `AGENT_KIND`
+(rendered by `<AgentKindPill>`) follow the identical pattern — so work-item kind
+and agent kind coloring is likewise **not** a per-component decision.
 
 <Aside type="tip" title="Do / don't">
 **Do** reach for a `var(--…)` semantic token and the `STATUS`/`SEVERITY`/`ISSUE_STATUS`
