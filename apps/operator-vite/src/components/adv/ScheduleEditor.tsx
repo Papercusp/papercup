@@ -329,7 +329,7 @@ export default function ScheduleEditor({
   };
 
   return (
-    <div className="pc-sched-editor" role="dialog" aria-label={`Schedule ${planTitle ?? planSlug}`}>
+    <div className="pc-sched-editor" role="region" aria-label={`Schedule ${planTitle ?? planSlug}`}>
       <div className="pc-sched-editor__head">
         <strong>Schedule</strong>
         <span className="pc-sched-editor__slug" title={planSlug}>{planTitle ?? planSlug}</span>

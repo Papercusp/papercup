@@ -21,6 +21,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   failovers: 0,
   upstreamErrors: 0,
   selfHealReclaims: 0,
+  stallsRecorded: 0,
   pausedUntil: 0,
   ...over,
 });

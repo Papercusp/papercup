@@ -86,11 +86,13 @@ export default function VersionBadge() {
           padding: '4px 9px',
           borderRadius: 8,
           font: '600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace',
-          letterSpacing: '0.02em',
+          letterSpacing: 0,
           cursor: stale ? 'pointer' : 'default',
-          border: `1px solid ${stale ? 'rgba(250,204,21,0.55)' : 'rgba(125,211,252,0.16)'}`,
-          background: stale ? 'rgba(250,204,21,0.16)' : 'rgba(8,18,30,0.55)',
-          color: stale ? '#fde68a' : 'rgba(186,230,253,0.55)',
+          border: `1px solid ${stale ? 'color-mix(in oklab, var(--warn), transparent 45%)' : 'var(--border)'}`,
+          background: stale
+            ? 'color-mix(in oklab, var(--warn), transparent 84%)'
+            : 'color-mix(in oklab, var(--bg), transparent 20%)',
+          color: stale ? 'var(--warn)' : 'var(--fg-mute)',
           opacity: stale ? 1 : 0.6,
           backdropFilter: 'blur(6px)',
           WebkitBackdropFilter: 'blur(6px)',

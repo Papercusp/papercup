@@ -282,7 +282,7 @@ export default function AdvFramesTab() {
 
       {/* enlarged panel — stills by default; "Watch live" mounts noVNC (P-009) */}
       {selection && (
-        <div className="pc-frames__panel" role="dialog" aria-label="Frame live view">
+        <div className="pc-frames__panel" role="region" aria-label="Frame live view">
           <div className="pc-frames__panel-head">
             <MonitorPlay size={13} aria-hidden />
             <span>
@@ -389,7 +389,7 @@ export default function AdvFramesTab() {
           background: var(--bg-2, rgba(255, 255, 255, 0.04));
           color: var(--fg, #e7f7ff);
         }
-        .pc-frames__topbar svg { color: #22d3ee; }
+        .pc-frames__topbar svg { color: var(--accent, #38bdf8); }
         .pc-frames__title { font-size: 12px; font-weight: 760; letter-spacing: 0; text-transform: uppercase; }
         .pc-frames__sub { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
         .pc-frames__spacer { flex: 1; }
@@ -429,8 +429,8 @@ export default function AdvFramesTab() {
           padding: 0;
           transition: border-color 150ms, box-shadow 150ms, opacity 150ms;
         }
-        .pc-frames__tile:hover { border-color: #22d3ee; box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.18); }
-        .pc-frames__tile[data-selected='true'] { border-color: #22d3ee; box-shadow: 0 0 10px rgba(34, 211, 238, 0.35); }
+        .pc-frames__tile:hover { border-color: var(--accent, #38bdf8); box-shadow: none; }
+        .pc-frames__tile[data-selected='true'] { border-color: var(--accent, #38bdf8); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent, #38bdf8), transparent 60%); }
         .pc-frames__tile[data-stale='true'] { opacity: 0.55; }
         .pc-frames__tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .pc-frames__tile-meta {
@@ -444,13 +444,13 @@ export default function AdvFramesTab() {
         .pc-frames__tile-display { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-dim, #b9d4e8); }
         .pc-frames__tile-role {
           font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0;
-          color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4); border-radius: 5px; padding: 0 5px;
+          color: var(--accent, #38bdf8); border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%); border-radius: 5px; padding: 0 5px;
         }
         .pc-frames__tile-age { margin-left: auto; font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
         .pc-frames__panel {
           position: absolute; inset: 56px 16px 16px;
           display: flex; flex-direction: column;
-          border: 1px solid rgba(34, 211, 238, 0.4);
+          border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
           border-radius: 14px;
           background: rgba(7, 16, 29, 0.97);
           box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
@@ -463,19 +463,19 @@ export default function AdvFramesTab() {
           font-size: 12px; font-weight: 600; color: var(--fg, #e7f7ff);
           border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.14));
         }
-        .pc-frames__panel-head svg { color: #22d3ee; }
+        .pc-frames__panel-head svg { color: var(--accent, #38bdf8); }
         .pc-frames__panel-head code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-dim, #b9d4e8); }
         .pc-frames__chip-watch {
           display: inline-flex; align-items: center; gap: 3px;
           font-size: 9.5px; font-weight: 700;
-          color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4);
+          color: var(--accent, #38bdf8); border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
           border-radius: 999px; padding: 0 5px;
         }
         .pc-frames__chip-watch[data-drive='true'] { color: #f87171; border-color: rgba(248, 113, 113, 0.5); }
         .pc-frames__mode {
           display: inline-flex; align-items: center; gap: 4px;
           font-size: 9.5px; font-weight: 800; letter-spacing: 0;
-          color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4);
+          color: var(--accent, #38bdf8); border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
           border-radius: 5px; padding: 1px 6px;
         }
         .pc-frames__mode[data-drive='true'] {
@@ -490,8 +490,8 @@ export default function AdvFramesTab() {
           border: 1px solid var(--border, rgba(125, 211, 252, 0.25));
           border-radius: 6px; padding: 3px 9px; cursor: pointer;
         }
-        .pc-frames__panel-btn:hover { color: var(--fg, #e7f7ff); border-color: #22d3ee; }
-        .pc-frames__panel-btn[data-active='true'] { color: #22d3ee; border-color: rgba(34, 211, 238, 0.5); }
+        .pc-frames__panel-btn:hover { color: var(--fg, #e7f7ff); border-color: var(--accent, #38bdf8); }
+        .pc-frames__panel-btn[data-active='true'] { color: var(--accent, #38bdf8); border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 50%); }
         .pc-frames__panel-btn[data-danger='true']:hover { color: #fca5a5; border-color: rgba(248, 113, 113, 0.6); }
         .pc-frames__panel-idle { display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--fg-mute, #7f9bb4); }
         .pc-frames__panel-close { background: transparent; border: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; }

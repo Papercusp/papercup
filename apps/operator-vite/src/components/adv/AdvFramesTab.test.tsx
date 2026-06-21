@@ -226,7 +226,7 @@ describe('AdvFramesTab — enlarged panel', () => {
     nuqsState.frame = 'alpha:0';
     await renderLoaded();
     fireSse('alpha', 'thumb', thumb('alpha', 0, { role: 'queen' }));
-    const panel = screen.getByRole('dialog', { name: 'Frame live view' });
+    const panel = screen.getByRole('region', { name: 'Frame live view' });
     expect(panel.textContent).toContain('alpha');
     expect(panel.textContent).toContain('queen');
     expect(screen.getByAltText('alpha display :0 (enlarged)')).toBeTruthy();

@@ -371,9 +371,9 @@
   border-color: color-mix(in oklab, #a855f7, transparent 58%);
 }
 .pc-roster__badge[data-client='codex'] {
-  color: var(--sky-300);
-  background: color-mix(in oklab, var(--sky-400), transparent 82%);
-  border-color: color-mix(in oklab, var(--sky-400), transparent 58%);
+  color: var(--accent-strong, var(--accent));
+  background: color-mix(in oklab, var(--accent), transparent 82%);
+  border-color: color-mix(in oklab, var(--accent), transparent 58%);
 }
 .pc-roster__badge[data-client='omp'] {
   color: var(--amber-400);

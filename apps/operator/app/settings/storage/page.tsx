@@ -21,6 +21,7 @@ import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
+import { Modal } from '@/app/harness/Modal';
 
 /* ── Wire types — mirror StorageUsageRow / PruneResult (operator-core/lib/storage). ── */
 type Federation = 'federated' | 'local-diagnostic' | 'bloat-queue';
@@ -552,34 +553,25 @@ function TrimDialog({
     mode === 'all' ? 'everything' : `older than ${floored ?? days} day${(floored ?? days) === 1 ? '' : 's'}`;
 
   return (
-    <div
-      role="presentation"
-      onClick={onCancel}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.45)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 100,
+    <Modal
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      title={`Trim ${row.label}`}
+      overlayStyle={{ background: 'rgba(0,0,0,0.45)' }}
+      contentStyle={{
+        width: 'min(440px, 92vw)',
+        background: 'var(--bg)',
+        border: '1px solid var(--border)',
+        borderRadius: 12,
+        padding: 20,
+        color: 'var(--fg)',
+        boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
       }}
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Trim ${row.label}`}
         data-testid="trim-dialog"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 'min(440px, 92vw)',
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          borderRadius: 12,
-          padding: 20,
-          color: 'var(--fg)',
-          boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
-        }}
       >
         <h2 style={{ margin: '0 0 8px', fontSize: 16 }}>
           Trim {row.label}
@@ -702,6 +694,6 @@ function TrimDialog({
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

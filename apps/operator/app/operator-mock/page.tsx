@@ -501,7 +501,7 @@ export default function OperatorMockPage(): JSX.Element {
                 paused={paused}
                 onDispatch={(card) => setConfirming(card)}
                 onDismiss={(card) => setDismissed(new Set([...dismissed, card.id]))}
-                onOpen={(card) => alert(`mock — would navigate to ${card.navUrl}`)}
+                onOpen={(card) => toast.info(`Mock navigation: ${card.navUrl}`)}
                 onAck={(card) => setDismissed(new Set([...dismissed, card.id]))}
                 gotoActivity={() => setView('activity')}
               />
