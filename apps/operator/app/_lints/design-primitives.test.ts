@@ -146,6 +146,26 @@ function unexpectedPatternMatches(label: string, pattern: RegExp): string[] {
   return offenders;
 }
 
+function unexpectedCoordUtilityClasses(): string[] {
+  const offenders: string[] = [];
+  const coordDir = join(OPERATOR_ROOT, 'app/coord');
+  const files: string[] = [];
+  walk(coordDir, files);
+  const utilityClassRe =
+    /className=\{?["'`](?=[^"'`]*(?:\b(?:mx-auto|max-w-|p-|px-|py-|mb-|mt-|space-y-|gap-|flex|grid|items-|justify-|rounded|border-|bg-|text-|font-|opacity-|overflow-|min-w-|w-|h-|shrink-|truncate|uppercase|tracking-)\b))[^"'`]+["'`]\}?/g;
+  for (const file of files) {
+    if (!file.endsWith('.tsx')) continue;
+    const content = readFileSync(file, 'utf-8');
+    const matches = [...content.matchAll(utilityClassRe)];
+    for (const match of matches) {
+      const before = content.slice(0, match.index);
+      const line = before.split('\n').length;
+      offenders.push(`${rel(file)}:${line}: ${match[0].trim()}`);
+    }
+  }
+  return offenders;
+}
+
 function expectNoUnexpected(label: string, offenders: string[]): void {
   if (offenders.length > 0) {
     throw new Error(
@@ -210,5 +230,9 @@ describe('design primitive lint', () => {
       'Viewport-relative font size',
       /\b(?:font-size|fontSize)\s*:\s*(?:['"])?[^;'",}]*(?:vw|vh|vmin|vmax)[^;'",}]*(?:['"])?/g,
     );
+  });
+
+  it('keeps /coord on tokenized CSS classes instead of Tailwind utility strings', () => {
+    expectNoUnexpected('Tailwind-style utility class strings in /coord', unexpectedCoordUtilityClasses());
   });
 });
