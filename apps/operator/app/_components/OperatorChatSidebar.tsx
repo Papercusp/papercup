@@ -352,7 +352,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   text-transform: uppercase;
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.22em;
+  letter-spacing: 0;
   color: color-mix(in srgb, var(--fg), transparent 14%);
 }
 
@@ -432,7 +432,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   color: #f3f8ff;
   font-size: 14px;
   line-height: 1.1;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 .op-chat-toggle {
   margin-left: auto;
@@ -482,7 +482,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   min-height: 26px;
   padding: 3px 7px;
   font-size: 10px;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 
 .op-chat-controls .pc-voice-control {
@@ -510,7 +510,7 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-controls .pc-voice-btn-label {
   font-size: 10px;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 
 .op-chat-controls .pc-voice-settings-link {
@@ -1095,7 +1095,7 @@ body.has-op-chat .pc-header {
   color: color-mix(in srgb, var(--fg), transparent 46%) !important;
   font-size: 10px !important;
   font-weight: 760 !important;
-  letter-spacing: 0.11em !important;
+  letter-spacing: 0 !important;
 }
 
 .op-chat-sidebar .oracle-load-earlier-end {
@@ -1116,7 +1116,7 @@ body.has-op-chat .pc-header {
 .op-chat-sidebar .oracle-tool-chip {
   font-size: 11px;
   line-height: 1.25;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .op-chat-sidebar .oracle-msg-content {
@@ -1214,7 +1214,7 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar .op-chat-empty-panel-label {
-  letter-spacing: 0.115em !important;
+  letter-spacing: 0 !important;
 }
 
 .op-chat-sidebar .op-chat-empty-row {
@@ -1346,7 +1346,7 @@ body.has-op-chat .pc-header {
   color: rgba(224, 247, 255, 0.90);
   font-size: 9.5px;
   font-weight: 760;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
   transform: translateY(-50%);

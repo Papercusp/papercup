@@ -23,6 +23,7 @@ import { useLexicon } from '@/lib/useLexicon';
 const TABS: ReadonlyArray<{ href: string; label: string; term?: TermKey }> = [
   { href: '/admin/run', label: 'Run' },
   { href: '/admin/features', label: 'Features' },
+  { href: '/admin/recipes', label: 'Recipes' },
   { href: '/admin/git', label: 'Git' },
   { href: '/admin/dogfood-substrate', label: 'Substrate' },
   { href: '/admin/dbos', label: 'DBOS' },

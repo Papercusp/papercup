@@ -82,6 +82,14 @@ export default defineTool({
       maxRunCount: args.maxRunCount,
       dryRun,
     });
+
+    // Live-update the /admin/recipes dashboard (P-009): a real sweep that retired
+    // anything shifts the list + the candidate worklist. A dryRun mutates nothing,
+    // so it never invalidates. Best-effort.
+    if (!dryRun && swept.length > 0) {
+      const { notifyRecipesChanged } = await import('../code/capture-recipe');
+      await notifyRecipesChanged((msg) => ctx.log(msg));
+    }
     return {
       content: [
         {

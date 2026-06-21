@@ -201,6 +201,104 @@ export interface CriterionTrend {
   series: { at: string; rating: string }[];
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Staleness signal (P-011 / D-004) — flag a rubric whose MODEL has drifted from
+// reality. The signal: criteria the Overwatch persistently rates 'unknown' (it
+// cannot ASSESS them) — the rubric's model/method for that criterion no longer
+// matches how the system works. A stale rubric re-enters the queen↔scout loop for
+// re-ratification (a new revision). "Start with a simple flag; don't over-automate"
+// (D-004): this is detection only — surfaced on rubrics:trend so the Queen decides.
+//
+// Why 'unknown' (not persistent 'broken'): an unassessable criterion means the
+// rubric drifted; a persistently-BROKEN criterion usually means the SYSTEM is broken
+// (a real finding the trend's worsening/broken distribution already surfaces) — NOT a
+// stale rubric. Defaulting to 'unknown' avoids false-positiving staleness onto a
+// working rubric correctly reporting a broken system. Override `staleRatings` to widen.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** One criterion flagged as stale (persistently unassessable). */
+export interface CriterionStaleness {
+  criterion: string;
+  /** Fraction of in-window ratings that are a "stale" rating (default 'unknown'). */
+  staleFraction: number;
+  /** # in-window ratings for this criterion (the evidence base). */
+  samples: number;
+  reason: string;
+}
+
+/** A rubric's staleness assessment over the scorecard window. */
+export interface RubricStaleness {
+  /** true when ≥1 criterion is flagged stale — the rubric's model may have drifted. */
+  stale: boolean;
+  /** The criteria flagged stale + why (empty when not stale). */
+  staleCriteria: CriterionStaleness[];
+  /** Human-readable rubric-level summary. */
+  reason: string;
+}
+
+export interface RubricStalenessOpts {
+  /** Min in-window ratings for a criterion before staleness is judged (default 3) —
+   *  too few ratings is "unknown", not "stale". */
+  minSamples?: number;
+  /** Stale-rating fraction at/above which a criterion is flagged (default 0.5). */
+  staleFraction?: number;
+  /** Ratings that count as "stale" evidence (default ['unknown']). Case-insensitive. */
+  staleRatings?: readonly string[];
+}
+
+const STALENESS_DEFAULTS = {
+  minSamples: 3,
+  staleFraction: 0.5,
+  staleRatings: ['unknown'] as readonly string[],
+};
+
+/**
+ * Detect rubric staleness from its per-criterion trends (P-011). A criterion with
+ * ≥ `minSamples` in-window ratings of which ≥ `staleFraction` are a stale rating
+ * (default 'unknown') is flagged — the Overwatch keeps being unable to assess it, so
+ * the rubric's model for it no longer matches reality. Pure (DB-free) so it unit-tests
+ * exhaustively; `scorecardTrend` applies it over the criteria it builds.
+ */
+export function computeRubricStaleness(
+  criteria: readonly CriterionTrend[],
+  opts: RubricStalenessOpts = {},
+): RubricStaleness {
+  const minSamples = opts.minSamples ?? STALENESS_DEFAULTS.minSamples;
+  const staleFraction = opts.staleFraction ?? STALENESS_DEFAULTS.staleFraction;
+  const staleRatings = new Set(
+    (opts.staleRatings ?? STALENESS_DEFAULTS.staleRatings).map((r) => r.toLowerCase()),
+  );
+
+  const staleCriteria: CriterionStaleness[] = [];
+  for (const c of criteria) {
+    if (c.count < minSamples) continue; // too little evidence → not "stale", just quiet
+    const staleCount = Object.entries(c.distribution).reduce(
+      (n, [rating, k]) => (staleRatings.has(rating.toLowerCase()) ? n + k : n),
+      0,
+    );
+    const fraction = staleCount / c.count;
+    if (fraction >= staleFraction) {
+      staleCriteria.push({
+        criterion: c.criterion,
+        staleFraction: fraction,
+        samples: c.count,
+        reason: `${staleCount}/${c.count} recent ratings are ${[...staleRatings].join('/')} — the criterion's model may no longer match how the system works`,
+      });
+    }
+  }
+
+  const stale = staleCriteria.length > 0;
+  return {
+    stale,
+    staleCriteria,
+    reason: stale
+      ? `${staleCriteria.length} criteri${staleCriteria.length === 1 ? 'on' : 'a'} persistently unassessable (${staleCriteria
+          .map((s) => s.criterion)
+          .join(', ')}) — the rubric model may have drifted; re-ratify via the queen↔scout loop`
+      : 'no staleness detected (criteria are being assessed)',
+  };
+}
+
 /** A rubric's qualitative health trend — per-criterion rating time-series + direction. */
 export interface RubricTrend {
   rubricRef: string;
@@ -211,6 +309,10 @@ export interface RubricTrend {
   window: { since?: string; from?: string; to?: string };
   /** Per-criterion trends, criterion key ASC (stable output). */
   criteria: CriterionTrend[];
+  /** Staleness signal (P-011): criteria the Overwatch persistently can't assess,
+   *  suggesting the rubric's model has drifted and should re-enter the queen↔scout
+   *  loop for re-ratification. */
+  staleness: RubricStaleness;
 }
 
 export interface ScorecardTrendFilter {
@@ -274,5 +376,6 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
       ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),
     },
     criteria,
+    staleness: computeRubricStaleness(criteria),
   };
 }

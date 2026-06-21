@@ -97,7 +97,7 @@ const CSS = `
   padding: 5px 10px;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
   text-transform: uppercase;
   background: transparent;
   border: none;

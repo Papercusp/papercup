@@ -7,9 +7,25 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness } from './scorecards';
+import type { CriterionTrend } from './scorecards';
 
 const s = (...ratings: string[]) => ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating }));
+
+/** Build a minimal CriterionTrend from a rating list (only the fields staleness reads). */
+const crit = (criterion: string, ...ratings: string[]): CriterionTrend => {
+  const distribution: Record<string, number> = {};
+  for (const r of ratings) distribution[r] = (distribution[r] ?? 0) + 1;
+  return {
+    criterion,
+    count: ratings.length,
+    distribution,
+    first: { rating: ratings[0] ?? 'unknown', at: '2026-06-20T00:00:00.000Z' },
+    latest: { rating: ratings[ratings.length - 1] ?? 'unknown', at: '2026-06-20T01:00:00.000Z' },
+    direction: 'unknown',
+    series: ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating })),
+  };
+};
 
 describe('computeTrendDirection (P-010)', () => {
   it('worsening — severity rises first→latest', () => {
@@ -45,5 +61,67 @@ describe('computeTrendDirection (P-010)', () => {
 
   it('is case-insensitive on the rating vocabulary', () => {
     expect(computeTrendDirection(s('HEALTHY', 'Broken'))).toBe('worsening');
+  });
+});
+
+describe('computeRubricStaleness (P-011)', () => {
+  it('flags a criterion persistently rated unknown (model drifted)', () => {
+    const r = computeRubricStaleness([crit('placement-health', 'unknown', 'unknown', 'unknown')]);
+    expect(r.stale).toBe(true);
+    expect(r.staleCriteria).toHaveLength(1);
+    expect(r.staleCriteria[0].criterion).toBe('placement-health');
+    expect(r.staleCriteria[0].staleFraction).toBe(1);
+    expect(r.staleCriteria[0].samples).toBe(3);
+    expect(r.reason).toMatch(/placement-health/);
+  });
+
+  it('does NOT flag a criterion being assessed (healthy/degraded/broken)', () => {
+    const r = computeRubricStaleness([crit('end-to-end-flow', 'healthy', 'degraded', 'broken')]);
+    expect(r.stale).toBe(false);
+    expect(r.staleCriteria).toEqual([]);
+    expect(r.reason).toMatch(/no staleness/);
+  });
+
+  it('does NOT flag persistent broken (a real system finding, not a stale rubric)', () => {
+    // The default staleRatings is ['unknown'] only — persistent 'broken' is the
+    // trend's worsening/broken signal, not staleness.
+    const r = computeRubricStaleness([crit('watchdog-determinism', 'broken', 'broken', 'broken', 'broken')]);
+    expect(r.stale).toBe(false);
+  });
+
+  it('needs ≥ minSamples (default 3) before judging — too few unknowns is quiet, not stale', () => {
+    expect(computeRubricStaleness([crit('c', 'unknown', 'unknown')]).stale).toBe(false); // 2 < 3
+    expect(computeRubricStaleness([crit('c', 'unknown', 'unknown')], { minSamples: 2 }).stale).toBe(true);
+  });
+
+  it('flags at/above the staleFraction threshold (default 0.5)', () => {
+    // 2/4 unknown = 0.5 → stale (>= threshold).
+    expect(computeRubricStaleness([crit('c', 'unknown', 'unknown', 'healthy', 'degraded')]).stale).toBe(true);
+    // 1/4 unknown = 0.25 → not stale.
+    expect(computeRubricStaleness([crit('c', 'unknown', 'healthy', 'degraded', 'broken')]).stale).toBe(false);
+  });
+
+  it('reports only the stale criteria across a mixed rubric', () => {
+    const r = computeRubricStaleness([
+      crit('fresh', 'healthy', 'degraded', 'healthy'),
+      crit('drifted', 'unknown', 'unknown', 'unknown'),
+      crit('also-fresh', 'broken', 'degraded', 'broken'),
+    ]);
+    expect(r.stale).toBe(true);
+    expect(r.staleCriteria.map((c) => c.criterion)).toEqual(['drifted']);
+  });
+
+  it('is case-insensitive on the stale rating, and honors a custom staleRatings set', () => {
+    expect(computeRubricStaleness([crit('c', 'UNKNOWN', 'Unknown', 'unknown')]).stale).toBe(true);
+    // widen to also treat 'broken' as stale evidence (D-004's broader signal).
+    const r = computeRubricStaleness([crit('c', 'broken', 'broken', 'unknown')], { staleRatings: ['unknown', 'broken'] });
+    expect(r.stale).toBe(true);
+    expect(r.staleCriteria[0].staleFraction).toBe(1);
+  });
+
+  it('empty criteria → not stale', () => {
+    const r = computeRubricStaleness([]);
+    expect(r.stale).toBe(false);
+    expect(r.staleCriteria).toEqual([]);
   });
 });

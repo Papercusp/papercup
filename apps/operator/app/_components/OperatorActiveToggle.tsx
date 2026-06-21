@@ -215,7 +215,7 @@ const TOGGLE_CSS = `
   border-radius: 999px;
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
   background: rgba(255,255,255,0.04);
   border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));

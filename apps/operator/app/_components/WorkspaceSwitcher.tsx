@@ -233,7 +233,7 @@ export default function WorkspaceSwitcher() {
         }
       >
         <div role="menu">
-          <div className="pc-workspace-menu-title" style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          <div className="pc-workspace-menu-title" style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0 }}>
             Workspaces
           </div>
           {reg.workspaces.map((ws) => {

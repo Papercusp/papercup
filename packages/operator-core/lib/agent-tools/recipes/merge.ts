@@ -61,6 +61,14 @@ export default defineTool({
       survivorId: args.survivorId,
       duplicateIds: args.duplicateIds,
     });
+
+    // Live-update the /admin/recipes dashboard (P-009): a merge flips duplicates to
+    // status=merged + folds counts onto the survivor — both the list and the
+    // candidate worklist change. Only when something actually merged. Best-effort.
+    if (mergedIds.length > 0) {
+      const { notifyRecipesChanged } = await import('../code/capture-recipe');
+      await notifyRecipesChanged((msg) => ctx.log(msg));
+    }
     return {
       content: [
         {
