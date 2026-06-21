@@ -1235,6 +1235,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
               res.on('close', () => resolve());
               res.on('error', () => resolve());
               peekedRest!.on('error', () => { res.destroy(); resolve(); });
+              // Wedge-prevention (the stuck-stream slot leak): also force-resolve on the ceiling/self-heal
+              // abort so a half-open-client + hung-body stream can't pin its admission slot forever.
+              const onAbort = () => {
+                try { peekedRest!.destroy(); } catch { /* already torn down */ }
+                try { res.destroy(); } catch { /* already torn down */ }
+                resolve();
+              };
+              if (ac.signal.aborted) onAbort();
+              else ac.signal.addEventListener('abort', onAbort, { once: true });
             });
           } else {
             res.end();
@@ -1254,6 +1263,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
               res.destroy();
               resolve();
             });
+            // Wedge-prevention — the 80-min stuck-stream slot leak (2026-06-21). This await previously
+            // listened ONLY to res/nodeStream events, so a stream where the CLIENT is half-open (never emits
+            // res 'close') AND the upstream body has ended-or-hung (never emits nodeStream 'error') pinned its
+            // admission slot FOREVER — surviving every self-heal reclaim AND the 20-min hard ceiling, because
+            // both abort `ac` (=currentAc) yet this await ignored that abort. (Observed: slot #178 held 4800s.)
+            // Make the abort ALSO force-tear-down both streams + resolve, so a reclaim/ceiling actually frees it.
+            const onAbort = () => {
+              try { nodeStream.destroy(); } catch { /* already torn down */ }
+              try { res.destroy(); } catch { /* already torn down */ }
+              resolve();
+            };
+            if (ac.signal.aborted) onAbort();
+            else ac.signal.addEventListener('abort', onAbort, { once: true });
           });
         } else {
           res.end();
