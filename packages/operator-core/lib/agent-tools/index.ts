@@ -463,6 +463,8 @@ import './fleet/opus-budget';
 import './accounts/scale-policy';
 // live-configurability-audit-2026-06-20 P-011 — settable auto-implement risk policy + dispatch limits:
 import './improvements/set-auto-policy';
+// live-configurability-audit-2026-06-20 P-012 — settable per-harness gym promotion gates:
+import './gym/set-gates';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

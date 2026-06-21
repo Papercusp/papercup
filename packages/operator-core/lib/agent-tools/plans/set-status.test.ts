@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   shouldPushNeedsHuman,
   itemImportance,
@@ -204,6 +204,10 @@ describe('releaseTerminalGrips (EI-2298)', () => {
   });
 
   it('is fail-safe: a clearAssignment throw is swallowed → assignmentReleased=false, no throw', async () => {
+    // The helper logs the swallowed error via console.warn; mock it so
+    // vitest-fail-on-console does not fail the test, and assert it occurred
+    // (the fail-safe path IS expected to warn).
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const out = await releaseTerminalGrips({
       status: 'done',
       agentOwnerId: null,
@@ -214,6 +218,8 @@ describe('releaseTerminalGrips (EI-2298)', () => {
       },
     });
     expect(out.assignmentReleased).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });
 

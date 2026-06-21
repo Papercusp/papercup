@@ -260,8 +260,8 @@ describe('AdvShell — strip + header', () => {
   it('collapses to the workspace-level tabs under All Pots and blanks single-pot widgets', async () => {
     nuqsState.scope = 'all';
     await renderShell();
-    const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('title'));
-    expect(tabs).toEqual(['Overview', 'Create', 'Calendar', 'Working', 'Health', 'Frames', 'Conversations', 'Learning', 'Evaluation']);
+    const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
+    expect(tabs).toEqual(['overview', 'create', 'calendar', 'working', 'health', 'frames', 'conversations', 'learning', 'evaluation']);
     expect(screen.queryByText('sub-pots')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');

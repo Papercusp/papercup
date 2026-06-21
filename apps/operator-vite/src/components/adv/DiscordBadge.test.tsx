@@ -68,7 +68,7 @@ describe('<DiscordBadge>', () => {
     expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
     expect(screen.getByText('7 online')).toBeTruthy();
-    expect(link.title).toContain('7 online');
+    expect(link.textContent).toContain('7 online');
     expect(container.querySelector('.pc-discord-badge__dot')).not.toBeNull();
   });
 
@@ -81,7 +81,7 @@ describe('<DiscordBadge>', () => {
     expect(screen.getByText('Discord')).toBeTruthy();
     expect(screen.queryByText(/online/)).toBeNull();
     expect(container.querySelector('.pc-discord-badge__dot')).toBeNull();
-    expect((screen.getByRole('link') as HTMLAnchorElement).title).toBe('Join the Discord');
+    expect(screen.getByRole('link').textContent).toContain('Discord');
   });
 
   it('falls back to the canonical gg invite when inviteUrl is empty', async () => {

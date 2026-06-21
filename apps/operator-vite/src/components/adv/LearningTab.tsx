@@ -300,22 +300,24 @@ export default function LearningTab() {
               workspace-global views (Benchmark / Scout / Knowledge / Throughput)
               hide the picker since they ignore it. */}
           {hiveAware ? (
-            <label className="pc-learning__hivepick" title="Scope the hive-aware views (Improvements, Gym, Learnings) to one hive — the tenancy unit. Benchmark, Scout, Knowledge and Throughput are workspace-wide and ignore this.">
-              <Brain size={12} aria-hidden />
-              <span className="pc-learning__hivepicklabel">hive</span>
-              <Select
-                ariaLabel="Hive lens"
-                value={hive}
-                onChange={(v: string) => void setLhive(v)}
-                disabled={hives.length === 0}
-                placeholder={hives.length === 0 ? 'no hives yet' : undefined}
-                triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
-                options={hives.map((h) => ({
-                  value: h.slug,
-                  label: `${hiveHomeLabel(h.slug)}${h.remote ? ' (joined)' : ''}`,
-                }))}
-              />
-            </label>
+            <Tooltip label="Scope the hive-aware views (Improvements, Gym, Learnings) to one hive — the tenancy unit. Benchmark, Scout, Knowledge and Throughput are workspace-wide and ignore this.">
+              <label className="pc-learning__hivepick">
+                <Brain size={12} aria-hidden />
+                <span className="pc-learning__hivepicklabel">hive</span>
+                <Select
+                  ariaLabel="Hive lens"
+                  value={hive}
+                  onChange={(v: string) => void setLhive(v)}
+                  disabled={hives.length === 0}
+                  placeholder={hives.length === 0 ? 'no hives yet' : undefined}
+                  triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
+                  options={hives.map((h) => ({
+                    value: h.slug,
+                    label: `${hiveHomeLabel(h.slug)}${h.remote ? ' (joined)' : ''}`,
+                  }))}
+                />
+              </label>
+            </Tooltip>
           ) : null}
           <button
             type="button"
@@ -465,17 +467,20 @@ function ImprovementsView({ hive }: { hive: string }) {
           ) : null}
           <div className="pc-learning__lanes" role="tablist" aria-label="Triage lane">
             {LANES.map((l) => (
-              <button
+              <Tooltip
                 key={l}
-                type="button"
-                role="tab"
-                aria-selected={lane === l}
-                className={`pc-learning__lane${lane === l ? ' is-active' : ''}`}
-                title={l === 'auto' ? 'Bugs agents may fix on their own' : l === 'human' ? 'Items waiting on your judgment' : undefined}
-                onClick={() => void setLane(l)}
+                label={l === 'auto' ? 'Bugs agents may fix on their own' : l === 'human' ? 'Items waiting on your judgment' : null}
               >
-                {l === 'all' ? 'All' : l === 'auto' ? 'Auto-fixable' : 'Needs review'}
-              </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={lane === l}
+                  className={`pc-learning__lane${lane === l ? ' is-active' : ''}`}
+                  onClick={() => void setLane(l)}
+                >
+                  {l === 'all' ? 'All' : l === 'auto' ? 'Auto-fixable' : 'Needs review'}
+                </button>
+              </Tooltip>
             ))}
           </div>
           <button
@@ -1189,19 +1194,19 @@ function StarControl({
   return (
     <span className="pc-learning__stars" role="radiogroup" aria-label="Grade this idea 1 to 5">
       {[1, 2, 3, 4, 5].map((n) => (
-        <button
-          key={n}
-          type="button"
-          role="radio"
-          aria-checked={value === n}
-          aria-label={`Grade ${n} of 5`}
-          title={`★${n} — ${GRADE_MEANING[n]}`}
-          className={`pc-learning__star${value != null && n <= value ? ' is-on' : ''}`}
-          disabled={busy}
-          onClick={() => onRate(n)}
-        >
-          <Star size={size} aria-hidden fill={value != null && n <= value ? 'currentColor' : 'none'} />
-        </button>
+        <Tooltip key={n} label={`★${n} — ${GRADE_MEANING[n]}`}>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={value === n}
+            aria-label={`Grade ${n} of 5`}
+            className={`pc-learning__star${value != null && n <= value ? ' is-on' : ''}`}
+            disabled={busy}
+            onClick={() => onRate(n)}
+          >
+            <Star size={size} aria-hidden fill={value != null && n <= value ? 'currentColor' : 'none'} />
+          </button>
+        </Tooltip>
       ))}
     </span>
   );
@@ -1599,15 +1604,16 @@ function ScoutView() {
                           ★{eff.grade} · {graderLabel(eff.gradedBy)}
                         </span>
                       ) : null}
-                      <button
-                        type="button"
-                        className="pc-learning__notebtn"
-                        aria-label={eff?.feedback ? 'Edit the grading note' : 'Grade with a note'}
-                        title={eff?.feedback ? `Edit the grading note: “${eff.feedback}”` : 'Grade with a note — ideators read recent notes next cycle'}
-                        onClick={() => void setGradeOpen(isOpen ? null : item.ideaId)}
-                      >
-                        {eff?.feedback ? <MessageSquareText size={12} aria-hidden /> : <MessageSquarePlus size={12} aria-hidden />}
-                      </button>
+                      <Tooltip label={eff?.feedback ? `Edit the grading note: “${eff.feedback}”` : 'Grade with a note — ideators read recent notes next cycle'}>
+                        <button
+                          type="button"
+                          className="pc-learning__notebtn"
+                          aria-label={eff?.feedback ? 'Edit the grading note' : 'Grade with a note'}
+                          onClick={() => void setGradeOpen(isOpen ? null : item.ideaId)}
+                        >
+                          {eff?.feedback ? <MessageSquareText size={12} aria-hidden /> : <MessageSquarePlus size={12} aria-hidden />}
+                        </button>
+                      </Tooltip>
                     </span>
                   </span>
                   {isOpen ? (
@@ -2003,17 +2009,16 @@ function LearningsView({ hive }: { hive: string }) {
               </div>
               {item.summary ? <div style={{ marginTop: 4, color: 'var(--warn, #f59e0b)', fontSize: 11.5 }}>⚠ {item.summary}</div> : null}
               <div style={{ display: 'flex', gap: 10, marginTop: 6, fontSize: 11.5 }}>
-                {(['skip', 'replace', 'keep-both'] as const).map((a) => (
-                  <label key={a} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name={`res-${item.itemId}`}
-                      checked={(reviewState.choices[item.itemId] ?? item.defaultAction) === a}
-                      onChange={() => setReviewState((s) => (s ? { ...s, choices: { ...s.choices, [item.itemId]: a } } : s))}
-                    />
-                    {a === 'skip' ? 'keep existing' : a === 'replace' ? 'take incoming' : 'keep both'}
-                  </label>
-                ))}
+                <Select
+                  ariaLabel={`Resolution for ${item.itemId}`}
+                  value={reviewState.choices[item.itemId] ?? item.defaultAction}
+                  onChange={(a) => setReviewState((s) => (s ? { ...s, choices: { ...s.choices, [item.itemId]: a as InstallAction } } : s))}
+                  options={[
+                    { value: 'skip', label: 'keep existing' },
+                    { value: 'replace', label: 'take incoming' },
+                    { value: 'keep-both', label: 'keep both' },
+                  ]}
+                />
               </div>
             </div>
           ))}

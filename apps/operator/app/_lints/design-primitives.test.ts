@@ -29,14 +29,14 @@ const TEST_FILE_RE = /(?:\.test|\.spec)\.tsx$/;
 
 const LEGACY_NATIVE_SELECT_FILES = new Set([
   // Shared implementation of the design-system wrapper.
-  'app/harness/Select.tsx',
+  'operator/app/harness/Select.tsx',
 ]);
 
 const LEGACY_NATIVE_TABLE_FILES = new Set<string>();
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
-  'app/harness/ConfirmModal.tsx',
-  'app/harness/useConfirmDialog.tsx',
+  'operator/app/harness/ConfirmModal.tsx',
+  'operator/app/harness/useConfirmDialog.tsx',
 ]);
 
 const LEGACY_BUTTON_TITLE_FILES = new Set<string>();

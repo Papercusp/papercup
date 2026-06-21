@@ -56,7 +56,7 @@ describe('HumanQueueDrain', () => {
   it('renders un-enriched items without a score chip (older cached shapes)', () => {
     render(<HumanQueueDrain items={[item({ id: 'EI-7' })]} />);
     expect(screen.getByText('EI-7')).toBeTruthy();
-    expect(screen.getByTitle(/No downstream signals yet/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /EI-7/ })).toBeTruthy();
   });
 
   it('clicking an item selects it', () => {

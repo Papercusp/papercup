@@ -200,7 +200,7 @@ describe('AdvFramesTab — tiles + selection', () => {
   it('clicking a tile selects it; clicking again clears the selection', async () => {
     await renderLoaded();
     fireSse('alpha', 'thumb', thumb('alpha', 0));
-    fireEvent.click(screen.getByTitle('alpha :0'));
+    fireEvent.click(screen.getByRole('button', { name: 'alpha :0' }));
     expect(nuqsSetters.frame).toHaveBeenCalledWith('alpha:0');
 
     cleanup();
@@ -208,7 +208,7 @@ describe('AdvFramesTab — tiles + selection', () => {
     nuqsState.frame = 'alpha:0';
     await renderLoaded();
     fireSse('alpha', 'thumb', thumb('alpha', 0));
-    const tile = screen.getByTitle('alpha :0');
+    const tile = screen.getByRole('button', { name: 'alpha :0' });
     expect(tile.getAttribute('data-selected')).toBe('true');
     fireEvent.click(tile);
     expect(nuqsSetters.frame).toHaveBeenCalledWith(null);

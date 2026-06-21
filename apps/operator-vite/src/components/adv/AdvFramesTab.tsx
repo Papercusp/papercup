@@ -258,6 +258,7 @@ export default function AdvFramesTab() {
                       className="pc-frames__tile"
                       data-selected={selectedKey === key}
                       data-stale={ageMs > STALE_AFTER_MS}
+                      aria-label={`${t.slug} :${t.display}${t.role ? ` — ${t.role}` : ''}`}
                       onClick={() => void setSelectedKey(selectedKey === key ? null : key)}
                     >
                       <img

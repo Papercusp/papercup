@@ -34,6 +34,7 @@ import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase } from './gym-db-init';
+import { readGymGates } from '../gym-gates';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
@@ -327,9 +328,10 @@ export async function runOneAutoloopCycle(
     log(`running loop: maxCycles=${MAX_CYCLES} budget=${BUDGET_USD === null ? '∞' : '$' + BUDGET_USD} (autoPromote:false, human-gated) …`);
     result = await runOptimizationLoop(
       {
-        // ε/δ are placeholders until P-014 derives them from measured variance; the human gate
-        // reviews each proposal anyway, so these only steer the loop's advisory verdict.
-        thresholds: { epsilon: 0.1, delta: 0.5, costCeiling: 3 },
+        // live-configurability-audit P-012: per-harness gym gates (operator_gym_gates), settable via
+        // gym:set-gates; empty store ⇒ DEFAULT_GYM_GATES (the former inline placeholder). The human
+        // gate reviews each proposal anyway, so these only steer the loop's advisory verdict.
+        thresholds: await readGymGates(slug, WS),
         baselineMeanCost: 1,
         baselineOfRecord: 0,
         dropThreshold: 1000,

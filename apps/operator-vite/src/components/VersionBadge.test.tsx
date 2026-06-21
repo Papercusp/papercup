@@ -89,9 +89,9 @@ describe('<VersionBadge>', () => {
     render(<VersionBadge />);
     await flush();
     const btn = screen.getByRole('button');
-    expect(btn.title).toContain('app v1.2.3 · abc1234');
-    expect(btn.title).toContain('browser');
-    expect(btn.title).not.toContain('newer build is running');
+    expect(btn.getAttribute('aria-label')).toContain('app v1.2.3 · abc1234');
+    expect(btn.getAttribute('aria-label')).toContain('browser');
+    expect(btn.getAttribute('aria-label')).not.toContain('newer build is running');
   });
 
   it('a later poll with a NEW sha flips to "↻ reload"; clicking hard-reloads', async () => {
@@ -112,7 +112,7 @@ describe('<VersionBadge>', () => {
     expect(screen.getByText('↻ reload')).toBeTruthy();
     const btn = screen.getByRole('button');
     expect(btn.style.cursor).toBe('pointer');
-    expect(btn.title).toContain('A newer build is running on the server');
+    expect(btn.getAttribute('aria-label')).toContain('A newer build is running on the server');
 
     fireEvent.click(btn);
     expect(reloadSpy).toHaveBeenCalledTimes(1);
