@@ -235,15 +235,20 @@ the **orchestrator-spawned bee** path (`spawn-mcp.ts`/`invoke.ts` →
 interactive `psu` claude sessions shared one `~/.claude`. The fix (`bootstrap-su`
 + `bootstrap-role` → `writeInteractiveClaudeConfig`, keyed by `sid` via the same
 `sessionClaudeConfigDir` helper the resume leg reads) materializes a **symlink
-mirror** of `~/.claude` with exactly one thing isolated — the `projects/`
-transcript store — and the sibling `~/.claude.json` symlinked in. That is what
-makes it credential-/onboarding-safe where a creds-only dir is not: the
+mirror** of `~/.claude` with **two** things isolated — the `projects/`
+transcript store (EI-153) and the launching user's **personal global-memory**
+files (`CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`, deliberately *not*
+symlinked in so a psu session loads no personal memory — the psu-isolation
+P-002 / D-001 leak fix) — plus the sibling `~/.claude.json` symlinked in. That
+is what makes it credential-/onboarding-safe where a creds-only dir is not: the
 user-level `papercusp-su` MCP (lives in `~/.claude.json`), the file-lock + coord
 hooks (`settings.json`), plugins/skills, and onboarding/trust all carry through;
-only the conversation transcripts are private (so `/resume` + wake-by-uuid never
-reach a peer's session — the EI-153 root). Verified live on claude-code 2.1.169
-(a creds-only dir lost the MCP + hooks; the mirror restores them). Covered by
-`interactive-claude-config.test.ts` (7) + the `bootstrap-su`/`bootstrap-role`
+the conversation transcripts and personal memory are private (so `/resume` +
+wake-by-uuid never reach a peer's session — the EI-153 root — and the session
+is governed only by the psu playbook + the P-001 project-guide splice). Verified
+live on claude-code 2.1.169 (a creds-only dir lost the MCP + hooks; the mirror
+restores them). Covered by `interactive-claude-config.test.ts` (8 — including
+the personal-memory leak-fix test) + the `bootstrap-su`/`bootstrap-role`
 route assertions (CLAUDE_CONFIG_DIR present for claude, absent for omp/codex,
 non-fatal on materialize failure).
 </Aside>

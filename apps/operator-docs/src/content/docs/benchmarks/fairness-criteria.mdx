@@ -126,12 +126,14 @@ Produce this for every run; fill PASS/FAIL/N-A with evidence:
 
 The benchmark is a **coordination-topology comparison**, all arms on the same tasks, same model, **same per-task model-call budget (iso-call-budget)**, same denominator. Each arm is a pluggable **topology strategy** over one shared pool driver (so adding/removing an arm is a small config, not a new driver). Axes: *locus* (none / central / distributed-flat / hierarchical) × *mechanism* (none / direct-message / shared-artifact / review / aggregation) × *granularity* (per-backlog / per-task).
 
-Each arm is a **blueprint** (the `spine.claimModel` + `coordination` schema section); the run driver maps the resolved spec → the right spawn shape. "blueprint+driver ✅" = the topology is declared + the unit-tested driver runs it; the only remaining step for a live run is the consumer's `runAgent` binding (fleet-spawn-backed) — see *Runtime enforcement* below.
+Most arms map 1:1 to a topology **blueprint** (the `spine.claimModel` + `coordination` schema section); the run driver resolves the spec → the right spawn shape. "blueprint+driver ✅" = the topology is declared + the unit-tested driver runs it; the only remaining step for a live run is the consumer's `runAgent` binding (fleet-spawn-backed) — see *Runtime enforcement* below.
 
-| Arm (blueprint id) | Locus | Mechanism | Status |
+The column below is the **arm id** (the `ArmId` on every `TaskRunResult` row), which is **not always a literal `blueprint.yaml` id**. The `dist-*` / `pair` / `hier-lead-worker` / `ensemble-solve` arms *are* topology blueprint ids, but the three poles resolve differently: `mini-swe` is the external baseline (its su-side floor solver is the `coding-solo` blueprint); `su-independent` is the **default** `resolveCoordinationSpec` resolution (no `coordination` block → `decider-dispatch`, no comms), not a file named `id: su-independent`; and `hive` resolves from any `kind:'hive'` blueprint (e.g. `hive-eval`), since `central` is set by `bp.kind==='hive'`, not by an id literally `hive`.
+
+| Arm (id) | Locus | Mechanism | Status |
 |---|---|---|---|
-| `mini-swe` | none (1 agent) | — | ✅ baseline floor |
-| `su-independent` | none (N isolated) | — | ✅ no-coordination pole |
+| `mini-swe` | none (1 agent) | — | ✅ baseline floor (solver: `coding-solo`) |
+| `su-independent` | none (N isolated) | — | ✅ no-coordination pole (default spec, not a file id) |
 | `dist-broadcast` | distributed-flat | self-claim + declare-intent + broadcast findings | ✅ blueprint+driver |
 | `dist-peer-review` | distributed-flat | self-claim + peer-review diffs before submit | ✅ blueprint+driver |
 | `dist-repo-huddle` | distributed (per-repo group) | same-repo agents share understanding + co-edit | ✅ blueprint+driver |
@@ -139,7 +141,7 @@ Each arm is a **blueprint** (the `spine.claimModel` + `coordination` schema sect
 | `ensemble-solve` | none-during, aggregate-after | solve-N-independently → judge picks/merges (`aggregate:judge-best`) | ✅ blueprint+driver (key control) |
 | `pair` | per-task pair | driver writes / navigator continuously reviews | ✅ blueprint+driver |
 | `hier-lead-worker` | hierarchical (elected lead) | a lead runs a coordination pass (charged to the iso-budget), then workers execute under it | ✅ blueprint+driver |
-| `hive` | central | Queen places/evicts/re-places/briefs/wakes | ✅ (reliability-degraded → F-FIX-038/EI-1293) |
+| `hive` | central | Queen places/evicts/re-places/briefs/wakes | ✅ (`kind:'hive'` blueprint; reliability-degraded → F-FIX-038/EI-1293) |
 
 **Framework (built):** a topology is a blueprint, resolved to a `CoordinationSpec` by `resolveCoordinationSpec` (`coordination-topology.ts`), mapped to per-team spawn plans (directive + tool-scope + team grouping) by `coordination-runtime.ts`, and executed by `runTopology` (`run-topology.ts`). The driver is generic across benchmarks via two injected seams: a per-benchmark `CloneGradeSeam` (clone/grade — identical across arms, C5) and a `runAgent` (the fleet-spawn-backed agent invocation). SWE-bench-Pro (diff) and FrontierSWE (in-container) both wire onto it.
 

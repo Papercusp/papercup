@@ -36,6 +36,15 @@ npm run lostpixel:update --workspace libs/generic/ui-primitives
 | `libs/marketplace-public-ui` | 3 components | 14 PNGs | `:6007` |
 | `libs/agent-chat` | 2 components | 7 PNGs | `:6008` |
 | `apps/operator` | 3 components | 10 PNGs | `:6009` |
+| `libs/generic/papergrid/grid-core` | 1 component | 5 PNGs | `:6009` ⚠ |
+
+`libs/generic/papergrid/grid-core` is fully wired **locally** (its own
+`.storybook/`, `lostpixel.config.ts` at threshold `0.05`, one
+`RichGrid.stories.tsx`, 5 committed baselines) but has **no step in the
+CI `visual` job** — its baselines are never checked on CI yet (open
+follow-up; see [CI behavior](#ci-behavior)). It also reuses port
+`6009`, colliding with `apps/operator`; reassign it to e.g. `:6010` to
+honor the unique-port rule below.
 
 ## Adding a story
 
@@ -73,7 +82,7 @@ npm install --save-dev --workspace libs/<lib> \
   --legacy-peer-deps --ignore-scripts
 ```
 
-Then create the four required files (copy from `libs/ui-primitives`):
+Then create the four required files (copy from `libs/generic/ui-primitives`):
 
 - `.storybook/main.ts` — story glob + framework
 - `.storybook/preview.ts` — backgrounds + global CSS imports
@@ -89,8 +98,10 @@ Add four scripts to `package.json`:
 "lostpixel:update": "LOST_PIXEL_GENERATE_ONLY=1 lost-pixel"
 ```
 
-Pick a unique port per lib (`6006` ui-primitives, `6007` marketplace-public-ui,
-`6008+` for new ones). Wire the new lib into the `visual` job in
+Pick a unique port per lib (`6006` ui-primitives, `6007`
+marketplace-public-ui, `6008` agent-chat, `6009` operator — and
+currently also `grid-core`, which is the one collision to fix; `6010+`
+for new ones). Wire the new lib into the `visual` job in
 `.github/workflows/test.yml` so CI covers it.
 
 <Aside type="caution" title="Lost Pixel pins playwright-core@1.47.2">
@@ -125,9 +136,11 @@ something is probably wrong — investigate the wobble first.
 - ❌ `lostpixel-diff/` — per-run output, ignored.
 - ❌ `storybook-static/` — per-run build, ignored.
 
-When the global PNG count grows past ~50, the spec (§1.11) calls for
-git-lfs to keep the repo light. Until then, direct-commit is simpler
-and avoids any LFS-bandwidth surprises in CI.
+Spec §1.11 mandates git-lfs for baseline blobs unconditionally. We
+currently direct-commit instead — simpler, and it avoids any
+LFS-bandwidth surprises in CI. The "~50 images" cutover is a local
+heuristic from each `lostpixel.config.ts` docstring, not the spec;
+revisit LFS when the per-lib PNG count climbs toward it.
 
 ## CI behavior
 
@@ -135,13 +148,21 @@ The `visual` job in `.github/workflows/test.yml`:
 
 - Runs on PRs **only** when the `run-visual` label is applied (matches
   the spec §1.11 opt-in pattern), and on every push to `main`.
-- Builds Storybook + runs Lost Pixel for each wired lib in sequence.
+- Builds Storybook + runs Lost Pixel in sequence for the four libs with
+  explicit steps: `ui-primitives`, `marketplace-public-ui`,
+  `agent-chat`, and `apps/operator`. **`grid-core` has no step yet** —
+  its local wiring is not covered by CI (open follow-up).
 - Uploads `lost-pixel-diffs` artifact on failure (combined `current/`
-  and `diff/` from every lib).
+  and `diff/` from those four libs).
 
-To auto-apply `run-visual` when story files touch, add a CODEOWNERS
-or labeler workflow rule for `libs/**/*.stories.@(ts|tsx)` (not yet
-wired — open follow-up).
+To auto-apply `run-visual` when story files touch, the labeler **config**
+already exists: `.github/labeler.yml` carries the rule
+`libs/**/*.stories.@(ts|tsx)`. The only missing piece is a runnable
+labeler **workflow** — one with `on: pull_request_target` and
+`uses: actions/labeler` — so the action never fires (open follow-up).
+Note the stray `.github/workflows/labeler.yml`, which duplicates the
+config but has no `on:`/`jobs:`/`uses:`, so it is not a runnable
+workflow either.
 
 ## Related
 

@@ -2,6 +2,12 @@
 title: P-079 runbook — live bidirectional federation acceptance
 sidebar:
   order: 4
+plans:
+  - non-collaborator-join-fork-pr-2026-06-02
+  - papercusp-phase1b-bidirectional-federation-2026-06-01
+  - papercusp-phase1b-bidirectional-federation-impl-2026-06-01
+  - papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-26
+  - comb-retire-per-harness-sharing-2026-06-11
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
@@ -16,11 +22,26 @@ This is the acceptance test for Phase-1b bidirectional federation: two
 over the Model B Hyperswarm substrate. It is the gate that closes implementation
 **Open-Risk R-1** (see below) — the one thing that cannot be asserted offline.
 
-Design: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`.
+Design: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`
+(now **superseded** — admission moved off the shared-repo contributor file).
 The deterministic offline proof (module + transport, gate stubbed) already exists at
 `packages/operator-core/lib/sync/hyperbee/__tests__/two-peer-swarm-bidi.test.ts`; this runbook
 covers what that test *can't*: the real GitHub publish→verify loop with two real
 identities.
+
+<Aside type="note" title="Write-free, non-collaborator join (the model this runbook tests)">
+The whole flow is governed by the **write-free join** model
+(`non-collaborator-join-fork-pr-2026-06-02`). A peer is admitted **purely from its
+SIGNED announce** — `device_pubkey` + `github_user_id` + `attestation_gist_id` —
+plus the **public attestation gist**, verified by `verifyAttestation`:
+`gist.owner.id === claimed github_user_id`, the gist body's `device_pubkey` matches
+the announced key, and a valid device Ed25519 signature. There is **no shared-repo
+contributor file** and **no repo write at join** (the prior `verifyChannel2` over
+`{repoOwner, repoName, token}` is gone). Any `gh`-authenticated GitHub identity can
+join; GitHub's own PR-merge rules are the real authority over what lands. The
+verification commands below therefore inspect the **announced attestation gist**, not
+a `user/<id>` contributor branch (those branches no longer exist).
+</Aside>
 
 <Aside type="tip" title="Most of P-079 is now an automatable gated test (2026-06-02)">
 The **whole identity path** — not just the gist crux — now runs **in-process with

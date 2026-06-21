@@ -466,6 +466,15 @@ to your context. Only do so when relevant to the current task.
   - mcp__papercusp__listSpawnableTemplates()
 ````
 
+<Aside type="caution">
+**Host drift:** the `localhost:3055` in these examples is the plan's original
+target. On the shipped/release operator the API host is **`:3070`**
+(`PAPERCUSP_HONO_PORT`); `:3055` is only the Vite SPA dev server, which proxies
+`/api → :3070` in dev and is absent on the release operator. An agent copying
+these curls should target `:3070`. See
+`packages/operator-core/lib/operator-api-base.ts`.
+</Aside>
+
 #### 3d — Bounded inbox in own prompt
 
 Every role's prompt also includes its own inbox bounded to last 20 pending messages.

@@ -2,6 +2,12 @@
 title: Testing — strategy, conventions, and OSS stack (v1.1)
 sidebar:
   order: 1
+plans:
+  - admin-testing-tab-restructure-2026-05-24
+  - harness-tests-tab-and-tester-promotion-2026-05-26
+  - universal-testing-domains-generic-2026-06-03
+  - starlight-projection-generators-2026-06-05
+  - generalize-libs-to-generic-2026-06-05
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -21,15 +27,21 @@ import { Aside } from '@astrojs/starlight/components';
   (testcontainers-per-worker is deterministic).
 - §1.4: `vitest-fail-on-console` now wired by default in shared config.
 - §1.4: `@axe-core/playwright` + `vitest-axe` adopted; first coverage
-  in `libs/ui-primitives` (4 components) and `apps/operator` (2 e2e specs).
-- Phase 3: TESTING.md present in 16/16 packages.
-- Phase 4 (Storybook 10 + Lost Pixel): shipped in 4 packages —
-  `libs/ui-primitives` (18 stories), `libs/marketplace-public-ui`
-  (9 stories), `libs/agent-chat` (7 stories), `apps/operator`
-  (10 stories). 47 total baselines (~5 MB). CI workflow runs all four
-  via `run-visual` PR label (auto-applied on story file changes by
-  `.github/labeler.yml`). See [`testing/visual-regression`](./visual-regression)
-  for the operational guide.
+  in `libs/generic/ui-primitives` (`src/a11y.test.tsx` covers StatCard,
+  StatusPill, JsonTree, MarkdownView) and `apps/operator` e2e specs.
+- Phase 3: TESTING.md present in 5 packages so far (`apps/tui`,
+  `apps/pui-zellij-plugin`, `libs/papercusp-shared`,
+  `packages/operator-core`, `packages/tooldef-mcp`) — rollout to the
+  rest is ongoing.
+- Phase 4 (Storybook 10 + Lost Pixel): in progress across four packages —
+  `libs/generic/ui-primitives` (6 stories), `libs/marketplace-public-ui`
+  (3 stories), `libs/agent-chat` (2 stories), `apps/operator`
+  (3 stories). 15 `*.stories.ts(x)` files repo-wide today. CI's visual
+  job builds Storybook per package (the `ui-primitives` job runs from
+  `libs/generic/ui-primitives`) and runs via the `run-visual` PR label
+  (auto-applied on story file changes by `.github/labeler.yml`). See
+  [`testing/visual-regression`](./visual-regression) for the operational
+  guide.
 </Aside>
 
 <Aside type="caution" title="Status: design proposal v1.1">
@@ -54,8 +66,8 @@ test frameworks ship new tests. Everything else is being migrated out.
 | --- | --- | --- | --- |
 | **Vitest** | `*.test.ts` next to source | per-package | Tests-tab registry globs |
 | **Playwright** | `*.spec.ts` | `apps/operator/e2e/` | `harness` / domain-specific E2E sections |
-| **Cargo** | `#[cfg(test)] mod tests { … }` | `<crate>/src/` | `cargo test --message-format=json` reporter (P-012) |
-| **LLM scenarios** | `.ts` / `.yaml` | `packages/operator-core/lib/llm-testing/scenarios/` | LLM testing tab |
+| **Cargo** | `#[cfg(test)] mod tests { … }` | `<crate>/src/` | `rust` (`Rust (Cargo)`) domain, via `shell` runners (`bash -c 'cd <crate> && cargo test'`) |
+| **LLM scenarios** | `.ts` | `packages/operator-core/lib/llm-testing/scenarios/` | LLM testing tab |
 
 **Where tests appear in the UI:** drop a test file under one of the
 glob-matched paths in `packages/operator-core/lib/testing-domains-registry.ts`
@@ -85,6 +97,18 @@ the tab. This caught the 2026-06-02 audit finding that 614 of 1168
 tests were orphaned. When it fires, widen a domain's globs (or add a
 domain) in the registry (`packages/operator-core/lib/testing-domains-registry.ts`),
 then `npm run gen:contract`.
+
+**Cargo runs through a shell runner, not a `cargo` runner kind.** The
+repo has **no root Cargo workspace**, so a `cargo test -p <crate>`
+invocation from the repo root can't resolve any crate. The `rust`
+(`Rust (Cargo)`) domain in `testing-domains-registry.ts` therefore `cd`s
+into each crate via `kind:'shell'` runners (`bash -c 'cd <crate> &&
+cargo test'`), covering the pui/TUI workbench (`apps/tui`), the pui
+companion proto + zellij plugin, and the `papercusp-desktop` Tauri shell.
+The standalone `cargo --message-format=json` reporter (P-012) was
+**dropped** — there is no such reporter file. Rust files are `.rs`, so
+they're never canonical-test orphans; the gap the `rust` domain closes
+was that nothing *ran* them.
 
 **Live smokes that can't be Vitest** (need a running operator / external
 service) are surfaced via `node` / `shell` **runners** on a domain
