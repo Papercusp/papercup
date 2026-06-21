@@ -13,6 +13,10 @@ vi.mock('../../work-item-checkpoint', () => ({
 }));
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+  // checkpoint.ts fire-and-forgets markFeatureProgress (last_progress_at bump); the
+  // mock must export it or the `void markFeatureProgress(...)` call throws (undefined)
+  // and the handler returns ok:false (agent-activity-liveness-truth integration).
+  markFeatureProgress: () => Promise.resolve(true),
 }));
 
 import checkpoint from './checkpoint';

@@ -231,11 +231,13 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const got = await call(getTool, { id });
     expect(got.ok).toBe(true);
-    expect((got.workItem as Record<string, unknown>).kind).toBe('bug');
+    const gotItem = (got.results as { workItem: Record<string, unknown> }[])[0]!.workItem;
+    expect(gotItem.kind).toBe('bug');
 
     const missing = await call(getTool, { id: 'WI-999' });
-    expect(missing.ok).toBe(false);
-    expect(missing.error).toMatch(/not found/);
+    const missRes = (missing.results as { ok: boolean; error?: string }[])[0]!;
+    expect(missRes.ok).toBe(false);
+    expect(missRes.error).toMatch(/not found/);
   });
 
   it('list merges across kinds, hides chunks, and a parent filter lists the chunk', async () => {
@@ -290,13 +292,14 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
 
     const blocks = await call(linkTool, { id: bugId, rel: 'blocks', target_id: featId, target_harness: 'papercup' });
     expect(blocks.ok).toBe(true);
-    expect(blocks.rel).toBe('blocks');
-    expect(blocks.dst).toEqual({ kind: 'feature', ref: `papercup#${featId}` });
+    const blocksRes = (blocks.results as { rel: string; dst: unknown }[])[0]!;
+    expect(blocksRes.rel).toBe('blocks');
+    expect(blocksRes.dst).toEqual({ kind: 'feature', ref: `papercup#${featId}` });
 
     // a different rel through the same tool surface
     const relates = await call(linkTool, { id: bugId, rel: 'relates', target_id: featId, target_harness: 'papercup' });
     expect(relates.ok).toBe(true);
-    expect(relates.rel).toBe('relates');
+    expect((relates.results as { rel: string }[])[0]!.rel).toBe('relates');
 
     // the edges are real and distinct
     const links = await db.sql<{ rel: string }[]>`
@@ -311,7 +314,8 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const tagged = await call(tagTool, { id, topic: 'shop' });
     expect(tagged).toEqual({ ok: true, topic: 'shop' });
     const subscribed = await call(subscribeTool, { id, mode: 'digest' });
-    expect(subscribed).toEqual({ ok: true });
+    expect(subscribed.ok).toBe(true);
+    expect((subscribed.results as { ok: boolean }[])[0]!.ok).toBe(true);
   });
 
   it('comment: appends a thread post to a work-item; a missing id → not-found envelope', async () => {
@@ -320,7 +324,7 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
 
     const commented = await call(commentTool, { id, body: 'repro: open the page twice' });
     expect(commented.ok).toBe(true);
-    expect((commented.post as Record<string, unknown>).body).toBe('repro: open the page twice');
+    expect(((commented.results as { post: Record<string, unknown> }[])[0]!.post).body).toBe('repro: open the page twice');
 
     // the comment is persisted on the work-item's thread (issue-family → commentIssue)
     const posts = await db.sql<{ body: string }[]>`
@@ -329,8 +333,9 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
 
     // missing work-item → the engine returns null → the tool wraps a not-found envelope
     const missing = await call(commentTool, { id: 'WI-404', body: 'ghost' });
-    expect(missing.ok).toBe(false);
-    expect(missing.error).toMatch(/work_item 'WI-404' not found/);
+    const missRes = (missing.results as { ok: boolean; error?: string }[])[0]!;
+    expect(missRes.ok).toBe(false);
+    expect(missRes.error).toMatch(/work_item 'WI-404' not found/);
   });
 
   it('promote: a bug mints an F-FIX feature; a feature is a no-op', async () => {
@@ -391,16 +396,18 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
     const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const res = await call(linkTool, { id, rel: 'blocks' });
-    expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/target_id.*target_kind.*target_ref/);
+    const r0 = (res.results as { ok: boolean; error?: string }[])[0]!;
+    expect(r0.ok).toBe(false);
+    expect(r0.error).toMatch(/target_id.*target_kind.*target_ref/);
   });
 
   it('link to a missing target work-item → not-found envelope', async () => {
     const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const res = await call(linkTool, { id, rel: 'blocks', target_id: 'WI-404' });
-    expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/target work_item 'WI-404' not found/);
+    const r0 = (res.results as { ok: boolean; error?: string }[])[0]!;
+    expect(r0.ok).toBe(false);
+    expect(r0.error).toMatch(/target work_item 'WI-404' not found/);
   });
 });
 
@@ -446,7 +453,8 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
     expect(kids.every((k) => k.scope === 'harness:papercup')).toBe(true);
     // The child is navigable back to the parent via getWorkItem(child).payload.expanded_from.
     const childGot = await call(getTool, { id: kids[0].issue_id });
-    expect(((childGot.workItem as Record<string, unknown>).payload as Record<string, unknown>).expanded_from).toBe(parentId);
+    const childItem = (childGot.results as { workItem: Record<string, unknown> }[])[0]!.workItem;
+    expect((childItem.payload as Record<string, unknown>).expanded_from).toBe(parentId);
   });
 
   it('expanding a SETTLED parent still proceeds (no "cannot expand settled" guard exists) and children inherit harness', async () => {
