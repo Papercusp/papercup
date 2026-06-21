@@ -46,11 +46,17 @@ describe('db:migrate-policy', () => {
     expect(b).toEqual({ policy: { lockTimeoutMs: 15000, statementTimeoutMs: null } });
   });
 
-  it('set is operator/architect-gated', async () => {
+  it('set rejects a role without operator-config write authority (e.g. bee)', async () => {
     await expect(
       tool.handler({ op: 'set', lockTimeoutMs: 30000 } as never, { role: 'bee' } as never),
-    ).rejects.toThrow(/operator or architect/i);
+    ).rejects.toThrow(/operator, architect, or queen/i);
     expect(writeM).not.toHaveBeenCalled();
+  });
+
+  it('set accepts the queen (operator-equivalent, EI-2204)', async () => {
+    const b = body(await tool.handler({ op: 'set', lockTimeoutMs: 30000 } as never, { role: 'queen' } as never));
+    expect(writeM).toHaveBeenCalledWith({ lockTimeoutMs: 30000 });
+    expect(b).toMatchObject({ ok: true, applied: true });
   });
 
   it('set requires at least one field', async () => {

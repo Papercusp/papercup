@@ -12,8 +12,8 @@
  * tools-md-sync only checks by name.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import '../agent-tools/index';
 import { lookupByMcpName, getCatalog } from '@papercusp/tooldef';
@@ -76,5 +76,60 @@ describe('auth gating (missing bearer/workspace class)', () => {
     expect(names.length).toBeGreaterThan(10);
     const missing = names.filter((n) => !isInvokable(n));
     expect(missing, `allowedTools with no registry entry: ${missing.join(', ')}`).toEqual([]);
+  });
+});
+
+describe('operator-config write-role gate (EI-2204)', () => {
+  // The operator-config-mutating tools (rate_limit_config, preferences, reset-overrides,
+  // migrate-policy, set-watchdog-tunables, routines:set) advertise [...SU_ROLES] for INVOKE
+  // but narrow their mutating op to operator-level authority. That gate MUST go through the
+  // shared `isOperatorConfigWriteRole` predicate (which includes the operator-equivalent
+  // `queen`, local-hive D-001) — not a hand-rolled `ctx.role !== 'operator' && ctx.role !==
+  // 'architect'` literal, which silently excluded the Queen and blocked the clean path to
+  // reset a jammed concurrency ceiling (EI-2204 / EI-2186).
+  const agentToolsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'agent-tools');
+
+  function walkTs(dir: string): string[] {
+    const out: string[] = [];
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name === '__tests__' || ent.name === 'node_modules') continue;
+        out.push(...walkTs(full));
+      } else if (ent.name.endsWith('.ts') && !ent.name.endsWith('.test.ts')) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  // Catches the anti-pattern in either ordering, with arbitrary whitespace/newlines.
+  const BANNED = /ctx\.role\s*!==\s*'(operator|architect)'\s*&&\s*ctx\.role\s*!==\s*'(operator|architect)'/;
+
+  it('no agent-tool hand-rolls the operator/architect write-gate (must use isOperatorConfigWriteRole)', () => {
+    const offenders = walkTs(agentToolsDir)
+      .filter((f) => BANNED.test(readFileSync(f, 'utf8')))
+      .map((f) => relative(agentToolsDir, f));
+    expect(
+      offenders,
+      `These tools re-introduced the hand-rolled operator/architect role-gate (excludes the ` +
+        `operator-equivalent queen, EI-2204). Gate via isOperatorConfigWriteRole(ctx.role) instead: ` +
+        offenders.join(', '),
+    ).toEqual([]);
+  });
+
+  it('every known operator-config-write tool imports the shared predicate', () => {
+    const tools = [
+      'operator/rate_limit_config.ts',
+      'operator/preferences.ts',
+      'config/reset-overrides.ts',
+      'db/migrate-policy.ts',
+      'improvements/set-watchdog-tunables.ts',
+      'routines/set.ts',
+    ];
+    for (const rel of tools) {
+      const src = readFileSync(join(agentToolsDir, rel), 'utf8');
+      expect(src, `${rel} must import isOperatorConfigWriteRole`).toMatch(/isOperatorConfigWriteRole/);
+    }
   });
 });

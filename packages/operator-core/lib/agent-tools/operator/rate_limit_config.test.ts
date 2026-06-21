@@ -1,10 +1,12 @@
 /**
  * rate_limit_config.test.ts — the operator:rate_limit_config HANDLER (read/write config
- * mocked). Pins: get returns the config; set is GUARDED twice — role must be operator|
- * architect (else throw) and at least one field must be provided (else throw); and a set
- * MERGES with current (an omitted field keeps its existing value). A regression that lets
- * a bee throttle the fleet, or drops the merge (zeroing an unspecified knob), is what
- * this catches.
+ * mocked). Pins: get returns the config; set is GUARDED twice — role must carry operator-
+ * config write authority (operator | architect | queen, via isOperatorConfigWriteRole; else
+ * throw) and at least one field must be provided (else throw); and a set MERGES with current
+ * (an omitted field keeps its existing value). A regression that lets a bee throttle the
+ * fleet, that drops the merge (zeroing an unspecified knob), OR that re-excludes the
+ * operator-equivalent queen (EI-2204 — she could invoke but not `set`, blocking the clean
+ * path to reset a jammed concurrency ceiling), is what this catches.
  *
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/operator/rate_limit_config.test.ts
@@ -39,9 +41,21 @@ describe('operator:rate_limit_config', () => {
     expect(b).toMatchObject({ config: { maxSimultaneousAgents: 16, concurrencyFloor: 2 } });
   });
 
-  it('set requires operator|architect role', async () => {
-    await expect(call({ op: 'set', maxSimultaneousAgents: 4 }, 'bee')).rejects.toThrow(/operator or architect/);
+  it('set rejects a role without operator-config write authority (e.g. bee)', async () => {
+    await expect(call({ op: 'set', maxSimultaneousAgents: 4 }, 'bee')).rejects.toThrow(/operator, architect, or queen/);
     expect(writeM).not.toHaveBeenCalled();
+  });
+
+  it('set ACCEPTS the queen (operator-equivalent, EI-2204) — she is no longer rejected', async () => {
+    const b = body(await call({ op: 'set', maxSimultaneousAgents: 4 }, 'queen'));
+    expect(writeM).toHaveBeenCalledWith({ maxSimultaneousAgents: 4, concurrencyFloor: 2 });
+    expect(b).toMatchObject({ ok: true, config: { maxSimultaneousAgents: 4, concurrencyFloor: 2 } });
+  });
+
+  it('set ACCEPTS architect (historical operator-config writer)', async () => {
+    const b = body(await call({ op: 'set', concurrencyFloor: 3 }, 'architect'));
+    expect(writeM).toHaveBeenCalledWith({ maxSimultaneousAgents: 16, concurrencyFloor: 3 });
+    expect(b).toMatchObject({ ok: true });
   });
 
   it('set requires at least one field', async () => {

@@ -17,7 +17,7 @@ import { Aside } from '@astrojs/starlight/components';
 Most libraries below are declared in `apps/operator/package.json` and resolved through the monorepo root `node_modules`. Total bundle delta from the migration was ~55 KB gzipped across the harness routes, all tree-shakable.
 
 <Aside type="caution" title="gsap is an undeclared dependency">
-`gsap` and `@gsap/react` are imported by `OperatorPanel.tsx` but are **not** declared in `apps/operator/package.json` (or any package.json) and are absent from `node_modules`. They resolve today only by accident of the install tree — verify/restore the declaration before relying on the HUD animation. See the [animation stack](#motion--formkitauto-animate-gsap-for-the-operatorpanel-hud) for what gsap actually drives.
+`gsap` and `@gsap/react` are imported by `OperatorPanel.tsx` but are **not** declared in `apps/operator/package.json` (or any package.json) and are absent from `node_modules`. They resolve today only by accident of the install tree — verify/restore the declaration before relying on the HUD animation. See the [animation stack](#motion--formkitauto-animate--gsap-for-the-operatorpanel-hud) for what gsap actually drives.
 </Aside>
 
 ## `@radix-ui/react-tooltip`
@@ -154,7 +154,7 @@ The wrapper forwards refs and spreads all native button props. `type` defaults t
 - You want the canonical class hook (`.pc-text-input`) for future restyling. (Note: there is no `.pc-text-input` CSS *rule* in current source — the wrapper carries its look via inline `BASE_STYLE`; the class is a future hook, not an active style.)
 - You want to opt out of any inline-style cascade a parent might be applying.
 
-**Prefer the wrapper for now.** A simple `<input type="text" value … onChange …>` does **not** currently pick up the dark-theme look on its own — the global `:where(input, textarea)` baseline that used to style unwrapped inputs is not present in current source CSS (see the [native input section](#native-input-textarea-styling)). Until it's restored, wrap text inputs with `<TextInput>` rather than relying on an unwrapped `<input>` matching surrounding fields.
+**Prefer the wrapper for now.** A simple `<input type="text" value … onChange …>` does **not** currently pick up the dark-theme look on its own — the global `:where(input, textarea)` baseline that used to style unwrapped inputs is not present in current source CSS (see the [native input section](#native-input--textarea-styling)). Until it's restored, wrap text inputs with `<TextInput>` rather than relying on an unwrapped `<input>` matching surrounding fields.
 
 **Don't override the canonical look with ad-hoc inline styles.** Applying `style={{ background, border, borderRadius, padding }}` to an `<input>` or `<textarea>` drifts the look away from the wrapper's `BASE_STYLE` (and away from every other input in the harness). If you need a different look in one place, reach for `<TextInput>` and document the deviation; if you need it everywhere, change `BASE_STYLE` in `TextInput.tsx` (or restore + edit the global `globals.css` baseline). A page-local `inputStyleSmall` const that re-states `background: 'var(--bg-3)'` is the failure mode this rule names.
 

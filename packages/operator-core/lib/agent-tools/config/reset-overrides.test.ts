@@ -52,10 +52,16 @@ beforeEach(() => {
 });
 
 describe('config:reset-overrides', () => {
-  it('is operator/architect-gated', async () => {
+  it('rejects a role without operator-config write authority (e.g. bee)', async () => {
     await expect(
       tool.handler({ concern: 'fake-concern' } as never, { role: 'bee' } as never),
-    ).rejects.toThrow(/operator or architect/i);
+    ).rejects.toThrow(/operator, architect, or queen/i);
+  });
+
+  it('accepts the queen (operator-equivalent, EI-2204)', async () => {
+    const b = body(await tool.handler({ concern: 'fake-concern' } as never, { role: 'queen' } as never));
+    expect(resetSpy).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({ ok: true });
   });
 
   it('requires concern or all', async () => {

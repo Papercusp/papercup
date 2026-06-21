@@ -18,12 +18,19 @@ import {
 
 /** Build the exact postgres-js null-socket-write TypeError that crash-looped
  *  :3070 (2026-06-18): the message Node throws + a stack inside postgres-js's
- *  connection module. */
-function pgNullWriteError(): TypeError {
+ *  connection module. `variant` selects the module path: 'esm' →
+ *  `postgres/src/connection.js`, 'cjs' → `postgres/cjs/src/connection.js`.
+ *  The REAL incident stack (EI-1405) was the CJS path under papercup-release;
+ *  both must classify benign or the green-operator crash path regresses. */
+function pgNullWriteError(variant: 'esm' | 'cjs' = 'esm'): TypeError {
   const e = new TypeError("Cannot read properties of null (reading 'write')");
+  const modulePath =
+    variant === 'cjs'
+      ? 'file:///home/x/papercup-release/node_modules/postgres/cjs/src/connection.js:255:22'
+      : 'file:///home/x/papercup-release/node_modules/postgres/src/connection.js:255:22';
   e.stack = [
     "TypeError: Cannot read properties of null (reading 'write')",
-    '    at Immediate.nextWrite (file:///home/x/papercup-release/node_modules/postgres/src/connection.js:255:22)',
+    `    at Immediate.nextWrite (${modulePath})`,
     '    at process.processImmediate (node:internal/timers:504:21)',
   ].join('\n');
   return e;
@@ -89,6 +96,15 @@ describe('isTransientPgConnectionError (2026-06-18 — torn-down PG connection m
     expect(isTransientPgConnectionError(pgNullWriteError())).toBe(true);
   });
 
+  it('classifies the REAL EI-1405 incident stack (CJS path: postgres/cjs/src/connection.js) as transient', () => {
+    // The actual :3070 crash-loop stack was the bundled CJS path, NOT the ESM
+    // one — `papercup-release/node_modules/postgres/cjs/src/connection.js:255`.
+    // The classifier's regex tolerates the optional `cjs/` segment; pin it here
+    // so a future regex "simplification" that drops `cjs` support can't silently
+    // re-open the green-operator crash path.
+    expect(isTransientPgConnectionError(pgNullWriteError('cjs'))).toBe(true);
+  });
+
   it('classifies postgres-js CONNECTION_CLOSED (code or message) as transient', () => {
     expect(isTransientPgConnectionError(Object.assign(new Error('x'), { code: 'CONNECTION_CLOSED' }))).toBe(true);
     expect(isTransientPgConnectionError(new Error('write CONNECTION_CLOSED localhost:5432'))).toBe(true);
@@ -113,7 +129,7 @@ describe('isBenignHostError (the combined fail-fast boundary)', () => {
   it('is true for every benign class', () => {
     expect(isBenignHostError(realJsonParseError('{bad'))).toBe(true);
     expect(isBenignHostError(Object.assign(new Error('x'), { code: 'ERR_INVALID_STATE' }))).toBe(true);
-    expect(isBenignHostError(pgNullWriteError())).toBe(true); // the 2026-06-18 crash-loop fix
+    expect(isBenignHostError(pgNullWriteError('cjs'))).toBe(true); // the 2026-06-18 (EI-1405) crash-loop fix — real incident CJS stack
   });
 
   it('is FALSE for a real host bug — the guard must still exit on these', () => {

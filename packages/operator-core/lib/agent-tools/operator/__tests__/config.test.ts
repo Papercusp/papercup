@@ -139,7 +139,24 @@ describe('operator:preferences', () => {
     const { default: tool } = await import('../preferences');
     await expect(
       tool.handler({ op: 'append', entry: 'x' }, MAKE_CTX({ role: 'worker', chunkId: 'ck' })),
-    ).rejects.toThrow(/operator or architect/i);
+    ).rejects.toThrow(/operator, architect, or queen/i);
+  });
+
+  it('append as queen persists (operator-equivalent, EI-2204)', async () => {
+    const appendPreferenceEntry = vi.fn(async () => undefined);
+    vi.doMock('../../../operator-preferences', () => ({
+      listPreferenceEntries: vi.fn(),
+      appendPreferenceEntry,
+      removePreferenceEntry: vi.fn(),
+    }));
+    const { default: tool } = await import('../preferences');
+    const result = await tool.handler(
+      { op: 'append', entry: 'a queen pref' },
+      MAKE_CTX({ role: 'queen' }),
+    );
+    expect(appendPreferenceEntry).toHaveBeenCalledWith('a queen pref');
+    const payload = parsePayload(result as never);
+    expect(payload.ok).toBe(true);
   });
 
   it('append as architect persists', async () => {

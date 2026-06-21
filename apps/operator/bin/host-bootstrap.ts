@@ -31,6 +31,7 @@ import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/devic
 import { registerHostPlatform } from '@papercusp/host-platform';
 import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
+import { validateHomeHarnessResolution } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -54,6 +55,23 @@ export function runBootstrap(): void {
   } catch (e) {
     console.warn('[addon-preflight] boot self-check errored (non-fatal):', (e as Error)?.message ?? e);
   }
+
+  // [EI-2224 startup validation] Home-harness slug resolution check. Fail-fast:
+  // if the configured home harness slug doesn't resolve to a registered project,
+  // fire-paths (dispatcher, overwatch, routines) will 404 silently and go dark.
+  // This has happened twice (config drift + host restart). The validation
+  // throws with a clear error if home harness is unregistered — loud failure
+  // instead of silent 404 dispatcher dark.
+  void (async () => {
+    try {
+      await validateHomeHarnessResolution();
+      console.log('[home-harness] startup validation passed — home harness slug resolves');
+    } catch (e) {
+      console.error('[home-harness] STARTUP VALIDATION FAILED:', (e as Error)?.message ?? e);
+      // Re-throw: operator boot cannot continue if fire-paths will 404
+      throw e;
+    }
+  })();
 
   // [power] P5-3 of operator-scalability-event-loop-2026-06-16 — detect the power
   // source ONCE and fold onBattery into the resource profile BEFORE the background
