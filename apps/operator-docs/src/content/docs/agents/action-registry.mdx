@@ -3,6 +3,13 @@ title: Action Registry — implementation plan v5
 description: Final implementation-ready plan unifying agent tool surfaces (Oracle, Operator-voice, Pi) plus shortcuts and command palette under one typed registry, with a delegate-to-Claude pattern for deep reasoning.
 sidebar:
   order: 2
+plans:
+  - agent-action-registry-plan-2026-05-03
+  - unify-agent-launches-as-blueprints-2026-06-04
+  - collapse-delegate-into-workitems-2026-06-04
+  - experiment-registry-invocation-api-2026-06-14
+  - universal-voice-interface-2026-06-05
+  - voice-persona-production-readiness-2026-06-02
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -10,6 +17,33 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="note">
 This is the canonical plan — earlier iterations (v2-v4) are preserved at
 `apps/operator/docs/plans/archive/agent-action-registry-plan-v{2,3,4}-2026-05-03.md` for design history.
+</Aside>
+
+<Aside type="caution" title="As-built deltas (read first)">
+This page is a forward-looking plan; several settled-looking details diverged
+once the registry shipped. The corrections below are reflected inline where they
+matter, but the load-bearing ones:
+
+- **The registry lives at `packages/operator-core/lib/commands/`** (the operator-core
+  carve), not `apps/operator/lib/commands/`.
+- **The delegation endpoint is `/api/agent-mcp/delegate-chat`** (a GET SSE shim into
+  the `operator:delegate` tool). There is no `operator-chat` or `operator-scan` API
+  route — those names never landed.
+- **`delegate_to_claude` is a client-side tool tagged `browser: 'required'`**, not a
+  webhook tool, and it has a live backend-neutral alias `delegate_to_agent`.
+- **The default `fullAgentEngine` is `'off'`**, not `'elevenlabs-conv'`. The OpenAI
+  engine value is `'openai-realtime'` (no `'gpt-realtime'` exists).
+- **The claude-sessions table was renamed to `harness_shared.delegates`** (migration
+  003); its queries are `delegates.list` / `delegates.get` / `delegates.search`.
+- **There is no `panel.*`/`harness.start`/`palette.toggle` surface in this registry** —
+  panel/palette toggles live in the separate `lib/shortcut-registry.ts`.
+- **EL Conv AI is a transport shell** that proxies every turn to the local
+  `/api/agent-mcp/operator-converse` brain via an `ask_operator` tool — the BYO-Haiku
+  reasoning story (§6/§8/§9) is largely moot. See the §9 as-built note.
+
+See `apps/operator/docs/plans/` (linked in frontmatter) for the plans that drove
+each delta — notably `unify-agent-launches-as-blueprints-2026-06-04` (D-005 retired
+the panel/scanner cards) and `collapse-delegate-into-workitems-2026-06-04`.
 </Aside>
 
 # Agent Action Registry — Implementation Plan v5 (final, implementation-ready)
@@ -24,15 +58,22 @@ with a clear architectural split between:
 
 - **reflexive UI control** — fast, local, low-stakes; runs in the voice layer
   via ElevenLabs Conv AI client-side tools or directly via shortcuts/palette
-- **deep reasoning** — slow, agent-backed, high-context; lives in the
-  existing `operator-scan`/`operator-chat` endpoints (`claude -p` under
-  `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p`, which
-  routes through its own Meridian router + Claude Max OAuth),
-  accessed via the `delegate_to_agent` (alias `delegate_to_claude`) tool
+- **deep reasoning** — slow, agent-backed, high-context; lives behind the
+  `/api/agent-mcp/delegate-chat` SSE endpoint, which shims into the
+  `operator:delegate` tool (`claude -p` under `AGENT_BACKEND=claude-code` —
+  the deployed default — or `omp -p`, which routes through its own Meridian
+  router + Claude Max OAuth), accessed via the `delegate_to_claude` tool
+  (live backend-neutral alias: `delegate_to_agent`)
+
+<Aside type="note">
+As built, the endpoint is `delegate-chat`, not `operator-chat`/`operator-scan`
+(neither route ever existed). The `delegate_to_agent` alias is real — both ids
+are registered so in-flight EL agents keep working through the rename.
+</Aside>
 
 **Non-goals:** generic DOM clicker, free-text input tools, drag/resize
-gestures, multi-step workflows in the registry. Deep-reasoning lives in
-the `operator-chat` endpoint, not in the registry.
+gestures, multi-step workflows in the registry. Deep-reasoning lives behind
+the `delegate-chat` endpoint, not in the registry.
 
 **Decisions made through iteration** (see §9 for the full log):
 
@@ -42,9 +83,9 @@ the `operator-chat` endpoint, not in the registry.
 | Voice underlying LLM | **Claude Haiku 4.5** via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports) |
 | Deep reasoning | **agent CLI per-turn** (`claude -p` under `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p` via its Meridian router; existing pattern from `operator-scan`); persistent subprocess rejected |
 | Conversation memory | `claude-sessions` table; voice picks via injected list; auto-archive at 24h idle |
-| Tool surface for voice | ~22 tools: 12 reflexive commands + 9 fast queries + `delegate_to_claude` + claude-sessions list/get |
+| Tool surface for voice | **As built: 25 EL client tools** — see §4 for the full list. (The plan's "12 reflexive + 9 fast queries + claude-sessions list/get" did not match the shipped set; there is no `panel.*` surface, and the session queries are `delegates.list/get/search`.) |
 | Audit | Two tables: `agent_actions` (full) + `agent_queries` (sampled per-def) |
-| Aliases for renamed tools | None — hard cutover with prompt update in same PR |
+| Aliases for renamed tools | **As built: one alias kept.** `delegate_to_agent` is registered as a live alias of `delegate_to_claude` (both stay live so in-flight EL agents keep working). The plan's "None — hard cutover" was reversed for the delegate rename. |
 | Browser-routing | Tristate `browser: 'required' \| 'optional' \| 'none'` per def |
 | Concurrency | Per-def `concurrent: 'allow' \| 'queue' \| 'deny'` |
 | Workspace scoping | `ctx.workspace`, never threaded through args |

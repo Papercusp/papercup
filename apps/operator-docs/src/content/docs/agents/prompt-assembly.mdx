@@ -191,9 +191,8 @@ If a rule is "the operator never raises voice prompts after midnight," put it in
 
 ```ts
 import { assembleRolePrompt } from '../../prompt-assembly';
-// (or, from the orchestrator re-export: '@papercusp/orchestrator/role-prompt')
 
-const { text, sections } = await assembleRolePrompt({
+const { text, sections } = assembleRolePrompt({
   role: 'operator',
   toolNames: [
     // MCP tool names (NOT the `mcp__agentmcp__` prefix form)
@@ -211,14 +210,21 @@ const { text, sections } = await assembleRolePrompt({
 
 The `sections` array reports `{ name, chars }` for each contributing block — useful for prompt-budget debugging.
 
-Three lower-level loaders exist for callers that build the assembly manually (today: `operator-converse` and `oracle` chat routes):
+<Aside type="caution">
+**`@papercusp/orchestrator/role-prompt` is NOT a re-export of this function.** It maps to `role-prompt-from-slug.ts`, which *defines its own* `assembleRolePrompt` with a completely different signature — `{ slug, role, mode, featureId, projectDir, ... }` — that calls `buildPrompt` (the spawned-bee path). It produces prompt **files** + the ten shared-base policy constants + a volatile tail, **not** the persona/catalog/`tools.md` four-section layout. The two functions share only a name. The dependency direction is one-way: operator-core depends on the orchestrator (`role-launch-spec.ts` imports `assembleRolePrompt` + `resolvePromptFiles` from `@papercusp/orchestrator/role-prompt`), never the reverse. The orchestrator module re-exports only the policy *constants* (`FRICTION_TRIPWIRE`, `YIELD_POLICY`, …) from `prompt-build`, never operator-core's `prompt-assembly.ts`.
+</Aside>
+
+Lower-level loaders exist for callers that build the assembly manually (today: the operator-converse and oracle chat routes, which assemble by hand rather than calling `assembleRolePrompt`). The module exports five such loaders/renderers:
 
 ```ts
 loadRolePersona('operator')   // section 1 — throws if missing
-renderToolsCatalog('operator', toolNames)  // section 2 — empty string if no tools
+loadRoleModePersona('operator', mode)  // audience-mode overlay — null if no file
+renderToolsCatalog('operator', toolNames, modality?, displayTransform?)  // section 2 — '' if no tools
 loadRoleToolsMd('operator')   // section 3 — null if file absent
 loadRoleConverse('operator')  // active-mode rules for converse routes — throws if missing
 ```
+
+A sibling renderer, `renderWireSchemasSection()`, lives in the same module: it emits a `## Wire schemas` legend derived from each tool's registered read/write column projections (consumed by the desktop-install prompt files, not by `assembleRolePrompt`).
 
 ## Hot-reload in dev
 
@@ -229,6 +235,8 @@ export PAPERCUSP_RELOAD_PROMPTS=1
 ```
 
 Defaults to on in `NODE_ENV=development`. Bypasses all caches; every request re-reads from disk. **Don't enable in production** — adds a few `readFileSync` calls per request.
+
+`shouldBypassCache` reads the flag as an explicit tri-state: `'1'` forces the bypass on, `'0'` forces it **off** even in development (useful to force caching for a dev profiling run), and any other value falls back to the `NODE_ENV === 'development'` default.
 
 The catalog (section 2) is memoized per-role and invalidated automatically when any tool is registered (catalog version bump in the projection registry). Editing a tool's `guidance` and hot-reloading the route picks up the change without restarting.
 
@@ -250,9 +258,9 @@ When introducing a role (e.g. `documenter`):
 1. **Add the persona** — `apps/operator/prompts/documenter.persona.md` (required).
 2. **Add the playbook** if the role has cross-tool workflows — `apps/operator/prompts/documenter.tools.md` (optional but recommended).
 3. **Verify the catalog** — list the tools the role should see; ensure each has `guidance` populated in `defineTool` (otherwise the catalog falls back to description-only, which often isn't enough).
-4. **Add to the `Role` union type** — `Role` in `prompt-assembly.ts` (the `export type Role` declaration).
+4. **Append to the `PROMPT_ROLES` array** — `PROMPT_ROLES` in `prompt-assembly.ts`. This is an array typed `as const satisfies readonly BuiltinAgentRole[]` (and `type Role = (typeof PROMPT_ROLES)[number]` is derived from it), so a new entry must also be a valid `BuiltinAgentRole` from agent-mcp or compilation fails. There is no hand-written `export type Role` union to edit. The set today is the 11 roles `operator`, `oracle`, `worker`, `validator`, `scoper`, `reviewer`, `debugger`, `architect`, `documenter`, `curator`, `auditor`.
 5. **Wire role-allowlist on tools** the role should call — most tools declare `roles: [...]` in their manifest.
-6. **Smoke test** — call `assembleRolePrompt({ role: 'documenter', toolNames: [...] })` and inspect `sections` to confirm all four parts populate.
+6. **Smoke test** — call `assembleRolePrompt({ role: 'documenter', toolNames: [...] })` and inspect `sections` to confirm the persona, catalog, playbook, shared-base, and runtime parts populate.
 
 If the role is a chat-mode driver (drives a streaming converse loop), also:
 
@@ -264,7 +272,7 @@ If the role is a chat-mode driver (drives a streaming converse loop), also:
 - **Not a tool registry.** Tools live in `packages/agent-mcp/src/tools/**` (built-ins) and `libs/papercusp/plugins/*/` (plugins). The prompt layer reads from the projection registry; it doesn't own it.
 - **Not auth or gating.** Role-allowlist, capability checks, quotas — all in the [endpoint-system dispatcher](/internal/docs/endpoint-system/gating). The prompt layer renders text; the dispatcher decides what runs.
 - **Not a runtime tool-discovery mechanism.** Agents that hit unfamiliar tools at runtime use [`agent_tools:list`](/internal/docs/endpoint-system/tool-catalog#singletons) — that's the live, role-filtered surface. Prompt assembly bakes in the *common* path; introspection covers the *long tail*.
-- **Not a template engine.** The four sections are concatenated verbatim. No variables, no conditionals. If you need conditional content, do it in TypeScript before passing to `assembleRolePrompt`.
+- **Not a template engine.** The sections are concatenated verbatim (joined by `\n\n---\n\n`). No variables, no conditionals beyond skipping an empty/absent section. If you need conditional content, do it in TypeScript before passing to `assembleRolePrompt`.
 
 ## File map
 
@@ -275,24 +283,27 @@ packages/operator-core/
 
 apps/operator/
 └── prompts/
-    ├── operator.persona.md                 ← required
+    ├── operator.persona.md                 ← one of 3 persona.md files
+    ├── operator.persona.<mode>-mode.md     ← audience-mode overlays
     ├── operator.converse.md                ← chat-mode rules (operator only today)
     ├── operator.tools.md                   ← cross-tool playbook
     ├── oracle.persona.md
     ├── oracle.tools.md
-    ├── worker.persona.md
-    ├── worker.tools.md
-    ├── scoper.persona.md
-    ├── scoper.tools.md
-    ├── architect.persona.md
-    ├── architect.tools.md
-    ├── validator.persona.md
+    ├── auditor.persona.md
+    ├── auditor.tools.md
+    ├── architect.tools.md                  ← spawn-roles ship tools.md only here;
+    ├── bee.tools.md                        ←   their persona comes from the
+    ├── debugger.tools.md                   ←   orchestrator's blueprints/base/
+    ├── reviewer.tools.md                   ←   prompts/<role>.md, NOT a
+    ├── scoper.tools.md                     ←   persona.md in this directory
+    ├── tester.tools.md
     ├── validator.tools.md
-    ├── reviewer.persona.md
-    ├── reviewer.tools.md
-    ├── debugger.persona.md
-    └── debugger.tools.md
+    ├── worker.tools.md
+    ├── papercusp-su-engineer.tools.md
+    └── papercusp-su-power.tools.md
 ```
+
+Only `auditor`, `operator`, and `oracle` have a `.persona.md` here. The 13 `*.tools.md` files cover those three plus the spawn-roles; a spawn-role's character comes from the orchestrator's prompt files (`blueprints/base/prompts/<role>.md`), resolved by `resolvePromptFiles`, not from this directory.
 
 ## Common pitfalls
 
