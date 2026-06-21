@@ -102,7 +102,7 @@ beforeAll(async () => {
       -- migration 323 (B-LOOP-1): the loop-recurrence columns upsertRoutine now
       -- INSERTs. Hand-rolled here like the sibling routines-runtime.integration
       -- schema; omitting them drifts this test from head and the INSERT fails
-      -- with `column "reschedule_interval_sec" ... does not exist`.
+      -- (column reschedule_interval_sec ... does not exist).
       reschedule_interval_sec integer,
       target_owner_id text,
       CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name)
