@@ -23,7 +23,10 @@ import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loo
 import { startLoopPressureGovernor } from '@papercusp/operator-core/lib/loop-pressure-governor';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
+import {
+  startMemoryWatchdog,
+  resolveMemoryWatchdogLimitMb,
+} from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
 import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
@@ -178,7 +181,13 @@ function startRequestServers(): void {
   // exit; the systemd unit's `Restart=always` (RestartSec=5s) brings up a fresh
   // low-RSS process. See lib/memory-watchdog.ts.
   if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== '0') {
-    const limitMb = Number(process.env.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB) || 3200;
+    // Role-aware default (EI-1613): the dedicated BACKGROUND primary (the
+    // bg-host, BG=1) boots the substrate + DBOS recovery and needs a far higher
+    // limit (12288) than a request-only worker (3200). The old flat `|| 3200`
+    // default trips the bg-host within minutes → recycle loop / (pre-fix) stay
+    // dead → routine-engine freeze. Resolved in code so a FRESH box is correct
+    // without a box-local systemd drop-in; an explicit env still wins.
+    const limitMb = resolveMemoryWatchdogLimitMb(process.env);
     startMemoryWatchdog({
       rssLimitMb: limitMb,
       onTrip: ({ rssMb }) => {

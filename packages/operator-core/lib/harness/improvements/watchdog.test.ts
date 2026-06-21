@@ -30,6 +30,7 @@ import {
   failedSpawnSignalsFromRows,
   stalledFeatureSignalsFromRows,
   orphanedSpawnSignalsFromRows,
+  ceilingJamSignalsFromRows,
   escalationSpikeSignalsFromRows,
   classifySpawnError,
   watchdogOptionsFromPayload,
@@ -474,6 +475,72 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     // rows from many harnesses into one signal) → no harness scope; defaults to operator.
     expect(signals[0].scope).toBeUndefined();
     expect(orphanedSpawnSignalsFromRows([])).toEqual([]);
+  });
+
+  describe('spawn-ceiling-jam (EI-2186): admission consumed by non-streaming rows', () => {
+    const now = Date.UTC(2026, 5, 21, 4, 0, 0);
+    const minsAgo = (m: number) => new Date(now - m * 60_000);
+    const opts = { ceiling: 8, minAgeMinutes: 15, silentMinutes: 15, slack: 2, now };
+
+    it('fires ONE critical signal when old non-streaming rows dominate the ceiling (the jam)', () => {
+      // 8 rows started 60 min ago, none streamed in the last 15 min → the EI-2186 jam.
+      const rows = Array.from({ length: 8 }, (_, i) => ({
+        spawn_id: `s-jam-${i}`,
+        harness_slug: 'papercup',
+        started_at: minsAgo(60),
+        last_output_at: i < 1 ? minsAgo(40) : null, // even the one with output is stale
+      }));
+      const signals = ceilingJamSignalsFromRows(rows, opts);
+      expect(signals).toHaveLength(1);
+      expect(signals[0].source).toBe('spawn-ceiling-jam');
+      expect(signals[0].key).toBe('spawn-ceiling-jam');
+      expect(signals[0].severity).toBe('critical');
+      expect(signals[0].body).toContain('maxSimultaneousAgents=8');
+      expect(signals[0].body).toContain('s-jam-0');
+    });
+
+    it('stays silent on a busy fleet — most running rows streamed recently', () => {
+      const rows = Array.from({ length: 8 }, (_, i) => ({
+        spawn_id: `s-live-${i}`,
+        harness_slug: 'papercup',
+        started_at: minsAgo(60),
+        last_output_at: minsAgo(1), // all actively streaming → genuinely alive
+      }));
+      expect(ceilingJamSignalsFromRows(rows, opts)).toEqual([]);
+    });
+
+    it('absorbs a couple of quiet/long-tool-call bees via slack (does not fire on 2)', () => {
+      const rows = [
+        { spawn_id: 'q1', harness_slug: 'papercup', started_at: minsAgo(60), last_output_at: null },
+        { spawn_id: 'q2', harness_slug: 'papercup', started_at: minsAgo(60), last_output_at: null },
+      ];
+      expect(ceilingJamSignalsFromRows(rows, opts)).toEqual([]);
+    });
+
+    it('does not count YOUNG rows that have not had time to stream yet', () => {
+      // 5 rows started 3 min ago with no output → too young to be suspect; no fire.
+      const rows = Array.from({ length: 5 }, (_, i) => ({
+        spawn_id: `young-${i}`,
+        harness_slug: 'papercup',
+        started_at: minsAgo(3),
+        last_output_at: null,
+      }));
+      expect(ceilingJamSignalsFromRows(rows, opts)).toEqual([]);
+    });
+
+    it('does not fire when live streamers outnumber the stale-suspect rows', () => {
+      const rows = [
+        // 3 genuinely live (streamed in the last minute)
+        ...Array.from({ length: 5 }, (_, i) => ({ spawn_id: `live-${i}`, harness_slug: 'p', started_at: minsAgo(60), last_output_at: minsAgo(1) })),
+        // 3 stale suspects — but they do NOT outnumber the live ones
+        ...Array.from({ length: 3 }, (_, i) => ({ spawn_id: `s-${i}`, harness_slug: 'p', started_at: minsAgo(60), last_output_at: null })),
+      ];
+      expect(ceilingJamSignalsFromRows(rows, opts)).toEqual([]);
+    });
+
+    it('is silent with no rows', () => {
+      expect(ceilingJamSignalsFromRows([], opts)).toEqual([]);
+    });
   });
 
   it('escalation-spike: silent below threshold, ONE signal with per-harness breakdown at/above it', () => {

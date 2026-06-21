@@ -1619,6 +1619,10 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     // safety (systematic ESCALATE volume).
     { name: 'papercusp-stalled-feature', collect: () => collectStalledFeatureSignals(getOrgPg().sql, workspaceId, opts) },
     { name: 'papercusp-orphaned-spawn', collect: () => collectOrphanedSpawnSignals(getOrgPg().sql, workspaceId, opts) },
+    // EI-2186: the spawn-ceiling-jam recurrence guard — admission ceiling consumed by
+    // non-streaming rows (stale debits from a host restart). Keys on stream activity,
+    // not heartbeat, so it catches the jam orphaned-spawn misses (fresh false-alive heartbeat).
+    { name: 'papercusp-spawn-ceiling-jam', collect: () => collectCeilingJamSignals(getOrgPg().sql, workspaceId, opts) },
     { name: 'papercusp-escalation-spike', collect: () => collectEscalationSpikeSignals(getOrgPg().sql, workspaceId, opts) },
     // P-051 (learning-system-audit): active insights citing missing repo files →
     // kind=change review captures (fs-only, no PG; lazy import keeps boot cheap).

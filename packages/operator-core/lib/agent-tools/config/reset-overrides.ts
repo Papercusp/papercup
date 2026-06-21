@@ -11,7 +11,7 @@
  * forbids a generic WRITE god-tool with per-concern *semantics*, not a uniform reset).
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import { listOverrideConcerns, getOverrideConcern } from '../../config-overrides/registry';
 
@@ -35,8 +35,8 @@ export default defineTool({
     dryRun: z.boolean().optional().describe('Preview what would reset without applying.'),
   }),
   async handler(args, ctx) {
-    if (ctx.role !== 'operator' && ctx.role !== 'architect') {
-      throw new Error('config:reset-overrides requires operator or architect role');
+    if (!isOperatorConfigWriteRole(ctx.role)) {
+      throw new Error('config:reset-overrides requires operator, architect, or queen role');
     }
     if (!args.all && !args.concern) throw new Error('pass concern:"<name>" or all:true');
 

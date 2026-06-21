@@ -11,7 +11,15 @@ import { hostname } from 'node:os';
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { reclaimOrphanedSpawns, heartbeatSpawns, recordSpawnPid, isSpawnProcessAlive } from './spawn-reclaim';
+import {
+  reclaimOrphanedSpawns,
+  heartbeatSpawns,
+  recordSpawnPid,
+  isSpawnProcessAlive,
+  reconcileSpawnAdmissionOnBoot,
+  launcherBootId,
+  __setLauncherBootIdForTests,
+} from './spawn-reclaim';
 
 const SPAWNED_AGENTS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
@@ -27,7 +35,7 @@ const SPAWNED_AGENTS_DDL = `
     restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
     heartbeat_at timestamptz NOT NULL DEFAULT now(),
     last_output_at timestamptz,
-    pid integer, launcher_host text)`;
+    pid integer, launcher_host text, launcher_boot_id text)`;
 
 const WS = 'default';
 const STALE = { staleMs: 5 * 60_000 };
@@ -47,14 +55,14 @@ async function insertSpawn(
   spawnId: string,
   status: string,
   heartbeatAgoSec: number,
-  rec: { pid?: number; host?: string; runId?: string } = {},
+  rec: { pid?: number; host?: string; runId?: string; bootId?: string } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.spawned_agents
-      (spawn_id, workspace_id, harness_slug, child_role, run_id, status, started_at, heartbeat_at, pid, launcher_host)
+      (spawn_id, workspace_id, harness_slug, child_role, run_id, status, started_at, heartbeat_at, pid, launcher_host, launcher_boot_id)
     VALUES (${spawnId}, ${WS}, 'papercup', 'worker', ${rec.runId ?? 'r-' + spawnId}, ${status},
             now() - interval '10 minutes', now() - ${heartbeatAgoSec}::int * interval '1 second',
-            ${rec.pid ?? null}, ${rec.host ?? null})`;
+            ${rec.pid ?? null}, ${rec.host ?? null}, ${rec.bootId ?? null})`;
 }
 
 async function statusOf(spawnId: string): Promise<string> {
@@ -284,12 +292,17 @@ describe('recordSpawnPid + isSpawnProcessAlive (EI-85)', () => {
     await insertSpawn('term', 'done', 5);
     await recordSpawnPid(db.sql, 'a', 31337);
     await recordSpawnPid(db.sql, 'term', 31338); // terminal → WHERE excludes it
-    const rows = await db.sql<{ spawn_id: string; pid: number | null; launcher_host: string | null }[]>`
-      SELECT spawn_id, pid, launcher_host FROM harness_shared.spawned_agents ORDER BY spawn_id`;
+    const rows = await db.sql<{ spawn_id: string; pid: number | null; launcher_host: string | null; launcher_boot_id: string | null }[]>`
+      SELECT spawn_id, pid, launcher_host, launcher_boot_id FROM harness_shared.spawned_agents ORDER BY spawn_id`;
     const a = rows.find((r) => r.spawn_id === 'a')!;
     expect(a.pid).toBe(31337);
     expect(a.launcher_host).toBe(hostname());
-    expect(rows.find((r) => r.spawn_id === 'term')!.pid).toBeNull();
+    // EI-2186: recordSpawnPid also stamps THIS process's boot id, so the boot
+    // reconcile / reclaim can tell a live spawn from a prior incarnation's row.
+    expect(a.launcher_boot_id).toBe(launcherBootId());
+    const term = rows.find((r) => r.spawn_id === 'term')!;
+    expect(term.pid).toBeNull();
+    expect(term.launcher_boot_id).toBeNull(); // terminal → WHERE excludes it
   });
 
   it('isSpawnProcessAlive: a bogus pid reads as dead (never a false alive)', () => {
@@ -315,6 +328,116 @@ describe('heartbeatSpawns keeps a live spawn out of reclaim range', () => {
     await heartbeatSpawns(db.sql, []);             // no-op
     await heartbeatSpawns(db.sql, ['terminal']);   // WHERE excludes terminal
     expect(await statusOf('terminal')).toBe('done');
+  });
+});
+
+/**
+ * EI-2186: the boot-id discriminator. A host/process restart leaves 'running' rows
+ * from a DEAD prior incarnation that jam the spawn-admission ceiling. The recorded
+ * pid is NOT stable across a reboot (reuse), and a stale launch row's reused pid can
+ * read as "alive" so the heartbeat gets bumped and the row is never reclaimed — the
+ * permanent jam. A row carrying a DIFFERENT (non-null) boot id than this process is
+ * provably orphaned regardless of pid liveness.
+ */
+describe('reclaimOrphanedSpawns: prior-incarnation boot-id short-circuits the pid false-alive (EI-2186)', () => {
+  const ME = hostname();
+  let original: string;
+  beforeAll(() => { original = launcherBootId(); });
+  beforeEach(() => { __setLauncherBootIdForTests('boot-current'); });
+  afterAll(() => { __setLauncherBootIdForTests(original); });
+
+  it('a STALE same-host row with a mismatched boot id is reclaimed even though its pid reads ALIVE', async () => {
+    // pid IS in alivePids → the pid path alone would KEEP it (the false-alive bug). The
+    // boot-id mismatch must override that and reclaim the orphaned slot.
+    await insertSpawn('zombie', 'running', 10 * 60, { pid: 4242, host: ME, runId: 'launch-z', bootId: 'boot-prior' });
+    alivePids.add(4242);
+    const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['zombie']);
+    expect(await statusOf('zombie')).toBe('failed');
+    const [row] = await db.sql<{ error_message: string }[]>`
+      SELECT error_message FROM harness_shared.spawned_agents WHERE spawn_id = 'zombie'`;
+    expect(row.error_message).toMatch(/prior operator incarnation \(boot-id mismatch/);
+  });
+
+  it('a STALE same-host row carrying the CURRENT boot id still uses the pid liveness check (kept when alive)', async () => {
+    await insertSpawn('current-live', 'running', 10 * 60, { pid: 4243, host: ME, bootId: 'boot-current' });
+    alivePids.add(4243); // genuinely alive child of THIS incarnation → kept
+    const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('current-live')).toBe('running');
+  });
+});
+
+/**
+ * EI-2186: reconcileSpawnAdmissionOnBoot — the release-on-host-restart reconcile.
+ * Runs ONCE at operator boot and frees same-host admission debits owned by a dead
+ * prior incarnation, REGARDLESS of heartbeat freshness (the crucial difference from
+ * the periodic sweep — it clears rows the false-alive bump kept fresh).
+ */
+describe('reconcileSpawnAdmissionOnBoot (EI-2186 boot reconcile)', () => {
+  const ME = hostname();
+  const CURRENT = 'boot-current';
+  let original: string;
+  beforeAll(() => { original = launcherBootId(); });
+  beforeEach(() => { __setLauncherBootIdForTests(CURRENT); });
+  afterAll(() => { __setLauncherBootIdForTests(original); });
+
+  it('reclaims a same-host prior-incarnation row even with a FRESH heartbeat (the jam signature)', async () => {
+    // Fresh heartbeat (1s) — the periodic reclaim would never see it as a candidate.
+    await insertSpawn('jammed', 'running', 1, { pid: 4242, host: ME, runId: 'launch-old', bootId: 'boot-prior' });
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql);
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['jammed']);
+    expect(r.workspaces).toEqual([WS]);
+    expect(await statusOf('jammed')).toBe('failed');
+    const [row] = await db.sql<{ error_message: string }[]>`
+      SELECT error_message FROM harness_shared.spawned_agents WHERE spawn_id = 'jammed'`;
+    expect(row.error_message).toMatch(/reclaimed at operator boot/);
+  });
+
+  it('reclaims restarting rows too, and frees the ceiling count', async () => {
+    await insertSpawn('r1', 'restarting', 1, { host: ME, bootId: 'boot-prior' });
+    await insertSpawn('r2', 'running', 1, { host: ME, bootId: 'boot-prior' });
+    expect(await runningCount()).toBe(2);
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql);
+    expect(r.reclaimed).toBe(2);
+    expect(await runningCount()).toBe(0); // ceiling fully freed
+  });
+
+  it('does NOT reclaim a row carrying the CURRENT boot id (a live spawn of this process)', async () => {
+    await insertSpawn('mine', 'running', 1, { pid: process.pid, host: ME, bootId: CURRENT });
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql);
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('mine')).toBe('running');
+  });
+
+  it('reclaims a null-boot-id row whose heartbeat is STALE (pre-migration orphan)', async () => {
+    await insertSpawn('legacy-stale', 'running', 10 * 60, { host: ME });
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql);
+    expect(r.reclaimed).toBe(1);
+    expect(await statusOf('legacy-stale')).toBe('failed');
+  });
+
+  it('does NOT reclaim a null-boot-id row whose heartbeat is FRESH (current-process mid-insert, safe)', async () => {
+    await insertSpawn('fresh-unstamped', 'running', 2, { host: ME });
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql);
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('fresh-unstamped')).toBe('running');
+  });
+
+  it('leaves a DIFFERENT-host prior-incarnation row alone (a federated peer owns it)', async () => {
+    await insertSpawn('peer', 'running', 1, { host: 'other-box', bootId: 'peer-boot' });
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql);
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('peer')).toBe('running');
+  });
+
+  it('never touches terminal rows', async () => {
+    await insertSpawn('doneRow', 'done', 1, { host: ME, bootId: 'boot-prior' });
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql);
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('doneRow')).toBe('done');
   });
 });
 

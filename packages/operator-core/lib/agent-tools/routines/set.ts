@@ -8,7 +8,7 @@
  * can't silently kill a routine. On a cron change, next_fire_at is recomputed.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
@@ -43,8 +43,8 @@ export default defineTool({
     dryRun: z.boolean().optional(),
   }),
   async handler(args, ctx) {
-    if (ctx.role !== 'operator' && ctx.role !== 'architect') {
-      throw new Error('routines:set requires operator or architect role');
+    if (!isOperatorConfigWriteRole(ctx.role)) {
+      throw new Error('routines:set requires operator, architect, or queen role');
     }
     if (args.cron === undefined && args.active === undefined) {
       throw new Error('set requires cron and/or active');

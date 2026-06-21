@@ -23,6 +23,41 @@
  * here in-process so it can drain HTTP gracefully before exiting.
  */
 
+import { backgroundWorkersEnabled } from './background-workers';
+
+/**
+ * Default RSS high-water mark (MiB), by host ROLE — used when
+ * `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB` is not set explicitly.
+ *
+ * The original single 3200 default was sized for a request-serving host. The
+ * dedicated BACKGROUND primary (the bg-host, `PAPERCUSP_BACKGROUND_WORKERS=1`)
+ * is a different animal: it boots the full hyperbee substrate (~25 harnesses)
+ * AND drives DBOS catch-up recovery, so its real working set is ~3.8 GB
+ * baseline + ~108 MB/harness (observed ~5 GB). 3200 trips within minutes there
+ * and the host recycles in a loop — and pre-EI-1613 the exit-0 recycle left it
+ * DEAD under `Restart=on-failure`, freezing the whole routine engine (EI-1613;
+ * the same class the dev-api host hit in EI-127, patched there with a 12288
+ * systemd drop-in). A request-only worker (BG=0 — the :3070 cluster workers,
+ * the :3170 staging operator) does NOT boot the substrate and stays light.
+ */
+export const MEMORY_WATCHDOG_LIMIT_MB_REQUEST = 3200;
+export const MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND = 12288;
+
+/**
+ * The RSS high-water mark (MiB) THIS process should recycle at. An explicit
+ * `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB` always wins; otherwise the default is
+ * role-aware (see above), so a FRESH box's bg-host is correct WITHOUT a
+ * box-local systemd drop-in (EI-1613 — the durable fix for the 3200-too-low
+ * bug that was only ever papered over per-box).
+ */
+export function resolveMemoryWatchdogLimitMb(env: NodeJS.ProcessEnv = process.env): number {
+  const explicit = Number(env.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return backgroundWorkersEnabled(env)
+    ? MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND
+    : MEMORY_WATCHDOG_LIMIT_MB_REQUEST;
+}
+
 export interface MemoryWatchdogOpts {
   /** RSS high-water mark in MiB. Crossing it for `tripsToRecycle` samples → recycle. Default 3200. */
   rssLimitMb?: number;

@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
   appendPreferenceEntry,
   listPreferenceEntries,
@@ -36,8 +36,8 @@ export default defineTool({
       const entries = await listPreferenceEntries();
       return { content: [{ type: 'text', text: JSON.stringify({ entries }) }] };
     }
-    if (ctx.role !== 'operator' && ctx.role !== 'architect') {
-      throw new Error(`operator:preferences ${args.op} requires operator or architect role`);
+    if (!isOperatorConfigWriteRole(ctx.role)) {
+      throw new Error(`operator:preferences ${args.op} requires operator, architect, or queen role`);
     }
     if (args.op === 'append') {
       await appendPreferenceEntry(args.entry);

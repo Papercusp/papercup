@@ -13,7 +13,7 @@
  * revert exercises the whole harness end-to-end before the behavior-changing prompt tools.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import { PAYLOAD_TUNABLE_KEYS } from '../../harness/improvements/watchdog';
 import {
@@ -57,9 +57,9 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ tunables: snap.tunables }) }] };
     }
 
-    // set — operator/architect only (mirrors operator:rate_limit_config); the SU read path is open.
-    if (ctx.role !== 'operator' && ctx.role !== 'architect') {
-      throw new Error('improvements:set-watchdog-tunables set requires operator or architect role');
+    // set — operator-config write authority only (mirrors operator:rate_limit_config); the SU read path is open.
+    if (!isOperatorConfigWriteRole(ctx.role)) {
+      throw new Error('improvements:set-watchdog-tunables set requires operator, architect, or queen role');
     }
     const keys = Object.keys(args.tunables);
     if (keys.length === 0) throw new Error('set requires at least one tunable');

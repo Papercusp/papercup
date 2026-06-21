@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { startMemoryWatchdog } from './memory-watchdog';
+import {
+  startMemoryWatchdog,
+  resolveMemoryWatchdogLimitMb,
+  MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND,
+  MEMORY_WATCHDOG_LIMIT_MB_REQUEST,
+} from './memory-watchdog';
 
 describe('startMemoryWatchdog', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -92,5 +97,45 @@ describe('startMemoryWatchdog', () => {
     vi.advanceTimersByTime(250);
     expect(exitSpy).toHaveBeenCalledWith(42);
     h.stop();
+  });
+});
+
+describe('resolveMemoryWatchdogLimitMb (EI-1613 — role-aware RSS default)', () => {
+  // Always pass an explicit env WITHOUT VITEST: backgroundWorkersEnabled reads
+  // the PASSED env, and would short-circuit to false (request role) under VITEST.
+  const bg = (over: Record<string, string> = {}) =>
+    ({ PAPERCUSP_BACKGROUND_WORKERS: '1', ...over }) as unknown as NodeJS.ProcessEnv;
+  const req = (over: Record<string, string> = {}) =>
+    ({ PAPERCUSP_BACKGROUND_WORKERS: '0', ...over }) as unknown as NodeJS.ProcessEnv;
+
+  it('the background primary (BG=1) defaults to 12288 — the substrate footprint, not the 3200 that froze bg-host', () => {
+    expect(resolveMemoryWatchdogLimitMb(bg())).toBe(MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND);
+    expect(MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND).toBe(12288);
+  });
+
+  it('a request-only worker (BG=0) keeps the lighter 3200 default', () => {
+    expect(resolveMemoryWatchdogLimitMb(req())).toBe(MEMORY_WATCHDOG_LIMIT_MB_REQUEST);
+    expect(MEMORY_WATCHDOG_LIMIT_MB_REQUEST).toBe(3200);
+  });
+
+  it('a default operator host (no BG flag, not :3170) is a background primary → 12288', () => {
+    expect(resolveMemoryWatchdogLimitMb({} as unknown as NodeJS.ProcessEnv)).toBe(12288);
+  });
+
+  it('the :3170 staging operator is request-only by design → 3200', () => {
+    expect(
+      resolveMemoryWatchdogLimitMb({ PAPERCUSP_HONO_PORT: '3170' } as unknown as NodeJS.ProcessEnv),
+    ).toBe(3200);
+  });
+
+  it('an explicit PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB always wins, in either role', () => {
+    expect(resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '5000' }))).toBe(5000);
+    expect(resolveMemoryWatchdogLimitMb(req({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '5000' }))).toBe(5000);
+  });
+
+  it('falls back to the role default for a non-positive / non-numeric explicit limit', () => {
+    expect(resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '0' }))).toBe(12288);
+    expect(resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '-1' }))).toBe(12288);
+    expect(resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: 'nonsense' }))).toBe(12288);
   });
 });

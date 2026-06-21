@@ -8,7 +8,7 @@
  * control harness (dryRun preview, post-apply verify+auto-revert, audit, one-call revert).
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import { readMigratePolicy, writeMigratePolicy, type MigratePolicy } from '../../migrate-policy';
 
@@ -39,8 +39,8 @@ export default defineTool({
     if (args.op === 'get') {
       return { content: [{ type: 'text', text: JSON.stringify({ policy: await readMigratePolicy() }) }] };
     }
-    if (ctx.role !== 'operator' && ctx.role !== 'architect') {
-      throw new Error('db:migrate-policy set requires operator or architect role');
+    if (!isOperatorConfigWriteRole(ctx.role)) {
+      throw new Error('db:migrate-policy set requires operator, architect, or queen role');
     }
     if (args.lockTimeoutMs === undefined && args.statementTimeoutMs === undefined) {
       throw new Error('set requires lockTimeoutMs and/or statementTimeoutMs');

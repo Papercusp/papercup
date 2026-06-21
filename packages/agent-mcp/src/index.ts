@@ -36,7 +36,15 @@ export type {
 // role-config.ts, whose `declare module` augmentation registers the built-in
 // roles with tooldef's `RoleRegistry` — so the re-exported `AgentRole` below
 // resolves to Papercusp's suggestion-union program-wide.
-export { AGENT_ROLES, BRAIN_PRINCIPAL_ROLE, SU_ROLES, SU_WRITE_ROLES, FROZEN_OVERLAY_ROLES } from './role-config';
+export {
+  AGENT_ROLES,
+  BRAIN_PRINCIPAL_ROLE,
+  SU_ROLES,
+  SU_WRITE_ROLES,
+  OPERATOR_CONFIG_WRITE_ROLES,
+  isOperatorConfigWriteRole,
+  FROZEN_OVERLAY_ROLES,
+} from './role-config';
 export type { BuiltinAgentRole } from './role-config';
 // hive-agent-tabs-psu-tui P-001: the shared AgentPaneKind taxonomy — one source
 // of truth for the backend roster shaping + pui pane render/color.

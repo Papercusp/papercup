@@ -9,7 +9,7 @@
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { AGENT_ROLES } from './role-config.js';
+import { AGENT_ROLES, OPERATOR_CONFIG_WRITE_ROLES, isOperatorConfigWriteRole, SU_ROLES } from './role-config.js';
 
 test('AGENT_ROLES contains the coding pipeline spine in order (scoper → curator)', () => {
   // The seven-stage spine plus the read-only debugger gate, as the `coding`
@@ -58,6 +58,37 @@ test('every role id is a non-empty kebab/lower token (valid in a tool roles: all
   for (const role of AGENT_ROLES) {
     assert.match(role, /^[a-z][a-z0-9-]*$/, `role id "${role}" is not a kebab/lower token`);
   }
+});
+
+test('OPERATOR_CONFIG_WRITE_ROLES is the operator-equivalent write set incl. queen (EI-2204)', () => {
+  // The in-handler write-gate for operator-config-mutating tools (rate_limit_config,
+  // preferences, reset-overrides, migrate-policy, set-watchdog-tunables, routines:set).
+  // queen is the operator SPECIALIZED (local-hive D-001) — she MUST be here, or she can
+  // invoke those tools but their `set` rejects her (the EI-2204 regression). operator +
+  // architect are the historical writers and must remain.
+  for (const role of ['operator', 'architect', 'queen']) {
+    assert.ok(
+      OPERATOR_CONFIG_WRITE_ROLES.includes(role as (typeof OPERATOR_CONFIG_WRITE_ROLES)[number]),
+      `operator-config write role "${role}" missing — its tools' set op would reject it`,
+    );
+  }
+  // It is a SUBSET of the broad invoke allowlist those tools advertise ([...SU_ROLES]) —
+  // a write role the dispatch layer would never admit makes no sense.
+  for (const role of OPERATOR_CONFIG_WRITE_ROLES) {
+    assert.ok((SU_ROLES as readonly string[]).includes(role), `write role "${role}" not in SU_ROLES`);
+  }
+});
+
+test('isOperatorConfigWriteRole — queen/operator/architect pass, other roles + unknown fail', () => {
+  for (const role of ['operator', 'architect', 'queen']) {
+    assert.equal(isOperatorConfigWriteRole(role), true, `${role} should have operator-config write authority`);
+  }
+  // Read-only / non-operator-equivalent SU roles, plugin-namespaced, and absent roles fail-closed.
+  for (const role of ['worker', 'scoper', 'validator', 'reviewer', 'documenter', 'curator', 'bee', 'plugin:role']) {
+    assert.equal(isOperatorConfigWriteRole(role), false, `${role} must NOT have operator-config write authority`);
+  }
+  assert.equal(isOperatorConfigWriteRole(undefined), false);
+  assert.equal(isOperatorConfigWriteRole(null), false);
 });
 
 test('the deliberately-CUT roles stay out of the set (dbos-system-completion P-015, D-020)', () => {

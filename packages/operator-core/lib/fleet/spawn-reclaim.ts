@@ -42,7 +42,7 @@ export const SPAWN_HEARTBEAT_INTERVAL_MS = 60_000;
  * `__setLauncherBootIdForTests` so the integration tests can simulate "a row from
  * a prior boot".
  */
-let LAUNCHER_BOOT_ID = randomUUID();
+let LAUNCHER_BOOT_ID: string = randomUUID();
 
 /** The current process's boot id (EI-2186). */
 export function launcherBootId(): string {
