@@ -34,9 +34,15 @@
   --text: var(--fg);
   --pc-color-text: var(--fg);
   --pc-text: var(--fg);
+  --pc-text-1: var(--fg);
+  --pc-text-2: var(--fg-dim);
+  --pc-text-dim: var(--fg-dim);
   --pc-surface: var(--bg-raised);
+  --pc-surface-1: var(--bg-1);
   --pc-surface-2: var(--bg-2);
+  --pc-surface-3: var(--bg-3);
   --pc-border: var(--border);
+  --pc-line: var(--border);
   --muted: var(--fg-mute);
   --mut: var(--fg-mute);
   --pc-color-muted: var(--fg-mute);
@@ -45,13 +51,22 @@
   --surface-2: var(--bg-2);
   --pc-color-surface-2: var(--bg-2);
   --bg-soft: var(--bg-2);
+  --bg-elev: var(--bg-raised);
+  --fg-1: var(--fg);
+  --fg-faint: color-mix(in srgb, var(--fg-mute), transparent 36%);
   --accent-2: var(--accent-strong);
   --accent-fg: var(--accent-ink);
+  --accent-bg: var(--accent-soft);
   --chip-accent: var(--accent);
   --chip-tint: var(--accent-soft);
   --stat-accent: var(--accent);
+  --info: var(--accent);
+  --counter: var(--accent-strong);
   --pc-color-primary: var(--accent);
+  --pc-accent: var(--accent);
+  --pc-accent-2: var(--accent-soft);
   --fg-link: var(--accent);
+  --fg-accent: var(--accent);
   --border-dim: var(--border);
   --border-subtle: var(--border);
   --border-warning: var(--warn-border);
@@ -64,10 +79,13 @@
   /* danger / error → red */
   --danger: var(--bad);
   --error: var(--bad);
+  --err: var(--bad);
   --red: var(--bad);
   --fg-danger: var(--bad);
+  --accent-error: var(--bad);
   --pc-color-danger: var(--bad);
   --pc-color-danger-text: var(--bad);
+  --pc-danger: var(--bad);
   --bg-danger: rgba(251, 113, 133, 0.1); /* rose-400 @ 0.1 */
   --bad-bg: rgba(251, 113, 133, 0.1);
   --error-bg: rgba(251, 113, 133, 0.1);
@@ -76,10 +94,18 @@
   --warning: var(--warn);
   --needs: var(--warn);
   --fg-warning: var(--warn);
+  --pc-warn-fg: var(--warn);
+  --pc-warn-bg: var(--warn-bg);
   --pc-color-warning-text: var(--warn);
   --bg-warning: var(--warn-bg);
   --amber-100: #fef3c7; /* light amber tint */
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --ease-in-out: var(--ease-mid);
+  --app-nav-height: 49px;
+  --h-top-collapse-left: 50%;
+  --operator-metric-tone: var(--accent);
+  --textarea-text-color: var(--fg);
   /*
    * --card-shadow, --frost, --ease-*, --dur-* migrated to DTCG tokens.
    * Source: design-tokens/desktop.motion.tokens.json. Generated to _semantic.css.

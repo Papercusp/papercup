@@ -394,6 +394,11 @@ export interface ScaleObserverDeps {
    *  exhausted account is NOT auto-scaled (manual accounts:scale_out still works).
    *  Default reads owner-steering fail-soft → true (enabled). */
   autoScaleOutAllowed: (ws: string) => Promise<boolean>;
+  /** Effective scale policy (windowMs / sustainedPenaltyThreshold). Injectable so the
+   *  observer test stays HERMETIC: the default reads the live store, which adds a DB
+   *  round-trip to the per-pause callback — that latency (not the policy value) is what
+   *  broke account-pool-store.test.ts's 5ms-flush observer test. Default = real readScalePolicy. */
+  readScalePolicy: () => Promise<ScalePolicy>;
   log: (level: LogLevel, msg: string) => void;
 }
 
@@ -433,6 +438,7 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
   const updatePool = deps.updatePool ?? updateAccountPool;
   const scaleOut = deps.scaleOut ?? ((id, ws) => handleAccountExhausted(id, ws, defaultScaleOutDeps(log)));
   const emitExhausted = deps.emitExhausted ?? defaultEmitExhausted;
+  const resolveScalePolicy = deps.readScalePolicy ?? readScalePolicy;
   // Owner auto-scale-out toggle (queen-steering-panel P-006). Fail-soft → enabled.
   const autoScaleOutAllowed =
     deps.autoScaleOutAllowed ??
@@ -461,7 +467,7 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
           ws,
         );
         const acct = getAccount(pool, accountId);
-        if (!acct || !isSustainedlyLimited(acct, t, await readScalePolicy())) return; // not exhausted (yet) — just pausing
+        if (!acct || !isSustainedlyLimited(acct, t, await resolveScalePolicy())) return; // not exhausted (yet) — just pausing
         emitExhausted(accountId, ev.pausedUntil); // observability fires regardless of the toggle
         // Owner auto-scale-out toggle (queen-steering-panel P-006): when disabled, the
         // account is left paused (no auto-deploy); manual accounts:scale_out still works.

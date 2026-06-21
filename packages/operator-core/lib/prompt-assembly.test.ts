@@ -32,6 +32,8 @@ const mockTools: Array<{
     chaining?: string;
     byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
   };
+  // tool-call-batching-wrappers P-010 — composite marker; the back-pointer tests push it.
+  replaces?: readonly string[];
 }> = [];
 
 vi.mock('@papercusp/agent-mcp', () => ({
@@ -52,6 +54,50 @@ describe('renderToolsCatalog', () => {
   it('returns empty string when no toolNames provided', async () => {
     const { renderToolsCatalog } = await import('./prompt-assembly');
     expect(renderToolsCatalog('operator', [])).toBe('');
+  });
+
+  it('renders a "Bundled by" back-pointer on a primitive a rendered composite replaces (P-010)', async () => {
+    mockTools.push(
+      { expose: { mcp: { name: 'fleet:assignments' } }, description: 'List assignments.', capabilities: [] },
+      { expose: { mcp: { name: 'work_items:list' } }, description: 'List work items.', capabilities: [] },
+      {
+        expose: { mcp: { name: 'coord:orient' } },
+        description: 'Orient + bootstrap in one call.',
+        capabilities: [],
+        replaces: ['fleet:assignments', 'work_items:list'],
+      },
+    );
+    const { renderToolsCatalog } = await import('./prompt-assembly');
+    const out = renderToolsCatalog('operator', ['fleet:assignments', 'work_items:list', 'coord:orient']);
+    // each bundled primitive points at the composite
+    expect(out).toContain('Bundled by: `coord:orient`');
+    // the composite itself gets no back-pointer (it is not a bundled primitive).
+    // Isolate just coord:orient's block (up to the next tool entry) — it sorts first,
+    // so a naive split would bleed into the primitives' back-pointers rendered below.
+    const compositeBlock = (out.split('- `coord:orient`')[1] ?? '').split('\n- `')[0];
+    expect(compositeBlock).not.toContain('Bundled by:');
+  });
+
+  it('does not back-point at a composite the agent cannot reach (not in the rendered set)', async () => {
+    mockTools.push(
+      { expose: { mcp: { name: 'fleet:assignments' } }, description: 'List assignments.', capabilities: [] },
+      { expose: { mcp: { name: 'coord:orient' } }, description: 'Orient.', capabilities: [], replaces: ['fleet:assignments'] },
+    );
+    const { renderToolsCatalog } = await import('./prompt-assembly');
+    const out = renderToolsCatalog('operator', ['fleet:assignments']); // coord:orient NOT rendered
+    expect(out).not.toContain('Bundled by:');
+  });
+
+  it('caps the back-pointer at 2 composites + "(+N more)" (D-006 bound)', async () => {
+    mockTools.push(
+      { expose: { mcp: { name: 'coord:inbox' } }, description: 'Inbox.', capabilities: [] },
+      { expose: { mcp: { name: 'c:one' } }, description: 'one', capabilities: [], replaces: ['coord:inbox'] },
+      { expose: { mcp: { name: 'c:two' } }, description: 'two', capabilities: [], replaces: ['coord:inbox'] },
+      { expose: { mcp: { name: 'c:three' } }, description: 'three', capabilities: [], replaces: ['coord:inbox'] },
+    );
+    const { renderToolsCatalog } = await import('./prompt-assembly');
+    const out = renderToolsCatalog('operator', ['coord:inbox', 'c:one', 'c:two', 'c:three']);
+    expect(out).toContain('(+1 more)');
   });
 
   it('renders description-only for tools without guidance (backwards-identical)', async () => {

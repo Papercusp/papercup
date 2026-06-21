@@ -294,6 +294,26 @@ export function renderToolsCatalog(
 
   const lines: string[] = ['## Available tools', ''];
   const sorted = [...new Set(toolNames)].sort();
+
+  // Bounded back-pointer (tool-call-batching-wrappers D-005c / P-010): build the inverse
+  // index primitive→composite over the RENDERED, modality-passing set (only point at a
+  // bundle the agent can actually reach). A primitive a composite `replaces` then gets a
+  // single "Bundled by" line — fired at the point the agent reads the primitive — capped
+  // (BACKPOINTER_CAP) to keep the catalog from bloating (D-006). The composite self-
+  // advertises the other direction via its `chaining` ("Bundles: …").
+  const bundledBy = new Map<string, string[]>();
+  for (const name of sorted) {
+    const t = byMcpName.get(name);
+    if (!t || !t.replaces || t.replaces.length === 0) continue;
+    if (!(t.modality ?? ['text', 'voice']).includes(modality)) continue;
+    for (const prim of t.replaces) {
+      const arr = bundledBy.get(prim) ?? [];
+      arr.push(name);
+      bundledBy.set(prim, arr);
+    }
+  }
+  const BACKPOINTER_CAP = 2;
+
   let rendered = 0;
   for (const name of sorted) {
     const tool = byMcpName.get(name);
@@ -313,6 +333,14 @@ export function renderToolsCatalog(
     if (g?.when) lines.push(`  When: ${g.when}`);
     if (g?.notWhen) lines.push(`  Not when: ${g.notWhen}`);
     if (g?.chaining) lines.push(`  Chaining: ${g.chaining}`);
+    const bundles = bundledBy.get(name);
+    if (bundles && bundles.length > 0) {
+      const shown = bundles
+        .slice(0, BACKPOINTER_CAP)
+        .map((n) => `\`${displayTransform ? displayTransform(n) : n}\``);
+      const extra = bundles.length > BACKPOINTER_CAP ? ` (+${bundles.length - BACKPOINTER_CAP} more)` : '';
+      lines.push(`  Bundled by: ${shown.join(', ')}${extra} — prefer the bundle to batch this call in one round-trip.`);
+    }
     lines.push('');
   }
   if (rendered === 0) return '';

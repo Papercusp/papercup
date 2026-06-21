@@ -76,6 +76,11 @@ export default defineTool({
        * tool-guidance arc.
        */
       guidance: { when?: string; notWhen?: string; chaining?: string } | null;
+      /** tool-call-batching-wrappers P-010: 'composite' when this tool bundles others
+       *  (has `replaces`), else 'primitive'. Filter for composites via composition. */
+      composition: 'primitive' | 'composite' | null;
+      /** The canonical tool names a composite bundles (the back-pointer source). */
+      replaces: readonly string[] | null;
     }> = [];
 
     for (const tool of listAllProjectedTools()) {
@@ -126,6 +131,8 @@ export default defineTool({
         allowed,
         reason,
         guidance,
+        composition: tool.composition ?? null,
+        replaces: tool.replaces ?? null,
       });
 
       if (out.length >= limit) break;

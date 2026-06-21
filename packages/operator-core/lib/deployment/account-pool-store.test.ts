@@ -22,6 +22,7 @@ import {
   recordAccountPenalty,
   recordAccountWindow,
   getAccount,
+  DEFAULT_SCALE_POLICY,
   type AccountPool,
 } from './account-pool';
 
@@ -152,6 +153,7 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
       emitExhausted: (id) => emitCalls.push(id),
       autoScaleOutAllowed: async () => true, // P-006 gate isolated (its own test covers OFF)
       log: () => {},
+      readScalePolicy: async () => DEFAULT_SCALE_POLICY,
     });
     // A SUSTAINED burst of real account-keyed governor pauses for acct-1 (threshold = 3 in-window).
     // A single pause is no longer "sustained" (D-003: that was the false-exhaustion trigger); it
@@ -180,6 +182,7 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
       emitExhausted: (id) => emitCalls.push(id),
       autoScaleOutAllowed: async () => false, // owner disabled auto-scale-out
       log: () => {},
+      readScalePolicy: async () => DEFAULT_SCALE_POLICY,
     });
     const g = getGovernor('anthropic', 'opus', undefined, 'acct-1');
     g.penalize({ retryAfterMs: 5 * MIN });
@@ -202,6 +205,7 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
       },
       emitExhausted: () => {},
       log: () => {},
+      readScalePolicy: async () => DEFAULT_SCALE_POLICY,
     });
     getGovernor('anthropic', 'opus', undefined, 'acct-1').penalize({ retryAfterMs: 60_000 }); // 1 min
     await flush();
@@ -225,6 +229,7 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
       },
       emitExhausted: () => {},
       log: () => {},
+      readScalePolicy: async () => DEFAULT_SCALE_POLICY,
     });
     getGovernor('anthropic', 'opus').penalize({ retryAfterMs: 31 * MIN }); // no accountId → global bucket
     await flush();

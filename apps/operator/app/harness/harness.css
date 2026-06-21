@@ -9754,7 +9754,7 @@ body:has(.h-top-collapse-inline) main {
 .h-config-tab:hover {
   background: color-mix(in oklab, var(--bg-1), white 2%) !important;
   border-color: color-mix(in oklab, var(--border), white 6%) !important;
-  color: var(--text-1) !important;
+  color: var(--fg) !important;
 }
 
 .h-config-tab:focus-visible {
@@ -10048,7 +10048,7 @@ body:has(.h-top-collapse-inline) main {
   border: 1px solid rgba(148, 163, 184, 0.12);
   border-radius: 6px;
   background: color-mix(in srgb, var(--bg-popover), transparent 64%);
-  color: var(--text-3) !important;
+  color: var(--fg-mute) !important;
 }
 
 .h-manifest-live-note {
@@ -10130,7 +10130,7 @@ body:has(.h-top-collapse-inline) main {
 .h-manifest-description {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 5%), color-mix(in srgb, var(--bg-1), transparent 5%)) !important;
-  color: var(--text-2) !important;
+  color: var(--fg-dim) !important;
   line-height: 1.45;
 }
 
@@ -10311,7 +10311,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-plugin-action-id {
   min-width: 8ch;
-  color: var(--text-1);
+  color: var(--fg);
 }
 
 .h-plugin-action-label {
@@ -10435,13 +10435,13 @@ body:has(.h-top-collapse-inline) main {
 .h-config-tab:hover {
   background: color-mix(in oklab, var(--accent), transparent 92%) !important;
   border-bottom-color: color-mix(in oklab, var(--accent), transparent 54%) !important;
-  color: var(--text-1) !important;
+  color: var(--fg) !important;
 }
 
 .h-config-tab.is-active {
   background: color-mix(in oklab, var(--accent), transparent 88%) !important;
   border-bottom-color: var(--accent) !important;
-  color: var(--text-1) !important;
+  color: var(--fg) !important;
 }
 
 .h-manifest-editor-head {
@@ -10490,7 +10490,7 @@ body:has(.h-top-collapse-inline) main {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-2) !important;
+  color: var(--fg-dim) !important;
   line-height: 1.4;
 }
 
@@ -10631,7 +10631,7 @@ body:has(.h-top-collapse-inline) main {
     color-mix(in srgb, var(--bg-1), transparent 44%) !important;
   border-color: color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
   border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 88%) !important;
-  color: var(--text-1) !important;
+  color: var(--fg) !important;
 }
 
 .h-config-tab.is-active {
@@ -19562,7 +19562,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 }
 
 .h-root .h-git-row {
-  --h-row-tone: var(--git-row-accent, var(--h-row-accent));
+  --h-row-tone: var(--h-row-accent);
   border-left: 3px solid color-mix(in oklab, var(--h-row-tone), transparent 36%) !important;
 }
 .h-root .h-git-row.is-active { --h-row-tone: var(--accent); }

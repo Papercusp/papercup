@@ -251,6 +251,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the wake-loop/routine (B-04), and the UI pane (B-08). Pending flip surfaced in
   // the plan's ## Now + every lane report.
   FLAGS.OVERWATCH,
+  // sentinel-as-herald-2026-06-21 (mirrors OVERWATCH): the SENTINEL autonomous
+  // system-health role. DELIBERATE dark ship (NOT the alpha default-on policy) —
+  // a brand-new, not-yet-proven autonomous role that nudges the live fleet; a
+  // confused sentinel must not be able to thrash the system it protects, so it
+  // ships dark until its first live staging run proves it. The owner flips it ON
+  // after that proof. Gates the role registration, the wake-loop/routine, and the
+  // UI pane. Pending flip surfaced in the plan's ## Now + every lane report.
+  FLAGS.SENTINEL,
   // impartial-benchmark-suite-2026-06-15 P-005 (BRIEF 3): the EXTERNAL-BENCH grader
   // adapter + the `external-bench:run` op. DELIBERATE dark ship (NOT the alpha
   // default-on policy) — the runner is genuinely incomplete (M2 in-container

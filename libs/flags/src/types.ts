@@ -647,6 +647,16 @@ export const FLAGS = {
   // observes-not-ideas, no thrash, cross-monitors the Queen). The owner flips it ON
   // after that proof — surfaced loudly in the plan's ## Now + every lane report.
   OVERWATCH: "papercusp-overwatch",
+  // sentinel-as-herald-2026-06-21: gates the SENTINEL role — a new always-on
+  // autonomous system-health supervisor (sibling to the Queen, mirrors OVERWATCH).
+  // The flag gates (a) the `sentinel` role registration, (b) the autonomous wake-loop +
+  // its routine/rule, and (c) the Sentinel UI pane. DEFAULT OFF —
+  // DELIBERATE (NOT the alpha flags-default-on policy): a brand-new, not-yet-proven
+  // AUTONOMOUS role that nudges the running fleet. A confused sentinel must not be
+  // able to thrash the system it protects, so it ships dark until its first live run
+  // on staging proves it. The owner flips it ON after that proof — surfaced loudly in
+  // the plan's ## Now + every lane report.
+  SENTINEL: "papercusp-sentinel",
   // scheduled-recurring-plans-2026-06-16 (P-028 → D-019): the global master switch for
   // the scheduled-plan EXECUTION path — the system:plan-run action + arming. DEFAULT ON
   // (owner-directed at ship, D-019). Safe despite being an autonomous executor: the real
@@ -1247,6 +1257,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the role registration (B-01), the wake-loop/routine (B-04), and the UI pane
   // (B-08). Pending flip surfaced in the plan's ## Now + every lane report.
   [FLAGS.OVERWATCH]: false,
+  // OFF by default — DELIBERATE (sentinel-as-herald-2026-06-21, mirrors OVERWATCH):
+  // the SENTINEL autonomous role ships dark. It is a brand-new, not-yet-proven
+  // autonomous supervisor that nudges the live fleet; a confused sentinel must not
+  // be able to thrash the system it protects, so it stays off until its first live
+  // staging run proves it. The owner flips it ON after that proof. The flag gates
+  // the role registration, the wake-loop/routine, and the UI pane. Pending flip
+  // surfaced in the plan's ## Now + every lane report. KNOWN_DARK_FLAGS.
+  [FLAGS.SENTINEL]: false,
   // DEFAULT ON (scheduled-recurring-plans-2026-06-16 D-019, owner-directed at ship): the
   // scheduled-plan execution path is enabled in prod. Safe despite being an autonomous
   // executor — the real control is per-plan ARMING (autonomy-gated, schedule-arm

@@ -216,6 +216,17 @@ export default defineTool({
       'over calling them separately. → work_items:pickup { id, intent } the item you take.',
   },
   capability: 'coord:read',
+  // tool-call-batching-wrappers P-010 — composite marker: the primitives this bundles.
+  // Drives the `composition: 'composite'` tag (agent_tools:list) + the bounded
+  // back-pointer on each of these primitives' catalog entries (prompt-assembly).
+  replaces: [
+    'fleet:assignments',
+    'work_items:list',
+    'coord:inbox',
+    'coord:plan-events',
+    'memory:search',
+    'coord:declare-intent',
+  ],
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({

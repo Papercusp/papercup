@@ -1,5 +1,5 @@
 /**
- * CSS-token lint — fails CI when a .tsx file references `var(--X)` where
+ * CSS-token lint — fails CI when a source file references `var(--X)` where
  * `--X` isn't defined anywhere in the operator's CSS sources.
  *
  * Catches the regression class that periodic audits keep finding:
@@ -10,7 +10,7 @@
  * transparently (invisible cards).
  *
  * The lint:
- *   1. Globs every .tsx file under app/ and lib/
+ *   1. Globs every .tsx/.ts/.css file under app/, lib/, and operator-vite/src/
  *   2. Extracts every `var(--name)` reference
  *   3. Globs every .css file under app/ and reads `--name:` definitions
  *   4. Asserts every used token is either defined OR in the carve-out list
@@ -25,7 +25,7 @@
  * add it to RUNTIME_TOKENS below.
  *
  * Component-LOCAL custom properties — a `--name:` both defined and used
- * inside the same .tsx (e.g. a styled-jsx <style> block) — are recognized
+ * inside the same source file (e.g. a styled-jsx <style> block) — are recognized
  * automatically: they're satisfied within the component, even though the
  * global CSS-source scan can't see a definition that lives in a .tsx.
  */
@@ -41,6 +41,7 @@ const SOURCE_ROOTS = [
   join(OPERATOR_ROOT, 'lib'),
   join(APPS_ROOT, 'operator-vite/src'),
 ];
+const SOURCE_EXTENSIONS = ['.tsx', '.ts', '.css'] as const;
 
 // Tokens set at runtime by a framework, not in any CSS source. Treat as defined.
 const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
@@ -48,6 +49,20 @@ const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
   '--radix-select-trigger-width',
   // Operator chat sidebar drives a custom width var on body for chrome offset.
   '--op-chat-w',
+  // Layout rails measure themselves in JS and write the current width on <html>.
+  '--left-sidebar-w',
+  '--dev-rail-w',
+  // Sonner writes these per-toast; globals.css uses them to keep stacked toasts compact.
+  '--toasts-before',
+  '--lift-amount',
+  '--front-toast-height',
+  // Voice controls write live input levels for the mic activity ring.
+  '--mic-level',
+  // Dev swarm identity artwork assigns these per rendered item.
+  '--intro-index',
+  '--bee-index',
+  // React Flow / harness chrome geometry knobs that are supplied by the component.
+  '--xy-handle-tx',
 ]);
 
 // CSS files to read defined tokens from. Order matters only for debugging;
@@ -105,7 +120,10 @@ function walk(dir: string, out: string[]): void {
     }
     if (st.isDirectory()) {
       walk(full, out);
-    } else if (full.endsWith('.tsx')) {
+    } else if (
+      SOURCE_EXTENSIONS.some((ext) => full.endsWith(ext)) &&
+      !/\.(?:test|spec)\.(?:tsx|ts)$/.test(full)
+    ) {
       out.push(full);
     }
   }
@@ -126,7 +144,7 @@ function collectUsedTokens(): Map<string, string[]> {
     // file (e.g. a styled-jsx <style> block), or a React inline custom-property
     // key such as `{ ['--name' as string]: value }`, is satisfied within the
     // component. The global CSS-source scan can't see definitions that live in a
-    // .tsx, so collect this file's own definitions and treat self-references as
+    // a global source, so collect this file's own definitions and treat self-references as
     // defined.
     const localDefs = new Set<string>();
     const defRe = /(?:^|\n|[;{])\s*(--[a-z0-9_-]+)\s*:/gim;
@@ -158,7 +176,7 @@ describe('css-tokens lint', () => {
   const defined = readDefinedTokens();
   const used = collectUsedTokens();
 
-  it('every var(--X) reference in .tsx is either defined in CSS or in the runtime-token allowlist', () => {
+  it('every var(--X) reference in source files is either defined in CSS or in the runtime-token allowlist', () => {
     const undefined_: Array<{ token: string; files: string[] }> = [];
     for (const [token, files] of used) {
       if (!defined.has(token)) {
