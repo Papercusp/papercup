@@ -202,6 +202,166 @@ export async function recordRecipeRun(
   });
 }
 
+export interface MergeRecipesInput {
+  workspaceId: string;
+  /** The recipe every duplicate consolidates into. */
+  survivorId: string;
+  /** Near-duplicate recipe ids to fold into the survivor. */
+  duplicateIds: string[];
+}
+
+export interface MergeRecipesResult {
+  /** The updated survivor (with the duplicates' run/success counts added). */
+  survivor: CodeRecipeRow;
+  /** The ids actually merged (excludes the survivor itself + ids absent from the workspace). */
+  mergedIds: string[];
+}
+
+/**
+ * Consolidate near-duplicate recipes into a SURVIVOR (the Queen's merge action
+ * from her recipe-graduation review, D-015). In ONE transaction, for each
+ * duplicate: set `status='merged'`, `merged_into=survivorId`, AND add its
+ * run_count/success_count onto the survivor so the consolidated recipe reflects
+ * total usage. Idempotent + reversible (a pure status/pointer flip + counter
+ * folding) and workspace-scoped — duplicate ids not in the workspace are skipped;
+ * a recipe is NEVER merged into itself.
+ *
+ * Returns the updated survivor plus the ids that were actually merged. Throws if
+ * the survivor does not exist in the workspace (nothing to merge INTO).
+ */
+export async function mergeRecipes(
+  sql: postgres.Sql,
+  input: MergeRecipesInput,
+): Promise<MergeRecipesResult> {
+  const { workspaceId, survivorId } = input;
+  // De-dupe the request + drop self-merge before touching the DB.
+  const requested = [...new Set(input.duplicateIds)].filter((id) => id !== survivorId);
+
+  return sql.begin(async (tx) => {
+    const survivorRows = await tx<DbRow[]>`
+      SELECT ${SELECT_COLS(tx)} FROM harness_shared.code_recipes
+       WHERE workspace_id = ${workspaceId} AND id = ${survivorId}
+       FOR UPDATE`;
+    if (!survivorRows[0]) {
+      throw new Error(`mergeRecipes: survivor ${survivorId} not found in workspace ${workspaceId}`);
+    }
+
+    if (requested.length === 0) {
+      return { survivor: mapRow(survivorRows[0]), mergedIds: [] };
+    }
+
+    // Mark each duplicate merged, pointing at the survivor, and harvest its
+    // counters in the SAME statement. RETURNING the ids confirms which rows
+    // actually existed in the workspace (others are silently skipped).
+    //
+    // IDEMPOTENT: skip a duplicate ALREADY merged into THIS survivor — its
+    // counters were folded on the first merge, so re-running must not re-add
+    // them (a no-op replay). A duplicate merged into a DIFFERENT survivor, or
+    // any non-merged status, is (re)pointed here and its counters folded once.
+    const merged = await tx<{ id: string; run_count: number | string; success_count: number | string }[]>`
+      UPDATE harness_shared.code_recipes
+         SET status      = 'merged',
+             merged_into = ${survivorId},
+             updated_at  = now()
+       WHERE workspace_id = ${workspaceId}
+         AND id = ANY(${requested})
+         AND id <> ${survivorId}
+         AND NOT (status = 'merged' AND merged_into = ${survivorId})
+       RETURNING id, run_count, success_count`;
+
+    const mergedIds = merged.map((m) => m.id);
+    const addRuns = merged.reduce((sum, m) => sum + asInt(m.run_count), 0);
+    const addSuccess = merged.reduce((sum, m) => sum + asInt(m.success_count), 0);
+
+    const updated = await tx<DbRow[]>`
+      UPDATE harness_shared.code_recipes
+         SET run_count     = run_count + ${addRuns},
+             success_count = success_count + ${addSuccess},
+             updated_at    = now()
+       WHERE workspace_id = ${workspaceId} AND id = ${survivorId}
+      RETURNING ${SELECT_COLS(tx)}`;
+
+    return { survivor: mapRow(updated[0]), mergedIds };
+  });
+}
+
+export interface SweepRecipesInput {
+  workspaceId: string;
+  /** Sharing boundary; omit ⇒ the whole workspace, explicit null ⇒ the workspace-global bucket. */
+  hiveSlug?: string | null;
+  /** Retire active recipes whose last_run_at is older than this (default 30). */
+  staleDays?: number;
+  /** Only one-offs: run_count at or below this (default 1 — nobody reused it). */
+  maxRunCount?: number;
+  /** Preview only — return the candidates WITHOUT changing anything (default false). */
+  dryRun?: boolean;
+}
+
+export interface SweepRecipesResult {
+  /** The swept (or, on a dryRun, would-be-swept) recipes. */
+  swept: CodeRecipeRow[];
+  dryRun: boolean;
+}
+
+/**
+ * Retire the stale long-tail of never-reused one-off recipes (mirror
+ * learning_packs:sweep). Selects ACTIVE recipes whose `last_run_at` is older
+ * than `staleDays` AND `run_count <= maxRunCount` (a one-off nobody reused) and
+ * — on a real run — flips them to `status='retired'`. A `dryRun` returns the
+ * candidates without mutating. NEVER touches a hot recipe (run_count over the
+ * cap), a recipe run recently, or a promoted/merged/already-retired one (the
+ * `status='active'` filter), so hygiene can't strand a graduated or consolidated
+ * recipe. Reversible (a status flip) + workspace-scoped.
+ *
+ * A recipe with a NULL last_run_at (saved, never run) is NOT swept here — it has
+ * no staleness clock yet; it ages in only once it's been run and then idled.
+ */
+export async function sweepRecipes(
+  sql: postgres.Sql,
+  input: SweepRecipesInput,
+): Promise<SweepRecipesResult> {
+  const { workspaceId } = input;
+  const staleDays = input.staleDays ?? 30;
+  const maxRunCount = input.maxRunCount ?? 1;
+  const dryRun = input.dryRun ?? false;
+  const hasHiveFilter = 'hiveSlug' in input;
+
+  // The hive narrowing is shared by both the dry-run SELECT and the real UPDATE
+  // so the candidate set can never diverge between preview and commit.
+  const hiveClause = hasHiveFilter
+    ? input.hiveSlug == null
+      ? sql`AND hive_slug IS NULL`
+      : sql`AND hive_slug = ${input.hiveSlug}`
+    : sql``;
+
+  if (dryRun) {
+    const rows = await sql<DbRow[]>`
+      SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
+       WHERE workspace_id = ${workspaceId}
+         AND status = 'active'
+         AND run_count <= ${maxRunCount}
+         AND last_run_at IS NOT NULL
+         AND last_run_at < now() - make_interval(days => ${staleDays})
+         ${hiveClause}
+       ORDER BY last_run_at ASC NULLS LAST, run_count ASC, id`;
+    return { swept: rows.map(mapRow), dryRun: true };
+  }
+
+  // Real run: retire the candidates and RETURN the retired rows (single
+  // statement — selection + mutation are atomic, no select-then-update race).
+  const rows = await sql<DbRow[]>`
+    UPDATE harness_shared.code_recipes
+       SET status = 'retired', updated_at = now()
+     WHERE workspace_id = ${workspaceId}
+       AND status = 'active'
+       AND run_count <= ${maxRunCount}
+       AND last_run_at IS NOT NULL
+       AND last_run_at < now() - make_interval(days => ${staleDays})
+       ${hiveClause}
+    RETURNING ${SELECT_COLS(sql)}`;
+  return { swept: rows.map(mapRow), dryRun: false };
+}
+
 /** Fetch one recipe by id, scoped to its workspace. Null when absent. */
 export async function getRecipe(
   sql: postgres.Sql,
