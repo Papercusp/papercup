@@ -15,6 +15,7 @@
  */
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
 
 export type SttEngineKind = 'voicemode' | 'webspeech' | 'deepgram' | 'off';
 export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai' | 'cartesia';
@@ -445,3 +446,56 @@ function mergePrefs(base: VoicePrefs, patch: Partial<VoicePrefs>): VoicePrefs {
   }
   return out;
 }
+
+/**
+ * Internal/derived keys that are NOT user-facing tunables: `nudgeDedup` is
+ * last-spoken-at bookkeeping (not config), and `webSpeechLeakAcked` /
+ * `kokoroSlowSuggestionDismissed` are one-shot consent acks. They're excluded
+ * from the override diff so config:list-overrides shows only real config drift.
+ */
+const VOICE_NON_TUNABLE_KEYS = new Set<keyof VoicePrefs>([
+  'nudgeDedup',
+  'webSpeechLeakAcked',
+  'kokoroSlowSuggestionDismissed',
+]);
+
+/** Reset workspace voice-prefs to DEFAULT_VOICE_PREFS (clears every override). Writes the full
+    default row directly (NOT through saveVoicePrefs, which merges over current). The concern's
+    reset; per-user overrides in user_preferences are a separate layer and untouched. */
+export async function resetWorkspaceVoicePrefs(): Promise<VoicePrefs> {
+  const next = { ...DEFAULT_VOICE_PREFS };
+  await writeOperatorState('operator_voice_prefs', next);
+  return next;
+}
+
+/** The WORKSPACE-layer keys that diverge from DEFAULT_VOICE_PREFS (skipping internal/derived
+    keys). Compared by value (JSON for the rare non-scalar) so a flipped toggle or retuned engine
+    surfaces as one entry. This is the workspace default-vs-override shape; the per-user layer
+    (user_preferences + VOICE_USER_OVERRIDE_KEYS) is reported by its own concern, not here. */
+function voicePrefsOverrides(ws: VoicePrefs): OverrideEntry[] {
+  const out: OverrideEntry[] = [];
+  for (const k of Object.keys(DEFAULT_VOICE_PREFS) as (keyof VoicePrefs)[]) {
+    if (VOICE_NON_TUNABLE_KEYS.has(k)) continue;
+    const eff = ws[k];
+    const def = DEFAULT_VOICE_PREFS[k];
+    const differs = typeof eff === 'object' || typeof def === 'object'
+      ? JSON.stringify(eff) !== JSON.stringify(def)
+      : eff !== def;
+    if (differs) out.push({ key: k, effective: eff, default: def, layer: 'pg-settings' });
+  }
+  return out;
+}
+
+// Self-register as a runtime-config override concern (P-024 registry / sentinel-herald P-037):
+// the WORKSPACE-level voice/operator prefs that diverge from DEFAULT_VOICE_PREFS show up in
+// config:list-overrides, and config:reset-overrides reverts them to defaults. Lazy-imports
+// loadWorkspaceVoicePrefs at call time (it's defined above; the concern just references it).
+registerOverrideConcern({
+  name: 'voice-prefs',
+  description: 'workspace voice/operator prefs diverging from defaults (operator_voice_prefs)',
+  auditAction: 'operator:voice_prefs',
+  diff: async () => voicePrefsOverrides(await loadWorkspaceVoicePrefs()),
+  capture: () => loadWorkspaceVoicePrefs(),
+  reset: () => resetWorkspaceVoicePrefs(),
+  restore: async (snap) => { await writeOperatorState('operator_voice_prefs', snap as VoicePrefs); },
+});

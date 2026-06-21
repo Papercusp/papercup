@@ -22,6 +22,8 @@
  * being clobbered by the pool's high-churn rate-projection writes.
  */
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
+import { activeWorkspaceId } from '../workspace-registry';
+import { registerOverrideConcern, type OverrideEntry } from '../config-overrides/registry';
 
 /** The decoded override. Both empty ⇒ no restriction (today's behaviour). */
 export interface AccountSessionOverride {
@@ -100,3 +102,27 @@ export async function setAccountOverride(
   await writeOperatorState(OVERRIDE_STATE_TABLE, next, workspaceId);
   return next;
 }
+
+// Self-register as a runtime-config override concern (P-024 registry / sentinel-herald P-037):
+// the owner's session-now account allow/exclude steer shows up in config:list-overrides, and
+// config:reset-overrides wipes it back to no-restriction (the "drop my account steer" lever).
+// The two axes are intrinsically paired but reported per-axis (each empty by default), so the
+// readback shows exactly which steer is active.
+registerOverrideConcern({
+  name: 'account-session-override',
+  description: "owner's session-now account steer (forcedAccounts allow-list / excludeAccounts)",
+  auditAction: 'accounts:set-session-override',
+  diff: async () => {
+    const o = await getAccountOverride(activeWorkspaceId());
+    const entries: OverrideEntry[] = [];
+    if (o.forcedAccounts.length > 0) entries.push({ key: 'forcedAccounts', effective: o.forcedAccounts, default: [], layer: 'pg-settings' });
+    if (o.excludeAccounts.length > 0) entries.push({ key: 'excludeAccounts', effective: o.excludeAccounts, default: [], layer: 'pg-settings' });
+    return entries;
+  },
+  capture: () => getAccountOverride(activeWorkspaceId()),
+  reset: () => setAccountOverride(activeWorkspaceId(), { clear: true }),
+  restore: async (snap) => {
+    const o = snap as AccountSessionOverride;
+    await setAccountOverride(activeWorkspaceId(), { forcedAccounts: o.forcedAccounts, excludeAccounts: o.excludeAccounts });
+  },
+});

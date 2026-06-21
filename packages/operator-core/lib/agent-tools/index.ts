@@ -467,6 +467,14 @@ import './improvements/set-watchdog-tunables';
 // readback (config:list-overrides); the concern modules (e.g. watchdog-tunables) self-register.
 import './config/list-overrides';
 import './config/reset-overrides';
+// sentinel-herald Phase 8 P-037 — pre-existing override mechanisms now self-register as
+// config-override concerns so config:list-overrides is the canonical audit surface. These
+// stores are already transitively imported by their tools; importing them here makes the
+// registration explicit + order-independent (matches the P-024 self-register convention).
+import '../rate-limit-config';
+import '../agent-config';
+import '../voice-prefs';
+import '../deployment/account-session-override';
 // live-configurability-audit-2026-06-20 P-003 — runtime-settable deploy-migration lock_timeout:
 import './db/migrate-policy';
 // live-configurability-audit-2026-06-20 P-002 — read/retune/pause the system routines (git-sync, …):

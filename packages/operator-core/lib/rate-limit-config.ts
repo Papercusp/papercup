@@ -19,6 +19,7 @@ import { getChannel } from '@papercusp/sse';
 import { setGlobalConcurrencyCap, setGlobalConcurrencyFloor } from '@papercusp/papercusp-shared/agent';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { getResourceProfile } from './resource-profile';
+import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
 
 export interface RateLimitConfig {
   /** Fleet-wide cap on concurrently-running agent spawns. The governor's global gate + the
@@ -108,6 +109,35 @@ export async function writeRateLimitConfig(input: Partial<RateLimitConfig>): Pro
   getRateLimitBus().publish({ type: 'rate_limit_config_changed', config: cfg, ts: Date.now() });
   return cfg;
 }
+
+/** Revert the rate-limit config to the host-seeded defaults (clears the override), propagated
+    live like any write. Returns the resulting (default) config. The override concern's reset. */
+export async function resetRateLimitConfig(): Promise<RateLimitConfig> {
+  // clampRateLimitConfig({}) resolves the getter-backed defaults to concrete numbers; persisting
+  // those IS the revert (a later host-profile change won't re-seed, but the user can re-clear).
+  return writeRateLimitConfig({});
+}
+
+// Self-register as a runtime-config override concern (P-024 registry / sentinel-herald P-037):
+// the live fleet cap + AIMD floor show up in config:list-overrides, and config:reset-overrides
+// can revert them to the host-seeded defaults.
+registerOverrideConcern({
+  name: 'rate-limit-config',
+  description: 'fleet rate-limit cap + AIMD floor (maxSimultaneousAgents / concurrencyFloor)',
+  auditAction: 'operator:rate_limit_config',
+  diff: async () => {
+    const cfg = await readRateLimitConfig();
+    const def = DEFAULT_RATE_LIMIT_CONFIG; // getter resolves maxSimultaneousAgents per-read
+    const entries: OverrideEntry[] = [];
+    for (const k of ['maxSimultaneousAgents', 'concurrencyFloor'] as const) {
+      if (cfg[k] !== def[k]) entries.push({ key: k, effective: cfg[k], default: def[k], layer: 'pg-settings' });
+    }
+    return entries;
+  },
+  capture: () => readRateLimitConfig(),
+  reset: () => resetRateLimitConfig(),
+  restore: (snap) => writeRateLimitConfig(snap as RateLimitConfig).then(() => {}),
+});
 
 /** Test hook — reset the module's cached state + boot latch. */
 export function __resetRateLimitConfigForTest(): void {

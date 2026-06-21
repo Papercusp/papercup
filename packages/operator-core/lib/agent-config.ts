@@ -23,6 +23,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
 import { papercuspPath } from './papercusp-root';
 import {
   AGENT_BACKENDS,
@@ -344,3 +345,40 @@ export async function surfaceModel(surface: SurfaceKey): Promise<string | undefi
     return undefined;
   }
 }
+
+/** Revert the agent backend config to baked defaults (clears every override). Returns the
+    default config. The override concern's reset — also re-mirrors env/shell to the boot state. */
+export async function resetAgentConfig(): Promise<AgentConfig> {
+  return writeAgentConfig({ ...DEFAULT_CONFIG });
+}
+
+/** True when a value diverges from the agent-config default (scalars by ===, the maps/array by
+    "non-empty", since their default is empty ⇒ inherit). Keeps the diff readable: one entry per
+    overridden field rather than a deep key-by-key blowout of the nested maps. */
+function agentConfigOverrides(cfg: AgentConfig): OverrideEntry[] {
+  const out: OverrideEntry[] = [];
+  if (cfg.backend !== DEFAULT_CONFIG.backend) {
+    out.push({ key: 'backend', effective: cfg.backend, default: DEFAULT_CONFIG.backend, layer: 'pg-settings' });
+  }
+  if (cfg.cmd !== DEFAULT_CONFIG.cmd) {
+    out.push({ key: 'cmd', effective: cfg.cmd, default: DEFAULT_CONFIG.cmd, layer: 'pg-settings' });
+  }
+  for (const k of ['models', 'backends', 'surfaceModels', 'tierCeilings'] as const) {
+    const v = cfg[k] ?? {};
+    if (Object.keys(v).length > 0) out.push({ key: k, effective: v, default: {}, layer: 'pg-settings' });
+  }
+  if ((cfg.tiers?.length ?? 0) > 0) out.push({ key: 'tiers', effective: cfg.tiers, default: [], layer: 'pg-settings' });
+  return out;
+}
+
+// Self-register as a runtime-config override concern (P-024 registry / sentinel-herald P-037):
+// the agent backend/cmd + per-role/per-surface model+backend maps show up in
+// config:list-overrides, and config:reset-overrides reverts them to DEFAULT_CONFIG.
+registerOverrideConcern({
+  name: 'agent-config',
+  description: 'agent backend + cmd + per-role/per-surface model & backend overrides (operator_agent_config)',
+  diff: async () => agentConfigOverrides(await readAgentConfig()),
+  capture: () => readAgentConfig(),
+  reset: () => resetAgentConfig(),
+  restore: (snap) => writeAgentConfig(snap as AgentConfig).then(() => {}),
+});
