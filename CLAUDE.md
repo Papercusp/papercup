@@ -229,6 +229,14 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   / inline `CREATE TABLE`. `000-baseline.sql` is frozen/generated.
 - **Never hardcode `localhost:5432`** — resolve via `getHarnessAdminUrl()`.
   Embedded-pg is the ship target; the dev box runs native PG on `:5432`.
+- **Reading PG-canonical state? Query PG — don't dump-and-jq a projection.**
+  Plans, work-items, issues, observations (`engineer_issues`), `tool_invocations`,
+  scorecards, recipes live in Postgres; the `*:list` tools and `docs/plans/*.md`
+  files are *projections*. For a filtered / aggregate / recency read, use
+  **`dev:pg_query`** (read-only SELECT — read-only txn + `statement_timeout` + row
+  cap) or a server-side `*:list` filter — never fetch a whole `*:list` and
+  `jq`/python a spilled projection. (su can also `psql` the admin URL directly:
+  `getHarnessAdminUrl()` / the live operator's `DATABASE_URL`.)
 - ⚠ **Apply migrations via the runner (`db:migrate`)** — a raw `psql -f` runs
   DDL without recording it in `harness_shared.schema_migrations`, so every
   deploy re-runs it; a lock-contending re-run trips the deploy's 15s

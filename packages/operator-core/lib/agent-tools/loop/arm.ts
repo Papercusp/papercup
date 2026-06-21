@@ -106,8 +106,11 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const ownerId = identity.ownerId;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    // No `?? ''` collapse — keep the unresolved case nullish so the guard below catches
+    // it and fails loud (a routine with an empty harness namespace would collide across
+    // hives). workspace-data-isolation-leaks P-003.
     const harness =
-      args.harness ?? ctx.harnessSlug ?? resolveHiveHomeSlug(undefined, undefined) ?? '';
+      args.harness ?? ctx.harnessSlug ?? resolveHiveHomeSlug(undefined, undefined);
     if (!harness) {
       return {
         content: [

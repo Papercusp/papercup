@@ -35,6 +35,13 @@ describe('canonicalHarnessSlug — retired-slug rename-compat shim (EI-2224)', (
     expect(canonicalHarnessSlug('papercup')).toBe('papercusp');
     expect(RETIRED_HARNESS_SLUG_ALIASES.papercup).toBe('papercusp');
   });
+  it('maps the retired home-HIVE `papercup-hive` slug to `papercusp` (infra-fail-fast P-014/D1)', () => {
+    // The home hive's legacy slug was retired 2026-06-19 with the rebrand; a
+    // lingering queen/fire-path on `papercup-hive` 400'd ("unknown project")
+    // instead of self-healing. Its sibling `papercup` was aliased — this was the gap.
+    expect(canonicalHarnessSlug('papercup-hive')).toBe('papercusp');
+    expect(RETIRED_HARNESS_SLUG_ALIASES['papercup-hive']).toBe('papercusp');
+  });
   it('leaves an unknown / current slug unchanged (not an arbitrary normalizer)', () => {
     expect(canonicalHarnessSlug('papercusp')).toBe('papercusp');
     expect(canonicalHarnessSlug('acme-hive')).toBe('acme-hive');

@@ -82,6 +82,12 @@ export default defineTool({
     }
 
     // Decided mode — co-locate (or spread) relative to coLocateWith via the policy.
+    // localSwarmId treats an unbooted/empty harness as the safe 'local' single-Swarm
+    // answer (it never throws), so an omitted harness => the local Swarm is INTENDED here,
+    // not a silent scope leak: this handler has no ctx to resolve a harness from, and a
+    // single-box deploy has exactly one Swarm. allow-scope-default(P-003): co-location
+    // local-Swarm fallback. (Follow-up: resolve from the placed work-item's harness for a
+    // federated multi-Swarm setup.)
     const local = localSwarmId(activeWorkspaceId(), args.harness ?? '');
     const peer = await getWorkItemSwarmAffinity(args.coLocateWith!, opt);
     if (!peer) return json({ ok: false, error: `coLocateWith item ${args.coLocateWith} not found` });

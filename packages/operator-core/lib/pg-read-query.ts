@@ -56,7 +56,7 @@ export const PG_READ_QUERY_HARD_TIMEOUT_MS = 30000;
  * early with a clear message.
  */
 export function assertSingleReadStatement(raw: string): string {
-  const q = raw.trim().replace(/;\s*$/, '');
+  const q = raw.trim().replace(/;\s*$/, '').trim();
   if (!q) throw new PgReadQueryError('empty query');
   if (q.includes(';')) {
     throw new PgReadQueryError(
@@ -94,7 +94,7 @@ export async function pgReadQuery(
   const sql = opts.client ?? getOrgPg().sql;
   const startedAt = Date.now();
   let rows: Record<string, unknown>[] = [];
-  await sql.begin(async (tx: OrgSql) => {
+  await sql.begin(async (tx) => {
     // READ ONLY must be set before the first data statement in the txn.
     await tx.unsafe('SET TRANSACTION READ ONLY');
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);

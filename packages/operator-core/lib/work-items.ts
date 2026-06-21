@@ -170,7 +170,21 @@ const links = new PgLinkStore(coordOpts);
 export function workItemObjectRef(wi: Pick<WorkItem, 'family' | 'harness' | 'id'>): ObjectRef {
   if (wi.family === 'issue') return { kind: ISSUE_KIND, ref: wi.id };
   // feature-family: harness-qualified ref (a bare id is not unique across harnesses).
-  return { kind: FEATURE_KIND, ref: featureRef(wi.harness ?? '', wi.id) };
+  // A feature-family item is harness-scoped by construction (harness_features_consolidated
+  // .harness_slug is NOT NULL; work_items:create requires `harness` for feature/research-
+  // task/chunk — verified 0/667 live rows have an empty harness). So a missing harness here
+  // is a bug, not a default: `feature:<id>` with an empty harness would collide across
+  // harnesses and corrupt coord dedup. Fail loud instead of `?? ''` (workspace-data-
+  // isolation-leaks P-003).
+  const harness = wi.harness?.trim();
+  if (!harness) {
+    throw new Error(
+      `workItemObjectRef: feature-family work-item ${wi.id} has no harness — its ObjectRef ` +
+        `would collide across harnesses (coord dedup corruption). A feature work-item must ` +
+        `carry its harness.`,
+    );
+  }
+  return { kind: FEATURE_KIND, ref: featureRef(harness, wi.id) };
 }
 
 function nowIso(): string {

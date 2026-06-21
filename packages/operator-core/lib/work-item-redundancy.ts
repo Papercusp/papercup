@@ -64,8 +64,18 @@ export const WORK_ITEM_REPLICA_OP_KINDS = {
 /** The authority scope key for a replica op: the Hive home if present, else the
  *  harness slug — identical to the claim store's scopeOf (single box → harness). */
 function replicaScopeOf(opts: { hiveSlug?: string | null; harnessSlug?: string; harness?: string }): string {
-  const harness = opts.harnessSlug ?? opts.harness ?? '';
-  return opts.hiveSlug && opts.hiveSlug.length > 0 ? opts.hiveSlug : harness;
+  if (opts.hiveSlug && opts.hiveSlug.length > 0) return opts.hiveSlug;
+  const harness = (opts.harnessSlug ?? opts.harness ?? '').trim();
+  if (!harness) {
+    // No Hive and no harness → an empty authority scope key collapses every harness's
+    // replicas into one consensus bucket (misrouted judging). Fail loud, never `?? ''`
+    // (workspace-data-isolation-leaks P-003).
+    throw new Error(
+      'replicaScopeOf: no hiveSlug and no harness — the replica authority scope key ' +
+        'would be empty, collapsing distinct harnesses into one consensus bucket.',
+    );
+  }
+  return harness;
 }
 
 /**
