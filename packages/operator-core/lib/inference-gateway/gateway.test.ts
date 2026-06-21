@@ -609,6 +609,41 @@ test('Fault #3 — a header-pinned request whose account is paced fails over to 
   resetGovernorRegistry();
 });
 
+test('Fault #3b — pinned account is paused AND pool.active() hands it back → still walks to a healthy account, NOT a "paced/paused" 429 (owner 2026-06-21)', async () => {
+  // The real-world miss: a bee pinned to a 97%-7d account that is PREDICTIVELY paused (governor pause, no
+  // 429). The failover pool's exhaustedUntil can't see that, so pool.active() returns the paused pin itself
+  // → the old canFailover==(poolActive!=pin) guard was false → the bee was 429'd with the pin's pause
+  // forwarded ("account X paced/paused; retry after Ns") instead of yielding. Now the walk (gated on the
+  // GOVERNOR pause) routes it to a healthy account regardless of what active() handed back.
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const paced: ActiveAccount = { accountId: 'paced-acct', token: async () => 'paced-tok' };
+  const healthy: ActiveAccount = { accountId: 'healthy-acct', token: async () => 'healthy-tok' };
+  // Round-robin active(): FIRST hop returns the paused pin itself (the bug trigger), the walk's next hop a
+  // healthy account.
+  const ring = [paced, healthy];
+  let i = 0;
+  const pool: AccountPool = {
+    active: () => ring[i++ % ring.length]!,
+    onExhausted: () => null,
+    select: (id) => (id === 'paced-acct' ? paced : id === 'healthy-acct' ? healthy : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50 });
+  port = await gw.listen(0);
+  getGovernor('anthropic', 'opus', undefined, 'paced-acct').penalize({ retryAfterMs: 30 * 60_000 }); // long predictive-style pause
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'paced-acct' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 200, 'served (yielded to liveness), NOT a paced/paused 429');
+  assert.equal(upstream.last.headers['authorization'], 'Bearer healthy-tok', 'walked to the healthy account despite active() returning the paused pin');
+  resetGovernorRegistry();
+});
+
 test('a header-pinned request whose account is HEALTHY is still strict-honored (cache affinity preserved)', async () => {
   resetGovernorRegistry();
   upstream = await startUpstream((_req, res) => {
