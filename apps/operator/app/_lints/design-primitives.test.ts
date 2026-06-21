@@ -286,6 +286,7 @@ describe('design primitive lint', () => {
       'Nonzero letter-spacing in audited operator app stylesheets',
       unexpectedNonzeroLetterSpacingUnderAny([
         join(OPERATOR_ROOT, 'app/_components'),
+        join(OPERATOR_ROOT, 'app/globals.css'),
         join(OPERATOR_ROOT, 'app/adv/harnesses'),
         join(OPERATOR_ROOT, 'app/adv/plans'),
         join(OPERATOR_ROOT, 'app/adv/sessions'),
@@ -308,6 +309,7 @@ describe('design primitive lint', () => {
         join(OPERATOR_ROOT, 'app/dev/swarm-identity/swarm-identity.module.css'),
         join(OPERATOR_ROOT, 'app/dev/swarm-logos/swarm-logos.module.css'),
         join(OPERATOR_ROOT, 'app/dev/tokens/page.tsx'),
+        join(OPERATOR_ROOT, 'app/harness'),
         join(OPERATOR_ROOT, 'app/installed/kpis/page.tsx'),
         join(OPERATOR_ROOT, 'app/operator-mock'),
         join(OPERATOR_ROOT, 'app/project-docs/page.tsx'),
