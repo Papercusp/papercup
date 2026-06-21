@@ -340,6 +340,139 @@ export async function listSessions(
   return { entries: rows };
 }
 
+// ── Tool co-occurrence (which tools fire together in one spawn) ────
+
+export interface CooccurrenceEntry {
+  tool_a: string;
+  tool_b: string;
+  /** # of spawns (agent turns) in which BOTH tools were invoked. */
+  support: number;
+  /** # of spawns containing tool_a / tool_b individually. */
+  spawns_a: number;
+  spawns_b: number;
+  /** support / spawns(rarer of the two) — the STRONGEST directional
+   *  conditional. ~1.0 ⇒ whenever the rarer tool fires, the other almost
+   *  always accompanies it (a near-deterministic pairing — wrapper bait). */
+  confidence: number;
+  /** support * total_spawns / (spawns_a * spawns_b) — symmetric bond
+   *  strength vs chance. 1 = independent, >1 = attract, <1 = repel. The
+   *  signal that separates a real pairing from two individually-common tools. */
+  lift: number;
+}
+
+export interface ToolCooccurrenceInput {
+  workspaceIds: string[] | null;
+  hours?: number;
+  /** Drop pairs seen in fewer than this many spawns (noise floor — a high
+   *  lift on tiny support is spurious). Default 3. */
+  minSupport?: number;
+  limit?: number;
+  /** Result ordering. 'support' (default) = highest co-occurrence volume
+   *  first (where wrapping saves the most round-trips); 'lift' = strongest
+   *  bond first; 'confidence' = most near-deterministic first. */
+  orderBy?: 'support' | 'lift' | 'confidence';
+}
+
+/**
+ * Pairwise tool co-occurrence over harness_shared.tool_invocations, grouped
+ * by spawn_id (one agent turn). MCP transport only — HTTP/IPC/in-process and
+ * routine/loopback (palette) callers are not agent reasoning round-trips and
+ * are excluded (palette is filtered at record time; transport='mcp' drops the
+ * rest). Pure deterministic counting — plan tool-call-batching-wrappers
+ * D-002/D-009: the miner NOMINATES wrapper candidates; it does not judge
+ * determinism (lift != determinism). No new table, no index — this is
+ * offline/analytical, and a CREATE INDEX on the hottest table risks a
+ * deploy-wedge (D-009/P-002).
+ */
+export async function toolCooccurrence(
+  input: ToolCooccurrenceInput,
+): Promise<{ totalSpawns: number; entries: CooccurrenceEntry[] }> {
+  const hours = Math.max(1, Math.min(168, input.hours ?? 24));
+  const minSupport = Math.max(1, Math.min(100000, input.minSupport ?? 3));
+  const limit = Math.max(1, Math.min(500, input.limit ?? 100));
+  const { sql } = getOrgPg();
+  const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+  const wsFrag =
+    input.workspaceIds && input.workspaceIds.length > 0
+      ? sql`AND workspace_id = ANY(${input.workspaceIds})`
+      : sql``;
+  const orderFrag =
+    input.orderBy === 'lift'
+      ? sql`ORDER BY lift DESC, support DESC`
+      : input.orderBy === 'confidence'
+        ? sql`ORDER BY confidence DESC, support DESC`
+        : sql`ORDER BY support DESC, lift DESC`;
+
+  const totalRows = (await sql`
+    SELECT count(*)::int AS n
+    FROM (
+      SELECT spawn_id
+      FROM harness_shared.tool_invocations
+      WHERE invoked_at > ${sinceIso}::timestamptz
+        AND transport = 'mcp'
+        AND spawn_id IS NOT NULL
+        AND tool_name IS NOT NULL
+        ${wsFrag}
+      GROUP BY spawn_id
+    ) s
+  `) as { n: number }[];
+  const totalSpawns = totalRows[0]?.n ?? 0;
+
+  type Row = {
+    tool_a: string;
+    tool_b: string;
+    support: number;
+    spawns_a: number;
+    spawns_b: number;
+    confidence: number;
+    lift: number;
+  };
+  const rows = (await sql`
+    WITH spawn_tools AS (
+      SELECT spawn_id, array_agg(DISTINCT tool_name) AS tools
+      FROM harness_shared.tool_invocations
+      WHERE invoked_at > ${sinceIso}::timestamptz
+        AND transport = 'mcp'
+        AND spawn_id IS NOT NULL
+        AND tool_name IS NOT NULL
+        ${wsFrag}
+      GROUP BY spawn_id
+    ),
+    tot AS (SELECT count(*)::numeric AS n FROM spawn_tools),
+    marg AS (
+      SELECT tname, count(*)::int AS spawns
+      FROM spawn_tools CROSS JOIN LATERAL unnest(tools) AS tname
+      GROUP BY tname
+    ),
+    pairs AS (
+      SELECT LEAST(a, b) AS tool_a, GREATEST(a, b) AS tool_b, count(*)::int AS support
+      FROM spawn_tools
+      CROSS JOIN LATERAL unnest(tools) AS a
+      CROSS JOIN LATERAL unnest(tools) AS b
+      WHERE a < b
+      GROUP BY LEAST(a, b), GREATEST(a, b)
+      HAVING count(*) >= ${minSupport}
+    )
+    SELECT
+      p.tool_a,
+      p.tool_b,
+      p.support,
+      ma.spawns AS spawns_a,
+      mb.spawns AS spawns_b,
+      ROUND((p.support::numeric / NULLIF(LEAST(ma.spawns, mb.spawns), 0)), 3)::float8 AS confidence,
+      ROUND((p.support::numeric * tot.n) / NULLIF((ma.spawns::numeric * mb.spawns), 0), 3)::float8 AS lift
+    FROM pairs p
+    JOIN marg ma ON ma.tname = p.tool_a
+    JOIN marg mb ON mb.tname = p.tool_b
+    CROSS JOIN tot
+    ${orderFrag}
+    LIMIT ${limit}
+  `) as Row[];
+
+  return { totalSpawns, entries: rows };
+}
+
 // ── Activity feed: most-recent tool invocations across workspaces ──
 
 export interface ActivityEntry {

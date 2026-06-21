@@ -266,3 +266,31 @@ describe('dev:telemetry', () => {
     expect(parsePayload((await tool.handler({ hours: 24 }, MAKE_CTX())) as never)).toEqual({ count: 1, entries });
   });
 });
+
+// ── dev:tool_cooccurrence ───────────────────────────────────────────
+
+describe('dev:tool_cooccurrence', () => {
+  it('returns count + total_spawns + entries', async () => {
+    const entries = [
+      { tool_a: 'locks:acquire', tool_b: 'locks:release', support: 9, spawns_a: 10, spawns_b: 10, confidence: 0.9, lift: 9 },
+    ];
+    vi.doMock('../../../dev-data', () => ({ toolCooccurrence: vi.fn(async () => ({ totalSpawns: 100, entries })) }));
+    const { default: tool } = await import('../tool_cooccurrence');
+    const result = await tool.handler({ hours: 24 }, MAKE_CTX());
+    expect(parsePayload(result as never)).toEqual({ count: 1, total_spawns: 100, entries });
+  });
+
+  it('forwards args with workspaceIds defaulted to null', async () => {
+    const mock = vi.fn(async () => ({ totalSpawns: 0, entries: [] }));
+    vi.doMock('../../../dev-data', () => ({ toolCooccurrence: mock }));
+    const { default: tool } = await import('../tool_cooccurrence');
+    await tool.handler({ minSupport: 5, orderBy: 'lift' }, MAKE_CTX());
+    expect(mock).toHaveBeenCalledWith({
+      workspaceIds: null,
+      hours: undefined,
+      minSupport: 5,
+      limit: undefined,
+      orderBy: 'lift',
+    });
+  });
+});

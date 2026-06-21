@@ -164,11 +164,16 @@ describe('integration — read real insights dir', () => {
     }
     const entries = await readInsightsDir(real);
     expect(entries.length).toBeGreaterThan(0);
-    // Sanity: every entry has the expected shape
+    // Sanity: every entry has the expected shape + a recognised VISIBLE status.
+    // readInsightsDir drops retired/superseded (isVisible), so what's left must be
+    // one of the live-vocabulary values — 'current' is a valid live synonym of
+    // 'active' (some insights use it), so it belongs in the allowed set. Keeping an
+    // explicit allowlist (vs `isVisible(e.status)`) still catches a typo'd status.
+    const LIVE_STATUSES = ['active', 'current', 'draft', 'review', 'wip'];
     for (const e of entries) {
       expect(typeof e.slug).toBe('string');
       expect(typeof e.title).toBe('string');
-      expect(['active'].includes(e.status) || ['draft', 'review', 'wip'].includes(e.status)).toBe(true);
+      expect(LIVE_STATUSES.includes(e.status)).toBe(true);
     }
 
     const prelude = renderInsightsPrelude(entries);

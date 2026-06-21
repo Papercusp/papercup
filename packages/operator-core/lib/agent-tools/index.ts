@@ -269,6 +269,9 @@ import './dev/state_counter';
 import './dev/event_emitter';
 import './dev/processes';
 import './dev/session_detail';
+// tool-call-batching-wrappers-2026-06-21 P-001 — tool co-occurrence miner
+// (the deterministic wrapper-candidate / code-recipes-promotion signal).
+import './dev/tool_cooccurrence';
 import './processes/kill';
 import './turn/interrupt';
 import './dev/omp_session';
