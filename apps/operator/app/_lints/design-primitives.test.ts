@@ -49,6 +49,22 @@ const LEGACY_BUTTON_TITLE_FILES = new Set<string>();
 const LEGACY_LINK_TITLE_FILES = new Set<string>();
 const LEGACY_TAB_TITLE_FILES = new Set<string>();
 
+const AUDITED_DIRECT_CYAN_FILES = [
+  'operator-vite/src/components/left-sidebar/left-sidebar.styles.ts',
+  'operator-vite/src/components/admin/AdminShell.tsx',
+  'operator-vite/src/components/admin/RecipesClient.tsx',
+  'operator-vite/src/components/adv/DemandPanel.tsx',
+  'operator-vite/src/components/adv/ExperimentsPanel.tsx',
+  'operator-vite/src/components/adv/LearningTab.tsx',
+  'operator-vite/src/components/adv/AdvOverviewTab.tsx',
+  'operator-vite/src/components/adv/AdvShell.tsx',
+  'operator/app/adv/harnesses/AdvDocsTab.tsx',
+  'operator/app/adv/harnesses/AdvGitGraphPanel.tsx',
+  'operator/app/harness/TrustBadge.tsx',
+  'operator/app/harness/theme.ts',
+  'operator/app/operator-mock/page.tsx',
+];
+
 function walk(dir: string, out: string[]): void {
   let entries: string[];
   try {
@@ -218,6 +234,32 @@ function unexpectedSkyPrimitiveReferences(): string[] {
   return offenders;
 }
 
+function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
+  const offenders: string[] = [];
+  const cyanLiteralRe =
+    /#(?:22d3ee|38bdf8|7dd3fc)|rgba\(\s*(?:34\s*,\s*211\s*,\s*238|56\s*,\s*189\s*,\s*248|125\s*,\s*211\s*,\s*252)\s*,\s*[^)]+\)/g;
+  for (const path of AUDITED_DIRECT_CYAN_FILES) {
+    const file = join(APPS_ROOT, path);
+    let content: string;
+    try {
+      content = readFileSync(file, 'utf-8');
+    } catch {
+      offenders.push(`${path}: missing audited file`);
+      continue;
+    }
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.includes('var(')) continue;
+      const matches = [...line.matchAll(cyanLiteralRe)];
+      for (const match of matches) {
+        offenders.push(`${path}:${i + 1}: ${match[0]}`);
+      }
+    }
+  }
+  return offenders;
+}
+
 function expectNoUnexpected(label: string, offenders: string[]): void {
   if (offenders.length > 0) {
     throw new Error(
@@ -297,5 +339,9 @@ describe('design primitive lint', () => {
 
   it('blocks direct sky brand primitives outside generated token stylesheets', () => {
     expectNoUnexpected('Sky brand primitive references', unexpectedSkyPrimitiveReferences());
+  });
+
+  it('keeps audited active surfaces free of direct cyan literals', () => {
+    expectNoUnexpected('Direct cyan literals', unexpectedDirectCyanLiteralsInAuditedFiles());
   });
 });
