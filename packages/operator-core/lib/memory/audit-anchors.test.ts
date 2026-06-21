@@ -8,6 +8,8 @@ import {
   planCheckerPg,
   migrationChecker,
   featureChecker,
+  isExternalFileAnchor,
+  classifyFileAnchor,
   type AuditCheckers,
   type MemoryWithAnchors,
 } from './audit-anchors';
@@ -149,6 +151,78 @@ describe('fileChecker', () => {
     const c = fileChecker(tmpRoot);
     const r = await c({ kind: 'file', value: 'missing/file.ts' });
     expect(r).toEqual({ ok: false, reason: 'file_not_found' });
+  });
+});
+
+describe('isExternalFileAnchor — paths the repo-root check can never resolve (skip, not broken)', () => {
+  it.each([
+    '/usr/lib/Papercusp/sidecar/serve.mjs',
+    '~/.papercusp/operator.json',
+    '../sibling/thing.ts',
+    'claude/.credentials.json',
+    'papercusp/endpoint-ipc.json',
+    'papercusp/embedded-pg.json',
+    'usr/lib/x.mjs',
+    'root/fedproto-wg-down.sh',
+    'tmp/mcp_call.sh',
+    'cargo/config.toml',
+    'omp/agent/auth.json',
+    'papercup-rust-mobile/crates/papercup-core/lib.rs',
+    'Restart/libs/storage.ts',
+  ])('treats %s as external', (v) => {
+    expect(isExternalFileAnchor(v)).toBe(true);
+  });
+
+  it.each([
+    'packages/operator-core/lib/foo.ts', // normal repo-relative
+    'locks/acquire.ts', // package-relative (resolved by basename, not external)
+    'libs/papercusp/libs/db/sql/107-x.sql',
+  ])('does NOT treat repo-shaped %s as external', (v) => {
+    expect(isExternalFileAnchor(v)).toBe(false);
+  });
+});
+
+describe('classifyFileAnchor — exact / external / basename-resolve / broken', () => {
+  const index = new Map<string, string[]>([
+    ['acquire.ts', ['packages/operator-core/lib/agent-tools/locks/acquire.ts']],
+    ['index.ts', ['a/index.ts', 'b/index.ts']], // ambiguous basename
+    ['survey.ts', ['packages/operator-core/lib/hive/survey.ts', 'packages/operator-core/lib/agent-tools/scout/survey.ts']],
+  ]);
+  const deps = {
+    exists: (rel: string) => rel === 'packages/operator-core/lib/real.ts',
+    basenameMatches: (b: string) => index.get(b) ?? [],
+  };
+
+  it('exact existing path → ok with no reason', () => {
+    expect(classifyFileAnchor('packages/operator-core/lib/real.ts', deps)).toEqual({ ok: true });
+  });
+
+  it('external path → ok (skipped)', () => {
+    expect(classifyFileAnchor('claude/.credentials.json', deps)).toEqual({ ok: true, reason: 'external' });
+  });
+
+  it('package-relative with a UNIQUE basename → resolved', () => {
+    expect(classifyFileAnchor('locks/acquire.ts', deps)).toEqual({
+      ok: true,
+      reason: 'resolved_by_basename',
+      resolved: 'packages/operator-core/lib/agent-tools/locks/acquire.ts',
+    });
+  });
+
+  it('ambiguous basename (>1, no unique suffix) → broken (real signal preserved)', () => {
+    expect(classifyFileAnchor('index.ts', deps)).toEqual({ ok: false, reason: 'file_not_found' });
+  });
+
+  it('ambiguous basename BUT a unique 2-segment suffix → resolved', () => {
+    expect(classifyFileAnchor('hive/survey.ts', deps)).toEqual({
+      ok: true,
+      reason: 'resolved_by_basename',
+      resolved: 'packages/operator-core/lib/hive/survey.ts',
+    });
+  });
+
+  it('genuinely missing (no match, not external) → broken', () => {
+    expect(classifyFileAnchor('deleted/gone.ts', deps)).toEqual({ ok: false, reason: 'file_not_found' });
   });
 });
 

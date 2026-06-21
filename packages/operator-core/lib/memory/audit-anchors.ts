@@ -168,16 +168,107 @@ function pickChecker(
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
+
+/**
+ * A 'file' anchor that points OUTSIDE the repo BY NATURE — so the repo-root
+ * `fs.stat` can never resolve it and flagging it `broken_anchor` is a FALSE
+ * positive (the file is real, just not a tracked repo source). Skipped (ok).
+ *
+ * Covers: absolute / home / parent-escape paths, secrets
+ * (`~/.claude/.credentials.json`), `~/.papercusp` runtime state
+ * (`endpoint-ipc.json` / `embedded-pg.json`), OS/scratch roots
+ * (`usr/` `root/` `tmp/` `proc/` `home/` `cargo/` `omp/`), and the SIBLING
+ * repos that git-sync does not own (`papercup-rust-mobile/`, `Restart/`).
+ * PURE — unit-testable without fs.
+ */
+export function isExternalFileAnchor(value: string): boolean {
+  return (
+    value.startsWith('/') ||
+    value.startsWith('~') ||
+    value.startsWith('../') ||
+    value.includes('.credentials') ||
+    /(^|\/)(endpoint-ipc|embedded-pg)\.json$/.test(value) ||
+    /^(usr|root|tmp|proc|home|cargo|omp)\//.test(value) ||
+    /^(papercup-rust-mobile|Restart)\//.test(value)
+  );
+}
+
+export type FileAnchorVerdict =
+  | { ok: true; reason?: 'external' | 'resolved_by_basename'; resolved?: string }
+  | { ok: false; reason: 'file_not_found' };
+
+/**
+ * Resolve a 'file' anchor against the repo. Pure — `exists` + `basenameMatches`
+ * are injected (so this tests without fs/git):
+ *   1. exact repo-relative path resolves → ok.
+ *   2. an external-by-nature path (see {@link isExternalFileAnchor}) → ok (skipped).
+ *   3. a package-relative path (the write-path historically stored anchors
+ *      package-relative, e.g. `locks/acquire.ts`) whose basename has a UNIQUE
+ *      repo file → ok (resolved). >1 match: accept only if a 2-segment suffix
+ *      is unique; otherwise leave it broken (ambiguous — needs human context).
+ *   4. else → file_not_found (a genuinely stale/deleted anchor — the real signal).
+ */
+export function classifyFileAnchor(
+  value: string,
+  deps: { exists: (rel: string) => boolean; basenameMatches: (base: string) => string[] },
+): FileAnchorVerdict {
+  if (deps.exists(value)) return { ok: true };
+  if (isExternalFileAnchor(value)) return { ok: true, reason: 'external' };
+  const segs = value.split('/');
+  const base = segs[segs.length - 1];
+  const matches = deps.basenameMatches(base);
+  if (matches.length === 1) return { ok: true, reason: 'resolved_by_basename', resolved: matches[0] };
+  if (matches.length > 1) {
+    const tail = segs.slice(-2).join('/');
+    const suffix = matches.filter((m) => m.endsWith('/' + value) || m.endsWith('/' + tail));
+    if (suffix.length === 1) return { ok: true, reason: 'resolved_by_basename', resolved: suffix[0] };
+  }
+  return { ok: false, reason: 'file_not_found' };
+}
+
+/** Memoized basename → repo-relative-paths index (submodule-aware), keyed by
+ *  repoRoot. Built from `git ls-files`; if git is unavailable the index is
+ *  empty and the checker degrades to literal-path + external-skip only. */
+let _repoFileIndex: { root: string; byBase: Map<string, string[]> } | null = null;
+function repoBasenameIndex(repoRoot: string): Map<string, string[]> {
+  if (_repoFileIndex && _repoFileIndex.root === repoRoot) return _repoFileIndex.byBase;
+  const byBase = new Map<string, string[]>();
+  try {
+    const out = execFileSync('git', ['ls-files', '--recurse-submodules'], {
+      cwd: repoRoot,
+      maxBuffer: 1 << 28,
+      stdio: ['ignore', 'pipe', 'ignore'], // discard git's stderr (e.g. "not a git repository" in a tmp root)
+    }).toString();
+    for (const f of out.split('\n')) {
+      if (!f) continue;
+      const b = f.slice(f.lastIndexOf('/') + 1);
+      const arr = byBase.get(b);
+      if (arr) arr.push(f);
+      else byBase.set(b, [f]);
+    }
+  } catch {
+    /* git unavailable (e.g. a tmp test root) → empty index; literal + external only */
+  }
+  _repoFileIndex = { root: repoRoot, byBase };
+  return byBase;
+}
 
 export function fileChecker(repoRoot: string): AnchorChecker {
+  const byBase = repoBasenameIndex(repoRoot);
   return async (anchor) => {
-    const p = path.join(repoRoot, anchor.value);
-    try {
-      await fs.promises.stat(p);
-      return { ok: true };
-    } catch {
-      return { ok: false, reason: 'file_not_found' };
-    }
+    const verdict = classifyFileAnchor(anchor.value, {
+      exists: (rel) => {
+        try {
+          fs.statSync(path.join(repoRoot, rel));
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      basenameMatches: (b) => byBase.get(b) ?? [],
+    });
+    return verdict.ok ? { ok: true } : { ok: false, reason: verdict.reason };
   };
 }
 

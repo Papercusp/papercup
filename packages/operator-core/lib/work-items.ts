@@ -40,6 +40,7 @@ import {
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { activeWorkspaceId } from './workspace-registry';
+import { fill_workspace_id_from_projects } from './agent-tools/plans/source';
 import { checkAndEscalateSteeringChurn } from './steering-churn';
 import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
@@ -596,21 +597,39 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   }
   const { sql } = getOrgPg();
   const now = Date.now();
-  // workspace_id: when the request carries an explicit workspace (EI-728), set it
-  // here so the write lands there; the fill_workspace_id_from_projects BEFORE-INSERT
-  // trigger fills ONLY when workspace_id is NULL/'', so a provided value wins. When
-  // omitted, the trigger derives from the harness's project row (fallback 'default').
+  // workspace_id (workspace-data-isolation P-002 / dogfood fix): RESOLVE it here and
+  // ALWAYS write it explicitly — do NOT leave it NULL for the fill_ws_features_trg
+  // BEFORE-INSERT trigger, whose lookup hits only the sparse `projects` table and then
+  // falls back to 'default', LEAKING fleet work-items out of their real workspace (the
+  // unified-ledger queue then can't see them — confirmed dogfood: 168/661 rows in
+  // 'default', incl. 39 operator-home). Precedence mirrors the WI-148 TS resolver:
+  //   1. explicit workspace (EI-728 — the '*' SU-wildcard is treated as "none")
+  //   2. derive from the harness via fill_workspace_id_from_projects (operator-home →
+  //      PAPERCUSP_WORKSPACE_ID, else the projects projection, else the AUTHORITATIVE
+  //      harness_registry); null when the harness resolves nowhere, throws on a same-name
+  //      cross-workspace collision
+  //   3. the operator's OWN active workspace — never the trigger's stale 'default'.
   // Positional $N::jsonb is the operator's proven jsonb write on the org pool
   // (prepare:false mis-binds sql.json()).
   const explicitWs =
     typeof input.workspaceId === 'string' && input.workspaceId.trim() && input.workspaceId !== '*'
       ? input.workspaceId.trim()
       : null;
+  let resolvedWs = explicitWs;
+  if (!resolvedWs && input.harness && input.harness.trim()) {
+    try {
+      resolvedWs = await fill_workspace_id_from_projects(input.harness.trim());
+    } catch {
+      // ambiguous same-name collision across workspaces (the resolver throws) → fall
+      // through to the operator's active workspace rather than guess or leak to 'default'.
+      resolvedWs = null;
+    }
+  }
+  if (!resolvedWs) resolvedWs = activeWorkspaceId();
   // queen-steering-panel P-008: stamp the source plan slug so the Queen's survey can
   // HARD-filter the frontier by owner eligible-plans. source_plan_slug is ALWAYS written
-  // (NULL when unplanned — the column is nullable). workspace_id stays CONDITIONAL
-  // (omitted when not explicit) so the fill_workspace_id_from_projects trigger / the
-  // column default still derives it (EI-728). The text params cast ::text — the org pool
+  // (NULL when unplanned — the column is nullable). workspace_id is now ALSO always
+  // written (the resolvedWs above) so the leaky trigger never decides it. The text params cast ::text — the org pool
   // runs prepare:false, so a bare trailing param leaves the server unable to infer its
   // type ("could not determine data type of parameter $N"), same as the $6::jsonb cast.
   const sourcePlanSlug =
@@ -652,11 +671,11 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     cols.push('taken_by', 'taken_at');
     vals.push(`$${params.length}::text`, 'now()');
   }
-  if (explicitWs) {
-    params.push(explicitWs);
-    cols.push('workspace_id');
-    vals.push(`$${params.length}::text`);
-  }
+  // Always write the resolved workspace explicitly (never rely on the trigger's stale
+  // 'default' fallback — see the resolution comment above).
+  params.push(resolvedWs);
+  cols.push('workspace_id');
+  vals.push(`$${params.length}::text`);
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_features_consolidated (${cols.join(', ')})
      VALUES (${vals.join(', ')})

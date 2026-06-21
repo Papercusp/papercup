@@ -50,13 +50,13 @@ async function insertOpen(msgId: string, ws = 'default'): Promise<void> {
   const body = { msg_id: msgId, kind: 'escalation', summary: msgId, resolved: null };
   await db.sql`
     INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, workspace_id)
-    VALUES ('escalations', ${msgId}, ${JSON.stringify(body)}::jsonb, ${ws})`;
+    VALUES ('escalations', ${msgId}, ${db.sql.json(body)}, ${ws})`;
 }
 async function insertResolve(msgId: string, relatedTo: string, ws = 'default'): Promise<void> {
   const body = { msg_id: msgId, kind: 'escalation_resolved', related_msg_id: relatedTo };
   await db.sql`
     INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, workspace_id)
-    VALUES ('escalations', ${msgId}, ${JSON.stringify(body)}::jsonb, ${ws})`;
+    VALUES ('escalations', ${msgId}, ${db.sql.json(body)}, ${ws})`;
 }
 async function openMsgIds(ws = 'default'): Promise<string[]> {
   const rows = await db.sql<{ msg_id: string }[]>`

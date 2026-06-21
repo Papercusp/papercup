@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { sendMessage } from '../messages';
-import { wakeRecipients } from '../inbox-wake';
+import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
 import { COORD_ROLES } from '../roles';
 
@@ -157,11 +157,44 @@ export default defineTool({
       }
     }
 
+    // Default (no-wake / inject-only) path — REPORT idle recipients
+    // (coord-dispatch-reliability-2026-06-21 P-001). A plain send lands in the
+    // inbox but does NOT re-invoke a sleeping agent, so a hand-off injected to an
+    // idle agent silently stalls. We NON-FIRINGLY probe each concrete addressee's
+    // inbox-wake key (report-only — NEVER a wake on this path, invariant a) and
+    // surface the ones no live session is watching, so the sender can re-send with
+    // wake:'required' instead of assuming pickup. Fully fail-soft: a roster /
+    // await-store hiccup degrades to no report — the send already succeeded
+    // (invariant c), so this never blocks or fails it. We probe the SAME
+    // post-expansion set the wake fan would (`env.to`), so a `@plan:`/`@topic:`
+    // send reports exactly the resolved recipients, never '*'.
+    let notWoken:
+      | { idleRecipients: string[]; note: string }
+      | undefined;
+    if (!wakeMode) {
+      const report = await reportIdleRecipients(env.to, { workspaceId: identity.workspaceId });
+      if (report.idle.length > 0) {
+        notWoken = {
+          idleRecipients: report.idle,
+          note:
+            `injected to ${report.idle.join(', ')} — no live session is watching their inbox, so this send does NOT ` +
+            'wake them (seen on their next natural turn, if any). To hand off live work that must be picked up now, ' +
+            "re-send with wake:'required' and verify pickup (woken / recipient_absent).",
+        };
+      }
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, msg_id: env.msg_id, ts: env.ts, ...(wake ? { wake } : {}) }),
+          text: JSON.stringify({
+            ok: true,
+            msg_id: env.msg_id,
+            ts: env.ts,
+            ...(wake ? { wake } : {}),
+            ...(notWoken ? { notWoken } : {}),
+          }),
         },
       ],
     };

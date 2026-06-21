@@ -24,10 +24,12 @@
  */
 
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { listActiveAwaitsForKey } from '../../events/await/store';
 // hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
-import { resolveBestEffortAgainstRoster } from './recipient-resolve';
+import { listPresence } from './presence';
+import { resolveBestEffortAgainstRoster, isSelectorOrWildcard } from './recipient-resolve';
 
 /** Prefix for the per-agent inbox-wake key. A bee watches `inboxWakeKey(self)`;
  *  a `{wake:true}` send to that bee fires exactly this key. */
@@ -46,8 +48,10 @@ export function ownerFromInboxWakeKey(key: string): string | null {
 
 /** Addressees we never wake even when `wake:true`: the broadcast wildcard and
  *  the human inbox (the human is not a wake-resumable agent; '*' would be the
- *  exact thunder-herd P-042 forbids). Plain ownerIds pass through. */
-const NON_WAKEABLE = new Set(['*', 'human', '']);
+ *  exact thunder-herd P-042 forbids). Plain ownerIds pass through. The
+ *  idle-recipient probe (coord-dispatch-reliability P-001) reuses this same set
+ *  so the no-wake report and the wake fan skip exactly the same addressees. */
+export const NON_WAKEABLE = new Set(['*', 'human', '']);
 
 export interface WakeRecipientsResult {
   /** Concrete recipient ownerIds we fired a wake key for (post-filter). */
@@ -137,4 +141,153 @@ export async function wakeRecipients(
     }
   }
   return { targets, keys, woken, staged };
+}
+
+// ── Idle-recipient REPORTING on the no-wake (default inject-only) path ──────────
+// coord-dispatch-reliability-2026-06-21 P-001. A plain `coord:send` (no wake)
+// lands in the recipient's inbox and is seen on their NEXT natural turn — it does
+// NOT re-invoke a sleeping agent. So a hand-off injected to an idle agent silently
+// stalls: the message is durable, but nobody picks it up until something else
+// wakes them. This path REPORTS (never acts on) that risk: for each concrete
+// addressee we NON-FIRINGLY probe whether anyone is watching its inbox-wake key,
+// so the sender learns "this landed in an inbox no live session is watching".
+//
+// INVARIANTS (the load-bearing ones):
+//  (a) REPORT-ONLY — we NEVER call emitAwaitedEvent / wake on this path. Auto-waking
+//      would violate the wake=billable cost model (unify-watch D-002: inject is the
+//      default, wake is the deliberate opt-in) and thunder-herd idle agents.
+//  (b) We skip the SAME non-wakeable targets the wake fan skips ('*' / 'human' /
+//      empty + audience selectors) — they are not single, wake-resumable agents.
+//  (c) FEDERATION FAIL-SOFT — a recipient NOT in the local roster is federated /
+//      remote, and its watchers live on its home instance, not in OUR await store.
+//      We must NEVER falsely flag it idle: it is classified `unknown` (advisory).
+//      And ANY roster / await-store read hiccup DEGRADES to "report nothing"
+//      (the send already succeeded) — it must never throw or block. The send
+//      succeeding is sacred.
+
+/** Per-recipient liveness disposition on the no-wake path. */
+export type RecipientLiveness =
+  /** Concrete local recipient with ≥1 active watcher on its inbox-wake key — a
+   *  live session will see the inject; NOT idle. */
+  | 'live'
+  /** Concrete local recipient with ZERO active watchers — the inject lands in an
+   *  inbox no session is watching; the work silently stalls until something else
+   *  wakes them. Flagged in `idleRecipients` / `notWoken`. */
+  | 'idle'
+  /** Not in the local roster (federated / remote, or a just-swept id): its
+   *  watchers aren't in OUR await store, so we CANNOT know — advisory only,
+   *  NEVER flagged idle (invariant c). */
+  | 'unknown';
+
+export interface IdleClassificationInput {
+  /** A concrete, wakeable recipient ownerId (caller pre-filters selectors). */
+  ownerId: string;
+  /** Is this ownerId in the local presence roster? (false ⇒ federated/unknown) */
+  inRoster: boolean;
+  /** How many active (unfired, uncancelled) watchers are on its inbox-wake key.
+   *  Only meaningful when inRoster — a federated recipient's watchers live
+   *  elsewhere. */
+  activeWatchers: number;
+}
+
+/**
+ * PURE core (unit-tested): classify ONE concrete recipient's no-wake liveness.
+ *  - not in the local roster → `unknown` (federated/remote — never falsely idle)
+ *  - in roster, ≥1 active watcher → `live`
+ *  - in roster, zero active watchers → `idle` (the report-worthy case)
+ */
+export function classifyRecipientLiveness(input: IdleClassificationInput): RecipientLiveness {
+  if (!input.inRoster) return 'unknown';
+  return input.activeWatchers > 0 ? 'live' : 'idle';
+}
+
+export interface IdleRecipientReport {
+  /** Concrete local recipients whose inject lands in an inbox NO live session is
+   *  watching — the work silently stalls. The reportable set (P-001). */
+  idle: string[];
+  /** Concrete local recipients with a live watcher — the inject will be seen. */
+  live: string[];
+  /** Recipients not in the local roster (federated/remote) — advisory, NEVER
+   *  reported as idle (invariant c). */
+  unknown: string[];
+  /** True when a roster / await-store read failed and we degraded to report
+   *  NOTHING (the send still succeeded — invariant c). `idle` is empty here. */
+  degraded: boolean;
+}
+
+const EMPTY_IDLE_REPORT: IdleRecipientReport = { idle: [], live: [], unknown: [], degraded: true };
+
+/**
+ * Probe the no-wake liveness of `recipients` (the POST-expansion `to[]` — audience
+ * selectors already resolved to concrete ownerIds). REPORT-ONLY: this NEVER fires
+ * a wake (invariant a) — it reads the await store with the NON-FIRING
+ * `listActiveAwaitsForKey` probe + the local presence roster, classifies each
+ * concrete recipient, and returns who would silently stall.
+ *
+ * Fully fail-soft (invariant c): a roster or await-store read error degrades to
+ * `EMPTY_IDLE_REPORT` (degraded:true, empty `idle`) — it can NEVER throw, so the
+ * send always succeeds regardless. Federated recipients (not in our roster) are
+ * `unknown`, never falsely idle.
+ */
+export async function reportIdleRecipients(
+  recipients: readonly string[],
+  opts: { workspaceId?: string } = {},
+): Promise<IdleRecipientReport> {
+  // (b) Skip the same non-wakeable targets the wake fan skips: '*'/'human'/empty
+  // and audience selectors ('@…') are not single wake-resumable agents.
+  const concrete = [...new Set(recipients)].filter(
+    (r) => !isSelectorOrWildcard(r) && !NON_WAKEABLE.has(r),
+  );
+  if (concrete.length === 0) return { idle: [], live: [], unknown: [], degraded: false };
+
+  // The local roster — the membership truth for "is this recipient federated?".
+  // A read hiccup DEGRADES the whole probe (invariant c): we cannot tell idle
+  // from federated without it, and a false idle flag is worse than no flag.
+  let rosterIds: Set<string>;
+  try {
+    const presence = await listPresence({ workspaceId: opts.workspaceId });
+    rosterIds = new Set(presence.map((p) => p.ownerId));
+  } catch (e) {
+    console.warn(
+      `[inbox-wake] idle-probe roster read failed, reporting no idle recipients: ${e instanceof Error ? e.message : e}`,
+    );
+    return EMPTY_IDLE_REPORT;
+  }
+
+  const idle: string[] = [];
+  const live: string[] = [];
+  const unknown: string[] = [];
+  for (const ownerId of concrete) {
+    const inRoster = rosterIds.has(ownerId);
+    let activeWatchers = 0;
+    if (inRoster) {
+      // NON-FIRING probe (invariant a): listActiveAwaitsForKey READS the active
+      // watchers without firing/waking any of them — the deliberate report-only
+      // peek the store documents for "is anyone waiting at all?".
+      try {
+        const watchers = await listActiveAwaitsForKey(inboxWakeKey(ownerId), opts.workspaceId);
+        activeWatchers = watchers.length;
+      } catch (e) {
+        // A per-recipient await-store hiccup degrades the WHOLE report (invariant
+        // c): a missing watcher count would otherwise mis-classify this concrete
+        // local recipient as idle. Report nothing rather than a false idle.
+        console.warn(
+          `[inbox-wake] idle-probe await read for ${ownerId} failed, reporting no idle recipients: ${e instanceof Error ? e.message : e}`,
+        );
+        return EMPTY_IDLE_REPORT;
+      }
+    }
+    switch (classifyRecipientLiveness({ ownerId, inRoster, activeWatchers })) {
+      case 'idle':
+        idle.push(ownerId);
+        break;
+      case 'live':
+        live.push(ownerId);
+        break;
+      case 'unknown':
+        unknown.push(ownerId);
+        break;
+    }
+  }
+  return { idle, live, unknown, degraded: false };
 }
