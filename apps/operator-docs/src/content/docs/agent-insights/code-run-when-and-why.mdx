@@ -4,6 +4,21 @@ description: The code-mode rollout (B-CX-3) — collapse a multi-step tool flow 
 discovered: 2026-06-20
 tags: [code-run, tool-orchestration, tokens, prompts, performance, agent-efficiency]
 status: active
+documents:
+  - libs/papercusp/packages/orchestrator/src/prompt-build.ts
+  - packages/operator-core/lib/code-run-policy.ts
+  - packages/operator-core/lib/agent-tools/code/run.ts
+  - packages/operator-core/lib/agent-tools/code/tools.ts
+  - libs/generic/tooldef/src/code-orchestration/orchestrate.ts
+  - libs/papercusp/libs/db/sql/161-operator-rate-limit-config-and-usage-samples.sql
+  - libs/papercusp/packages/orchestrator/src/usage-sample-pg.ts
+  - apps/operator/prompts/papercusp-su-power.tools.md
+  - apps/operator/prompts/papercusp-su-engineer.tools.md
+  - apps/operator/prompts/hive-instances/papercup-hive.su.md
+plans:
+  - queen-brief-cache-assembly-2026-06-13
+  - bee-context-efficiency-2026-06-14
+  - rate-limit-layer-v2-2026-06-05
 ---
 
 `code:run` executes a JS/TS script that calls your allowed tools (`tools.ns.verb(args)` + real

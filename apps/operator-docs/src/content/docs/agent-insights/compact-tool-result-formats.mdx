@@ -3,8 +3,50 @@ title: "Parsing tagged compact tool results (TOON / CSV)"
 description: "Tool results are no longer always JSON — the MCP transport delivers compact TOON by default, prefixed with a `format: <fmt>` marker. How to read each format, where the pagination cursor + row count went, and how to force JSON when you need it."
 discovered: 2026-06-06
 tags: [tool-results, toon, csv, serialization, tokens, mcp, negotiation]
-status: active
+status: superseded
+documents:
+  - libs/generic/tooldef/src/serialize-result.ts
+  - libs/generic/result-encoding/src/encode.ts
+  - libs/generic/result-encoding/src/formats.ts
+  - libs/generic/result-encoding/src/eligibility.ts
+  - libs/generic/tooldef/src/define-tool.ts
+  - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
+  - packages/agent-mcp/src/server.ts
+  - libs/generic/tooldef-http/src/http-projection.ts
+  - packages/operator-core/lib/agent-tools/pre-prompt-registry-config.ts
+plans:
+  - token-efficient-tool-result-formats-2026-06-06
+  - token-efficient-agent-io-2026-06-06
+  - operator-scalability-event-loop-2026-06-16
+  - app-wide-load-traps-2026-06-16
 ---
+
+:::caution[Superseded — one named example is now wrong]
+The runbook below is overwhelmingly still correct (the `format:` marker, the
+`_meta` envelope, the negotiation knobs, and the lossless round-trip fallback all
+still hold). But the specific claim that **`audit:list` reliably arrives as
+TOON** (in "The lossless guarantee", below) is now **false**:
+
+- `audit:list` is registered as a **Tier-3 headerless-CSV** tool
+  (`read: 'csv'`) in `packages/operator-core/lib/agent-tools/pre-prompt-registry-config.ts:52`.
+  Its summary mode returns exactly `{id,ts,actor,action,subject}` (flat), so in
+  compact mode it self-presents as **headerless CSV** — `format: csv\n[N]\n…rows`
+  — not TOON.
+- The Tier-3 read path **takes precedence** over the generic TOON-auto path:
+  `libs/generic/tooldef/src/serialize-result.ts:191`
+  (`const chosen = tier3 ? { ...tier3, fallback: false } : chooseFormat(data, opts);`),
+  where `tryTier3Read` (lines 151–168) returns `format: 'csv'` for a registry
+  tool whose `readPrePromptFormat` is `'csv'` once the request resolves to
+  compact.
+
+The **general principle** still holds (flat/uniform list tools get a compact
+format); only the named tool and its claimed format (TOON) are wrong. Treat
+`audit:list` as headerless CSV.
+
+Also new since this was written and **not** covered below: a 16 KiB size gate
+(`TOON_VERIFY_MAX_BYTES`, `libs/generic/result-encoding/src/encode.ts:74`) skips
+round-trip verification and forces JSON for lists above that size.
+:::
 
 ## What changed
 
@@ -74,8 +116,9 @@ doesn't hold — so you are **never handed a compact payload that doesn't decode
 back to the original**. Practical consequence: a list whose rows carry rich
 markdown text or nested blobs (e.g. `work_items:list` with non-null `payload`)
 may arrive as JSON with `_meta.formatFallback: true`. That's the safety net
-working, not a bug. Flat/uniform list tools (e.g. `audit:list`) reliably arrive
-as TOON.
+working, not a bug. Flat/uniform list tools reliably arrive in a compact format.
+(See the Superseded note at the top: `audit:list` specifically is now a Tier-3
+**headerless-CSV** tool, not TOON.)
 
 Implementation: `libs/generic/result-encoding` (encoder + eligibility) and
 `libs/generic/tooldef/src/serialize-result.ts` (the single serializer every

@@ -4,6 +4,20 @@ description: "When the coord-probe-canary breaches its cycle SLO, read each step
 discovered: 2026-06-13
 tags: [coordination, canary, performance, postgres, notify, pg-notify, substrate-outbox, contention, debugging, root-cause, EI-401]
 status: active
+documents:
+  - packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:breachDisposition
+  - packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:classifyBreach
+  - packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:attributeBreach
+  - packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:evaluateProbe
+  - "packages/operator-core/lib/harness/routines/coord-invariant-actions.ts:registerSystemAction('coord-probe-canary')"
+  - "packages/operator-core/lib/harness/routines/seed-coord-invariant-routines.ts (totalSloMs: 30_000, ON CONFLICT does not update payload_template)"
+  - "packages/operator-core/lib/agent-tools/coordination/messages.ts:readAckedMsgIds (EI-401 DB-direct read optimization)"
+  - "libs/papercusp/libs/db/sql/150-coord-event-log-federation.sql (capture_substrate_outbox triggers, WHEN harness_slug IS NOT NULL)"
+  - "libs/papercusp/libs/db/sql/126-coordination-fanout.sql:notify_coord_event_log (unconditional pg_notify('coord_inbox'))"
+plans:
+  - coord-system-e2e-testing-2026-06-10
+  - distributed-coordination-shared-harness-2026-06-04
+  - coordination-substrate-2026-06-03
 ---
 
 ## The mistake this prevents

@@ -1,14 +1,61 @@
 ---
 title: "claude-file memory: MEMORY.md is a capped projection — and over-cap it goes silently STALE"
-description: The session-start index has a ~24.4KB hard cap. The projector evicts oldest project entries to fit a 20KB soft cap, PHYSICALLY ARCHIVING them (they leave the searchable store) — and when durables alone exceed the hard cap it ABORTS, leaving MEMORY.md stale. Measured at 111/1k/10k by the memory bench's index-cap probe.
+description: The session-start index has a ~24.4KB hard cap. The projector evicts oldest project entries to fit a 20KB soft cap, PHYSICALLY ARCHIVING them (they leave the searchable store). SUPERSEDED — the over-cap-abort behavior this runbook documents was replaced by tiering (MEMORY-overflow.md); see the caution at the top. Measured at 111/1k/10k by the memory bench's index-cap probe.
 discovered: 2026-06-05
 tags: [memory, claude-file, scale, benchmarking]
-status: active
+status: superseded
+documents:
+  - ~/.claude/scripts/memory-compact.mjs
+  - packages/operator-core/lib/memory/bench/index-cap.ts
+  - packages/operator-core/lib/memory/bench/index-cap-cli.ts
+  - packages/operator-core/lib/memory/bench/index-cap.test.ts
+  - libs/generic/memory/src/claude-file-backend.ts
+plans:
+  - memory-backend-benchmark-2026-06-05
+  - fix-claude-code-memory-2026-06-05
+  - memory-backend-improve-and-hybrid-2026-06-08
+  - claude-memory-projection-integration-2026-06-05
 sidebar:
   order: 65
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+
+:::caution[Superseded — the over-cap path now TIERS, it does not abort]
+This runbook documents the **pre-tiering** behavior. Three days after it was
+written, plan `memory-backend-improve-and-hybrid-2026-06-08` (P-010) replaced
+the abort path. The historical narrative below is preserved as-is; here is what
+the code does **now**:
+
+- **The danger Aside below is the OPPOSITE of current behavior.** The projector
+  no longer aborts on an oversized durable set — it **tiers**. `tierForCap`
+  (`~/.claude/scripts/memory-compact.mjs:379-393`) keeps the `user` section plus
+  the most-recent durables that fit the budget in `MEMORY.md` and pages the rest
+  to `MEMORY-overflow.md`, a sibling on-demand index. **No fact is dropped**, and
+  new memories still appear (in `MEMORY.md` or the overflow index). The script's
+  own comment (`memory-compact.mjs:370-371`) calls the old abort "a STALE index
+  (silent memory loss)". The only remaining abort is a belt-and-suspenders guard
+  (`memory-compact.mjs:609-614`) that the code notes "should never happen since
+  the tier budget is below the soft cap".
+- **The "abort" / "index stops updating altogether" table rows below are stale.**
+  The index-cap probe now records tiering. `simulateIndexProjection`
+  (`packages/operator-core/lib/memory/bench/index-cap.ts:305-325`) returns
+  `indexed` + `tiered` with `searchableAfterCompaction = active.length`, and the
+  test "durable entries are NEVER archived — they tier (still searchable), never
+  lost" (`index-cap.test.ts:78-94`) asserts no abort and no stale index. The
+  bench note now reads "no abort, no stale index, no lost facts"
+  (`index-cap.ts:441-443`).
+- **Nuance on "unsearchable after compaction":** still true for *archived
+  `project` files*, but under tiering, paged-out **durables stay searchable** (the
+  topic file is untouched). The "unsearchable after compaction" framing below
+  overstates the loss for durables — it now bounds session-start **visibility**,
+  not **recall**.
+
+Everything else still holds: the ~24.4 KB hard cap and 20 KB soft cap, the
+auto-generated projection (edit topic files, never `MEMORY.md`), `archive/`'s
+invisibility to search, physical archiving of derivable-`project` files, the
+`memory-hygiene` session-start notice, and the reproduction CLI.
+:::
 
 ## The three-layer trap
 

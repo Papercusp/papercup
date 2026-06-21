@@ -4,6 +4,23 @@ description: "The GitHub nightly's first real executions failed ~50 files across
 discovered: 2026-06-11
 tags: [ci, github-actions, nightly, testing, postgres, pgvector, hermeticity, environment, wi-123, debugging]
 status: active
+documents:
+  - scripts/ci-provision-pg.mjs
+  - libs/papercusp/libs/db/src/connection.ts
+  - packages/operator-core/lib/harness-paths.ts
+  - libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js
+  - packages/operator-core/lib/ensure-omp-su.ts
+  - packages/operator-core/lib/workspace-registry.ts
+  - .github/workflows/test.yml
+  - .github/workflows/test-nightly.yml
+plans:
+  - papercup-test-suite-green-2026-06-02
+  - papercusp-full-app-audit-2026-06-09
+  - papercusp-systems-abstraction-2026-05-29
+  - generalize-libs-to-generic-2026-06-05
+  - starlight-projection-generators-2026-06-05
+  - docs-and-memory-as-projections-2026-06-05
+  - plans-pg-canonical-migration-2026-06-03
 ---
 
 ## The mistake this prevents

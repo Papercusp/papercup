@@ -4,6 +4,21 @@ description: Why a joined member's writes never federate even though the swarm c
 discovered: 2026-06-15
 tags: [federation, hyperbee, boot-all, outbox-drain, hive, EI-521, testing]
 status: active
+documents:
+  - packages/operator-core/lib/sync/hyperbee/boot-all.ts:bootSingleHarness
+  - packages/operator-core/lib/sync/hyperbee/boot-all.ts:ensureSendSideWired
+  - packages/operator-core/lib/sync/hyperbee/wire-outbox.ts:wireOutboxForHarness
+  - "packages/operator-core/lib/sync/hyperbee/swarm.ts:joinHarnessSwarm (discovery.flushed fire-and-forget, :464-466)"
+  - packages/operator-core/lib/sync/hyperbee/__tests__/wire-outbox-drain-online.integration.test.ts (EI-521 regression guard)
+plans:
+  - papercusp-feature-content-federation-2026-06-01
+  - hive-federation-cross-machine-merge-2026-06-14
+  - papercusp-phase1b-bidirectional-federation-2026-06-01
+  - papercusp-phase1b-bidirectional-federation-impl-2026-06-01
+  - perf-sweep-outbox-bloat-write-storm-2026-06-08
+  - named-resource-locks-drain-2026-06-02
+  - shared-hive-federation-2026-06-08
+  - plan-federation-regrain-2026-06-13
 ---
 
 ## Symptom
