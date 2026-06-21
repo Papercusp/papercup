@@ -53,6 +53,14 @@ export interface ScorecardRow {
   missingKeys: string[];
   /** Whether `rubricRef` resolved to a known rubric (so `missingKeys` is meaningful). */
   rubricResolved: boolean;
+  /**
+   * True when this scorecard is a SYNTHESIZED floor (`payload.observation.synthesized`),
+   * not an agent emission — the deterministic backstop filed by overwatch/scorecard-backstop
+   * when an Overwatch turn ended without one. EXCLUDED by default (see `includeSynthesized`)
+   * so the agent-emission freshness/trend/staleness signals never count the floor as the
+   * agent doing its job.
+   */
+  synthesized: boolean;
 }
 
 export interface ListScorecardsFilter {
@@ -64,6 +72,14 @@ export interface ListScorecardsFilter {
   since?: string;
   /** Max rows (newest-first). Default 100, max 500. */
   limit?: number;
+  /**
+   * Include SYNTHESIZED floor scorecards (`payload.observation.synthesized`). Default
+   * FALSE — every monitoring consumer (the agent-emission freshness detector, the trend,
+   * the staleness signal, Scout's digest) reads AGENT scorecards only, so the deterministic
+   * floor (overwatch/scorecard-backstop) never masks an agent skip nor pollutes the trend.
+   * Set true only for an explicit "did the monitor speak at all (incl. the floor)" read.
+   */
+  includeSynthesized?: boolean;
 }
 
 interface ScorecardRowDb {
@@ -101,6 +117,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
        AND ${filter.rubricRef ? sql`payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : sql`TRUE`}
        AND ${filter.sourceHive ? sql`payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : sql`TRUE`}
        AND ${filter.since ? sql`created_at >= ${filter.since}` : sql`TRUE`}
+       AND ${filter.includeSynthesized ? sql`TRUE` : sql`payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
      ORDER BY created_at DESC
      LIMIT ${limit}`;
 
@@ -123,6 +140,10 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     const criteriaKeys = rubricCriteriaKeys.get(observation.rubricRef) ?? null;
     const rubricResolved = criteriaKeys !== null;
     const missingKeys = rubricResolved ? criteriaKeys!.filter((k) => !ratedKeys.has(k)) : [];
+    // Read the synthesized marker from the RAW payload (not the parsed observation,
+    // which may strip unknown keys) so the floor stays distinguishable.
+    const synthRaw = (row.payload as { observation?: { synthesized?: unknown } } | null)?.observation?.synthesized;
+    const synthesized = synthRaw === true || synthRaw === 'true';
 
     out.push({
       issueId: row.issue_id,
@@ -134,6 +155,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       nKeys: ratedKeys.size,
       missingKeys,
       rubricResolved,
+      synthesized,
     });
   }
 

@@ -65,6 +65,12 @@ export interface CheckScorecardFreshnessFilter {
   since?: string;
   /** Fallback window size when `since` is omitted (default 2h). */
   lookbackMs?: number;
+  /**
+   * Count SYNTHESIZED floor scorecards toward freshness. Default FALSE — freshness measures
+   * the AGENT's every-turn emission, so the deterministic backstop floor
+   * (overwatch/scorecard-backstop) does NOT make a silently-skipping Overwatch read 'fresh'.
+   */
+  includeSynthesized?: boolean;
 }
 
 /**
@@ -84,6 +90,8 @@ export async function checkScorecardFreshness(
     rubricRef: filter.rubricRef,
     sourceHive: filter.sourceHive,
     since,
+    // Default-false: freshness reflects the AGENT's emission, never the synthesized floor.
+    includeSynthesized: filter.includeSynthesized ?? false,
   });
 
   // A valid "complete" requires the rubric to have resolved — an empty missingKeys from an
