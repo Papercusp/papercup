@@ -13,6 +13,7 @@ import {
   runSubstrateOutboxBackstopGc,
   DRAINED_RETENTION_MS,
   ORPHAN_UNDRAINED_RETENTION_MS,
+  EPHEMERAL_UNDRAINED_RETENTION_MS,
 } from './substrate-outbox-backstop-gc';
 
 /** A fixed epoch-ms clock so the retention windows are deterministic. */

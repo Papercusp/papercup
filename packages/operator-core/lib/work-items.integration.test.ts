@@ -367,7 +367,7 @@ describe('unified work_items surface (real PG)', () => {
   });
 
   it('feature-family requires a harness', async () => {
-    await expect(wi.createWorkItem({ kind: 'feature', title: 'x' })).rejects.toThrow(/requires a harness/);
+    await expect(wi.createWorkItem({ kind: 'feature', title: 'x' })).rejects.toThrow(/requires a non-empty harness/);
   });
 
   it('get resolves across both kind-tables', async () => {
