@@ -97,6 +97,16 @@ export interface CaptureImprovementInput {
    * Used to track per-Hive topic lens + who filed it.
    */
   sourceRole?: 'Queen' | 'bee' | 'system' | 'Scout' | 'human';
+  /**
+   * The filer's resolved fine ROLE (overwatch | queen | scout | bee | worker | su |
+   * system | …) for per-role attribution — close-observation-attribution-gap
+   * 2026-06-21. Persisted at `payload.filedByRole` so per-role observation analytics
+   * (the OverwatchBrief observation panel, Scout's corpus-digest) attribute every
+   * observation instead of bucketing ~100% as 'unknown'. Free-form (the fine role),
+   * distinct from the narrow `sourceRole` improvement-source enum. The tool handler
+   * resolves it from the caller's LIVE coord presence at capture time.
+   */
+  filedByRole?: string;
   source?: IssueSource;
   /**
    * Learning-signal provenance (frontier P-002/D-002): organic (default) | drill |
@@ -336,6 +346,11 @@ export async function captureImprovement(
   }
   // P-010 source-tag: track who filed this for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
+  // Filer-role attribution (close-observation-attribution-gap 2026-06-21): stamp the
+  // caller's resolved fine role so per-role observation analytics group it instead of
+  // bucketing 'unknown'. Stored for BOTH lanes — every capture has a filer worth
+  // attributing. Read back by the OverwatchBrief observation panel (compute.ts).
+  if (input.filedByRole) payload.filedByRole = input.filedByRole;
   // Structured-field seam (D-005): the observation's { kind, scope, confidence, refs }.
   if (input.payloadExtra) Object.assign(payload, input.payloadExtra);
 

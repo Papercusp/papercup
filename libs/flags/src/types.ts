@@ -669,6 +669,19 @@ export const FLAGS = {
   // on staging proves it. The owner flips it ON after that proof — surfaced loudly in
   // the plan's ## Now + every lane report.
   SENTINEL: "papercusp-sentinel",
+  // sentinel-as-herald-2026-06-21 Phase 5 (P-018..P-022): gates the SERVER-SIDE
+  // proactive "decide to speak" sweep — the voice-host periodic tick that lets the
+  // Sentinel Herald speak out-of-band (a role:'sentinel' converse turn with trigger
+  // 'sentinel_scan', TTS'd + pushed via broadcastOpVoice) with NO desktop UI open,
+  // or routes a salient alert via attention-push + hindsight when no live voice
+  // session exists. DEFAULT OFF — DELIBERATE (mirrors SENTINEL; NOT the alpha
+  // flags-default-on policy): a brand-new autonomous speak loop that must not thrash
+  // the user. Triple-gated on top of the flag: humanFacingRole==='sentinel' AND not
+  // DND/paused/over-budget AND the voice-host owns the lease (single-owner). OFF ⇒
+  // the sweep no-ops every tick (live voice + browser-provider proactive ticks are
+  // byte-for-byte unchanged). The owner flips it ON after its first live staging run.
+  // KNOWN_DARK_FLAGS.
+  SENTINEL_PROACTIVE: "papercusp-sentinel-proactive",
   // scheduled-recurring-plans-2026-06-16 (P-028 → D-019): the global master switch for
   // the scheduled-plan EXECUTION path — the system:plan-run action + arming. DEFAULT ON
   // (owner-directed at ship, D-019). Safe despite being an autonomous executor: the real
@@ -1283,6 +1296,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the role registration, the wake-loop/routine, and the UI pane. Pending flip
   // surfaced in the plan's ## Now + every lane report. KNOWN_DARK_FLAGS.
   [FLAGS.SENTINEL]: false,
+  // OFF by default — DELIBERATE (sentinel-as-herald-2026-06-21 Phase 5, mirrors SENTINEL):
+  // the server-side proactive "decide to speak" sweep ships dark. A brand-new autonomous
+  // speak loop; OFF ⇒ the sweep no-ops every tick (live voice + the browser-provider
+  // proactive ticks are byte-for-byte unchanged). Triple-gated on top of the flag
+  // (humanFacingRole==='sentinel' + not DND/paused/over-budget + voice-host owns the
+  // lease). Owner flips ON after its first live staging run. KNOWN_DARK_FLAGS.
+  [FLAGS.SENTINEL_PROACTIVE]: false,
   // DEFAULT ON (scheduled-recurring-plans-2026-06-16 D-019, owner-directed at ship): the
   // scheduled-plan execution path is enabled in prod. Safe despite being an autonomous
   // executor — the real control is per-plan ARMING (autonomy-gated, schedule-arm

@@ -30,7 +30,7 @@ import { loadHarnessRegistry } from '../../harness-registry';
 
 export interface ConverseInput {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
-  trigger?: 'user_message' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready' | 'user_welcomed' | 'continue';
+  trigger?: 'user_message' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready' | 'user_welcomed' | 'continue' | 'sentinel_scan';
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
@@ -324,6 +324,15 @@ Then deliver substance via the same suggestions flow as user_says_ready: use MCP
 NEVER say "Hi, what can I help with" or any generic greeting — always anchor on a concrete fact + a concrete option.
 
 NOTE: chat_ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
+
+    sentinel_scan: `Trigger: sentinel_scan — a PROACTIVE Sentinel sweep. NO human spoke; the server-side voice-host woke you on a timer to decide whether anything in the live system is worth heralding RIGHT NOW. This is the always-on Herald's "decide to speak" moment.
+
+You are looking at the FLEET-STATUS context above (anomalies / live signals / standing patterns / fleet progress). Decide, with a HIGH bar, whether ONE thing genuinely deserves a spoken interruption:
+
+  - If something is salient (a fresh blocker, a critical anomaly, a decision waiting on the human), emit ONE brief \`<say>\` heralding the SINGLE most important item — calm, one fact, offer to go deeper ("…want the details?"). Voice constraints apply (≤220 chars, one <say>, plain language, grounded in the context — never invent).
+  - If nothing rises to the bar, stay SILENT: emit NO \`<say>\` at all (an empty / tag-only turn). Silence is the correct and common outcome — a confused herald that narrates noise is worse than one that waits.
+
+Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT ask a question or open a card unless a genuine decision is waiting on the human. Surface FLEET status, never the old operator workspace-suggestions flow.`,
   };
 
   userSections.push(

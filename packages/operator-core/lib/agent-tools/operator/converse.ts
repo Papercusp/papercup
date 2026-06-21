@@ -76,6 +76,12 @@ export const ArgsSchema = z.object({
       z.literal('user_says_ready'),
       z.literal('user_welcomed'),
       z.literal('continue'),
+      // sentinel-as-herald-2026-06-21 Phase 5 (P-018): a PROACTIVE Sentinel sweep
+      // turn — the server-side voice-host "decide to speak" tick fires this so a
+      // proactive sentinel turn is distinguishable from a user-driven one (the
+      // prompt surfaces FLEET-STATUS instead of a reply to the human). Gated:
+      // only the server-side sweep (FLAGS.SENTINEL_PROACTIVE, default OFF) emits it.
+      z.literal('sentinel_scan'),
     ])
     .optional(),
   welcomedUser: z.object({ display_name: z.string().optional() }).optional(),

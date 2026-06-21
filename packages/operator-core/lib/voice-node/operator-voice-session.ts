@@ -199,6 +199,26 @@ export class OperatorVoiceSession {
     };
   }
 
+  /**
+   * The live state the server-side Sentinel proactive sweep needs to decide
+   * whether it may fire (sentinel-as-herald-2026-06-21 Phase 5, P-019). The host
+   * reads this each sweep tick:
+   *   - sessionLive    : status !== 'off' (a live EL voice session exists).
+   *   - ownsVoiceLease : this host has an ELECTED player (playerId != null) — the
+   *                      single-owner guard. The lease elects ONE player (D-003), so
+   *                      only the elected host runs the sweep; it never double-fires
+   *                      alongside a browser provider / a second host.
+   *   - humanFacingRole: the live persona behind the brain ('operator' | 'sentinel').
+   * Read-only; never mutates the session.
+   */
+  sweepState(): { sessionLive: boolean; ownsVoiceLease: boolean; humanFacingRole: 'operator' | 'sentinel' } {
+    return {
+      sessionLive: this.status !== 'off',
+      ownsVoiceLease: this.playerId !== null,
+      humanFacingRole: this.brainRole === 'sentinel' ? 'sentinel' : 'operator',
+    };
+  }
+
   // ── election + session start ─────────────────────────────────────────────
 
   private kindOf(clientId: string): VoiceClientKind {

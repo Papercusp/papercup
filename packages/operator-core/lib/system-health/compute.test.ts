@@ -6,8 +6,25 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, type EscalationAgingInput } from './compute';
 import { PANEL_LABELS } from './types';
+
+describe('observationRole — per-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
+  it('prefers the stamped payload.filedByRole', () => {
+    expect(observationRole({ payload: { filedByRole: 'overwatch' }, signalOrigin: 'organic' })).toBe('overwatch');
+  });
+  it('falls back to sourceRole, then signalOrigin, then unknown', () => {
+    expect(observationRole({ payload: {}, sourceRole: 'Scout' })).toBe('Scout');
+    expect(observationRole({ payload: null, signalOrigin: 'organic' })).toBe('organic');
+    expect(observationRole({})).toBe('unknown');
+  });
+  it('reads the REAL row fields, not the prior phantom `it.origin`/top-level `sourceRole`', () => {
+    // EngineerIssue carries `payload` + `signalOrigin`, NEVER a top-level `origin`
+    // nor (for tool captures) `sourceRole` — the old `it.sourceRole ?? it.origin`
+    // read undefined on both → bucketed 100% as 'unknown'.
+    expect(observationRole({ payload: { filedByRole: 'bee' } })).toBe('bee');
+  });
+});
 
 describe('panelSafe — per-panel fail-soft', () => {
   it('passes a healthy collector through, injecting key + label', async () => {

@@ -13,7 +13,8 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, deriveAgentRole } from '../coordination/identity';
+import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import type { IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
@@ -87,6 +88,14 @@ export default defineTool({
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     const source = id.source === 'omp-hook-session' || id.source === 'static-client' ? 'su' : 'engineer';
+    // Resolve the filer's ROLE for per-role observation attribution (close the
+    // ~100%-'unknown' gap, 2026-06-21). The caller is LIVE while it files, so its
+    // coord presence carries the FINE self-reported role (overwatch/queen/scout/
+    // bee/worker/…) that the server-side deriveAgentRole cannot see (the agent's
+    // PAPERCUSP_AGENT_ROLE env is not in THIS process). Fall back to the coarse
+    // source-derived role; best-effort — a presence-read miss never blocks a capture.
+    const filedByRole =
+      (await getPresence(id.ownerId).catch(() => null))?.agentRole ?? deriveAgentRole(id) ?? undefined;
     // Auto-derive sourceHive (rubric-driven-observations D-003) from the caller's
     // hive/harness when omitted: signed-spawn bees carry ctx.harnessSlug; explicit
     // callers (Overwatch/Scout) set observation.sourceHive themselves. '*' (the
@@ -113,6 +122,7 @@ export default defineTool({
         lane: args.lane,
         payloadExtra: observation ? { observation } : undefined,
         createdBy: id.ownerId,
+        filedByRole,
         source,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };

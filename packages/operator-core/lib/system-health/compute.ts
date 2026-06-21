@@ -708,17 +708,39 @@ async function collectAutonomy(ctx: HealthCtx): Promise<HealthPanel<AutonomyHeal
   });
 }
 
+/**
+ * The attributable ROLE of an observation row, for the brief's per-role panel.
+ * Reads the filer role stamped at capture (payload.filedByRole, close-observation-
+ * attribution-gap 2026-06-21), then the narrow sourceRole, then the signal origin,
+ * else 'unknown'. Pure (testable without PG). PRIOR BUG: the panel read
+ * `it.sourceRole ?? it.origin` — NEITHER field exists on an EngineerIssue row (it
+ * carries `payload` + `signalOrigin`), so every observation bucketed as 'unknown',
+ * blinding the per-role rubric criteria.
+ */
+export function observationRole(it: {
+  payload?: unknown;
+  sourceRole?: string | null;
+  signalOrigin?: string | null;
+}): string {
+  const p = it.payload && typeof it.payload === 'object' ? (it.payload as Record<string, unknown>) : undefined;
+  const filed = p?.filedByRole;
+  if (typeof filed === 'string' && filed) return filed;
+  if (it.sourceRole) return it.sourceRole;
+  if (it.signalOrigin) return it.signalOrigin;
+  return 'unknown';
+}
+
 async function collectObservations(ctx: HealthCtx): Promise<HealthPanel<ObservationsHealth>> {
   return panelSafe<ObservationsHealth>('observations', async () => {
     const { listIssues } = await import('../issues-engineer');
     const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
     const items = (await listIssues({ topic: OBSERVATION_TOPIC, state: 'open', limit: 500 })) as Array<{
-      createdAt?: string; sourceRole?: string | null; origin?: string | null;
+      createdAt?: string; payload?: unknown; sourceRole?: string | null; signalOrigin?: string | null;
     }>;
     const recentByRole: Record<string, number> = {};
     let newestAt: number | null = null;
     for (const it of items) {
-      const role = it.sourceRole ?? it.origin ?? 'unknown';
+      const role = observationRole(it);
       recentByRole[role] = (recentByRole[role] ?? 0) + 1;
       const t = it.createdAt ? new Date(it.createdAt).getTime() : NaN;
       if (Number.isFinite(t) && (newestAt === null || t > newestAt)) newestAt = t;

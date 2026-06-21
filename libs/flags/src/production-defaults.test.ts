@@ -263,6 +263,16 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // after that proof. Gates the role registration, the wake-loop/routine, and the
   // UI pane. Pending flip surfaced in the plan's ## Now + every lane report.
   FLAGS.SENTINEL,
+  // sentinel-as-herald-2026-06-21 Phase 5 (P-018..P-022): the SERVER-SIDE proactive
+  // "decide to speak" sweep (the voice-host periodic tick that lets the Sentinel Herald
+  // speak out-of-band with no desktop UI open, or route a salient alert via attention-push
+  // + hindsight when no live voice session exists). DELIBERATE dark ship (mirrors SENTINEL;
+  // NOT the alpha default-on policy) — a brand-new autonomous speak loop. OFF ⇒ the sweep
+  // no-ops every tick (live voice + the browser-provider proactive ticks are byte-for-byte
+  // unchanged); triple-gated on top of the flag (humanFacingRole==='sentinel' + not
+  // DND/paused/over-budget + voice-host owns the lease). Owner flips ON after its first
+  // live staging run. Pending flip surfaced in the plan's ## Now + every lane report.
+  FLAGS.SENTINEL_PROACTIVE,
   // impartial-benchmark-suite-2026-06-15 P-005 (BRIEF 3): the EXTERNAL-BENCH grader
   // adapter + the `external-bench:run` op. DELIBERATE dark ship (NOT the alpha
   // default-on policy) — the runner is genuinely incomplete (M2 in-container

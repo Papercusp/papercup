@@ -48,6 +48,29 @@ describe('storageKindOf — the native column mapping (close-loop D-002)', () =>
   });
 });
 
+describe('captureImprovement — filer-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
+  it('stamps payload.filedByRole on an observation when given (fixes the ~100% unknown bucket)', async () => {
+    const d = deps();
+    await captureImprovement(
+      { title: 'hive-coordination-health scorecard', kind: 'change', lane: 'observation', filedByRole: 'overwatch' },
+      d,
+    );
+    expect((d.created[0].payload as Record<string, unknown>).filedByRole).toBe('overwatch');
+  });
+
+  it('stamps payload.filedByRole on an improvement too', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'docs:search friction', kind: 'bug', filedByRole: 'bee' }, d);
+    expect((d.created[0].payload as Record<string, unknown>).filedByRole).toBe('bee');
+  });
+
+  it('omits filedByRole when not provided (no empty stamp)', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'x', kind: 'change', lane: 'observation' }, d);
+    expect((d.created[0].payload as Record<string, unknown> | undefined)?.filedByRole).toBeUndefined();
+  });
+});
+
 describe('captureImprovement — observation lane (turn-end-reflection-observations-2026-06-14 D-005)', () => {
   it('files the OBSERVATION topic, NOT the improvement topic (invisible to the work pipeline)', async () => {
     const d = deps();
