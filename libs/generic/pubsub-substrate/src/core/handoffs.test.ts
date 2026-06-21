@@ -19,12 +19,15 @@ const acc = (msg_id: string, ts: string, related: string): HandoffRecord =>
   ({ msg_id, ts, kind: 'handoff_accepted', from: 'b', to: ['a'], related_msg_id: related }) as HandoffRecord;
 const exp = (msg_id: string, ts: string, related: string): HandoffRecord =>
   ({ msg_id, ts, kind: 'handoff_expired', from: 'system:handoff-reconcile', to: ['a'], related_msg_id: related }) as HandoffRecord;
+const rep = (msg_id: string, ts: string, related: string): HandoffRecord =>
+  ({ msg_id, ts, kind: 'handoff_repinged', from: 'system:handoff-reconcile', to: ['a'], related_msg_id: related }) as HandoffRecord;
 
 describe('isHandoffRecord', () => {
-  it('accepts handoff + handoff_accepted + handoff_expired, rejects other kinds', () => {
+  it('accepts handoff + handoff_accepted + handoff_expired + handoff_repinged, rejects other kinds', () => {
     expect(isHandoffRecord(h('h1', 't1'))).toBe(true);
     expect(isHandoffRecord(acc('a1', 't2', 'h1'))).toBe(true);
     expect(isHandoffRecord(exp('e1', 't2', 'h1'))).toBe(true);
+    expect(isHandoffRecord(rep('r1', 't2', 'h1'))).toBe(true);
     expect(isHandoffRecord({ kind: 'message' } as unknown as CoordEnvelope)).toBe(false);
   });
 });
@@ -63,5 +66,34 @@ describe('foldHandoffs — expiry (F-FIX-037)', () => {
     expect(foldHandoffs(recs, { status: 'open' })).toHaveLength(0);
     expect(foldHandoffs(recs, { status: 'expired' })).toHaveLength(0);
     expect(foldHandoffs(recs, { status: 'accepted' }).map((x) => x.record.msg_id)).toEqual(['h1']);
+  });
+});
+
+describe('foldHandoffs — re-ping (coord-dispatch-reliability P-003)', () => {
+  it('surfaces repinged_by on the paired handoff', () => {
+    const recs = [h('h1', 't1'), h('h2', 't2'), rep('r2', 't3', 'h2')];
+    const all = foldHandoffs(recs);
+    expect(all.find((x) => x.record.msg_id === 'h2')?.repinged_by?.msg_id).toBe('r2');
+    expect(all.find((x) => x.record.msg_id === 'h1')?.repinged_by).toBeUndefined();
+  });
+
+  it('a re-ping is NOT a terminal status: a re-pinged-but-unaccepted handoff stays OPEN', () => {
+    const recs = [h('h1', 't1'), rep('r1', 't2', 'h1')];
+    // still open (the re-ping only nudges the offerer) — and carries the marker.
+    expect(foldHandoffs(recs, { status: 'open' }).map((x) => x.record.msg_id)).toEqual(['h1']);
+    expect(foldHandoffs(recs, { status: 'open' })[0].repinged_by?.msg_id).toBe('r1');
+    // a re-ping alone never makes it accepted/expired.
+    expect(foldHandoffs(recs, { status: 'accepted' })).toHaveLength(0);
+    expect(foldHandoffs(recs, { status: 'expired' })).toHaveLength(0);
+  });
+
+  it('a handoff can be both re-pinged and then accepted: acceptance still wins', () => {
+    const recs = [h('h1', 't1'), rep('r1', 't2', 'h1'), acc('a1', 't3', 'h1')];
+    const open = foldHandoffs(recs, { status: 'open' });
+    expect(open).toHaveLength(0); // accepted → no longer open
+    const accepted = foldHandoffs(recs, { status: 'accepted' });
+    expect(accepted.map((x) => x.record.msg_id)).toEqual(['h1']);
+    expect(accepted[0].repinged_by?.msg_id).toBe('r1'); // marker still surfaced
+    expect(accepted[0].accepted_by?.msg_id).toBe('a1');
   });
 });

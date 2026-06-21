@@ -23,6 +23,11 @@ export type CoordKind =
   // F-FIX-037: a sibling expiry record auto-written by the stale-handoff reconcile
   // when a handoff sits pending past the TTL (same immutable pattern as acceptance).
   | 'handoff_expired'
+  // coord-dispatch-reliability P-003: a sibling RE-PING record auto-written by the
+  // reconcile sweep when an OPEN handoff is still un-acked after ~30m (but < the
+  // 12h expire TTL) — re-pings the OFFERER once. Same immutable sibling pattern;
+  // the record itself is the idempotency marker (one re-ping per handoff).
+  | 'handoff_repinged'
   | 'escalation'
   | 'escalation_resolved'
   | 'contract'

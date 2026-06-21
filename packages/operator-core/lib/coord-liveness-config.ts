@@ -19,6 +19,10 @@ import { STALE_MS } from './liveness';
 export interface CoordLivenessConfig {
   /** Override the stale-handoff auto-expiry TTL (default STALE_HANDOFF_TTL_MS = 12h). */
   handoffTtlMs?: number;
+  /** Override the handoff re-ping window — an open, un-acked handoff older than this
+   *  (but < handoffTtlMs) re-pings the offerer once (default STALE_HANDOFF_REPING_MS = 30m).
+   *  coord-dispatch-reliability P-003. */
+  handoffRepingMs?: number;
   /** Override the stale-claim reclaim grace (default STALE_CLAIM_GRACE_MS = STALE_MS = 10m). */
   reclaimGraceMs?: number;
   /** Override the requeue cap before a mid-flight claim is dead-lettered (default staleReclaimRequeueCap() = 3). */
@@ -31,6 +35,7 @@ export interface CoordLivenessConfig {
  *  The real fallback lives in each consumer (this layer only carries OVERRIDES). */
 export const COORD_LIVENESS_DEFAULTS = {
   handoffTtlMs: 12 * 60 * 60 * 1000,
+  handoffRepingMs: 30 * 60 * 1000,
   reclaimGraceMs: STALE_MS,
   reclaimRequeueCap: 3,
   sessionReaperGraceMs: STALE_MS,

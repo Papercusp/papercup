@@ -53,6 +53,7 @@ export const COORD_LEGEND: Record<string, LegendEntry> = {
   escalation: { glyph: '^', name: 'escalation — needs attention' },
   escalation_resolved: { glyph: '=', name: 'escalation resolved' },
   handoff_accepted: { glyph: '<', name: 'handoff accepted' },
+  handoff_repinged: { glyph: '<', name: 'handoff re-ping — your offer is still un-acked' },
   notify: { glyph: '.', name: 'notify — subscription delta' },
   plan_event: { glyph: '~', name: 'plan event' },
   subscribe: { glyph: '.', name: 'subscribe' },

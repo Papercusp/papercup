@@ -48,6 +48,9 @@ export interface OverwatchQueenHealth {
    *  in her next wake brief's inbox (she folds `readInbox(resolveQueenOwner)` into
    *  every wake). null = no recent Queen session to address → escalate instead. */
   coordOwner: string | null;
+  /** Most-recent CONSECUTIVE Queen wakes that ran 0 LLM tokens (the LLM never executed —
+   *  infra/rate-limit loss). Feeds the queen-placement-stalled detector. */
+  consecutiveZeroTokenWakes: number;
 }
 
 /** The worker fleet's health (`fleet:assignments` / `coord:presence`). */
@@ -129,6 +132,7 @@ export interface OverwatchCrossMonitor {
  */
 export type AnomalyKind =
   | 'queen-stalled' // Queen's lastWakeAt older than the cadence threshold
+  | 'queen-placement-stalled' // Queen wakes on cadence but recent wakes ran 0 LLM tokens while a placeable frontier waits (infra/rate-limit stall the cadence signal misses)
   | 'queen-dark' // cross-monitor: the Queen's liveness has gone dark (D-004)
   | 'overwatch-dark' // cross-monitor: overwatch itself has gone dark (surfaced to the Queen)
   | 'token-paused' // a rate bucket (opus/sonnet) is paused — RPM saturation
@@ -230,7 +234,7 @@ export const DEFAULT_OVERWATCH_BRIEF_CAPS: OverwatchBriefCaps = {
 export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
   return {
     hiveSlug,
-    queen: { lastWakeAt: null, stalled: false, cadenceOk: true, workingTracked: 0, nextFireAt: null, coordOwner: null },
+    queen: { lastWakeAt: null, stalled: false, cadenceOk: true, workingTracked: 0, nextFireAt: null, coordOwner: null, consecutiveZeroTokenWakes: 0 },
     bees: { running: 0, completed: 0, churning: 0, deadClaims: 0 },
     workFeed: { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 },
     tokens: { pausedBuckets: [], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0, gatewayWedged: false, gatewaySustainedThrottle: false },

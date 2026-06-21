@@ -904,6 +904,58 @@ export function overwatchScorecardSkipped(args: {
 }
 
 /**
+ * PURE: count the most-recent CONSECUTIVE Queen wakes that ran ZERO LLM tokens.
+ * Samples are newest-first (as queenWakeEfficiency returns them). A 0-token wake =
+ * the agent process launched but the LLM never executed (infra / rate-limit loss) —
+ * DISTINCT from a healthy short wake, which still spends tokens deciding "nothing to
+ * do". (hive-loop-supervision 2026-06-21 — D-009: the Queen's 0-token-no-op outage.)
+ */
+export function countLeadingZeroTokenWakes(
+  samples: ReadonlyArray<{
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  }>,
+): number {
+  let n = 0;
+  for (const s of samples) {
+    const tokens = s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheCreationTokens;
+    if (tokens === 0) n += 1;
+    else break;
+  }
+  return n;
+}
+
+/**
+ * PURE: is the Queen alive-but-not-placing-despite-placeable-work? (hive-loop-supervision
+ * 2026-06-21, sibling of overwatchScorecardSkipped). True when her last ≥minConsecutive
+ * wakes ran 0 LLM tokens (the LLM never executed — see countLeadingZeroTokenWakes) WHILE a
+ * placeable frontier waits and placement is not paused. This catches the silent stall the
+ * cadence-based `queen-stalled` signal MISSES: the Queen wakes ON cadence (looks healthy) but
+ * her wakes are empty, so nothing is placed. A known bee-cap fullness suppresses it (a full
+ * fleet, not a stall). Default threshold 3 (≈1.5h at a 30-min cadence) avoids a one-off blip.
+ */
+export function queenPlacementStalled(args: {
+  consecutiveZeroTokenWakes: number;
+  frontier: number;
+  paused: boolean;
+  beesBusy?: number;
+  beesCap?: number;
+  minConsecutive?: number;
+}): boolean {
+  if (args.paused) return false;
+  if (args.frontier <= 0) return false; // nothing for the Queen to place → not a stall
+  if (
+    typeof args.beesCap === 'number' && args.beesCap > 0 &&
+    typeof args.beesBusy === 'number' && args.beesBusy >= args.beesCap
+  ) {
+    return false; // fleet is full — the lack of new placements isn't the bug
+  }
+  return args.consecutiveZeroTokenWakes >= (args.minConsecutive ?? 3);
+}
+
+/**
  * PURE: derive Scout ideation health from recent tick rows (newest-first, as
  * readScoutTicks returns). Transport-death = cycles RAN in-window but produced ZERO
  * ideas (a transport failure, not low quality) — the plan's "Scout 0 ideas/24h"

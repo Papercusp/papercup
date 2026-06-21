@@ -31,7 +31,7 @@ import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
-import { reconcileStalePendingHandoffsOnce } from '../reconcile-handoffs';
+import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '../reconcile-handoffs';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
@@ -198,25 +198,44 @@ const attentionReconcileWorkflow = DBOS.registerWorkflow(attentionReconcileTick,
 });
 DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile', crontab: '0 20 * * * *' });
 
-// Hourly (:26, off the :00/:20/:23 stampede): the coord-handoff invariant
-// (F-FIX-037) — auto-expire handoffs left pending past the 12h TTL. A handoff is
-// an immutable coord_event_log offer of work; an unaccepted one sits `open`
-// forever and misleads successors ("pick up the open handoff" chases a stale
-// offer). The sweep writes a sibling 'handoff_expired' record (never mutates the
-// original) so the fold drops it from `open`. Idempotent + batch-limited (500).
+// Every 30 min (:26 + :56, off the :00/:20/:23 stampede): the coord-handoff
+// invariant passes. (1) F-FIX-037 EXPIRE — auto-expire handoffs left pending past
+// the 12h TTL: a handoff is an immutable coord_event_log offer of work; an
+// unaccepted one sits `open` forever and misleads successors ("pick up the open
+// handoff" chases a stale offer). The sweep writes a sibling 'handoff_expired'
+// record (never mutates the original) so the fold drops it from `open`. (2)
+// coord-dispatch-reliability P-003 RE-PING — an open, un-acked handoff older than
+// ~30m (but < the 12h expire TTL) re-pings the OFFERER once (sibling
+// 'handoff_repinged' + a coord message + a fail-soft wake) so they can follow up /
+// reassign before the expire backstop. The :56 tick is why the cadence is 30min —
+// the re-ping is only useful if it fires promptly; the 12h expire pass in the same
+// tick is idempotent + batch-limited (500) so running it twice an hour is harmless.
+// Both passes are independently fail-soft; one failing never blocks the other.
 async function handoffReconcileTick(): Promise<void> {
   await DBOS.runStep(async () => {
     if (shouldShedHeavyTick('handoff-reconcile')) return;
-    // live-configurability-audit P-014: apply the handoff-TTL override (undefined ⇒ 12h default).
+    // live-configurability-audit P-014 + P-003: apply the handoff TTL / re-ping
+    // overrides (undefined ⇒ baked defaults: 12h expire, 30m re-ping).
     const { readCoordLivenessConfig } = await import('../coord-liveness-config');
     const livenessCfg = await readCoordLivenessConfig();
+    // EXPIRE pass (12h backstop) — unchanged.
     await reconcileStalePendingHandoffsOnce({ ttlMs: livenessCfg.handoffTtlMs });
+    // RE-PING pass (~30m offerer nudge) — isolated so an expire failure never skips
+    // it and vice versa.
+    try {
+      await reconcileHandoffRepingsOnce({
+        repingMs: livenessCfg.handoffRepingMs,
+        ttlMs: livenessCfg.handoffTtlMs,
+      });
+    } catch (e) {
+      console.warn(`[handoff-reconcile] re-ping pass failed: ${e instanceof Error ? e.message : e}`);
+    }
   }, { name: 'handoff-reconcile' });
 }
 const handoffReconcileWorkflow = DBOS.registerWorkflow(handoffReconcileTick, {
   name: 'handoffReconcile', maxRecoveryAttempts: 5,
 });
-DBOS.registerScheduled(handoffReconcileWorkflow, { name: 'handoffReconcile', crontab: '0 26 * * * *' });
+DBOS.registerScheduled(handoffReconcileWorkflow, { name: 'handoffReconcile', crontab: '0 26,56 * * * *' });
 
 // Hourly (:23, off the stampede): surface silently-dead DBOS workflows
 // (MAX_RECOVERY_ATTEMPTS_EXCEEDED / ERROR) — the embedBackfill/systemHealth class the

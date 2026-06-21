@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import {
   planWatchdogCaptures,
   collectServiceDownSignals,
@@ -23,6 +23,8 @@ import {
   DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
   planSelfEscalations,
   withWatchdogTickLock,
+  watchdogTickLockUrl,
+  _closeWatchdogTickLockForTests,
   watchdogKeyOf,
   partitionSignalsByKnownKeys,
   smokeFailSignalsFromRows,
@@ -43,6 +45,7 @@ import {
 } from './watchdog';
 import type { CaptureImprovementResult } from './capture-core';
 import type { ProbeResult } from '../../service-health';
+import { _resetHarnessAdminUrlCacheForTests } from '../../embedded-pg-discovery';
 
 function sig(p: Partial<WatchdogSignal> & { key: string }): WatchdogSignal {
   return {
@@ -1201,6 +1204,56 @@ describe('runWatchdogTick — cross-host lock (watchdog-robustness P-003)', () =
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // backend-connection-scaling-2026-06-17 P-001: the tick mutex is a SESSION-level
+  // pg_advisory_lock — acquire + release MUST hit the same backend. Under PgBouncer
+  // transaction pooling (PAPERCUSP_PGBOUNCER=1) the pooled org client reassigns
+  // backends per statement, so the lock connection MUST bypass the pooler. This
+  // guards against a future refactor "helpfully" routing it through maybePgbouncer.
+  describe('tick-lock connection is DIRECT, never the PgBouncer pooler (P-001)', () => {
+    const DIRECT = 'postgresql://harness_admin:pw@db-direct.test:5432/papercusp';
+    const env = process.env;
+    const KEYS = [
+      'HARNESS_ADMIN_DATABASE_URL',
+      'DATABASE_URL',
+      'PAPERCUSP_PG_URL',
+      'PAPERCUSP_PGBOUNCER',
+      'PAPERCUSP_PGBOUNCER_PORT',
+    ] as const;
+    // Snapshot originals so we can restore EXACTLY — `env.X = undefined` coerces to
+    // the STRING "undefined" (poisoning getHarnessAdminUrl for later tests), so an
+    // originally-unset var must be `delete`-d, not assigned.
+    const original = new Map(KEYS.map((k) => [k, env[k]]));
+    const setOrDelete = (k: string, v: string | undefined) => {
+      if (v === undefined) delete env[k];
+      else env[k] = v;
+    };
+    afterAll(() => {
+      for (const k of KEYS) setOrDelete(k, original.get(k));
+      _resetHarnessAdminUrlCacheForTests();
+    });
+
+    it('stays the direct admin URL even when PAPERCUSP_PGBOUNCER=1', () => {
+      env.HARNESS_ADMIN_DATABASE_URL = DIRECT;
+      delete env.DATABASE_URL;
+      delete env.PAPERCUSP_PG_URL;
+      env.PAPERCUSP_PGBOUNCER = '1';
+      env.PAPERCUSP_PGBOUNCER_PORT = '6432';
+      _resetHarnessAdminUrlCacheForTests();
+
+      const url = watchdogTickLockUrl();
+      expect(url).toBe(DIRECT);
+      // The whole point: NOT rerouted to the local pooler port.
+      expect(url).not.toContain('6432');
+      expect(url).not.toContain('127.0.0.1');
+    });
+  });
+
+  // Close the dedicated tick-lock connection the default-path tests may have opened
+  // (idle_timeout:0 singleton) so the suite leaves no open PG handle.
+  afterAll(async () => {
+    await _closeWatchdogTickLockForTests();
   });
 });
 

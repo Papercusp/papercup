@@ -98,6 +98,39 @@ export async function expireHandoff(
   return env;
 }
 
+/**
+ * Re-ping the OFFERER of a still-open, un-acked handoff — writes a sibling
+ * 'handoff_repinged' record (the SAME immutable pattern as acceptHandoff/
+ * expireHandoff; the original handoff is never mutated). Used by the reconcile
+ * sweep (coord-dispatch-reliability P-003) when an open handoff has sat un-acked
+ * past the ~30m re-ping window (but < the 12h expire TTL). The sibling record is
+ * itself the idempotency marker — once written, the fold surfaces `repinged_by`
+ * and the re-ping selector excludes this handoff, so the offerer is nudged EXACTLY
+ * once. `by` is the system reconcile owner; `to` addresses the handoff's offerer
+ * (`target.from`), so the re-ping lands in the offerer's coord inbox. Returns the
+ * new re-ping record, or null when the target handoff is absent.
+ */
+export async function repingHandoff(
+  targetMsgId: string,
+  opts: { by: string; note?: string },
+): Promise<HandoffRecord | null> {
+  const target = await getHandoff(targetMsgId);
+  if (!target) return null;
+  const env: HandoffRecord = {
+    ts: new Date().toISOString(),
+    msg_id: newMsgId(),
+    from: opts.by,
+    to: [target.from],
+    kind: 'handoff_repinged',
+    related_msg_id: targetMsgId,
+    plan_slug: target.plan_slug,
+    summary:
+      opts.note ?? 'auto re-ping: handoff still un-acked after the re-ping window — nudging the offerer',
+  };
+  await coordLog.putEvent('handoffs', env.msg_id, env);
+  return env;
+}
+
 /** Read one handoff record by msg_id. */
 export async function getHandoff(msgId: string): Promise<HandoffRecord | null> {
   const rec = await coordLog.getEvent('handoffs', msgId);

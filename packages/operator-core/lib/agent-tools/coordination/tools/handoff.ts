@@ -12,6 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { openHandoff, acceptHandoff } from '../handoffs';
 import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
+import { wakeRecipients } from '../inbox-wake';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -103,11 +104,54 @@ export default defineTool({
       files_modified: args.files_modified,
       commit: args.commit,
     });
+
+    // coord-dispatch-reliability P-003 (wake-on-open): opening a handoff previously
+    // only INJECTED to the recipient's inbox — an IDLE recipient never woke, never
+    // accepted, and so the offerer's own accept-wake (`handoff:accepted:<id>`) never
+    // fired → a silent stall. Now we WAKE the resolved recipient(s) so a sleeping
+    // addressee gets a turn to accept, starting the accept→wake-offerer chain.
+    //   - SINGLE-TARGET, never a broadcast: wakeRecipients fires one inbox-wake key
+    //     per concrete ownerId and skips the SAME NON_WAKEABLE/selector targets the
+    //     coord:send wake fan skips ('*'/'human'/empty/@selectors) — no thunder-herd.
+    //   - FAIL-SOFT: the handoff is ALREADY durably recorded above; a wake-fan hiccup
+    //     must NEVER fail the open (the recipient still sees it on their next natural
+    //     turn). Any error here degrades to "no liveness reported".
+    //   - LIVENESS surfaced (parallel to P-001's coord:send notWoken): the offerer
+    //     learns whether anyone was actually re-invoked, so a handoff that woke
+    //     nobody (recipient_absent) is a loud miss they can react to, not a silent one.
+    let wake:
+      | { targets: string[]; woken: number; staged?: number; recipient_absent?: boolean; note?: string }
+      | undefined;
+    try {
+      const fan = await wakeRecipients(handoffTo, {
+        summary: args.summary,
+        source: identity.ownerId,
+        workspaceId: identity.workspaceId ?? undefined,
+      });
+      wake = { targets: fan.targets, woken: fan.woken };
+      if (fan.staged > 0) wake.staged = fan.staged;
+      // A handoff aimed at concrete, wakeable addressee(s) that woke nobody AND
+      // staged nobody is a loud miss (mirrors coord:send wake:'required'): the
+      // handoff injected to their inbox, but no session was re-invoked to accept it.
+      if (fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
+        wake.recipient_absent = true;
+        wake.note =
+          `handoff opened, but no awake/watching session was re-invoked for: ${fan.targets.join(', ')} — ` +
+          'it is in their inbox (seen on their next natural turn). If this work must be picked up now, ' +
+          'follow up with coord:send wake:\'required\' or reassign. (A 30m re-ping backstop will nudge you if it stays un-acked.)';
+      }
+    } catch (e) {
+      // The open already succeeded; a wake failure is non-fatal. Report nothing.
+      console.warn(
+        `[coord:handoff] wake-on-open for ${rec.msg_id} failed (handoff still recorded): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, msg_id: rec.msg_id, ts: rec.ts }),
+          text: JSON.stringify({ ok: true, msg_id: rec.msg_id, ts: rec.ts, ...(wake ? { wake } : {}) }),
         },
       ],
     };
