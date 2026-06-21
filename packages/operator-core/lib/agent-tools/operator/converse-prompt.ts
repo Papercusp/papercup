@@ -182,8 +182,8 @@ export async function buildOperatorPrompt(
   if (playbook) systemSections.push(playbook);
 
   // Operator memory pre-turn injection — best-effort, via the shared
-  // helper. Same source of truth as architect/brainstorm prompts +
-  // operator:delegate (each picks its own user/workspace scope).
+  // helper. Same source of truth as architect/brainstorm prompts; each
+  // surface picks its own user/workspace scope.
   // Falls through silently when mem0 is unavailable.
   // Operator chat has no specific harness in scope, so fan out the
   // memory recall across every harness in the workspace. Failures

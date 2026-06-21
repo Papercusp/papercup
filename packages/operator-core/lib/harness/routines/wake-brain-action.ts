@@ -7,7 +7,6 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { getBrainSession } from '../../brain-pin';
-import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 
 export const WAKE_BRAIN_ACTION = 'wake-brain';
 

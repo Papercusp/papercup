@@ -136,75 +136,6 @@ const optionsForOptions = defineTool({
   },
 });
 
-/** Retired `psu --brain` support helpers kept only for old unit coverage. */
-/**
- * Hive scope for the interactive brain's wake brief
- * (queen-interactive-brain-fresh-context P-002): the started hive she's actually
- * operating — the launch harness when it's a started hive, else the first started
- * hive in the workspace. Null when nothing is started (→ no brief, fail-soft).
- */
-export async function resolveBrainHiveSlug(
-  workspaceId: string,
-  harnessSlug: string | null,
-): Promise<string | null> {
-  try {
-    const { listStartedHives } = await import('../../../hive/started');
-    const started = (await listStartedHives())
-      .filter((h) => h.workspaceId === workspaceId)
-      .map((h) => h.installSlug);
-    if (harnessSlug && started.includes(harnessSlug)) return harnessSlug;
-    return started[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Append the precomputed Queen wake brief to a brain launch's prompt text
- * (queen-interactive-brain-fresh-context P-002) so the interactive Queen opens
- * already-briefed — the SAME computeQueenWakeBrief the autonomous wakes inject,
- * reused not forked. Gated by FLAGS.QUEEN_BRAIN_FRESH; fail-soft on EVERY path
- * (flag off / no started hive / no brief / any throw → the promptText unchanged,
- * i.e. a fresh session with just the su launch-context — still better than a
- * resumed transcript). Exported so the injection unit-tests without the POST handler.
- */
-export async function maybeAppendBrainBrief(
-  promptText: string,
-  opts: { workspace: string; harnessSlug: string | null },
-): Promise<string> {
-  try {
-    const { getFlag } = await import('@papercusp/flags/server');
-    const { FLAGS } = await import('@papercusp/flags');
-    if (!(await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system'))) return promptText;
-    const hiveSlug = await resolveBrainHiveSlug(opts.workspace, opts.harnessSlug);
-    if (!hiveSlug) return promptText;
-    const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
-    const brief = await computeQueenWakeBrief(opts.workspace, hiveSlug, { wokeBy: 'interactive-brain' });
-    return brief ? `${promptText}\n\n${brief}` : promptText;
-  } catch {
-    return promptText;
-  }
-}
-
-/**
- * The brain pin `psu --brain` reads back (queen-interactive-brain-fresh-context
- * P-003): under FLAGS.QUEEN_BRAIN_FRESH report NO pin (null) so every dock-open
- * takes the fresh mint-launch path (the POST injects the Queen brief); flag OFF →
- * the persistent D-013 pinned session. Exported so the flag branch unit-tests
- * without the route's auth machinery.
- *
- * EI-908: the pin is workspace-scoped. The dock's brain pane is the ACTIVE
- * workspace's Queen, so this reads that workspace's scoped pin (a demo
- * instance's pin lives under its own key and can never be returned here).
- */
-export async function resolveBrainPin(workspaceId: string): Promise<string | null> {
-  const { getFlag } = await import('@papercusp/flags/server');
-  const { FLAGS } = await import('@papercusp/flags');
-  if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) return null;
-  const { getBrainSession } = await import('../../../brain-pin');
-  return getBrainSession(workspaceId);
-}
-
 /**
  * psu-account-chooser P-002: the env patch that pins an interactive psu session to a
  * chosen pool `account`. Mirrors the fleet's gateway routing (operator-spawn →
@@ -384,11 +315,7 @@ const post = defineTool({
       /** The launcher's own cwd — used for no-harness launches so the
        *  agent's cwd-scoped session resume works from the user's terminal. */
       cwd?: string | null;
-      /** Pin this launch as THE canonical brain session (the desktop chat
-       *  dock's right pane — native-terminal-desktop D-013). claude-only:
-       *  the pin is the forceable native session uuid, which only claude
-       *  has (`--session-id`). `psu --brain` reads it back for an exact
-       *  picker-free resume. */
+      /** Deprecated tombstone input. When true, this route returns 410. */
       brain?: boolean;
       /** psu-account-chooser P-002: pin this interactive session to a specific pool
        *  account. Routed through the gateway (gatewaySpawnEnv) when INFERENCE_GATEWAY

@@ -97,7 +97,8 @@ vi.mock('../../desktop-install/papercusp-files', () => ({
 vi.mock('../../superuser-token', () => ({
   readSuperuserToken: () => 'TESTBEARER',
 }));
-// D-013 brain pin: mock the PG-backed pointer so brain launches don't need a DB.
+// D-013 brain pin: mock the old PG-backed pointer so retired paths can assert
+// they do not touch it.
 // EI-908: setBrainSession is workspace-scoped — (workspaceId, nativeSessionId).
 const setBrainSessionMock = vi.fn(async (_ws: string, _id: string) => {});
 const getBrainSessionMock = vi.fn(async (): Promise<string | null> => null);
@@ -105,21 +106,15 @@ vi.mock('../../brain-pin', () => ({
   setBrainSession: (...a: unknown[]) => setBrainSessionMock(...(a as [string, string])),
   getBrainSession: () => getBrainSessionMock(),
 }));
-// queen-interactive-brain-fresh-context P-003: GET /brain (and the POST brief
-// append) consult FLAGS.QUEEN_BRAIN_FRESH BEFORE the pin — ON ⇒ report no pin so
-// `psu --brain` always mints fresh. The flag defaults ENABLED, so without this
-// mock GET /brain short-circuits to null and the D-013 resume-the-pin path is
-// never exercised. Mock it OFF by default (resume path); the ON branch has its
-// own test. importActual keeps the rest of flags/server real.
+// Account routing tests also use feature flags. importActual keeps the rest of
+// flags/server real.
 const getFlagMock = vi.fn(async (_key: string, _scope: string): Promise<boolean> => false);
 vi.mock('@papercusp/flags/server', async (importActual) => ({
   ...(await importActual<typeof import('@papercusp/flags/server')>()),
   getFlag: (...a: unknown[]) => getFlagMock(...(a as [string, string])),
 }));
-// queen-interactive-brain-fresh-context P-002: a fresh-context brain launch
-// appends the precomputed Queen wake brief to the launch-context prompt. Mock the
-// started-hive resolver + the brief computer so the POST path's brief-injection
-// branch runs without a live hive/DB. Defaults: one started hive, a brief string.
+// Old brain-brief dependencies remain mocked so tombstone tests can prove the
+// retired launch path exits before computing a brief.
 const listStartedHivesMock = vi.fn(async () => [{ workspaceId: 'default', installSlug: 'papercup' }]);
 vi.mock('../../hive/started', () => ({ listStartedHives: (...a: unknown[]) => listStartedHivesMock(...(a as [])) }));
 const computeQueenWakeBriefMock = vi.fn(async (): Promise<string | null> => '## QUEEN WAKE BRIEF\n- frontier: wi-1');

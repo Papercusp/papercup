@@ -201,14 +201,9 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     out.push(`**Woke by:** ${f.wokeBy.trim()}`);
   }
 
-  // Interactive-brain teaching (queen-interactive-brain-fresh-context P-004):
-  // the interactive `psu --brain` dock pane runs the SU engineer playbook + this
-  // injected brief — it does NOT load queen.md, so it never sees queen.md's
-  // "Each wake is a FRESH session — re-derive, never remember" teaching. Mirror it
-  // HERE, gated on the interactive-brain wake, so the dock Queen trusts this
-  // freshly-computed brief instead of assuming a carried conversation. (The
-  // autonomous Queen already gets this from queen.md; the floor/digest sections
-  // below are identical for both.)
+  // Legacy interactive-brain wake teaching (queen-interactive-brain-fresh-context
+  // P-004). `psu --brain` is retired, but old wake metadata may still carry this
+  // marker; keep the fresh-session teaching here for historical rows.
   if (f.wokeBy?.trim() === 'interactive-brain') {
     out.push('');
     out.push(

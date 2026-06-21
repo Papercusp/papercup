@@ -11,10 +11,8 @@
  *   });
  *   if (block) sections.push(block);
  *
- * Same shape used by operator-converse today. Designed so the other
- * chat routes (architect.chat, brainstorm.chat, delegate-chat) can
- * adopt the exact same behavior with a 1-line call once the
- * sse-typed-events branch lands.
+ * Same shape used by operator-converse today. Designed so other chat
+ * routes can adopt the exact same behavior with a 1-line call.
  *
  * Best-effort: any failure (mem0 unavailable, PG down, embedder
  * misconfigured, no hits) returns null and the caller's prompt is

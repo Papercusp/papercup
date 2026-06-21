@@ -4,7 +4,7 @@
  * `delegate_to_claude` / `delegate_to_agent` are intentionally absent. The
  * remaining `delegates.*` queries only read historical records.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   listDelegatedSessions: vi.fn(async (_opts: { status?: string; limit?: number }) => [] as unknown[]),
@@ -27,6 +27,10 @@ const ctx = (overrides: Partial<CommandContext> = {}): CommandContext => ({
   workspace: 'default',
   requestId: 'r-1',
   ...overrides,
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
 });
 
 describe('registration surface', () => {

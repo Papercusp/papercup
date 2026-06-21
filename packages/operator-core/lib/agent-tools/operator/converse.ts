@@ -232,8 +232,7 @@ export default defineTool({
       );
     }
 
-    // Principal + workspace check. Same as operator:scan and
-    // operator:delegate — transport-agnostic gate via
+    // Principal + workspace check: transport-agnostic gate via
     // readSystemPrincipal. Missing principal falls through to a lean
     // tool-less path so conversation still works.
     // The workspace this turn runs in. Prefer the DISPATCH context's

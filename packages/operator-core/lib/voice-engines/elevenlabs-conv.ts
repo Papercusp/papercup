@@ -15,9 +15,8 @@
  * tools** — when the agent calls them, the SDK invokes our handler in
  * the browser, we run runCommand() locally, return the result. Sub-100ms.
  *
- * Server-side commands + delegate_to_claude are configured at agent-creation
- * time on the EL dashboard as **webhook tools** pointing at our public
- * endpoints. Those don't go through this client; the agent talks to our
+ * Server-side webhook commands are configured at agent-creation time on the
+ * EL dashboard. Those don't go through this client; the agent talks to our
  * server directly.
  *
  * This module only handles the in-page audio + clientTools loop.

@@ -378,7 +378,7 @@ const TOOLS = [
     description:
       "Open the chat panel in the harness dashboard at a specific chatId. Use after " +
       "chat_list to navigate the user to a specific conversation. Don't use to start " +
-      "a new chat — that's delegate_to_claude.",
+      "a new chat.",
     parameters: {
       type: 'object',
       properties: {

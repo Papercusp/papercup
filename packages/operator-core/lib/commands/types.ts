@@ -29,7 +29,7 @@ export type Concurrency =
 export type Tier =
   | 'reflexive'   // commands: panel.*, navigate, voice.set-mode
   | 'fast-query'  // queries: harness.status, chat.list
-  | 'delegation'; // delegate_to_claude only
+  | 'delegation'; // retired delegate tier retained for historical rows
 
 /** Audit policy for queries. Commands always audit. */
 export type QueryAuditPolicy = 'none' | 'sample' | 'full';

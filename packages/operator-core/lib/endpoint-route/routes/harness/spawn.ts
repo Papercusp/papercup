@@ -376,6 +376,32 @@ const invoke = defineTool({
     // setting QUEEN_BRIEF would render a misleading "## Queen brief" overlay (the
     // EI-506 reasoning, applied to the overwatch) — exclude it like the briefed Queen.
     if (kickoff && role !== 'overwatch' && (role !== 'queen' || !queenWakeBrief.trim())) env.QUEEN_BRIEF = kickoff;
+    // hive-inference-gateway routing (D-011 fix): the /invoke spawn path is the SECOND spawn
+    // chokepoint and had DRIFTED from the bee chokepoint (operator-spawn.ts:1045-1063) — it never
+    // routed Queen/overwatch/blueprint-run agents through the localhost pacing gateway, so they
+    // egressed with the single shared ~/.claude OAuth credential and 429'd on its WEEKLY cap (→ the
+    // ~3s/0-token wakes that placed nothing) while the 8-account pool sat idle with headroom. Mirror
+    // the bee path: when INFERENCE_GATEWAY is ON, point the agent at 127.0.0.1:<gatewayPort>, and
+    // (when INFERENCE_GATEWAY_MULTI_ACCOUNT is ALSO on) pin it to an AVAILABLE pool account so one
+    // credential's 5h/weekly cap can't starve the hive's central decider. Fail-soft: a selection
+    // miss → no pin (gateway routes to its active() account); flag OFF → {} → unchanged direct
+    // egress. Lazy-import to keep the route module's registration side-effect-free (cf. the
+    // orchestrator-runner import above). DURABLE FOLLOW-UP: extract a shared
+    // resolveSpawnGatewayEnv() both chokepoints call so they can't drift again (the parity test
+    // below guards it meanwhile).
+    {
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
+      const { selectSpawnAccount } = await import('../../../deployment/account-pool-store');
+      const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
+      let routeAccountId: string | undefined;
+      if (gwOn && (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system'))) {
+        routeAccountId = await selectSpawnAccount(activeWorkspaceId(), project.slug).catch(() => undefined);
+      }
+      Object.assign(env, gatewaySpawnEnv(gwOn, { accountId: routeAccountId, ownerId: hiveSpawnId ?? undefined }));
+      if (routeAccountId) env.PAPERCUSP_ACCOUNT_ID = routeAccountId;
+    }
     const spawnStartMs = Date.now();
     const r = await spawnInvokeOnce(
       project.path,

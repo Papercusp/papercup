@@ -3,8 +3,8 @@
  * el-tools-check.mjs — static drift check for el-agent-sync TOOLS list.
  *
  * Yesterday we hit "ElevenLabs runtime error: Client tool with name X is
- * not defined on client" because two CommandDefs (delegate_to_claude,
- * operator.approve-pending) were registered as `browser: 'optional'` in
+ * not defined on client" because CommandDefs such as
+ * operator.approve-pending were registered as `browser: 'optional'` in
  * the registry but pushed as `type: 'client'` in el-agent-sync's TOOLS
  * list. The browser exposes only browser:'required' commands as
  * client-tools, so the agent's tool list was a superset of the
@@ -72,8 +72,7 @@ for (const file of defFiles) {
     const agents = (b.match(/agents:\s*\[([^\]]+)\]/) || [])[1] || '';
     const agentList = agents.split(',').map((s) => s.trim().replace(/['"]/g, '')).filter(Boolean);
     // Match the property assignment, not occurrences of the words
-    // inside doc-comments (which the comment for delegate_to_claude
-    // legitimately contains). Anchor to start-of-line + whitespace.
+    // inside doc-comments. Anchor to start-of-line + whitespace.
     const browser = (b.match(/^\s*browser:\s*'(\w+)'/m) || [])[1];
     const kind = (b.match(/^\s*kind:\s*'(\w+)'/m) || [])[1];
     defs.push({ id, agents: agentList, browser, kind, file });

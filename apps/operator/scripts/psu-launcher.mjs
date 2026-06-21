@@ -519,7 +519,7 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
 /**
  * Does claude's OWN store hold a transcript for this session id? A tracked
  * adv row alone doesn't prove resumability: a launch that died before its
- * first persisted turn leaves the adv row (and the brain pin) behind with NO
+ * first persisted turn leaves the adv row behind with NO
  * `~/.claude/projects/<dir>/<id>.jsonl`, and `claude --resume <id>` then
  * fails "No conversation found". Pure-ish (reads FS); exported for tests.
  */
@@ -1695,9 +1695,8 @@ async function main() {
 
 /**
  * POST bootstrap-su + exec the raw backend — the fresh-SU launch tail shared
- * by the plain `psu` flow and `psu --brain`'s fresh-brain fallback. `brain`
- * pins the minted native session id server-side as THE canonical brain
- * (native-terminal-desktop D-013) before the session's first turn.
+ * by the plain `psu` flow. The retired `psu --brain` path is rejected before
+ * it reaches this launcher.
  */
 async function launchFreshSu(selections, args, { brain = false } = {}) {
   const res = await api('/api/agent-mcp/console/bootstrap-su', {
