@@ -22,6 +22,7 @@ import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from '@papercusp/operator-co
 import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
 import { readRegistry } from '@papercusp/operator-core/lib/workspace-registry';
 import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
+import { checkHomeHarnessResolves } from '@papercusp/operator-core/lib/harness-core';
 
 async function main(): Promise<void> {
   console.log('=== STEP 1: ensurePapercuspWorkspace ===');
@@ -55,13 +56,38 @@ async function main(): Promise<void> {
   for (const p of hReg.projects) {
     console.log(`  - ${p.slug}  →  ${p.path}`);
   }
+  // EI-2224 recurrence guard: assert the configured operator-home harness slug
+  // resolves to a registered project (alias-aware) — fail LOUD at boot instead of
+  // 404ing SILENTLY at dispatch time. A rename that leaves PAPERCUSP_HIVE_HOME_SLUG
+  // (or a fire-path env) on the retired slug used to dark the dispatcher ~34h.
   const homeSlug = operatorHomeHarnessSlug();
-  const homeProject = hReg.projects.find((p) => p.slug === homeSlug);
-  if (!homeProject) {
-    console.error(`FAIL: ${homeSlug} not in sentinel workspace registry`);
+  const homeCheck = await checkHomeHarnessResolves(homeSlug);
+  if (!homeCheck.ok) {
+    console.error(`FAIL: ${homeCheck.message}`);
     process.exit(1);
   }
-  console.log(`✓ ${homeSlug} registered in sentinel workspace`);
+  console.log(
+    homeCheck.aliased
+      ? `⚠ ${homeCheck.message}` // resolves, but only via the deprecated alias — clean up the pointer
+      : `✓ ${homeSlug} resolves to a registered project`,
+  );
+
+  // Guard the EXACT env that caused EI-2224: a stale PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS
+  // pointing at an unregistered slug starves the auto-implement lane. Only checked when set
+  // (unset ⇒ the routine defaults to its own install slug — WI-290).
+  const runnerEnv = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS?.trim();
+  if (runnerEnv) {
+    const runnerCheck = await checkHomeHarnessResolves(runnerEnv);
+    if (!runnerCheck.ok) {
+      console.error(`FAIL: PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS=${runnerEnv} — ${runnerCheck.message}`);
+      process.exit(1);
+    }
+    console.log(
+      runnerCheck.aliased
+        ? `⚠ PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS=${runnerEnv} resolves only via the retired-slug alias → "${runnerCheck.resolvedSlug}"; update it to drop the alias`
+        : `✓ PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS=${runnerEnv} resolves to a registered project`,
+    );
+  }
   // The shared hive is best-effort (skipped in a packaged install / on a transient
   // PG hiccup) — present it, but do NOT fail the bootstrap on a non-'skipped' miss.
   const papercuspHive = hReg.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG);

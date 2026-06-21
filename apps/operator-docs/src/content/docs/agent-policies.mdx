@@ -1,6 +1,14 @@
 ---
 title: Agent policies
 description: Binding rules for engineer-collaborator agents working on Papercusp. Plan first, verify before claiming done, scope discipline, and when to update docs.
+plans:
+  - plans-pg-canonical-migration-2026-06-03
+  - agent-plan-tracking-2026-05-20
+  - psu-wrappers-and-plan-tracked-launch-2026-05-30
+  - psu-wrapper-trio-and-terminal-launcher-2026-05-29
+  - fumadocs-to-starlight-2026-05-20
+  - papercusp-su-memory-2026-05-25
+  - nuqs-audit-2026-05-11
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -359,7 +367,7 @@ Specifically:
   `install-standalone-mcp.sh` to re-render the per-client playbooks and
   refresh the `psu` launcher (the old `omp-su` / `claude-su` / `codex-su`
   wrappers are retired — `psu` assembles playbook + MCP + flags per launch). (See
-  [Superuser mode → Per-client wrappers](/internal/docs/endpoint-system/superuser-mode#per-client-wrappers-and-playbooks).)
+  [Superuser mode → The `psu` launcher and playbooks](/internal/docs/endpoint-system/superuser-mode#the-psu-launcher-and-playbooks).)
 
 ## 16. Commits, branches, PRs
 

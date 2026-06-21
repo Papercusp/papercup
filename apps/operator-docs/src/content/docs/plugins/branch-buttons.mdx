@@ -1,6 +1,10 @@
 ---
 title: Branch buttons
 description: How a plugin contributes branch-scoped action buttons.
+plans:
+  - agent-action-registry-plan-2026-05-03
+  - endpoint-hono-elimination-2026-05-21
+  - fumadocs-to-starlight-2026-05-20
 ---
 
 A plugin can contribute action buttons that appear in the harness's
@@ -19,15 +23,25 @@ Declare in your plugin's `papercusp.json`:
     "production": {
       "build": {
         "url": "/api/plugins/@scope/myplugin/build-prod",
-        "displayName": "Build & deploy (prod)"
+        "method": "POST",
+        "displayName": "Build & deploy (prod)",
+        "description": "Build and deploy the production branch"
       }
     }
   }
 }
 ```
 
-When the user clicks the button, the substrate `POST`s to the URL with
-JSON body:
+A button is either a bare URL string (shorthand) or an object. The object
+form accepts these optional fields alongside `url`:
+
+- `method` — `"POST"` (default) or `"GET"`. With `GET`, the dispatch sends
+  **no** JSON body (see below).
+- `displayName` — label shown in the menu (defaults to the button name).
+- `description` — longer text surfaced by the branch-actions list API.
+
+When the user clicks the button, the substrate dispatches to the URL using
+the declared `method` (default `POST`). For `POST`, it sends this JSON body:
 
 ```json
 {
@@ -39,20 +53,33 @@ JSON body:
 }
 ```
 
+For `GET`, no request body is sent — the handler only gets the URL.
+
+The `env` field is the resolved manifest env (the `resolveEnv` output). The
+object button form does not declare its own `env` requirements today, so for
+plain URL buttons this is typically an empty object.
+
 Your handler can return:
 
-- `text/event-stream` — SSE; every `data:` line is forwarded verbatim
-  to the user's xterm modal. Use this for long-running build/deploy
-  scripts so the user sees progress.
+- `text/event-stream` — SSE; each event's `data` is forwarded verbatim
+  to the user's xterm modal. Frames whose SSE event name is `heartbeat`
+  are skipped as keepalive transport noise; all other events (regardless
+  of name) flow through. Use this for long-running build/deploy scripts
+  so the user sees progress.
 - `application/json` or `text/plain` — one-shot; the body is shown as
   a single output line.
 
 Non-2xx responses mark the run as `failed` with the HTTP status as the
-exit code.
+exit code. A transport-level failure to reach the URL at all (the fetch
+throws) is distinct: the run is marked `failed` with exit code `-1` and
+signal `fetch-error`.
 
 URLs are resolved against the operator's origin (`selfUrl()`). Most
 plugins point at their own routes mounted under `/api/plugins/<slug>/...`,
 but any operator-relative or absolute URL works.
+
+Button names must match `^[A-Za-z0-9_][A-Za-z0-9._-]*$`; entries that fail
+this check, and object declarations with no `url`, are silently skipped.
 
 ### Example handler (plugin `apiRoutes` — a Hono app)
 

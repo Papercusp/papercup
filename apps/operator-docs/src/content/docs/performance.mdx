@@ -1,12 +1,20 @@
 ---
 title: Performance — rules every agent must follow
 description: Render, bundle, network, layout, and measurement guidelines distilled from the apps that feel fastest, plus concrete anti-patterns from real audits of this codebase. Apply to all new code.
+plans:
+  - finish-next-removal-2026-06-01
+  - operator-vite-migration-2026-05-20
+  - fumadocs-to-starlight-2026-05-20
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
 
 
 import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Stack note — Next.js has been removed">
+This page was written when the operator app was a **Next.js App Router** project, and several rules below were framed around RSC / Server Components / Next-specific tooling. **That framework is gone.** The operator is now a **Vite SPA on TanStack Router** (`apps/operator-vite`, dev server on `:3055`) fronting a **Hono host** (`apps/operator/bin/hono-host.ts`, `:3070`). There is no `next` dependency, no RSC, no Server Components, and `'use client'` is an inert vestige. The `next/*` import surface (`next/image`, `next/dynamic`, `next/link`, `next/navigation`) is satisfied by TanStack-Router-backed shims under `apps/operator/lib/router-compat/{dynamic,link,navigation}.tsx`. RSC-only advice ("ship zero JS", "push `'use client'` to the leaf") does **not** apply to a SPA — read those rules as historical context. The *measured* perf wins (parallelize fs/PG, request-scoped read caches, virtualize/memoize lists, animate only transform/opacity) still hold; only the **named cause** "Next.js dev mode" and any Next-specific tool are stale. See `apps/operator/docs/plans/finish-next-removal-2026-06-01.md` and `apps/operator/docs/plans/operator-vite-migration-2026-05-20.md`.
+</Aside>
 
 <Aside type="caution" title="Read this BEFORE making any changes">
 **Every agent must read this page before changing code in this repo.** "It works" isn't the same as "it's fast." This page captures (a) practices from apps users consider best-in-class — Linear, Notion, Vercel, Figma, Discord, Stripe — and (b) **real anti-patterns we've shipped** that have caused production slowdowns. The "What not to do" section near the bottom is **load-bearing**: it lists specific traps with measured impact and the correct alternative. If a pattern in your change matches one of those traps, change the approach before continuing.
@@ -47,13 +55,16 @@ You can verify the first three locally with React DevTools' Profiler. The last t
 
 These are non-negotiable. CI / review will reject violations.
 
-### 1. Default to Server Components
+### 1. (Historical — RSC no longer applies) Keep the JS you ship small
 
-Next.js App Router lets you write Server Components (RSC) by default. **Don't add `'use client'` unless the file actually needs browser APIs / hooks / event handlers.** Server Components ship zero JS to the browser; they're free.
+> **Stale on this stack.** This rule assumed Next.js App Router Server Components. The operator is now a Vite SPA on TanStack Router — **everything ships to the browser; there are no Server Components and `'use client'` is a no-op.** The rule below is kept for context and for the parts that still generalize.
 
-When you do need a client component, push `'use client'` to the **leaf**, not the route. Example:
+The SPA-era takeaway: there is no free server-only tier, so be deliberate about what each route's chunk pulls in. Code-split heavy, not-immediately-needed pieces (see rule 14 with the `dynamic` shim), keep route bundles under the per-feature delta target, and don't hoist a one-route dependency into the shared chunk.
+
+Original (Next-era) guidance, for reference only:
 
 ```tsx
+// (Next.js App Router — no longer the stack)
 // Wrong — every server-rendered child of /reports also ships to the browser
 'use client';
 export default function ReportsPage() { ... }
@@ -105,13 +116,15 @@ If you absolutely need to animate size, use `motion`'s `layout` prop, which uses
 
 Animation effects with unstable deps trigger re-render storms. If you find yourself writing `useEffect(() => { setTimeout(...) }, [openCount])`, you're about to fire one timeout per render. Use `motion`'s declarative API (`animate` prop) instead.
 
-### 6. `'use client'` files cannot import server-only code
+### 6. Keep server-only code out of the browser bundle
 
-If a file has `'use client'`, you can't import `lib/db.ts`, `lib/credentials.ts`, or anything in `app/api/`. The build will tree-shake, but the boundary check might not. Keep client/server-only types and functions in separate files; cross via API routes.
+> **Reframed for the SPA.** The old wording ("`'use client'` files cannot import server-only code") was a Next.js RSC boundary rule. `'use client'` no longer means anything, and `app/api/` is gone — server endpoints live in the Hono host (`apps/operator/bin/hono-host.ts` + `lib/endpoint-route/`). The underlying hazard is still real on the SPA.
+
+Everything in the operator-vite client tree gets bundled and shipped to the browser. Don't import Postgres clients, credential loaders, `node:fs`, or other host-only modules into a component or a file the client tree reaches — it bloats the bundle and can leak secrets. Keep client/server-only types and functions in separate files and cross the boundary via the Hono API (`fetch`/`useSyncQuery`), not a direct import.
 
 ### 7. Don't add a dependency you'll only use once
 
-A 50 KB lib for a single gradient effect is not a fair trade. Open the bundle analyzer (`ANALYZE=true npm run build`) before adding any dep over ~5 KB gzip and prove it's worth the cost. If the team has a stalwart utility (e.g. `tw-animate-css` for animations, `lucide-react` for icons), use it instead of pulling a parallel one.
+A 50 KB lib for a single gradient effect is not a fair trade. Inspect the route's chunk with a Vite/rollup bundle visualizer (e.g. `rollup-plugin-visualizer` against the operator-vite build) before adding any dep over ~5 KB gzip and prove it's worth the cost. (The old `ANALYZE=true npm run build` / `@next/bundle-analyzer` flow is gone with Next — `@next/bundle-analyzer` is not installed, and `apps/operator`'s `build` script just runs the operator-docs Starlight build then the operator-vite Vite build.) If the team has a stalwart utility (e.g. `@formkit/auto-animate` / `motion` for animations, `lucide-react` for icons), use it instead of pulling a parallel one.
 
 ### 8. Always test under "Slow 4G" + "4× CPU throttle" in DevTools
 
@@ -145,9 +158,9 @@ A page that needs both a fast and a slow data source should stream — the fast 
 </Page>
 ```
 
-### 12. Use `<Image>` from `next/image` for any non-icon image
+### 12. Use the `next/image` shim (`@/lib/router-compat`) for any non-icon image, and always set explicit dimensions
 
-Next handles responsive sizes, AVIF/WebP serving, lazy loading, and proper aspect-ratio CSS. Hand-rolling `<img>` skips all of that and produces a guaranteed CLS regression.
+The `next/image` import resolves to the router-compat shim (`apps/operator/lib/router-compat`), not Next's optimizer — there is no Next image server in the SPA. Whichever `<img>`/`<Image>` you use, **set explicit `width`/`height` (or an aspect-ratio box) and `loading="lazy"` for below-the-fold images.** A bare `<img>` with no reserved box is a guaranteed CLS regression.
 
 ### 13. Move heavy CPU work to a Web Worker
 
@@ -161,13 +174,13 @@ The pattern: `new Worker(new URL('./worker.ts', import.meta.url), { type: 'modul
 
 ### 14. Lazy-load above-the-fold-but-not-critical features
 
-Plugin tabs in Config aren't visible until the user clicks Config. Tutorial dock isn't visible until invoked. Use `next/dynamic` for these:
+Plugin tabs in Config aren't visible until the user clicks Config. Tutorial dock isn't visible until invoked. Use the `dynamic` shim (`@/lib/router-compat/dynamic`) — or plain `React.lazy` + `<Suspense>` — for these:
 
 ```tsx
 const ProposalsPanel = dynamic(() => import('./ProposalsPanel'), { ssr: false });
 ```
 
-Reduces initial bundle for the harness page; the chunk loads when needed.
+(The `ssr: false` option is a no-op vestige on the SPA — there is no SSR — but the shim accepts it so call sites don't have to change.) Reduces the initial chunk for the harness route; the lazy chunk loads when needed.
 
 ### 15. Prefer CSS `contain` and `content-visibility` for off-screen work
 
@@ -189,7 +202,7 @@ Adopting the [animation strategy](#) (see also `lib/forms` style guide for forms
 | Modal / popover / dropdown / tab open/close | **CSS keyframes on Radix `data-state`** | Native compositor; zero JS cost. The `--ease-out` / `--ease-in` / `--dur-fast` / `--dur-normal` / `--dur-slow` tokens in `globals.css` are the standard. |
 | List item add / remove / reorder | **`@formkit/auto-animate`** | One-line `useAutoAnimate`. WAAPI direct; zero React re-renders. |
 | Counter tweens, choreography, drag, layout | **`motion`** | WAAPI-backed since v10. `<motion.div>`, `AnimatePresence`, `LayoutGroup`. |
-| Cross-route page transitions | **`next-transition-router`** | The shared `RouteTransitionProvider` centralizes navigation choreography and route lifecycle handling. |
+| Cross-route page transitions | **plain TanStack `<Link>`** (+ the Web Animations API for the two jump-gate links) | `next-transition-router` was removed as pure overhead when the app moved to TanStack Router. Ordinary navigation is now a plain TSR `<Link>` (instant, no transition machine); `RouteTransitionProvider` only plays a WAAPI transform/opacity "warp" on the two `jump-gate` anchors (`/` and `/adv`). The route progress bar is driven by `@bprogress/react`, not `next-transition-router`. |
 | **Don't use** | GSAP, Theatre, react-spring, popmotion | Either overkill, abandoned, or duplicates of what we already have. |
 
 **Reduced-motion is mandatory**:
@@ -213,7 +226,7 @@ Zero (`useSyncQuery`) gives us local-first reads. Don't bypass it with `fetch` f
 
 ### 17. Pre-fetch the next likely route
 
-If clicking the harness picker is going to navigate to a different harness, `<Link prefetch>` (default in App Router) loads its JS chunk before the click. Make sure your `Link` components stay as `Link`s and aren't replaced with `router.push` (which doesn't prefetch).
+If clicking the harness picker is going to navigate to a different harness, use a TanStack `<Link>` (via the router-compat shim) so its chunk can be preloaded before the click. TanStack Router preloads on intent (hover/touch) when configured; keep navigation as `<Link>` elements rather than imperative `router.push` / `navigate()`, which don't get the same preload behavior.
 
 ### 18. Cache server responses appropriately
 
@@ -221,7 +234,7 @@ If clicking the harness picker is going to navigate to a different harness, `<Li
 
 ### 19. `preconnect` to cross-origin API hosts
 
-For Anthropic, Cloudflare, Chatwoot, etc., add `<link rel="preconnect" href="https://api.anthropic.com">` in `app/layout.tsx`. Buys you 100–300 ms on the first request.
+For Anthropic, Cloudflare, Chatwoot, etc., add `<link rel="preconnect" href="https://api.anthropic.com">` in the SPA's root HTML (`apps/operator-vite/index.html` `<head>`, or the root layout component). Buys you 100–300 ms on the first request.
 
 ## Layout / paint rules
 
@@ -282,7 +295,7 @@ When an animation feels janky:
 
 ### 26. Bundle analyzer before merging a dep
 
-`ANALYZE=true npm run build` (Next.js built-in via `@next/bundle-analyzer`). Look at the route's chunk for unexpected size. Anything > 100 KB on a single route is suspect.
+Run a Vite/rollup bundle visualizer (e.g. `rollup-plugin-visualizer`) against the operator-vite build and look at the route's chunk for unexpected size. Anything > 100 KB on a single route is suspect. (The old `ANALYZE=true npm run build` / `@next/bundle-analyzer` path is gone — `@next/bundle-analyzer` is not installed and the build is no longer a Next build.)
 
 ## Anti-patterns we've fallen into before — frontend
 
@@ -301,16 +314,16 @@ The 2026-05-03 perf audit found these patterns *had been shipped* and were causi
 
 ### A1. Don't `await` filesystem operations in a serial `for` loop
 
-If you read N files sequentially, **Next.js dev mode adds ~150ms per `fs.readFile`** (HMR file-tracking instrumentation wraps every fs call). 68 files × 150ms = 10 seconds **just from the loop shape**. The same code in plain Node is 14ms.
+If you read N files sequentially, the per-call latency multiplies: in the audited environment ~150ms per `fs.readFile` × 68 files = 10 seconds **just from the loop shape**, where the same code parallelized was ~14ms. (The audit measured this under the old Next.js dev server, whose HMR file-tracking instrumentation wrapped every fs call; that named cause is **stale** — dev now runs the Vite SPA on `:3055` plus a tsx/Hono host on `:3070`, with no Next dev server wrapping fs. The parallelize-the-reads advice still stands regardless of the runtime.)
 
 ```ts
-// ❌ Wrong — measured 10.9s in Next.js dev for 68 files
+// ❌ Wrong — measured 10.9s for 68 files (serial loop shape)
 for (const h of harnesses) {
   const raw = await fs.readFile(join(dir, h, 'config.json'), 'utf8');
   out[h] = JSON.parse(raw);
 }
 
-// ✅ Right — same files, ~150ms (10× speedup, single-call latency)
+// ✅ Right — same files, ~single-call latency (10×+ speedup)
 const results = await Promise.all(harnesses.map(async (h) => {
   const raw = await fs.readFile(join(dir, h, 'config.json'), 'utf8');
   return [h, JSON.parse(raw)] as const;
