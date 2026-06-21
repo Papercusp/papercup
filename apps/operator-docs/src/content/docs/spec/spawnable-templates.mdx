@@ -49,7 +49,7 @@ The `kind` is informational for now; the executor doesn't enforce it on the pare
 
 ## `requires` fields
 
-Declarative metadata listing the fields a parent should supply in the `scaffold_harness` action body. Today the executor (`doScaffoldHarness` in `packages/operator-core/lib/execute-action.ts`) hard-validates three fields, in this order: `projectSlug` against `/^[a-z0-9][a-z0-9-]{1,63}$/`, then `template` and `spec` as non-empty. The per-template `requires` list is **not** enforced per-field at the executor, and is **not** read anywhere else — no code consumes `spawnable.requires`. It is purely documentary metadata: it is not surfaced to the spawning role's prompt, and it is not echoed in the `dryRun` result (which returns only `templateKind`).
+Declarative metadata listing the fields a parent should supply in the `scaffold_harness` action body. Today the executor (`doScaffoldHarness` in `packages/operator-core/lib/execute-action.ts`) hard-validates three fields, in this order: `projectSlug` against `/^[a-z0-9][a-z0-9-]{1,63}$/`, then `template` and `spec` as non-empty. The per-template `requires` list is **not** enforced per-field at the executor, and is **not** read anywhere else — no code consumes `spawnable.requires`. It is purely documentary metadata: it is not surfaced to the spawning role's prompt, and it is not echoed in the `dryRun` result (which returns `slug`, `path`, `template`, `parent_slug`, and `templateKind` — not the `requires` list).
 
 ```ts
 "requires": ["spec"]

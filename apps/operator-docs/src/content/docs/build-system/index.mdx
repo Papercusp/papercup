@@ -3,6 +3,12 @@ title: Build system overview
 description: Where each piece is built, what produces what, and the one URL that runs all of it.
 sidebar:
   order: 1
+plans:
+  - finish-next-removal-2026-06-01
+  - operator-vite-migration-2026-05-20
+  - operator-core-headless-serve-2026-06-04
+  - fumadocs-to-starlight-2026-05-20
+  - mac-desktop-release-readiness-2026-06-11
 ---
 
 :::caution[The operator is Vite now, not Next.js]
@@ -14,7 +20,9 @@ a TanStack-Router SPA). Read any "Next.js app / Next standalone / `next dev` /
 longer used; running/browsing the old standalone webapp is what's retired — a
 `PreToolUse` hook blocks browser nav to `:3055`/`:3070`. (Note: `apps/operator/app/**`
 is **not** dead code — operator-vite still imports its live page bodies via the
-`@/app` alias + `next/*` compat shims.) See the `operator-next-is-retired` insight.
+`@/app` alias, with the former `next/*` imports rewritten to a re-implemented
+compat layer under `@/lib/router-compat/*` — `dynamic.tsx`, `link.tsx`,
+`navigation.tsx` — not `next/*` shims.) See the `operator-next-is-retired` insight.
 :::
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.

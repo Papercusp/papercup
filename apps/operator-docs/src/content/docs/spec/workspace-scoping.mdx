@@ -75,7 +75,7 @@ Tables in scope (initial enumeration):
 
 Two more tables — `harness_shared.system_principals` and `harness_shared.pi_sessions` — were created with a built-in `workspace_id NOT NULL` column and gained workspace-isolation RLS plus a `<table>_workspace_nonempty` CHECK constraint in the same rollout.
 
-This 10-table list was the initial Phase-A enumeration. Workspace-scoping/RLS has since been rolled out to the broad majority of `harness_shared.*` tables — the realized scope is roughly 166 `*_workspace_isolation` policies (e.g. `adv_sessions`, `agent_chats_consolidated`, `feature_audit_consolidated`, `harness_plan_status`, `harness_project_files`, and many more), an order of magnitude beyond the original ten.
+This 10-table list was the initial Phase-A enumeration. Workspace-scoping/RLS has since been rolled out to the broad majority of `harness_shared.*` tables — the realized scope is roughly 150 `*_workspace_isolation` policies (e.g. `adv_sessions`, `agent_chats_consolidated`, `feature_audit_consolidated`, `harness_plan_status`, `harness_project_files`, and many more), an order of magnitude beyond the original ten.
 
 Default `''` on the column lets the migration land additively before backfill; the migration script populates real values, after which `''` is rejected. A runtime trigger (`harness_shared.fill_workspace_id_from_projects()`) also resolves `workspace_id` from `projects` (by `harness_slug`) on insert, falling back to `'default'` when it cannot be resolved — see [Migration script](#migration-script).
 

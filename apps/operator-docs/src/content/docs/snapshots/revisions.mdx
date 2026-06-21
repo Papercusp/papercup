@@ -3,18 +3,40 @@ title: Revisions
 description: Mapping from each review item across the two rounds of feedback to the section that addresses it (or to the deferred bucket with reasoning). Future readers ask "why is X complicated" — the answer lives here.
 sidebar:
   order: 7
+plans:
+  - dbos-durable-flows-adoption-2026-06-02
+  - retire-snapshots-instance-spec-2026-06-09
+  - self-contained-migration-baseline-2026-06-02
+  - revive-plugin-system-2026-06-04
+  - papercusp-dogfood-phase1b-oauth-clone-attestation-2026-05-24
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Historical design-review log — code is the source of truth">
+This page is the round-by-round design-review record for the snapshots V1
+design as it stood in May 2026. It is **not** a description of shipped
+behavior. Since these reviews, much of the build-script / OAuth substrate
+*was* implemented (`packages/operator-core/lib/provision/` and
+`/oauth/`), and the separately-scoped snapshot-**export** subsystem was
+later **retired** (`@papercusp/export-state`, the `snapshots:*` tools, and
+the `kind=snapshot` Cupboard were dropped — see
+`retire-snapshots-instance-spec-2026-06-09`, migration 199). Several
+decisions below were superseded during implementation; the most
+load-bearing divergences are flagged inline. Where this log and the code
+disagree, **trust the code.**
+</Aside>
 
 This page tracks the substantive design decisions made during review. Each
 item links back to the review prompt that surfaced it and forward to the
 section that addresses it (or to the deferred bucket with the reasoning).
 
-The plan has been through **six rounds of external review** so far.
-Each round's reviewer was rigorous; their feedback is preserved here
-verbatim in summary so future readers can audit the design rationale.
-A seventh sign-off review is planned before implementation begins.
+The plan went through **six rounds of external review** before
+implementation. Each round's reviewer was rigorous; their feedback is
+preserved here verbatim in summary so future readers can audit the design
+rationale. A seventh sign-off review was planned before implementation; the
+"implementation begins" framing below is preserved as the historical
+record (see the banner above).
 
 ## Round 1 (2026-05-08)
 
@@ -82,7 +104,7 @@ tiers. All accepted with concrete refinements.
 | **Medium 7.** Skip-teardown silent cost leak | **Accepted, deferred to V1.1.** 7-day passive banner on operator home tile listing orphan resources. | [build-scripts § Skip-teardown banner](./build-scripts#skip-teardown-banner-v11) |
 | **Medium 8.** POSIX/bash compat across platforms | **Accepted, deferred to V1.1.** Per-platform script paths (`setup.path.linux` / `.darwin`) optional + bashism linter at publish time. | [open-questions § V1.1](./open-questions#v11-improves-the-system-ships-fast-follow) |
 | **Medium 9.** verify polling at scale | **Accepted in V1.** Visibility-aware: foreground-only by default, no periodic background polling unless explicitly opted in. | [build-scripts § Verify](./build-scripts#verify-semantics) |
-| **Medium 10.** Multi-machine fork race | **Accepted in V1.** PG-based `harness_shared.operator_claims` with PG advisory locks + heartbeat-renewed `expires_at`. Replaces file-based heartbeat. | [build-scripts § Recovery](./build-scripts#recovery-contract) |
+| **Medium 10.** Multi-machine fork race | **Designed as** PG-based `harness_shared.operator_claims` with advisory locks + heartbeat-renewed `expires_at`, replacing file-based heartbeat. **Superseded in implementation:** this machinery was built and then removed in the DBOS-only cutover. The `operator_claims` table was dropped (migration 112) and the advisory-lock + 30s heartbeat were deleted entirely. Concurrency is now serialized by the DBOS provision workflow's `deduplicationID`; a PENDING workflow holds its dedup slot for its whole lifetime with **no heartbeat** (see `dbos-durable-flows-adoption-2026-06-02`). | [build-scripts § Recovery](./build-scripts#recovery-contract) |
 | **Minor 11.** ctx.oauth.token() refresh storm | **Accepted.** Promise-cache so concurrent calls share the in-flight refresh. | [oauth-integration § Concurrent refresh](./oauth-integration#concurrent-refresh-storm) |
 | **Minor 12.** OAuth single-tenancy V1.1 callout | **Accepted.** Promoted to V1.1 explicit line item. | [oauth-integration § Multi-tenancy](./oauth-integration#multi-tenancy-callout-v11) |
 | **Minor 13.** Audit log fail-loud on encrypted volumes | **Accepted in V1.** Substrate refuses to run if audit dir unwriteable. | [build-scripts § Fail-loud](./build-scripts#fail-loud-on-encrypted-locked-volumes) |
@@ -97,7 +119,7 @@ Round-4 reviewer surfaced four substantive points + a process commitment.
 | **A.** Bundle bwrap isn't enough — needs install-time smoke test | **Accepted.** `bwrap --ro-bind / / --unshare-all true` at first install; failure → permanent `sandbox_available: false` mark + signed-only mode for substrate's lifetime. | [build-scripts § Bwrap smoke test](./build-scripts#bwrap-smoke-test-linux-install-flow) |
 | **B.** macOS signed-or-refuse needs per-run dev escape for plugin authors | **Accepted.** `PAPERCUSP_DEV_UNSIGNED=<sha256>` per-run env var, hash-bound, no persistence. Used together with `papercusp plugin install --dev`. | [build-scripts § Per-run unsandbox escapes](./build-scripts#per-run-unsandbox-escapes) |
 | **C.** Per-(publisher, plugin) trust doesn't cover ownership transfer | **Accepted in V1.** Trust keyed on `publisher_id` (signing-key fingerprint); different fingerprint on new version triggers fresh consent. Closes xz-utils-in-miniature. | [build-scripts § Ownership transfer](./build-scripts#ownership-transfer) |
-| **D.** Multi-machine fork race needs PG primitive, not file-based heartbeat | **Accepted in V1.** PG-backed `operator_claims` table with advisory lock + heartbeat-renewed expires_at. | [build-scripts § Recovery](./build-scripts#recovery-contract) |
+| **D.** Multi-machine fork race needs PG primitive, not file-based heartbeat | **Designed as** a PG-backed `operator_claims` table with advisory lock + heartbeat-renewed `expires_at`. **Superseded:** implemented, then removed in the DBOS-only cutover — see Round 3 item 10 above. The DBOS provision workflow's `deduplicationID` is now the cross-request mutex (no claims table, no heartbeat). | [build-scripts § Recovery](./build-scripts#recovery-contract) |
 | **Process.** Vetted-publisher allowlist needs documented gate | **Accepted in V1.** Apply via GitHub issue at github.com/papercupai/papercusp-publishers; reviewed within N business days; allowlist published; appeals via issue thread. | [open-questions § V1](./open-questions#v1--gates-safe-to-release-to-a-vetted-publisher-alpha) |
 
 ## Round 5

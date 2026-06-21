@@ -448,6 +448,9 @@ import './config/list-overrides';
 import './config/reset-overrides';
 // live-configurability-audit-2026-06-20 P-003 — runtime-settable deploy-migration lock_timeout:
 import './db/migrate-policy';
+// live-configurability-audit-2026-06-20 P-002 — read/retune/pause the system routines (git-sync, …):
+import './routines/list';
+import './routines/set';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

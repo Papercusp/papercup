@@ -1,9 +1,19 @@
 ---
 title: TypeScript Layers
-description: The four-layer model the operator is migrating toward — core / host / routes / client — and the empty tsconfig scaffold under apps/operator/layers/ that names them.
+description: The four-layer model — core / host / routes / client — and the inert tsconfig scaffold under apps/operator/layers/ that names them. The scaffold (Phase 6a) was dropped 2026-06-14; the boundary is now enforced physically by the package split.
 sidebar:
   order: 3
+plans:
+  - host-architecture-2026-05-20-v2
+  - next-removal-2026-05-20
+  - endpoint-hono-elimination-2026-05-21
+  - route-audit-2026-05-20
+  - endpoint-route-migration-2026-05-20
 ---
+
+:::caution[Status — dropped 2026-06-14]
+This scaffold (Phase 6a) was **dropped** per owner decision P-004 in [host-architecture-2026-05-20-v2](https://github.com/papercusp/papercusp/blob/main/apps/operator/docs/plans/host-architecture-2026-05-20-v2.md). Next has been removed and `apps/operator/app/api` is empty (zero `route.ts` files, `_hono/` deleted); the client moved to `apps/operator-vite`. The core/host/client boundary is now enforced **physically** by the package split (`tooldef` / `@papercusp/host-platform` / `operator-core` vs `apps`), so the tsconfig-projects layering described below is no longer planned — a `tsc`-projects scaffold would only fight Vite aliasing and duplicate the package boundary. The tsconfigs under `apps/operator/layers/` remain as inert scaffolding, and the route-migration narrative (Phase 4) below was superseded wholesale. Read the rest as design intent, not a live migration path.
+:::
 
 ## What this is
 
