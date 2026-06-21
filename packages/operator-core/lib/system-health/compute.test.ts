@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, type EscalationAgingInput } from './compute';
 import { PANEL_LABELS } from './types';
 
 describe('observationRole — per-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
@@ -23,6 +23,54 @@ describe('observationRole — per-role attribution (close-observation-attributio
     // nor (for tool captures) `sourceRole` — the old `it.sourceRole ?? it.origin`
     // read undefined on both → bucketed 100% as 'unknown'.
     expect(observationRole({ payload: { filedByRole: 'bee' } })).toBe('bee');
+  });
+});
+
+describe('overwatchScorecardSkipped — monitor-the-monitor (hive-loop-supervision 2026-06-21)', () => {
+  const base = { alive: true as boolean | null, lastWakeAt: 1_000_000, now: 1_000_000 + 6 * 60_000, freshnessStatus: 'stale' as const };
+  it('skipped when alive + settled past grace + not fresh', () => {
+    expect(overwatchScorecardSkipped(base)).toBe(true);
+    expect(overwatchScorecardSkipped({ ...base, freshnessStatus: 'partial-only' })).toBe(true);
+  });
+  it('NOT skipped when fresh', () => {
+    expect(overwatchScorecardSkipped({ ...base, freshnessStatus: 'fresh' })).toBe(false);
+  });
+  it('NOT skipped within the grace (turn may still be in flight — no mid-turn false positive)', () => {
+    expect(overwatchScorecardSkipped({ ...base, now: base.lastWakeAt + 60_000 })).toBe(false);
+  });
+  it('NOT skipped when dark (alive:false) or never woke (lastWakeAt:null)', () => {
+    expect(overwatchScorecardSkipped({ ...base, alive: false })).toBe(false);
+    expect(overwatchScorecardSkipped({ ...base, lastWakeAt: null })).toBe(false);
+  });
+});
+
+describe('scoutHealthVerdict — ideation observability (hive-loop-supervision 2026-06-21)', () => {
+  const now = 1_000_000_000;
+  const t = (agoMs: number, status: string, ideas?: number) => ({ status, ideasGenerated: ideas, tickAt: new Date(now - agoMs).toISOString() });
+  it('transport-death: cycles RAN in-window but 0 ideas', () => {
+    const v = scoutHealthVerdict([t(60_000, 'ran', 0), t(120_000, 'ran', 0)], now);
+    expect(v.transportDeath).toBe(true);
+    expect(v.ranInWindow).toBe(2);
+    expect(v.ideasInWindow).toBe(0);
+  });
+  it('healthy: cycles ran with ideas (newest run + window sum)', () => {
+    const v = scoutHealthVerdict([t(60_000, 'ran', 5), t(120_000, 'ran', 3)], now);
+    expect(v.transportDeath).toBe(false);
+    expect(v.ideasInWindow).toBe(8);
+    expect(v.ideasLastRun).toBe(5);
+  });
+  it('only gated/idle ticks → NOT transport-death (no full cycle = unknown, not dead)', () => {
+    const v = scoutHealthVerdict([t(60_000, 'gated'), t(120_000, 'gated')], now);
+    expect(v.transportDeath).toBe(false);
+    expect(v.ranInWindow).toBe(0);
+    expect(v.lastRanAt).toBeNull();
+  });
+  it('window-bounds the ran tally but lastTickAt is the newest overall', () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const v = scoutHealthVerdict([t(dayMs + 60_000, 'ran', 9)], now); // older than 24h
+    expect(v.ranInWindow).toBe(0);
+    expect(v.transportDeath).toBe(false);
+    expect(v.lastTickAt).not.toBeNull();
   });
 });
 

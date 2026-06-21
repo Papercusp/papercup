@@ -47,6 +47,7 @@ import type {
   InfraHealth,
   SuFleetHealth,
   OverwatchPanelHealth,
+  ScoutHealth,
 } from './types';
 import { PANEL_LABELS } from './types';
 import { isOperationalEscalation } from '../attention/adapters';
@@ -880,6 +881,62 @@ export function overwatchScorecardSkipped(args: {
   return args.freshnessStatus !== 'fresh';
 }
 
+/**
+ * PURE: derive Scout ideation health from recent tick rows (newest-first, as
+ * readScoutTicks returns). Transport-death = cycles RAN in-window but produced ZERO
+ * ideas (a transport failure, not low quality) — the plan's "Scout 0 ideas/24h"
+ * signal. Surfaced so the Overwatch can rate ideation-quality instead of 'unknown'.
+ */
+export function scoutHealthVerdict(
+  ticks: ReadonlyArray<{ status: string; ideasGenerated?: number; tickAt: string }>,
+  nowMs: number,
+  windowMs: number = 24 * 60 * 60 * 1000,
+): ScoutHealth {
+  const ms = (t: { tickAt: string }) => Date.parse(t.tickAt);
+  const inWin = ticks.filter((t) => Number.isFinite(ms(t)) && nowMs - ms(t) <= windowMs);
+  const ran = inWin.filter((t) => t.status === 'ran');
+  const ideasInWindow = ran.reduce((s, t) => s + (t.ideasGenerated ?? 0), 0);
+  const newestRan = ran[0]; // filter preserves the newest-first order
+  const newest = ticks[0];
+  return {
+    lastTickAt: newest && Number.isFinite(ms(newest)) ? ms(newest) : null,
+    lastRanAt: newestRan ? ms(newestRan) : null,
+    ideasLastRun: newestRan?.ideasGenerated ?? 0,
+    ideasInWindow,
+    ranInWindow: ran.length,
+    transportDeath: ran.length > 0 && ideasInWindow === 0,
+  };
+}
+
+async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
+  return panelSafe<ScoutHealth>('scout', async () => {
+    const { readScoutTicks } = await import('../scout/tick-ledger');
+    const ticks = await readScoutTicks({ workspaceId: ctx.ws, limit: 200 });
+    const data = scoutHealthVerdict(ticks, ctx.now);
+    const status: PanelStatus = data.transportDeath ? 'crit' : data.lastRanAt == null ? 'unknown' : 'ok';
+    const summary =
+      data.lastRanAt == null
+        ? data.lastTickAt == null
+          ? 'no scout ticks recorded'
+          : `no full cycle in 24h — last tick ${agoMin(data.lastTickAt, ctx.now)} (gated/idle)`
+        : data.transportDeath
+          ? `TRANSPORT-DEATH — ${data.ranInWindow} cycle(s) ran in 24h but 0 ideas generated (a transport failure, not low quality)`
+          : `${data.ideasInWindow} idea(s)/24h over ${data.ranInWindow} cycle(s); last run ${agoMin(data.lastRanAt, ctx.now)} (${data.ideasLastRun} ideas)`;
+    return {
+      status,
+      summary,
+      data,
+      link: { label: 'Learning', href: '/adv?tab=learning' },
+      metrics: [
+        m('ideas 24h', data.ideasInWindow, data.transportDeath ? 'crit' : undefined),
+        m('cycles 24h', data.ranInWindow),
+        m('last run', agoMin(data.lastRanAt, ctx.now)),
+        m('last tick', agoMin(data.lastTickAt, ctx.now)),
+      ],
+    };
+  });
+}
+
 async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPanelHealth>> {
   return panelSafe<OverwatchPanelHealth>('overwatch', async () => {
     const { ws, now, hiveSlug } = ctx;
@@ -1024,17 +1081,18 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
 
   const [
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,
-    plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch,
+    plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
   ] = await Promise.all([
     collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
     collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
     collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
     collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx), collectOverwatch(ctx),
+    collectScout(ctx),
   ]);
 
   const panels: SystemHealthPanels = {
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,
-    plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch,
+    plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
   };
   const overall = worstStatus(Object.values(panels).map((p) => p.status));
   // queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), kept DISTINCT

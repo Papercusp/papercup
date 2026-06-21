@@ -11,6 +11,7 @@ import {
   type ParamView,
 } from '@papercusp/orchestrator/blueprint/params';
 import type { BlueprintParams } from '@papercusp/orchestrator/blueprint/schema';
+import { OverridableSettingStyle } from '@papercusp/ui-primitives/override';
 import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import SavedPromptsSection from './SavedPromptsSection';
@@ -268,9 +269,19 @@ function ParamControl({
         <span style={{ width: labelW, fontSize: 11.5, color: 'var(--fg-mute)' }}>{spec.label}</span>
         {control}
         {view.overridden && !spec.secret && (
-          <span style={{ fontSize: 10.5, color: 'var(--fg-mute)' }} title="overridden (differs from the default)">
-            ●
-          </span>
+          // The override marker now uses the shared pc-override badge chrome
+          // (sentinel-herald P-035) instead of a hand-rolled ● dot. Presence-
+          // based + shown only when overridden — same condition as before, so
+          // non-overridden rows stay bare (no always-on "default" badge).
+          <>
+            <OverridableSettingStyle />
+            <span
+              className="pc-override-badge pc-override-badge--on"
+              title="overridden (differs from the default)"
+            >
+              override
+            </span>
+          </>
         )}
       </div>
       {(spec.description || spec.affects) && (

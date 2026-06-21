@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { toast } from 'sonner';
+import { OverridableSetting } from '@papercusp/ui-primitives/override';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { DraftNumberInput } from '@/lib/forms';
@@ -293,15 +294,22 @@ export default function UserSettingsPage() {
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
+                  {/* Override badge + Clear (reset) now route through the shared
+                      <OverridableSetting> primitive (sentinel-herald P-035).
+                      Presence-based: a key present in effective.user IS an
+                      override (preserves the prior `spec.key in effective.user`
+                      semantics — a re-stated workspace value still shows). */}
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
-                    <strong style={{ fontSize: 14 }}>{spec.label}</strong>
+                    <OverridableSetting
+                      label={spec.label}
+                      isOverridden={overridden}
+                      onReset={() => clearOverride(spec.key)}
+                      resetLabel="Clear"
+                    />
                     {overridden && (
-                      <>
-                        <span style={{ padding: '1px 6px', borderRadius: 3, background: 'var(--accent)', color: 'var(--accent-ink)', fontSize: 10, fontWeight: 600 }}>OVERRIDE</span>
-                        <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
-                          workspace: <code>{formatValue(workspaceValue)}</code>
-                        </span>
-                      </>
+                      <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
+                        workspace: <code>{formatValue(workspaceValue)}</code>
+                      </span>
                     )}
                   </div>
                   <p style={{ color: 'var(--fg-mute)', fontSize: 12, margin: '0 0 8px' }}>{spec.help}</p>
@@ -311,15 +319,6 @@ export default function UserSettingsPage() {
                     onChange={(v) => setOverride(spec.key, v)}
                   />
                 </div>
-                {overridden && (
-                  <button
-                    type="button"
-                    onClick={() => clearOverride(spec.key)}
-                    style={{ flexShrink: 0, padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
-                  >
-                    Clear
-                  </button>
-                )}
               </div>
             );
           })}
