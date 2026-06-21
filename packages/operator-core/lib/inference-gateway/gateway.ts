@@ -954,7 +954,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (!release) {
       queued429++;
-      const retryAfterSec = Math.max(1, Math.ceil((gov.state.pausedUntil - Date.now()) / 1000));
+      const retryAfterSec = Math.min(BEE_RETRY_AFTER_CAP_S, Math.max(1, Math.ceil((gov.state.pausedUntil - Date.now()) / 1000)));
       log('warn', `admission timed out for ${model}; 429 retry-after ${retryAfterSec}s (account ${active.accountId})`);
       sendJson(
         res,

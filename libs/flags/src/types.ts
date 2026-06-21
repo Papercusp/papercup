@@ -455,6 +455,11 @@ export const FLAGS = {
   // override store is empty by default ⇒ baked defaults ⇒ byte-identical; flip OFF to ignore any
   // stored override and force the baked defaults. Operational (not auth/spend), so not dark.
   TELEMETRY_BUFFER_CONFIG: "papercusp-telemetry-buffer-config",
+  // live-configurability-audit-2026-06-20 P-020 — runtime per-workspace txn lock_timeout/statement_timeout
+  // (db:txn-timeouts) applied by inWorkspaceTxn via the @papercusp/locks getTxnTimeouts seam. Default-ON
+  // kill-switch: the override store is empty by default ⇒ baked 5s/5s ⇒ byte-identical; flip OFF to ignore
+  // any stored override and force the defaults. Operational (not auth/spend), so not dark.
+  TXN_TIMEOUTS_CONFIG: "papercusp-txn-timeouts-config",
   // agent-capability-confinement-2026-06-13 B-06 (P-011) ⨯ queen-autonomy-policy D-012/P-110:
   // the Queen decision-ledger ACTION-CHOKEPOINT emit — one append-only row per governed
   // (tier != 'low') action by a non-SU principal, from the dispatch postInvoke seam. ON by
@@ -1223,6 +1228,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // P-020 — telemetry-buffer config is operational + safe (empty store = byte-identical); ships
   // ON per the default-on policy, as a kill-switch (OFF forces the baked telemetry-buffer defaults).
   [FLAGS.TELEMETRY_BUFFER_CONFIG]: true,
+  // P-020 — txn-timeouts config is operational + safe (empty store = byte-identical 5s/5s); ships
+  // ON per the default-on policy, as a kill-switch (OFF forces the baked 5s/5s txn timeouts).
+  [FLAGS.TXN_TIMEOUTS_CONFIG]: true,
   // ON by default — Phase-0 foundation record-keeping (B-06 / P-011), same call as
   // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
   // OFF is the kill-switch (the emit no-ops).
