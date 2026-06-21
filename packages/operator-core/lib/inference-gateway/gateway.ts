@@ -1054,11 +1054,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
         if (up.status === 429 || up.status === 529) {
           upstream429++;
-          // AIMD signal (B-GW-1): an upstream 429 is the per-IP-RPM throttle signal. Feed it so a
-          // SUSTAINED run shrinks admission concurrency (529 is server-overload, not per-IP RPM, so it
-          // does NOT count — reducing OUR concurrency can't ease an Anthropic-wide overload). A lone
-          // transient 429 is absorbed by the controller's leaky bucket; only a storm trips a decrease.
-          if (up.status === 429) aimd.recordThrottle();
+          // AIMD signal (B-GW-1, refined 2026-06-21 budget-aware routing): a 429 shrinks GLOBAL admission
+          // concurrency ONLY when it's genuine pool-wide over-drive — i.e. we could NOT route it around to a
+          // healthy account. recordThrottle() is therefore DEFERRED to the failover decision below: a
+          // per-account quota/throttle 429 that successfully fails over to a healthy account is a ROUTING
+          // event, NOT global pressure, so it must not shrink concurrency. (The bug it fixes: every 429 —
+          // incl. quota-429s from the 98-99%-maxed accounts the round-robin kept hitting — recorded a
+          // throttle, collapsing effective→AIMD-floor while 5/8 accounts sat at 55-91% headroom, so 34
+          // requests queued behind a 4-wide gate and timed out → the owner-reported bee "API errors".)
+          // 529 is server-overload (not per-IP RPM) and never counts.
           const reset = parseRateReset(hobj);
           const unifiedRejected = gov.snapshot().unified?.rejected === true;
           // Anthropic's AUTHORITATIVE per-request signal: `x-should-retry: true` on a 429 means a SHORT
@@ -1149,6 +1153,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // total latency, so a request can never hang. A usage cap / multi-hour reset is forwarded, not waited.
         if (internalRetry) {
           let proceed = false;
+          // Fix B (budget-aware routing): did this per-account 429 successfully fail over to a HEALTHY,
+          // different account? If so it's a routing event, not global over-drive — AIMD must ignore it.
+          let routedAround = false;
           let backoff = internalRetry.backoffMs;
           // A genuinely transient throttle resets within the recovery cap; a usage cap / org pause is hours out.
           const transient =
@@ -1163,6 +1170,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 gov = governorForAccount(model, active.accountId);
                 attempt++;
                 proceed = true;
+                routedAround = true; // routed a per-account quota-429 to a healthy account → NOT global pressure
               }
             } else {
               // 529 server-overload: back off + retry the SAME account (no penalty/rotation).
@@ -1196,6 +1204,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             shedAllThrottled++;
             log('warn', `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms hit on '${active.accountId}' (model ${model}) → shed 429, free slot (wedge-prevention ladder)`);
           }
+          // AIMD throttle signal (Fix B): record a throttle ONLY for a 429 we could NOT route around to a
+          // healthy account — the genuine pool-wide-saturation signal (we waited / shed / will forward it).
+          // A routed-around per-account quota-429 stays invisible to global AIMD, so one account hitting its
+          // quota can no longer choke the whole gateway's admission concurrency.
+          if (up.status === 429 && !routedAround) aimd.recordThrottle();
           if (proceed) {
             clearStall(); // this attempt is done; the next iteration arms a fresh deadline
             peekedRest?.destroy(); // discard the throttled/capped account's body
