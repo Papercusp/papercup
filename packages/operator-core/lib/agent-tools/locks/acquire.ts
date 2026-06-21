@@ -56,9 +56,7 @@ import {
   type FileLockAcquireResult,
 } from '../../authority/file-lock-authority-ops';
 
-const DEFAULT_TTL_SEC = 1200;
-const MAX_TTL_SEC = 3600;
-const MAX_WAIT_SEC = 300;
+import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
  *  SLEEPING waiter's ticket stays grant-eligible. Much longer than the 300s
@@ -90,7 +88,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   // Framework default per-tool timeoutSec is 60s. wait.max_sec can
-  // be up to MAX_WAIT_SEC=300, so we'd be killed mid-wait at 60s.
+  // be up to MAX_WAIT_SEC (the lock-config cap), so we'd be killed mid-wait at 60s.
   // Bump above MAX_WAIT_SEC with a margin for the final-busy retry
   // + unsubscribe + progress-emit work that runs after wait_until.
   timeoutSec: MAX_WAIT_SEC + 30,

@@ -42,11 +42,12 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import { normalizePaths, tryAcquire, tryRelease, type AcquireBusy } from './su-lock-store';
 import { enrichBusy } from './enrich-busy';
+import { DEFAULT_LOCK_TTL_SEC } from './lock-config';
 
 /** Default lease — same as the PreToolUse hook (`ttl_sec: 1200`). The body runs
  *  while held and releases in a finally, so this is just the crash/abort
  *  backstop (a body that dies without releasing frees at TTL). */
-const DEFAULT_TTL_SEC = 1200;
+const DEFAULT_TTL_SEC = DEFAULT_LOCK_TTL_SEC;
 
 /** The ctx fields this HOF reads. A capability tool's `UnifiedToolContext`
  *  satisfies it (it carries `projectDir` + the identity fields). */

@@ -18,9 +18,7 @@ import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { broadcastResourceDrainStart } from './resource-broadcast';
 
-const DEFAULT_TTL_SEC = 1200;
-const MAX_TTL_SEC = 3600;
-const MAX_WAIT_SEC = 300;
+import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 
 function holderJson(h: ResourceHolder) {
   return {

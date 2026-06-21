@@ -31,7 +31,7 @@ import {
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { broadcastResourceDrainStart, broadcastResourceBackUp } from './resource-broadcast';
 
-const DEFAULT_TTL_SEC = 1200;
+import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC } from './lock-config';
 
 export interface GuardSpec {
   coordinationDomain: string;

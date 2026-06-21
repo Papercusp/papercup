@@ -12,8 +12,7 @@ import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryHeartbeatResource } from './su-lock-store';
 
-const DEFAULT_TTL_SEC = 1200;
-const MAX_TTL_SEC = 3600;
+import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
 export default defineTool({
   name: 'locks:heartbeat_resource',

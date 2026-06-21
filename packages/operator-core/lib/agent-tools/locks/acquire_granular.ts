@@ -16,8 +16,7 @@ import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireGranular, validatePath } from './su-lock-store';
 
-const DEFAULT_TTL_SEC = 1200;
-const MAX_TTL_SEC = 3600;
+import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
