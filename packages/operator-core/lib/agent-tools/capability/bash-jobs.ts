@@ -344,13 +344,13 @@ export function readJobOutput(job: BashJob, peek = false): string {
 export function killJob(job: BashJob): { ok: boolean; alreadyDone: boolean } {
   if (job.status !== 'running') return { ok: true, alreadyDone: true };
   try {
-    job.child.kill('SIGTERM');
+    killProcessTree(job.child, 'SIGTERM');
   } catch {
     /* fallthrough to SIGKILL */
   }
   setTimeout(() => {
     if (job.status === 'running') {
-      try { job.child.kill('SIGKILL'); } catch { /* ignore */ }
+      try { killProcessTree(job.child, 'SIGKILL'); } catch { /* ignore */ }
     }
   }, 2_000);
   job.status = 'killed';

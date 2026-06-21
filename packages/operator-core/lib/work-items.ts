@@ -225,6 +225,11 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     summary: i.body,
     state: i.state,
     assignee: i.assignee,
+    // Issue-family has no claim-time / progress columns (it isn't the dispatched,
+    // lease-held backlog) — agent-activity-liveness-truth P-001 applies only to the
+    // feature family. classifyItemActivity returns 'free' for a null-taken item anyway.
+    takenAt: null,
+    lastProgressAt: null,
     assignedBy: i.assignedBy,
     severity: i.severity,
     parent: null,
@@ -251,6 +256,8 @@ interface FeatureRowDb {
   summary: string | null;
   status: string | null;
   taken_by: string | null;
+  taken_at: unknown;
+  last_progress_at: unknown;
   parent_id: string | null;
   payload: unknown;
   assignee_rank: number | null;
@@ -273,6 +280,11 @@ function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     summary: r.summary ?? '',
     state: r.status ?? 'todo',
     assignee: r.taken_by,
+    // agent-activity-liveness-truth P-001: the claim time (grace anchor) + last REAL
+    // item-scoped progress. Reset on holder-change (claim/release); bumped on a state
+    // transition / checkpoint. Feed both to classifyItemActivity (item-activity.ts).
+    takenAt: r.taken_at == null ? null : tsIso(r.taken_at),
+    lastProgressAt: r.last_progress_at == null ? null : tsIso(r.last_progress_at),
     assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
     severity: null,
     parent: r.parent_id,
@@ -298,6 +310,7 @@ function coerceGithubUserId(raw: number | string | null | undefined): number | n
 }
 
 const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
+  taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
   origin, audit_verdict, verified_author_github_user_id`;
 
@@ -691,6 +704,10 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     summary: input.summary ?? '',
     state: 'todo',
     assignee: assignTo, // B-LOOP-4: created already-claimed when `assignee` was given
+    // P-001: an atomic create+claim stamps taken_at=now() (the grace anchor); a fresh
+    // row has no item-scoped progress yet, so last_progress_at stays null.
+    takenAt: assignTo ? tsIso(now) : null,
+    lastProgressAt: null,
     assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
     severity: null,
     parent: input.parent ?? null,
@@ -806,6 +823,11 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
              requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
+             -- agent-activity-liveness-truth P-001 (D-001/D-004): a state transition is
+             -- REAL item-scoped progress — bump last_progress_at so a held item reads as
+             -- `progressing`, not `stalled`. Only for HELD rows (an unclaimed-row flip has
+             -- no holder to credit, and a later claim resets the signal anyway).
+             last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
@@ -954,7 +976,12 @@ export async function claimWorkItem(id: string, assignee: string, opts: { harnes
     const ws = activeWorkspaceId();
     const rows = await sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
-         SET taken_by = ${assignee}, taken_at = now(), updated_ts = ${Date.now()}
+         SET taken_by = ${assignee}, taken_at = now(),
+             -- P-001: a NEW holder starts with a clean progress slate (so the grace
+             -- window anchors on the fresh taken_at, not a prior holder's stale
+             -- last_progress_at); a re-claim by the SAME agent keeps its progress.
+             last_progress_at = CASE WHEN taken_by = ${assignee} THEN last_progress_at ELSE NULL END,
+             updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
          AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee})
          -- G2 admission (shared-hive-trust-admission P-003): an explicit named claim
@@ -1058,7 +1085,9 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   // byte-identical to the pre-P-002 claim.
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.harness_features_consolidated
-       SET taken_by = ${filter.assignee}, taken_at = now(), updated_ts = ${Date.now()}
+       -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
+       -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
+       SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
      WHERE (harness_slug, feature_id) = (
        SELECT harness_slug, feature_id
          FROM harness_shared.harness_features_consolidated
@@ -1133,7 +1162,9 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
   const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.harness_features_consolidated
-       SET taken_by = NULL, taken_at = NULL,
+       -- P-001: release clears the progress signal too — the next claimant starts fresh
+       -- (a stale last_progress_at must not outlive the holder that earned it).
+       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL,
            status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
            updated_ts = ${Date.now()}
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}

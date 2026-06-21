@@ -112,3 +112,48 @@ describe('background jobs', () => {
     expect(getJob('does-not-exist')).toBeUndefined();
   });
 });
+
+describe('process-group kill — no orphaned descendants (capability-bash-orphan-kill-2026-06-21)', () => {
+  // A timed-out / aborted / killed command MUST take its descendants with it.
+  // Before the detached-process-group fix, the kill hit only the `bash -c` parent;
+  // its children (e.g. a runaway ugrep) orphaned to init and kept running at full
+  // CPU — the 58-min search that starved the operator event loop → :3070 wedge.
+  // Proof: a GRANDCHILD that would `touch` a marker AFTER the kill deadline must
+  // never get the chance to create it.
+  let markerSeq = 0;
+  // `( sleep 3; touch <marker> ) &` is a subshell grandchild of the operator; the
+  // outer `wait` keeps bash alive until the kill. With the group fix the grandchild
+  // dies with the group; without it, it orphans, sleeps, and creates the marker.
+  const grandchildCmd = (marker: string): string => `( sleep 3; touch ${marker} ) & echo started; wait`;
+  async function expectNoOrphanMarker(run: (marker: string) => Promise<unknown>): Promise<void> {
+    const marker = join(STATE, `orphan-${markerSeq++}.marker`);
+    await run(marker);
+    // Wait well past the grandchild's 3s delay; an orphan would have touched it.
+    await new Promise((r) => setTimeout(r, 3500));
+    expect(existsSync(marker)).toBe(false);
+  }
+
+  it('foreground timeout kills the grandchild (no orphan)', async () => {
+    await expectNoOrphanMarker(async (marker) => {
+      const r = await runForeground({ command: grandchildCmd(marker), cwd: STATE, stateDir: STATE }, never, 300);
+      expect(r.status).toBe('timed_out');
+    });
+  }, 10_000);
+
+  it('foreground abort kills the grandchild (no orphan)', async () => {
+    await expectNoOrphanMarker(async (marker) => {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 200);
+      const r = await runForeground({ command: grandchildCmd(marker), cwd: STATE, stateDir: STATE }, ac.signal, 30_000);
+      expect(r.status).toBe('killed');
+    });
+  }, 10_000);
+
+  it('killJob kills the background grandchild (no orphan)', async () => {
+    await expectNoOrphanMarker(async (marker) => {
+      const job = startBackground({ command: grandchildCmd(marker), cwd: STATE, stateDir: STATE }, 60_000);
+      expect(job.status).toBe('running');
+      killJob(job);
+    });
+  }, 10_000);
+});
