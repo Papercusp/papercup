@@ -498,7 +498,36 @@ export default defineTool({
     // failures as failed nursery rows instead of dropping them.
     try {
       const parsed = parseOperatorTurn(assembled);
-      if (parsed.spawns.length > 0) {
+      // Sentinel-as-Herald handoff (sentinel-herald P-014/P-015/P-016): the
+      // SENTINEL never places work itself — instead of `<spawn>` it emits
+      // `<handoff_to_queen>`, which we dispatch THROUGH the file-and-nudge seam
+      // (tier-gate → file high-priority user-requested work_item → nudge the Queen
+      // → subscribe for hindsight). Honored ONLY for role==='sentinel'; the
+      // operator path below ignores handoffs entirely (and the sentinel ignores
+      // spawns — the two can't cross). The Sentinel must NOT fleet:spawn.
+      const isSentinel = input.role === 'sentinel';
+      if (isSentinel && parsed.handoffs.length > 0) {
+        const [{ dispatchSentinelHandoff }, { defaultSentinelHandoffDeps }] = await Promise.all([
+          import('../../operator-sentinel-handoff'),
+          import('../../operator-sentinel-handoff-deps'),
+        ]);
+        const deps = defaultSentinelHandoffDeps();
+        for (const h of parsed.handoffs) {
+          void dispatchSentinelHandoff(h, workspaceId, deps)
+            .then((r) => {
+              if (r.status === 'error') {
+                console.warn(`[sentinel-converse] handoff dispatch failed: ${r.error}`);
+              }
+            })
+            .catch((err) => {
+              console.warn('[sentinel-converse] handoff dispatch error', err);
+            });
+        }
+      }
+      // The OPERATOR spawns directly; the SENTINEL never does (its envelope denies
+      // fleet:spawn). Guard the spawn dispatch on NOT-sentinel so a stray `<spawn>`
+      // from the Herald persona is a no-op rather than a placement.
+      if (!isSentinel && parsed.spawns.length > 0) {
         const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
         for (const sp of parsed.spawns) {
           // The operator conversation turn is NOT itself a nursery node, so each

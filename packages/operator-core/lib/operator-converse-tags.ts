@@ -52,6 +52,44 @@ export interface SpawnRequest {
   extras: string[];
 }
 
+/**
+ * `<handoff_to_queen>` — the SENTINEL'S placement seam (sentinel-herald Phase 4,
+ * P-014). The Sentinel/Herald never places work itself (its capability envelope
+ * denies fleet:spawn/placement by design); instead it SUGGESTS + HANDS OFF: it
+ * files a HIGH-PRIORITY work_item the user asked for and nudges the Queen, who is
+ * the placer. This is the structured twin of `<spawn>` — same parse-server-side,
+ * dispatch-side-effect shape — but honored ONLY for role==='sentinel' (the
+ * operator path never reads it). The Sentinel must NOT emit `<spawn>`.
+ *
+ *   <handoff_to_queen summary="…" harness="…" feature="…" tier="low|medium|high"
+ *                     urgent="true" capability="…">
+ */
+export interface HandoffRequest {
+  /** What the user wants done — becomes the work_item title/summary. Required. */
+  summary: string;
+  /** Harness slug the request is about (sets the work_item scope + Queen context).
+   *  null → workspace-scope / the Queen resolves the home harness. */
+  harness: string | null;
+  /** Feature/chunk the conversation is about, carried so the Queen picks up where
+   *  the conversation is (work_item context). null when unscoped. */
+  featureId: string | null;
+  /** Action tier the Sentinel self-classified (the user-facing approval tier,
+   *  P-015): 'low' → just file + nudge; 'medium'/'high' → surface for approval
+   *  via the standing-approval system before the Queen acts. The SERVER
+   *  re-resolves the authoritative tier from `capability` when present; this is
+   *  the brain's hint / the fallback when no capability is named. Default 'high'
+   *  (user-asked work is high-priority by default — the persona contract). */
+  tier: 'low' | 'medium' | 'high';
+  /** The capability the handoff ultimately exercises (e.g. 'fleet:spawn'); when
+   *  present the server resolves the AUTHORITATIVE tier from the substrate
+   *  tier-table (resolveActualTier) rather than trusting the brain's `tier`. null
+   *  when the request is generic. */
+  capability: string | null;
+  /** Urgent → the work_item is filed `urgent` (wakes the Queen NOW via the
+   *  hive urgent-wake, not her slow cadence) and the nudge escalates. */
+  urgent: boolean;
+}
+
 export interface ParsedOperatorTurn {
   /** The user-visible utterance, or null when the operator went silent (sleep tag only). */
   say: string | null;
@@ -61,6 +99,13 @@ export interface ParsedOperatorTurn {
   sleep: { durationMinutes: number; reason: string } | null;
   /** Spawn requests emitted this turn. Empty array when none. */
   spawns: SpawnRequest[];
+  /**
+   * `<handoff_to_queen>` requests emitted this turn (sentinel-herald P-014).
+   * Empty array when none. The converse dispatch honors these ONLY when the
+   * turn's role is 'sentinel' — the operator path ignores them (it spawns
+   * directly via `spawns`). Parallel handoffs in one turn are allowed.
+   */
+  handoffs: HandoffRequest[];
   /**
    * True when the brain emitted `<continue/>` — it has more user-visible
    * progress to make in the same conversation thread, no user input
@@ -95,6 +140,11 @@ const CONTINUE_RE = /<continue\s*\/?>/i;
 // role required; feature/chunk/extras optional. Multiple <spawn> tags per
 // turn are allowed (parallel fan-out: "review these three plans").
 const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
+// <handoff_to_queen summary="…" harness="…" feature="…" tier="…" urgent="true"
+//  capability="…"> — self-closing. summary required; the rest optional. Multiple
+// per turn allowed (the Sentinel can hand off a small batch). Same attr-bag shape
+// as <spawn>. (sentinel-herald P-014.)
+const HANDOFF_RE = /<handoff_to_queen\s+([^>]+?)\s*\/?>/gi;
 // <report>{json}</report> — a single JSON object of per-plan/per-item status
 // blocks (D-001). Non-greedy body; we JSON-parse + validate it via
 // parseReportBody. Paired with <say> per the prompt (D-004). The whole span
@@ -102,6 +152,9 @@ const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
 // raw JSON into the chat bubble.
 const REPORT_RE = /<report>([\s\S]*?)<\/report>/i;
 const REPORT_STRIP_RE = /<report>[\s\S]*?<\/report>/gi;
+// Strip a self-closing <spawn …>/<handoff_to_queen …> from the no-<say> prose
+// fallback so a stray control tag never leaks as raw text into the chat bubble.
+const CONTROL_TAG_STRIP_RE = /<(?:spawn|handoff_to_queen)\s+[^>]*?\/?>/gi;
 
 /**
  * Validate a raw `<report>` JSON body into a `ParsedReport`, or null when
@@ -216,6 +269,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     setMode: null,
     sleep: null,
     spawns: [],
+    handoffs: [],
     continue: false,
     report: null,
     raw,
@@ -237,6 +291,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     // around the sleep tag is model debug noise we should drop.
     const stripped = raw
       .replace(REPORT_STRIP_RE, '')
+      .replace(CONTROL_TAG_STRIP_RE, '')
       .replace(/<set_mode>[^<]*<\/set_mode>/gi, '')
       .replace(CONTINUE_RE, '')
       .trim();
@@ -297,6 +352,38 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
       featureId: attrs['feature'] ? attrs['feature'] : null,
       chunkId: attrs['chunk'] ? attrs['chunk'] : null,
       extras,
+    });
+  }
+
+  // <handoff_to_queen …> — the Sentinel's file-and-nudge placement seam
+  // (sentinel-herald P-014). Collect every tag in the turn. Like <spawn>, a
+  // missing required attr (here `summary`) drops the tag with a warn. `tier`
+  // is constrained to low|medium|high (anything else falls back to 'high', the
+  // user-asked-work default); `urgent` is a boolean-ish attr ("true"/"1"/"yes").
+  let handoffMatch: RegExpExecArray | null;
+  HANDOFF_RE.lastIndex = 0;
+  while ((handoffMatch = HANDOFF_RE.exec(raw)) !== null) {
+    const attrs = parseAttrs(handoffMatch[1]);
+    const summary = (attrs['summary'] ?? '').trim();
+    if (!summary) {
+      // eslint-disable-next-line no-console
+      console.warn('[operator-converse] dropped malformed <handoff_to_queen>: missing summary', {
+        attrs,
+      });
+      continue;
+    }
+    const tierRaw = (attrs['tier'] ?? '').trim().toLowerCase();
+    const tier: HandoffRequest['tier'] =
+      tierRaw === 'low' || tierRaw === 'medium' ? tierRaw : tierRaw === 'high' ? 'high' : 'high';
+    const urgentRaw = (attrs['urgent'] ?? '').trim().toLowerCase();
+    const urgent = urgentRaw === 'true' || urgentRaw === '1' || urgentRaw === 'yes';
+    result.handoffs.push({
+      summary,
+      harness: attrs['harness'] ? attrs['harness'] : null,
+      featureId: attrs['feature'] ? attrs['feature'] : null,
+      tier,
+      capability: attrs['capability'] ? attrs['capability'] : null,
+      urgent,
     });
   }
 

@@ -364,6 +364,91 @@ describe('spawn tags', () => {
   });
 });
 
+// ── <handoff_to_queen> tag (sentinel-herald P-014) ──────────────────
+describe('handoff_to_queen tags', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('parses a full handoff tag (summary + harness + feature + tier + urgent + capability)', () => {
+    const r = parseOperatorTurn(
+      '<say>On it — filing the auth rewrite and flagging the Queen.</say>\n' +
+        '<handoff_to_queen summary="rewrite the auth module" harness="papercup" ' +
+        'feature="auth-module" tier="high" urgent="true" capability="fleet:spawn">',
+    );
+    expect(r.say).toBe('On it — filing the auth rewrite and flagging the Queen.');
+    expect(r.handoffs).toEqual([
+      {
+        summary: 'rewrite the auth module',
+        harness: 'papercup',
+        featureId: 'auth-module',
+        tier: 'high',
+        capability: 'fleet:spawn',
+        urgent: true,
+      },
+    ]);
+  });
+
+  it('defaults tier to high and urgent to false when omitted (user-asked-work default)', () => {
+    const r = parseOperatorTurn('<handoff_to_queen summary="scope out the wiki revamp">');
+    expect(r.handoffs).toHaveLength(1);
+    expect(r.handoffs[0]).toMatchObject({
+      summary: 'scope out the wiki revamp',
+      harness: null,
+      featureId: null,
+      tier: 'high',
+      capability: null,
+      urgent: false,
+    });
+  });
+
+  it('accepts tier=low|medium and falls back unknown tier to high', () => {
+    expect(parseOperatorTurn('<handoff_to_queen summary="x" tier="low">').handoffs[0].tier).toBe('low');
+    expect(parseOperatorTurn('<handoff_to_queen summary="x" tier="medium">').handoffs[0].tier).toBe('medium');
+    expect(parseOperatorTurn('<handoff_to_queen summary="x" tier="bogus">').handoffs[0].tier).toBe('high');
+  });
+
+  it('parses urgent truthy variants (true/1/yes), everything else false', () => {
+    expect(parseOperatorTurn('<handoff_to_queen summary="x" urgent="1">').handoffs[0].urgent).toBe(true);
+    expect(parseOperatorTurn('<handoff_to_queen summary="x" urgent="yes">').handoffs[0].urgent).toBe(true);
+    expect(parseOperatorTurn('<handoff_to_queen summary="x" urgent="nope">').handoffs[0].urgent).toBe(false);
+  });
+
+  it('drops a handoff with no summary (warn emitted)', () => {
+    const r = parseOperatorTurn('<handoff_to_queen harness="papercup">');
+    expect(r.handoffs).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('dropped malformed <handoff_to_queen>'),
+      expect.any(Object),
+    );
+  });
+
+  it('collects multiple handoff tags in one turn (small batch)', () => {
+    const r = parseOperatorTurn(
+      '<say>Filing both.</say>\n' +
+        '<handoff_to_queen summary="first thing" harness="a">\n' +
+        '<handoff_to_queen summary="second thing" harness="b">',
+    );
+    expect(r.handoffs.map((h) => h.summary)).toEqual(['first thing', 'second thing']);
+    expect(r.handoffs.map((h) => h.harness)).toEqual(['a', 'b']);
+  });
+
+  it('handoffs default to [] when no tag present', () => {
+    expect(parseOperatorTurn('<say>just chatting</say>').handoffs).toEqual([]);
+  });
+
+  it('strips a stray <handoff_to_queen> (no <say>) from the prose fallback', () => {
+    // Model forgot the <say> wrapper — the control tag must NOT leak as bubble text.
+    const r = parseOperatorTurn('<handoff_to_queen summary="do the thing">');
+    expect(r.say).toBeNull();
+    expect(r.handoffs[0].summary).toBe('do the thing');
+  });
+});
+
 describe('parseReportBody', () => {
   it('validates a minimal plan block', () => {
     const r = parseReportBody('{"plans":[{"title":"Alpha"}]}');

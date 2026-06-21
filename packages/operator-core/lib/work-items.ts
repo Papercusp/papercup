@@ -787,6 +787,22 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
     void import('./work-items-events')
       .then((m) => m.emitWorkItemSettledEvents(settled))
       .catch(() => {});
+    // sentinel-herald P-016: when a SETTLED item is a Sentinel handoff (carries
+    // the `user-requested` topic), report its landing back to the operator via
+    // the hindsight "[While you were away]" channel. Same fire-and-forget +
+    // lazy-import shape as the settled-events emit; the watch module reads the
+    // item's topics (the cheap gate) and no-ops for any non-handoff item.
+    void import('./operator-sentinel-handoff-watch')
+      .then((m) =>
+        m.reportHandoffLandingIfTracked(
+          { id: settled.id, title: settled.title, state: settled.state, harness: settled.harness },
+          async (wid, harness) => {
+            const detail = await getWorkItemDetail(wid, harness ?? undefined);
+            return detail?.topics ?? [];
+          },
+        ),
+      )
+      .catch(() => {});
   }
   // plugin-system-hive-port P-004: a transition INTO `blocked` fires
   // `work-item:blocked:<id>` (notifying the delegator) so blocked work is a

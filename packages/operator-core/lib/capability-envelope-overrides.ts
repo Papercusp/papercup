@@ -5,8 +5,11 @@
  * (PROTECTED_CAPABILITY_GLOBS) are consumed by evaluateCapabilityEnvelope — a PURE, SYNC fn on the
  * dispatch hot path (checkCapabilityEnvelope, every tool call). This is the runtime OVERRIDE, read via
  * the ratified D-010 mechanism: a module-level SYNC cache (zero-await on the hot path), refreshed on
- * (a) boot, (b) local write (same-process immediate), (c) the dark-flag onFlagChange, and (d) a ~60s
- * .unref()'d periodic timer for bounded (≤60s) cross-process freshness.
+ * (a) the dark-flag onFlagChange — which fires when the owner flips the flag AND on a key===null flag
+ * reload, so boot/enable is immediate; (b) local write (same-process immediate); and (c) a ~60s
+ * .unref()'d periodic timer for bounded (≤60s) cross-process + restart freshness. The module import is
+ * deliberately PURE (no import-time getFlag/PG read) so importing it on the dispatch hot path never
+ * triggers IO — the getters are plain cache reads.
  *
  * DARK by default: gated by FLAGS.CAPABILITY_ENVELOPE_OVERRIDES (default-OFF, KNOWN_DARK_FLAGS). Flag
  * OFF ⇒ the getters return empty ⇒ the dispatch step uses the baked ROLE_ENVELOPES + floor ⇒
@@ -52,11 +55,13 @@ export async function refreshCapabilityEnvelopeOverrides(): Promise<void> {
     cached = {};
   }
 }
-void refreshCapabilityEnvelopeOverrides();
+// D-010 (a): event-driven refresh — fires on the owner's enable-flip + on a key===null reload (boot).
+// NO import-time getFlag here: keeping the import pure means importing this on the dispatch hot path
+// (projected-tool-deps) never does IO; the getters are plain cache reads.
 onFlagChange((key) => {
   if (key === null || key === FLAGS.CAPABILITY_ENVELOPE_OVERRIDES) void refreshCapabilityEnvelopeOverrides();
 });
-// D-010 (d): bounded cross-process freshness. .unref() so it never holds the process (or a test) open.
+// D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
 const _refreshTimer = setInterval(() => void refreshCapabilityEnvelopeOverrides(), 60_000);
 if (typeof _refreshTimer.unref === 'function') _refreshTimer.unref();
 
