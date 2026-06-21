@@ -439,6 +439,10 @@ export const FLAGS = {
   // (capability:grant_role / capability:revoke_role). DARK by default (owner-authority, D-007):
   // it flag-gates both the loadRoleCapabilities grant-union AND the grant/revoke tools.
   CAPABILITY_GRANT_TOOL: "papercusp-capability-grant-tool",
+  // live-configurability-audit-2026-06-20 P-007 — BOINC work-item redundancy master switch
+  // (migrated off the PAPERCUSP_WORKITEM_REDUNDANCY env gate). DARK (N× model spend); SYNC-cached
+  // because the claim-path read is synchronous (the WORKITEM_CLAIM_LEASE migration pattern).
+  WORKITEM_REDUNDANCY: "papercusp-workitem-redundancy",
   // agent-capability-confinement-2026-06-13 B-06 (P-011) ⨯ queen-autonomy-policy D-012/P-110:
   // the Queen decision-ledger ACTION-CHOKEPOINT emit — one append-only row per governed
   // (tier != 'low') action by a non-SU principal, from the dispatch postInvoke seam. ON by
@@ -1161,6 +1165,8 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // P-008 — capability grant tool ships DARK (owner-authority / D-007); the flag gates the
   // loadRoleCapabilities grant-union, so OFF = byte-identical capability resolution.
   [FLAGS.CAPABILITY_GRANT_TOOL]: false,
+  // P-007 — work-item redundancy is N× model spend; ships DARK (owner flips via /admin/features).
+  [FLAGS.WORKITEM_REDUNDANCY]: false,
   // ON by default — Phase-0 foundation record-keeping (B-06 / P-011), same call as
   // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
   // OFF is the kill-switch (the emit no-ops).

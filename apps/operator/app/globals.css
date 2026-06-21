@@ -600,6 +600,131 @@ button {
   cursor: pointer;
 }
 
+:where(
+  input:not([type]),
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="password"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  textarea
+) {
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+:where(
+  input:not([type]),
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="password"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  textarea
+):focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 45%);
+}
+
+:where(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+  accent-color: var(--accent);
+}
+
+:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost):hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost):focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost):disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+:where(.pc-btn-primary) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+:where(.pc-btn-primary):hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--accent-ink);
+}
+
+:where(.pc-btn-destructive) {
+  background: color-mix(in oklab, var(--bad), transparent 86%);
+  border-color: color-mix(in oklab, var(--bad), transparent 55%);
+  color: var(--bad);
+}
+
+:where(.pc-btn-destructive):hover:not(:disabled) {
+  background: color-mix(in oklab, var(--bad), transparent 76%);
+  border-color: color-mix(in oklab, var(--bad), transparent 35%);
+  color: var(--fg);
+}
+
+:where(.pc-btn-ghost) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-dim);
+}
+
+:where(.pc-btn-ghost):hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
 code, pre, kbd {
   font-family: ui-monospace, "JetBrains Mono", "Menlo", monospace;
   font-size: 0.92em;

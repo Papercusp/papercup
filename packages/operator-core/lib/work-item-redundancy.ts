@@ -34,6 +34,9 @@ import { getWorkItem, setWorkItemState } from './work-items';
 import { isWorkItemAutoPickable } from './work-items-admission';
 import { getWorkItemReplicaAuthority } from './work-item-replica-authority';
 import { hiveHomeSlugForHarness } from './hive-federation';
+import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+import { systemDistinctId } from './flag-distinct-id';
 import {
   judgeGymRun,
   rubricFromBlueprintGym,
@@ -80,11 +83,29 @@ export async function resolveReplicaHiveSlug(workspaceId: string, harnessSlug: s
   }
 }
 
-/** The owner's master switch for BOINC redundancy (P-014). Default OFF. Env-gated via
- *  `PAPERCUSP_WORKITEM_REDUNDANCY` (a synchronous server-side dispatch decision deep in the
- *  claim path); promote to a FLAG (as WORKITEM_CLAIM_LEASE did, P-012) if a UI toggle is wanted. */
+/** The owner's master switch for BOINC redundancy (P-014). Default OFF. Migrated off the
+ *  `PAPERCUSP_WORKITEM_REDUNDANCY` env gate to the `WORKITEM_REDUNDANCY` FLAG
+ *  (live-configurability-audit-2026-06-20 P-007) — SYNC-cached because the claim-path read is
+ *  synchronous (the WORKITEM_CLAIM_LEASE pattern). Refreshed on boot + every flag change;
+ *  unloaded ⇒ false (DEFAULT OFF, the safe state). N× model spend → ships DARK, owner-ratified
+ *  via /admin/features. (Single-box redundancy uses the local replica authority; the cross-Swarm
+ *  router install at register-replica-authority-ops boot still reads this at module-load, so a
+ *  cross-MACHINE redundancy run wants a restart with the flag on — a noted follow-up.) */
+let redundancyOn = false;
+async function refreshRedundancyFlag(): Promise<void> {
+  try {
+    redundancyOn = await getFlag(FLAGS.WORKITEM_REDUNDANCY, systemDistinctId());
+  } catch {
+    redundancyOn = false;
+  }
+}
+void refreshRedundancyFlag();
+onFlagChange((key) => {
+  if (key === null || key === FLAGS.WORKITEM_REDUNDANCY) void refreshRedundancyFlag();
+});
+
 export function workItemRedundancyEnabled(): boolean {
-  return process.env.PAPERCUSP_WORKITEM_REDUNDANCY === '1';
+  return redundancyOn;
 }
 
 export const DEFAULT_REPLICA_TTL_SEC = 1800; // 30m — generous for an LLM work turn; renewed by heartbeat

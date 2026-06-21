@@ -6,6 +6,8 @@ import { registerWorkbenchPanels } from '@/app/harness/dock/workbench-panels';
 import { registerWorkbenchVoicePanel } from '../components/workbench/WorkbenchVoicePanel';
 import { registerWorkbenchHiveDirectoryPanel } from '../components/workbench/WorkbenchHiveDirectoryPanel';
 import { onDockApiBind, listPanels, setPanelParams } from '@/app/harness/dock/dock-actions';
+import { Select } from '@/app/harness/Select';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useLexicon } from '@/lib/useLexicon';
 
 /**
@@ -116,44 +118,30 @@ function WorkbenchPage() {
         <div style={{ flex: 1 }} />
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ color: 'var(--fg-mute, #888)' }}>{t('pot')}</span>
-          <select
-            value={harness}
-            onChange={(e) => void setHarness(e.target.value)}
-            data-testid="workbench-harness-select"
-            style={{
-              background: 'var(--bg, #0e0f13)',
-              color: 'var(--fg)',
-              border: '1px solid var(--border, #333)',
-              borderRadius: 4,
-              padding: '3px 6px',
-              fontSize: 12,
+          <Select
+            value={harness || '_none'}
+            onChange={(value) => {
+              if (value !== '_none') void setHarness(value);
             }}
-          >
-            {harness === '' && <option value="">— select —</option>}
-            {projects.map((p) => (
-              <option key={p.slug} value={p.slug}>
-                {p.title ?? p.slug}
-              </option>
-            ))}
-          </select>
+            testId="workbench-harness-select"
+            options={[
+              ...(harness === '' ? [{ value: '_none', label: 'select', disabled: true }] : []),
+              ...projects.map((p) => ({ value: p.slug, label: p.title ?? p.slug })),
+            ]}
+            ariaLabel={`${t('pot')} picker`}
+            triggerStyle={{ minWidth: 180 }}
+          />
         </label>
-        <button
-          type="button"
-          onClick={() => window.dispatchEvent(new CustomEvent('papercusp:dock-reset-layout'))}
-          data-testid="workbench-reset-layout"
-          title="Reset the workbench layout to the default 3-pane arrangement"
-          style={{
-            padding: '3px 10px',
-            fontSize: 11,
-            background: 'var(--bg, #0e0f13)',
-            color: 'var(--fg)',
-            border: '1px solid var(--border, #333)',
-            borderRadius: 4,
-            cursor: 'pointer',
-          }}
-        >
-          Reset layout
-        </button>
+        <Tooltip label="Reset the workbench layout to the default 3-pane arrangement">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('papercusp:dock-reset-layout'))}
+            data-testid="workbench-reset-layout"
+            style={{ fontSize: 11 }}
+          >
+            Reset layout
+          </button>
+        </Tooltip>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <HarnessDock layoutName="workbench" slug={harness} />

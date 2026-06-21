@@ -28,6 +28,9 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // flip is the ratification/activation gate after reviewing the D-009 design. Safe dark: the
   // loadRoleCapabilities grant-union is flag-gated, so OFF = byte-identical capability resolution.
   FLAGS.CAPABILITY_GRANT_TOOL,
+  // live-configurability-audit-2026-06-20 P-007: BOINC work-item redundancy (N× model spend) —
+  // migrated off the PAPERCUSP_WORKITEM_REDUNDANCY env gate to a FLAG; ships dark, owner-ratified.
+  FLAGS.WORKITEM_REDUNDANCY,
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
   FLAGS.CLOUDFLARE_PUBLISH, // cut for V1 — publish surface not shipping
   FLAGS.HARNESS_PHASES, // cut for V1

@@ -1,10 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import AdminShell from '../../components/admin/AdminShell';
 import { SubstrateSummaryCardClient } from '@/app/harness/insights/SubstrateSummaryCardClient';
 import { BootHistoryTableClient } from '@/app/harness/insights/BootHistoryTableClient';
 import { SubstrateHealthPill } from '@/app/harness/insights/SubstrateHealthPill';
 import { ClaimAttemptTimelineClient } from '@/app/harness/insights/ClaimAttemptTimelineClient';
+import { Select } from '@/app/harness/Select';
 import { useLexicon } from '@/lib/useLexicon';
 
 /**
@@ -42,6 +44,8 @@ interface HealthResponse {
   }>;
 }
 
+type SubstrateHarnessRow = NonNullable<HealthResponse['harnesses']>[number];
+
 function DogfoodSubstratePage() {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
@@ -72,6 +76,29 @@ function DogfoodSubstratePage() {
     (resp?.harnesses ?? []).filter(
       (h) => h.workspaceId !== '' && h.harnessSlug !== '',
     );
+  const columns: ColumnDef<SubstrateHarnessRow>[] = [
+    {
+      key: 'workspace',
+      header: 'Workspace',
+      width: 2,
+      toCopyText: (row) => row.workspaceId,
+      render: ({ row }) => <code>{row.workspaceId}</code>,
+    },
+    {
+      key: 'harness',
+      header: t('pot'),
+      width: 2,
+      toCopyText: (row) => row.harnessSlug,
+      render: ({ row }) => <code>{row.harnessSlug}</code>,
+    },
+    {
+      key: 'health',
+      header: 'Health',
+      width: 1.4,
+      toCopyText: (row) => row.verdict,
+      render: ({ row }) => <SubstrateHealthPill verdict={row.verdict} reasons={row.reasons} />,
+    },
+  ];
 
   return (
     <AdminShell title="Substrate diagnostic">
@@ -88,26 +115,14 @@ function DogfoodSubstratePage() {
             No shared {t('pot', { plural: true, lower: true })} booted yet.
           </div>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }} data-testid="dogfood-substrate-table">
-            <thead>
-              <tr>
-                <th style={th}>Workspace</th>
-                <th style={th}>{t('pot')}</th>
-                <th style={th}>Health</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((h) => (
-                <tr key={`${h.workspaceId}::${h.harnessSlug}`} data-testid={`dogfood-substrate-row-${h.harnessSlug}`}>
-                  <td style={td}><code>{h.workspaceId}</code></td>
-                  <td style={td}><code>{h.harnessSlug}</code></td>
-                  <td style={td}>
-                    <SubstrateHealthPill verdict={h.verdict} reasons={h.reasons} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div data-testid="dogfood-substrate-table">
+            <RichGrid<SubstrateHarnessRow>
+              rows={rows}
+              columns={columns}
+              getRowId={(row) => `${row.workspaceId}::${row.harnessSlug}`}
+              rowMinHeight={32}
+            />
+          </div>
         )}
 
         <section style={{ marginTop: 12 }} data-testid="dogfood-substrate-boot-history-section">
@@ -121,18 +136,14 @@ function DogfoodSubstratePage() {
           <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-dim, #888)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
             Claim attempts
             {rows.length > 0 && (
-              <select
-                data-testid="claim-attempts-harness-picker"
+              <Select
+                testId="claim-attempts-harness-picker"
                 value={pickedSlug || rows[0].harnessSlug}
-                onChange={(e) => setPickedSlug(e.target.value)}
-                style={{ fontSize: 11, fontWeight: 400, padding: '2px 6px', textTransform: 'none', letterSpacing: 0 }}
-              >
-                {rows.map((h) => (
-                  <option key={h.harnessSlug} value={h.harnessSlug}>
-                    {h.harnessSlug}
-                  </option>
-                ))}
-              </select>
+                onChange={setPickedSlug}
+                options={rows.map((h) => ({ value: h.harnessSlug, label: h.harnessSlug }))}
+                ariaLabel="Claim-attempt harness picker"
+                triggerStyle={{ fontSize: 11, fontWeight: 400, minHeight: 24, padding: '2px 6px', textTransform: 'none', letterSpacing: 0 }}
+              />
             )}
           </h2>
           {rows.length > 0 ? (
@@ -147,19 +158,3 @@ function DogfoodSubstratePage() {
     </AdminShell>
   );
 }
-
-const th = {
-  textAlign: 'left' as const,
-  borderBottom: '1px solid var(--border, #2a2a2a)',
-  padding: '8px 12px',
-  fontWeight: 600,
-  color: 'var(--fg-dim, #888)',
-  fontSize: 11,
-  textTransform: 'uppercase' as const,
-  letterSpacing: '0.04em',
-};
-
-const td = {
-  padding: '10px 12px',
-  borderBottom: '1px solid var(--border-subtle, #222)',
-};
