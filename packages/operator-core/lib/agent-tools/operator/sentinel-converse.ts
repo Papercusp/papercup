@@ -25,12 +25,13 @@ import operatorConverse from './converse';
 
 // The operator converse handler — reused verbatim. It reads `input.role` to pick
 // the persona; this alias defaults that to 'sentinel' when the caller omits it.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sharedHandler = (operatorConverse as any).handler as (
-  input: Record<string, unknown>,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ctx: any,
-) => unknown;
+// Returns the converse ToolResult ({ content: [{ type, text }] }).
+const sharedHandler = (operatorConverse as unknown as {
+  handler: (
+    input: Record<string, unknown>,
+    ctx: unknown,
+  ) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+}).handler;
 
 export default defineTool({
   name: 'sentinel:converse',
