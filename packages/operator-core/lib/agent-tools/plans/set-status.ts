@@ -21,8 +21,11 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
+import { convertPlanItem } from '../../plan-items/convert';
 import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 const SU_BEE_ROLES = [...SU_ROLES, 'bee'] as const;
 
@@ -269,6 +272,33 @@ export default defineTool({
         };
       }
       claim = { claimId: outcome.claimId, autoClaimed: !outcome.alreadyHeld };
+
+      // work-queue-completeness Phase A (ENFORCEMENT): when the auto-convert flag is ON,
+      // the wip flip's auto-claim ALSO mints (or idempotently resumes) a tracked work_item
+      // via convertPlanItem — so flipping an item to wip never leaves untracked work.
+      // convertPlanItem re-runs the policy-checked lease (idempotent against the claim we
+      // just took above), so it is safe here. BEST-EFFORT: wrapped so a convert failure
+      // (or a flag-IO error) NEVER breaks the status flip — the claim already succeeded.
+      // Fail-safe to OFF on a flag-read error.
+      const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
+      if (autoConvert) {
+        await convertPlanItem({
+          workspaceId: scope.workspaceId,
+          harnessSlug: scope.harnessSlug,
+          planSlug: args.slug,
+          itemId: args.itemId,
+          owner: agentId.ownerId,
+          ownerLabel: agentId.ownerLabel,
+          ownerName,
+          ownerUser: bestEffortOwnerUser(ctx),
+          intent: `plans:set-status ${args.itemId} → wip (auto-convert)`,
+        }).catch((e) =>
+          console.warn(
+            `[plans:set-status] auto-convert ${args.slug}#${args.itemId} failed:`,
+            (e as Error)?.message ?? e,
+          ),
+        );
+      }
     }
 
     const rev = planRevisionCapture(

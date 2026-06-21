@@ -14,20 +14,11 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { createWorkItem, getWorkItem, WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
-import { findMirroredOpenItem } from './mirror-guard';
-import { resolveHiveScope, hiveArg, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
-
-/**
- * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
- * must resolve to a hive (auto-resolve-then-require). Issue kinds (bug/change) are
- * deliberately EXCLUDED — they may stay workspace-global (the issues surface).
- */
-const HIVE_GATED_KINDS: ReadonlySet<string> = new Set(['feature', 'research-task', 'chunk']);
+import { WORK_ITEM_KINDS } from '../../work-items';
+import { hiveArg } from '../_hive-scope';
+import { createOneWorkItem } from './_create-core';
 
 export default defineTool({
   name: 'work_items:create',
@@ -100,88 +91,24 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    try {
-      // EI-316 mirror-duplicate guard: a title embedding an existing OPEN
-      // work-item id ("WI-118: …") is almost always an accidental mirror — the
-      // creator should work the given id, not fork a duplicate it then completes
-      // while the original strands in `validating`. Refuse with the live id
-      // (override: force:true). Flag-gated so a misfire is instantly reversible.
-      if (!args.force && (await getFlag(FLAGS.WORK_ITEM_MIRROR_GUARD, 'system'))) {
-        const mirror = await findMirroredOpenItem(args.title, async (id) => {
-          const wi = await getWorkItem(id, args.harness);
-          return wi ? { id: wi.id, state: wi.state } : null;
-        });
-        if (mirror) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({
-                  ok: false,
-                  error: 'duplicate_mirror',
-                  message:
-                    `title references existing OPEN work-item ${mirror.id} (state: ${mirror.state}) — ` +
-                    `work that item directly (work_items:claim ${mirror.id} / work_items:set_state), do NOT create a mirror. ` +
-                    `Pass force:true only if this reference is deliberate.`,
-                  existing: mirror,
-                }),
-              },
-            ],
-          };
-        }
-      }
-      // EI-728: route the write to the request's workspace. Precedence: explicit
-      // `workspace` arg → the request's concrete workspace (MCP ?workspace=, on
-      // ctx.workspaceId) → undefined (keep the trigger-derived default). '*'
-      // (unscoped SU) is treated as "no workspace" so the trigger still derives.
-      const workspaceId =
-        (typeof args.workspace === 'string' && args.workspace.trim()) ? args.workspace.trim()
-          : (ctx.workspaceId && ctx.workspaceId !== '*') ? ctx.workspaceId
-            : undefined;
-      // Hive-scope gate (domain-generic-hive-architecture P-022/P-024, D-019/D-020):
-      // a PIPELINE work-item belongs to a hive's fleet queue, so it must resolve to a
-      // hive — auto-resolve-then-require from the explicit `hive` arg, else the item's
-      // harness, else the session's harness. A pipeline kind already carries a harness,
-      // so this essentially always resolves (no new 400 for normally-scoped callers);
-      // only a genuinely hive-less pipeline create (bare operator scope, no harness)
-      // errors. Pin the item's harness to the resolved hive home when none was given (1:1
-      // hive==home harness). Issue kinds (bug/change) are NOT gated — they may stay
-      // workspace-global (D-020).
-      let harnessForItem = args.harness;
-      if (HIVE_GATED_KINDS.has(args.kind)) {
-        const hiveScope = await resolveHiveScope(args.hive, {
-          workspaceId: ctx.workspaceId,
-          harnessSlug: args.harness ?? ctx.harnessSlug,
-        });
-        if (hiveScope.kind === 'none') {
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'hive_required', message: HIVE_REQUIRED_DETAIL }) }],
-          };
-        }
-        harnessForItem = args.harness ?? hiveScope.slug;
-      }
-      const workItem = await createWorkItem({
-        kind: args.kind as WorkItemKind,
-        title: args.title,
-        summary: args.summary,
-        harness: harnessForItem,
-        workspaceId,
-        severity: args.severity,
-        parent: args.parent,
-        topics: args.topics,
-        payload: args.payload,
-        createdBy: ident.ownerId,
-        urgent: args.urgent,
-        // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`
-        // stamps the owner in the same write — no create→claim race. The creator is
-        // the durable delegator (`assignedBy`, issue-family only; the feature table
-        // has no assigned_by column so it is harmlessly ignored there).
-        assignee: args.assign_to,
-        assignedBy: args.assign_to ? ident.ownerId : undefined,
-      });
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, workItem }) }] };
-    } catch (e) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }) }] };
-    }
+    // The per-item creation core (mirror-guard + workspace resolution + hive-scope gate
+    // + the atomic create+claim) is extracted to `_create-core` so this single-item
+    // handler and the bulk `work_items:create_batch` loop apply it IDENTICALLY. It never
+    // throws — a failure (mirror duplicate, hive_required, or a createWorkItem rejection)
+    // comes back as `{ ok: false, … }`, preserving the prior envelope shapes exactly.
+    const res = await createOneWorkItem(args, {
+      ownerId: ident.ownerId,
+      workspaceId: ctx.workspaceId,
+      harnessSlug: ctx.harnessSlug,
+    });
+    const payload = res.ok
+      ? { ok: true, workItem: res.workItem }
+      : {
+          ok: false,
+          error: res.error,
+          ...(res.message !== undefined ? { message: res.message } : {}),
+          ...(res.existing !== undefined ? { existing: res.existing } : {}),
+        };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });

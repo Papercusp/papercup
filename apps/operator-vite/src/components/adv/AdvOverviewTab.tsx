@@ -443,7 +443,7 @@ export default function AdvOverviewTab() {
         .pc-overview__bar-fill {
           height: 100%;
           border-radius: 999px;
-          background: linear-gradient(90deg, #38bdf8, #34d399);
+          background: linear-gradient(90deg, var(--accent, #38bdf8), var(--good, #34d399));
           transition: width 240ms ease;
         }
         /* Generic list rows (needs-you / agents / activity) */

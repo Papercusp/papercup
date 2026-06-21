@@ -167,16 +167,24 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     });
   }
   // Placeable work not being placed while routines are alive — the Queen's to place.
-  if (workFeed.autoEligibleStuck > 0 && workFeed.deadRoutines === 0) {
+  // EI-2357: key this off the genuinely Queen-PLACEABLE frontier (unblocked todo the
+  // Queen actually places), NOT `autoEligibleStuck` — that count is the auto-IMPLEMENT
+  // dispatcher's drain lane (code-bug improvements the DISPATCHER, not the Queen, drains).
+  // A stalled dispatcher is surfaced separately (collectDispatcherStalenessSignals, wired
+  // into the improvements watchdog). Keying the Queen nudge off the dispatcher lane caused
+  // chronic false "Queen drove 0 placements" readings + recurring false HUMAN escalations
+  // whenever the dispatcher backlog was non-empty while the frontier was 0 (the Queen had
+  // nothing to place) — see EI-2357 / EI-2130 / EI-2238.
+  if (workFeed.frontier > 0 && workFeed.deadRoutines === 0) {
     out.push({
       kind: 'work-feed-stuck',
       severity: 'warning',
       subject: 'work feed',
-      detail: `${workFeed.autoEligibleStuck} auto-eligible item(s) at attempts:0 unplaced, with the routines alive.`,
+      detail: `${workFeed.frontier} placeable frontier item(s) ready (unblocked todo) but unplaced, with the routines alive.`,
       suggestedAction: {
         type: 'nudge',
         target: 'queen',
-        message: `Queen — ${workFeed.autoEligibleStuck} auto-eligible item(s) are ready (attempts:0) but unplaced; place them.`,
+        message: `Queen — ${workFeed.frontier} frontier item(s) are ready to place; place them.`,
       },
     });
   }

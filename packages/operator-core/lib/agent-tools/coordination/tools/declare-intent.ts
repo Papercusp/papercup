@@ -33,6 +33,9 @@ import { COORD_ROLES } from '../roles';
 import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
 import { reconcileDeclaredClaims } from '../../../plan-items/claim-discipline';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../../plan-items/agent-names';
+import { convertPlanItem } from '../../../plan-items/convert';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 export default defineTool({
   name: 'coord:declare-intent',
@@ -152,6 +155,37 @@ export default defineTool({
           ownerUser: bestEffortOwnerUser(ctx),
           intent: args.intent,
         });
+
+        // work-queue-completeness Phase A (ENFORCEMENT): when the auto-convert flag is ON,
+        // each item the caller now HOLDS (just-claimed or already-held) gets a tracked
+        // work_item via convertPlanItem — so an auto-claimed declare-intent lane never
+        // leaves untracked work. Idempotent (resumes an existing record), so re-declaring
+        // is a harmless no-op. BEST-EFFORT: wrapped per-item AND as a whole so a convert
+        // failure (or a flag-IO error) NEVER breaks declare-intent — the lane stays
+        // claimed regardless. Fail-safe to OFF on a flag-read error.
+        const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
+        if (autoConvert) {
+          const held = [...reconciled.claimed, ...reconciled.alreadyHeld];
+          for (const itemId of held) {
+            await convertPlanItem({
+              workspaceId: scope.workspaceId,
+              harnessSlug: scope.harnessSlug,
+              planSlug: args.current_plan_slug,
+              itemId,
+              owner: identity.ownerId,
+              ownerLabel: identity.ownerLabel,
+              ownerName,
+              ownerUser: bestEffortOwnerUser(ctx),
+              intent: args.intent,
+            }).catch((e) =>
+              console.warn(
+                `[coord:declare-intent] auto-convert ${args.current_plan_slug}#${itemId} failed:`,
+                (e as Error)?.message ?? e,
+              ),
+            );
+          }
+        }
+
         claims =
           unknown.length > 0
             ? {

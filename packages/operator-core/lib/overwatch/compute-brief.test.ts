@@ -135,14 +135,28 @@ test('detectAnomalies — a dead routine → work-feed-stuck critical ESCALATE (
   assert.equal(hits[0].suggestedAction.type, 'escalate');
 });
 
-test('detectAnomalies — auto-eligible stuck with routines alive → work-feed-stuck warning NUDGE queen', () => {
+test('detectAnomalies — placeable frontier unplaced with routines alive → work-feed-stuck warning NUDGE queen', () => {
   const b = base();
+  // EI-2357: the nudge keys off the genuinely Queen-placeable FRONTIER, not the
+  // dispatcher lane. frontier:3 (real placeable work) + routines alive → nudge fires.
   b.workFeed = { frontier: 3, autoEligibleStuck: 5, deadRoutines: 0, blockedStranded: 0 };
   const a = only(detectAnomalies(b), 'work-feed-stuck');
   assert.equal(a.severity, 'warning');
   assert.equal(a.suggestedAction.type, 'nudge');
   assert.equal(a.suggestedAction.target, 'queen');
-  assert.match(a.detail, /attempts:0/);
+  assert.match(a.detail, /placeable frontier/);
+});
+
+test('detectAnomalies — EI-2357 recurrence guard: dispatcher-lane backlog with frontier=0 does NOT nudge/escalate the Queen', () => {
+  const b = base();
+  // The auto-implement dispatcher's drain lane is large (126 code-bug items at
+  // attempts:0), but the Queen-placeable frontier is 0 — she has nothing to place.
+  // Must raise NO work-feed-stuck anomaly (this was the chronic false "Queen drove 0
+  // placements" + recurring false HUMAN escalations; a stalled dispatcher is surfaced
+  // separately by the dispatcher-staleness watchdog).
+  b.workFeed = { frontier: 0, autoEligibleStuck: 126, deadRoutines: 0, blockedStranded: 0 };
+  const hits = detectAnomalies(b).filter((a) => a.kind === 'work-feed-stuck');
+  assert.equal(hits.length, 0);
 });
 
 test('detectAnomalies — stranded-on-resolved-constraint → NUDGE queen to re-open', () => {

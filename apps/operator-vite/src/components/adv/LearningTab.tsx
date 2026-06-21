@@ -1137,7 +1137,7 @@ function BakeoffTrendView() {
     RoutedRail ('plan' | 'gym' | 'improvement' | 'instance') — open set, render
     whatever arrives. */
 const RAIL_META: Record<string, { label: string; desc: string; color: string }> = {
-  plan: { label: 'plan draft', desc: 'A draft plan awaiting Queen/owner triage — open it in the Create tab', color: '#7dd3fc' },
+  plan: { label: 'plan draft', desc: 'A draft plan awaiting Queen/owner triage — open it in the Create tab', color: 'var(--accent-strong, var(--accent))' },
   gym: { label: 'gym', desc: 'Seeded into the gym quality-diversity experiment archive', color: '#34d399' },
   improvement: { label: 'improvement', desc: 'Filed as an improvement work-item (EI-…) in the backlog', color: '#a78bfa' },
   instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: '#f472b6' },
@@ -1686,7 +1686,7 @@ function KnowledgeView() {
         <ul className="pc-learning__list">
           {insights.recent.map((ins) => (
             <li key={ins.slug} className="pc-learning__row" title={ins.description || ins.title}>
-              <span className="pc-learning__sev" style={{ background: '#7dd3fc' }} aria-hidden />
+              <span className="pc-learning__sev" style={{ background: 'var(--accent-strong, var(--accent))' }} aria-hidden />
               <span className="pc-learning__id">{ins.slug}</span>
               <span className="pc-learning__title">{ins.title}</span>
               <span className="pc-learning__meta">
@@ -2210,7 +2210,7 @@ function LearningStyles() {
       .pc-learning__stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__stat--auto strong { color: #86efac; }
       .pc-learning__stat--human strong { color: #fcd34d; }
-      .pc-learning__stat--good strong { color: #7dd3fc; }
+      .pc-learning__stat--good strong { color: var(--accent-strong, var(--accent)); }
 
       .pc-learning__section { display: flex; flex-direction: column; gap: 10px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

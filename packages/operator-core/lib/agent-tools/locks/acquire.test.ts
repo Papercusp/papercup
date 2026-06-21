@@ -90,7 +90,7 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('a WorkspaceContendedError degrades to a structured empty busy (no raw PG leak)', async () => {
-    routeM.mockRejectedValue(new WorkspaceContendedError('advisory lock timeout'));
+    routeM.mockRejectedValue(new WorkspaceContendedError('ws', '55P03', new Error('advisory lock timeout')));
     const b = body(await call({}));
     expect(b).toMatchObject({ ok: false, busy: [] });
   });

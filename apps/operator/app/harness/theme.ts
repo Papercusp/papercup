@@ -75,8 +75,8 @@ export const BOARD_COLUMN_ORDER: HarnessStatus[] = [
 // coloring; the /adv Issues panel + Detail pane read them via the
 // <SeverityPill> / issue-status helpers in primitives.tsx instead of
 // re-declaring local tone maps. Hues align to the bluefrost semantic
-// family (red → amber → sky → grey) so issues stay on-theme; `minor` uses
-// the sky accent rather than the legacy yellow.
+// family (red → amber → accent → grey) so issues stay on-theme; `minor` uses
+// the accent token rather than the legacy yellow.
 //
 // Same Proxy fallback as STATUS — an unknown severity/status returns a
 // neutral grey rather than crashing the row subtree at render.
@@ -84,7 +84,7 @@ export const BOARD_COLUMN_ORDER: HarnessStatus[] = [
 const _SEVERITY_TABLE = {
   critical: { solid: '#ef4444', bg: 'rgba(239,68,68,0.16)',   text: '#fca5a5', label: 'Critical' },
   major:    { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Major' },
-  minor:    { solid: '#38bdf8', bg: 'rgba(56,189,248,0.14)',  text: '#7dd3fc', label: 'Minor' },
+  minor:    { solid: 'var(--accent)', bg: 'color-mix(in oklab, var(--accent), transparent 86%)',  text: 'var(--accent-strong, var(--accent))', label: 'Minor' },
   nit:      { solid: '#94a3b8', bg: 'rgba(148,163,184,0.14)', text: '#cbd5e1', label: 'Nit' },
 } as const;
 
@@ -150,7 +150,7 @@ export type WorkItemKindKey = keyof typeof _WORK_ITEM_KIND_TABLE;
 // visual language as Work items.
 const _AGENT_KIND_TABLE = {
   queen:    { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Queen' },
-  bee:      { solid: '#38bdf8', bg: 'rgba(56,189,248,0.14)',  text: '#7dd3fc', label: 'Bee' },
+  bee:      { solid: 'var(--accent)', bg: 'color-mix(in oklab, var(--accent), transparent 86%)',  text: 'var(--accent-strong, var(--accent))', label: 'Bee' },
   sentinel: { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',  text: '#6ee7b7', label: 'Sentinel' },
   planner:  { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)',  text: '#d8b4fe', label: 'Planner' },
   su:       { solid: '#ec4899', bg: 'rgba(236,72,153,0.15)',  text: '#f9a8d4', label: 'SU' },

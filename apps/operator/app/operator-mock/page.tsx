@@ -243,7 +243,7 @@ const STATUS_LABEL: Record<CardStatus, string> = {
 
 const STATUS_COLOR: Record<CardStatus, string> = {
   pending: '#fbbf24',
-  'in-flight': '#38bdf8',
+  'in-flight': 'var(--accent)',
   done: '#94a3b8',
   failed: '#ef4444',
 };
@@ -257,10 +257,10 @@ const ACTIVITY_KIND_GLYPH = {
 } as const;
 
 const ACTIVITY_KIND_COLOR = {
-  'in-flight': '#38bdf8',
+  'in-flight': 'var(--accent)',
   done: '#94a3b8',
   delegate: '#a78bfa',
-  scan: '#22d3ee',
+  scan: 'var(--accent-strong, var(--accent))',
   error: '#ef4444',
 } as const;
 
@@ -959,7 +959,7 @@ const S: Record<string, React.CSSProperties> = {
     gap: 6,
     border: '1px solid rgba(255,255,255,0.06)',
   },
-  statePillScanning: { color: '#22d3ee', borderColor: 'rgba(34,211,238,0.3)' },
+  statePillScanning: { color: 'var(--accent-strong, var(--accent))', borderColor: 'color-mix(in oklab, var(--accent), transparent 70%)' },
   statePillPaused: { color: '#fbbf24', borderColor: 'rgba(251,191,36,0.3)' },
   stateDot: { width: 6, height: 6, borderRadius: 3, background: 'currentColor', display: 'inline-block' },
   headerActions: { display: 'flex', gap: 6 },
@@ -991,7 +991,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   toggleActive: {
     padding: '7px 14px',
-    background: '#38bdf8',
+    background: 'var(--accent)',
     color: '#051827',
     border: 'none',
     borderRadius: 6,
@@ -1053,9 +1053,9 @@ const S: Record<string, React.CSSProperties> = {
     textAlign: 'left',
   },
   harnessRowActive: {
-    background: 'rgba(56,189,248,0.1)',
-    border: '1px solid rgba(56,189,248,0.3)',
-    color: '#7dd3fc',
+    background: 'color-mix(in oklab, var(--accent), transparent 90%)',
+    border: '1px solid color-mix(in oklab, var(--accent), transparent 70%)',
+    color: 'var(--accent-strong, var(--accent))',
     padding: '6px 8px',
     borderRadius: 4,
     fontSize: 12,
@@ -1114,8 +1114,8 @@ const S: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
     padding: '8px 10px',
-    background: 'rgba(56,189,248,0.06)',
-    border: '1px solid rgba(56,189,248,0.2)',
+    background: 'color-mix(in oklab, var(--accent), transparent 94%)',
+    border: '1px solid color-mix(in oklab, var(--accent), transparent 80%)',
     borderRadius: 6,
     marginBottom: 12,
     flexWrap: 'wrap' as const,
@@ -1132,7 +1132,7 @@ const S: Record<string, React.CSSProperties> = {
     color: '#cbd5e1',
   },
   chipX: { background: 'transparent', color: '#94a3b8', border: 'none', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 },
-  clearAllBtn: { background: 'transparent', color: '#38bdf8', border: 'none', fontSize: 12, cursor: 'pointer', marginLeft: 'auto' },
+  clearAllBtn: { background: 'transparent', color: 'var(--accent)', border: 'none', fontSize: 12, cursor: 'pointer', marginLeft: 'auto' },
 
   searchWrap: { marginBottom: 14 },
   searchInput: {
@@ -1184,7 +1184,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   directiveBody: {
     background: 'rgba(0,0,0,0.3)',
-    borderLeft: '3px solid rgba(56,189,248,0.4)',
+    borderLeft: '3px solid color-mix(in oklab, var(--accent), transparent 60%)',
     padding: 10,
     borderRadius: 4,
     fontSize: 12,
@@ -1196,7 +1196,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   actions: { display: 'flex', gap: 8 },
   primaryBtn: {
-    background: '#38bdf8',
+    background: 'var(--accent)',
     color: '#051827',
     border: 'none',
     padding: '8px 16px',
@@ -1216,7 +1216,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   linkBtn: {
     background: 'transparent',
-    color: '#38bdf8',
+    color: 'var(--accent)',
     border: 'none',
     padding: '8px 0',
     fontSize: 13,
@@ -1255,7 +1255,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   subFilterActive: {
     padding: '5px 10px',
-    background: '#38bdf8',
+    background: 'var(--accent)',
     color: '#051827',
     border: 'none',
     borderRadius: 4,
@@ -1311,8 +1311,8 @@ const S: Record<string, React.CSSProperties> = {
   activityTs: { fontSize: 11, color: '#64748b', flexShrink: 0, marginTop: 2 },
   spinnerChip: {
     fontSize: 10,
-    color: '#38bdf8',
-    background: 'rgba(56,189,248,0.1)',
+    color: 'var(--accent)',
+    background: 'color-mix(in oklab, var(--accent), transparent 90%)',
     padding: '1px 6px',
     borderRadius: 3,
     display: 'inline-flex',
@@ -1323,8 +1323,8 @@ const S: Record<string, React.CSSProperties> = {
   spinner: {
     width: 6,
     height: 6,
-    border: '1.5px solid rgba(56,189,248,0.4)',
-    borderTopColor: '#38bdf8',
+    border: '1.5px solid color-mix(in oklab, var(--accent), transparent 60%)',
+    borderTopColor: 'var(--accent)',
     borderRadius: 3,
     display: 'inline-block',
     animation: 'spin 0.8s linear infinite',
@@ -1388,7 +1388,7 @@ const S: Record<string, React.CSSProperties> = {
   modalLabel: { fontSize: 12, color: '#94a3b8', marginBottom: 6 },
   modalQuote: {
     background: 'rgba(255,255,255,0.04)',
-    borderLeft: '3px solid #38bdf8',
+    borderLeft: '3px solid var(--accent)',
     padding: '10px 12px',
     borderRadius: 4,
     fontSize: 13,

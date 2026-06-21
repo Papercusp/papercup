@@ -59,7 +59,7 @@ export const ADV_TABS: ReadonlyArray<{
   accentRgb: string;
 }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: '#818cf8', accentRgb: '129, 140, 248' },
-  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
+  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: 'var(--accent)', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
   // Calendar — the schedulable time-surface for scheduled/recurring plans
   // (scheduled-recurring-plans-2026-06-16 P-019). Next to Create (D-001: no separate
@@ -79,7 +79,7 @@ export const ADV_TABS: ReadonlyArray<{
   // (The Overwatch surface moved to the left sidebar next to Queen — its
   // actionable control + anomaly→action list — and its duplicated health grid
   // was dropped in favour of this Health tab. system-health-tab P-008, 2026-06-15.)
-  { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: '#22d3ee', accentRgb: '34, 211, 238' },
+  { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: 'var(--accent-strong, var(--accent))', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },

@@ -292,7 +292,7 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
           font-size: 10.5px; font-weight: 700; letter-spacing: 0; white-space: nowrap;
           border: 1px solid transparent;
         }
-        .pc-doc-badge--src-generated { color: #7dd3fc; background: rgba(56,189,248,.14); border-color: rgba(56,189,248,.38); }
+        .pc-doc-badge--src-generated { color: var(--accent-strong, var(--accent)); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%); border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 62%); }
         .pc-doc-badge--src-manual { color: #cbd5e1; background: rgba(100,116,139,.16); border-color: rgba(100,116,139,.4); }
         .pc-doc-badge--src-augmented { color: #c4b5fd; background: rgba(167,139,250,.16); border-color: rgba(167,139,250,.4); }
         .pc-doc-badge--st-stale, .pc-doc-badge--st-review { color: #fbbf24; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.4); }

@@ -557,6 +557,10 @@ import './scorecards/freshness';
 // WI-NNN ids (D-008). Coexists with features:*/issues:* during the migration (their
 // retirement is the deferred, coordinated follow-on).
 import './work_items/create';
+// BULK create (work-queue-completeness Phase B): create up to 100 items in one call,
+// each through the same per-item core as work_items:create (mirror-guard + workspace
+// resolution + hive-scope gate + atomic create+claim). One bad item never fails the batch.
+import './work_items/create_batch';
 import './work_items/get';
 import './work_items/list';
 import './work_items/search';
@@ -568,6 +572,10 @@ import './work_items/claim';
 // one round-trip — the #1 measured agent flow; also closes the get→claim race.
 import './work_items/pickup';
 import './work_items/release';
+// BULK mutation dispatcher (work-queue-completeness Phase B): apply ONE op
+// (claim|release|set_state|set_priority|tag|subscribe) to up to 200 items in one call,
+// each mapping to the existing single-op engine fn. One bad item never fails the batch.
+import './work_items/batch';
 // Per-assignee ordered work-list (local-hive-orchestration P-020 / D-004 / D-008):
 // reorder moves an item within its assignee's queue; writer (bee|queen) = the
 // propose/dispose audit, gated by the existing automation tier (work_items:write → medium).

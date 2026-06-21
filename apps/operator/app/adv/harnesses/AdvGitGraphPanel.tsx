@@ -517,7 +517,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
           color: var(--fg-mute); cursor: pointer;
           transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
         }
-        .pc-adv-gitgrid__filter--all { --chip-tint: #7dd3fc; }
+        .pc-adv-gitgrid__filter--all { --chip-tint: var(--accent-strong, var(--accent)); }
         .pc-adv-gitgrid__filter--refs { --chip-tint: #2dd4bf; }
         .pc-adv-gitgrid__filter--merges { --chip-tint: #a78bfa; }
         .pc-adv-gitgrid__filter--bookmarked { --chip-tint: #f59e0b; }

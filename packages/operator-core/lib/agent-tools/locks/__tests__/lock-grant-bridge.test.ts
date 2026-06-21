@@ -26,6 +26,9 @@ const awaitRow = (eventKey: string): AwaitRow => ({
   firedAt: null,
   firedReason: null,
   cancelledAt: null,
+  once: true,
+  minSleepSec: null,
+  urgency: false,
 });
 
 describe('key helpers', () => {

@@ -17,7 +17,7 @@ import { FlaskConical, RefreshCw } from 'lucide-react';
 import type { ExperimentRunSummary } from '@papercusp/operator-core/lib/experiment/ledger';
 
 const TIER_TONE: Record<string, string> = {
-  offline: '#7dd3fc',
+  offline: 'var(--accent-strong, var(--accent))',
   shadow: '#c4b5fd',
   live: '#fbbf24',
 };
@@ -116,7 +116,7 @@ export function ExperimentsPanel() {
         .pc-experiments__empty code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; }
         .pc-experiments__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-experiments__row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
-        .pc-experiments__test { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; color: #06121a; background: #7dd3fc; border-radius: 4px; padding: 1px 5px; }
+        .pc-experiments__test { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; color: var(--accent-ink, #06121a); background: var(--accent-strong, var(--accent)); border-radius: 4px; padding: 1px 5px; }
         .pc-experiments__tier { flex: none; font-size: 10.5px; font-weight: 600; }
         .pc-experiments__arms { flex: 1 1 auto; min-width: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; }
         .pc-experiments__arm { color: var(--fg-mute, #7f9bb4); }

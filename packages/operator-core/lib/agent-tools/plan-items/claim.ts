@@ -13,6 +13,9 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
 import { claimPlanItem } from '../../plan-items/liveness';
+import { convertPlanItem } from '../../plan-items/convert';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 export default defineTool({
   name: 'plan_items:claim',
@@ -38,6 +41,53 @@ export default defineTool({
     const id = resolveAgentIdentity(ctx);
     const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: args.harness });
     const ownerName = await resolveAdoptedName(workspaceId, id.ownerId);
+
+    // work-queue-completeness Phase A (ENFORCEMENT): when the auto-convert flag is ON,
+    // a claim is no longer a bare lease — it mints (or idempotently resumes) a tracked
+    // work_item via convertPlanItem (policy-checked lease → resume-or-mint → claim →
+    // back-link). Because convertPlanItem re-runs claimPlanItem and is idempotent, this
+    // is safe in the same spot a bare claim happened. Fail-safe to OFF on a flag-IO error
+    // (today's bare-claim behavior). Read SYNC at the tool layer like convert.ts does for
+    // COMPILED_BRIEFS — keeps the core flag-mock-free.
+    const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
+    if (autoConvert) {
+      const conv = await convertPlanItem({
+        workspaceId,
+        harnessSlug,
+        planSlug: args.plan,
+        itemId: args.item,
+        owner: id.ownerId,
+        ownerLabel: id.ownerLabel,
+        ownerName,
+        ownerUser: bestEffortOwnerUser(ctx),
+        intent: args.intent,
+        livenessMode: args.mode,
+        ttlSec: args.ttl_sec,
+      });
+      const converted = conv.status === 'converted' || conv.status === 'resumed';
+      // Re-shape into the same { ok, result } envelope today's callers read, plus the
+      // minted/resumed workItem. A refused/conflict convert maps back to the same
+      // claim-shaped failure the bare path returns (its embedded `claim` payload).
+      if (conv.status === 'converted' || conv.status === 'resumed') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                result: { status: 'claimed', claim: conv.claim, mode: conv.mode, viaAssignment: conv.viaAssignment },
+                convertStatus: conv.status,
+                workItem: { id: conv.workItem.id, kind: conv.workItem.kind, harness: conv.workItem.harness ?? null },
+              }),
+            },
+          ],
+        };
+      }
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: converted, result: conv }) }],
+      };
+    }
+
     const result = await claimPlanItem({
       workspaceId,
       harnessSlug,

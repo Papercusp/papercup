@@ -75,7 +75,7 @@ export default function AdminShell({
           align-items: flex-end;
           gap: 16px;
           padding: 14px 18px 12px;
-          border-bottom: 1px solid rgba(125, 211, 252, 0.14);
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.14));
           background:
             linear-gradient(180deg, rgba(7, 16, 29, 0.98), rgba(6, 13, 24, 0.98));
           box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.02);
@@ -86,7 +86,7 @@ export default function AdminShell({
           min-width: 0;
         }
         .pc-adminshell__kicker {
-          color: rgba(186, 230, 253, 0.64);
+          color: var(--fg-mute);
           font-size: 10px;
           font-weight: 760;
           letter-spacing: 0;
@@ -117,8 +117,8 @@ export default function AdminShell({
           align-items: center;
           min-height: 34px;
           padding: 0 12px;
-          border: 1px solid rgba(125, 211, 252, 0.14);
-          border-bottom-color: rgba(125, 211, 252, 0.08);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+          border-bottom-color: color-mix(in oklab, var(--border, rgba(125, 211, 252, 0.14)), transparent 45%);
           border-radius: 10px 10px 0 0;
           background: rgba(255, 255, 255, 0.02);
           color: rgba(214, 236, 248, 0.72);
@@ -126,12 +126,12 @@ export default function AdminShell({
           font-weight: 650;
           letter-spacing: 0;
           text-decoration: none !important;
-          transition: background-color 120ms, border-color 120ms, color 120ms, transform 120ms;
+          transition: background-color 120ms, border-color 120ms, color 120ms;
         }
         .pc-adminshell__tab:hover {
           color: #eff8ff;
           background: rgba(12, 24, 38, 0.96);
-          border-color: rgba(125, 211, 252, 0.28);
+          border-color: var(--border-strong, rgba(125, 211, 252, 0.28));
           text-decoration: none !important;
         }
         .pc-adminshell__tab[aria-selected="true"] {
@@ -141,7 +141,6 @@ export default function AdminShell({
           border-color: color-mix(in srgb, var(--accent), transparent 62%);
           border-bottom-color: rgba(7, 16, 29, 0.98);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-          transform: translateY(1px);
         }
         .pc-adminshell__tab:focus-visible {
           outline: 2px solid color-mix(in srgb, var(--accent), transparent 42%);
@@ -151,10 +150,10 @@ export default function AdminShell({
         .pc-adminshell__host {
           align-self: center;
           padding: 5px 10px;
-          border: 1px solid rgba(125, 211, 252, 0.12);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
           border-radius: 999px;
           background: rgba(255, 255, 255, 0.025);
-          color: rgba(186, 230, 253, 0.68);
+          color: var(--fg-mute);
           font-size: 11px;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }

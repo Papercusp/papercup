@@ -44,7 +44,7 @@ export function trustBadgeState(p: TrustBadgeProps): TrustState | null {
   if (p.auditVerdict === 'admit') {
     return {
       label: 'admitted',
-      color: '#7dd3fc',
+      color: 'var(--accent-strong, var(--accent))',
       title: `Remote work by ${who} — admitted by the auditor${p.verifiedAuthorGithubUserId != null ? ' (author not on your trust list)' : ''}.`,
     };
   }

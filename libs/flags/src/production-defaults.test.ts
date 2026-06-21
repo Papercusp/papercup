@@ -50,6 +50,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // live plans:start path; ships dark, owner flips after an attended integration-verify. Safe
   // dark: OFF ⇒ no promotion (today's behavior, byte-identical).
   FLAGS.PLAN_WORKITEM_PROMOTION,
+  // work-queue-completeness-2026-06-21 Phase A (unified-work-item-ledger): every plan-item claim
+  // auto-mints a tracked work-item (routes plan_items:claim / declare-intent / set-status→wip
+  // through convertPlanItem). Ships dark, reversible; owner flips ON after verifying. Safe dark:
+  // OFF ⇒ today's bare claimPlanItem on all claim paths (byte-identical).
+  FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT,
   // infra-perf-reliability-audit-round4 P-005 (D-005): gates the listEscalations read cutover
   // onto the coord_open_escalations projection (mig 355). DARK until the migration+backfill is
   // verified applied in prod; the table+trigger are additive + harmless while OFF, so OFF ⇒ the

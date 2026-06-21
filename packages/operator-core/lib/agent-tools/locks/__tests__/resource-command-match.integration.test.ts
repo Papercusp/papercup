@@ -40,6 +40,7 @@ const reg = (resource: string, patterns: string[], enforcement: ResourceRegistry
   rule_text: '',
   enforcement,
   match_patterns: patterns,
+  max_holders: null,
 });
 
 describe('matchCommandToResources (pure)', () => {

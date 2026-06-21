@@ -19,7 +19,7 @@ import { SearchX, RefreshCw } from 'lucide-react';
 import type { DemandSnapshot } from '@papercusp/operator-core/lib/negative-space/demand-read';
 
 const SURFACE_TONE: Record<string, string> = {
-  docs: '#7dd3fc',
+  docs: 'var(--accent-strong, var(--accent))',
   memory: '#c4b5fd',
   plans: '#fcd34d',
 };

@@ -860,6 +860,16 @@ export const FLAGS = {
   // attended integration-verify. OFF ⇒ no promotion (today's behavior, byte-identical).
   // KNOWN_DARK_FLAGS.
   PLAN_WORKITEM_PROMOTION: "papercusp-plan-workitem-promotion",
+  // work-queue-completeness-2026-06-21 Phase A (unified-work-item-ledger): ENFORCEMENT —
+  // every plan-item claim auto-mints a tracked work-item. When ON, the three bare-claim
+  // bypass paths (plan_items:claim, coord:declare-intent { items }, plans:set-status → wip
+  // auto-claim) route the claim through convertPlanItem (policy-checked lease → resume-or-mint
+  // a work_item → claim it → link it back), so WORKING a plan item never leaves untracked work.
+  // DEFAULT OFF (dark, reversible): it mints work-items on every live plan-item claim path; the
+  // owner flips it ON after verifying. OFF ⇒ today's bare claimPlanItem (byte-identical). The
+  // auto-convert legs in declare-intent / set-status are best-effort (wrapped so a convert
+  // failure never breaks the underlying claim). KNOWN_DARK_FLAGS.
+  PLAN_ITEM_CLAIM_AUTO_CONVERT: "papercusp-claim-auto-convert",
   // infra-perf-reliability-audit-round4 P-005 (D-005): switch listEscalations({status:'open'})
   // to read the materialized harness_shared.coord_open_escalations projection (mig 355) instead
   // of the unbounded ~35k-event full-surface replay that pg_stat_statements pinned as ~88% of
@@ -1343,6 +1353,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (dark): mints work-items on the live plans:start path; flip ON after an
   // attended integration-verify (unified-work-item-ledger P-003 / D-002).
   [FLAGS.PLAN_WORKITEM_PROMOTION]: false,
+  // DEFAULT OFF (dark, work-queue-completeness Phase A): routes every plan-item claim through
+  // convertPlanItem so the claim auto-mints a tracked work-item; flip ON after verifying. OFF ⇒
+  // today's bare claimPlanItem on all three claim paths, byte-identical. KNOWN_DARK_FLAGS.
+  [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: false,
   // DEFAULT OFF (infra-perf-round4 P-005): gates the listEscalations read cutover onto the
   // coord_open_escalations projection. The projection table+trigger (mig 355) are additive +
   // harmless while OFF; flip ON only after the migration+backfill is verified in prod.
