@@ -2221,6 +2221,7 @@ async function runWatchdogTickBody(
         severity: s.severity,
         paths: s.paths,
         // Explicit scope (consume-edges P-021): the D-005 triage taxonomy keys off it.
+        // allow-scope-default: 'operator' is the explicit top-level improvement scope (not a workspace).
         scope: s.scope ?? 'operator',
         foundDuring: 'improvement-watchdog',
         createdBy: 'system:improvement-watchdog',
