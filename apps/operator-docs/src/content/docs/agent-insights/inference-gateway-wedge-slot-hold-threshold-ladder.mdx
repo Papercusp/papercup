@@ -2,7 +2,7 @@
 title: "Inference-gateway wedge: bound EVERY admission-slot-hold path below the self-heal / watchdog ladder"
 description: "The gateway restart-storms (watchdog WEDGE every ~6min — or a multi-minute freeze when the watchdog exhausts its hourly restart budget) whenever ANY code path lets a request hold its admission slot longer than the self-heal (75s) / watchdog (120s) thresholds. There are THREE such paths and they were fixed ONE AT A TIME (2026-06-20): the 429-absorb wait, the transport-STALL retry (catch-block — it bypassed the 429 deadline), and the non-streaming 5-min headers wait. The durable principle is one threshold LADDER: internal-retry deadline (60s) < self-heal (75s) < watchdog (120s), and EVERY slot-hold path must respect it. A wedge is a BUG; forwarded 429/503s under load are CAPACITY (a different problem)."
 discovered: 2026-06-20
-tags: [inference-gateway, admission, wedge, reliability, runbook, slot-hold, stall, 429, watchdog, self-heal, capacity, hot-reload]
+tags: [inference-gateway, admission, wedge, reliability, runbook, slot-hold, stall, 429, watchdog, self-heal, capacity, hot-reload, streaming, slot-leak, stuck-stream]
 status: active
 ---
 
@@ -42,6 +42,35 @@ addresses one path is still a band-aid if another path wedges.
    timeout (5 min) alone is `>>` the 120s watchdog. Fixed: cap the HEADERS arm by `retryDeadlineAt -
    Date.now()` — **only the headers wait, NOT the body-idle**, so a healthy long STREAM that is making
    progress keeps its slot (body-idle resets on each byte).
+
+## A FOURTH mode (different class): the stuck-stream slot leak
+
+2026-06-21 — after the three retry/wait paths above were fixed, the storm wedges stopped (≥1.5 h clean),
+but a SINGLE wedge surfaced with a *different* signature: `24/24 in-flight, 82 queued` frozen 120s with
+**zero 429s, zero STALLED, zero fetch-failures** — only repeated SELF-HEAL reclaims of the SAME slot whose
+held time kept GROWING: `slot #178, held 4800s → 4860s, stream=true`. **80 minutes** — well past the 20-min
+hard ceiling. The reclaim AND the ceiling both `abort(currentAc) + res.destroy()`, yet the slot never freed.
+
+Root cause: the streaming-body await resolved ONLY on `res` / `nodeStream` events —
+`new Promise(resolve => { res.on('finish'|'close'|'error', resolve); nodeStream.on('error', …) })`. A stream
+where the CLIENT is half-open (never emits res `'close'`) AND the upstream body has ended-or-hung (never
+emits nodeStream `'error'`) pins its slot **forever**: the await does NOT listen to the abort signal, so the
+self-heal reclaim and the 20-min ceiling — which both abort `ac` — are *ignored*. These leaked slots
+accumulate until all 24 are pinned → freeze → wedge. Cadence ~1.5 h (slow leak), vs the 6-min storm cadence.
+
+Fix: make BOTH streaming awaits (the `up.body` pipe AND the peeked-rest pipe) also force-tear-down + resolve
+on the abort signal, so a reclaim/ceiling actually frees a stuck-stream slot:
+
+```
+const onAbort = () => { try { nodeStream.destroy(); } catch {} try { res.destroy(); } catch {} resolve(); };
+ac.signal.aborted ? onAbort() : ac.signal.addEventListener('abort', onAbort, { once: true });
+```
+
+Purely additive — it never fires for a healthy stream (which completes via res `'finish'` before anything
+aborts `ac`). **The log TELL that distinguishes this mode:** a SELF-HEAL reclaim line whose `held Ns` GROWS
+across reclaims of the SAME `slot #` (the abort isn't landing) — vs a healthy reclaim where the slot frees
+and the next reclaim targets a different, younger slot. Generalizes the ladder principle: it is not enough
+to *signal* an abort; every slot-hold await must actually *resolve on* that abort.
 
 ## Diagnose
 
