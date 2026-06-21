@@ -386,6 +386,9 @@ export interface GatewayStats {
    *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
    *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
   selfHealReclaims: number;
+  /** Count of rate-limit STALL candidates recorded (P-002): all-throttled sheds to an identified bee. The
+   *  full {ownerId, accountId, soonestResetAt} events are on GET /admin/stalls (for the stall-waker). */
+  stallsRecorded: number;
   /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
   unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
   pausedUntil: number;
@@ -689,6 +692,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
   let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
 
+  // Rate-limit STALL events (gateway-rate-limit-stall-autowake P-002): when the gateway sheds an
+  // all-throttled 429 to an IDENTIFIED bee (x-papercusp-owner present), record {ownerId, accountId,
+  // soonestResetAt} so a stall-waker can confirm the bee actually went idle and wake it once the account
+  // recovers. A bounded ring buffer surfaced on GET /admin/stalls; the gateway itself NEVER wakes (it stays
+  // a thin proxy — the coordinator owns the confirm-wait-wake state).
+  interface StallEvent { ownerId: string; accountId: string; soonestResetAt: number; at: number; }
+  const STALL_BUFFER_MAX = 256;
+  const recentStalls: StallEvent[] = [];
+  let stallsRecorded = 0;
+  function recordStall(ownerId: string | undefined, accountId: string, soonestResetAt: number): void {
+    if (!ownerId) return; // only bees that identified themselves (x-papercusp-owner) are wake-able
+    stallsRecorded++;
+    recentStalls.push({ ownerId, accountId, soonestResetAt, at: Date.now() });
+    if (recentStalls.length > STALL_BUFFER_MAX) recentStalls.splice(0, recentStalls.length - STALL_BUFFER_MAX);
+  }
+
   // Prompt-cache instrumentation (#0, 2026-06-21): a PASSIVE per-account tally of cache read/write tokens
   // parsed from each response's usage (the `message_start` SSE event), so we can SEE the prompt-cache hit
   // rate per account + the cost of routing a bee off its cache-warm account. Zero hot-path cost: the
@@ -802,6 +821,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       upstreamErrors,
       egressCircuitOpens,
       selfHealReclaims,
+      stallsRecorded,
       unified: snap.unified,
       pausedUntil: snap.pausedUntil,
       cache: cacheSnapshot(),
@@ -835,6 +855,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // x-papercusp-account header so its per-credential conversation cache survives; an unknown id
     // (or no header / a single-account pool) falls back to the active account — today's behavior.
     const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
+    // The bee's coord ownerId (== spawnId), if it identified itself — lets the gateway attribute an
+    // all-throttled shed back to this bee for the stall-waker (P-002). Absent ⇒ not wake-able (no-op).
+    const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
     const pinned = (wantAccount && pool.select?.(wantAccount)) || null;
     const poolActive = pool.active();
     // Fault #3 — pinned-but-paced failover. The spawn-side drain selector pins a bee to an account by
@@ -887,6 +910,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (!found && soonestPaused - Date.now() > maxQueueWaitMs) {
         totalRequests++;
         shedAllThrottled++;
+        // P-002: the whole pool is out of budget until `soonestPaused` — record a stall candidate so the
+        // waker can wake this bee then (only if it identified itself + its CLI doesn't recover on its own).
+        recordStall(wantOwner, active.accountId, soonestPaused);
         const retryAfterSec = Math.max(1, Math.ceil((soonestPaused - Date.now()) / 1000));
         log('warn', `inference-gateway: whole pool throttled (soonest reset ${retryAfterSec}s > admission wait cap) → fail-fast shed 429 (slot freed, not squatted)`);
         sendJson(
@@ -1415,6 +1441,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (req.method === 'GET' && (url === '/stats' || url === '/admin/stats')) {
       sendJson(res, 200, stats());
+      return;
+    }
+    if (req.method === 'GET' && (url === '/admin/stalls' || url.startsWith('/admin/stalls?'))) {
+      // P-002: recent rate-limit stall candidates for the stall-waker (gateway-rate-limit-stall-autowake).
+      // `?since=<epochMs>` returns only events after that watermark (the waker passes its last-seen `now`).
+      const since = Number(url.match(/[?&]since=(\d+)/)?.[1] ?? 0);
+      sendJson(res, 200, { ok: true, now: Date.now(), stalls: recentStalls.filter((s) => s.at > since) });
       return;
     }
     if (req.method === 'GET' && url === '/admin/config') {
