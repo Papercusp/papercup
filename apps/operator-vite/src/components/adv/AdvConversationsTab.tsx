@@ -1891,7 +1891,7 @@ function AdvConvStyles() {
         color: var(--warn, #f59e0b);
         font-size: 11px;
         font-weight: 800;
-        letter-spacing: 0.05em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advconv__needs strong {
@@ -1951,7 +1951,7 @@ function AdvConvStyles() {
         margin-bottom: 4px;
         color: var(--fg, #e7f7ff);
         font-size: 12px;
-        letter-spacing: 0.05em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advconv__callout p {
@@ -2078,7 +2078,7 @@ function AdvConvStyles() {
         gap: 6px;
         color: var(--fg, #e7f7ff);
         font-weight: 800;
-        letter-spacing: 0.08em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advconv__replyhead em {
@@ -2111,7 +2111,7 @@ function AdvConvStyles() {
         font: inherit;
         font-size: 12px;
         font-weight: 700;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         cursor: pointer;
         transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
@@ -2167,7 +2167,7 @@ function AdvConvStyles() {
         border-radius: 8px;
         font-size: 12px;
         font-weight: 600;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         border: 1px solid var(--advconv-border);
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 30%);
         color: var(--fg-dim, #b9d4e8);
@@ -2231,7 +2231,7 @@ function AdvConvStyles() {
         color: var(--fg-mute, #9fb6cc);
         font-size: 11px;
         font-weight: 700;
-        letter-spacing: 0.08em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advconv__railhead strong {
@@ -2286,7 +2286,7 @@ function AdvConvStyles() {
         color: var(--fg-dim, #b9d4e8);
         font-size: 10px;
         font-weight: 800;
-        letter-spacing: 0.08em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advconv__statepill--open {
@@ -2476,7 +2476,7 @@ function AdvConvStyles() {
         gap: 6px;
         color: var(--fg, #e7f7ff);
         font-weight: 850;
-        letter-spacing: 0.1em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advfeed__filterhead p { display: none; }
@@ -2582,7 +2582,7 @@ function AdvConvStyles() {
         color: var(--fg-mute, #7890a8);
         font-size: 10px;
         font-weight: 800;
-        letter-spacing: 0.1em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advfeed__field--search {
@@ -2615,7 +2615,7 @@ function AdvConvStyles() {
       }
       .pc-advfeed__scopebar > span {
         font-weight: 700;
-        letter-spacing: 0.1em;
+        letter-spacing: 0;
         text-transform: uppercase;
         color: var(--fg-mute, #7f9bb4);
       }
@@ -2645,7 +2645,7 @@ function AdvConvStyles() {
       }
       .pc-advfeed__daysep {
         position: sticky; top: 0; z-index: 1;
-        font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+        font-size: 10px; letter-spacing: 0; text-transform: uppercase;
         color: var(--fg-mute, #7890a8); padding: 4px 2px 1px;
         background: linear-gradient(var(--advconv-bg), color-mix(in srgb, var(--advconv-bg), transparent 18%));
       }
@@ -2765,7 +2765,7 @@ function AdvConvStyles() {
         margin-bottom: 3px;
         color: var(--fg, #e7f7ff);
         font-size: 10px;
-        letter-spacing: 0.1em;
+        letter-spacing: 0;
         text-transform: uppercase;
       }
       .pc-advfeed__body { white-space: pre-wrap; color: var(--fg, #dceaf6); margin: 0; line-height: 1.42; }

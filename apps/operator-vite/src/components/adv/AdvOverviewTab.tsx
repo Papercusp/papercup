@@ -393,7 +393,7 @@ export default function AdvOverviewTab() {
           color: var(--fg, #e7f7ff);
         }
         .pc-overview__tile-head svg { color: var(--tile-accent, #7dd3fc); }
-        .pc-overview__tile-title { font-size: 12px; font-weight: 760; letter-spacing: 0.04em; text-transform: uppercase; }
+        .pc-overview__tile-title { font-size: 12px; font-weight: 760; letter-spacing: 0; text-transform: uppercase; }
         .pc-overview__tile-count {
           font-size: 11px;
           font-weight: 700;
@@ -412,7 +412,7 @@ export default function AdvOverviewTab() {
           font-size: 10px;
           font-weight: 700;
           text-transform: uppercase;
-          letter-spacing: 0.05em;
+          letter-spacing: 0;
           color: var(--fg-mute, #7f9bb4);
           background: transparent;
           border: none;
@@ -467,7 +467,7 @@ export default function AdvOverviewTab() {
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .pc-overview__row-tag {
-          font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+          font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0;
           color: var(--fg-mute, #7f9bb4);
           border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
           border-radius: 5px; padding: 1px 5px; flex-shrink: 0;

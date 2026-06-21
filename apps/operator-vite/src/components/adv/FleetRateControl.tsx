@@ -196,7 +196,7 @@ export default function FleetRateControl() {
         .pc-overview__rate { display: inline-flex; align-items: center; gap: 16px; }
         .pc-overview__rate-slot { display: inline-flex; flex-direction: column; gap: 1px; }
         .pc-overview__rate-k {
-          font-size: 9px; font-weight: 760; letter-spacing: 0.09em; text-transform: uppercase;
+          font-size: 9px; font-weight: 760; letter-spacing: 0; text-transform: uppercase;
           color: var(--fg-mute, #7f9bb4);
         }
         .pc-overview__rate-v {
@@ -211,7 +211,7 @@ export default function FleetRateControl() {
         }
         .pc-overview__rate-input:focus { outline: none; border-color: var(--accent, #57b3ff); }
         .pc-overview__rate-paused {
-          font-size: 10px; font-weight: 760; letter-spacing: 0.06em; text-transform: uppercase;
+          font-size: 10px; font-weight: 760; letter-spacing: 0; text-transform: uppercase;
           color: var(--warn, #ffb454); border: 1px solid currentColor; border-radius: 4px;
           padding: 1px 6px; align-self: center;
         }

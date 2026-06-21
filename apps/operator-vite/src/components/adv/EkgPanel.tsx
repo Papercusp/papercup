@@ -112,7 +112,7 @@ export function EkgPanel() {
         .pc-ekg__rollup { margin: 6px 0 4px; font-size: 11px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
         .pc-ekg__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-ekg__row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
-        .pc-ekg__severity { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #06121a; border-radius: 4px; padding: 1px 5px; background: #fcd34d; }
+        .pc-ekg__severity { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; color: #06121a; border-radius: 4px; padding: 1px 5px; background: #fcd34d; }
         .pc-ekg__severity.is-major { background: #fb7185; }
         .pc-ekg__feature { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; }
         .pc-ekg__dir { margin-left: 4px; font-style: normal; color: var(--fg-mute, #7f9bb4); }

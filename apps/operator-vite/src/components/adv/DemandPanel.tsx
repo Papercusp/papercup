@@ -96,7 +96,7 @@ export function DemandPanel() {
         .pc-demand__rollup { margin: 6px 0 4px; font-size: 11px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
         .pc-demand__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-demand__row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
-        .pc-demand__surface { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #06121a; border-radius: 4px; padding: 1px 5px; }
+        .pc-demand__surface { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; color: #06121a; border-radius: 4px; padding: 1px 5px; }
         .pc-demand__query { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; }
         .pc-demand__meta { flex: none; display: inline-flex; gap: 8px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
         .pc-demand__age { opacity: 0.85; }

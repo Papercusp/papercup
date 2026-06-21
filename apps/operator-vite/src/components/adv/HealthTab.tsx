@@ -158,10 +158,10 @@ function HealthStyles() {
       .pc-health__bar[data-tone='bad'] { border-color: rgba(244, 63, 94, 0.45); background: rgba(244, 63, 94, 0.08); }
       .pc-health__bar[data-tone='warn'] { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.06); }
       .pc-health__bar svg { color: var(--fg-dim, #b9d4e8); }
-      .pc-health__overall { font-size: 12px; font-weight: 760; letter-spacing: 0.02em; color: var(--fg, #e7f7ff); }
+      .pc-health__overall { font-size: 12px; font-weight: 760; letter-spacing: 0; color: var(--fg, #e7f7ff); }
       .pc-health__counts { display: flex; gap: 5px; }
       .pc-health__count {
-        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0;
         padding: 1px 7px; border-radius: 999px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); color: var(--fg-mute, #7f9bb4);
       }
@@ -190,7 +190,7 @@ function HealthStyles() {
       .pc-hcard--mute { --card-accent: #475569; opacity: 0.72; }
       .pc-hcard__head { display: flex; align-items: center; gap: 6px; }
       .pc-hcard__title {
-        font-size: 10.5px; font-weight: 750; letter-spacing: 0.04em; text-transform: uppercase;
+        font-size: 10.5px; font-weight: 750; letter-spacing: 0; text-transform: uppercase;
         color: var(--fg, #e7f7ff); flex: 1; min-width: 0;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
@@ -216,7 +216,7 @@ function HealthStyles() {
         font-size: 11px; font-weight: 740; color: var(--fg, #e7f7ff);
         font-variant-numeric: tabular-nums;
       }
-      .pc-hcard__m span { text-transform: uppercase; letter-spacing: 0.02em; font-weight: 600; }
+      .pc-hcard__m span { text-transform: uppercase; letter-spacing: 0; font-weight: 600; }
       .pc-hcard__m[data-tone='bad'] b { color: #fca5a5; }
       .pc-hcard__m[data-tone='warn'] b { color: #fcd34d; }
       .pc-hcard__m[data-tone='mute'] { opacity: 0.6; }

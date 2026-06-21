@@ -453,7 +453,7 @@ function ScheduleEditorStyles() {
     <style>{`
       .pc-sched-editor { display: flex; flex-direction: column; gap: 9px; padding: 12px; font-size: 12px; color: var(--fg, #e7f7ff); }
       .pc-sched-editor__head { display: flex; align-items: center; gap: 8px; }
-      .pc-sched-editor__head strong { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+      .pc-sched-editor__head strong { font-size: 11px; text-transform: uppercase; letter-spacing: 0; }
       .pc-sched-editor__slug { font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--fg-mute, #7f9bb4); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pc-sched-editor__x { background: none; border: none; color: var(--fg-mute, #7f9bb4); font-size: 16px; cursor: pointer; line-height: 1; }
       .pc-sched-editor__modes { display: flex; gap: 4px; }
@@ -462,7 +462,7 @@ function ScheduleEditorStyles() {
       .pc-sched-editor__mode.is-on { color: var(--accent, #38bdf8); border-color: color-mix(in srgb, var(--accent), transparent 50%); background: color-mix(in srgb, var(--accent), transparent 88%); }
       .pc-sched-editor__row { display: flex; gap: 10px; }
       .pc-sched-editor__field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-      .pc-sched-editor__field > span { font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-mute, #7f9bb4); }
+      .pc-sched-editor__field > span { font-size: 10px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
       .pc-sched-editor__field input, .pc-sched-editor__field select {
         font: inherit; font-size: 12px; padding: 5px 7px; border-radius: 6px; color: var(--fg, #e7f7ff);
         background: var(--bg, #07101d); border: 1px solid var(--border-strong, rgba(125,211,252,0.3)); }

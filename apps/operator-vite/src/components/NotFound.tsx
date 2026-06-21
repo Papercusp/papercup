@@ -149,7 +149,7 @@ export default function NotFound() {
                 color: 'var(--accent-strong)',
                 fontSize: 12,
                 fontWeight: 850,
-                letterSpacing: '0.14em',
+                letterSpacing: "0",
                 textTransform: 'uppercase',
               }}
             >

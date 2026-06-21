@@ -166,6 +166,37 @@ function unexpectedCoordUtilityClasses(): string[] {
   return offenders;
 }
 
+function unexpectedNonzeroLetterSpacingUnder(root: string): string[] {
+  const offenders: string[] = [];
+  const files: string[] = [];
+  try {
+    const st = statSync(root);
+    if (st.isDirectory()) {
+      walk(root, files);
+    } else if (SOURCE_FILE_RE.test(root) && !TEST_FILE_RE.test(root)) {
+      files.push(root);
+    }
+  } catch {
+    return offenders;
+  }
+  const nonzeroLetterSpacingRe =
+    /\b(?:letter-spacing|letterSpacing)\s*:\s*(?:['"])?(?!0(?:\s*(?:[;,'"}]|!important)|\s*$))[0-9.]+(?:em|px|rem)?(?:['"])?/gm;
+  for (const file of files) {
+    const content = readFileSync(file, 'utf-8');
+    const matches = [...content.matchAll(nonzeroLetterSpacingRe)];
+    for (const match of matches) {
+      const before = content.slice(0, match.index);
+      const line = before.split('\n').length;
+      offenders.push(`${rel(file)}:${line}: ${match[0].trim()}`);
+    }
+  }
+  return offenders;
+}
+
+function unexpectedNonzeroLetterSpacingUnderAny(roots: string[]): string[] {
+  return roots.flatMap((root) => unexpectedNonzeroLetterSpacingUnder(root));
+}
+
 function expectNoUnexpected(label: string, offenders: string[]): void {
   if (offenders.length > 0) {
     throw new Error(
@@ -234,5 +265,19 @@ describe('design primitive lint', () => {
 
   it('keeps /coord on tokenized CSS classes instead of Tailwind utility strings', () => {
     expectNoUnexpected('Tailwind-style utility class strings in /coord', unexpectedCoordUtilityClasses());
+  });
+
+  it('keeps audited Vite surfaces on design-spec letter spacing', () => {
+    expectNoUnexpected(
+      'Nonzero letter-spacing in audited Vite surfaces',
+      unexpectedNonzeroLetterSpacingUnderAny([
+        join(APPS_ROOT, 'operator-vite/src/components/adv'),
+        join(APPS_ROOT, 'operator-vite/src/components/admin'),
+        join(APPS_ROOT, 'operator-vite/src/components/left-sidebar'),
+        join(APPS_ROOT, 'operator-vite/src/components/dev-admin-rail'),
+        join(APPS_ROOT, 'operator-vite/src/components/NotFound.tsx'),
+        join(APPS_ROOT, 'operator-vite/src/routes/admin/dogfood-substrate.tsx'),
+      ]),
+    );
   });
 });

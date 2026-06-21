@@ -96,7 +96,7 @@ export const RAIL_CSS = `/*
   text-transform: uppercase;
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0.2em;
+  letter-spacing: 0;
   color: color-mix(in srgb, var(--fg), transparent 14%);
 }
 .pcdar__expand-chevron {
@@ -167,7 +167,7 @@ body.has-dev-rail .pc-header {
   gap: 8px;
   font-size: 12px;
   font-weight: 760;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--fg), transparent 18%);
 }
@@ -177,7 +177,7 @@ body.has-dev-rail .pc-header {
   background: color-mix(in srgb, var(--accent), transparent 84%);
   color: var(--accent-soft);
   font-size: 9px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
 }
 .pcdar__spacer {
   flex: 1;
@@ -231,7 +231,7 @@ body.has-dev-rail .pc-header {
   color: color-mix(in srgb, var(--fg), transparent 26%);
   font-size: 12px;
   font-weight: 650;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   text-align: left;
   cursor: pointer;
   transition: background 120ms, color 120ms;
@@ -299,7 +299,7 @@ body.has-dev-rail .pc-header {
 .pcdar-panel__bar-label {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: rgba(148, 163, 184, 0.78);
 }
@@ -409,7 +409,7 @@ body.has-dev-rail .pc-header {
   border-radius: 999px;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   background: rgba(148, 163, 184, 0.18);
   color: color-mix(in srgb, var(--fg), transparent 18%);
 }

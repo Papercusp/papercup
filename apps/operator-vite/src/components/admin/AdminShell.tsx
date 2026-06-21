@@ -88,7 +88,7 @@ export default function AdminShell({
           color: rgba(186, 230, 253, 0.64);
           font-size: 10px;
           font-weight: 760;
-          letter-spacing: 0.11em;
+          letter-spacing: 0;
           line-height: 1;
           text-transform: uppercase;
         }
@@ -123,7 +123,7 @@ export default function AdminShell({
           color: rgba(214, 236, 248, 0.72);
           font-size: 12px;
           font-weight: 650;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
           text-decoration: none !important;
           transition: background-color 120ms, border-color 120ms, color 120ms, transform 120ms;
         }

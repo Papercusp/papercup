@@ -82,7 +82,7 @@ export default function HumanQueueDrain({
         .pc-hqdrain__head h3 {
           display: inline-flex; align-items: center; gap: 5px; margin: 0;
           font-size: 12px; font-weight: 740; color: #fcd34d;
-          text-transform: uppercase; letter-spacing: 0.06em;
+          text-transform: uppercase; letter-spacing: 0;
         }
         .pc-hqdrain__hint { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
         .pc-hqdrain__list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 0 0 18px; }

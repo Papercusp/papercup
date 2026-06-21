@@ -127,7 +127,7 @@ export function QueenWakeEfficiencyPanel() {
         .pc-qeff__stats { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 4px; }
         .pc-qeff__stat { display: flex; flex-direction: column; gap: 1px; }
         .pc-qeff__stat strong { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fg, #dbeafe); }
-        .pc-qeff__stat span { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); }
+        .pc-qeff__stat span { font-size: 10px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
         .pc-qeff__rollup { margin: 4px 0; font-size: 11px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
         .pc-qeff__list { list-style: none; margin: 4px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-qeff__row { display: flex; align-items: center; gap: 8px; padding: 2px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); font-variant-numeric: tabular-nums; }

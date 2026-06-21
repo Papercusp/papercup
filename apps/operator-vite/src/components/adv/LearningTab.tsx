@@ -2136,7 +2136,7 @@ function LearningStyles() {
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__subtab span { display: flex; flex-direction: column; line-height: 1.15; font-size: 12.5px; font-weight: 650; text-align: left; }
-      .pc-learning__subtab em { font-style: normal; font-size: 10px; font-weight: 500; color: var(--fg-mute, #7f9bb4); text-transform: uppercase; letter-spacing: 0.04em; }
+      .pc-learning__subtab em { font-style: normal; font-size: 10px; font-weight: 500; color: var(--fg-mute, #7f9bb4); text-transform: uppercase; letter-spacing: 0; }
       .pc-learning__subtab.is-active { color: var(--fg, #e7f7ff); border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.12); }
       .pc-learning__subtab.is-active em { color: color-mix(in oklab, #34d399, white 12%); }
 
@@ -2156,7 +2156,7 @@ function LearningStyles() {
         border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
       }
-      .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
+      .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0; }
 
       .pc-learning__how {
         list-style: none; margin: 0; padding: 11px 13px;
@@ -2184,7 +2184,7 @@ function LearningStyles() {
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__flowchip strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
-      .pc-learning__flowchip em { font-style: normal; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__flowchip em { font-style: normal; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__flownet { display: inline-flex; align-items: center; gap: 1px; font-weight: 740; font-variant-numeric: tabular-nums; }
       .pc-learning__flownet--good { color: var(--good); }
       .pc-learning__flownet--warn { color: var(--warn); }
@@ -2207,14 +2207,14 @@ function LearningStyles() {
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
       }
       .pc-learning__stat strong { font-size: 20px; font-weight: 760; line-height: 1; color: var(--fg, #e7f7ff); font-variant-numeric: tabular-nums; }
-      .pc-learning__stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__stat--auto strong { color: #86efac; }
       .pc-learning__stat--human strong { color: #fcd34d; }
       .pc-learning__stat--good strong { color: #7dd3fc; }
 
       .pc-learning__section { display: flex; flex-direction: column; gap: 10px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-      .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0; color: var(--fg-dim, #b9d4e8); }
       .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; }
       .pc-learning__lanes { display: inline-flex; gap: 4px; }
       .pc-learning__lane {
@@ -2238,7 +2238,7 @@ function LearningStyles() {
         border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-dim, #b9d4e8);
       }
-      .pc-learning__loop em { font-style: normal; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.05em; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__loop em { font-style: normal; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__loop--running { border-color: rgba(52, 211, 153, 0.5); }
       .pc-learning__loop--running em { color: #86efac; }
       .pc-learning__loopspend { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--fg-mute, #7f9bb4); }

@@ -390,7 +390,7 @@ export default function AdvFramesTab() {
           color: var(--fg, #e7f7ff);
         }
         .pc-frames__topbar svg { color: #22d3ee; }
-        .pc-frames__title { font-size: 12px; font-weight: 760; letter-spacing: 0.04em; text-transform: uppercase; }
+        .pc-frames__title { font-size: 12px; font-weight: 760; letter-spacing: 0; text-transform: uppercase; }
         .pc-frames__sub { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
         .pc-frames__spacer { flex: 1; }
         .pc-frames__state {
@@ -410,7 +410,7 @@ export default function AdvFramesTab() {
         .pc-frames__chip-dot { width: 7px; height: 7px; border-radius: 50%; background: #475569; }
         .pc-frames__chip-dot[data-state='polling'] { background: #4ade80; box-shadow: 0 0 6px rgba(74, 222, 128, 0.5); }
         .pc-frames__chip-dot[data-state='error'] { background: #f87171; }
-        .pc-frames__chip-meta { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); }
+        .pc-frames__chip-meta { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
         .pc-frames__grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -443,7 +443,7 @@ export default function AdvFramesTab() {
         .pc-frames__tile-slug { font-weight: 700; }
         .pc-frames__tile-display { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-dim, #b9d4e8); }
         .pc-frames__tile-role {
-          font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+          font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0;
           color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4); border-radius: 5px; padding: 0 5px;
         }
         .pc-frames__tile-age { margin-left: auto; font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
@@ -474,7 +474,7 @@ export default function AdvFramesTab() {
         .pc-frames__chip-watch[data-drive='true'] { color: #f87171; border-color: rgba(248, 113, 113, 0.5); }
         .pc-frames__mode {
           display: inline-flex; align-items: center; gap: 4px;
-          font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em;
+          font-size: 9.5px; font-weight: 800; letter-spacing: 0;
           color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4);
           border-radius: 5px; padding: 1px 6px;
         }

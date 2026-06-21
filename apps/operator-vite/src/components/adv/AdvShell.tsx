@@ -641,7 +641,7 @@ export default function AdvShell({
           color: color-mix(in oklab, var(--accent-strong, var(--accent-soft)), transparent 26%);
           font-size: 10px;
           font-weight: 760;
-          letter-spacing: 0.11em;
+          letter-spacing: 0;
           line-height: 1;
           text-transform: uppercase;
         }
@@ -663,7 +663,7 @@ export default function AdvShell({
           color: var(--fg-mute, #7f9bb4);
           font-size: 10px;
           font-weight: 760;
-          letter-spacing: 0.09em;
+          letter-spacing: 0;
           line-height: 1;
           text-transform: uppercase;
           white-space: nowrap;
@@ -715,7 +715,7 @@ export default function AdvShell({
           padding: 5px 10px;
           font-size: 11px;
           font-weight: 700;
-          letter-spacing: 0.04em;
+          letter-spacing: 0;
           text-transform: uppercase;
           border-radius: 6px;
           border: 1px solid transparent;
@@ -941,7 +941,7 @@ export default function AdvShell({
           color: color-mix(in oklab, var(--fg-dim, #b9d4e8), var(--h-main-tab-accent) 18%);
           font-size: 11.5px;
           font-weight: 600;
-          letter-spacing: 0.4px;
+          letter-spacing: 0;
           text-transform: uppercase;
           cursor: pointer;
           transition: color var(--dur-fast, 120ms) var(--ease-out, ease), border-color var(--dur-fast, 120ms) var(--ease-out, ease), background-color var(--dur-fast, 120ms) var(--ease-out, ease);

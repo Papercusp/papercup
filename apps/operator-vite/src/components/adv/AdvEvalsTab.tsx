@@ -1906,7 +1906,7 @@ function EvalsStyles() {
       .pc-evals__subtab.is-active { color: var(--fg, #e7f7ff); border-color: color-mix(in oklab, #eab308, transparent 30%); background: color-mix(in oklab, #eab308, transparent 86%); }
       .pc-evals__controlsright { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       .pc-evals__suitepick { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-mute, #7f9bb4); }
-      .pc-evals__suitelabel { font-size: 10px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+      .pc-evals__suitelabel { font-size: 10px; font-weight: 760; letter-spacing: 0; text-transform: uppercase; }
       .pc-evals__refresh { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 7px; border: 1px solid var(--border, rgba(125,211,252,0.2)); background: var(--bg-2, rgba(255,255,255,0.04)); color: var(--fg-dim, #b9d4e8); cursor: pointer; }
       .pc-evals__refresh:disabled { opacity: 0.5; cursor: default; }
 

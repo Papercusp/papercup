@@ -60,7 +60,7 @@ export default function LearningInfraHealthChip() {
         }
         .pc-lihealth em {
           font-style: normal; font-size: 9.5px; overflow: hidden; text-overflow: ellipsis;
-          letter-spacing: 0.02em; color: var(--fg-mute, #7f9bb4);
+          letter-spacing: 0; color: var(--fg-mute, #7f9bb4);
         }
         .pc-lihealth--good { border-color: rgba(52, 211, 153, 0.4); }
         .pc-lihealth--warn { border-color: rgba(252, 211, 77, 0.45); color: var(--fg-dim, #b9d4e8); }

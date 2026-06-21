@@ -70,7 +70,7 @@ export default function DiscordBadge({ slug }: { slug: string | null }) {
           padding: 5px 10px;
           font-size: 11px;
           font-weight: 700;
-          letter-spacing: 0.04em;
+          letter-spacing: 0;
           text-decoration: none;
           border-radius: 6px;
           border: 1px solid rgba(88, 101, 242, 0.45);
