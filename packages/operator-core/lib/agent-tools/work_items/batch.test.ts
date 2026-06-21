@@ -206,9 +206,11 @@ describe('work_items:claim_next { count } (real PG)', () => {
     // oldest-first (created_ts ASC) → the first two seeded ids, claimed by the caller
     expect(claimed.map((c) => c.id)).toEqual([ids[0], ids[1]]);
     expect(claimed.every((c) => c.assignee === 'su-tester')).toBe(true);
-    // the third remains claimable
+    // the third remains claimable — work_items:get returns the house bulk envelope
+    // ({ results:[{ workItem }] }, D-001), so unwrap the single result by id.
     const third = await call(getTool, { id: ids[2] });
-    expect((third.workItem as { assignee: string | null }).assignee).toBeNull();
+    const thirdItem = (third.results as { workItem: { assignee: string | null } }[])[0]!.workItem;
+    expect(thirdItem.assignee).toBeNull();
   });
 
   it('count>1 STOPS at the first miss — returns fewer than count when the queue runs dry', async () => {
