@@ -58,3 +58,42 @@ export function gatewayLlmEnv(enabled: boolean): Record<string, string> {
   const url = `http://127.0.0.1:${gatewayPort()}`;
   return { [GATEWAY_BASE_URL_ENV]: url, [GATEWAY_SDK_URL_ENV]: url };
 }
+
+/**
+ * Resolve the COMPLETE gateway+account spawn-env for a spawned agent — the ONE routing decision
+ * BOTH spawn chokepoints must apply (the bee path `fleet/operator-spawn.ts` AND the `/invoke`
+ * route `endpoint-route/routes/harness/spawn.ts`), so a routing change can't be added to one path
+ * only. D-011: the `/invoke` path had DRIFTED and never routed Queen/overwatch/blueprint-run agents
+ * through the pool → they egressed on the single shared `~/.claude` OAuth credential and 429'd on
+ * its WEEKLY cap (silent 0-token wakes, the Queen placing nothing) while the 8-account pool sat idle.
+ *
+ * Evaluates the gateway flags (INFERENCE_GATEWAY, +_MULTI_ACCOUNT) and, when multi-account is on,
+ * selects an AVAILABLE pool account; then composes `gatewaySpawnEnv` (ANTHROPIC_BASE_URL + the
+ * account/owner routing headers) plus `PAPERCUSP_ACCOUNT_ID` (the per-account governor key, so a
+ * single account's 429 can't pause the account-blind class bucket). Fail-soft: a selection miss →
+ * no pin (the gateway routes to its `active()` account); flag OFF → `{}` (unchanged direct egress).
+ * Lazy-imports the flag + account-pool deps so this module stays import-light for the pure helpers
+ * above (and so a route module importing it picks up no extra registration side-effects).
+ *
+ * FOLLOW-UP (durable): `operator-spawn.ts` still inlines the equivalent block (1045-1063) because it
+ * ALSO drives `ensureStallWakerLoop` off the same `gwOn`; route it through this helper too so the two
+ * chokepoints are structurally identical and can never drift again. The unit test guards the env
+ * contract meanwhile.
+ */
+export async function resolveSpawnGatewayEnv(opts: {
+  workspaceId: string | undefined;
+  slug: string | undefined;
+  ownerId?: string;
+}): Promise<Record<string, string>> {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
+  let accountId: string | undefined;
+  if (gwOn && (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system'))) {
+    const { selectSpawnAccount } = await import('../deployment/account-pool-store');
+    accountId = await selectSpawnAccount(opts.workspaceId, opts.slug).catch(() => undefined);
+  }
+  const env = gatewaySpawnEnv(gwOn, { accountId, ownerId: opts.ownerId });
+  if (accountId) env.PAPERCUSP_ACCOUNT_ID = accountId;
+  return env;
+}
