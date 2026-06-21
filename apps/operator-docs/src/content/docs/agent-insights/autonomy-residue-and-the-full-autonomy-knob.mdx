@@ -4,6 +4,28 @@ description: Raising all 13 autonomy ceilings to critical does NOT make the Quee
 discovered: 2026-06-15
 tags: [autonomy, queen, decider, ceilings, protected-categories, graduation, self-improvement, flags, recursive-self-improvement, verify-first]
 status: active
+documents:
+  - packages/operator-core/lib/autonomy/decider.ts
+  - packages/operator-core/lib/harness/improvements/policy.ts
+  - packages/operator-core/lib/harness/improvements/full-autonomy-grant.ts
+  - packages/operator-core/lib/autonomy/categories.ts
+  - packages/operator-core/lib/autonomy/tripwire/core.ts
+  - libs/flags/src/types.ts
+  - packages/operator-core/lib/harness/routines/improvement-actions.ts
+  - packages/operator-core/lib/sync-resolver/index.ts
+  - packages/operator-core/lib/harness/routines/human-queue-digest-action.ts
+  - packages/operator-core/lib/system-health/compute.ts
+  - packages/operator-core/lib/agent-tools/improvements/digest.ts
+  - packages/operator-core/lib/agent-tools/improvements/triage.ts
+plans:
+  - queen-autonomy-and-selffeed-fix-2026-06-15
+  - queen-autonomy-policy-2026-06-13
+  - queen-autonomous-execution-2026-06-13
+  - papercusp-self-improvement-loop-2026-06-04
+  - unify-work-items-2026-06-04
+  - close-the-self-improvement-loop-2026-06-05
+  - deterministic-blueprints-migration-2026-06-13
+  - agent-capability-confinement-2026-06-13
 ---
 
 When an agent is asked "make the Queen fully autonomous," the obvious move is to
@@ -45,7 +67,7 @@ Agents conflate these. They are different mechanisms:
 
 - **DECISION gate** — `lib/autonomy/decider.ts`. "May the Queen auto-DECIDE this
   action (place an item, resolve a question, ratify) without asking the owner?"
-  Keyed by the 13-category taxonomy + risk/reversibility/authority.
+  Keyed by the 14-category taxonomy + risk/reversibility/authority.
 - **IMPLEMENT TCB** — `lib/harness/improvements/policy.ts` `classifyImprovement`.
   "May the self-improvement loop auto-IMPLEMENT this captured improvement?" A
   separate filter: `protectedPathPatterns` + `protectedKeywords` (the deploy gate,

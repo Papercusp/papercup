@@ -4,6 +4,18 @@ description: "A queen/spawn that fails with a contentless `fetch failed` (null o
 discovered: 2026-06-13
 tags: [spawn, loopback, undici, fetch-failed, watchdog, EI-390, network, retry, deploy, debugging]
 status: active
+documents:
+  - "packages/operator-core/lib/loopback-fetch.ts:isTransientNetworkError (lines 47-65, incl. UND_ERR_* recognition at :59 and unknown-code fall-through at :60-64)"
+  - "packages/operator-core/lib/loopback-fetch.ts:describeFetchError (lines 76-83)"
+  - "packages/operator-core/lib/loopback-fetch.ts:loopbackFetch (lines 93-121, retry loop using isTransientNetworkError at :113)"
+  - "packages/operator-core/lib/blueprint/launch-blueprint.ts:421-454 (void loopbackFetch(/invoke, POST, {launch:true}); .catch records status:'failed', errorMessage:describeFetchError(e))"
+  - "packages/operator-core/lib/harness/improvements/watchdog.ts:classifySpawnError (lines 1048-1056; 'fetch failed'->network at :1051 checked before auth at :1052)"
+  - "harness_shared.spawned_agents table, status='failed' (queried in collectFailedSpawnSignals, watchdog.ts:1103-1111)"
+plans:
+  - watchdog-audit-2026-06-09
+  - watchdog-robustness-2026-06-09
+  - unify-agent-spawn-chokepoint-2026-06-06
+  - unify-agent-launches-as-blueprints-2026-06-04
 ---
 
 ## The mistake this prevents

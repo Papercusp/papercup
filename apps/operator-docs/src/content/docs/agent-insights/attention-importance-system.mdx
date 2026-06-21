@@ -1,10 +1,50 @@
 ---
 title: The attention/importance system (Planning tab)
-description: How plan-item importance + the unified AttentionItem feed fit together, and two non-obvious gotchas — parseWarnings become lint ERRORS, and the Plans tab has no in-app chat host.
+description: How plan-item importance + the unified AttentionItem feed fit together, and two non-obvious gotchas — parseWarnings become lint ERRORS, and (historically) the Plans tab had no in-app chat host (now superseded by the inline PlanChat host).
 discovered: 2026-05-31
 tags: [plans, attention, importance, parser, lint, chat]
-status: active
+status: superseded
+documents:
+  - libs/generic/plan-parser/src/parser.ts
+  - packages/operator-core/lib/agent-tools/plans/lint.ts
+  - packages/operator-core/lib/attention/types.ts
+  - packages/operator-core/lib/agent-tools/plans/attention.ts
+  - apps/operator/app/admin/plans/PlanChat.tsx
+  - apps/operator/app/admin/plans/PlanItemPreview.tsx
+  - apps/operator/app/admin/plans/DiscussPanel.tsx
+plans:
+  - planning-attention-importance-2026-05-31
+  - inbox-cards-unification-2026-05-31
+  - papercusp-systems-abstraction-2026-05-29
+  - inbox-tiering-and-message-agent-2026-06-05
 ---
+
+:::caution[Superseded — Gotcha 2 no longer holds]
+The "Plans tab has no in-app chat host" gotcha below is **out of date**. The
+Plans tab now ships a dedicated inline chat host, so Chat there is no longer a
+no-op:
+
+- `apps/operator/app/admin/plans/PlanChat.tsx` creates a harness-scoped chat
+  (`POST /api/harness/:slug/agent-chats`, lines 39–63) and mounts
+  `<ChatPanel slug chatId mode="discuss" />` **inline** (line 84) — exactly the
+  host the original Gotcha 2 said was missing (inbox-cards-unification D-006).
+- It is wired into the Plans UI: `PlanItemPreview.tsx:188`
+  (`{chatOpen ? <PlanChat harnessSlug={harnessSlug} label={…} /> : null}`) and
+  `DiscussPanel.tsx:75` (`<PlanChat harnessSlug={item.harnessSlug} label={chatLabel} />`).
+- The no-harness case is handled with a clear message
+  (`PlanChat.tsx:65–71`), not a silent no-op.
+- `PlanChatModal` and the bespoke `InboxItemActions` toolkit are **retired**
+  (`PlanItemPreview.tsx:15–17`). The plan the original section pointed at as
+  "open work," `planning-attention-importance-2026-05-31` P-017, is **done**.
+
+Gotcha 1 (parseWarnings → lint errors) and the importance axis described in
+**What it is ¶1** remain accurate. The attention-feed source list in **¶2** has
+drifted (`plans-awaiting-review` was retired, `types.ts:171`; the feed gained
+operator-report / improvement / standing-approval / conversation / scout-grade
+kinds, `types.ts:22–34`) — treat that enumeration and the UI facet labels as
+point-in-time, not load-bearing. The original narrative is preserved below for
+history.
+:::
 
 ## What it is
 

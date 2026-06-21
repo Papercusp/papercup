@@ -3,10 +3,51 @@ title: The autoloop is the routines engine now (Pot operator + self-declared wak
 description: After autoloop-pot-operator-rebuild, there is no setInterval autoloop ticker — the DBOS routines engine fires each harness's blueprint-declared schedule, and a Pot operator decides its own next wake via pot:declare-wake. autoloop:control flips routine rows, not a timer.
 discovered: 2026-06-05
 tags: [autoloop, pot, operator, routines, blueprint, dbos, wake]
-status: active
+status: superseded
 sidebar:
   order: 76
+documents:
+  - packages/operator-core/lib/autoloop.ts
+  - packages/operator-core/lib/dbos/routines-workflow.ts
+  - packages/operator-core/lib/agent-tools/autoloop/control.ts
+  - packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts
+  - packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts
+  - packages/operator-core/lib/agent-tools/blueprint/catalog.ts
+  - packages/operator-core/lib/blueprint/launch-blueprint.ts
+  - packages/agent-mcp/src/tools/harness/list.ts
+  - packages/agent-mcp/src/tools/harness/status.ts
+  - packages/agent-mcp/src/tools/harness/registry-read.ts
+  - packages/operator-core/lib/agent-tools/hive/declare_wake.ts
+  - packages/operator-core/lib/agent-tools/hive/wake.ts
+  - packages/operator-core/lib/agent-tools/hive/status.ts
+  - packages/operator-core/lib/hive/wake.ts
+  - packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts
+  - packages/operator-core/lib/overwatch/liveness.ts
+  - libs/papercusp/packages/harness/blueprints
+plans:
+  - autoloop-pot-operator-rebuild-2026-06-05
+  - overwatch-role-2026-06-15
+  - hive-tool-namespace-2026-06-08
+  - harness-to-hive-ui-terminology-2026-06-15
+  - directed-wake-honesty-and-spawn-handoff-2026-06-14
+  - domain-generic-hive-architecture-2026-06-18
 ---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Superseded — the 'Pot operator' half is renamed; the autoloop-engine half still holds">
+
+The **autoloop-engine half** of this runbook is still accurate and verified line-by-line: no `setInterval` (`autoloop.ts` keeps only a header comment about the removed ticker), fire-gate/backoff read at the fire point (`routines-workflow.ts:159` `checkFireGate` → `:173`/`:181`/`:185` `recordFire`), `autoloop:control` flips `bp-schedule-*` routine rows (`agent-tools/autoloop/control.ts`), enablement = the blueprint's `triggers.schedule`, and the registry-aware `harness:list`/`harness:status` reads.
+
+The **"Pot operator" half** was refactored (2026-06-08 → 2026-06-18) into the Hive/Queen + overwatch model. The wake **mechanics survive** (REPLACE semantics, wake-floor clamp, `@papercusp/rules` event subscriptions, force/debounce) — only the `pot:` verb names and the standalone pot blueprint are gone:
+
+- **No `pot` blueprint exists.** `libs/papercusp/packages/harness/blueprints/` holds 46 built-ins, none named `pot`. The only `blueprints/pot/blueprint.yaml` on disk is a stale `papercusp-desktop/src-tauri/target/debug/sidecar/` build artifact. (`overwatch-role-2026-06-15`, `harness-to-hive-ui-terminology-2026-06-15`.)
+- **The catalog can't mark a pot entry `launchable`.** `launchable` is derived from `BUILTIN_LAUNCH_BLUEPRINTS` (`blueprint/launch-blueprint.ts:48` — `deploy, scan, implement, merge-resolution, release-fix, content-fix, audit, coding, bee, sentinel`; no `pot`); `catalog.ts:65` builds the set from it.
+- **`pot:declare-wake` / `pot:wake` / `pot:status` do not exist.** The self-declared-wake surface is now `hive:declare-wake` (`agent-tools/hive/declare_wake.ts:50`, gated `routines:write` per `role-principal-caps.ts:84`) + `hive:wake`, and the overwatch's `overwatch:declare-wake` (`agent-tools/overwatch/declare_wake.ts:38`, gated `coord:write`). There is no `agent-tools/pot/` dir; the equivalent files are `agent-tools/hive/{declare_wake,wake,status}.ts` and `agent-tools/overwatch/declare_wake.ts`.
+
+Rule of thumb for this page: `s/pot:/hive:/` for the wake verbs; there is no standalone pot blueprint — the `operator` role is the decider of launch blueprints generally. (`hive-tool-namespace-2026-06-08`, `domain-generic-hive-architecture-2026-06-18`.)
+
+</Aside>
 
 ## What
 
