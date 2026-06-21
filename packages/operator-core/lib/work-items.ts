@@ -849,6 +849,90 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
   return result;
 }
 
+// ── live-verified marker (release-pipeline-resilience-2026-06-09 P-013) ──────────
+//
+// "done" on a pipeline/operator work-item means code-on-staging; its VALUE only exists once
+// DEPLOYED + exercised. live_verified is an ADDITIVE payload marker (NOT a new lifecycle state —
+// the core enum is deliberately untouched, D-013 sketch) recording that a human/agent confirmed the
+// change live: { at, by, deployedSha?, evidence? }. Feature-family only (the dispatched backlog the
+// plan targets); issue-family items report applicable:false without writing.
+
+export interface WorkItemLiveVerified {
+  /** epoch ms the live-verification was recorded. */
+  at: number;
+  /** who confirmed it (ownerId / actor). */
+  by: string;
+  /** the deployed commit verified against (from release:deploy status / dev:pipeline_position). */
+  deployedSha?: string | null;
+  /** free-text proof — what was exercised, where. */
+  evidence?: string | null;
+}
+
+export interface WorkItemLiveVerifiedResult {
+  id: string;
+  /** false ⇒ a non-feature-family item (no dispatched-backlog payload to mark); nothing was written. */
+  applicable: boolean;
+  liveVerified: WorkItemLiveVerified | null;
+}
+
+/** Read the live_verified marker off a work-item payload (null if unset / malformed). */
+export function readWorkItemLiveVerified(payload: unknown): WorkItemLiveVerified | null {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const lv = (payload as Record<string, unknown>).live_verified;
+    if (lv && typeof lv === 'object' && !Array.isArray(lv)) {
+      const m = lv as Record<string, unknown>;
+      if (typeof m.at === 'number' && typeof m.by === 'string') {
+        return {
+          at: m.at,
+          by: m.by,
+          deployedSha: typeof m.deployedSha === 'string' ? m.deployedSha : null,
+          evidence: typeof m.evidence === 'string' ? m.evidence : null,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Set (marker) or clear (marker=null) a work-item's live_verified payload marker. An additive JSONB
+ * merge that PRESERVES the rest of the payload (e.g. the plan_item back-pointer); clear removes only
+ * the `live_verified` key. Feature-family only — a non-feature item returns applicable:false without
+ * writing. Returns null when the item does not exist. Does NOT touch the lifecycle state column.
+ */
+export async function setWorkItemLiveVerified(
+  id: string,
+  marker: WorkItemLiveVerified | null,
+  opts: { harness?: string } = {},
+): Promise<WorkItemLiveVerifiedResult | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family !== 'feature') {
+    return { id: wi.id, applicable: false, liveVerified: readWorkItemLiveVerified(wi.payload) };
+  }
+  const { sql } = getOrgPg();
+  let rows: FeatureRowDb[];
+  if (marker === null) {
+    rows = await sql<FeatureRowDb[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = COALESCE(payload, '{}'::jsonb) - 'live_verified',
+             updated_ts = ${Date.now()}
+       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  } else {
+    const patch = JSON.stringify({ live_verified: marker });
+    rows = await sql<FeatureRowDb[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb,
+             updated_ts = ${Date.now()}
+       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  }
+  const updated = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  if (!updated) return null;
+  return { id: updated.id, applicable: true, liveVerified: readWorkItemLiveVerified(updated.payload) };
+}
+
 /**
  * Claimable.claim — the tuple-space atomic `in` for a SPECIFIC item (feature → taken_by;
  * issue → assignee). Atomic compare-and-claim (fleet-as-supervised-blackboard D-004):

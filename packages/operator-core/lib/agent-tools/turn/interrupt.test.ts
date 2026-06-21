@@ -112,4 +112,21 @@ describe('turn:interrupt — performInterrupt (P-016/P-018; headless P-020)', ()
     expect(r.error).toMatch(/your own turn/);
     expect(calls.send).toHaveLength(0);
   });
+
+  it('force key:"esc" sends ESC over the managed pty (endTurn / stall-recovery path) → pty-esc channel', async () => {
+    const keys: Array<'sigint' | 'esc'> = [];
+    const { d } = makeDeps({ ptyForce: async (_owner, key) => { keys.push(key); return true; } });
+    const r = await performInterrupt(baseInput({ mode: 'force', key: 'esc' }), d);
+    expect(r.ok).toBe(true);
+    expect(r.channel).toBe('pty-esc');
+    expect(keys).toEqual(['esc']); // the ESC byte (\x1b), not Ctrl+C
+  });
+
+  it('force with no key defaults to Ctrl+C (turn:interrupt behaviour unchanged)', async () => {
+    const keys: Array<'sigint' | 'esc'> = [];
+    const { d } = makeDeps({ ptyForce: async (_owner, key) => { keys.push(key); return true; } });
+    const r = await performInterrupt(baseInput({ mode: 'force' }), d); // no key
+    expect(r.channel).toBe('pty-ctrl-c');
+    expect(keys).toEqual(['sigint']);
+  });
 });

@@ -36,6 +36,7 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
+import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
 // spawnReclaimSweep, staleClaimSweep, learningInfraHealth, steeringChurnSweep) were
@@ -366,3 +367,34 @@ const diskSpaceAlarmWorkflow = DBOS.registerWorkflow(diskSpaceAlarmTick, {
   name: 'diskSpaceAlarm', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(diskSpaceAlarmWorkflow, { name: 'diskSpaceAlarm', crontab: '0 13,43 * * * *' });
+
+// Daily 05:00 (after the 03:00–04:30 GC/prune cluster, off the :00 stampede): the
+// Layer-1 memory-anchor audit (papercusp-su-memory-2026-05-25 P-019). Re-checks
+// every harness_shared.memory_anchors row structurally — file anchors via the
+// repo basename-resolve + external-skip checker (audit-anchors.fileChecker), plus
+// plan/migration/feature — stamps last_checked_at + last_check_ok and flips
+// memory_canonical.state broken_anchor⇄active. This is the job that gives the
+// EI-2032 anchor-rooting cleanup LIVE effect: until it ran, the residue was purely
+// latent (the checker was never scheduled). SKIPS cleanly on a source-less host
+// (detectPapercupRoot()→null) so a packaged install never false-flags. It WRITES,
+// but broken_anchor does NOT affect recall (canonical recall filters only
+// state='archived') → low blast radius. Default ON; kill-switch
+// PAPERCUSP_MEMORY_ANCHOR_AUDIT=0. Never throws (mirrors embed-backfill: a thrown
+// step → DBOS marks the workflow permanently dead → silent stop forever) → can't
+// poison the scheduler. Shed under loop pressure (git ls-files + N UPDATEs).
+async function memoryAnchorAuditTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_MEMORY_ANCHOR_AUDIT === '0') return;
+    if (shouldShedHeavyTick('memory-anchor-audit')) return;
+    try {
+      const r = await runMemoryAnchorAuditOnce();
+      console.log(`[memory-anchor-audit] ${r.skipped ? `skipped: ${r.reason ?? 'no-op'}` : (r.summary ?? 'done')}`);
+    } catch (err) {
+      console.warn(`[memory-anchor-audit] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'memory-anchor-audit' });
+}
+const memoryAnchorAuditWorkflow = DBOS.registerWorkflow(memoryAnchorAuditTick, {
+  name: 'memoryAnchorAudit', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(memoryAnchorAuditWorkflow, { name: 'memoryAnchorAudit', crontab: '0 0 5 * * *' });

@@ -53,13 +53,16 @@ export interface PickupResult {
  * `ok:false` + the failing step; a dispatch/gate failure throws out of `call`.
  */
 export async function composePickup(args: PickupArgs, call: InnerCall): Promise<PickupResult> {
+  // work_items:get is bulk (bulk-endpoint-standardization-2026-06-21): a single
+  // id comes back as the one entry of `results` (each self-describes its id).
   const got = (await call('work_items:get', {
     id: args.id,
     ...(args.harness ? { harness: args.harness } : {}),
     detail: args.detail ?? true,
-  })) as { ok?: boolean; workItem?: unknown; error?: string } | undefined;
-  if (!got?.ok || got.workItem == null) {
-    return { ok: false, step: 'get', error: got?.error ?? `work_item '${args.id}' not found` };
+  })) as { ok?: boolean; results?: Array<{ ok?: boolean; workItem?: unknown; error?: string }> } | undefined;
+  const gotItem = got?.results?.[0];
+  if (!gotItem?.ok || gotItem.workItem == null) {
+    return { ok: false, step: 'get', error: gotItem?.error ?? `work_item '${args.id}' not found` };
   }
 
   const claimed = (await call('work_items:claim', {
@@ -68,7 +71,7 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
     ...(args.assignee ? { assignee: args.assignee } : {}),
   })) as { ok?: boolean; workItem?: unknown; error?: string } | undefined;
   if (!claimed?.ok) {
-    return { ok: false, step: 'claim', item: got.workItem, claimed: false, error: claimed?.error ?? 'claim failed' };
+    return { ok: false, step: 'claim', item: gotItem.workItem, claimed: false, error: claimed?.error ?? 'claim failed' };
   }
 
   let presence: unknown;
@@ -87,7 +90,7 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
 
   return {
     ok: true,
-    item: claimed.workItem ?? got.workItem,
+    item: claimed.workItem ?? gotItem.workItem,
     claimed: true,
     intentDeclared,
     ...(presence ? { presence } : {}),

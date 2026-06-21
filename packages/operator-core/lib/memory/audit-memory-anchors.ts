@@ -34,6 +34,7 @@ import {
   type MemoryWithAnchors,
 } from './audit-anchors';
 import { pgClientFields } from './mem0-connection';
+import { detectPapercupRoot } from '../harness/register-papercusp';
 
 interface CliOptions {
   dryRun: boolean;
@@ -42,8 +43,13 @@ interface CliOptions {
 
 function parseArgs(argv: string[]): CliOptions {
   const dryRun = argv.includes('--dry-run');
-  // Repo root = three levels up from this file (apps/operator/bin/x.ts → /)
-  const repoRoot = path.resolve(__dirname, '..', '..', '..');
+  // Repo root: detect the papercup checkout (markers: apps/operator + libs/papercusp
+  // package.json), falling back to the path relative to THIS file. This file lives at
+  // packages/operator-core/lib/memory/ → FOUR levels up is the repo root. (The old
+  // `..×3` calc was a stale carry-over from when the CLI lived at apps/operator/bin/;
+  // it resolved to `…/packages` and made the fileChecker stat anchors against the
+  // wrong root — every file anchor false-flagged.)
+  const repoRoot = detectPapercupRoot() ?? path.resolve(__dirname, '..', '..', '..', '..');
   return { dryRun, repoRoot };
 }
 
@@ -215,6 +221,32 @@ export async function audit(opts: CliOptions): Promise<{
   } finally {
     await client.end();
   }
+}
+
+/**
+ * Single-run wrapper for the periodic scheduler (dbos/periodic-workflows.ts).
+ * Resolves the repo root via {@link detectPapercupRoot} and SKIPS when there is
+ * none (a packaged install / non-repo cwd) — so a source-less host never marks
+ * every file anchor `broken_anchor`. Deps are injected so the skip + pass-through
+ * logic is unit-testable without a live pg connection.
+ */
+export async function runMemoryAnchorAuditOnce(opts: {
+  dryRun?: boolean;
+  /** Override the repo-root resolver (test seam). */
+  resolveRepoRoot?: () => string | null;
+  /** Override the audit runner (test seam). */
+  auditFn?: (o: CliOptions) => Promise<{ skipped: boolean; ok?: boolean; summary?: string }>;
+} = {}): Promise<{ skipped: boolean; ok?: boolean; summary?: string; reason?: string }> {
+  const resolveRepoRoot = opts.resolveRepoRoot ?? detectPapercupRoot;
+  const repoRoot = resolveRepoRoot();
+  if (!repoRoot) {
+    return {
+      skipped: true,
+      reason: 'no repo root (packaged install / non-repo cwd) — memory-anchor audit skipped',
+    };
+  }
+  const auditFn = opts.auditFn ?? audit;
+  return auditFn({ dryRun: opts.dryRun ?? false, repoRoot });
 }
 
 // CLI entry (only when invoked directly, not when imported by tests)

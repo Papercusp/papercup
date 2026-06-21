@@ -565,6 +565,9 @@ import './work_items/get';
 import './work_items/list';
 import './work_items/search';
 import './work_items/set_state';
+// release-pipeline-resilience-2026-06-09 P-013 — the additive live-verified marker (done=staging vs
+// confirmed-live), distinct from the lifecycle state:
+import './work_items/set_live_verified';
 // Structured completion → auto-emit (coord-lifecycle-automation-2026-06-04 D-004)
 import './work_items/complete';
 import './work_items/claim';
