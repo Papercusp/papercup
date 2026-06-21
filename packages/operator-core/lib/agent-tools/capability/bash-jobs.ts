@@ -105,8 +105,40 @@ function spawnShell(
     // LEASED sandbox DISPLAY in `env`; with no lease there is no DISPLAY at all.
     env: { ...stripHostX(process.env), ...(env ?? {}), PATH: spawnPath },
     stdio: ['ignore', 'pipe', 'pipe'],
+    // OWN PROCESS GROUP (capability-bash-orphan-kill-2026-06-21): `detached:true`
+    // makes the child (bash, or the bwrap wrapper) a process-group leader
+    // (pgid === child.pid on Linux). That is what lets a timeout/abort kill the
+    // WHOLE tree — bash AND every descendant it spawned (grep/ugrep/build/…) — via
+    // process.kill(-pid). Without it, killing only the bash parent ORPHANS its
+    // children (reparented to init), which keep running at full CPU: the runaway
+    // 58-min ugrep that starved the operator event loop → :3070 wedge. We never
+    // unref() the child, so the operator still tracks + reaps it normally.
+    detached: true,
   });
   return child;
+}
+
+/**
+ * Kill a spawned command's ENTIRE process group, not just the bash parent.
+ * spawnShell runs `detached:true`, so the child is its own process-group leader
+ * (pgid === child.pid); signalling the NEGATIVE pid reaches bash and every
+ * descendant it spawned. Without this a timed-out / aborted command leaves
+ * orphaned grandchildren (e.g. ugrep) running at 100% CPU — the wedge root cause
+ * (capability-bash-orphan-kill-2026-06-21). Falls back to a direct child kill if
+ * the group signal fails (child already exited / pid reused). Never throws.
+ */
+function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, sig); // negative pid → the whole process group
+  } catch {
+    try {
+      child.kill(sig);
+    } catch {
+      /* already exited */
+    }
+  }
 }
 
 /** Append a chunk to a job's in-memory tail (trimmed) + spill log + totals. */
@@ -179,12 +211,12 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killProcessTree(child, 'SIGKILL');
     }, Math.min(timeoutMs, MAX_TIMEOUT_MS));
 
     const onAbort = (): void => {
       aborted = true;
-      child.kill('SIGKILL');
+      killProcessTree(child, 'SIGKILL');
     };
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
@@ -273,7 +305,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const timer = setTimeout(() => {
     if (job.status === 'running') {
       job.status = 'timed_out';
-      child.kill('SIGKILL');
+      killProcessTree(child, 'SIGKILL');
     }
   }, Math.min(timeoutMs, MAX_TIMEOUT_MS));
 
