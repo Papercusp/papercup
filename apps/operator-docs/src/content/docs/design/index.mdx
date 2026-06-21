@@ -191,34 +191,30 @@ For full sort, virtualization, multi-row expand, and theme-token reference, see 
 
 ## Where to look for examples
 
+All file paths below are live (relative to `apps/operator/`). The pre-migration example files (`FeatureList.tsx`, `ProposalsPanel.tsx`, `ArchivesPanel.tsx`, `IssuesList.tsx`, `SnapshotsPanel.tsx`, `ArchitectInbox.tsx`, `TriageQueue.tsx`, the `*Banner`/`*Dashboard` panels, `FeatureLink.tsx`, etc.) were deleted as orphans during the adv-harness migration and now live only under `libs/papercusp/_retired/apps-web/` — don't reach for them.
+
 | Need an example of… | File |
 |---|---|
-| Tooltip on a button | `PiTerminalsDock.tsx`, `EscalationBanner.tsx` |
-| Tooltip on an IconButton (auto-wrapped) | Any `<IconButton title>` — wrap is in `primitives.tsx` |
-| Modal with header / body / actions | `ArchivesPanel.tsx`, `DecisionsPanel.tsx` |
-| Modal with custom z-index | `FeatureTimelinePanel.tsx` (zIndex=100) |
-| Modal with reduced-opacity overlay | `TriageQueue.tsx` (overlayStyle override) |
-| Vaul side drawer | `FeaturePeekPanel.tsx`, `issues/IssueDetail.tsx` |
-| cmdk command palette | `CommandPalette.tsx` |
-| Real Radix Tabs (with Tabs.Content) | `BrainstormFull.tsx` |
-| Filter-pill tabs (shared content) | `ArchitectInbox.tsx`, `ProposalsPanel.tsx` |
-| Radix Tabs as 9-tab top nav | `HarnessDashboard.tsx` |
-| Radix Select wrapper | `FeatureEditor.tsx`, `FeatureList.tsx`, `ProposalsPanel.tsx` |
-| Radix Select with `<optgroup>` | `HarnessDashboard.tsx` (project picker, inline Radix Select) |
-| Empty-string-sentinel select | `DepartmentHarnessDashboard.tsx` (`'_default'` ↔ `''`) |
-| Radix Checkbox in grid render | `FeatureList.tsx`, `ProposalsPanel.tsx` |
-| Radix Checkbox indeterminate | `ProposalsPanel.tsx` (select-all checkbox) |
-| Sonner toast.success / toast.error | `PhaseTabs.tsx`, `DepartmentHarnessDashboard.tsx` |
-| `useFormWith` + Zod (single-submit form) | `app/login/page.tsx`, `app/settings/oracle/OracleClient.tsx`, `app/settings/api-keys/page.tsx` |
-| `useDebouncedSave` (per-field settings) | `app/settings/voice/page.tsx`, `app/settings/backups/page.tsx`, `app/settings/operator/page.tsx` |
-| `useForm` + `makeAjvResolver` (plugin JSON Schema) | `app/harness/HarnessDashboard.tsx` (PluginConfigEditor), `app/settings/plugins/page.tsx` |
+| Tooltip on a button | `app/harness/PiTerminalsDock.tsx`, `app/admin/plans/PlanActions.tsx` |
+| Tooltip in the harness editor | `app/harness/FeatureEditor.tsx` |
+| Modal with header / body / actions | `app/admin/plans/PlanConflictModal.tsx`, `app/admin/plans/RevisionDiffModal.tsx` |
+| Vaul side drawer | `app/admin/plans/PlanDetail.tsx` |
+| cmdk command palette | `app/_components/CommandPalette.tsx`, `app/_components/GlobalCommandPalette.tsx` |
+| Real Radix Tabs (Tabs.List / Trigger) | `app/adv/sessions/AdvSessionsClient.tsx` (session detail-panel tab strip) |
+| Radix Select wrapper | `app/harness/FeatureEditor.tsx`, `app/admin/plans/PlanActions.tsx`, `app/_components/OperatorPanel.tsx` |
+| Radix Select with grouped options | `app/admin/plans/PlansClient.tsx`, `app/adv/harnesses/HarnessesWorkspace.tsx` |
+| Radix Checkbox | `app/adv/harnesses/AcceptancePanel.tsx`, `app/installed/plugins/[slug]/permissions/page.tsx` |
+| Sonner toast.success / toast.error | `app/admin/plans/PlanActions.tsx`, `app/admin/_components/TableAdmin.tsx` |
+| `useFormWith` + Zod (single-submit form) | `app/settings/profile/page.tsx`, `app/settings/oracle/OracleClient.tsx`, `app/settings/operator/page.tsx`, `app/settings/api-keys/page.tsx` |
+| `useDebouncedSave` (per-field settings) | `app/settings/agent/page.tsx` (the sole live consumer) |
+| Per-field auto-save via bespoke callbacks | `app/settings/voice/page.tsx` (`savePrefsPatch`), `app/settings/backups/page.tsx` |
+| `useForm` + `makeAjvResolver` (plugin JSON Schema) | `app/settings/plugins/page.tsx`, `app/harness/HarnessPluginsSection.tsx` |
 | `Controller` for non-native widgets (MarkdownEditor, etc.) | `app/settings/oracle/OracleClient.tsx` |
-| Radix Collapsible (per-row state) | `CheckpointBanner.tsx` |
-| Radix Collapsible (replacing `<details>`) | `DepartmentHarnessDashboard.tsx` |
-| `RichGrid` with sort + multi-row expand | `FeatureList.tsx`, `ProposalsPanel.tsx` |
-| `RichGrid` with custom row hover/click | `IssuesList.tsx`, `ArchivesPanel.tsx` |
-| `RichGrid` with virtualization | `HarnessDashboard.tsx` (large feature list) |
-| `applySort` helper for client-side sort | `ProposalsPanel.tsx`, `IssuesList.tsx` |
+| Radix Collapsible | `app/harness/FeatureEditor.tsx`, `app/admin/plans/PlanItemsList.tsx`, `app/_components/SetupWizard/StepTelemetry.tsx` |
+| `RichGrid` with built-in sort | `app/adv/harnesses/WorkItemsPanel.tsx`, `app/admin/plans/RunsPanel.tsx` |
+| `RichGrid` with per-column filters | `app/adv/harnesses/AdvAgentsPanel.tsx`, `app/adv/harnesses/AdvLogsPanel.tsx` |
+| `RichGrid` with persisted column widths | `app/adv/harnesses/WorkItemsPanel.tsx`, `app/adv/harnesses/AdvAgentsPanel.tsx` |
+| Kanban board | `app/admin/plans/PlanKanbanView.tsx` |
 
 ## Pages
 
