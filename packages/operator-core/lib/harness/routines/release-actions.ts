@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
+import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 
 /** Markers the release CLIs print their result JSON behind (P-008) — parse ONE delimited
  *  line instead of brace-slicing all of stdout (fragile to any log line with braces). MUST
@@ -187,8 +188,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
 
 /** P-004 thresholds: a gate held this many consecutive hourly checkpoints — or
  *  with no green for this long — is STALLED and worth an urgent, one-shot alert. */
-const STALL_REDS = 3;
-const STALL_AGE_MS = 6 * 60 * 60 * 1000;
+// P-016: STALL thresholds are runtime-settable — see releaseCheckpointConfig() (release:checkpoint-config).
 
 // P-003 (git-sync-dx-hardening): a stalled gate gets a DURABLE escalation row
 // (every other pipeline failure has one) — its own phase so it never clobbers
@@ -266,8 +266,8 @@ async function trackGateStall(
     const firstRedAt = gh.firstRedAt ?? Date.now();
     const lastGreenAt = gh.lastGreenAt ?? null;
     let stallAlerted = gh.stallAlerted ?? false;
-    const stalledByCount = consecutiveReds >= STALL_REDS;
-    const stalledByAge = lastGreenAt != null && Date.now() - lastGreenAt > STALL_AGE_MS;
+    const stalledByCount = consecutiveReds >= releaseCheckpointConfig().stallReds;
+    const stalledByAge = lastGreenAt != null && Date.now() - lastGreenAt > releaseCheckpointConfig().stallAgeMs;
     if ((stalledByCount || stalledByAge) && !stallAlerted) {
       stallAlerted = true;
       const heldHrs = lastGreenAt ? Math.round((Date.now() - lastGreenAt) / 3_600_000) : null;
@@ -324,8 +324,7 @@ async function trackGateStall(
 
 /** P-009 thresholds: a workspace that has flaked this often is "chronically
  *  flaky"; re-notify at most once a day per workspace. */
-const CHRONIC_FLAKE_COUNT = 3;
-const FLAKE_NOTIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+// P-016: CHRONIC-FLAKE thresholds are runtime-settable — see releaseCheckpointConfig().
 
 /**
  * P-009: per-workspace flake history. The affected-tests runner prints
@@ -362,7 +361,7 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string): Promis
     const prev = fh[ws] ?? {};
     const flakes = (prev.flakes ?? 0) + 1;
     let notifiedAt = prev.notifiedAt;
-    if (flakes >= CHRONIC_FLAKE_COUNT && (notifiedAt == null || now - notifiedAt > FLAKE_NOTIFY_COOLDOWN_MS)) {
+    if (flakes >= releaseCheckpointConfig().chronicFlakeCount && (notifiedAt == null || now - notifiedAt > releaseCheckpointConfig().flakeNotifyCooldownMs)) {
       newlyChronic.push(ws);
       notifiedAt = now;
     }
@@ -380,7 +379,7 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string): Promis
       await notifyAttention({
         kind: 'intervention',
         title: 'Chronically-flaky test(s) in the release gate',
-        body: `${newlyChronic.join(', ')} has flaked ≥${CHRONIC_FLAKE_COUNT}× in the green-checkpoint suite (failed then passed on retry). Quarantine it accountably (quarantine.txt + a de-quarantine follow-up) so it stops risking gate stalls.`,
+        body: `${newlyChronic.join(', ')} has flaked ≥${releaseCheckpointConfig().chronicFlakeCount}× in the green-checkpoint suite (failed then passed on retry). Quarantine it accountably (quarantine.txt + a de-quarantine follow-up) so it stops risking gate stalls.`,
         importance: 'high',
         workspaceId: ctx.workspaceId,
         data: { workspaces: newlyChronic.join(',') },
@@ -570,12 +569,12 @@ export interface DeployEventRow {
  * the SAME target within DEPLOY_BACKOFF_MS of `nowMs`. A new green (different sha) or the
  * window elapsing clears the back-off. Exported for unit testing.
  */
-export function shouldBackOff(latest: DeployEventRow | null, targetSha: string, nowMs: number): boolean {
+export function shouldBackOff(latest: DeployEventRow | null, targetSha: string, nowMs: number, backoffMs: number = DEPLOY_BACKOFF_MS): boolean {
   if (!latest || (latest.status !== 'failed' && latest.status !== 'rolled-back')) return false;
   const detail = typeof latest.detail === 'string' ? safeJson(latest.detail) : latest.detail ?? {};
   const lastTarget = String((detail as Record<string, unknown>).targetSha ?? ''); // stored sliced(0,12)
   const ageMs = nowMs - new Date(latest.created_at).getTime();
-  return lastTarget.length > 0 && targetSha.startsWith(lastTarget) && ageMs < DEPLOY_BACKOFF_MS;
+  return lastTarget.length > 0 && targetSha.startsWith(lastTarget) && ageMs < backoffMs;
 }
 
 /** DB glue over shouldBackOff — reads the latest deploy event; never blocks a deploy on a
@@ -590,7 +589,7 @@ async function recentDeployFailedFor(slug: string, targetSha: string): Promise<b
         ORDER BY created_at DESC LIMIT 1`,
       [slug],
     )) as DeployEventRow[];
-    return shouldBackOff(rows[0] ?? null, targetSha, Date.now());
+    return shouldBackOff(rows[0] ?? null, targetSha, Date.now(), releaseCheckpointConfig().deployBackoffMs);
   } catch {
     return false;
   }

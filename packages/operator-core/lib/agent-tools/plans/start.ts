@@ -181,6 +181,24 @@ export default defineTool({
     }
 
     ctxAny.metadata?.({ slug: args.slug, harnessSlug, status: row?.op_status, autoApproved, transitioned });
+
+    // unified-work-item-ledger P-003 (D-002): promote the plan's OPEN items into
+    // placeable, UNCLAIMED work-items so a started plan never sits at zero work-items
+    // (the Queen places them). Behind the default-OFF flag papercusp-plan-workitem-
+    // promotion (the runner reads it). Idempotent + fire-and-forget + never-throw, so
+    // the start path is unaffected whether the flag is on or off.
+    void import('../../plan-workitem-promotion-run')
+      .then(async (m) => {
+        const { resolveAgentIdentity } = await import('../coordination/identity');
+        await m.promotePlanItems({
+          workspaceId: DEFAULT_WORKSPACE_ID,
+          harnessSlug,
+          planSlug: args.slug,
+          createdBy: resolveAgentIdentity(ctx).ownerId,
+        });
+      })
+      .catch(() => {});
+
     return {
       content: [
         {

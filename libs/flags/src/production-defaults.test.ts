@@ -42,6 +42,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
+  // unified-work-item-ledger-2026-06-21 P-003: plan→work-item promotion mints work-items on the
+  // live plans:start path; ships dark, owner flips after an attended integration-verify. Safe
+  // dark: OFF ⇒ no promotion (today's behavior, byte-identical).
+  FLAGS.PLAN_WORKITEM_PROMOTION,
   // NOTE: SU_BLUEPRINT_PERSONA (P-006) is now DEFAULT ON (owner-authorized 2026-06-18) — removed from
   // this allowlist after the P-008 papercup-hive su instance-override content was authored + seeded.
   // NOTE: REPLACE_CLAUDE_BASE (P-013/P-014) is now DEFAULT ON (owner-authorized 2026-06-18) — removed

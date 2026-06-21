@@ -16,6 +16,7 @@
  *
  * Server-only.
  */
+import { createHash } from 'node:crypto';
 import type { ProjectedTool } from '@papercusp/agent-mcp';
 import { checkScript } from '@papercusp/tooldef';
 import {
@@ -23,6 +24,7 @@ import {
   recordRecipeRun,
   type CodeRecipeRow,
 } from '../../code-recipes-store';
+import { searchSimilarRecipes, type SimilarRecipe } from '../../code-recipes-search';
 
 /** Stable kebab slug from a title (the recipe PRIMARY KEY). Matches the
  *  plans:apply-plan-block toKebab so recipe ids look like every other slug. */
@@ -32,6 +34,29 @@ export function recipeSlug(title: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
+}
+
+/**
+ * Resolve the recipe PRIMARY KEY id (P-003 collision-fix).
+ *
+ * When the agent GAVE a title, `id = recipeSlug(title)` — the intended EXPLICIT
+ * dedup key (re-running the same titled recipe upserts in place, bumping its
+ * run_count). When the title was AUTO-DERIVED (no `given.title`), suffix the slug
+ * with a short content-hash of the script: two DIFFERENT scripts that happen to
+ * derive the SAME tool-set fallback title (`recipe: a + b`) must not clobber each
+ * other and pollute one another's run_count. Cross-title semantic dedup is the
+ * SearchSource (#1); this only stops auto-derived-title collisions.
+ */
+export function recipeId(
+  title: string,
+  description: string,
+  script: string,
+  given: { title?: string },
+): string {
+  const base = recipeSlug(title) || recipeSlug(description) || 'untitled-recipe';
+  if (given.title?.trim()) return base; // explicit title ⇒ stable dedup key
+  const hash = createHash('sha1').update(script).digest('hex').slice(0, 8);
+  return `${base}-${hash}`;
 }
 
 /** `wake-queue` / `set_status` → `wakeQueue` / `setStatus` — mirrors parse-check. */
@@ -134,16 +159,35 @@ export interface CaptureRecipeInput {
   allowed?: ReadonlySet<string>;
 }
 
+export interface CaptureRecipeResult {
+  /** The upserted recipe row. */
+  row: CodeRecipeRow;
+  /**
+   * Top-N prior recipes that ALREADY do something similar (semantic + structural
+   * dedup, P-004 / D-003). SOFT/ADVISORY — surfaced in the code:run result so the
+   * LLM can choose `recipes:run(<id>)` next time instead of re-authoring. Empty
+   * when nothing was similar (or the search degraded). EXCLUDES the just-upserted
+   * recipe itself.
+   */
+  similarRecipes: SimilarRecipe[];
+}
+
 /**
- * Capture a successful code:run as a recipe. ALWAYS best-effort: any failure is
- * logged + swallowed so capture never breaks the run. Returns the saved row (or
- * null when capture was skipped/failed). DEDUP is NOT done here (Phase 2) — this
- * only upserts + records the run.
+ * Capture a successful code:run as a recipe AND surface near-duplicates (P-004).
+ * ALWAYS best-effort: any failure is logged + swallowed so capture never breaks
+ * the run. Returns the saved row + the top similar recipes (or null when capture
+ * was skipped/failed).
+ *
+ * The embedding is computed ONCE (`title\ndescription`, 384-dim) and reused for
+ * BOTH the dedup search and the upsert. Dedup runs BEFORE the upsert — excluding
+ * the new recipe's id — so a re-run of an existing recipe doesn't match itself,
+ * and the result reflects the PRIOR corpus. Dedup is SOFT: a search failure
+ * degrades to `similarRecipes: []` and never blocks the capture/run.
  */
 export async function captureRecipe(
   deps: CaptureRecipeDeps,
   input: CaptureRecipeInput,
-): Promise<CodeRecipeRow | null> {
+): Promise<CaptureRecipeResult | null> {
   const log = deps.log ?? (() => {});
   try {
     const toolsUsed = safe(() => extractToolsUsed(input.script, input.tools, input.allowed), []);
@@ -151,13 +195,38 @@ export async function captureRecipe(
       title: input.title,
       description: input.description,
     });
-    const id = recipeSlug(title) || recipeSlug(description) || 'untitled-recipe';
+    // P-003 collision-fix: explicit title ⇒ slug; auto-derived ⇒ slug+scriptHash.
+    const id = recipeId(title, description, input.script, { title: input.title });
 
     const hiveSlug = input.harness
       ? await deps.resolveHive(input.workspaceId, input.harness).catch(() => null)
       : null;
 
+    // Compute the embedding ONCE and reuse it for both dedup + the upsert.
     const embedding = await deps.embed(`${title}\n${description}`).catch(() => null);
+
+    // DEDUP (SOFT, P-004): rank prior recipes BEFORE the upsert (exclude the new
+    // id so a re-run never matches itself). Best-effort — a failure must not break
+    // the run, so degrade to [].
+    let similarRecipes: SimilarRecipe[] = [];
+    try {
+      similarRecipes = await searchSimilarRecipes(
+        deps.sql,
+        {
+          workspaceId: input.workspaceId,
+          hiveSlug,
+          title,
+          description,
+          toolsUsed,
+          embedding,
+          excludeId: id,
+          limit: 5,
+        },
+        { log },
+      );
+    } catch (err) {
+      log(`code:run recipe dedup failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
+    }
 
     const row = await upsertRecipe(deps.sql, {
       id,
@@ -182,7 +251,7 @@ export async function captureRecipe(
       reused: false,
     });
 
-    return row;
+    return { row, similarRecipes };
   } catch (err) {
     log(`code:run recipe capture failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
     return null;

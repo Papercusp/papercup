@@ -472,6 +472,8 @@ import './coordination/handoff-config';
 import './coordination/session-reaper-config';
 // live-configurability-audit-2026-06-20 P-015 — hive placement-watchdog control policy:
 import './hive/control-policy';
+// live-configurability-audit-2026-06-20 P-016 — green-checkpoint / release thresholds:
+import './release/checkpoint-config';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

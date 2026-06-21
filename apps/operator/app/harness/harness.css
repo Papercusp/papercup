@@ -15713,7 +15713,7 @@ html body .h-root.h-root :is(
 .h-feature-peek-drawer > div:nth-of-type(2) > h2,
 .h-issue-detail-drawer > div:nth-of-type(2) > h2,
 .h-feature-peek-drawer > div:nth-of-type(2) > div:first-child h2 {
-  font-size: clamp(1.35rem, 1.2rem + 0.5vw, 1.78rem) !important;
+  font-size: 1.5rem !important;
   line-height: 1.18 !important;
 }
 
@@ -16366,7 +16366,7 @@ html body .h-root.h-root :is(
 .h-insights-panel .h-insights-kpi-value {
   margin-top: 8px !important;
   color: color-mix(in oklab, var(--fg), white 10%) !important;
-  font-size: clamp(21px, 2.6vw, 28px) !important;
+  font-size: 24px !important;
   font-weight: 900 !important;
   letter-spacing: 0;
 }
@@ -17553,7 +17553,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 }
 
 .h-drawer-title-card h2 {
-  font-size: clamp(1.45rem, 1.28rem + 0.58vw, 1.92rem) !important;
+  font-size: 1.6rem !important;
   line-height: 1.14 !important;
   color: color-mix(in oklab, var(--fg), white 14%) !important;
 }
@@ -17712,7 +17712,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-drawer-title-card h2 {
   max-width: 34rem;
-  font-size: clamp(1.20rem, 1.08rem + 0.34vw, 1.54rem) !important;
+  font-size: 1.3rem !important;
   line-height: 1.28 !important;
   letter-spacing: 0 !important;
   text-shadow: none !important;
@@ -17874,7 +17874,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-feature-peek-drawer .h-drawer-title-card h2,
 .h-issue-detail-drawer .h-drawer-title-card h2 {
-  font-size: clamp(1.20rem, 1.08rem + 0.34vw, 1.54rem) !important;
+  font-size: 1.3rem !important;
   line-height: 1.28 !important;
 }
 
@@ -17885,7 +17885,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-feature-peek-drawer > div:nth-of-type(2) > .h-drawer-title-card h2,
 .h-issue-detail-drawer > div:nth-of-type(2) > .h-drawer-title-card h2 {
-  font-size: clamp(1.20rem, 1.08rem + 0.34vw, 1.54rem) !important;
+  font-size: 1.3rem !important;
   line-height: 1.28 !important;
 }
 
@@ -17896,7 +17896,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-feature-peek-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child h2,
 .h-issue-detail-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child h2 {
-  font-size: clamp(1.20rem, 1.08rem + 0.34vw, 1.54rem) !important;
+  font-size: 1.3rem !important;
   line-height: 1.28 !important;
 }
 
@@ -20102,7 +20102,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-feature-peek-drawer h2,
 .h-issue-detail-drawer h2 {
   color: color-mix(in oklab, var(--fg), white 7%) !important;
-  font-size: clamp(1.08rem, 1rem + 0.25vw, 1.24rem) !important;
+  font-size: 1.14rem !important;
   line-height: 1.28 !important;
   letter-spacing: 0 !important;
   text-shadow: none !important;

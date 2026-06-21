@@ -102,7 +102,7 @@
   opacity: 0;
   color: #fde68a;
   font-family: "Bahnschrift", "Aptos Display", "Helvetica Neue", "Arial Narrow", ui-sans-serif, sans-serif;
-  font-size: clamp(32px, 6.2vw, 88px);
+  font-size: 56px;
   font-stretch: condensed;
   font-weight: 900;
   line-height: 0.88;
@@ -120,14 +120,14 @@
 }
 
 .introLines span[data-line="3"] {
-  font-size: clamp(22px, 4.8vw, 60px);
+  font-size: 40px;
   line-height: 1.04;
   letter-spacing: 0;
 }
 
 .introLines span[data-line="4"] {
   color: #fde68a;
-  font-size: clamp(26px, 5.4vw, 76px);
+  font-size: 48px;
   line-height: 0.94;
   letter-spacing: 0;
 }
@@ -261,7 +261,7 @@
   z-index: 2;
   margin: 0;
   color: #fde68a;
-  font-size: clamp(24px, 4.5vw, 70px);
+  font-size: 44px;
   font-weight: 900;
   line-height: 0.9;
   letter-spacing: 0;
@@ -431,7 +431,7 @@
 .hero h1 {
   max-width: 900px;
   margin: 16px 0 0;
-  font-size: clamp(58px, 12vw, 154px);
+  font-size: 96px;
   line-height: 0.78;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -442,7 +442,7 @@
   max-width: 800px;
   margin: 28px 0 0;
   color: color-mix(in srgb, var(--text) 78%, var(--muted));
-  font-size: clamp(16px, 2vw, 23px);
+  font-size: 19px;
   line-height: 1.45;
 }
 
@@ -690,7 +690,7 @@
 
 .optionHeader h2 {
   margin: 8px 0 0;
-  font-size: clamp(32px, 5vw, 64px);
+  font-size: 46px;
   line-height: 0.95;
   letter-spacing: 0;
 }
@@ -783,7 +783,7 @@
 
 .wordmark strong {
   display: block;
-  font-size: clamp(32px, 4vw, 54px);
+  font-size: 42px;
   line-height: 0.9;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -841,7 +841,7 @@
 .browserBody h3 {
   max-width: 620px;
   margin: 18px 0 0;
-  font-size: clamp(38px, 7vw, 82px);
+  font-size: 54px;
   line-height: 0.84;
   letter-spacing: 0;
 }
@@ -1002,7 +1002,7 @@
 .swarmLogoHeader h2 {
   margin: 9px 0 0;
   color: var(--text);
-  font-size: clamp(32px, 5vw, 66px);
+  font-size: 46px;
   line-height: 0.9;
   letter-spacing: 0;
   text-transform: uppercase;

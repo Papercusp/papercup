@@ -315,13 +315,13 @@ const projectDocsCss = `
   }
   .project-docs-article h1 {
     margin: 0 0 16px;
-    font-size: clamp(2.15rem, 4.2vw, 3.05rem);
+    font-size: 2.6rem;
     max-width: none;
   }
   .project-docs-article h2 {
     margin: 30px 0 12px;
     padding-top: 2px;
-    font-size: clamp(1.55rem, 2.6vw, 2.2rem);
+    font-size: 1.85rem;
     border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
     padding-bottom: 8px;
   }

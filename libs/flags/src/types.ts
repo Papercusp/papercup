@@ -813,6 +813,13 @@ export const FLAGS = {
   // wake/learning loop on a hot path, so it ships reversible behind one flag and flips ON only
   // after the post-canary verify. OFF ⇒ today's per-hive brains, byte-identical. KNOWN_DARK_FLAGS.
   WORKSPACE_COORDINATION: "papercusp-workspace-coordination",
+  // unified-work-item-ledger-2026-06-21 P-003 (D-002): auto-promote a started plan's OPEN
+  // items into placeable, UNCLAIMED work-items inside plans:start (the single promotion path;
+  // the Queen just calls plans:start). DEFAULT OFF (dark): it mints work-items on the live
+  // start path + the Queen frontier, so it ships reversible and flips ON only after an
+  // attended integration-verify. OFF ⇒ no promotion (today's behavior, byte-identical).
+  // KNOWN_DARK_FLAGS.
+  PLAN_WORKITEM_PROMOTION: "papercusp-plan-workitem-promotion",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1261,6 +1268,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // unverified; owner flips ON after the B-LOOP-1..5 chain is green + the manual e2e
   // passes. KNOWN_DARK_FLAGS.
   [FLAGS.LOOPS]: false,
+  // DEFAULT OFF (dark): mints work-items on the live plans:start path; flip ON after an
+  // attended integration-verify (unified-work-item-ledger P-003 / D-002).
+  [FLAGS.PLAN_WORKITEM_PROMOTION]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

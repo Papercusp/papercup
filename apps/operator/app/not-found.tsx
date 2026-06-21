@@ -139,7 +139,7 @@ export default function NotFound() {
               style={{
                 margin: 0,
                 color: 'var(--fg)',
-                fontSize: 'clamp(36px, 5vw, 52px)',
+                fontSize: 44,
                 lineHeight: 0.98,
                 fontWeight: 900,
                 letterSpacing: '0',
@@ -153,7 +153,7 @@ export default function NotFound() {
                 maxWidth: 500,
                 margin: '18px 0 0',
                 color: 'color-mix(in oklab, var(--fg-dim), white 8%)',
-                fontSize: 'clamp(15px, 2vw, 17px)',
+                fontSize: 16,
                 lineHeight: 1.68,
               }}
             >
