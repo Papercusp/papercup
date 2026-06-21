@@ -387,6 +387,24 @@ export interface OverwatchPanelHealth {
   staleForMs: number | null;
   /** Overwatch watchdog fallback fires in the last 24h (a forgot-to-declare signal). */
   watchdogFires24h: number;
+  /**
+   * Monitor-the-monitor (hive-loop-supervision 2026-06-21): the emission freshness of
+   * the every-wake hive-coordination-health scorecard, checked SINCE the Overwatch's
+   * ACTUAL last wake. null when not applicable (paused / never-woke / flag-off / read
+   * error). `fresh` = a COMPLETE scorecard landed since the last wake.
+   */
+  scorecardEmission: {
+    status: 'fresh' | 'partial-only' | 'stale';
+    lastCompleteAt: string | null;
+    missingCount: number;
+  } | null;
+  /**
+   * True when the Overwatch is alive+started, its last wake has SETTLED past the grace,
+   * and that wake emitted no COMPLETE scorecard — the Owner-#1 every-wake mandate was
+   * skipped. The time-sensitive grace lives in compute.ts (where `now` is available) so
+   * the liveness alarm stays a pure read over the snapshot.
+   */
+  scorecardSkipped: boolean;
 }
 
 /**

@@ -860,6 +860,26 @@ async function collectSuFleet(ctx: HealthCtx): Promise<HealthPanel<SuFleetHealth
   });
 }
 
+/**
+ * PURE: did a SETTLED Overwatch wake skip its mandated scorecard? (monitor-the-monitor,
+ * hive-loop-supervision 2026-06-21). True when the supervisor is alive, its last wake is
+ * older than the grace (so the turn — whose END emits the scorecard — has completed),
+ * and no COMPLETE hive-coordination-health scorecard landed since that wake. The grace
+ * kills the mid-turn false positive (a just-woken Overwatch hasn't emitted yet).
+ */
+export function overwatchScorecardSkipped(args: {
+  alive: boolean | null;
+  lastWakeAt: number | null;
+  now: number;
+  freshnessStatus: 'fresh' | 'partial-only' | 'stale';
+  graceMs?: number;
+}): boolean {
+  const grace = args.graceMs ?? 5 * 60_000;
+  if (args.alive === false || args.lastWakeAt == null) return false;
+  if (args.now - args.lastWakeAt <= grace) return false; // turn may still be in flight
+  return args.freshnessStatus !== 'fresh';
+}
+
 async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPanelHealth>> {
   return panelSafe<OverwatchPanelHealth>('overwatch', async () => {
     const { ws, now, hiveSlug } = ctx;
@@ -876,6 +896,29 @@ async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPa
     }
     const lastWakeAt = cs.lastWakeAt ? new Date(cs.lastWakeAt).getTime() : null;
     const nextFireAt = cs.nextWakeAt ? new Date(cs.nextWakeAt).getTime() : null;
+    // Monitor-the-monitor (hive-loop-supervision 2026-06-21): is the Overwatch actually
+    // emitting its every-wake hive-coordination-health scorecard? Check freshness SINCE
+    // its last wake (not a generic lookback). Best-effort — a read error leaves emission
+    // null + skipped false, never blocking the panel.
+    let scorecardEmission: OverwatchPanelHealth['scorecardEmission'] = null;
+    let scorecardSkipped = false;
+    if (cs.started && cs.flagEnabled && lastWakeAt != null) {
+      try {
+        const { checkScorecardFreshness } = await import('../scorecard-freshness');
+        const f = await checkScorecardFreshness({
+          rubricRef: 'hive-coordination-health',
+          sourceHive: cs.hiveSlug ?? undefined,
+          since: new Date(lastWakeAt).toISOString(),
+        });
+        scorecardEmission = { status: f.status, lastCompleteAt: f.lastCompleteAt, missingCount: f.latestMissingKeys.length };
+        scorecardSkipped = overwatchScorecardSkipped({
+          alive: ctx.overwatchAlive,
+          lastWakeAt,
+          now,
+          freshnessStatus: f.status,
+        });
+      } catch { /* freshness unreadable — leave null/false, never block the panel */ }
+    }
     const data: OverwatchPanelHealth = {
       flagEnabled: cs.flagEnabled,
       started: cs.started,
@@ -886,6 +929,8 @@ async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPa
       nextFireAt,
       staleForMs: cs.staleForMs,
       watchdogFires24h,
+      scorecardEmission,
+      scorecardSkipped,
     };
     const status = overwatchStatus(data);
     const stateLabel = !cs.flagEnabled
