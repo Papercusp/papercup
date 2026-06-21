@@ -24,10 +24,30 @@
  *
  * Transition-only + per-signal debounced so it never spams; env-killable
  * (PAPERCUSP_INFRA_LIVENESS_ALARM=0). The watcher does not live in what it watches.
+ *
+ * EI-2146 — dedup + auto-resolve (detector-failure fix). The per-signal
+ * `lastAlertedAt` debounce is in-memory, so it is per-WORKER and per-PROCESS: in
+ * cluster mode (N request workers) and across restarts it does NOT dedup, so one
+ * ~4h incident left dozens of identical never-closing `blocker` escalations that
+ * drowned real signal and grew coord_event_log unbounded. The durable fix keys
+ * off the escalation LOG itself (a stable per-signal signature):
+ *   1. DEDUP — never open a second escalation while one with the same signature
+ *      is still open (collapse repeats into one row; re-fire only after recovery).
+ *   2. AUTO-RESOLVE-ON-RECOVERY — each tick, resolve every open infra-liveness
+ *      escalation whose condition is no longer firing. On the first post-deploy
+ *      tick this is the one-time backlog sweep of the recovered cohort.
+ *   3. FALSE-POSITIVE SUPPRESSION — "no bees running" is NOT a fault when the
+ *      placement frontier is genuinely empty (an idle fleet is correct).
  */
-import type { SystemHealth } from './types';
+import { PANEL_LABELS, type SystemHealth, type PanelKey } from './types';
 import { computeSystemHealth, lastSystemHealth } from './compute';
-import { openEscalation, type EscalationSeverity } from '../agent-tools/coordination/escalations';
+import {
+  openEscalation,
+  listEscalationsPaginated,
+  resolveEscalation,
+  type EscalationSeverity,
+  type EscalationRecord,
+} from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { activeWorkspaceId } from '../workspace-registry';
 
@@ -130,12 +150,67 @@ export function evaluateLivenessAlarm(
   //    is never silently missed). Sharper-keyed panels above are skipped.
   const coveredKeys = new Set(['workFeed', 'queen', 'tokens']);
   for (const panel of Object.values(health.panels)) {
-    if (panel.status === 'crit' && !coveredKeys.has(panel.key)) {
-      signals.push({ key: `panel:${panel.key}`, severity: 'blocker', summary: `${panel.label}: ${panel.summary}` });
+    if (panel.status !== 'crit' || coveredKeys.has(panel.key)) continue;
+    // EI-2146 #3: suppress the no-bees-while-idle FALSE POSITIVE. A fleet with
+    // zero bees running is CORRECT when there is no placeable work — the
+    // placement frontier is empty — so it is an idle fleet, not an infra fault.
+    // Only the specific no-bees case is gated; a bees-crit for any OTHER reason
+    // (e.g. a cursed placement, or real frontier work waiting) still surfaces.
+    if (panel.key === 'bees') {
+      const running = health.panels.bees?.data?.running;
+      const frontier = health.panels.workFeed?.data?.frontier;
+      if (running === 0 && frontier === 0) continue;
     }
+    signals.push({ key: `panel:${panel.key}`, severity: 'blocker', summary: `${panel.label}: ${panel.summary}` });
   }
 
   return signals;
+}
+
+// ── durable per-signal signature (dedup + auto-resolve key) ────────────────────
+
+/** The summary prefix every fired escalation carries. */
+const SUMMARY_PREFIX = '[infra-liveness] ';
+
+/** Reverse map a panel LABEL back to its key, for classifying legacy records. */
+const PANEL_LABEL_TO_KEY: Record<string, PanelKey> = Object.fromEntries(
+  (Object.entries(PANEL_LABELS) as Array<[PanelKey, string]>).map(([k, v]) => [v, k]),
+);
+
+/**
+ * Derive a signal's stable signature from an escalation summary — the fallback
+ * for LEGACY records written before EI-2146 (which carry no explicit signature),
+ * so the one-time backlog sweep can classify and auto-resolve the existing pile.
+ * Mirrors the summaries produced by `evaluateLivenessAlarm`. Returns null when
+ * the summary is not a recognizable infra-liveness signal (left untouched).
+ */
+export function deriveSignatureFromSummary(summary: string): string | null {
+  let s = summary ?? '';
+  if (s.startsWith(SUMMARY_PREFIX)) s = s.slice(SUMMARY_PREFIX.length);
+  s = s.trim();
+  if (s.startsWith('system-health tick stale')) return 'health-tick-stale';
+  if (/dead routine\(s\)/.test(s)) return 'dead-routines';
+  if (s.startsWith('Queen loop dark')) return 'queen-dark';
+  if (s.startsWith('Overwatch supervisor loop dark')) return 'overwatch-dark';
+  if (/LLM pool account\(s\) paused/.test(s)) return 'accounts-starved';
+  // Catch-all panel form: "<panel label>: <panel summary>".
+  const idx = s.indexOf(': ');
+  if (idx > 0) {
+    const key = PANEL_LABEL_TO_KEY[s.slice(0, idx)];
+    if (key) return `panel:${key}`;
+  }
+  return null;
+}
+
+/**
+ * The stable signature of an open escalation: the explicit `livenessSignature`
+ * stamped on records this alarm writes (EI-2146), else derived from the summary
+ * (legacy). Null = not classifiable as an infra-liveness signal.
+ */
+export function livenessSignatureOf(rec: EscalationRecord): string | null {
+  const explicit = (rec as Record<string, unknown>).livenessSignature;
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+  return deriveSignatureFromSummary(rec.summary ?? '');
 }
 
 // ── tick + debounce + starter ─────────────────────────────────────────────────
@@ -145,27 +220,57 @@ const lastAlertedAt = new Map<string, number>();
 export interface AlarmDeps {
   computeHealth?: (ws: string) => Promise<SystemHealth>;
   readLast?: (ws: string) => SystemHealth | null;
-  escalate?: (input: { severity: EscalationSeverity; summary: string; body?: string }) => Promise<unknown>;
+  escalate?: (input: {
+    severity: EscalationSeverity;
+    summary: string;
+    body?: string;
+    meta?: Record<string, unknown>;
+  }) => Promise<unknown>;
+  /** The currently-OPEN infra-liveness escalations — the durable dedup +
+   *  auto-resolve source. Default reads a bounded newest-first window of the
+   *  escalation log and filters to this alarm's identity. */
+  listOpen?: () => Promise<EscalationRecord[]>;
+  /** Resolve one open escalation by msg_id (auto-resolve-on-recovery). */
+  resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
   now?: () => number;
   snapshotStaleMs?: number;
   debounceMs?: number;
 }
 
+/** Bound the per-tick escalation-log read: large enough to cover the recently-
+ *  open infra-liveness set (and the recovered cohort on the first sweep), small
+ *  enough not to re-load the whole ~13k backlog every ~2min (cf. EI-1490). */
+const OPEN_SCAN_WINDOW = 500;
+
 /**
  * One alarm tick: prefer the warm cache (cheap when the bg tick is alive), else
- * compute fresh (and the staleness is itself a signal). Evaluate, then escalate
- * each NEW critical signal — debounced per signal key so a sustained problem
- * wakes the owner once per window, not every tick. Best-effort: never throws.
+ * compute fresh (and the staleness is itself a signal). Then, against the OPEN
+ * infra-liveness escalations (EI-2146):
+ *   - auto-resolve every open escalation whose condition no longer fires (the
+ *     one-time backlog sweep on the first post-deploy tick), and
+ *   - fire each NEW signal, durably deduped (one open row per signature, across
+ *     workers + restarts) and in-memory cooldown-debounced.
+ * Best-effort: never throws.
  */
 export async function runLivenessAlarmTick(
   workspaceId?: string,
   deps: AlarmDeps = {},
-): Promise<{ fired: AlarmSignal[]; signals: AlarmSignal[] }> {
+): Promise<{ fired: AlarmSignal[]; signals: AlarmSignal[]; resolved: string[] }> {
   const ws = workspaceId ?? activeWorkspaceId();
   const now = (deps.now ?? Date.now)();
   const readLast = deps.readLast ?? lastSystemHealth;
   const compute = deps.computeHealth ?? computeSystemHealth;
   const escalate = deps.escalate ?? ((input) => openEscalation(INFRA_LIVENESS_IDENTITY, input));
+  const listOpen =
+    deps.listOpen ??
+    (async () => {
+      const { escalations } = await listEscalationsPaginated({ status: 'open', maxRecords: OPEN_SCAN_WINDOW });
+      return escalations.filter((e) => e.from === INFRA_LIVENESS_IDENTITY.ownerId);
+    });
+  const resolve =
+    deps.resolve ??
+    ((msg_id, choice, note) =>
+      resolveEscalation({ msg_id, choice, note, resolver: INFRA_LIVENESS_IDENTITY.ownerId }));
   const staleMs = deps.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
 
@@ -175,8 +280,49 @@ export async function runLivenessAlarmTick(
   const health = stale ? await compute(ws) : (cached as SystemHealth);
 
   const signals = evaluateLivenessAlarm(health, snapshotAgeMs, { snapshotStaleMs: staleMs });
+  const currentSigs = new Set(signals.map((s) => s.key));
+
+  // Read the open infra-liveness escalations ONCE, bucketed by signature. The
+  // durable, cross-worker/cross-restart dedup the in-memory debounce cannot give.
+  // Fail-soft: a log-read error degrades to the in-memory debounce only — it must
+  // never crash the request worker nor block a genuine alarm.
+  let openBySig = new Map<string, EscalationRecord[]>();
+  try {
+    for (const rec of await listOpen()) {
+      const sig = livenessSignatureOf(rec);
+      if (!sig) continue;
+      const list = openBySig.get(sig);
+      if (list) list.push(rec);
+      else openBySig.set(sig, [rec]);
+    }
+  } catch {
+    openBySig = new Map();
+  }
+
+  // 1. Auto-resolve-on-recovery: every open infra-liveness escalation whose
+  //    signal is no longer firing. On the first post-deploy tick this drains the
+  //    recovered backlog (gateway/accounts/no-bees-while-idle) so the pile clears.
+  const resolved: string[] = [];
+  for (const [sig, recs] of openBySig) {
+    if (currentSigs.has(sig)) continue; // still firing — keep the single open row
+    for (const rec of recs) {
+      try {
+        await resolve(rec.msg_id, 'auto-resolved', `infra-liveness signal '${sig}' cleared (condition recovered)`);
+        resolved.push(rec.msg_id);
+      } catch {
+        /* a resolve failure must never crash the request worker */
+      }
+    }
+    // Drop the in-memory cooldown so a genuine re-occurrence after recovery
+    // re-fires immediately ("re-fire only after auto-resolve").
+    lastAlertedAt.delete(sig);
+  }
+
+  // 2. Fire each NEW signal — durably deduped (skip a signature that already has
+  //    an open escalation) then in-memory cooldown-debounced.
   const fired: AlarmSignal[] = [];
   for (const s of signals) {
+    if (openBySig.has(s.key)) continue; // an open escalation already covers this signature
     const prev = lastAlertedAt.get(s.key);
     if (prev !== undefined && now - prev < debounceMs) continue;
     lastAlertedAt.set(s.key, now);
@@ -184,17 +330,20 @@ export async function runLivenessAlarmTick(
     try {
       await escalate({
         severity: s.severity,
-        summary: `[infra-liveness] ${s.summary}`,
+        summary: `${SUMMARY_PREFIX}${s.summary}`,
         body:
           `Detected by the request-path infra-liveness alarm (R4-3/R4-8) — it runs on a request worker, ` +
           `independent of the background routine engine, so it fires even when that engine is frozen ` +
           `(the failure that blinds the in-engine watchdog). Signal: ${s.key}. Workspace: ${ws}.`,
+        // EI-2146: stamp the signature so dedup + auto-resolve match exactly
+        // (no summary-parsing needed for records this alarm writes).
+        meta: { livenessSignature: s.key },
       });
     } catch {
       /* an alarm-send failure must never crash the request worker */
     }
   }
-  return { fired, signals };
+  return { fired, signals, resolved };
 }
 
 /**
