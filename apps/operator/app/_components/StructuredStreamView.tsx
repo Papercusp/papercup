@@ -20,6 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 import '@xterm/xterm/css/xterm.css';
+import { Checkbox } from '../harness/Checkbox';
 import type { StreamEvent, StreamStep } from './structured-stream-types';
 
 export type { StreamEvent, StreamStep, StepStatus } from './structured-stream-types';
@@ -273,10 +274,10 @@ export function StructuredStreamView({
         }}
       >
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
+          <Checkbox
             checked={showFailuresOnly}
-            onChange={(e) => setShowFailuresOnly(e.target.checked)}
+            onChange={setShowFailuresOnly}
+            ariaLabel="Show only failures"
           />
           show only failures{failureCount > 0 ? ` (${failureCount})` : ''}
         </label>

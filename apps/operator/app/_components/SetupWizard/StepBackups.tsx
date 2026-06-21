@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import RouteLink from '../RouteLink';
+import { Checkbox } from '../../harness/Checkbox';
 
 interface BackupSettings {
   enabled: boolean;
@@ -96,11 +97,11 @@ export function StepBackups() {
         {loading && <span>Loading current setting…</span>}
         {!loading && settings && (
           <label className="pc-consent__toggle">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={settings.enabled && !kopiaMissing}
               disabled={busy || kopiaMissing}
-              onChange={(e) => void setEnabled(e.target.checked)}
+              onChange={(checked) => void setEnabled(checked)}
+              ariaLabel="Enable local backups"
             />
             <span>
               {kopiaMissing

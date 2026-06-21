@@ -23,6 +23,7 @@ import {
   TrendingUp,
   Trophy,
 } from 'lucide-react';
+import { Checkbox } from '@/app/harness/Checkbox';
 import { Select, type SelectEntry, type SelectOption } from '@/app/harness/Select';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
@@ -442,10 +443,10 @@ export default function AdvShell({
                 already included), so the toggle only shows for a single pick. */}
             {!allMode && (
               <label className="pc-advshell__scope-toggle" title={`Include sub-${t('pot', { plural: true, lower: true })} in list views (plans, sessions). Editor views still focus a single ${t('pot')}.`}>
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={scopeMode === 'expanded'}
-                  onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
+                  onChange={(checked) => void setScopeMode(checked ? 'expanded' : 'self')}
+                  ariaLabel={`Include sub-${t('pot', { plural: true, lower: true })}`}
                 />
                 <span>sub-{t('pot', { plural: true, lower: true })}</span>
               </label>

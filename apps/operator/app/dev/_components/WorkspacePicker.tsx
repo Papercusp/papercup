@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Checkbox } from '../../harness/Checkbox';
 
 interface Workspace {
   id: string;
@@ -67,19 +68,19 @@ export default function WorkspacePicker({ selected, onChange }: Props) {
   return (
     <div className="pc-dev-ws-picker">
       <label className="pc-dev-ws-row">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={allSelected}
           onChange={() => onChange(allSelected ? [] : null)}
+          ariaLabel="All workspaces"
         />
         <span>All workspaces</span>
       </label>
       {workspaces.map((w) => (
         <label key={w.id} className="pc-dev-ws-row">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={allSelected || (selected?.includes(w.id) ?? false)}
             onChange={() => toggle(w.id)}
+            ariaLabel={w.name || w.id}
           />
           <span>{w.name || w.id}</span>
         </label>

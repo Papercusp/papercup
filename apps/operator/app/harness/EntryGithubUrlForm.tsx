@@ -37,6 +37,7 @@ import { parseHarnessLink } from '@papercusp/operator-core/lib/harness/harness-l
 // below remains the fallback, so no provider = exactly the old behavior.
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
+import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import { Tooltip } from './Tooltip';
 
@@ -1006,10 +1007,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', marginBottom: 14, borderRadius: 6, cursor: 'pointer' }}
         data-testid="verify-tests-optin"
       >
-        <input
-          type="checkbox"
+        <Checkbox
           checked={verifyTests}
-          onChange={(e) => setVerifyTests(e.target.checked)}
+          onChange={setVerifyTests}
+          ariaLabel="Verify the detected test command"
           style={{ marginTop: 2 }}
         />
         <span>

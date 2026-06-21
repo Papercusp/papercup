@@ -27,6 +27,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '@/app/harness/Modal';
+import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
@@ -927,10 +928,10 @@ function PromoteDialog({
                       fontSize: '0.85em',
                     }}
                   >
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={selected.has(item.id)}
                       onChange={() => toggleItem(item.id)}
+                      ariaLabel={`Promote ${item.id}`}
                       style={{ marginTop: '2px', flexShrink: 0 }}
                     />
                     <span>

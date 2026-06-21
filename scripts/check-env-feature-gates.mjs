@@ -62,6 +62,29 @@ const ALLOW = new Set([
   'PAPERCUSP_DESKTOP_SCREEN_TRACKS', 'PAPERCUSP_DEV_PLUGIN_WATCH', 'PAPERCUSP_FAKE_LLM',
   'PAPERCUSP_PROMPT_CACHE', 'PAPERCUSP_MEMORY_WATCHDOG', 'PAPERCUSP_PTY_FLOW_CONTROL',
   'PAPERCUSP_ENABLE_RUST_REWRITES', // build-mode (Rust vs JS proxies), launcher-set — config, not a user feature
+  // ── system-health / DBOS / gateway OPS kill-switches + dev traces (live-configurability-audit
+  //    P-023). These gate INTERNAL infrastructure (watchdogs, alarms, reapers, self-heal, dev
+  //    tracing), not user-facing features — launch-time/ops runtime config, env is correct (same
+  //    category as ALLOW_DEV_RESTART / MEMORY_WATCHDOG above). The FEATURE value-gates P-023 targeted
+  //    (handoff TTL, redundancy switch, placement-watchdog, improvement caps) were migrated to FLAGS /
+  //    the control-harness by P-007/P-011/P-014/P-015; the remaining ones (scout ceiling, auth bypass,
+  //    exec-sandbox egress, PG timeouts) are NUMERIC/owned by Phase-3 items P-019/P-020/P-022 and ride
+  //    those. Promoting a specific watchdog to a FLAG (for /admin/features hot-flip) stays an optional
+  //    per-watchdog follow-up. ──
+  'PAPERCUSP_A003_TRACE',                       // hyperbee A003 debug trace (dev)
+  'PAPERCUSP_GATEWAY_ROUTE_LOG',                // inference-gateway route logging (dev)
+  'PAPERCUSP_LOOP_PROFILER',                    // event-loop profiler (dev)
+  'PAPERCUSP_DBOS_EXECUTOR_REAPER',             // DBOS executor-reaper ops kill-switch
+  'PAPERCUSP_DBOS_WORKFLOW_GC',                 // DBOS workflow-GC ops kill-switch
+  'PAPERCUSP_FEDERATION_DRAIN_RECONCILE',       // federation drain-reconcile ops toggle
+  'PAPERCUSP_GATEWAY_SELFHEAL',                 // inference-gateway self-heal ops kill-switch
+  'PAPERCUSP_GREEN_STALL_WATCHDOG',             // green-checkpoint stall watchdog ops kill-switch
+  'PAPERCUSP_INFRA_LIVENESS_ALARM',             // infra-liveness alarm ops kill-switch
+  'PAPERCUSP_LAG_SELF_RESTART',                 // event-loop-lag self-restart ops kill-switch
+  'PAPERCUSP_SINGLE_PRIMARY_GUARD',             // single-primary guard ops kill-switch
+  'PAPERCUSP_STORAGE_GROWTH_ALARM',             // storage-growth alarm ops kill-switch
+  'PAPERCUSP_STRUCTURAL_ERROR_VERIFIER',        // structural-error verifier ops kill-switch
+  'PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE', // watchdog inline service-health probe ops toggle
 ]);
 
 // Broad scan (git grep), precise filter in JS (easier than shell-escaping the boolean form).

@@ -354,8 +354,8 @@ describe('AdvShell — selector + actions', () => {
 
   it('the sub-harnesses toggle flips scope between expanded and self', async () => {
     await renderShell();
-    const toggle = screen.getByText('sub-pots').closest('label')!.querySelector('input')!;
-    expect(toggle.checked).toBe(true);
+    const toggle = screen.getByRole('checkbox', { name: /include sub-pots/i });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
     fireEvent.click(toggle);
     await waitFor(() => expect(nuqsSetters.scope).toHaveBeenCalledWith('self'));
   });

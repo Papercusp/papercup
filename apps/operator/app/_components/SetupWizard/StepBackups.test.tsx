@@ -67,8 +67,8 @@ describe('StepBackups (SetupWizard backups step)', () => {
   it('renders the enabled toggle once settings load (checked, label "Backups enabled")', async () => {
     installFetch();
     render(<StepBackups />);
-    const cb = (await screen.findByRole('checkbox')) as HTMLInputElement;
-    expect(cb.checked).toBe(true);
+    const cb = await screen.findByRole('checkbox');
+    expect(cb.getAttribute('aria-checked')).toBe('true');
     expect(screen.getByText('Backups enabled')).toBeTruthy();
   });
 
@@ -76,8 +76,8 @@ describe('StepBackups (SetupWizard backups step)', () => {
     backupsBody = { workspaceId: 'w', settings: settings({ enabled: false }), kopia: { ok: true } };
     installFetch();
     render(<StepBackups />);
-    const cb = (await screen.findByRole('checkbox')) as HTMLInputElement;
-    expect(cb.checked).toBe(false);
+    const cb = await screen.findByRole('checkbox');
+    expect(cb.getAttribute('aria-checked')).toBe('false');
     expect(screen.getByText('Backups disabled')).toBeTruthy();
   });
 
@@ -98,9 +98,9 @@ describe('StepBackups (SetupWizard backups step)', () => {
     render(<StepBackups />);
     expect(await screen.findByText(/Kopia isn't installed in this runtime/i)).toBeTruthy();
     expect(screen.getByText(/kopia binary not found/i)).toBeTruthy();
-    const cb = (await screen.findByRole('checkbox')) as HTMLInputElement;
+    const cb = (await screen.findByRole('checkbox')) as HTMLButtonElement;
     expect(cb.disabled).toBe(true);
-    expect(cb.checked).toBe(false); // checked is forced off while kopia missing
+    expect(cb.getAttribute('aria-checked')).toBe('false'); // checked is forced off while kopia missing
     expect(screen.getByText(/Backups unavailable \(kopia not installed\)/i)).toBeTruthy();
   });
 

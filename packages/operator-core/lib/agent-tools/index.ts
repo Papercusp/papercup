@@ -28,6 +28,12 @@ import './pre-prompt-registry-config';
 import './code/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.
 import './code/tools';
+// code-recipes-2026-06-21 Phase 2 (P-005) — the recipe reuse verbs: list / get /
+// search (the BEFORE-author dedup check) / run (reuse under the REUSER envelope, D-004).
+import './recipes/list';
+import './recipes/get';
+import './recipes/search';
+import './recipes/run';
 
 import './operator/stats';
 import './operator/converse';

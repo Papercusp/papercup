@@ -43,7 +43,7 @@ describe('<WorkspacePicker /> smoke', () => {
     const boxes = await screen.findAllByRole('checkbox');
     // master + 2 rows, all checked under "all".
     expect(boxes).toHaveLength(3);
-    expect(boxes.every((b) => (b as HTMLInputElement).checked)).toBe(true);
+    expect(boxes.every((b) => b.getAttribute('aria-checked') === 'true')).toBe(true);
   });
 
   it('toggling a row from "all" emits everything-except-that-row', async () => {
@@ -57,8 +57,8 @@ describe('<WorkspacePicker /> smoke', () => {
   it('only the selected rows are checked when a specific list is passed', async () => {
     render(<WorkspacePicker selected={['w1']} onChange={() => {}} />);
     await screen.findByText('One');
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    const boxes = screen.getAllByRole('checkbox');
     // [master(all=false), w1(true), w2(false)]
-    expect(boxes.map((b) => b.checked)).toEqual([false, true, false]);
+    expect(boxes.map((b) => b.getAttribute('aria-checked') === 'true')).toEqual([false, true, false]);
   });
 });

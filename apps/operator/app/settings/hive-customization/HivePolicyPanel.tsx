@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
+import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { useHarnessClaimStatus } from '../../adv/harnesses/useHarnessClaimStatus';
 
@@ -203,7 +204,7 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
               <div style={ROW}>
                 <span style={LABEL}>Moderation</span>
                 <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <input type="checkbox" checked={reportable} onChange={(e) => setReportable(e.target.checked)} />
+                  <Checkbox checked={reportable} onChange={setReportable} ariaLabel="Members can report content" />
                   members can report content
                 </label>
               </div>

@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   recipeSlug,
+  recipeId,
   deriveTitleDescription,
   extractToolsUsed,
 } from './capture-recipe';
@@ -27,6 +28,30 @@ describe('recipeSlug', () => {
   it('kebab-cases a title into a stable slug', () => {
     expect(recipeSlug('Triage Stale Work-Items!')).toBe('triage-stale-work-items');
     expect(recipeSlug('  leading/trailing  ')).toBe('leading-trailing');
+  });
+});
+
+describe('recipeId — explicit title is the stable dedup key; auto-derived gets a content-hash suffix (P-003)', () => {
+  it('uses the bare slug when the agent GAVE a title (the intended explicit dedup key)', () => {
+    const id = recipeId('Triage Stale Items', 'desc', 'return 1;', { title: 'Triage Stale Items' });
+    expect(id).toBe('triage-stale-items');
+    // re-deriving with the same explicit title is stable (upserts in place)
+    expect(recipeId('Triage Stale Items', 'desc', 'return 2;', { title: 'Triage Stale Items' })).toBe(
+      'triage-stale-items',
+    );
+  });
+
+  it('suffixes a content-hash when the title was AUTO-DERIVED (no given.title)', () => {
+    const id = recipeId('recipe: a + b', 'd', 'return 1;', {});
+    expect(id).toMatch(/^recipe-a-b-[0-9a-f]{8}$/);
+  });
+
+  it('two DIFFERENT auto-derived scripts with the SAME fallback title get DISTINCT ids (no clobber)', () => {
+    const idA = recipeId('recipe: a + b', 'd', 'return 1;', {});
+    const idB = recipeId('recipe: a + b', 'd', 'return 2;', {});
+    expect(idA).not.toBe(idB); // different script ⇒ different hash suffix
+    // same script ⇒ same id (deterministic)
+    expect(recipeId('recipe: a + b', 'd', 'return 1;', {})).toBe(idA);
   });
 });
 
