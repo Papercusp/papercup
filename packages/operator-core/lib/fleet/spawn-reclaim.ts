@@ -20,6 +20,7 @@
  */
 import { hostname } from 'node:os';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { wakeParentOnChildDeath } from './parent-wake';
 
@@ -28,6 +29,30 @@ type Db = Sql | TransactionSql;
 
 /** Cadence the live host bumps `heartbeat_at` for its in-flight spawns. */
 export const SPAWN_HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
+ * Per-process boot id (EI-2186) — a nonce minted ONCE when this operator process
+ * starts. Stamped on every nursery row this process launches (`recordSpawnPid`).
+ * Its job: tell a row launched by THIS live process apart from one left behind by
+ * a DEAD prior incarnation on the same host, WITHOUT depending on a pid — which is
+ * not stable across a host restart (the rebooted box reuses the same low pids for
+ * unrelated processes, so a stale row's recorded pid can read as "alive" and wedge
+ * the concurrency ceiling forever). A `running` row whose `launcher_host` is mine
+ * but whose `launcher_boot_id` ≠ this is provably orphaned. Mutable only via
+ * `__setLauncherBootIdForTests` so the integration tests can simulate "a row from
+ * a prior boot".
+ */
+let LAUNCHER_BOOT_ID = randomUUID();
+
+/** The current process's boot id (EI-2186). */
+export function launcherBootId(): string {
+  return LAUNCHER_BOOT_ID;
+}
+
+/** Test-only: override the boot id to simulate rows left by a prior incarnation. */
+export function __setLauncherBootIdForTests(id: string): void {
+  LAUNCHER_BOOT_ID = id;
+}
 
 /**
  * Record the child OS pid + this launcher host on a nursery row (EI-85). The
@@ -39,7 +64,7 @@ export const SPAWN_HEARTBEAT_INTERVAL_MS = 60_000;
 export async function recordSpawnPid(sql: Db, spawnId: string, pid: number): Promise<void> {
   await sql`
     UPDATE harness_shared.spawned_agents
-       SET pid = ${pid}, launcher_host = ${hostname()}
+       SET pid = ${pid}, launcher_host = ${hostname()}, launcher_boot_id = ${LAUNCHER_BOOT_ID}
      WHERE spawn_id = ${spawnId} AND status IN ('running', 'restarting')`;
 }
 
@@ -213,9 +238,16 @@ export async function reclaimOrphanedSpawns(
   // overwatch) → liveness = the firing process exists; otherwise it is an
   // invoke-once bee spawn → liveness = the strict invoke-once-cmdline check.
   const candidates = await sql<
-    { spawn_id: string; workspace_id: string; pid: number | null; launcher_host: string | null; run_id: string | null }[]
+    {
+      spawn_id: string;
+      workspace_id: string;
+      pid: number | null;
+      launcher_host: string | null;
+      run_id: string | null;
+      launcher_boot_id: string | null;
+    }[]
   >`
-    SELECT spawn_id, workspace_id, pid, launcher_host, run_id
+    SELECT spawn_id, workspace_id, pid, launcher_host, run_id, launcher_boot_id
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
        AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'`;
@@ -227,8 +259,19 @@ export async function reclaimOrphanedSpawns(
   const alive: string[] = [];
   const deadChild: string[] = [];
   const hostGone: string[] = [];
+  const priorBoot: string[] = [];
   for (const c of candidates) {
     const sameHost = c.launcher_host != null && c.launcher_host === me;
+    // EI-2186: a same-host row stamped with a DIFFERENT (non-null) boot id was
+    // launched by a dead prior incarnation of this operator — provably orphaned,
+    // immune to pid reuse (a rebooted host reassigns the same pids, which is how a
+    // stale `launch`-kind row's recorded pid read as "alive" and wedged the ceiling
+    // forever). This must short-circuit the pid liveness check below — otherwise the
+    // false-alive path bumps its heartbeat and it never becomes a candidate again.
+    if (sameHost && c.launcher_boot_id != null && c.launcher_boot_id !== LAUNCHER_BOOT_ID) {
+      priorBoot.push(c.spawn_id);
+      continue;
+    }
     const kind: 'spawn' | 'launch' = (c.run_id ?? '').startsWith('launch-') ? 'launch' : 'spawn';
     if (sameHost && c.pid != null) {
       if (isAlive(c.pid, kind)) alive.push(c.spawn_id);
@@ -243,7 +286,7 @@ export async function reclaimOrphanedSpawns(
   // sweep nor the next reclaims them (their own host will resume heartbeating).
   if (alive.length > 0) await heartbeatSpawns(sql, alive);
 
-  const reclaimable = [...deadChild, ...hostGone];
+  const reclaimable = [...deadChild, ...hostGone, ...priorBoot];
   if (reclaimable.length === 0) {
     return { reclaimed: 0, spawnIds: [], workspaces: [] };
   }
@@ -260,6 +303,10 @@ export async function reclaimOrphanedSpawns(
            error_message = COALESCE(
              error_message,
              CASE
+               WHEN spawn_id = ANY(${priorBoot}::text[])
+                 THEN 'reclaimed: launched by a prior operator incarnation (boot-id mismatch on '
+                      || COALESCE(launcher_host, '?')
+                      || ') — host restarted, concurrency ceiling freed by the reclaim sweep (EI-2186)'
                WHEN spawn_id = ANY(${deadChild}::text[])
                  THEN 'reclaimed: child process (pid ' || COALESCE(pid::text, '?')
                       || ') confirmed dead on ' || COALESCE(launcher_host, '?')
@@ -273,6 +320,79 @@ export async function reclaimOrphanedSpawns(
     RETURNING spawn_id, workspace_id`;
 
   // EI-108: Wake parents of reclaimed spawns (best-effort, concurrent, no await)
+  for (const row of rows) {
+    void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(
+      () => { /* best-effort — logged inside wakeParentOnChildDeath */ },
+    );
+  }
+
+  return {
+    reclaimed: rows.length,
+    spawnIds: rows.map((r) => r.spawn_id),
+    workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+  };
+}
+
+/**
+ * Boot-time spawn-admission reconcile (EI-2186) — the release-on-host-restart
+ * half of the spawn chokepoint.
+ *
+ * THE BUG IT FIXES. A host restart (or operator-process restart) kills every
+ * in-flight spawn/launch BEFORE its normal admission-release runs, leaving
+ * `running`/`restarting` nursery rows that count forever against the global
+ * concurrency ceiling (`maxSimultaneousAgents`). The periodic
+ * `reclaimOrphanedSpawns` could not clear them: it only considers rows whose
+ * heartbeat is STALE, but a stale `launch`-kind row's recorded pid gets REUSED by
+ * an unrelated process on the rebooted box, so the permissive launch liveness
+ * check read it as "alive" and BUMPED its heartbeat each sweep — keeping it
+ * permanently fresh and never a reclaim candidate. The ceiling read N/N with ~0
+ * live bees and NO bee could be placed fleet-wide (the "idle Queen / no bees"
+ * storm was actually a hard-jammed ceiling).
+ *
+ * THE RECONCILE. A fresh operator process has launched NOTHING yet, so any
+ * `running` row attributed to THIS host that does not carry THIS process's boot id
+ * is owned by a dead prior incarnation — reclaim it, regardless of heartbeat
+ * freshness (that is the crucial difference from the periodic sweep: it does NOT
+ * gate on staleness, so it clears rows the false-alive bug kept fresh). The
+ * boot-id discriminator is immune to pid reuse. Rows predating the boot-id column
+ * (`launcher_boot_id IS NULL`) fall back to the stale-heartbeat rule so a
+ * mid-insert current-process row (not yet pid/boot-id-stamped) is never reclaimed
+ * out from under itself. Different-host rows are left alone (a federated peer's
+ * live operator owns them).
+ *
+ * Call ONCE at host bootstrap, before arming the spawn paths. Idempotent + safe to
+ * re-run. The caller announces `spawn-slot:freed:<ws>` per freed workspace so any
+ * over-ceiling waiter wakes (the same contract as the periodic sweep).
+ */
+export async function reconcileSpawnAdmissionOnBoot(
+  sql: Db,
+  opts: { staleMs?: number } = {},
+): Promise<ReclaimResult> {
+  const staleSec = Math.max(1, Math.round((opts.staleMs ?? RECLAIM_STALE_MS) / 1000));
+  const me = hostname();
+
+  const rows = await sql<{ spawn_id: string; workspace_id: string }[]>`
+    UPDATE harness_shared.spawned_agents
+       SET status = 'failed',
+           finished_at = now(),
+           duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
+           error_message = COALESCE(
+             error_message,
+             'reclaimed at operator boot: launched by a prior incarnation on '
+               || COALESCE(launcher_host, '?')
+               || ' (host/process restarted before its admission-release ran) — '
+               || 'stale spawn-ceiling debit freed by the boot reconcile (EI-2186)'
+           )
+     WHERE status IN ('running', 'restarting')
+       AND launcher_host = ${me}
+       AND (
+             (launcher_boot_id IS NOT NULL AND launcher_boot_id <> ${LAUNCHER_BOOT_ID})
+          OR (launcher_boot_id IS NULL AND heartbeat_at < now() - ${staleSec}::int * interval '1 second')
+       )
+    RETURNING spawn_id, workspace_id`;
+
+  // Wake parents of the reclaimed spawns (best-effort, concurrent — same as the
+  // periodic sweep; a parent awaiting a now-dead child should not hang).
   for (const row of rows) {
     void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(
       () => { /* best-effort — logged inside wakeParentOnChildDeath */ },

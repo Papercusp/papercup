@@ -657,6 +657,41 @@ export function runBootstrap(): void {
   if (backgroundWorkers && !utilityHost) {
     void (async () => {
       try {
+        // EI-2186: BEFORE arming the periodic sweep, reconcile the spawn-admission
+        // ceiling against reality. A host/process restart kills in-flight spawns
+        // before their admission-release runs, leaving 'running' nursery rows that
+        // jam `maxSimultaneousAgents` forever (the periodic reclaim can't clear them
+        // — a stale launch row's reused pid reads as "alive" and its heartbeat is
+        // bumped, so it never becomes a candidate). This boot reconcile frees every
+        // same-host row owned by a dead prior incarnation (boot-id mismatch),
+        // regardless of heartbeat freshness, then wakes any over-ceiling waiter.
+        try {
+          const { getOrgPg } = await import('@papercusp/db-org');
+          const { reconcileSpawnAdmissionOnBoot } = await import('@papercusp/operator-core/lib/fleet/spawn-reclaim');
+          const r = await reconcileSpawnAdmissionOnBoot(getOrgPg().sql);
+          if (r.reclaimed > 0) {
+            console.warn(
+              `[spawn-reclaim] boot reconcile freed ${r.reclaimed} stale admission debit(s) from a prior incarnation: ${r.spawnIds.join(', ')}`,
+            );
+            try {
+              const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
+              const { spawnSlotEventKey } = await import('@papercusp/operator-core/lib/fleet/operator-spawn');
+              for (const ws of r.workspaces) {
+                await emitAwaitedEvent({
+                  key: spawnSlotEventKey(ws),
+                  summary: `${r.reclaimed} stale spawn slot(s) freed by the boot reconcile (host restart)`,
+                  source: 'spawn-boot-reconcile',
+                  workspaceId: ws,
+                }).catch(() => undefined);
+              }
+            } catch {
+              /* best-effort — waiters fall back to their await timeout / the periodic sweep */
+            }
+          }
+        } catch (err) {
+          console.warn('[spawn-reclaim] boot reconcile failed (non-fatal):', err instanceof Error ? err.message : err);
+        }
+
         const { armInProcessPeriodicChecks } = await import('@papercusp/operator-core/lib/dbos/in-process-periodic');
         armInProcessPeriodicChecks();
       } catch (err) {

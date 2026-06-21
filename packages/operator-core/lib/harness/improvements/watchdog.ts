@@ -64,6 +64,13 @@ export type WatchdogSource =
   | 'insight-staleness'
   // hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
   | 'stalled-feature' | 'orphaned-spawn' | 'escalation-spike'
+  // the spawn-admission ceiling is consumed by rows that aren't actually
+  // streaming — stale debits jamming `maxSimultaneousAgents` so NO bee can be
+  // placed even though ~nothing is alive (EI-2186 — host-restart class). The
+  // orphaned-spawn collector misses this because the jammed rows can carry a
+  // FRESH heartbeat (a reused-pid false-alive bump); this reads stream activity
+  // (last_output_at), which a dead process cannot fake:
+  | 'spawn-ceiling-jam'
   // links 5–6 flow assertion (hive-loop-e2e-testing-2026-06-10 P-011 — ship-link.ts):
   | 'ship-link-stuck'
   // an auto-implement dispatch whose worker died without ever calling
@@ -435,6 +442,15 @@ export interface CollectOptions extends LearningSloOptions {
   stalledFeatureHours?: number;
   /** orphaned-spawn: a running row this much past the reclaim threshold fires. Default 15min (3× RECLAIM_STALE_MS). */
   orphanedSpawnStaleMinutes?: number;
+  /** spawn-ceiling-jam: a running row older than this with NO recent stream output counts as a
+   *  suspected stale debit (EI-2186). Gives the "for > N minutes" semantics. Default 15min. */
+  ceilingJamMinAgeMinutes?: number;
+  /** spawn-ceiling-jam: a running row whose last_output_at is within this window is treated as
+   *  genuinely live (a dead process cannot advance stream output). Default 15min. */
+  ceilingJamSilentMinutes?: number;
+  /** spawn-ceiling-jam: tolerate up to this many old, non-streaming rows before firing — absorbs
+   *  a couple of legitimately quiet bees. Default 2. */
+  ceilingJamSlack?: number;
   /** escalation-spike lookback window. Default 6h. */
   escalationSpikeWindowHours?: number;
   /** escalation-spike fire threshold (escalations in the window). Default 3. */
@@ -1379,6 +1395,109 @@ export async function collectOrphanedSpawnSignals(
      ORDER BY COALESCE(heartbeat_at, started_at) ASC
      LIMIT 50`;
   return orphanedSpawnSignalsFromRows(rows, { staleMinutes });
+}
+
+interface CeilingJamRow {
+  spawn_id: string;
+  harness_slug: string | null;
+  started_at: string | Date;
+  last_output_at: string | Date | null;
+}
+/**
+ * Pure: classify the workspace's `running`/`restarting` nursery rows into
+ * genuinely-live (streamed output within `silentMinutes`) vs. suspected stale
+ * debits (older than `minAgeMinutes` AND not streaming), and emit ONE aggregate
+ * signal when the admission ceiling is consumed by the latter (EI-2186).
+ *
+ * Why stream output and not heartbeat: a host restart kills the launcher before
+ * its admission-release runs, so the row jams `maxSimultaneousAgents` forever, and
+ * the periodic reclaim cannot clear it — a stale `launch` row's reused pid reads as
+ * "alive" and its HEARTBEAT gets bumped each sweep (a false-alive). `last_output_at`
+ * is NOT touched by that bump path, and a dead process cannot advance it, so it is
+ * the one liveness proxy the jam cannot fake. The fire condition is conservative —
+ * the suspect rows must OUTNUMBER the live-streaming ones and clear the slack — so a
+ * busy fleet (many streaming bees) and a couple of quiet/long-tool-call bees never trip it.
+ */
+export function ceilingJamSignalsFromRows(
+  rows: CeilingJamRow[],
+  opts: { ceiling?: number; minAgeMinutes?: number; silentMinutes?: number; slack?: number; now?: number } = {},
+): WatchdogSignal[] {
+  const minAgeMinutes = opts.minAgeMinutes ?? 15;
+  const silentMinutes = opts.silentMinutes ?? 15;
+  const slack = opts.slack ?? 2;
+  const now = opts.now ?? Date.now();
+  const ms = (v: string | Date | null): number | null => {
+    if (v == null) return null;
+    const t = v instanceof Date ? v.getTime() : new Date(v).getTime();
+    return Number.isNaN(t) ? null : t;
+  };
+  const running = rows.length;
+  let streamingLive = 0;
+  const jammed: string[] = [];
+  for (const r of rows) {
+    const outAt = ms(r.last_output_at);
+    const streamedRecently = outAt != null && now - outAt <= silentMinutes * 60_000;
+    if (streamedRecently) {
+      streamingLive++;
+      continue;
+    }
+    const startedAt = ms(r.started_at);
+    const oldEnough = startedAt != null && now - startedAt > minAgeMinutes * 60_000;
+    if (oldEnough) jammed.push(r.spawn_id);
+  }
+  // Fire only when the stale-suspect rows clear the slack AND outnumber the live
+  // streamers — i.e. the ceiling is consumed by rows that aren't actually working.
+  if (jammed.length <= slack || jammed.length <= streamingLive) return [];
+  const sample = jammed.slice(0, 5).join(', ');
+  const ceilingNote = opts.ceiling != null ? ` (fleet ceiling maxSimultaneousAgents=${opts.ceiling})` : '';
+  return [{
+    source: 'spawn-ceiling-jam',
+    key: 'spawn-ceiling-jam',
+    title: 'Spawn-admission ceiling jammed by non-streaming rows — stale debits blocking placement',
+    body:
+      `Watchdog signal (spawn-ceiling-jam): ${running} spawned_agents row(s) are status='running'/'restarting'${ceilingNote}, ` +
+      `but only ${streamingLive} have streamed output in the last ${silentMinutes} min — ${jammed.length} have been running ` +
+      `> ${minAgeMinutes} min with NO stream activity. That is the EI-2186 class: a host/process restart left admission ` +
+      `debits that never released, so the concurrency ceiling reads full while ~nothing is alive and NO bee can be placed. ` +
+      `The heartbeat-based reclaim misses these (a reused-pid false-alive keeps their heartbeat fresh); the boot reconcile ` +
+      `(reconcileSpawnAdmissionOnBoot) clears them at the next operator restart. Sample: ${sample}${jammed.length > 5 ? ', …' : ''}.`,
+    severity: 'critical',
+    kind: 'bug',
+  }];
+}
+/**
+ * spawn-ceiling-jam: the recurrence guard for EI-2186. Distinct from orphaned-spawn
+ * (which keys on a STALE heartbeat — and the jam's signature is a FRESH heartbeat
+ * from the false-alive bump): this keys on stream-output recency, which a dead row
+ * cannot fake. Box-global ceiling, workspace-scoped rows (matching admission's
+ * per-workspace `countRunning`).
+ */
+export async function collectCeilingJamSignals(
+  sql: Sql,
+  workspaceId: string,
+  opts: CollectOptions = {},
+): Promise<WatchdogSignal[]> {
+  const minAgeMinutes = opts.ceilingJamMinAgeMinutes ?? 15;
+  const rows = await sql<CeilingJamRow[]>`
+    SELECT spawn_id, harness_slug, started_at, last_output_at
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId}
+       AND status IN ('running', 'restarting')
+     ORDER BY started_at ASC
+     LIMIT 200`;
+  let ceiling: number | undefined;
+  try {
+    const { getCachedRateLimitConfig } = await import('../../rate-limit-config');
+    ceiling = getCachedRateLimitConfig().maxSimultaneousAgents;
+  } catch {
+    /* best-effort — the signal stands without the ceiling number in its body */
+  }
+  return ceilingJamSignalsFromRows(rows, {
+    ceiling,
+    minAgeMinutes,
+    silentMinutes: opts.ceilingJamSilentMinutes,
+    slack: opts.ceilingJamSlack,
+  });
 }
 
 interface EscalationSpikeRow { harness_slug: string; mtime_ms: number | string }
