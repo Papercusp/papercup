@@ -169,6 +169,12 @@ vi.mock('../../hive-federation', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, hiveHomeSlugForHarness: h.hiveHomeSlugForHarness };
 });
+// P-017 workspace-tier clamp seam — only the foreign-workspace harness resolver
+// is stubbed; the rest of harness-core stays real (the wide agent-tools import graph).
+vi.mock('../../harness-core', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, resolveWorkspaceForHarnessSlugIn: h.resolveWorkspaceForHarnessSlugIn };
+});
 
 // _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
 // schemas; under vite-node's ESM transform there is no module-scope require,
@@ -402,6 +408,51 @@ describe('scoped-superuser-workspace-clamp', () => {
     const res = await callTool('gatingtest:scoped', { harness: 'all' }, superuserExtra('&workspace=ws-test'));
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  // P-017: a per-call `harness` arg that resolves to a DIFFERENT workspace must be
+  // rejected even for a workspace-only (non-hive) scoped session. The plan/work-item
+  // readers resolve a harness→workspace from the REGISTRY (not the clamped ctx.workspaceId),
+  // so without this dispatch clamp a scoped session could read a foreign workspace's plans
+  // by naming its harness — the gap the active-ws-first fallback alone left open.
+  it('flag ON: rejects a per-call `harness` that belongs to ANOTHER workspace (workspace-only scope)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'foreign-ws-harness' }, scoped('ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(textOf(res)).toContain('other-ws');
+    expect(h.resolveWorkspaceForHarnessSlugIn).toHaveBeenCalledWith('ws-test', 'foreign-ws-harness');
+  });
+
+  it('flag ON: ALLOWS a per-call `harness` that belongs to the session\'s OWN workspace', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'own-ws-harness' }, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:scoped-ok');
+  });
+
+  it('flag ON: ALLOWS an UNREGISTERED harness (fail-open; the tool resolves/fails loud, not the clamp)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'unregistered-harness' }, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:scoped-ok');
+  });
+
+  it('flag OFF: a foreign-workspace `harness` arg is NOT clamped (today\'s behavior)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool('gatingtest:scoped', { harness: 'foreign-ws-harness' }, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:scoped-ok');
+  });
+
+  it('flag ON: an UNSCOPED (?workspace=*) superuser is NOT P-017-clamped on a foreign harness', async () => {
+    // The clamp is gated on workspaceId !== '*', so an unscoped session is never
+    // harness_forbidden here (it may still fail downstream for needing a concrete
+    // workspace tx — that's a separate gate, not this clamp).
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { harness: 'foreign-ws-harness' }, scoped('*'));
+    expect(textOf(res)).not.toContain('harness_forbidden');
+    expect(h.resolveWorkspaceForHarnessSlugIn).not.toHaveBeenCalled();
   });
 });
 
@@ -820,5 +871,66 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     } finally {
       err.mockRestore();
     }
+  });
+});
+
+/* ─── cross-workspace-denial invariant (workspace-data-isolation-leaks #4) ──
+ *
+ * The isolation plan's Verification §, invariant #4: "authenticate as workspace B,
+ * attempt to read A's data through every surface, assert denial." The
+ * scoped-superuser-workspace-clamp is the enforcement; the synthetic-probe
+ * MECHANISM is pinned above. This block wires the invariant on the REAL
+ * cross-workspace READ surfaces a foreign reader would actually use:
+ *   - papercusp:list_workspaces — the workspace ENUMERATOR (reads every workspace's
+ *     registry off the admin handle).
+ *   - search:fulltext / search:semantic — cross-workspace prose/embedding search.
+ *   - memory:search — cross-workspace memory recall.
+ * Each is crossWorkspace:true (runs on the getOrgPg admin handle, which bypasses
+ * per-workspace RLS) and is NOT on the scoped-safe / global-flag-admin allowlists,
+ * so a SCOPED session is denied (workspace_forbidden) and only an UNSCOPED
+ * (--all-workspaces) superuser may span. A NEW such read surface added without
+ * confinement (or without an explicit allowlist review) makes this fail loudly.
+ */
+describe('cross-workspace-denial invariant (isolation-plan #4)', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+
+  const FOREIGN_READ_SURFACES = [
+    'papercusp:list_workspaces',
+    'search:fulltext',
+    'search:semantic',
+    'memory:search',
+  ] as const;
+
+  for (const tool of FOREIGN_READ_SURFACES) {
+    it(`flag ON: a session scoped to ws-b is DENIED ${tool} (cannot read another workspace's data)`, async () => {
+      // Guard: the invariant must run against a tool that is actually registered +
+      // crossWorkspace — a silently-unregistered surface would vacuously "pass".
+      expect(lookupByMcpName(tool), `${tool} must be a registered MCP tool`).toBeTruthy();
+      h.scopedClampFlag.value = true;
+      const res = await callTool(tool, { query: 'secret-from-ws-a' }, scoped('ws-b'));
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain('workspace_forbidden');
+    });
+  }
+
+  it('flag ON: a session scoped to ws-b is DENIED reading another workspace\'s plans by naming its harness', async () => {
+    // The harness-arg vector (P-017): plan/work-item readers derive harness→workspace
+    // from the registry, so naming a foreign-workspace harness would otherwise read it.
+    h.scopedClampFlag.value = true;
+    const res = await callTool('plans:get', { harness: 'foreign-ws-harness', slug: 'anything' }, scoped('ws-b'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag OFF: the invariant is a no-op (today\'s behavior — the surfaces are reachable)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool('papercusp:list_workspaces', {}, scoped('ws-b'));
+    expect(textOf(res)).not.toContain('workspace_forbidden');
+  });
+
+  it('an UNSCOPED (--all-workspaces, ?workspace=*) superuser may still span — the invariant confines only SCOPED sessions', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('papercusp:list_workspaces', {}, scoped('*'));
+    expect(textOf(res)).not.toContain('workspace_forbidden');
   });
 });

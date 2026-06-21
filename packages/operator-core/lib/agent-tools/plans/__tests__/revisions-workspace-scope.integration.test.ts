@@ -81,7 +81,8 @@ describe('plan_revisions workspace scoping (audit P-008 / mig 218)', async () =>
     expect(chainB.map((r) => r.seq)).toEqual([1]);
     expect(await countPlanRevisions(SLUG, { harnessSlug: 'papercup', workspaceId: WS_A })).toBe(2);
     expect(await countPlanRevisions(SLUG, { harnessSlug: 'papercup', workspaceId: WS_B })).toBe(1);
-    // The default-workspace spine is untouched by either.
+    // The operator-home spine (papercup → PAPERCUSP_WORKSPACE_ID via resolvePlanScope,
+    // WI-148 mig-295 cutover — no longer the silent 'default') is untouched by either.
     expect(await countPlanRevisions(SLUG, { harnessSlug: 'papercup' })).toBe(0);
   });
 

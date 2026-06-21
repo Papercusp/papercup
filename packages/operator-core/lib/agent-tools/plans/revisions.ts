@@ -18,8 +18,7 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import { fill_workspace_id_from_projects } from './source';
+import { fill_workspace_id_from_projects, resolvePlanScope } from './source';
 import { hashPlanContent } from './content-hash';
 import {
   resolveAgentIdentity,
@@ -301,6 +300,29 @@ export function planRevisionCapture(
   return { afterWrite, recorded };
 }
 
+/**
+ * Require an explicit workspace for the by-global-id revision reads/writes
+ * (`getPlanRevisionById` / `getPlanRevisionPairById` / `setPlanRevisionRationale`).
+ * Those query the global `plan_revisions` PK under per-workspace RLS, so the
+ * caller MUST say which workspace — resolve it via `resolvePlanScope` from the
+ * harness (the sibling tools `plans:revision-transcript` / `plans:revision-diff`
+ * already do). Refusing to silently default to a global workspace: the old
+ * `?? DEFAULT_WORKSPACE_ID` read the *wrong* workspace's spine, and after the
+ * WI-148 mig-295 data move it read an empty 'default' (workspace-data-isolation-
+ * leaks P-001 / D-003 — no silent scope defaults).
+ */
+function requireRevisionWorkspaceId(opts: { workspaceId?: string }): string {
+  const ws = opts.workspaceId?.trim();
+  if (!ws) {
+    throw new Error(
+      'plan_revisions: workspaceId is required — revision rows are RLS-isolated ' +
+        'per workspace. Resolve it via resolvePlanScope(opts) from the harness ' +
+        'before calling. (No silent workspace default — workspace-data-isolation-leaks P-001.)',
+    );
+  }
+  return ws;
+}
+
 // ── Reading the revision chain (P-004) ─────────────────────────────
 
 /** Longest-common-subsequence length over two line arrays. Rolling
@@ -384,8 +406,12 @@ export async function listPlanRevisions(
   planSlug: string,
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<PlanRevisionRow[]> {
-  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
-  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  // WI-148 / workspace-data-isolation-leaks P-001: derive (workspaceId, harnessSlug)
+  // from the SAME canonical resolver the plans:* readers use — operator-home →
+  // PAPERCUSP_WORKSPACE_ID, a concrete slug → its projects/registry workspace,
+  // unresolvable → throw. No silent `|| DEFAULT_WORKSPACE_ID` (which read the
+  // stale 'default' spine after the mig-295 data move).
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<PlanRevisionDbRow[]>`
       SELECT id, seq, content_hash, content_snapshot, rationale,
@@ -443,7 +469,7 @@ export async function getPlanRevisionById(
   revisionId: number,
   opts: { workspaceId?: string } = {},
 ): Promise<PlanRevisionRef | null> {
-  return withWorkspace(opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(requireRevisionWorkspaceId(opts), async (tx) => {
     const rows = await tx<
       {
         id: number | string;
@@ -496,7 +522,7 @@ export async function getPlanRevisionPairById(
   revisionId: number,
   opts: { workspaceId?: string } = {},
 ): Promise<PlanRevisionPair | null> {
-  return withWorkspace(opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(requireRevisionWorkspaceId(opts), async (tx) => {
     const rows = await tx<
       {
         id: number | string;
@@ -554,7 +580,7 @@ export async function setPlanRevisionRationale(
   rationale: string,
   opts: { workspaceId?: string } = {},
 ): Promise<boolean> {
-  return withWorkspace(opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(requireRevisionWorkspaceId(opts), async (tx) => {
     const rows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_revisions
       SET rationale = ${rationale}
@@ -576,8 +602,12 @@ export async function countPlanRevisions(
   planSlug: string,
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<number> {
-  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
-  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  // WI-148 / workspace-data-isolation-leaks P-001: derive (workspaceId, harnessSlug)
+  // from the SAME canonical resolver the plans:* readers use — operator-home →
+  // PAPERCUSP_WORKSPACE_ID, a concrete slug → its projects/registry workspace,
+  // unresolvable → throw. No silent `|| DEFAULT_WORKSPACE_ID` (which read the
+  // stale 'default' spine after the mig-295 data move).
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   return withWorkspace(workspaceId, async (tx) => {
     const rows = await tx<{ n: number }[]>`
       SELECT COUNT(*)::int AS n
@@ -625,8 +655,12 @@ export async function insertBackfillRevisions(
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<number> {
   if (revisions.length === 0) return 0;
-  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
-  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  // WI-148 / workspace-data-isolation-leaks P-001: derive (workspaceId, harnessSlug)
+  // from the SAME canonical resolver the plans:* readers use — operator-home →
+  // PAPERCUSP_WORKSPACE_ID, a concrete slug → its projects/registry workspace,
+  // unresolvable → throw. No silent `|| DEFAULT_WORKSPACE_ID` (which read the
+  // stale 'default' spine after the mig-295 data move).
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   return withWorkspace(workspaceId, async (tx) => {
     let seq = 0;
     for (const r of revisions) {
@@ -660,8 +694,12 @@ export async function insertBackfillRevisionsIfEmpty(
   revisions: BackfillRevisionInput[],
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<{ inserted: number; skippedExisting: boolean }> {
-  const harnessSlug = opts.harnessSlug?.trim() || operatorHomeHarnessSlug();
-  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  // WI-148 / workspace-data-isolation-leaks P-001: derive (workspaceId, harnessSlug)
+  // from the SAME canonical resolver the plans:* readers use — operator-home →
+  // PAPERCUSP_WORKSPACE_ID, a concrete slug → its projects/registry workspace,
+  // unresolvable → throw. No silent `|| DEFAULT_WORKSPACE_ID` (which read the
+  // stale 'default' spine after the mig-295 data move).
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   return withWorkspace(workspaceId, async (tx) => {
     const rows = await tx<{ n: number }[]>`
       SELECT COUNT(*)::int AS n

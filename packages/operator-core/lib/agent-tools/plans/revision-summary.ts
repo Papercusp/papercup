@@ -28,6 +28,9 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHaiku } from '../../haiku';
 import { getPlanRevisionById, setPlanRevisionRationale } from './revisions';
 import { readPlanRunTranscript, TRANSCRIPT_MAX_LIMIT } from './runs';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolvePlanScope } from './source';
 
 /** Longest a stored rationale may be — a one-line digest entry, not a
  *  paragraph. */
@@ -110,7 +113,7 @@ export interface SummarizeRevisionResult {
  */
 export async function summarizeRevisionRationale(
   revisionId: number,
-  opts: { workspaceId?: string } = {},
+  opts: { workspaceId: string },
 ): Promise<SummarizeRevisionResult | null> {
   const rev = await getPlanRevisionById(revisionId, opts);
   if (!rev) return null;
@@ -184,6 +187,7 @@ const argsSchema = z.object({
     .int()
     .positive()
     .describe('Global plan_revisions id (from plans:revisions rows).'),
+  harness: harnessArg,
 });
 
 export default defineTool({
@@ -206,7 +210,15 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     try {
-      const result = await summarizeRevisionRationale(args.revisionId);
+      // Revision rows are RLS-isolated per workspace (mig 218 / WI-148 mig 295);
+      // resolve the workspace from the harness arg so the by-global-id lookup
+      // targets the plan's own workspace — not a silent 'default' (which after the
+      // cutover is empty → every summarise 404s). workspace-data-isolation P-001.
+      const harnessSlug = resolveCtxHarnessSlug(harnessScopedCtx(args.harness, ctx));
+      const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const result = await summarizeRevisionRationale(args.revisionId, {
+        workspaceId: scope.workspaceId,
+      });
       if (result === null) {
         return {
           isError: true,
