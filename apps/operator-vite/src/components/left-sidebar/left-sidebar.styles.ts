@@ -847,10 +847,10 @@ body.has-left-sidebar .pc-header {
 .pc-mt__spec { flex: 1; min-width: 0; font: inherit; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 6px; border-radius: 5px; color: var(--fg, #e7f7ff); background: var(--bg, #07101d); border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.28)); }
 .pc-mt__spec:focus { outline: none; border-color: rgba(99, 102, 241, 0.6); }
 .pc-mt__spec:disabled { opacity: 0.6; }
-.pc-mt__badge { flex-shrink: 0; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0; padding: 1px 5px; border-radius: 999px; color: var(--fg-mute, #7f9bb4); border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); }
-.pc-mt__badge--on { color: #c7d2fe; border-color: rgba(99, 102, 241, 0.5); background: rgba(99, 102, 241, 0.14); }
-.pc-mt__reset { flex-shrink: 0; font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 5px; cursor: pointer; color: var(--fg-dim, #b9d4e8); background: var(--bg-3, rgba(255, 255, 255, 0.05)); border: 1px solid var(--border, rgba(125, 211, 252, 0.22)); }
-.pc-mt__reset:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
+/* The per-tier badge + reset now render through the shared <OverridableSetting>
+ * (badgeStyle="chip" → .pc-override-badge / .pc-override-reset), so the old
+ * .pc-mt__badge / .pc-mt__reset classes are gone. The row container + name + spec
+ * input styling below stays — it wraps the primitive. */
 
 /* ThrottleSection + AutonomySurfacing (queen-steering-panel P-007 / P-009) */
 .pc-queen__collapse { display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; background: none; border: none; cursor: pointer; text-align: left; color: inherit; font: inherit; }
@@ -864,6 +864,10 @@ body.has-left-sidebar .pc-header {
 .pc-queen__knobhead { display: flex; align-items: center; gap: 6px; }
 .pc-queen__knobhead svg { color: var(--fg-mute, #7f9bb4); flex-shrink: 0; }
 .pc-queen__knoblabel { font-size: 11px; font-weight: 700; color: var(--fg, #e7f7ff); }
+/* When a knob head hosts the shared <OverridableSetting> (badgeStyle="inline"),
+ * let it grow to fill the head so the badge's margin-left:auto right-aligns it
+ * exactly like the old .pc-queen__knobbadge. */
+.pc-queen__knobhead .pc-override { flex: 1; min-width: 0; }
 .pc-queen__knobbadge { margin-left: auto; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0; padding: 1px 6px; border-radius: 999px; color: var(--fg-mute, #7f9bb4); border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); }
 .pc-queen__knobbadge--on { color: #fcd34d; border-color: color-mix(in srgb, var(--queen-accent), transparent 50%); background: color-mix(in srgb, var(--queen-accent), transparent 88%); }
 .pc-queen__knobrow { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
