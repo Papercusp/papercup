@@ -385,6 +385,20 @@ export interface GatewayStats {
   /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
   unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
   pausedUntil: number;
+  /** Prompt-cache instrumentation (#0, 2026-06-21): per-account + total cache read/write tokens with
+   *  hit/miss counts, failover-induced misses tagged. `hitRate` = read/(read+create+input) — how much of
+   *  the input context was a cache HIT vs a cold (re)write. Surfaces the cost of routing a bee off its
+   *  cache-warm account. */
+  cache: {
+    read: number;
+    create: number;
+    input: number;
+    hits: number;
+    misses: number;
+    failoverMisses: number;
+    hitRate: number;
+    byAccount: Record<string, { read: number; create: number; hits: number; misses: number; failoverMisses: number; hitRate: number }>;
+  };
 }
 
 /** Rough token estimate for admission (refined once the account exposes real headroom). */
@@ -671,6 +685,78 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
   let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
 
+  // Prompt-cache instrumentation (#0, 2026-06-21): a PASSIVE per-account tally of cache read/write tokens
+  // parsed from each response's usage (the `message_start` SSE event), so we can SEE the prompt-cache hit
+  // rate per account + the cost of routing a bee off its cache-warm account. Zero hot-path cost: the
+  // observer runs ALONGSIDE the client pipe (never in it) and detaches after the first event.
+  const CACHE_MISS_MIN_TOKENS = 1024; // ignore tiny requests — only a non-trivial cold prefix counts as a "miss"
+  interface CacheTally { read: number; create: number; input: number; hits: number; misses: number; failoverMisses: number; }
+  const newTally = (): CacheTally => ({ read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0 });
+  const cacheByAccount = new Map<string, CacheTally>();
+  const cacheTotal = newTally();
+  function recordCacheUsage(accountId: string, input: number, read: number, create: number, didFailover: boolean): void {
+    const t = cacheByAccount.get(accountId) ?? newTally();
+    for (const x of [t, cacheTotal]) {
+      x.read += read;
+      x.create += create;
+      x.input += input;
+      // HIT = reused a cached prefix. MISS = processed a non-trivial prefix with NO cache read (a cold
+      // (re)write — first-time, expired, or wrong-account). A miss that FOLLOWED a failover is routing-induced.
+      if (read > 0) x.hits++;
+      else if (input + create >= CACHE_MISS_MIN_TOKENS) {
+        x.misses++;
+        if (didFailover) x.failoverMisses++;
+      }
+    }
+    cacheByAccount.set(accountId, t);
+  }
+  // Attach a bounded, passive 'data' observer that captures the message_start usage then detaches. Runs
+  // ALONGSIDE the client pipe (never in it), so it adds zero client-visible latency and can never break the
+  // stream (all parsing is wrapped + best-effort).
+  function observeCacheUsage(stream: Readable, accountId: string, didFailover: boolean): void {
+    let buf = '';
+    let done = false;
+    const onData = (chunk: Buffer) => {
+      if (done) return;
+      buf += chunk.toString('utf8');
+      const m = buf.match(/^data: (\{"type":"message_start".*\})$/m);
+      if (m) {
+        done = true;
+        stream.off('data', onData);
+        try {
+          const u = (JSON.parse(m[1]) as { message?: { usage?: { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } } }).message?.usage;
+          if (u) recordCacheUsage(accountId, u.input_tokens ?? 0, u.cache_read_input_tokens ?? 0, u.cache_creation_input_tokens ?? 0, didFailover);
+        } catch {
+          /* malformed message_start — ignore; never break the stream */
+        }
+      } else if (buf.length > 32_768) {
+        done = true; // message_start not in the first 32KB (non-stream JSON / odd framing) → give up
+        stream.off('data', onData);
+      }
+    };
+    stream.on('data', onData);
+  }
+  const cacheRate = (t: CacheTally): number => {
+    const denom = t.read + t.create + t.input;
+    return denom > 0 ? Math.round((t.read / denom) * 1000) / 1000 : 0;
+  };
+  function cacheSnapshot(): GatewayStats['cache'] {
+    const byAccount: GatewayStats['cache']['byAccount'] = {};
+    for (const [id, t] of cacheByAccount) {
+      byAccount[id] = { read: t.read, create: t.create, hits: t.hits, misses: t.misses, failoverMisses: t.failoverMisses, hitRate: cacheRate(t) };
+    }
+    return {
+      read: cacheTotal.read,
+      create: cacheTotal.create,
+      input: cacheTotal.input,
+      hits: cacheTotal.hits,
+      misses: cacheTotal.misses,
+      failoverMisses: cacheTotal.failoverMisses,
+      hitRate: cacheRate(cacheTotal),
+      byAccount,
+    };
+  }
+
   // Self-heal in-flight registry (EI-2086): every request currently holding an admission slot, keyed by
   // a per-request id, carrying its start time + stream flag + an abort hook (the same force-terminate
   // path as the hard-ceiling backstop). The sweeper reclaims the oldest stuck slot from here.
@@ -714,6 +800,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       selfHealReclaims,
       unified: snap.unified,
       pausedUntil: snap.pausedUntil,
+      cache: cacheSnapshot(),
     };
   }
 
@@ -1267,6 +1354,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // only a genuine mid-stream stall (no bytes for upstreamBodyIdleTimeoutMs) trips the abort,
           // which surfaces as a stream 'error' below → resolve → finally releases the slot.
           nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
+          // Cache instrumentation (#0): PASSIVE observer — tally this request's prompt-cache read/write from
+          // the message_start event WITHOUT touching the client pipe. `attempt > 0` ⇒ the request failed over
+          // off its initially-selected account, so a miss here is routing-induced.
+          observeCacheUsage(nodeStream, active.accountId, attempt > 0);
           nodeStream.pipe(res);
           await new Promise<void>((resolve) => {
             res.on('finish', () => resolve());
