@@ -35,6 +35,7 @@
  */
 
 import { readdir, readFile } from 'node:fs/promises';
+import { STALE_MS } from './liveness';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
@@ -46,7 +47,7 @@ import { interruptViaPty, findLiveHost } from './events/await/psu-pty-discovery'
  *  (every 60s) refreshes presence well inside it, so a briefly-quiet but alive
  *  session is never reaped. Also the floor on `started_at` so a just-launched
  *  session (presence not yet written in its first seconds) is never reaped. */
-export const IDLE_SESSION_GRACE_MS = 10 * 60 * 1000;
+export const IDLE_SESSION_GRACE_MS = STALE_MS;
 
 /** One open adv_session considered for reaping. */
 export interface ReapableSession {

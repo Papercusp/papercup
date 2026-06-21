@@ -19,6 +19,7 @@
  * fan-out without a ref collision).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { assertScopeWellFormed } from './work-item-scope';
 import {
   PgTaggableStore,
   PgThreadStore,
@@ -292,11 +293,16 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   const { sql } = getOrgPg();
   const id = input.id ?? (await nextIssueId());
   const created = nowIso();
+  // unified-work-item-ledger P-001: a harness-attributable item must never be
+  // silently filed operator-global via a missing/blank harness. operator stays
+  // valid only as the EXPLICIT default; a malformed `harness:` (empty slug) throws.
+  const scope = input.scope ?? 'operator';
+  assertScopeWellFormed(scope);
   const rows = await sql<IssueRowDb[]>`
     INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
        assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at)
-    VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${input.scope ?? 'operator'}, ${input.title}, ${input.body ?? ''},
+    VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${input.title}, ${input.body ?? ''},
             ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
             ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
             ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},

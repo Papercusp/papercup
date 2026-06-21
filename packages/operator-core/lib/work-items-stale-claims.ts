@@ -52,6 +52,7 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
+import { STALE_MS } from './liveness';
 import {
   FEATURE_NON_REQUEUE_STATES,
   isRequeueableFeatureState,
@@ -62,7 +63,7 @@ type Db = Sql | TransactionSql;
 
 /** How long a claim may sit heartbeat-less before it is presumed orphaned.
  *  Matches the fleet_assignment view's 10-minute liveness window (mig 225). */
-export const STALE_CLAIM_GRACE_MS = 10 * 60 * 1000;
+export const STALE_CLAIM_GRACE_MS = STALE_MS;
 
 /** What the reaper did to a freed row. */
 export type StaleClaimAction =

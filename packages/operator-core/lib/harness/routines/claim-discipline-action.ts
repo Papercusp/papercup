@@ -23,6 +23,7 @@
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
+import { STALE_MS } from '../../liveness';
 import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
@@ -49,7 +50,7 @@ export function selectDeclaredPresence(
   alive: boolean;
   declaredPlanSlug: string | null;
 }> {
-  const PRESENCE_STALE_MS = 10 * 60 * 1000; // 10 min
+  const PRESENCE_STALE_MS = STALE_MS; // 10 min — the canonical liveness window (P-014 single source)
   const now = Date.now();
 
   return presenceRows

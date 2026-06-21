@@ -574,7 +574,11 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   }
 
   // feature-family — harness-scoped row in harness_features_consolidated.
-  if (!input.harness) throw new Error(`work_item kind '${input.kind}' requires a harness`);
+  // unified-work-item-ledger P-001: reject a blank/whitespace harness too (not just
+  // a missing one), so a feature can never land with an empty harness_slug.
+  if (!input.harness || !input.harness.trim()) {
+    throw new Error(`work_item kind '${input.kind}' requires a non-empty harness`);
+  }
   const { sql } = getOrgPg();
   const now = Date.now();
   // workspace_id: when the request carries an explicit workspace (EI-728), set it
