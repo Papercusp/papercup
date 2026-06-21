@@ -293,6 +293,7 @@ describe('design primitive lint', () => {
         join(OPERATOR_ROOT, 'app/admin/features/FeaturesAdmin.tsx'),
         join(OPERATOR_ROOT, 'app/admin/plans/plans.css'),
         join(OPERATOR_ROOT, 'app/admin/testing/testing.css'),
+        join(OPERATOR_ROOT, 'app/dev/dev.css'),
         join(OPERATOR_ROOT, 'app/project-docs/page.tsx'),
         join(OPERATOR_ROOT, 'app/settings/autonomy/page.tsx'),
         join(OPERATOR_ROOT, 'app/settings/personalization/ThemeEditor.tsx'),
