@@ -41,6 +41,6 @@ See the [implementation status table](/internal/docs/implementation/status) for 
 
 This is an [Astro Starlight](https://starlight.astro.build) site at `apps/operator-docs/src/content/docs/`. Running `npm run build` from `apps/operator-docs` compiles it to `dist/` with `base: '/internal/docs'`, emits per-page `.md` twins, then `scripts/postbuild-copy.sh` mirrors `dist/` into `apps/operator/public/internal/docs/`. The operator serves it statically at `/internal/docs` on its Hono host (`http://localhost:3070/internal/docs`) — reachable only while the Tauri dev shell is running. (It was previously a Fumadocs site; the emit-md-twins step preserves the old per-page `.md` HTTP surface.)
 
-Access is **loopback-only**: the docs route returns HTTP 403 to any non-loopback host (only `127.0.0.1` / `localhost` / `::1` / `tauri.localhost` pass) unless `PAPERCUSP_INTERNAL_DOCS_BYPASS=1` is set. The Hono host also content-negotiates extensionless slugs: `/internal/docs/<slug>` returns the `.md` twin when the request sends `Accept: text/markdown`, and the `.html` page otherwise.
+Access is **loopback-only**: the docs route returns HTTP 403 to any non-loopback host (only `127.0.0.1` / `localhost` / `::1` / `10.0.2.2` / `tauri.localhost` pass) unless `PAPERCUSP_INTERNAL_DOCS_BYPASS=1` is set. The Hono host also content-negotiates extensionless slugs: `/internal/docs/<slug>` returns the `.md` twin when the request sends `Accept: text/markdown`, and the `.html` page otherwise.
 
 After v1.0 freeze, the canonical spec moves to its own repo.

@@ -60,8 +60,8 @@ The Swarm skin is selected by `FLAGS.THE_HIVE` / `papercusp-the-hive`.
 - The legacy `hive` selector remains as an implementation-pack alias; new runtime usage should prefer `honeycomb`.
 - The Swarm desktop icons are parallel exports only. `tauri.conf.json` still points to the classic icon set until packaging explicitly opts into the Swarm pack.
 
-<Aside type="caution" title="Title swap is an open decision (EI-230)">
-The flag-on `document.title`/wordmark rendering `The Swarm` is a tracked open owner decision (EI-230), not necessarily final: forcing the title contradicts the classic-runtime-title decision (D-005) and collides with D-007 (`Swarm` = deployment unit). It awaits owner resolution — ratify `The Swarm` as the product sub-brand or repoint `HIVE_TITLE` back to `The Hive`.
+<Aside type="note" title="Title swap resolved (EI-230 → The Swarm)">
+The flag-on `document.title`/wordmark renders `The Swarm`. EI-230 weighed this against D-005 (classic runtime titles) and D-007 (`Swarm` = deployment unit); the owner **resolved** it on 2026-06-10 (D-008 in `the-hive-lexicon-2026-06-06`, status: shipped): `The Swarm` is ratified as the product sub-brand, so `HIVE_TITLE` / `OperatorWordmarkLockup` stay pointed at `The Swarm` (deliberately **not** repointed to `The Hive`).
 </Aside>
 
 ## Lexicon
