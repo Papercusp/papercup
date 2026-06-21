@@ -69,6 +69,11 @@ export type WatchdogSource =
   // an auto-implement dispatch whose worker died without ever calling
   // improvements:resolve (consume-edges P-011 — orphaned-dispatch.ts):
   | 'orphaned-dispatch'
+  // the auto-implement DISPATCHER itself has stopped firing while armed work
+  // waits — `lastDispatchAt` stale despite an eligible queue (EI-2150 —
+  // dispatcher-staleness.ts). The orphaned-dispatch collector only sees DEAD
+  // WORKERS on open rows; this sees NO dispatches at all:
+  | 'dispatcher-staleness'
   // learning-system SLO sensors (self-learning-frontier P-047 / FB-21 —
   // learning-slo.ts; flag-gated dark per D-001 until the P-001 arming gate):
   | 'triage-entropy' | 'capture-consume-imbalance' | 'mttsh-regression'
@@ -434,6 +439,9 @@ export interface CollectOptions extends LearningSloOptions {
   escalationSpikeWindowHours?: number;
   /** escalation-spike fire threshold (escalations in the window). Default 3. */
   escalationSpikeMinCount?: number;
+  /** dispatcher-staleness: hours the auto-implement dispatcher may go silent (while armed
+   *  work waits) before the lane is flagged stalled (EI-2150). Default 6. */
+  dispatcherStalenessThresholdHours?: number;
 }
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
@@ -1509,6 +1517,20 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
       name: 'papercusp-orphaned-dispatch',
       collect: () => import('./orphaned-dispatch').then((m) => m.collectOrphanedDispatchSignals(workspaceId)),
     },
+    // EI-2150: the DISPATCHER-STALL detector — the dispatcher itself stopped firing
+    // (lastDispatchAt stale) while armed, never-dispatched work waits. The sibling
+    // orphaned-dispatch collector only catches DEAD WORKERS on open rows; this catches
+    // the lane going dark entirely. Skips with a note while disarmed / env-paused / the
+    // ledger is absent (migration 238).
+    {
+      name: 'papercusp-dispatcher-staleness',
+      collect: () =>
+        import('./dispatcher-staleness').then((m) =>
+          m.collectDispatcherStalenessSignals(workspaceId, {
+            dispatcherStalenessThresholdHours: opts.dispatcherStalenessThresholdHours,
+          }),
+        ),
+    },
     {
       name: 'papercusp-ship-link',
       collect: () => import('./ship-link').then((m) => m.collectShipLinkSignals()),
@@ -2249,6 +2271,9 @@ export const PAYLOAD_TUNABLE_KEYS = [
   'structuralMinRate', 'structuralMinCallsForRate', 'transientMinCount', 'callerMinCount',
   'serviceHealthMaxStaleMs', 'smokeFailRecentHours', 'expiredLeaseWindowDays',
   'expiredLeaseMinCount', 'failedSpawnWindowHours', 'failedSpawnMinCount',
+  // dispatcher-staleness (EI-2150): hours the auto-implement dispatcher may go silent
+  // while armed work waits before the lane is flagged stalled
+  'dispatcherStalenessThresholdHours',
   // self-escalation + retention
   'failStreakToEscalate', 'maxSelfEscalationsPerTick', 'tickRetentionDays',
   // known-open aging (consume-edges P-020 — D-004 PROPOSED defaults, tunable here

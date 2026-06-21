@@ -101,7 +101,7 @@ The catalog is THE authoritative answer to "what tools does this role know about
 
 `renderToolsCatalog(role, toolNames, modality = 'text', displayTransform?)` has two filters the four-section sketch hides:
 
-- **`modality`** (`'text' | 'voice'`) — each tool may declare a `modality: ('text' | 'voice')[]`; a tool whose array excludes the requested modality is dropped. The default when a tool omits the field is `['text', 'voice']` (usable in either surface). Voice surfaces pass `'voice'`, so e.g. `chat:ask_choice` (declared `modality: ['text']` because buttons are invisible to a voice user) falls out of the voice catalog automatically.
+- **`modality`** (`'text' | 'voice'`) — each tool may declare a `modality: ('text' | 'voice')[]`; a tool whose array excludes the requested modality is dropped. The default when a tool omits the field is `['text', 'voice']` (usable in either surface). Voice surfaces pass `'voice'`, so e.g. the `plans:*` write tools (declared `modality: ['text']`, e.g. `plans/new.ts:208`, since plan-editing is a text-surface task) fall out of the voice catalog automatically. (`chat:ask_choice` declares no `modality`, so it defaults to `['text', 'voice']` and stays in both surfaces.)
 - **`displayTransform`** — an optional rewrite of the *displayed* tool name (lookup is always by the colon MCP name). The operator passes a `:`→`_` transform so the catalog advertises `harness_status` instead of `harness:status`: Claude Code sanitizes the colon out of MCP tool names before handing them to the model, so the catalog must show the underscore form the model actually sees. Every other role uses the identity default, so its catalog is byte-identical.
 
 ### Section 3 — `<role>.tools.md`

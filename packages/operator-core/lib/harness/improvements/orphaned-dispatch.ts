@@ -280,8 +280,10 @@ export function buildOrphanedDispatchSignals(
     });
 }
 
-/** True when the error is PG's undefined_table (migration 238 not applied yet). */
-function isMissingLedgerTable(e: unknown): boolean {
+/** True when the error is PG's undefined_table (migration 238 not applied yet).
+ *  Exported so the sibling dispatcher-staleness collector reuses the SAME
+ *  table-absent detection (EI-2150) rather than re-deriving the predicate. */
+export function isMissingLedgerTable(e: unknown): boolean {
   const code = (e as { code?: unknown } | null)?.code;
   if (code === '42P01') return true;
   const msg = e instanceof Error ? e.message : String(e);

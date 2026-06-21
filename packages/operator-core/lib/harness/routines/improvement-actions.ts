@@ -406,7 +406,20 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
   // dispatchable. Read at `autonomy:<ws>` (the same key the decider reads), so one owner
   // flip covers both the decision gate + this implement lane. Fail-DARK (helper).
   const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ctx.workspaceId);
-  const runnerHarness = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || null;
+  // WI-290: default the runner harness to the routine's OWN install slug when the env
+  // override is unset. This previously read ONLY a per-tree/per-process untracked
+  // `.env.local` var — a config single-point-of-failure. When the executor that actually
+  // runs the routines (the dedicated bg-host, on the staging tree) lacked it — a drift a
+  // restart / routine-consolidation can silently introduce — `planImplementRun` returned
+  // action='no-runner' EVERY tick and dispatched nothing, with only a console.log. The
+  // routine's liveness signal (last_fired_at) kept advancing, so the lane went dark and
+  // STAYED dark (35h after the 2026-06-19 host-restart orphan storm; ~200 dispatchable
+  // bugs stranded) with nothing detecting it. The dispatch is ALWAYS a fresh durable child
+  // spawn (EI-403-A) that lands via the release gate — never an in-process modification —
+  // so the routine's own install slug is the correct default runner; the env now only
+  // OVERRIDES it to a DIFFERENT harness. `planImplementRun`'s pure no-runner guard stays
+  // intact (the `|| null` tail still trips it if neither resolves — e.g. an empty slug).
+  const runnerHarness = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || ctx.installSlug || null;
   const maxPerRun = intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_PER_RUN', 1, { min: 0 });
   // maxAttempts is genuinely optional (undefined = no cap). Honor an explicit 0
   // (a valid "never dispatch" pause) when set; leave undefined when unset/blank.
