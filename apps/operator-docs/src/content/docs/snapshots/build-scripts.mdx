@@ -3,6 +3,10 @@ title: Build scripts (provision lifecycle)
 description: Plugins can declare setup / teardown / verify scripts that run on the user's host inside an OS-level sandbox by default, with full visibility, consent gating, idempotency tracking, and audit logging.
 sidebar:
   order: 3
+plans:
+  - plugin-system-hive-port-2026-06-11
+  - dbos-durable-flows-adoption-2026-06-02
+  - self-contained-migration-baseline-2026-06-02
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -21,8 +25,8 @@ the full mapping. Most-recent additions:
   `skipReprovisionOnPatch`.
 - **`papercusp_record_resource` helper** lets scripts checkpoint each
   created resource; substrate offers automatic rollback prompt on failure.
-- **PG-based operator lock** (replaces file-based heartbeat) for
-  multi-machine fork safety.
+- **DBOS durable workflow** owns provision concurrency + recovery (the
+  earlier PG operator-claim row + advisory lock + heartbeat was deleted).
 - **Trust granularity is per-(publisher, plugin)**; ownership transfer
   invalidates trust; key rotation must be marketplace-countersigned.
 - **Hooks queued during setup**, replayed after; overflow surfaces a
@@ -46,9 +50,14 @@ the full mapping. Most-recent additions:
 Core build-script execution has landed: the SDK types (`PluginProvision` /
 `ProvisionScript` in `@papercusp/plugin-sdk`), the runner + sandbox
 (`packages/operator-core/lib/provision/{runner,sandbox}.ts`), the audit log
-(`lib/provision/audit-log.ts` + `provision-audit-bus.ts` → `/api/provision/stream`),
-the `harness_shared.operator_claims` PG lock table, the `lib/provision/runtime/lib.sh`
+(`lib/provision/audit-log.ts` + `provision-audit-bus.ts` → `/api/provision/stream`,
+both PG-backed via migration 026), the `lib/provision/runtime/lib.sh`
 helper, and real plugin scripts under `libs/papercusp/plugins/{github-repo,cloudflare-stack,cloudflare-pages}/provision/`.
+Provision concurrency + recovery run through a DBOS durable workflow
+(default-ON; disable with `PAPERCUSP_DBOS_PROVISION=0`) — the
+`harness_shared.operator_claims` lock table described in the *Recovery
+contract* section below was **dropped** (`112-drop-operator-claims.sql`, no
+shim) and replaced by the workflow's `deduplicationID` mutex.
 
 The **shipped** `ProvisionScript` type is `{ path, timeoutSec?, runAt?,
 displayName?, description? }` (note `path`, not `command`); `cloudProvider` /
@@ -113,10 +122,10 @@ Each script is **part of the plugin's signed tarball** — its sha256 is include
 | `setup.path` | yes | — | Relative path inside the plugin tarball (the shipped SDK field is `path`). Must be marked executable in the tarball. |
 | `setup.displayName` | yes | — | Human label shown in the consent dialog. |
 | `setup.description` | yes | — | One-paragraph explanation shown to the user before they approve. |
-| `setup.allowedHosts` | yes for non-cloudProvider plugins | — | Outbound network restricted to this allowlist. Always blocked even when this list is empty: 169.254.0.0/16 (IMDS), 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, ::1, fd00::/8 — see [Network policy floor](#network-policy-floor). |
-| `setup.cloudProvider` | yes for cloud-SDK plugins | — | Substrate-curated preset replacing the old `network: "open"` mode. Shape: `{ id: "aws" \| "gcp" \| "azure", region: "us-east-1" \| ... \| "${cfg.region}" }`. Substrate templates region into the preset's allowlist. Multi-region plugins use `regions: [...]`. See [Cloud provider presets](#cloud-provider-presets). |
+| `setup.allowedHosts` | yes for non-cloudProvider plugins | — | Outbound network restricted to this allowlist. Always blocked even when this list is empty: 169.254.169.254/32 + 169.254.0.0/16 (IMDS), 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7 (IPv6 ULA) — see [Network policy floor](#network-policy-floor). |
+| `setup.cloudProvider` | yes for cloud-SDK plugins | — | Substrate-curated preset replacing the old `network: "open"` mode. Shape: `{ id: "aws" \| "gcp" \| "azure" \| "cloudflare", region: "us-east-1" \| ... \| "${cfg.region}" }`. Substrate templates region into the preset's allowlist. Multi-region plugins use `regions: [...]`. See [Cloud provider presets](#cloud-provider-presets). |
 | `setup.timeoutSec` | no | 600 | Substrate kills the script if it exceeds this. Audit log records the timeout. |
-| `setup.writesState` | no | false | If true, substrate expects the script to drop a JSON file at `$PAPERCUSP_PLUGIN_STATE` on success. Used for resource tracking. |
+| `setup.writesState` | no | false | Design-only (see the partial-implementation Aside). The *shipped* resource-tracking path is the `record_resource` / `state_set` helpers over `$PAPERCUSP_RECORD_FIFO`; `$PAPERCUSP_PLUGIN_STATE` is read-only JSON content set for teardown/verify, not a writeable file. |
 | `setup.requiresInteractive` | no | false | If false (the default and only V1-supported value), substrate refuses scripts that try to read from stdin or open browser windows mid-run. Forbidden in V1 — see [No interactive subprocesses](#no-interactive-subprocesses). |
 | `teardown.path` | recommended | — | If absent, uninstalling the plugin shows "this plugin can't auto-clean its resources; you'll need to remove them manually." |
 | `verify.path` | recommended | — | Used for plugin health on operator boot. If absent, plugin health is inferred from action invocations. |
@@ -135,11 +144,10 @@ substrate hard-blocks outbound connections to:
 
 | CIDR | Why |
 |---|---|
-| `169.254.0.0/16` | Cloud metadata services (AWS IMDS, GCP, Azure) — exfiltrating instance role credentials |
+| `169.254.169.254/32`, `169.254.0.0/16` | Cloud metadata services (AWS IMDS, GCP, Azure) — exfiltrating instance role credentials |
 | `127.0.0.0/8` | Loopback — pivoting to other host services (`localhost:5432`, etc.) |
 | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | RFC1918 — pivoting to internal infra |
-| `::1` | IPv6 loopback |
-| `fd00::/8` | IPv6 ULA |
+| `fc00::/7` | IPv6 ULA (covers `fc00::/8` + `fd00::/8`) — pivoting to internal IPv6 infra |
 
 Plugins that genuinely need to reach RFC1918 or loopback addresses
 (self-hosted database, internal Kubernetes API) must declare each one in
@@ -182,10 +190,16 @@ substrate expands the allowlist for both. Plugins that need a service
 not in the preset declare a custom `allowedHosts` extension that's
 merged with the preset.
 
+The shipped `cloudProvider.id` enum is `"aws" | "gcp" | "azure" |
+"cloudflare"`. `cloudflare` is the first-party dogfood (the
+`cloudflare-stack` / `cloudflare-pages` plugins) — its bundled preset
+allows `api.cloudflare.com`, `*.cloudflare.com`, `*.workers.dev`, and
+`*.pages.dev`.
+
 #### Preset maintenance
 
-AWS / GCP / Azure ship new services regularly. Static substrate-bundled
-allowlists go stale. Maintenance:
+AWS / GCP / Azure / Cloudflare ship new services regularly. Static
+substrate-bundled allowlists go stale. Maintenance:
 
 - **Bundled with substrate version** — V1 ships with the latest preset at substrate-build time. Stale presets are a known limitation.
 - **Monthly update channel** — substrate fetches `https://presets.papercusp.io/cloud/<provider>-<version>.json`, signed with Papercusp's infrastructure key. Updates are additive (new hosts only); the substrate refuses to apply an update that *removes* hosts without an explicit migration note.
@@ -250,14 +264,16 @@ policy-driven (kernel policy), not transient — the right disposition is
 "refuse unsigned, accept signed with eyes open," not "louder warning
 every run."
 
-### Per-run unsandbox escapes
+### Sandbox escape hatches
 
-Two narrow escape hatches, both per-run only, neither persistent:
+Two env-var escape hatches, both per-process only, neither persistent:
 
 | Env var | Purpose | Constraint |
 |---|---|---|
-| `PAPERCUSP_UNSANDBOX_SCRIPT=<sha256>` | Linux: run a signed script outside bwrap (e.g., when the bundled bwrap fails on a host with non-standard kernel hardening) | Hash must match the script's sha256 exactly. Doesn't survive process restart. Logged loudly. |
-| `PAPERCUSP_DEV_UNSIGNED=<sha256>` | Plugin author developing locally on macOS or any platform: skip signature verification for *this specific* script hash | Same constraints. Used in conjunction with `papercusp plugin install --dev`. |
+| `PAPERCUSP_DISABLE_SANDBOX=1` | Test / CI hosts where bwrap isn't available: skip the smoke probe entirely and run the script directly (`active: false`, no sandbox) | For CI/test only. Doesn't survive process restart. |
+| `PAPERCUSP_ALLOW_NO_SANDBOX=1` | Run a script unsandboxed *when the bwrap smoke test fails* (non-standard kernel hardening) instead of the default fail-loud path | The runner records a `sandbox-bypass` audit event each run. Doesn't survive process restart. |
+
+Neither is keyed on a script hash — they are coarse process-level opt-ins, not per-script grants. (Earlier drafts described `PAPERCUSP_UNSANDBOX_SCRIPT=<sha256>` / `PAPERCUSP_DEV_UNSIGNED=<sha256>` hash-keyed env vars; those were never implemented and do not exist in the runner.)
 
 ### Dev install flow for plugin authors
 
@@ -279,8 +295,8 @@ End-users never see a `--dev` install unless someone explicitly hands
 them one with that flag. The marketplace flow stays signed-only.
 
 Sandbox restrictions:
-- Filesystem: read-write access only to `$PAPERCUSP_PLUGIN_DATA` and the project dir; read-only access to `$PAPERCUSP_PLUGIN_DIR`. Everything else, including `$HOME`, is read-only.
-- Network: outbound only to `setup.allowedHosts` when `network: "restrict"` (the default). `network: "open"` lifts this restriction with extra consent.
+- Filesystem: read-write access only to `$PAPERCUSP_SCRATCH_DIR` (which is also the script's `$HOME` and working directory) and the project dir; read-only access to `$PAPERCUSP_PLUGIN_DIR`. Everything else is read-only.
+- Network: outbound only to the effective allowlist (`setup.allowedHosts` and/or the resolved `cloudProvider` preset). The [network policy floor](#network-policy-floor) is always blocked on top of that.
 - Process: child processes inherit the same sandbox.
 - No `setuid`, no kernel-level access.
 
@@ -293,11 +309,19 @@ Signing changes only the consent-flow presentation — not the sandbox boundary:
 | Sandbox enforced? | **Yes** | **Yes** | **Yes** |
 | Consent-UI text | "Signed by `@papercupai`. Last 5 versions trusted by you." | "Signed by `@papercupai`. First time you've seen this publisher." | "Unsigned. The script's source has not been verified by any publisher." |
 | "Trust this publisher's future scripts" toggle | Visible, unchecked default | Visible, unchecked default | Hidden |
-| Power-user `--unsandbox` opt-out | Settings-page toggle, requires CLI confirmation | Settings-page toggle, requires CLI confirmation | Hidden behind `PAPERCUSP_UNSANDBOX_SCRIPT=<hash>` env-var that does not survive process restart |
+| Power-user unsandbox opt-out | Settings-page toggle, requires CLI confirmation | Settings-page toggle, requires CLI confirmation | Hidden behind the `PAPERCUSP_ALLOW_NO_SANDBOX=1` env-var (logged as a `sandbox-bypass` audit event; does not survive process restart) |
 
 Convenience scales with trust. Isolation does not.
 
-### Static-analysis warnings
+### Static-analysis warnings (design-only — not yet implemented)
+
+> **Design-only.** No static-analysis scanner exists in the provision lib
+> today: there is no destructive-pattern scan, no `staticAnalysisWaivers`
+> manifest field, and the consent surface (`ProvisionPanel`) shows only
+> `displayName` / `description` / `cloudProvider` / `allowedHosts` — no
+> "Static analysis: N warnings" line. The behavior below is the design
+> target, in the same not-yet-shipped bucket as `network` /
+> `writesState` / `requiresInteractive`.
 
 The substrate scans every script for common destructive patterns before
 showing the consent dialog. Detected patterns surface as warnings in the
@@ -322,29 +346,38 @@ The substrate provides each script with a controlled environment:
 | Variable | Purpose |
 |---|---|
 | `$PAPERCUSP_PLUGIN_DIR` | Absolute path to the plugin's installed directory (read-only, even outside the sandbox) |
-| `$PAPERCUSP_PLUGIN_STATE` | Absolute path to a writeable `state.json` location (write here for resource tracking) |
-| `$PAPERCUSP_PLUGIN_DATA` | The plugin's per-harness data directory (`<harness>/.papercusp/plugins/<name>/`) |
-| `$PAPERCUSP_HARNESS_SLUG` | The harness slug the script is being run for |
-| `$PAPERCUSP_PROJECT_DIR` | The harness's project dir |
-| `$PAPERCUSP_RUN_ID` | Unique id for this script invocation; used by the substrate to correlate audit log + output |
-| Plugin config keys | Each `configSchema` field is exported as `$PAPERCUSP_CFG_<KEY>` (uppercased, underscored). |
+| `$PAPERCUSP_SCRATCH_DIR` | Per-(harness, plugin) read-write scratch dir. **Also the script's `$HOME` and working directory** (bwrap `--chdir`). |
+| `$PAPERCUSP_PLUGIN_STATE` | JSON **content** of the current provision state, serialized into the env var (not a file path, not writeable). **Only set for `teardown` and `verify`** — `setup` doesn't get it. Scripts read it as data, e.g. `state="${PAPERCUSP_PLUGIN_STATE:-$(cat)}"` then `jq`. |
+| `$PAPERCUSP_PLUGIN_NAME` | The plugin slug the script is being run for. |
+| `$PAPERCUSP_HARNESS_SLUG` | The harness slug the script is being run for. |
+| `$PAPERCUSP_PHASE` | `setup` \| `teardown` \| `verify`. |
+| `$PAPERCUSP_PROJECT_DIR` | The harness's project dir (only set when the harness has one; used by `render_templates`). |
+| `$PAPERCUSP_RUNTIME_LIB` | Absolute path to `lib.sh` (the script sources this). |
+| `$PAPERCUSP_RECORD_FIFO` | Path the `record_resource` / `state_set` helpers write to (see [Helper library](#helper-library-provisionlibsh)). |
+| `$PAPERCUSP_CONFIG` | The full plugin config as a JSON string. Parse with `jq` (e.g. `echo "$PAPERCUSP_CONFIG" \| jq -r '.region'`). |
+| `$USER_VAR_<UPPER_SNAKE>` | Each **top-level scalar** config field, flattened: `lowerCamel` → `UPPER_SNAKE` (e.g. `accountId` → `$USER_VAR_ACCOUNT_ID`). Strings/numbers/booleans/null only — nested objects and arrays are skipped (read those from `$PAPERCUSP_CONFIG`). |
 
-Working directory is set to `$PAPERCUSP_PLUGIN_DATA`. Scripts that need
-the plugin install dir use `$PAPERCUSP_PLUGIN_DIR/...`.
+There is **no** `$PAPERCUSP_PLUGIN_DATA`, `$PAPERCUSP_RUN_ID`, or
+`$PAPERCUSP_CFG_*` in the provision sandbox env. The working directory and
+`$HOME` are both `$PAPERCUSP_SCRATCH_DIR`; the internal `dbos-…` run id is
+used only for audit correlation and is not exported to the script.
 
 The substrate captures stdout + stderr line-by-line and streams them into
 an xterm pane in the operator UI. Scripts can also write structured
-progress markers:
+progress markers — emitted as **tab-separated** records to
+`$PAPERCUSP_PROGRESS_FD` (a dedicated fd; falls back to fd 2 if unset),
+not to stdout, and with no numeric percentage. The `lib.sh` helpers
+(`papercusp_progress` / `papercusp_warn` / `papercusp_error`) emit them:
 
 ```bash
-echo '::papercusp::progress {"step": "iam-role", "pct": 25}'
-echo '::papercusp::progress {"step": "lambda", "pct": 60}'
-echo '::papercusp::warn   {"message": "creating in us-east-1; override with $REGION"}'
-echo '::papercusp::error  {"message": "iam:CreateRole denied — token missing IAM perms"}'
+printf '::papercusp::progress\t%s\t%s\n' "step:iam-role" "creating role" >&"$PAPERCUSP_PROGRESS_FD"
+printf '::papercusp::warn\t%s\n'          "creating in us-east-1; override with \$REGION" >&"$PAPERCUSP_PROGRESS_FD"
+printf '::papercusp::error\t%s\n'         "iam:CreateRole denied — token missing IAM perms" >&"$PAPERCUSP_PROGRESS_FD"
 ```
 
-These get parsed and rendered as a structured progress bar above the raw
-output. Plugins that don't emit them just show raw output, which is fine.
+These get parsed and rendered as a structured progress indicator above
+the raw output. Plugins that don't emit them just show raw output, which
+is fine.
 
 ## No interactive subprocesses
 
@@ -352,7 +385,7 @@ V1 scripts are **non-interactive**. The substrate enforces this:
 
 - stdin is closed (or piped from /dev/null).
 - The substrate refuses scripts that try to open a browser window for OAuth (no `xdg-open`, `open`, `start`, etc. — these calls fail under the sandbox).
-- Scripts that need user input must take it via configSchema fields up-front. The substrate populates `$PAPERCUSP_CFG_*` before invocation.
+- Scripts that need user input must take it via configSchema fields up-front. The substrate populates `$PAPERCUSP_CONFIG` (and the flattened `$USER_VAR_*` scalars) before invocation.
 
 Why: interactive scripts hang the operator with no useful UI feedback. A
 real-world example is `aws sso login` which opens a browser and blocks
@@ -366,19 +399,31 @@ deliberately out of V1.
 
 ## Idempotency contract
 
-The done-marker for a successful setup is a JSON file at
-`<plugin-data>/.papercusp-setup-done`:
+Idempotency state is **PG-backed** (migration 026). There is no
+`.papercusp-setup-done` marker file; the done-state for a successful setup
+is the `ProvisionState` row in `harness_shared.provision_state` (one row
+per `(workspace, harness, plugin)`), whose JSONB payload holds the
+idempotency hashes plus `createdResources` / `outputs` / `lastSetupAt`:
 
 ```json
 {
-  "version": 1,
-  "runId": "prov-abc123",
-  "completedAt": "2026-05-08T20:14:32Z",
-  "configHash": "sha256:7a3...",
-  "pluginVersion": "0.1.0",
-  "scriptHash": "sha256:a1b2c3..."
+  "schemaVersion": 1,
+  "hashes": {
+    "configHash": "sha256:7a3...",
+    "scriptHash": "sha256:a1b2c3...",
+    "pluginVersion": "0.1.0"
+  },
+  "createdResources": [],
+  "outputs": {},
+  "lastSetupAt": "2026-05-08T20:14:32Z",
+  "lastVerifyAt": null,
+  "setupFailed": false
 }
 ```
+
+(`provisionDir` survives only as a display-path helper — the UI can show
+"stored as `<path>`" without leaking the PG implementation; nothing is
+persisted to that path.)
 
 The substrate compares **three** values against the current install:
 
@@ -386,7 +431,7 @@ The substrate compares **three** values against the current install:
 |---|---|---|
 | `configHash` | sha256 of the structural projection of the current per-harness plugin-config | Mismatch → re-provision prompt |
 | `scriptHash` | sha256 of the current plugin's `setup.path` file content | Mismatch → **always** re-provision prompt (script-hash changes can never be auto-applied) |
-| `pluginVersion` | semver from the current plugin's manifest | Mismatch → re-provision prompt unless `skipReprovisionOnPatch: true` AND only the patch component changed AND `scriptHash` matches |
+| `pluginVersion` | semver from the current plugin's manifest | Mismatch → re-provision prompt unless `skipReprovisionOnPatch: true` AND **only the patch component changed** (major *and* minor unchanged) AND `scriptHash` matches. A minor bump is treated like a major bump ("to be safe") and always re-prompts. |
 
 | State | Substrate behavior |
 |---|---|
@@ -399,14 +444,18 @@ The substrate compares **three** values against the current install:
 
 The flag governs **`pluginVersion` mismatches only, when both `scriptHash`
 and `configHash` are unchanged**. It does NOT exempt script-hash changes
-under any circumstance. The intent is "config-shape didn't change in a
-way that affects provisioning, and the script wasn't touched, so a patch
-bump (`0.1.0 → 0.1.1`) doesn't need re-prompting."
+under any circumstance, and it only applies to a **pure patch bump** — the
+decision logic treats *any* minor change like a major change ("treat minor
+like major to be safe"), so only `major.minor` staying fixed makes a bump
+patch-exempt. The intent is "config-shape didn't change in a way that
+affects provisioning, and the script wasn't touched, so a patch bump
+(`0.1.0 → 0.1.1`) doesn't need re-prompting."
 
-A malicious publisher pushing a malicious patch with the same major.minor
+A malicious publisher pushing a malicious patch with the same `major.minor`
 and `skipReprovisionOnPatch: true` cannot slip through — their script's
 sha256 will be different from the recorded one, and that difference
-forces re-consent.
+forces re-consent. (And a minor bump — e.g. `0.1.0 → 0.2.0` — re-prompts
+even when both hashes match.)
 
 ### Structural vs operational config fields
 
@@ -449,8 +498,15 @@ are applied immediately to the running plugin without re-provisioning.
 
 ## State file contract
 
-When `writesState: true`, the script must drop a JSON file at
-`$PAPERCUSP_PLUGIN_STATE` before exiting successfully. Shape:
+> The `writesState` "drop a file" flow below is design-only. In the
+> shipped runner, scripts record state incrementally through the
+> `record_resource` / `state_set` helpers (over `$PAPERCUSP_RECORD_FIFO`),
+> and the substrate persists it as the PG `ProvisionState` row — there is
+> no script-written `$PAPERCUSP_PLUGIN_STATE` file. The shape below is the
+> logical `createdResources` / `outputs` payload either path produces.
+
+When `writesState: true`, the design has the script drop a JSON document
+(logically) before exiting successfully. Shape:
 
 ```json
 {
@@ -481,58 +537,45 @@ fails the run with a clear error.
 
 ## Recovery contract
 
-V1 uses a **PG-backed operator claim** for cross-machine safety. File-based
-heartbeats have classic split-brain failure modes when a harness is shared
-across machines (laptop ↔ desktop, dev ↔ CI). Postgres is already the
-substrate's coordination point for `harness_shared.*` tables; reusing it
-gets distributed-lock semantics for free.
+Provision concurrency and crash recovery run entirely through a **DBOS
+durable workflow** (default-ON; disable with `PAPERCUSP_DBOS_PROVISION=0`,
+itself gated by the master `PAPERCUSP_DBOS_ORCHESTRATOR` switch). Two
+properties of the workflow replace the older hand-rolled machinery:
 
-### `harness_shared.operator_claims`
+- **`deduplicationID` is the cross-request mutex** — keyed on the
+  `(harness, plugin)` pair, it serializes concurrent provision attempts so
+  only one runs; a duplicate request is collapsed onto the in-flight one.
+- **DBOS recovery is the liveness** — if the operator is SIGKILL'd
+  mid-provision, the workflow resumes on restart (crash-resume-verified:
+  `recovery_attempts 1 → 2`, `PENDING → SUCCESS`) rather than leaving a
+  stale lock to expire.
 
-```sql
-CREATE TABLE harness_shared.operator_claims (
-  harness_slug   text NOT NULL,
-  plugin_slug    text NOT NULL,
-  machine_id     text NOT NULL,
-  pid            int  NOT NULL,
-  run_id         text NOT NULL,
-  script_hash    text NOT NULL,
-  claimed_at     timestamptz NOT NULL DEFAULT now(),
-  expires_at     timestamptz NOT NULL,
-  PRIMARY KEY (harness_slug, plugin_slug)
-);
-```
+The run is tagged with an internal `dbos-…` run id used only to correlate
+audit rows.
 
-### Acquisition + heartbeat
-
-Operator boot sequence for a plugin needing setup:
-
-1. Acquire a PG advisory lock keyed on `hash(harness_slug, plugin_slug)`. Blocks if another operator holds it.
-2. Within the lock, check for an existing claim row:
-   - No row → insert with `expires_at = now() + 90s`. Proceed.
-   - Row exists, `expires_at > now()` → another operator owns it. Release advisory lock; refuse with "another operator owns this harness on machine X (last heartbeat Ns ago); resolve before continuing."
-   - Row exists, `expires_at <= now()` (stale) → the previous operator died without releasing. Insert new claim row, prompt user "previous setup may have left orphaned resources. Run teardown to clean up before re-trying?"
-3. Release advisory lock; setup proceeds.
-4. Background heartbeat job updates `expires_at = now() + 90s` every 30s while setup is running.
-5. On clean exit (success or graceful failure), claim row is deleted; advisory lock not needed.
+<Aside type="note" title="The PG operator-claim was deleted">
+Earlier drafts described a `harness_shared.operator_claims` row, a PG
+advisory lock keyed on `hash(harness_slug, plugin_slug)`, a 90s
+`expires_at`, and a 30s background heartbeat. **All of that was removed**
+— the table was dropped (`112-drop-operator-claims.sql`, no shim) once DBOS
+provisioning was crash-resume-verified, and the advisory-lock + heartbeat
+code was deleted with it. There is no claims table, no advisory lock, and
+no heartbeat in the shipped runner.
+</Aside>
 
 ### Multi-machine fork race
 
 Two operators (laptop + desktop) attempting concurrent setup of the same
-`(harness, plugin)`:
-
-- Both acquire advisory locks; only one wins (PG serializes them).
-- Loser sees the winner's claim row; refuses with the message above.
-- Winner runs setup; on completion, claim row is gone; loser can re-attempt.
-
-This eliminates the duplicate-cloud-resource scenario where both
-operators successfully `aws lambda create-function` because the cloud
-APIs aren't transactional. The substrate's lock is the
+`(harness, plugin)` are serialized by the workflow's `deduplicationID`:
+only one provision runs to completion; the duplicate request is
+deduplicated rather than racing. This eliminates the duplicate-cloud-resource
+scenario where both operators successfully `aws lambda create-function`
+because the cloud APIs aren't transactional — the DBOS workflow is the
 arbitration point.
 
 Plugin authors should *also* implement cloud-API-level idempotency
 (check-then-create, or use clouds' built-in idempotency tokens) as
-defense-in-depth. The PG lock prevents the obvious race; idempotent
+defense-in-depth. The workflow prevents the obvious race; idempotent
 scripts handle the residual.
 
 ### Single-user host detection
@@ -544,7 +587,7 @@ acknowledgement banner:
 | Detection | Threshold |
 |---|---|
 | **Active sessions** (primary): `who \| awk '{print $1}' \| sort -u \| wc -l > 1` | More than one logged-in user. Most reliable signal. |
-| **Configured users** (secondary): `/etc/passwd` entries with UID ≥ 1000 + valid `/home/<name>/` + valid login shell | Catches "host has multiple human users configured even if only one is logged in right now." |
+| **Configured users** (secondary): `/etc/passwd` entries with `1000 ≤ UID ≤ 60000` + a `/home/<name>/` home + a login shell from a fixed allowlist | Catches "host has multiple human users configured even if only one is logged in right now." The 60000 upper bound excludes the `nobody` / high system-service range. |
 
 Either trigger surfaces:
 
@@ -681,8 +724,6 @@ Timeout:      5 min
 
   [ Show full script source ▼ ]
 
-Static analysis: 0 warnings.
-
 This script will run in a sandbox with the listed restrictions. The
 substrate will:
   ✓ Stream all output into a terminal pane you can watch live
@@ -755,86 +796,65 @@ in the plugin's harness-toolbar tile and in the dashboard summary.
 
 ## Audit logging
 
-Every script run writes to `<harness>/.papercusp/audit/provision-runs/<ts>-<plugin>-<phase>.log`:
+Audit logging is **PG-backed** (migration 026). Every provision event —
+`consent-granted`, `setup-started`, `script-output`, `resource-recorded`,
+`setup-succeeded` / `-failed`, the `sandbox-bypass` event, etc. — is one
+row in `harness_shared.provision_audit_log`, keyed by
+`(workspace, harness, plugin)` and indexed for the common
+"all events for `(harness, plugin)` ordered by ts" query. There is no
+per-`(harness, plugin)` `.log` file. Each row carries `{ts, kind, runId,
+data}`; the runId is the internal `dbos-…` correlation tag.
 
-```
-=== papercusp provision run ===
-plugin: @papercupai/aws-lambda
-version: 0.1.0
-phase: setup
-script: ./provision/setup.sh
-script-hash: sha256:a1b2c3...
-sandbox: bubblewrap
-network: restrict (allowed: lambda.us-east-1.amazonaws.com, ...)
-started: 2026-05-08T20:14:32.123Z
-runId: prov-abc123
+Rows are also fanned out in-process via `provision-audit-bus` to the
+`/api/provision/stream` SSE endpoint, so the operator UI's terminal pane
+updates sub-millisecond after the row commits — no file polling.
+Conceptually the row stream for one run reads as:
 
-=== environment ===
-PAPERCUSP_HARNESS_SLUG=my-store
-PAPERCUSP_PROJECT_DIR=/home/me/projects/my-store
-PAPERCUSP_PLUGIN_DIR=/home/me/.papercusp/global-plugins/@papercupai/aws-lambda
-PAPERCUSP_CFG_REGION=us-east-1
-(secrets redacted)
-
-=== output ===
-::papercusp::progress {"step": "iam-role", "pct": 25}
-[setup] Creating IAM role aws-lambda-role-my-store...
-... (full stream) ...
-::papercusp::progress {"step": "done", "pct": 100}
-
-=== exit ===
-exitCode: 0
-durationMs: 47230
-stateWritten: yes
-stateBytes: 412
+```text
+consent-granted   { decision: "approved" }
+setup-started     { scriptHash, configHash, pluginVersion }
+script-output     { line: "[setup] Creating IAM role aws-lambda-role-my-store..." }
+resource-recorded { kind: "aws.iam.role", externalId: "arn:aws:iam::123:role/my-fn-role" }
+setup-succeeded   { exitCode: 0, durationMs: 47230 }
 ```
 
 ### Retention
 
-Audit logs are forensic — they're consulted when something goes wrong
+Audit rows are forensic — they're consulted when something goes wrong
 (unexpected cloud bill, suspected compromise, "what changed since last
 month"), and the time horizon for noticing those problems is months, not
 days.
 
-**V1 default**: 1 year retention, 50 MB per (harness, plugin) cap,
-oldest-first eviction within the cap.
+Because the log lives in Postgres, there is **no per-(harness, plugin)
+size cap and no in-band oldest-first eviction** — PG absorbs the volume
+without truncation. If a future retention policy is needed it lives as a
+scheduled `DELETE`, not as in-band file rewriting. V1.1 formalizes the
+policy and adds UI surfaces for browsing older audit entries.
 
-The size cap protects against a runaway plugin spamming logs; the
-duration protects the actual use case. Provisioning runs are rare (often
-once per harness lifetime), so a year of logs is typically under 10 MB per
-harness. V1.1 formalizes the policy and adds UI surfaces for browsing
-older audit entries.
+### `auditLogCapMb` is accepted but ignored
 
-### Per-plugin override
-
-Plugins doing terraform-class provisioning (K8s cluster bootstrap,
-multi-resource Terraform applies) can legitimately emit hundreds of MB.
-The 50 MB default would silently evict useful debugging context.
+The manifest still accepts a `provision.auditLogCapMb` field for source
+compatibility, but the runner **passes it straight to `appendAudit`, which
+ignores it** — there is no file-size cap left to tune:
 
 ```json
 {
   "provision": {
-    "setup": {
-      "auditLogCapMb": 500
-    }
+    "auditLogCapMb": 500
   }
 }
 ```
 
-Surfaced in the consent dialog as a discrete line: "**This plugin
-requests up to 500 MB of audit space.**" Lets legitimate plugins
-request capacity while flagging it as a thing the user should notice.
+(The earlier design surfaced a "this plugin requests up to N MB of audit
+space" consent line tied to this field; with PG-backed logging there is no
+cap to request, so the field is a no-op.)
 
-### Fail-loud on encrypted-locked volumes
+### Fail-loud on write failure
 
-`<harness>/.papercusp/audit/provision-runs/` may live on an encrypted
-volume that's locked at boot (LUKS, FileVault, EncFS). If the substrate
-can't write to the audit dir, it **fails loud**: setup is refused,
-operator banner shows "audit volume unavailable; unlock the volume or
-run with `PAPERCUSP_NO_AUDIT=1` (not recommended)." Silent
-audit-swallowing is forbidden — the audit trail is the only record of
-what scripts did, and losing it silently is a worse failure mode than
-refusing to run.
+The audit trail is the only durable record of what scripts did, so the
+substrate must never silently swallow it. If the audit insert can't reach
+PG, the right disposition is to **fail loud** — refuse setup and surface an
+operator banner rather than running a script whose actions go unrecorded.
 
 ## Relationship to compute:exec:*
 
@@ -885,8 +905,8 @@ papercusp_record_resource "aws.lambda.function" "$FN_ARN"
 | `papercusp_progress <step> <message>` | Emits a `::papercusp::progress` marker. UI renders a structured progress bar. |
 | `papercusp_warn <message>` | Emits a `::papercusp::warn` marker. UI renders a yellow indicator. |
 | `papercusp_error <message>` | Emits a `::papercusp::error` marker. UI renders a red indicator (script may still continue or exit). |
-| `papercusp_record_resource <kind> <id> [<meta-json>]` | Appends `{kind, externalId, recordedAt, metadata?}` to the resource WAL (via `$PAPERCUSP_RECORD_FIFO`) *immediately* (not at success). Substrate uses this for partial-failure rollback. |
-| `papercusp_state_set <key> <value>` | Sets a key in `state.json` `outputs` (same FIFO, `$op: "state_set"`). |
+| `papercusp_record_resource <kind> <id> [<meta-json>]` | Appends `{kind, externalId, recordedAt, metadata?}` JSON to `$PAPERCUSP_RECORD_FIFO` *immediately* (not at success). The substrate folds it into the provision-state `createdResources`. Used for partial-failure rollback. |
+| `papercusp_state_set <key> <value>` | Sets a key in the provision-state `outputs` object (same FIFO, `{"$op":"state_set",...}`). |
 | `papercusp_render_templates` | Walks `$PAPERCUSP_PROJECT_DIR` for `*.tmpl` files, renders each via `envsubst` with the script's exported env, writes the de-suffixed result, removes the `.tmpl` source. Skips VCS/build dirs. |
 
 ### Partial-failure rollback via `record_resource`
@@ -907,29 +927,37 @@ Tear down these resources before re-trying setup?
 ```
 
 If the user picks teardown, the substrate runs `teardown.sh` with a
-state.json containing only the recorded-so-far resources. Plugin
-authors don't have to write defensive "did this fail in stage X?" logic
-in setup; partial state is captured and tear-downable.
+provision state (passed via `$PAPERCUSP_PLUGIN_STATE`) containing only the
+recorded-so-far resources. Plugin authors don't have to write defensive
+"did this fail in stage X?" logic in setup; partial state is captured and
+tear-downable.
 
-`papercusp_record_resource` writes are atomic appends to a
-write-ahead log; the substrate compacts them into `state.json`'s
-`createdResources` array on next read. This means even a hard kill of
-the script (SIGKILL) preserves what was recorded.
+`papercusp_record_resource` / `papercusp_state_set` write newline-delimited
+JSON to `$PAPERCUSP_RECORD_FIFO`. In V1 this is a **regular file** the
+substrate tails every ~200ms (a true named pipe is V2); the poller
+tolerates pretty-printed multi-line JSON and folds each record into the
+provision-state row. Crucially the substrate does a **final drain on
+script exit** — without it, records written between the last poll tick and
+exit would be silently lost. Each append is atomic newline-delimited JSON,
+so even a hard kill (SIGKILL) preserves what was already recorded.
 
 ### Teardown contract: plugin's `teardown.sh` is the dispatcher
 
 Resource kinds (`aws.iam.role`, `aws.lambda.function`, etc.) are
 plugin-author vocabulary, not substrate-defined types. `teardown.sh`
-receives the recorded resources via `state.json` and dispatches per
-kind:
+receives the recorded resources as the JSON *content* of
+`$PAPERCUSP_PLUGIN_STATE` (the env var holds the serialized state, not a
+file path — the real first-party plugins read it as
+`state="${PAPERCUSP_PLUGIN_STATE:-$(cat)}"`) and dispatches per kind:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 . "$PAPERCUSP_RUNTIME_LIB"
 
-# Read recorded resources from state.json (passed via $PAPERCUSP_PLUGIN_STATE)
-mapfile -t RESOURCES < <(jq -c '.createdResources[]' "$PAPERCUSP_PLUGIN_STATE")
+# $PAPERCUSP_PLUGIN_STATE holds the state JSON as a string (fallback: stdin)
+state="${PAPERCUSP_PLUGIN_STATE:-$(cat)}"
+mapfile -t RESOURCES < <(echo "$state" | jq -c '.createdResources[]')
 
 # Tear down in REVERSE creation order (LIFO)
 for resource in "${RESOURCES[@]}" | tac; do

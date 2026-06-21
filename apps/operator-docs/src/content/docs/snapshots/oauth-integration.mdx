@@ -13,7 +13,7 @@ plans:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="Rounds 2–6 review feedback incorporated">
-- `ctx.oauth.token(field)` helper — refresh + 401 retry-once transparent to plugin authors
+- `ctx.oauth.token(field)` helper — expiry-check + refresh transparent to plugin authors (401 retry-once lives in a separate opt-in `withRetry()` wrapper, not the helper itself)
 - **Promise-cache for concurrent refresh** — 10 actions firing in parallel share one in-flight refresh request rather than racing
 - Pasted tokens (hybrid mode) get **scope verification via provider introspection** before being accepted
 - **State is a URL parameter, NOT a cookie** — corrects a wording bug from earlier drafts; concurrent OAuth flows have independent state tokens (HMAC-signed, single-use nonce server-side)
@@ -73,7 +73,7 @@ do that. (See "Hybrid mode" below.)
 | `provider` | yes | Must be a substrate-registered provider. V1 supports `github`. V2 adds `slack`, `linear`, `notion`, `jira`. |
 | `scopes` | yes | Array of provider-specific scope strings. The substrate forwards these unchanged in the authorize URL. |
 | `tokenType` | no | `access` (default), `refresh`, or `both`. Determines what gets stored in the config. `refresh` is required if the plugin needs to operate without re-auth for >24h. |
-| `userInfoFields` | no | Optional list of extra fields to populate from the provider's user-info endpoint, e.g. `["login", "email"]` for GitHub. The substrate writes them as `<field>_user_<key>` in the plugin config (e.g. `github_token_user_login: "alice"`). |
+| `userInfoFields` | no | *(Design-only, not yet implemented.)* Optional list of extra fields to populate from the provider's user-info endpoint, e.g. `["login", "email"]` for GitHub, intended to write `<field>_user_<key>` into the plugin config. The callback does not currently fetch user info, and nothing reads the provider's `userInfoUrl`. |
 
 ## Substrate-level provider config
 
@@ -98,19 +98,26 @@ The substrate reads them at start, never logs them, never includes them in
 audit output.
 
 For production, `redirectUri` should be HTTPS — `http://localhost` is the
-dev/desktop default. Production deployments override via `PAPERCUSP_HOST`
-env var or the substrate's site config.
+dev/desktop default. `redirectUri` is a literal field in
+`~/.papercusp/oauth-apps.json` (read verbatim, no host-env substitution);
+edit it there per deployment. The papercusp root that file is read from is
+governed by `PAPERCUSP_HOME` (default `~/.papercusp`), not any host env var.
 
 ## Endpoints
 
 ```text
-GET /api/oauth/start?provider=<p>&plugin=<plug>&harness=<h>&field=<f>
+GET /api/oauth/start?provider=<p>&plugin=<plug>&harness=<h>&field=<f>&scopes=<comma-separated>
   → 302 to provider authorize URL with HMAC-signed state in the URL `state` parameter
+  → the requested scopes are passed as a comma-separated query param and
+    forwarded unchanged to the authorize URL (not derived from the manifest
+    at the route level — the caller, e.g. the settings page, supplies them)
 
 GET /api/oauth/callback?provider=<p>&code=<c>&state=<s>
   → exchanges code for token
-  → writes token to plugin's per-harness config[field]
-  → redirects to /settings/plugins?connected=<plugin>
+  → writes token (+ optional _refresh / _expires_at, and _expired:false) to
+    plugin's per-harness config[field]
+  → 307 redirect to /harness/<harness>?panel=config&oauth_connected=<plugin>
+    (on success), or .../?panel=config&oauth_error=<msg> on provider/exchange error
 
 POST /api/oauth/verify-paste
   → hybrid mode: introspect a pasted PAT's granted scopes against the
@@ -126,7 +133,10 @@ independent state values — no cookie collision is possible.
 
 State token is:
 
-- HMAC-signed with a substrate-only secret
+- HMAC-signed with a substrate-only secret. The secret is
+  `PAPERCUSP_OAUTH_STATE_SECRET` (must be ≥32 chars); when unset, dev falls
+  back to a per-process random key, so restarting the process invalidates
+  in-flight OAuth states.
 - 5min expiry
 - Single-use (server-side nonce table; first callback consumes the nonce)
 - Includes `(plugin, harness, field, providerHost)` as keyed claims
@@ -134,6 +144,15 @@ State token is:
 The HMAC + nonce combination prevents both CSRF (state can't be forged
 without the substrate's secret) and replay (each state can only be
 consumed once).
+
+The nonce ledger is the Postgres table `harness_shared.oauth_nonces`
+(migration 030 — it replaced an earlier process-local `Map` that broke
+across restarts and multi-instance deploys). `signState` `INSERT`s the
+nonce; `verifyAndConsumeState` atomically claims it via a single
+`UPDATE … WHERE consumed = false RETURNING` (concurrent callbacks racing
+the same nonce resolve to exactly one winner, the rest get
+`already-consumed`). An opportunistic sweep deletes expired rows once the
+table grows past ~1000.
 
 ## Provider matrix
 
@@ -172,7 +191,7 @@ plugin's manifest requires:
 
 | Provider | Introspection endpoint | Notes |
 |---|---|---|
-| **GitHub** | `GET /applications/<client_id>/token` (OAuth Apps) — substrate Basic-auths with the OAuth app's client_id+secret to inspect any token issued by it. For fine-grained PATs, hit `GET /user` and read the `X-OAuth-Scopes` header. | V1 |
+| **GitHub** | `GET /user` with a `Bearer` token; read the `X-OAuth-Scopes` response header. This works uniformly for OAuth-app tokens, classic PATs, and fine-grained PATs. | V1 |
 | Slack | `auth.test` returns scopes in response headers | V2 |
 | Linear | GraphQL `viewer { id }` errors with explicit scope-required messages | V2 |
 | Notion | `/v1/users/me` echoes integration capabilities | V2 |
@@ -186,6 +205,11 @@ Verification rules:
 | Superset of requested (more permissions than needed) | Accepted with a warning toast: "this token has more scopes than the plugin needs; consider creating a more narrowly-scoped one" |
 | Subset of requested (missing required scopes) | **Rejected.** Toast names the missing scopes. User regenerates and re-pastes. |
 | Token doesn't belong to this OAuth app's client_id | Rejected for OAuth-app PATs. Allowed for fine-grained PATs (no client_id binding exists). |
+
+A provider with no introspection endpoint is a special case: the substrate
+accepts the pasted token **unverified** and the response carries
+`outcome: 'no-introspection'`. Only providers that implement `introspect()`
+run the exact/superset/subset comparison above.
 
 The plain input writes the token to the same config field. The substrate
 doesn't care which path produced the token — both end up at
@@ -210,12 +234,18 @@ The substrate's `ctx.oauth.token(field)` helper:
 3. If `expires_at` is past, or within 5 minutes of expiring, hits the provider's refresh endpoint *before* returning. Updates `config[field]` and `config[field + '_expires_at']` atomically.
 4. Returns the (possibly-refreshed) access token.
 
-If a plugin still gets a 401 from the provider (e.g., the token was
-revoked between refresh and use), the helper retries once: invalidates
-the cached token, hits the refresh endpoint fresh, returns the new token.
-A second 401 surfaces to the plugin as a normal error, plus the
-substrate flags `oauth_expired: true` on the config so the operator UI
-shows a "reconnect" button.
+The helper itself stops there: `ctx.oauth.token(field)` does the
+expiry-check, refresh, and concurrent-refresh dedup, but does **not** do
+401 retry. The 401-retry-once logic lives in a separate exported
+`withRetry()` wrapper that a plugin must opt into — it is not wired into
+`ctx.oauth.token`, and currently has no production callers.
+
+`withRetry()` semantics: if a wrapped provider call returns a 401 (e.g.,
+the token was revoked between refresh and use), it forces a refresh by
+zeroing the cached expiry, re-acquires the token, and retries once. A
+second 401 surfaces to the plugin as a normal error, plus the substrate
+flags `oauth_expired: true` on the config so the operator UI shows a
+"reconnect" button.
 
 ### Storage
 
@@ -234,6 +264,14 @@ token plus the access-token expiry:
 These fields are siblings inside the same plugin-config JSON. They share
 the same `secret: true` flag for snapshot purposes (all three are
 stripped together).
+
+At rest, the PG mirror of plugin configs is already encrypted (migration
+039 — pgcrypto `config_ct` column; the writer NULLs the plaintext `config`
+column after encryption), and the on-disk
+`~/.papercusp/harnesses/<slug>/plugin-configs/<plugin>.json` is written
+with mode `0600`. The one remaining plaintext surface is that on-disk file
+itself, which the substrate plugin loader reads synchronously and cannot
+decrypt — see [Open Questions](#open-questions) #4.
 
 ### Concurrent refresh storm
 
@@ -303,7 +341,7 @@ papercusp's authorization is gone.
 |---|---|---|
 | `@papercusp/plugin-sdk` | `oauth` field on the property schema + `PluginOAuthRequirement[]` manifest entries. | ~15 |
 | `packages/operator-core/lib/endpoint-route/routes/oauth/start.ts` | Generate state, redirect to provider authorize URL. | ~60 |
-| `packages/operator-core/lib/endpoint-route/routes/oauth/callback.ts` | Exchange code, fetch user info, write to plugin config. | ~100 |
+| `packages/operator-core/lib/endpoint-route/routes/oauth/callback.ts` | Exchange code, write access token (+ optional `_refresh`/`_expires_at`, and `_expired: false`) to plugin config. Does *not* fetch user info — the `userInfoFields` manifest feature is unimplemented. | ~100 |
 | `packages/operator-core/lib/oauth/{providers,token,state,storage-fs}.ts` | Provider registry (GitHub), token-exchange + `ctx.oauth.token()` refresh logic, HMAC state, fs-backed token storage. | ~120 |
 | `apps/operator/app/settings/plugins/page.tsx` | Render Connect button when `oauth` is declared on a field. | ~50 |
 | `packages/operator-core/lib/endpoint-route/routes/oauth/verify-paste.ts` | Hybrid mode — introspect a pasted PAT's scopes against the plugin's required scopes. | ~40 |
@@ -361,7 +399,7 @@ The wrong path is "adopt arctic to hit the LOC budget without doing the audit." 
 1. **Where does the OAuth client_secret live?** A separate `~/.papercusp/oauth/<provider>-secret` file with `0600` perms is what's proposed. Some operators may prefer environment variables (k8s-style). Should both be supported?
 2. **Multi-tenancy**: if the operator is hosted publicly (not self-hosted), every user shares the same OAuth app's redirect URI. Is that fine? Or do we shard providers per tenant?
 3. **PKCE**: required for public clients. Substrate is a confidential client (has a secret), so PKCE is optional but harmless. Probably worth implementing for defense-in-depth.
-4. **Token storage at rest**: tokens currently land in plain JSON in `~/.papercusp/harnesses/<slug>/plugin-configs/<plugin>.json`. For a multi-user host, encrypting at rest would matter. Out of V1 scope?
+4. **Token storage at rest**: the PG mirror of plugin configs is already encrypted at rest (migration 039, pgcrypto `config_ct`), and the on-disk `~/.papercusp/harnesses/<slug>/plugin-configs/<plugin>.json` is written `0600`. The remaining open item is just that on-disk plaintext file — the substrate plugin loader reads it directly and cannot decrypt, so encrypting it would mean teaching the loader a decryption path. Worth doing for a multi-user host?
 5. **Per-plugin OR per-harness OR per-user authorization**: GitHub OAuth gives the same access regardless of which harness asks; we just write the token to a different per-harness config. Should the substrate offer to *share* an authorization across harnesses (one GitHub Connect, applies to all your harnesses)? Trade-off: convenience vs. blast radius if one harness's config leaks.
 
 See [Open Questions](./open-questions).

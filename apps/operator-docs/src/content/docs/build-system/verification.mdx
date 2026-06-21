@@ -3,6 +3,13 @@ title: Verifying a build
 description: How to smoke-test each platform end-to-end before declaring the artifact good to ship.
 sidebar:
   order: 7
+plans:
+  - retire-snapshots-instance-spec-2026-06-09
+  - operator-core-headless-serve-2026-06-04
+  - revive-cupboard-distribution-2026-06-04
+  - mac-desktop-release-readiness-2026-06-11
+  - windows-desktop-release-readiness-2026-06-11
+  - desktop-app-install-integration-2026-05-23
 ---
 
 ## Pre-flight check (any platform)
@@ -12,12 +19,12 @@ Re-run the auditor on every artifact:
 ```sh
 papercusp-desktop/bin/audit-bundle.sh \
   papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
-  /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
+  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
   /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
   /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
 ```
 
-Or click **Audit prod bundles for PostHog leaks** in `/admin`. Should print `OK: 4/4`. If any FAIL, **stop** — the artifact must not ship.
+Or click **Audit prod bundles for PostHog leaks** in `/admin`. (The `.dmg` is the `universal-apple-darwin` artifact — `Papercusp_0.0.1_universal.dmg`, not `x86_64`.) Should print `OK: 4/4`. If any FAIL, **stop** — the artifact must not ship.
 
 ---
 
@@ -58,29 +65,26 @@ PROD_PORT=$(jq -r .port ~/.papercusp/operator.json)
 curl -s http://127.0.0.1:${PROD_PORT}/api/flags/bootstrap | jq
 ```
 
-Expected (the V1 ship defaults — `papercusp-snapshots` is `true` by design, every other flag `false`):
+Expected — a `source: "defaults"` payload whose `flags` object carries the **full** flag map. `getAllFlags` builds it via `resolveWithDefaults`, which spreads every key in `FLAG_DEFAULTS` (libs/flags/src/types.ts), so on a clean install you get **all ~101 flag keys**, not a handful. Many of them legitimately default `true` (51 of the keys default on, 50 off), so a clean install showing lots of `true` flags is correct, not a leak. A representative excerpt:
 
 ```json
 {
   "flags": {
-    "papercusp-snapshots": true,
     "papercusp-cloudflare-publish": false,
-    "papercusp-oracle": false,
     "papercusp-harness-phases": false,
     "papercusp-design": false,
     "papercusp-testing": false,
-    "papercusp-inbox-durable-escalations": false,
-    "papercusp-improvement-auto-implement": false,
-    "papercusp-video-channels": false,
-    "papercusp-voice-channels": false,
-    "papercusp-the-hive": false
+    "papercusp-the-hive": true,
+    "papercusp-video-channels": true,
+    "papercusp-voice-channels": true
+    // …all remaining flag keys, each at its FLAG_DEFAULTS value
   },
   "evaluatedAt": 1234567890,
   "source": "defaults"
 }
 ```
 
-`source` must be `"defaults"` (the only other values are `"posthog"` and `"override"`). A `"posthog"` source on a clean install means PostHog config leaked in. The flag *values* must match `FLAG_DEFAULTS` in `libs/flags/src/types.ts` (snapshots on; everything else off). (`papercusp-templates` / `papercusp-marketplace` were retired — distribution lives in the ungated Cupboard.)
+`source` must be `"defaults"` (the only other values are `"posthog"` and `"override"`). A `"posthog"` source on a clean install means PostHog config leaked in. Don't diff against a fixed key list — verify each value against `FLAG_DEFAULTS` in `libs/flags/src/types.ts` (the authoritative full map). Two things to know when comparing: (1) the payload contains **every** flag key, so a verifier expecting a short fixed list will falsely flag a correct install; (2) `getAllFlags` runs the stored PG override row through `resolveWithDefaults`, which **drops retired/unknown keys** — e.g. `papercusp-oracle` (folded into `papercusp-testing` by owner ask 2026-06-10) and the long-gone `SNAPSHOTS` key (retired in `retire-snapshots-instance-spec-2026-06-09`; the reproducible clone is now the ungated InstanceSpec) will never appear even if the stored row still carries them. (`papercusp-templates` / `papercusp-marketplace` were likewise retired — distribution lives in the ungated Cupboard.)
 
 ### 4. No outbound PostHog traffic
 
@@ -132,14 +136,16 @@ In the Mac VM:
 
 ```sh
 scp -i ~/.ssh/papercup-vm-mac -P 2222 \
-  /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
+  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
   aviweiss@127.0.0.1:~
 
-hdiutil attach ~/Papercusp_0.0.1_x86_64.dmg
+hdiutil attach ~/Papercusp_0.0.1_universal.dmg
 cp -R "/Volumes/Papercusp/Papercusp.app" /Applications/
 hdiutil detach "/Volumes/Papercusp"
 xattr -dr com.apple.quarantine /Applications/Papercusp.app
 ```
+
+The Mac build target is `universal-apple-darwin` (see `papercusp-desktop/bin/mac-vm-build.sh`), so it produces a single universal `.dmg` — `Papercusp_0.0.1_universal.dmg`, **not** an `x86_64` one. The "Mac Prod Build" admin command copies back and audits `Papercusp_*_universal.dmg` accordingly. (Note: the "Install + launch Mac .dmg" admin command in `admin-commands.ts` still hard-codes `Papercusp_0.0.1_x86_64.dmg` — a stale name that the build doesn't emit; prefer the universal filename until that command is reconciled.)
 
 Or click **Install + launch Mac .dmg** in `/admin`.
 
@@ -250,7 +256,8 @@ Or via Settings → Apps → Papercusp → Uninstall.
 |---|---|
 | A real PostHog key (`phx_…` / `phc_…`) found by `audit-bundle.sh` inside the install | Secret leaked into bundle — **must** rebuild |
 | `/api/flags/bootstrap` returns `source: "posthog"` on a clean install | PostHog config (env var or discovery file) made it through — leak |
-| Any flag other than `papercusp-snapshots` returns `true` | Default ship-state violated — leak |
+| A flag value disagrees with `FLAG_DEFAULTS` in `libs/flags/src/types.ts` on a clean install | Default ship-state violated — leak. (Note: 51 flags default `true`, so a clean install with many `true` flags is **correct** — only a *mismatch* against `FLAG_DEFAULTS` is a leak.) |
+| A retired key (e.g. `papercusp-oracle`, `papercusp-snapshots`) appears in the payload | `resolveWithDefaults` should have dropped it — stored override row leaking retired keys |
 | `ss -tnp` shows connection to `flags.papercuspai.com` | App phoning home in clean-install state — leak |
 | Window stuck on the bootstrap page (never navigates off `web/index.html`) | The sidecar never became ready — check the preflight handshake / serve logs |
 | `embedded-pg.json` / `operator.json` missing, or app connects to `:5432` | Embedded PG didn't bootstrap (`serve.mjs` owns this) |
@@ -267,7 +274,7 @@ Copy this and run top to bottom:
 # 1. Auditor pass
 papercusp-desktop/bin/audit-bundle.sh \
   papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
-  /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
+  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
   /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
   /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
 

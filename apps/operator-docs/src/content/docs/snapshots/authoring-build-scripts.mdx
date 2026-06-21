@@ -3,6 +3,10 @@ title: Authoring a build script
 description: How publishers ship `provision.setup` / `teardown` / `verify` scripts that work end-to-end with snapshot fork — manifest extensions, runtime helpers, project-file templating, reference plugins.
 sidebar:
   order: 2
+plans:
+  - fumadocs-to-starlight-2026-05-20
+  - plugin-system-hive-port-2026-06-11
+  - dbos-durable-flows-adoption-2026-06-02
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -89,9 +93,19 @@ value at fork time.
 Override snapshot behavior for `secret: true` fields:
 
 - `"strip"` (default) — value never travels with the snapshot
-- `"include"` — value travels (e.g. demo Slack webhook). Publish CLI
-  requires `--include-secrets` flag and per-secret confirmation
-- `"warn-and-prompt"` — publish CLI asks per-snapshot
+- `"include"` — declares that the value *may* travel (e.g. a demo Slack
+  webhook)
+- `"warn-and-prompt"` — flags the field for a per-snapshot prompt
+
+<Aside type="caution" title="Policy is declarative only today">
+`snapshotPolicy` is a share-semantics declaration on the field — the
+`papercusp snapshot publish` CLI does not yet consume it. The publish
+command tars `.papercusp/` with only `--name` / `--note` / `--icon` /
+`--include-project` / `--include-logs`; there is no `--include-secrets`
+flag or per-secret redaction step wired in. Until that lands, do not rely
+on `"include"` / `"warn-and-prompt"` to gate what leaves your host — strip
+secrets yourself before publishing.
+</Aside>
 
 ### `shareable: false`
 
@@ -190,10 +204,14 @@ auto-source `state.json`.
 |-------------------------|------------------------------------------------------|
 | `$PAPERCUSP_CONFIG`     | Full plugin config as JSON (parse with jq if needed) |
 | `$PAPERCUSP_HARNESS_SLUG` | The harness slug — useful as a default name        |
+| `$PAPERCUSP_PLUGIN_NAME`| The plugin slug                                      |
 | `$PAPERCUSP_PROJECT_DIR`| RW-mounted harness project dir (templates target)    |
 | `$PAPERCUSP_PLUGIN_DIR` | RO-mounted plugin source dir                         |
 | `$PAPERCUSP_SCRATCH_DIR`| RW-mounted scratch dir; also `$HOME` and CWD         |
 | `$PAPERCUSP_RUNTIME_LIB`| Path to lib.sh — source it for helpers               |
+| `$PAPERCUSP_RECORD_FIFO`| Record-bridge file the helpers append to (see below) |
+| `$PAPERCUSP_PLUGIN_STATE`| Full `state.json` — injected on `teardown`/`verify` only |
+| `$PAPERCUSP_PROGRESS_FD`| fd the progress/warn/error markers write to (default 2) |
 | `$PAPERCUSP_PHASE`      | One of `setup` / `teardown` / `verify`               |
 
 ## Runtime helpers (`lib.sh`)
@@ -213,13 +231,20 @@ Then use:
 | `papercusp_progress <step> <message>` | Emit a structured progress event. UI shows progress bar.   |
 | `papercusp_warn <message>`            | Surface a yellow warning indicator.                        |
 | `papercusp_error <message>`           | Surface a red error indicator (script may continue).       |
-| `papercusp_record_resource <kind> <id> [<json-meta>]` | Record a resource for teardown. Append-only WAL. |
+| `papercusp_record_resource <kind> <id> [<json-meta>]` | Record a resource for teardown. Idempotent on `(kind, externalId)` — re-recording the same resource collapses rather than duplicating. |
 | `papercusp_state_set <key> <json-value>` | Set a `state.json` output. Becomes `$OUTPUT_<key>`.     |
 | `papercusp_render_templates`          | Walk `$PAPERCUSP_PROJECT_DIR` for `*.tmpl`, render each.  |
 
 Resource kinds (`cloudflare.d1.database`, `aws.lambda.function`,
 `github.repo`) are **plugin-author vocabulary**, not substrate-defined.
 Your `teardown.sh` is the dispatcher that knows how to delete each kind.
+
+Under the hood, `papercusp_record_resource` writes newline-JSON to the
+`$PAPERCUSP_RECORD_FIFO` bridge, which the substrate folds into the
+durable store. That store is PG-backed (a single JSONB row per
+`(workspace, harness, plugin)`) — not an on-disk append-only WAL — so
+recording is a transactional read-modify-write that dedupes on
+`(kind, externalId)`.
 
 ## Project-file templating (the `.tmpl` convention)
 
@@ -264,16 +289,27 @@ plugin from one:
 papercusp plugin init my-stack --template cloudflare-stack
 cd my-stack
 # edit provision/setup.sh, configSchema, etc.
-papercusp install --from-path .
 ```
+
+<Aside type="caution" title="Local-dir install is not a wired command">
+Both this guide's older drafts and `plugin init`'s own next-steps print
+`papercusp install --from-path .`, but that flag does **not** exist.
+`papercusp install` only recognizes `--from-lock`, `--harness`, and
+`--accept-capabilities[=current|=all]`; an unknown `--from-path` token
+falls through to the positional slug and fails slug validation. Installing
+a locally-edited plugin from a directory is a documented concept, not an
+implemented install path — develop and test against your in-place copy
+(e.g. `papercusp plugin verify`) until it lands.
+</Aside>
 
 Available templates:
 
-| Template          | What it provisions                                | Use when…                                          |
-|-------------------|---------------------------------------------------|----------------------------------------------------|
-| `cloudflare-stack`| Pages + Workers + D1 + R2 + KV (mega-plugin)      | Your harness deploys to Cloudflare                 |
-| `github-repo`     | GitHub repo (single resource)                     | Your harness pushes code to GitHub                 |
-| _(more coming)_   | _aws-stack, fly-stack, render-stack, vercel-stack_| _As they ship_                                     |
+| Template           | What it provisions                                | Use when…                                          |
+|--------------------|---------------------------------------------------|----------------------------------------------------|
+| `cloudflare-stack` | Pages + Workers + D1 + R2 + KV (mega-plugin)      | Your harness deploys to Cloudflare                 |
+| `cloudflare-pages` | Cloudflare Pages only (lighter reference)         | You only need a Pages site, not the full stack     |
+| `github-repo`      | GitHub repo (single resource)                     | Your harness pushes code to GitHub                 |
+| _(more coming)_    | _aws-stack, fly-stack, render-stack, vercel-stack_| _As they ship_                                     |
 
 The `cloudflare-stack` source is the most complete worked example —
 read its [setup.sh](https://github.com/Papercusp/papercusp/blob/main/plugins/cloudflare-stack/provision/setup.sh)
@@ -287,8 +323,9 @@ Your script runs in a substrate-bundled bwrap (Linux) or sandbox-exec
 
 - **Filesystem**: RO access to `/usr`, `/lib`, `/bin`, `/etc`, your
   plugin dir; RW access to `$PAPERCUSP_SCRATCH_DIR`,
-  `$PAPERCUSP_PROJECT_DIR`, `/tmp`. Everything else is RO including
-  `$HOME`.
+  `$PAPERCUSP_PROJECT_DIR`, `/tmp`. `$HOME` is set to the RW scratch dir
+  (and CWD is `chdir`'d there too), so writes under `$HOME` land in
+  scratch — everything else is RO.
 - **Network**: outbound only to `provision.allowedHosts` (or the
   declared `cloudProvider` preset's allowlist). The substrate hard-blocks
   IMDS (`169.254.0.0/16`), RFC1918, and loopback regardless of declared
@@ -297,12 +334,33 @@ Your script runs in a substrate-bundled bwrap (Linux) or sandbox-exec
   or open browsers mid-run are killed. Use OAuth via `ctx.oauth.token()`
   in your action handlers, not `aws sso login` from setup.
 
+<Aside type="caution" title="Sandbox bypass escape hatches">
+Two env vars let the runner skip the sandbox — useful to know when
+debugging why a script behaves differently across machines:
+`PAPERCUSP_DISABLE_SANDBOX=1` (CI/test) skips sandboxing entirely, and
+`PAPERCUSP_ALLOW_NO_SANDBOX=1` (dev fallback) runs scripts unsandboxed
+after a failed bwrap smoke test, recording a `sandbox-bypass` audit event
+per run. Neither is set in normal operation; assume your script is fully
+sandboxed unless you've opted out.
+</Aside>
+
 ## Idempotency
 
 `setup.sh` runs once per `(harness, plugin)` per `(configHash,
 scriptHash, pluginVersion)` tuple. Re-runs are blocked unless the user
-explicitly clicks Re-provision OR one of the hashes changes. Inside
-your script, you should still:
+explicitly clicks Re-provision OR one of the hashes changes.
+
+How each hash decides a re-provision (the conservative defaults):
+
+- **configHash** — by default every config field is hashed, so *any*
+  config change re-provisions. Narrowing this to provisioning-relevant
+  fields requires a `provisioningFields` projection.
+- **scriptHash** — any edit to `setup.sh` always forces a re-provision,
+  regardless of `skipReprovisionOnPatch`.
+- **pluginVersion** — a major *or* minor version bump re-provisions; only
+  patch-level bumps are eligible for `skipReprovisionOnPatch`.
+
+Inside your script, you should still:
 
 - Check by name before creating resources (HTTP probe → 200 ? skip : create).
 - Call `papercusp_record_resource` either way so teardown sees the

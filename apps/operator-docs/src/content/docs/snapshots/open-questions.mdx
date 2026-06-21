@@ -3,6 +3,11 @@ title: Open questions and V1/V1.1/V2 split
 description: Each design decision rated by impact and assigned to V1 (gates "safe to release publicly"), V1.1 (improves the system, ships fast-follow), or V2 (separate workstream). Updated through round 6.
 sidebar:
   order: 6
+plans:
+  - papercusp-dogfood-v5-2026-05-23
+  - dbos-durable-flows-adoption-2026-06-02
+  - revive-plugin-system-2026-06-04
+  - plugin-system-hive-port-2026-06-11
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -38,15 +43,15 @@ Public marketplace launch is V1.1+, gated on the moderation layer.
 | Sandbox by default for *all* scripts | Without it, build scripts are an unconditioned arbitrary-code-execution vector for any approved publisher (npm event-stream / xz-utils precedent). Signing proves provenance, not safety. |
 | **Linux: bwrap with bundled binary + install-time smoke test** | Bundled bwrap covers distro variance; smoke test catches kernels with disabled unprivileged user namespaces. Failure → permanent `sandbox_available: false` → signed-only mode for substrate's lifetime |
 | **macOS: sandbox-exec + signed-only mode (no unsigned scripts at all)** | sandbox-exec is deprecated but functional — meaningful boundary against accidents. Refusing unsigned scripts on macOS plugs the "unsigned + no real sandbox" gap |
-| **Network policy floor**: 169.254.0.0/16, 127.0.0.0/8, 10/8, 172.16/12, 192.168/16, ::1, fd00::/8 always blocked, regardless of `allowedHosts` or `cloudProvider` | Closes IMDS-credential exfiltration and lateral-movement attack classes |
-| **`cloudProvider: { id, region }` presets** with monthly signed update channel + region templating | Replaces the old `network: "open"` mode which gave plugins effectively unbounded outbound network access. Per-region presets close the cross-region leak surface. |
+| **Network policy floor**: 169.254.169.254/32, 169.254.0.0/16, 127.0.0.0/8, 10/8, 172.16/12, 192.168/16, `fc00::/7` always blocked, regardless of `allowedHosts` or `cloudProvider` | Closes IMDS-credential exfiltration and lateral-movement attack classes. (Shipped `DENY_FLOOR_CIDRS` is IPv4 RFC1918 + IMDS + loopback plus the IPv6 ULA range `fc00::/7`; there is no separate `::1` entry.) |
+| **`cloudProvider: { id, region }` presets** with `${region}` templating (shipped ids: `aws`, `gcp`, `azure`, `cloudflare`) | Replaces the old `network: "open"` mode which gave plugins effectively unbounded outbound network access. Per-region presets close the cross-region leak surface. **Implementation note:** the four presets are compiled-in TypeScript constants (`PRESETS` in `network-policy.ts`) with `${region}` placeholders expanded per declared region; the originally-designed "monthly signed update channel" for preset distribution is **not built** — updating a preset means shipping a new substrate build. |
 | **Static-analysis warnings** on common destructive patterns (`curl \| bash`, `sudo`, `rm -rf $HOME`, `eval` of untrusted input, `chmod -R 777`, base64-blob-smuggle) | Cheap and high-signal; catches "I copy-pasted destructive command and didn't notice" failure mode |
 
 ### Trust, signing, and consent
 
 | Item | Why V1 |
 |---|---|
-| **Trust granularity per-(publisher, plugin)** keyed on signing-key fingerprint | Coarser-grained trust silently gives @publisher's malicious new plugin the same trust as their existing benign one |
+| **Trust granularity per-(publisher, plugin)** keyed on signing-key fingerprint | Coarser-grained trust silently gives @publisher's malicious new plugin the same trust as their existing benign one. **Implementation note:** trust now lives as a single-row-per-workspace PG record in `harness_shared.operator_trust_store` (encrypted-at-rest), superseding the earlier `<workspace>/trust.json` mode-0600 file. |
 | **Ownership transfer invalidates trust** — different `publisher_id` on a new version triggers fresh consent | Closes the xz-utils-in-miniature attack class |
 | **Key rotation events must be marketplace-countersigned** | "Publisher rotated their key, re-trust?" prompt is otherwise a phishing surface; without marketplace's infrastructure-key signature the prompt is just trust-me-bro-from-attacker |
 | **Quarantine clears trust** for the affected `(publisher, plugin)`. Publisher-key compromise advisory clears all of `(publisher, *)` | Cached trust must die when marketplace flags anything bad |
@@ -56,10 +61,10 @@ Public marketplace launch is V1.1+, gated on the moderation layer.
 
 | Item | Why V1 |
 |---|---|
-| **PG-backed `harness_shared.operator_claims`** for setup locking with PG advisory locks + heartbeat-renewed `expires_at` | File-based locks don't survive multi-machine harness sharing (laptop ↔ desktop split-brain) |
-| **`papercusp_record_resource <kind> <id>`** helper that writes to `state.json` immediately | Plugin authors aren't infra engineers; partial-failure rollback should not require defensive idempotency-handling logic in setup.sh |
-| **Recovery contract**: stale-lock detection prompts cleanup before re-trying setup; partial-failure offers automatic teardown of recorded resources | Killed/crashed setup leaves undiagnosable orphan resources |
-| **Teardown contract**: plugin's `teardown.sh` is the dispatcher; receives recorded resource list via `state.json` and dispatches per `kind` | Locks Path 1 explicitly so plugin authors don't ship empty teardown.sh assuming substrate magic |
+| **Provision concurrency + crash-recovery owned by the DBOS provision workflow** (the workflow's `deduplicationID` is the cross-request mutex; DBOS recovery is the liveness) | File-based locks don't survive multi-machine harness sharing (laptop ↔ desktop split-brain). **Superseded design:** an earlier PG `harness_shared.operator_claims` table with advisory locks + 30s heartbeat-renewed `expires_at` was *built and then dropped* in the DBOS-only cutover (migration 112 drops the table; no claims table, no heartbeat remain). See [revisions § Round 3 item 10](./revisions) and plan `dbos-durable-flows-adoption-2026-06-02`. |
+| **`papercusp_record_resource <kind> <id>`** helper for recording created resources | Plugin authors aren't infra engineers; partial-failure rollback should not require defensive idempotency-handling logic in setup.sh. **Implementation note:** the helper writes newline-delimited JSON to a FIFO/record file (`PAPERCUSP_RECORD_FIFO`); the substrate tails that file on a 200ms tick and folds each entry into the PG-backed provision-state row (the row IS the authoritative state — there is no `state.json` file). |
+| **Recovery contract**: partial-failure offers automatic teardown of recorded resources | Killed/crashed setup leaves undiagnosable orphan resources. **Implementation note:** stale-lock detection is gone — crash-recovery is now DBOS workflow recovery, and recorded resources live in the PG provision-state row, not a `state.json` file. |
+| **Teardown contract**: plugin's `teardown.sh` is the dispatcher; receives the recorded resource list and dispatches per `kind` | Locks Path 1 explicitly so plugin authors don't ship empty teardown.sh assuming substrate magic. The resource list comes from the PG-backed provision-state row (formerly `state.json`). |
 | **OAuth `ctx.oauth.token(field)` helper** with pre-emptive refresh + 401 retry-once + Promise-cache for concurrent-refresh storm | Every plugin reinvents refresh logic poorly; offline-laptop case produces inscrutable failures; concurrent calls without Promise-cache race the provider's refresh endpoint |
 | **PAT scope introspection** (V1 GitHub) | Hybrid-mode pastes silently produce under-scoped tokens that break action handlers at runtime |
 | **OAuth state in URL parameter, not cookie** (HMAC + single-use nonce) | Cookies collide on concurrent flows; URL state is per-flow by construction |
@@ -71,7 +76,7 @@ Public marketplace launch is V1.1+, gated on the moderation layer.
 | Item | Why V1 |
 |---|---|
 | **Schema evolution**: per-property `aliases` array for both renames (`["oldName"]`) and removals (`[null]`), walked from current installed plugin's manifest | A single plugin version bump silently breaks every snapshot pinned to the old version |
-| **`versionPin: { mode: "exact" }` is the reproducible default** (legacy `pluginVersionPinned: true` maps to it) | Pinning is the right default; alias-walk only happens on explicit "fork against latest" opt-in. Drastically reduces alias-map maintenance burden. |
+| **`versionPin: { mode }`** — shipped defaults: `"semver"` for JS plugins, `"hash"` for WASM/daemon plugins; `"exact"` is the mapping for legacy `pluginVersionPinned: true` | Alias-walk only happens on explicit "fork against latest" opt-in. **Correction:** the canonical SDK type and JSON schema both default JS plugins to `"semver"` (accept any version satisfying the captured range), *not* `"exact"`. (The CLI metadata-display fallback in `snapshot-cli.ts` shows `"exact"` only when the field is absent on a legacy snapshot — a display quirk, not the canonical default.) |
 | **`securityAdvisories` field** on marketplace catalog per-version; fork-time prompt loud when pinned version has open advisory | Pinning a vulnerable version is otherwise a vulnerability vector |
 | **`secret`** + **`snapshotPolicy: "include" \| "strip" \| "warn-and-prompt"`** with strip default; `--include-secrets` flag at publish + per-secret confirmation | Plugin authors otherwise hardcode secrets into project files for demos, defeating the purpose |
 | **`shareable: false`** + JSON-Schema `pattern` for format validation by convention | Format validation prevents fork-time typos in account IDs, region names, etc. |
@@ -82,8 +87,9 @@ Public marketplace launch is V1.1+, gated on the moderation layer.
 
 | Item | Why V1 |
 |---|---|
-| **Audit log defaults**: 1 year retention, 50 MB per (harness, plugin) cap, oldest-first eviction; **per-plugin `auditLogCapMb` override** in manifest surfaced in consent dialog | Forensic logs consulted months later; legitimate terraform-class plugins need higher caps with explicit consent |
+| **Audit log**: PG-backed, one row per event in `harness_shared.provision_audit_log` — no cap, no truncation, no eviction | Forensic logs consulted months later. **Superseded design:** the original 1-year retention / 50 MB per-(harness, plugin) cap / oldest-first eviction is **not implemented** — PG absorbs the volume, and a future retention policy is only a TODO (a scheduled `DELETE`). The manifest `auditLogCapMb` argument still parses but is **ignored** by `appendAudit` (the removed file-based version capped at 10 MB, not 50 MB). See [revisions § Audit log retention](./revisions). |
 | **Audit log fail-loud** on encrypted-locked filesystems | Silent audit-swallowing is a worse failure mode than refusing to run |
+| **Encryption-at-rest for credential/token storage** (pgcrypto `pgp_sym_*`) — *shipped, not deferred* | Sensitive payloads are stored as a sibling `payload_ct BYTEA` column on the tables in `ENCRYPTED_TABLES` (operator credentials, voice credentials, marketplace token, publish credentials, trust store, search-provider credentials); plugin configs holding `ctx.oauth` tokens are encrypted via `plugin_configs.config_ct`. The symmetric key is bootstrapped at `~/.papercusp/db-encryption-key` (or `PAPERCUSP_DB_ENCRYPTION_KEY`). *(Earlier drafts listed this under V2; it is already implemented.)* |
 | **Single-user host detection**: primary `who \| sort -u \| wc -l > 1`; secondary passwd UID-≥-1000 + `/home/<n>/` + login-shell filter; one-time acknowledgement banner on shared-host | V1 explicitly targets single-user dev/desktop; without enforcement, threat model silently doesn't hold on shared hosts |
 | **Vetted-publisher allowlist process documented**: GitHub issue at github.com/papercupai/papercusp-publishers; reviewed within N business days; allowlist published; appeals via issue thread | Without a public process, "vetted alpha" is opaque-by-default — defeats the moderation framing |
 | **Interactive-subprocess ban**: `requiresInteractive: false` enforced; substrate refuses scripts that read from stdin or open browsers mid-run | `aws sso login`-style scripts hang the operator with no UI feedback |
@@ -118,7 +124,6 @@ Public marketplace launch is V1.1+, gated on the moderation layer.
 | **macOS Tauri sidecar with restricted entitlements** (`Info.plist`-declared) | Defense-in-depth on top of V1's sandbox-exec; the operator already runs on Tauri so the surface exists |
 | Per-cloud `budgetCap` helpers beyond AWS (GCP, Azure, Cloudflare) | Ship AWS in V1.1; add others as plugin authors demand |
 | Layer-7 network policy proxy with TLS interception | V1 enforces via OS sandbox + cloudProvider presets; V2 adds richer per-request observability (requires CA cert provisioning, real install pain) |
-| Encrypted-at-rest token storage | Only matters for shared-host scenarios that aren't the V1 target |
 | AST-level static analysis on provision scripts | V1 pattern matcher catches dumb-pattern attacks; AST-level catches more sophisticated ones (per-language parsers required) |
 | Windows sandboxing (Job objects + restricted tokens) | V1 is Linux-primary, macOS-supported, Windows-banner-only |
 | Substrate-level teardown dispatcher (substrate knows how to delete `aws.lambda.function`, etc.) | V1 keeps `teardown.sh` as the dispatcher; V2 adds built-in handlers for common kinds |
@@ -134,18 +139,18 @@ Before V1 implementation begins, these need explicit sign-off:
 - [ ] **macOS: signed-only mode + sandbox-exec, no unsigned-script path** in V1
 - [ ] **`PAPERCUSP_DEV_UNSIGNED=<sha256>`** + `papercusp plugin install --dev` is the only macOS dev escape
 - [ ] **Network policy floor (IMDS + RFC1918 + loopback) always blocks**, regardless of `allowedHosts` or `cloudProvider`
-- [ ] **`cloudProvider` presets with region templating** + monthly signed update channel
+- [ ] **`cloudProvider` presets with `${region}` templating** (shipped ids `aws`/`gcp`/`azure`/`cloudflare` as compiled-in constants; the "monthly signed update channel" is a design target, not built)
 - [ ] **Trust per-(publisher, plugin)** keyed on signing-key fingerprint
 - [ ] **Ownership transfer invalidates trust**
 - [ ] **Key-rotation events marketplace-countersigned**
 - [ ] **Cost field dropped from V1**; budget enforcement comes via real `budgetCap` helper in V1.1
-- [ ] **Audit retention defaults** (1y / 50MB cap) + `auditLogCapMb` per-plugin override + fail-loud on encrypted-locked volumes
+- [ ] **Audit log is PG-backed and uncapped** (no 1y retention / 50 MB cap / eviction — that design was superseded; `auditLogCapMb` is parsed but ignored) + fail-loud on encrypted-locked volumes
 - [ ] **`aliases` covers both renames and removals**
-- [ ] **`versionPin: { mode: "exact" }` is the reproducible default** (legacy `pluginVersionPinned: true` maps to it); security advisories prompt loudly at fork
+- [ ] **`versionPin: { mode }` defaults** — `"semver"` for JS plugins, `"hash"` for WASM/daemon; `"exact"` is the legacy `pluginVersionPinned: true` mapping (not the default); security advisories prompt loudly at fork
 - [ ] **`runAt: "first-action"` synchronization contract** (action returns `setup-required`; hooks queued + replayed; webhooks 503'd) is the locked design
 - [ ] **Default for structural-vs-operational fields is `structural`**
 - [ ] **`papercusp_record_resource` helper** + plugin's `teardown.sh` as dispatcher
-- [ ] **PG-based `operator_claims` lock** (not file-based) for multi-machine fork safety
+- [ ] **DBOS provision workflow owns concurrency** (`deduplicationID` = cross-request mutex; DBOS recovery = liveness) — the earlier PG `operator_claims` advisory-lock + heartbeat was built and then dropped (migration 112)
 - [ ] **`who`-based shared-host detection** + one-time acknowledgement banner
 - [ ] **Vetted-publisher allowlist process documented** as part of V1 launch criterion
 - [ ] **`arctic` adoption gated on supply-chain audit**; rolled-our-own is the fallback
@@ -155,7 +160,7 @@ Before V1 implementation begins, these need explicit sign-off:
 Once these are checked, implementation begins. The order is:
 
 1. **PR 1** (~600 LOC): Snapshot share-semantics + OAuth substrate + GitHub provider + `ctx.oauth.token()` helper + paste-PAT scope check + version pinning (`versionPin`) + security-advisory consultation
-2. **PR 2** (~1,400–1,500 LOC): Build-script lifecycle (manifest, runner, sandbox with bwrap-bundling + smoke test, audit, recovery via PG, consent flow, cloudProvider presets, network floor, trust per-(publisher, plugin) with rotation/transfer, hook queue-and-replay, single-user-host detection, helper library) + dogfooded against the existing `cloudflare-pages-hosted` Worker deploy
+2. **PR 2** (~1,400–1,500 LOC): Build-script lifecycle (manifest, runner, sandbox with bwrap-bundling + smoke test, audit, crash-recovery + concurrency via the DBOS provision workflow, PG-backed provision state, consent flow, cloudProvider presets, network floor, trust per-(publisher, plugin) with rotation/transfer, hook queue-and-replay, single-user-host detection, helper library) + dogfooded against the existing `cloudflare-pages-hosted` Worker deploy
 3. **PR 3** (V1.1 onward): github-repo refactored to use build scripts + `runAt` scheduling + `budgetCap` + AWS-Budgets helper + skip-teardown banner + marketplace moderation layer (separate spec)
 
 ## Long-tail design questions

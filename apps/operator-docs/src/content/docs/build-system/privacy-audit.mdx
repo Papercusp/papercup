@@ -62,7 +62,7 @@ posthog-js@
 
 `posthog-js` is dynamic-imported only when the user opts into telemetry (default off), so its presence isn't a leak per se — but a hostile fork could strip the opt-in gate, so it's worth flagging. WARN, not FAIL.
 
-Documentation paths (`content/docs`, `*.mdx`, `*.md`, `*.rsc`, prerendered `app/docs/*.html`) are excluded from the FAIL scan via an `exclude_re` so legitimate prose mentions of the needles don't trip it.
+Documentation paths (`content/docs`, any `/docs/` path segment, `*.mdx`, `*.md`, `*.rsc`, prerendered `app/docs/*.html`) are excluded from the FAIL scan via an `exclude_re` so legitimate prose mentions of the needles don't trip it.
 
 ## Supported artifact formats
 
@@ -89,7 +89,7 @@ bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
 
 Exit codes:
 - `0` — all clean (`OK: N/N artifacts clean`)
-- `1` — at least one artifact had a match
+- `1` — at least one artifact had a match, or a named artifact was not found. A missing/`not found` artifact is counted as a failure (`FAIL: <artifact> (not found)`), and the exit-1 summary line reads `FAIL: N of M artifacts contain PostHog leaks`.
 - `2` — usage error
 
 ## /admin integration
