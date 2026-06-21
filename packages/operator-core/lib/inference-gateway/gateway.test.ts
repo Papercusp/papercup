@@ -1143,15 +1143,14 @@ test('[B-GW-2 chaos] a hung OAuth-TOKEN endpoint under high concurrency — ever
 // maxConcurrent DOWN (then a clean 200 stream recovers it), and the all-pool-throttled fail-fast shed.
 // ---------------------------------------------------------------------------------------------------
 
-test('[B-GW-1 AIMD] sustained upstream 429s SHRINK the effective admission concurrency, then 200s recover it', async () => {
-  // Pool of 3. The upstream 429s (usage-cap, backoff-0 internal rotation) for the first 2 calls then 200s.
-  // 3-account pool with PER-ACCOUNT governors (governorFor:undefined overrides boot's single shared
-  // governor → the registry's per-(model,account) buckets, so one account's 429 pause doesn't pause the
-  // others). ONLY the first upstream call 429s (a BARE transient burst → a short pace + fast pool
-  // rotation); every later call 200s. Request 1: the throttled account 429s (recordThrottle → trips a
-  // decrease at threshold 1) → rotate to a healthy account → 200. The throttled account is then briefly
-  // paced + pool-skipped, so later requests route to the CLEAN accounts → 200, each draining pressure +
-  // earning additive recovery toward the cap.
+test('[B-GW-1 AIMD] a routed-around per-account 429 does NOT shrink global admission concurrency (budget-aware routing)', async () => {
+  // THE FIX (2026-06-21 budget-aware routing): a per-account quota/throttle 429 that successfully fails
+  // over to a HEALTHY account is a ROUTING event, NOT gateway-over-drive — it must NOT shrink the global
+  // admission concurrency. (The bug it replaces: EVERY 429 recordThrottle'd, so hitting one of the
+  // 98-99%-maxed accounts collapsed effective→AIMD-floor even though other accounts had 55-91% headroom →
+  // requests queued behind a tiny gate and timed out → the owner-reported bee "API errors".) Pool of 3 with
+  // per-account governors; account A 429s once (a bare transient burst) then 200s; request 1 routes A→B and
+  // succeeds. AIMD must stay pinned at the cap — the healthy accounts are never choked by A's quota hit.
   resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
   const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
@@ -1160,8 +1159,8 @@ test('[B-GW-1 AIMD] sustained upstream 429s SHRINK the effective admission concu
     (_req, res) => {
       calls += 1;
       if (calls === 1) {
-        // BARE 429: rate_limit_error, NO window headers → a short transient burst-throttle the gateway
-        // paces + rotates off (not a long usage cap), so the pool recovers fast.
+        // BARE 429: rate_limit_error, NO window headers → a short transient burst-throttle on account A
+        // that the gateway routes around to a healthy account.
         res.writeHead(429, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
       } else {
@@ -1175,28 +1174,57 @@ test('[B-GW-1 AIMD] sustained upstream 429s SHRINK the effective admission concu
   const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r1.status, 200, 'request recovered via failover off the throttled account');
   await r1.text();
-  let s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; concurrencyCap: number; aimd: { effective: number; cap: number; decreases: number } };
+  const s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; concurrencyCap: number; aimd: { effective: number; cap: number; decreases: number } };
   assert.equal(s.concurrencyCap, 8, 'the cap is the configured concurrency');
-  assert.ok(s.aimd.decreases >= 1, `the upstream 429 tripped ≥1 AIMD decrease (got ${s.aimd.decreases})`);
-  assert.ok(s.admission.maxConcurrent < 8, `effective admission concurrency shrank below the cap (got ${s.admission.maxConcurrent}/8)`);
-  const shrunk = s.aimd.effective;
-
-  // Now drive a run of clean 200s (routing to the healthy accounts) → additive recovery toward the cap.
-  for (let i = 0; i < 10; i++) {
-    const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
-    const rb = await r.text();
-    assert.equal(r.status, 200, `recovery request ${i} got ${r.status} (calls=${calls}, body=${rb.slice(0, 100)})`);
-  }
-  s = (await (await ask('/stats')).json()) as typeof s;
-  assert.ok(s.aimd.effective > shrunk, `effective concurrency recovered after clean 200s (${shrunk} → ${s.aimd.effective})`);
-  assert.ok(s.aimd.effective <= 8, 'recovery never exceeds the cap');
-  // No slot leak: every request settled, nothing pinned.
-  assert.equal(((await (await ask('/stats')).json()) as { inFlight: number }).inFlight, 0, 'no admission slot leaked under the AIMD storm + recovery');
+  assert.equal(s.aimd.decreases, 0, `a routed-around 429 must NOT trip an AIMD decrease (got ${s.aimd.decreases})`);
+  assert.equal(s.admission.maxConcurrent, 8, `global admission stayed at the cap — the healthy accounts are not choked (got ${s.admission.maxConcurrent}/8)`);
+  assert.equal(s.aimd.effective, 8, 'effective concurrency unchanged: one account 429ing does not throttle the whole pool');
+  assert.equal(((await (await ask('/stats')).json()) as { inFlight: number }).inFlight, 0, 'no admission slot leaked');
 }, 20_000);
 
-test('[B-GW-1 AIMD] effective admission concurrency never drops below the floor under a relentless 429 storm', async () => {
-  // 6 accounts, all usage-cap-429: one request rotates through all 6 (6 recordThrottle, backoff 0) → many
-  // decreases, but the effective concurrency bottoms out at the configured floor, never lower.
+test('[B-GW-1 AIMD] a single-account 429 storm DOES shrink effective concurrency, then clean 200s recover it', async () => {
+  // With ONE account there is nothing to route around, so every 429 is genuine over-drive → recordThrottle
+  // → shrink; a forwarded 200 drains the pressure + additively recovers toward the cap. The budget-aware
+  // fix only changes the MULTI-account routed-around case; the single-account shrink/recover loop is intact.
+  resetGovernorRegistry();
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls += 1;
+      if (calls <= 4) {
+        // BARE 429 → a usage-cap-style forward on the sole account (no rotation target), counted as throttle.
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: "You've hit your session limit · resets 10:50am" } }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    },
+    { concurrency: 8, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 2 } },
+  );
+  for (let i = 0; i < 4; i++) {
+    const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+    await r.text();
+  }
+  let s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; aimd: { effective: number; decreases: number } };
+  assert.ok(s.aimd.decreases >= 1, `the single-account 429 storm tripped ≥1 AIMD decrease (got ${s.aimd.decreases})`);
+  assert.ok(s.aimd.effective < 8, `effective shrank below the cap (got ${s.aimd.effective})`);
+  const shrunk = s.aimd.effective;
+  for (let i = 0; i < 12; i++) {
+    const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
+    assert.equal(r.status, 200, `recovery request ${i}`);
+    await r.text();
+  }
+  s = (await (await ask('/stats')).json()) as typeof s;
+  assert.ok(s.aimd.effective > shrunk, `effective recovered after clean 200s (${shrunk} → ${s.aimd.effective})`);
+  assert.equal(((await (await ask('/stats')).json()) as { inFlight: number }).inFlight, 0, 'no slot leaked');
+}, 20_000);
+
+test('[B-GW-1 AIMD] a POOL-WIDE 429 storm shrinks effective concurrency to — but never below — the floor', async () => {
+  // 6 accounts, ALL usage-cap-429: every request rotates through all 6 and is forwarded the 429. Under the
+  // budget-aware throttle accounting (2026-06-21) a request records ONE throttle only when it could NOT be
+  // routed to ANY healthy account (genuine pool-wide saturation) — so it takes a few requests to walk the
+  // effective concurrency down, but it must bottom out AT the configured floor and never go below.
   resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
   const pool = createFailoverPool(['A', 'B', 'C', 'D', 'E', 'F'].map(acct));
@@ -1207,11 +1235,14 @@ test('[B-GW-1 AIMD] effective admission concurrency never drops below the floor 
     },
     { pool, concurrency: 16, aimd: { floor: 3, decreaseThreshold: 1 } },
   );
-  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(r.status, 429, 'pool exhausted → the usage-cap 429 is forwarded after rotation');
-  await r.text();
+  // Walk several fully-saturated requests through; each records one throttle → one decrease until the floor.
+  for (let i = 0; i < 8; i++) {
+    const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(r.status, 429, 'pool exhausted → the usage-cap 429 is forwarded after rotation');
+    await r.text();
+  }
   const s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; aimd: { effective: number; floor: number; decreases: number } };
-  assert.ok(s.aimd.decreases >= 1, 'the storm tripped AIMD decreases');
+  assert.ok(s.aimd.decreases >= 1, 'a pool-wide-saturation 429 DID trip AIMD decreases');
   assert.equal(s.aimd.effective, 3, `effective concurrency pinned at the floor (got ${s.aimd.effective}), never below`);
   assert.equal(s.admission.maxConcurrent, 3, 'the queue cap was driven to the floor, not lower');
 }, 20_000);
