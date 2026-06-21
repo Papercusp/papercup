@@ -1587,8 +1587,14 @@ export interface WatchdogDeps {
   processAutoClose?: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
 }
 
-/** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down. */
-export async function defaultPapercuspCollectors(workspaceId: string, opts: CollectOptions = {}): Promise<WatchdogCollector[]> {
+/** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down.
+ *  `opts.installSlug` (carried on the WatchdogTickOptions the tick passes through) is threaded
+ *  to the dispatcher-staleness collector so it mirrors the dispatcher's runner/flag resolution
+ *  (EI-2150). */
+export async function defaultPapercuspCollectors(
+  workspaceId: string,
+  opts: CollectOptions & { installSlug?: string | null } = {},
+): Promise<WatchdogCollector[]> {
   return [
     {
       name: 'papercusp-red-test',
@@ -1651,6 +1657,10 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
         import('./dispatcher-staleness').then((m) =>
           m.collectDispatcherStalenessSignals(workspaceId, {
             dispatcherStalenessThresholdHours: opts.dispatcherStalenessThresholdHours,
+            // Mirror the dispatcher's armed inputs (EI-2150): without the install slug the
+            // collector reads the runner env-only and skips as "disarmed" in the env-unset
+            // config that caused the incident — going dark in the scenario it exists to watch.
+            installSlug: opts.installSlug,
           }),
         ),
     },
