@@ -9,6 +9,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { captureRecipe } from './capture-recipe';
+import type { SimilarRecipe } from '../../code-recipes-search';
 
 /**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
@@ -109,34 +110,45 @@ export default defineTool({
       timeoutMs: args.timeoutSec ? args.timeoutSec * 1000 : undefined,
     });
 
-    // CAPTURE (code-recipes-2026-06-21 P-003): every SUCCESSFUL, non-dry-run code:run is
-    // saved as a reusable recipe (D-012). Best-effort — wrapped so it can NEVER break the
-    // run (a dry-run is a preview, not an execution, so it captures nothing). DEDUP is
-    // Phase 2; this only captures. The await keeps the recipe durable before we return, but
-    // captureRecipe swallows every failure internally.
+    // CAPTURE + DEDUP (code-recipes-2026-06-21 P-003/P-004): every SUCCESSFUL, non-dry-run
+    // code:run is saved as a reusable recipe (D-012), and the capture path ALSO returns the
+    // top prior recipes that already do something similar (semantic + structural dedup, D-003).
+    // Best-effort — wrapped so it can NEVER break the run (a dry-run is a preview, not an
+    // execution, so it captures nothing). The await keeps the recipe durable before we return,
+    // but maybeCaptureRecipe swallows every failure internally.
+    //
+    // similarRecipes is ADVISORY/SOFT: the run STILL ran + STILL captured. It tells the agent
+    // "recipes X/Y already do this — next time recipes:run(X) instead of re-authoring".
+    let similarRecipes: SimilarRecipe[] = [];
     if (result.ok && !(args.dryRun ?? false)) {
-      await maybeCaptureRecipe(args, ctx, all, allowed);
+      similarRecipes = await maybeCaptureRecipe(args, ctx, all, allowed);
     }
 
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    const payload =
+      similarRecipes.length > 0 ? { ...result, similarRecipes } : result;
+    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });
 
 /**
  * Resolve the capture deps (PG handle, embedder, hive resolver) + the acting
- * agent's identity from ctx, then upsert the recipe. Lazy imports keep
- * projected-tool-deps' early load free of db-org / embedder / hive-federation
+ * agent's identity from ctx, then upsert the recipe + run dedup. Lazy imports
+ * keep projected-tool-deps' early load free of db-org / embedder / hive-federation
  * cycles, and every step is best-effort (captureRecipe itself try/catches).
+ *
+ * Returns the top similar PRIOR recipes (P-004 dedup) so the caller can surface
+ * them SOFT in the code:run result. Returns [] on any wiring failure — capture +
+ * dedup must NEVER break the run.
  */
 async function maybeCaptureRecipe(
   args: { script: string; title?: string; description?: string },
   ctx: UnifiedToolContext,
   tools: ReturnType<typeof listAllProjectedTools>,
   allowed: ReadonlySet<string>,
-): Promise<void> {
+): Promise<SimilarRecipe[]> {
   try {
     const workspaceId = ctx.workspaceId;
-    if (!workspaceId) return; // no workspace ⇒ nothing to scope a recipe to
+    if (!workspaceId) return []; // no workspace ⇒ nothing to scope a recipe to
 
     const { getOrgPg } = await import('@papercusp/db-org');
     const { buildQueryEmbedder } = await import('../search/embedder');
@@ -152,7 +164,7 @@ async function maybeCaptureRecipe(
 
     const embedder = await buildQueryEmbedder().catch(() => null);
 
-    await captureRecipe(
+    const captured = await captureRecipe(
       {
         sql: getOrgPg().sql,
         embed: async (text) => (embedder ? embedder(text) : null),
@@ -171,7 +183,9 @@ async function maybeCaptureRecipe(
         allowed,
       },
     );
+    return captured?.similarRecipes ?? [];
   } catch (err) {
     ctx.log(`code:run recipe capture wiring failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
+    return [];
   }
 }
