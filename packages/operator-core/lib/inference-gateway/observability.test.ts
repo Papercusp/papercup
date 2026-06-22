@@ -22,6 +22,8 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   upstreamErrors: 0,
   egressCircuitOpens: 0,
   egressFailsByAccount: {},
+  egressAttemptsByAccount: {},
+  egressFailRateByAccount: {},
   selfHealReclaims: 0,
   stallsRecorded: 0,
   codex: { requests: 0, upstream429: 0, failovers: 0, errors: 0 },

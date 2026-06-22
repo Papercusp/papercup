@@ -62,12 +62,18 @@ export async function syncWorkItemDepEdges(
   harnessSlug: string,
   featureId: string,
   blockedBy: readonly string[],
+  opts: { enforceAcyclicity?: boolean } = {},
 ): Promise<void> {
-  const current = await getWorkItemDepBlockers(harnessSlug);
-  if (wouldCreateCycle(current, featureId, blockedBy)) {
-    throw new Error(
-      `work_item_deps: setting blocked_by for ${harnessSlug}#${featureId} would create a dependency cycle`,
-    );
+  // Acyclicity is enforced for DIRECT writes (default). The transitional dual-write from
+  // syncFeatureBlockEdges passes enforceAcyclicity:false — coord_links already accepted the set,
+  // so the mirror must not throw (it would break the authoritative write during the cutover).
+  if (opts.enforceAcyclicity ?? true) {
+    const current = await getWorkItemDepBlockers(harnessSlug);
+    if (wouldCreateCycle(current, featureId, blockedBy)) {
+      throw new Error(
+        `work_item_deps: setting blocked_by for ${harnessSlug}#${featureId} would create a dependency cycle`,
+      );
+    }
   }
   const { sql } = getOrgPg();
   const blockedRef = featureRef(harnessSlug, featureId);

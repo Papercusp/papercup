@@ -21,6 +21,7 @@
     "@papercusp/audio-dsp": "*",
     "@papercusp/bench-metrics": "*",
     "@papercusp/blueprint-distribution": "*",
+    "@papercusp/cache": "*",
     "@papercusp/chat-protocol": "*",
     "@papercusp/debounce-coalesce": "*",
     "@papercusp/deployment-driver": "*",

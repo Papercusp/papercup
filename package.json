@@ -41,6 +41,7 @@
     "libs/generic/failure-detector",
     "libs/generic/fanout-resolver",
     "libs/generic/projection-index",
+    "libs/generic/cache",
     "libs/generic/activity-bridge",
     "libs/generic/pubsub-substrate",
     "libs/generic/plugin-loader",

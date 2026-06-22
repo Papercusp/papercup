@@ -86,6 +86,14 @@ test('a dead/hanging egress proxy on one account FAILS OVER to a healthy account
   assert.equal(res.headers.get('x-papercusp-routed-account'), 'OK', 'routed-account header names the survivor (the failover is visible, not silent)');
   assert.ok(calls.includes('DEAD'), 'the dead account was attempted first');
   assert.ok(calls.includes('OK'), 'then the request rotated to the healthy account');
+  // Volume-fair rate: DEAD failed its single attempt (1/1 = 1.0); OK served its single attempt (0/1 = 0.0). The
+  // rate is per-account-denominated, so a dead proxy reads 1.0 even on tiny traffic and a healthy one reads 0.0 —
+  // exactly the signal a raw count buries when one proxy is busier than another.
+  const s = gw.stats();
+  assert.equal(s.egressAttemptsByAccount.DEAD, 1, 'DEAD got one egress attempt (the denominator)');
+  assert.equal(s.egressAttemptsByAccount.OK, 1, 'OK got one egress attempt');
+  assert.equal(s.egressFailRateByAccount.DEAD, 1, 'DEAD: 1 fail / 1 attempt = 1.0');
+  assert.equal(s.egressFailRateByAccount.OK, 0, 'OK: 0 fail / 1 attempt = 0.0 (served), even though it carried the same traffic');
 });
 
 test('N consecutive transport failures OPEN the egress circuit (account paused + stat) and return a retryable 503 — never a wedge', async () => {
@@ -113,6 +121,11 @@ test('N consecutive transport failures OPEN the egress circuit (account paused +
     governor.state.pausedUntil > Date.now(),
     'the dead account governor is PAUSED — the same lever as the 429 hard-cap, so the selector routes around it (no longer scored "healthiest")',
   );
+  // Normalized egress-failure RATE (2026-06-22 audit): every one of DEAD's 3 attempts transport-failed, so its
+  // rate is 1.0 over 3 attempts — the volume-fair "this proxy is dead" signal, not just a raw count.
+  assert.equal(s.egressAttemptsByAccount.DEAD, 3, 'every attempt on DEAD is counted as the rate denominator');
+  assert.equal(s.egressFailsByAccount.DEAD, 3, 'all 3 attempts transport-failed');
+  assert.equal(s.egressFailRateByAccount.DEAD, 1, 'egressFailRateByAccount = fails/attempts = 3/3 = 1.0 (dead proxy)');
 });
 
 test('a successful response RESETS the streak — a flapping proxy that recovers does not accumulate toward the circuit', async () => {

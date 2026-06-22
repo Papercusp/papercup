@@ -21,6 +21,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { featureRef, FEATURE_KIND } from '../issue-blocks-merge';
+import { syncWorkItemDepEdges } from './work-item-deps-store';
 
 /**
  * For one harness, every feature with ≥1 feature→feature `blocks` edge, keyed by the
@@ -79,6 +80,20 @@ export async function syncFeatureBlockEdges(
         ON CONFLICT (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel) DO NOTHING`;
     }
   });
+  // P-003 transitional dual-write (work-item-deps-and-readiness-2026-06-22): mirror the same blocker
+  // set into the dedicated work_item_deps table so it stays a COMPLETE mirror during the
+  // coord_links -> work_item_deps cutover (the blockersOf() seam flips its read once backfill +
+  // dual-write are in place). Best-effort + non-throwing: coord_links is still authoritative here and
+  // acyclicity is disabled for the mirror (coord_links already accepted this set), so a mirror failure
+  // can never break the authoritative write during the transition.
+  try {
+    await syncWorkItemDepEdges(harnessSlug, featureId, blockedBy, { enforceAcyclicity: false });
+  } catch (err) {
+    console.warn(
+      `[feature-blockers-edges] work_item_deps mirror failed for ${harnessSlug}#${featureId}:`,
+      err,
+    );
+  }
 }
 
 /** One feature→feature `blocks` edge row, ready to INSERT into coord_links. */
