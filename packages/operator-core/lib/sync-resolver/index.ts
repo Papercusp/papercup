@@ -1755,6 +1755,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return enrichPlanListRows(plans);
     },
   },
+  // plans.byHive — CROSS-MEMBER browse (WI-259 P-006, D-010). Plans across EVERY
+  // member harness of a shared hive. Reuses plans.list's read with the member-slug
+  // SET (callPlansRead already accepts `harness_slugs` — read-dispatch.ts), so the
+  // rows are identical to the per-harness list (each carries its harness_slug =
+  // member origin) + the same attribution enrichment. Member-origin-scoped reads
+  // (plans.list) are UNCHANGED; this is the explicit cross-member rollup view.
+  'plans.byHive': {
+    argsSchema: z.object({ hiveHomeSlug: z.string(), workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { hiveHomeSlug, workspaceId } = args as { hiveHomeSlug: string; workspaceId?: string };
+      const memberSlugs = await resolveHiveMemberSlugs(hiveHomeSlug, workspaceId);
+      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('list', { harness_slugs: memberSlugs })) as {
+        plans?: unknown[];
+      };
+      const plans = Array.isArray(r?.plans) ? r.plans : [];
+      if (plans.length === 0) return plans;
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return plans;
+      const { enrichPlanListRows } = await import('./plan-attribution');
+      return enrichPlanListRows(plans);
+    },
+  },
   // plans.viewer — the current viewer's plan-OWNER identity (their git email),
   // for the plans list "my / others' / all" saved views (shared-hive-collaboration
   // P-002). One row: [{ email }] (email null when unresolvable → UI degrades).
@@ -3544,24 +3568,35 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .object({
         harnessSlug: z.string().min(1).optional(),
         allHives: z.boolean().optional(),
+        limit: z.number().int().positive().max(2000).default(1000),
       })
       .optional(),
     resolve: async (args) => {
-      const { harnessSlug, allHives } = (args ?? {}) as { harnessSlug?: string; allHives?: boolean };
-      const [{ getOrgPg }, { listRecipes }, { activeWorkspaceId }, { hiveHomeSlugForHarness }] =
+      const { harnessSlug, allHives, limit } = (args ?? {}) as {
+        harnessSlug?: string;
+        allHives?: boolean;
+        limit?: number;
+      };
+      const lim = limit ?? 1000;
+      const [{ getOrgPg }, { listRecipes, countRecipes }, { activeWorkspaceId }, { hiveHomeSlugForHarness }] =
         await Promise.all([
           import('@papercusp/db-org'),
           import('../code-recipes-store'),
           import('../workspace-registry'),
           import('../hive-federation'),
         ]);
+      const sql = getOrgPg().sql;
       const workspaceId = activeWorkspaceId();
-      if (allHives) {
-        return (await listRecipes(getOrgPg().sql, workspaceId)) as unknown[];
-      }
-      const slug = harnessSlug ?? operatorHomeHarnessSlug();
-      const hiveSlug = await hiveHomeSlugForHarness(workspaceId, slug).catch(() => null);
-      return (await listRecipes(getOrgPg().sql, workspaceId, { hiveSlug })) as unknown[];
+      // Capped list + cheap COUNT over the SAME filter, so the dashboard can show
+      // "N of TOTAL" via attachListMeta (the flat-row sync contract has no envelope).
+      const listOpts = allHives
+        ? {}
+        : { hiveSlug: await hiveHomeSlugForHarness(workspaceId, harnessSlug ?? operatorHomeHarnessSlug()).catch(() => null) };
+      const [rows, total] = await Promise.all([
+        listRecipes(sql, workspaceId, { ...listOpts, limit: lim }),
+        countRecipes(sql, workspaceId, listOpts),
+      ]);
+      return attachListMeta(rows, { total }) as unknown[];
     },
   },
 

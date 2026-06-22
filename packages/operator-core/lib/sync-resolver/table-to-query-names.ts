@@ -96,6 +96,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'plans.items',
     'plans.attention',
     'plans.search',
+    // plans.byHive (WI-259 P-006) — the cross-member plan rollup. A FEDERATED plan
+    // write lands on harness_plans under the author member's slug + fires the change
+    // notify, so a peer member's new/edited plan live-refreshes the hive rollup.
+    'plans.byHive',
   ],
   'harness_shared.plan_revisions': ['plans.revisions'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the
