@@ -4,6 +4,11 @@ description: "A recurring anti-pattern: code treats ONE transient reading — a 
 discovered: 2026-06-20
 tags: [reliability, false-positive, locks, pg-57014, health, alarms, contention, retry, infra-fail-fast]
 status: active
+documents:
+  - packages/operator-core/lib/harness/improvements/learning-infra-health.ts
+  - packages/operator-core/lib/system-health/compute.ts
+  - packages/operator-core/lib/agent-tools/locks/contention-retry.ts
+  - packages/operator-core/lib/escalating-http-probe.ts
 ---
 
 ## The pattern

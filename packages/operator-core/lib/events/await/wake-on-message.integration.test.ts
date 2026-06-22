@@ -96,9 +96,12 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
       }),
       { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
     ));
+    // coord:send is bulk (P-006): the single send is n=1 — the per-message
+    // fields (msg_id / wake) live on results[0]; the envelope carries ok/counts.
     expect(res.ok).toBe(true);
-    expect(typeof res.msg_id).toBe('string');
-    expect(res.wake?.woken).toBe(1); // a {wake:true} that woke nobody would be 0
+    const one = res.results[0];
+    expect(typeof one.msg_id).toBe('string');
+    expect(one.wake?.woken).toBe(1); // a {wake:true} that woke nobody would be 0
 
     // Drain the real pump with host discovery pointed at the isolated dir.
     await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
@@ -118,8 +121,8 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     expect(envelope).toContain(idleB); // the wake is B's own, never a broadcast
     const lines = await log.readLines('messages');
     const mine = lines.filter(
-      (e) => (e as { msg_id?: string }).msg_id === res.msg_id
-        || (e as { msgId?: string }).msgId === res.msg_id,
+      (e) => (e as { msg_id?: string }).msg_id === one.msg_id
+        || (e as { msgId?: string }).msgId === one.msg_id,
     );
     expect(mine).toHaveLength(1);
     expect(JSON.stringify(mine[0])).toContain(`wake-rung ping for ${idleB}`);
@@ -144,16 +147,16 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
         { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
       ));
 
-    // First wake → delivered.
+    // First wake → delivered. (bulk n=1 → per-message fields on results[0].)
     const r1 = await send(1);
-    expect(r1.wake?.woken).toBe(1);
+    expect(r1.results[0].wake?.woken).toBe(1);
     await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
     expect(hostB.received).toHaveLength(1);
 
     // Second wake to the SAME agent → still woken, still delivered. A consumed
     // or cancelled watch would return woken:0 and never reach the socket.
     const r2 = await send(2);
-    expect(r2.wake?.woken).toBe(1);
+    expect(r2.results[0].wake?.woken).toBe(1);
     await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
     expect(hostB.received).toHaveLength(2);
 

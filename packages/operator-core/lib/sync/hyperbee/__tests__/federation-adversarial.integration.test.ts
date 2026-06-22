@@ -70,6 +70,7 @@ import {
 } from '../projection';
 import { buildHarnessFeaturesProjection } from '../projections/harness-features';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, SUBSTRATE_OUTBOX_DDL } from '../../../../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../packages/operator-core/lib/sync/hyperbee/__tests__ → repo root is seven up.
@@ -203,57 +204,11 @@ const FRAMEWORK_ROLES_DDL = `
  */
 async function setupFeatureSchema(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(FRAMEWORK_ROLES_DDL);
-  await sql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      workspace_id        TEXT NOT NULL DEFAULT '',
-      harness_slug        TEXT NOT NULL,
-      feature_id          TEXT NOT NULL,
-      title               TEXT,
-      summary             TEXT,
-      status              TEXT,
-      attempts            INT,
-      claims              TEXT,
-      notes               TEXT,
-      metadata            JSONB,
-      kind                TEXT,
-      project_id          TEXT,
-      expected_cost_cents INT,
-      tags                JSONB,
-      needs_human_review  BOOLEAN,
-      ts                  BIGINT,
-      created_ts          BIGINT,
-      updated_ts          BIGINT,
-      parent_id           TEXT,
-      goal_id             TEXT,
-      taken_by            TEXT,
-      taken_at            TIMESTAMPTZ,
-      expires_at          TIMESTAMPTZ,
-      -- Work-item dispatch columns (unify-work-items D-013) — the projection's
-      -- writeToPg inserts these unconditionally, so the mirror must carry them.
-      item_kind           TEXT NOT NULL DEFAULT 'feature',
-      feature_order       INT,
-      swarm_affinity      TEXT,
-      redundancy          INT,
-      payload             JSONB,
-      author_pubkey       TEXT,
-      origin              TEXT NOT NULL DEFAULT 'local',
-      fed_ts              BIGINT,
-      fed_hlc             TEXT,
-      verified_author_github_user_id BIGINT, -- mig 273: the feature projection writes this; without it B's apply INSERT throws "column does not exist" and the feature never lands
-      PRIMARY KEY (harness_slug, feature_id)
-    );
-    CREATE TABLE harness_shared.harness_issues_consolidated (
-      workspace_id TEXT NOT NULL DEFAULT '', harness_slug TEXT NOT NULL,
-      issue_id TEXT NOT NULL, author_pubkey TEXT,
-      origin TEXT NOT NULL DEFAULT 'local', PRIMARY KEY (harness_slug, issue_id)
-    );
-  `);
-  // The real send-side capture trigger (mig 102). Not strictly needed here — these
-  // tests append ops to the own log DIRECTLY (not via the CDC drain) — but applying
-  // it keeps the schema production-faithful and harmless (it only fires on writes
-  // the projection makes with origin filters, which the echo-guard already drops).
-  const sqlText = readFileSync(join(SQL_DIR, 'archive/102-substrate-outbox.sql'), 'utf8');
-  await sql.unsafe(sqlText);
+  // P-010 unification: work_items base + hfc/ei compat views + the outbox table. These
+  // tests append ops to the own log DIRECTLY (not via the CDC drain), so no capture
+  // trigger is needed — and archive/102's hfc-capture would fail on the compat view.
+  await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await sql.unsafe(SUBSTRATE_OUTBOX_DDL);
 }
 
 /** A per-peer projection apply bound to THIS peer's `sql` (the features projection

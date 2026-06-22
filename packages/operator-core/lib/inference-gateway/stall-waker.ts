@@ -24,9 +24,10 @@ export interface StallEvent {
 export interface StallWakerDeps {
   /** GET /admin/stalls?since=<ms> on the running gateway → the new stall candidates. */
   fetchStalls: (sinceMs: number) => Promise<{ now: number; stalls: StallEvent[] }>;
-  /** Did this bee actually STALL (go idle/stream-silent), vs recover on its own CLI retry? The false-
-   *  positive guard: we only wake a bee we've confirmed is sitting idle. */
-  beeIsIdle: (ownerId: string) => Promise<boolean>;
+  /** Did this OWNER (ANY role — a harness bee, an su/psu session, anything holding a coord wake-key) actually
+   *  STALL (go idle/stream-silent), vs recover on its own retry? The false-positive guard: we only wake an
+   *  owner we've confirmed is sitting idle. Role-agnostic — the autowake works the same for every caller. */
+  ownerIsIdle: (ownerId: string) => Promise<boolean>;
   /** Has the account's budget actually returned (its pause expired + the gateway can serve again)? Guards
    *  against waking a bee straight back into a still-throttled pool. */
   capacityBack: (accountId: string, soonestResetAt: number) => Promise<boolean>;
@@ -113,9 +114,9 @@ export class StallWaker {
       //     CLI retry is still running → not idle → dropped after the confirm window.
       let idle = false;
       try {
-        idle = await this.deps.beeIsIdle(ownerId);
+        idle = await this.deps.ownerIsIdle(ownerId);
       } catch (e) {
-        this.deps.log('warn', `stall-waker: beeIsIdle(${ownerId}) failed: ${(e as Error).message}`);
+        this.deps.log('warn', `stall-waker: ownerIsIdle(${ownerId}) failed: ${(e as Error).message}`);
         continue; // unknown → re-check next tick, don't wake blindly
       }
       if (!idle) {

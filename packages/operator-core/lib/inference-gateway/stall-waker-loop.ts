@@ -28,12 +28,25 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       if (!r.ok) return { now: Date.now(), stalls: [] };
       return (await r.json()) as { now: number; stalls: StallEvent[] };
     },
-    beeIsIdle: async (ownerId) => {
-      const node = await getSpawnPg(getOrgPg().sql, workspaceId, ownerId).catch(() => null);
-      if (!node) return false; // gone/unknown → not a wake-able idle bee (a wake would woken:0 anyway)
-      const lastOut = node.lastOutputAt ? new Date(node.lastOutputAt).getTime() : 0;
-      // Alive but stream-silent past the threshold = the turn ended and the bee is sleeping, not retrying.
-      return lastOut > 0 && Date.now() - lastOut > IDLE_SILENCE_MS;
+    ownerIsIdle: async (ownerId) => {
+      // ROLE-AGNOSTIC idle check (2026-06-22): the auto-wake must behave the SAME for ANY caller that holds a
+      // coord wake-key — a harness bee, an su/psu engineer session, anything — not just bee spawns. Take the
+      // most-recent activity from EITHER source: (a) the bee nursery's stream output (only a bee has a
+      // spawned_agents row) and (b) coord presence's last_active_at (EVERY coord agent has one, any role).
+      // Silent past the threshold from BOTH = the turn ended and the owner is sleeping on its wake-key
+      // (wake-able), not mid-retry. (Before this it read ONLY spawned_agents, so an su/psu agent was never
+      // recognized as idle → never auto-woken — the role-specific gap su-b813f hit.)
+      const sql = getOrgPg().sql;
+      const node = await getSpawnPg(sql, workspaceId, ownerId).catch(() => null);
+      const beeOut = node?.lastOutputAt ? new Date(node.lastOutputAt).getTime() : 0;
+      const presence = await sql<{ last_active_at: string | null }[]>`
+        SELECT last_active_at FROM harness_shared.coord_presence WHERE owner_id = ${ownerId} LIMIT 1`.catch(
+        () => [] as { last_active_at: string | null }[],
+      );
+      const coordAct = presence[0]?.last_active_at ? new Date(presence[0].last_active_at).getTime() : 0;
+      const lastActivity = Math.max(beeOut, coordAct);
+      if (lastActivity === 0) return false; // truly unknown owner (no bee row + no coord presence) → not wake-able
+      return Date.now() - lastActivity > IDLE_SILENCE_MS;
     },
     capacityBack: async (accountId) => {
       const rows = await accountStatus(workspaceId).catch(() => [] as Awaited<ReturnType<typeof accountStatus>>);

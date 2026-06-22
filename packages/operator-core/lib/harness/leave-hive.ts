@@ -47,6 +47,8 @@ import {
 import { closeBootedHarness, getBootedHarness } from '../sync/hyperbee/boot-all';
 import { publishPresenceTombstoneForHarness } from '../sync/hyperbee/wire-presence';
 import { removeGitSyncRoutine } from './git-sync/git-sync-routine';
+import { removeHiveMember } from '../hive-membership-store';
+import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -90,6 +92,13 @@ export interface LeaveHiveResult {
   members: LeaveHiveMember[];
   /** Whether the registry view entry was removed. */
   viewRemoved?: boolean;
+  /** The leaver's resolved github_user_id (null = gh unauthed → membership row
+   *  left to the owner's revoke / TTL; G27). */
+  leaverGithubUserId?: number | null;
+  /** hive_members admission rows deleted for the leaver (G27). 0 = not a member /
+   *  already gone / unresolved identity. The DELETE fires the mig-189 capture
+   *  trigger → a federated `del` membership tombstone. */
+  membershipRowsDropped?: number;
   error?: string;
 }
 
@@ -110,6 +119,20 @@ export interface LeaveHiveDeps {
   /** Delete a harness's local shared_presence rows; returns rows deleted
    *  (default: inline DELETE). */
   dropPresence?: (sql: Sql, workspaceId: string, harnessSlug: string) => Promise<number>;
+  /** Resolve the LEAVING peer's own github_user_id, to delete their persistent
+   *  hive_members admission row (G27). Default: resolveLocalGithubIdentity →
+   *  githubUserId, or null when gh isn't authed (then membership cleanup is
+   *  skipped — best-effort; the owner's revoke / TTL is the backstop). */
+  resolveLeaverGithubUserId?: () => Promise<number | null>;
+  /** Delete the leaver's hive_members admission row for the hive; returns rows
+   *  deleted (default: removeHiveMember). The DELETE fires the mig-189 capture
+   *  trigger → a federated `del` membership tombstone. */
+  dropMembers?: (
+    sql: Sql,
+    workspaceId: string,
+    hiveHomeSlug: string,
+    githubUserId: number,
+  ) => Promise<number>;
   /** rm -rf a clone dir (default fs.rm recursive force). */
   rmDir?: (path: string) => Promise<void>;
   /** Sleep for the EI-469 drain window (test seam; default setTimeout). */

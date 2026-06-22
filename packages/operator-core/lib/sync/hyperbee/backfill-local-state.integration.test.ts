@@ -22,6 +22,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
 import { backfillLocalState } from './backfill-local-state';
 import type { BootedHarnessHandle } from './boot';
 
@@ -120,21 +121,11 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
 
   beforeAll(async () => {
     db = await createFreshPgDb('backfill');
-    // The consolidated tables (subset of the real columns the SELECT touches),
-    // the outbox, and the marker table. NO capture trigger here — the backfill
-    // INSERTs into the outbox itself, so the trigger is irrelevant; and we want
-    // to seed remote rows without them being filtered by the trigger anyway.
+    // P-010 unification: work_items base + hfc/ei compat views (the backfill reads
+    // hfc + engineer_issues, now views over work_items). NO capture trigger here — the
+    // backfill INSERTs into the outbox itself, mirroring the capture in code.
+    await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     await db.sql.unsafe(`
-      CREATE TABLE harness_shared.harness_features_consolidated (
-        harness_slug TEXT NOT NULL,
-        feature_id   TEXT NOT NULL,
-        workspace_id TEXT NOT NULL DEFAULT '',
-        title        TEXT,
-        status       TEXT,
-        updated_ts   BIGINT,
-        origin       TEXT NOT NULL DEFAULT 'local',
-        PRIMARY KEY (harness_slug, feature_id)
-      );
       CREATE TABLE harness_shared.harness_issues_consolidated (
         harness_slug TEXT NOT NULL,
         issue_id     TEXT NOT NULL,
@@ -185,18 +176,9 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         origin         TEXT   NOT NULL DEFAULT 'local',
         PRIMARY KEY (workspace_id, hive_home_slug, github_user_id)
       );
-      -- fed-reanchor B5 added engineer_issues to the backfill (a dedicated block,
-      -- the federation slug derived from the scope column; operator scope resolves
-      -- via hives). The fixture must create both or the backfill count/resolve queries
-      -- hit a missing relation. Subset of the real columns the SELECT / to_jsonb touch.
-      CREATE TABLE harness_shared.engineer_issues (
-        workspace_id TEXT NOT NULL DEFAULT 'default',
-        issue_id     TEXT NOT NULL,
-        scope        TEXT NOT NULL DEFAULT 'operator',
-        title        TEXT NOT NULL DEFAULT '',
-        origin       TEXT NOT NULL DEFAULT 'local',
-        PRIMARY KEY (workspace_id, issue_id)
-      );
+      -- engineer_issues is the unified ei compat VIEW (created by the helper above); the
+      -- backfill's issue block reads it + derives the federation slug from scope (operator
+      -- resolves via hives).
       CREATE TABLE harness_shared.hives (
         workspace_id TEXT NOT NULL,
         home_slug    TEXT NOT NULL,

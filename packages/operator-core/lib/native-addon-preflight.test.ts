@@ -6,6 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import {
   DEFAULT_REQUIRED_ADDONS,
   requiredAddonsFromEnv,

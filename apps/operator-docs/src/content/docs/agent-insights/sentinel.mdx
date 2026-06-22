@@ -1,8 +1,8 @@
 ---
-title: The Sentinel/Herald — the always-on voice of the hive
+title: The Sentinel — the always-on voice of the hive
 description: "One role that watches the fleet AND narrates it: always-on, voice-first, short replies, status + suggestions (never deep planning). How to enable it (the SENTINEL flag + the humanFacingRole='sentinel' voice pref repoints the live converse brain), the read-context sources it walks in with (curation:state-of-hive / curation:feed / Overwatch compute-brief / fleet:assignments — never waits on the Queen), the handoff-to-Queen flow (<handoff_to_queen> → high-priority work_item + nudge, tier-gated, hindsight landing report), the live-override settings tab, and the in-progress server-side proactive path (P-018-022)."
 discovered: 2026-06-21
-tags: [sentinel, herald, operator, voice, converse, read-context, handoff-to-queen, overrides, proactive, sentinel-herald-2026-06-21]
+tags: [sentinel, operator, voice, converse, read-context, handoff-to-queen, overrides, proactive, sentinel-herald-2026-06-21]
 status: active
 documents:
   - apps/operator/prompts/sentinel.persona.md
@@ -13,9 +13,9 @@ documents:
   - apps/operator-vite/src/components/left-sidebar/SentinelTab.tsx
 ---
 
-## What the Sentinel/Herald is
+## What the Sentinel is
 
-The Sentinel and the Herald are **one role**, not two cooperating hats
+The Sentinel is **one role**, not two cooperating hats
 (`sentinel-herald-2026-06-21` D-001). Watching the fleet is simply *how* it knows
 what to tell the user — same identity. It is:
 
@@ -34,7 +34,7 @@ what to tell the user — same identity. It is:
   Sentinel cannot place or execute.
 
 The boundary with the other autonomous roles: the **Queen** steers and places, the
-**Overwatch** is the machine-facing supervisor, and the **Sentinel/Herald** is the
+**Overwatch** is the machine-facing supervisor, and the **Sentinel** is the
 human-facing narrator. The legacy "operator" role was decomposed into those three;
 only the machine-facing halves shipped, and this plan re-homes the orphaned
 human-facing concierge brain onto the Sentinel.
@@ -66,7 +66,7 @@ voice / text / mobile.
 
 ## The read-context — it never waits on the Queen
 
-The Sentinel walks in already *knowing* the live system, so it can herald (file +
+The Sentinel walks in already *knowing* the live system, so it can narrate (file +
 nudge) instead of re-deriving from raw coord. It reads the **ready-made digests
 directly** (D-009 — never a Queen-maintained status object, which would be stale
 exactly when she is mid-turn, reintroducing the "wait on the Queen" problem the
@@ -84,7 +84,7 @@ flaky leg degrades to an empty section, never throws). The four sources:
 
 It is a **Sentinel slice** of the queen-brief — escalations/anomalies/progress +
 "what's worth surfacing," **not** placement rank (the Queen owns placement; the
-Herald owns surfacing). Each section is capped (`DEFAULT_SENTINEL_CONTEXT_CAPS`) so
+Sentinel owns surfacing). Each section is capped (`DEFAULT_SENTINEL_CONTEXT_CAPS`) so
 the block stays a digest; an all-quiet system renders the headings with an explicit
 "nothing" so silence is a trustworthy signal, not an omission. It is injected into
 the converse prompt's SYSTEM sections **only** when `role === 'sentinel'` (the

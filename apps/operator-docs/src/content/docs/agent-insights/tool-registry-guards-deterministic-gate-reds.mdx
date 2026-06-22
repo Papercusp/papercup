@@ -4,6 +4,10 @@ description: "A new tool with expose:{ipc:true} must be added to EXPECTED_IPC_EL
 discovered: 2026-06-21
 tags: [tools, registry, green-checkpoint, deploy-gate, ci-guards, tooldef, flags]
 status: active
+documents:
+  - packages/operator-core/lib/__tests__/ipc-allowlist.test.ts
+  - packages/operator-core/lib/__tests__/tool-input-schema-rejection.test.ts
+  - libs/flags/src/production-defaults.test.ts
 ---
 
 When the green-checkpoint goes red, triage the failure into two classes — the fix

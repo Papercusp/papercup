@@ -4,6 +4,12 @@ description: Re-graining a federated table (e.g. whole-blob plan → per-part) d
 discovered: 2026-06-13
 tags: [federation, fed_ts, lww, plan-parts, cutover, mutual-exclusion, mig-214, clobber, harness_plans]
 status: active
+documents:
+  - packages/operator-core/lib/sync/hyperbee/projections/harness-plans.ts
+  - packages/operator-core/lib/sync/hyperbee/projections/harness-plan-parts.ts
+  - packages/operator-core/lib/sync/hyperbee/__tests__/plan-part-federation-cutover.integration.test.ts
+plans:
+  - plan-federation-regrain-2026-06-13
 ---
 
 ## What

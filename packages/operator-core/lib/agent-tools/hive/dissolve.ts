@@ -34,6 +34,7 @@ import { cancelSubtree } from '../../fleet/nursery';
 import { clearHiveTimeWake } from '../../hive/wake';
 import { dropHarnessSchema } from '../../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../../harness-membership';
+import { removeAllHiveMembers } from '../../hive-membership-store';
 import { requireHiveTier } from '../../hive/member-tier-gate';
 import { teardownHiveLearningLoop } from '../../hive/provision-learning-loop';
 import { releaseHiveDesktop } from '../computer/desktop-lease';
@@ -150,6 +151,23 @@ export default defineTool({
       }
     }
     steps.cancelledSpawns = cancelledSpawns;
+
+    // 2.5. Delete the hive's membership records (G24 — shared-hive-public-release-
+    // 2026-06-22). dissolve previously left harness_shared.hive_members rows behind,
+    // so a dissolved hive's members lingered and kept federating. Delete them all
+    // (done BEFORE deregister, while the substrate is still live): the mig-189
+    // capture trigger enqueues a `del` per local-origin row → federates a membership
+    // tombstone so peers' read-merge drops the departed members. Best-effort: a
+    // failure WARNS but never fails the dissolve (same contract as 3.5/3.6).
+    try {
+      steps.membershipRowsDropped = await removeAllHiveMembers(workspaceId, hive.slug, sql);
+    } catch (e) {
+      steps.membershipRowsDropped = 0;
+      steps.membershipError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+      console.warn(
+        `[hive:dissolve] hive_members teardown for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
+      );
+    }
 
     // 3. Deregister the home harness.
     const dereg = await removeHarnessFromWorkspace(workspaceId, hive.slug);

@@ -104,7 +104,7 @@ addressed to you, not a state source.
 
 When you find something wrong that needs action, you don't fix it — you
 file it + nudge the Queen (or, for fleet-health anomalies, escalate via
-`coord:escalate`). Watch, herald, hand off.
+`coord:escalate`). Watch, narrate, hand off.
 
 ### Surfacing suggestions (open_canvas / user_says_ready)
 

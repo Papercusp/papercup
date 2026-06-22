@@ -108,4 +108,66 @@ describe('bucketByCritique (D-005 moonshot preservation + cap)', () => {
     expect(b.rejected.map((i) => i.id)).toEqual(['m3']);
     expect(b.verdicts['m3'].reason).toMatch(/bucket full/i);
   });
+
+  it('empty input → all-empty buckets + empty verdicts', () => {
+    const b = bucketByCritique([]);
+    expect(b).toEqual({ kept: [], moonshot: [], rejected: [], verdicts: {} });
+  });
+
+  it('threads custom options into verdictFor — a raised noveltyFloor rejects an otherwise-kept idea', () => {
+    const items: CritiqueScores[] = [{ id: 'x', novelty: 0.5, feasibility: 0.9 }];
+    expect(bucketByCritique(items).kept.map((i) => i.id)).toEqual(['x']); // default floor 0.34 → keep
+    const b = bucketByCritique(items, { noveltyFloor: 0.6 });
+    expect(b.kept).toEqual([]);
+    expect(b.rejected.map((i) => i.id)).toEqual(['x']);
+  });
+});
+
+// ── Threshold boundaries + custom options (depth pass, su-7f3e0376) ──────────
+describe('verdictFor — exact threshold boundaries (the <,>= edges)', () => {
+  it('novelty exactly AT the noveltyFloor (0.34) is NOT rejected; just below IS', () => {
+    expect(verdictFor({ id: 'a', novelty: 0.34, feasibility: 0.5 }).verdict).toBe('keep'); // 0.34 < 0.34 is false
+    expect(verdictFor({ id: 'b', novelty: 0.33, feasibility: 0.95 }).verdict).toBe('reject');
+  });
+
+  it('feasibility exactly AT the feasibilityFloor (0.5) → keep (>=)', () => {
+    expect(verdictFor({ id: 'c', novelty: 0.8, feasibility: 0.5 }).verdict).toBe('keep');
+    expect(verdictFor({ id: 'd', novelty: 0.8, feasibility: 0.49 }).verdict).toBe('moonshot'); // novel leap, low feas
+  });
+
+  it('novelty exactly AT the moonshotNoveltyFloor (0.66) + low feasibility → moonshot; just below → reject', () => {
+    expect(verdictFor({ id: 'e', novelty: 0.66, feasibility: 0.4 }).verdict).toBe('moonshot');
+    expect(verdictFor({ id: 'f', novelty: 0.65, feasibility: 0.4 }).verdict).toBe('reject'); // mid novelty, not a strong leap
+  });
+
+  it('honors custom floors (a raised noveltyFloor flips keep → reject)', () => {
+    expect(verdictFor({ id: 'g', novelty: 0.5, feasibility: 0.9 }, { noveltyFloor: 0.6 }).verdict).toBe('reject');
+    expect(verdictFor({ id: 'h', novelty: 0.5, feasibility: 0.9 }).verdict).toBe('keep');
+  });
+});
+
+describe('corpusNovelty — clamp, cap, and custom decided-states', () => {
+  const idea = 'operator backpressure token bucket scheduler latency';
+
+  it('clamps novelty to 0 — an identical ALREADY-DECIDED prior cannot go negative past the penalty', () => {
+    const r = corpusNovelty(idea, [{ ref: 'i:1', kind: 'idea', text: idea, state: 'dropped' }]);
+    expect(r.alreadyTried).toBe(true);
+    expect(r.novelty).toBe(0); // 1 - 1.0 - 0.15 = -0.15 → clamped to 0, never negative
+  });
+
+  it('caps the surfaced matches at maxMatches (most-similar first)', () => {
+    const corpus: CorpusEntry[] = Array.from({ length: 5 }, (_, i) => ({
+      ref: `dup:${i}`,
+      kind: 'plan' as const,
+      text: idea, // identical → similarity 1.0, all above the floor
+    }));
+    const r = corpusNovelty(idea, corpus, { maxMatches: 2 });
+    expect(r.matches).toHaveLength(2);
+  });
+
+  it('a non-default state counts as already-tried only when included in custom decidedStates', () => {
+    const prior: CorpusEntry = { ref: 'i:1', kind: 'idea', text: idea, state: 'archived' };
+    expect(corpusNovelty(idea, [prior]).alreadyTried).toBe(false); // 'archived' not in the default decided set
+    expect(corpusNovelty(idea, [prior], { decidedStates: ['archived'] }).alreadyTried).toBe(true);
+  });
 });

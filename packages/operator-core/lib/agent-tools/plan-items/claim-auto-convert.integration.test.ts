@@ -95,7 +95,9 @@ const ctxA = { isSuperuser: true, uiClientId: 'sess-A', workspaceId: 'default' }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function call(tool: any, args: unknown, ctx: unknown): Promise<any> {
   const res = await tool.handler(args, ctx);
-  return JSON.parse(res.content[0].text);
+  // Bulk tools (plan_items:claim/…) return the canonical { data: envelope };
+  // a non-bulk / guard path returns a raw { content } ToolResult.
+  return res.data ?? JSON.parse(res.content[0].text);
 }
 
 async function implementsEdges() {

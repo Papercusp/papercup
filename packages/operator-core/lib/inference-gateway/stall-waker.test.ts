@@ -10,7 +10,7 @@ function harness(opts: StallWakerOptions = {}) {
   const calls = { wake: [] as string[], cap: 0 };
   const deps: StallWakerDeps = {
     fetchStalls: async (since) => ({ now: state.t, stalls: queue.filter((s) => s.at > since) }),
-    beeIsIdle: async () => state.beeIdle,
+    ownerIsIdle: async () => state.beeIdle,
     capacityBack: async () => {
       calls.cap++;
       return state.capBack;
@@ -102,6 +102,19 @@ test('de-dup — many stalls for one bee → a single pending + a single wake (l
   const r3 = await h.w.tick();
   assert.deepEqual(r3.woken, ['bee-1']);
   assert.equal(h.calls.wake.length, 1, 'woken exactly once');
+});
+
+test('ROLE-AGNOSTIC — an su/psu session (not a bee spawn) is woken identically to a bee (2026-06-22)', async () => {
+  const h = harness();
+  // An autonomous su/psu engineer session — NOT a harness bee. The waker must treat it the same: confirm idle
+  // (the role-agnostic ownerIsIdle dep), wait the reset, then wake. (The role-specific gap su-b813f hit was in
+  // the DEPS impl, now fixed to read coord_presence for any role; the class here was always caller-agnostic.)
+  h.pushStall({ ownerId: 'su-b813f856-99a1-494d-b92e-ae4b81343394' });
+  let r = await h.w.tick();
+  assert.equal(r.pulled, 1);
+  h.advance(61_000);
+  r = await h.w.tick();
+  assert.deepEqual(r.woken, ['su-b813f856-99a1-494d-b92e-ae4b81343394'], 'an su/psu session is auto-woken just like a bee');
 });
 
 test('wake cap — a bee that keeps stalling is given up after maxWakesPerBee', async () => {
