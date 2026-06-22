@@ -413,6 +413,9 @@ export interface GatewayStats {
   /** Count of rate-limit STALL candidates recorded (P-002): all-throttled sheds to an identified bee. The
    *  full {ownerId, accountId, soonestResetAt} events are on GET /admin/stalls (for the stall-waker). */
   stallsRecorded: number;
+  /** Per-backend Codex/OpenAI counters (2026-06-22 audit) — kept SEPARATE from the Claude counters above so
+   *  /stats distinguishes Codex health from Claude health. All zero until Codex accounts are configured. */
+  codex: { requests: number; upstream429: number; failovers: number; errors: number };
   /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
   unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
   pausedUntil: number;
@@ -731,6 +734,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let upstreamErrors = 0;
   let failovers = 0;
   let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
+  // Per-backend (Codex/OpenAI) counters (2026-06-22 audit): the Codex path's 429s/failovers/errors are tracked
+  // SEPARATELY so /stats can distinguish Codex health from Claude health (the shared counters above stay
+  // Claude-only). All zero until Codex accounts are configured.
+  let codexRequests = 0;
+  let codexUpstream429 = 0;
+  let codexFailovers = 0;
+  let codexUpstreamErrors = 0;
   let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
 
   // Rate-limit STALL events (gateway-rate-limit-stall-autowake P-002): when the gateway sheds an
@@ -863,6 +873,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       egressCircuitOpens,
       selfHealReclaims,
       stallsRecorded,
+      codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
       unified: snap.unified,
       pausedUntil: snap.pausedUntil,
       cache: cacheSnapshot(),
@@ -1532,6 +1543,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     const bodyBuf = await readBody(req);
     totalRequests++;
+    codexRequests++;
     res.setTimeout(downstreamIdleMs, () => res.destroy());
 
     // RESILIENCE PARITY with the Claude path (2026-06-22 audit): rotate to another Codex account + retry on
@@ -1543,7 +1555,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const rotateCodex = (resetAt: number): boolean => {
       const next = deps.codexPool!.onExhausted(active.accountId, resetAt);
       if (next && next.accountId !== active.accountId) {
-        failovers++;
+        codexFailovers++;
         active = next;
         return true;
       }
@@ -1555,7 +1567,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       try {
         token = await withDeadline(active.token(), tokenTimeoutMs, `codex token '${active.accountId}'`);
       } catch (e) {
-        upstreamErrors++;
+        codexUpstreamErrors++;
         log('error', `inference-gateway: Codex token read failed on '${active.accountId}': ${(e as Error).message}`);
         if (canRetry && rotateCodex(Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) continue;
         if (!res.headersSent) {
@@ -1590,7 +1602,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         clearTimeout(stallTimer);
       } catch (e) {
         clearTimeout(stallTimer);
-        upstreamErrors++;
+        codexUpstreamErrors++;
         active.invalidateToken?.();
         // Transport failure (dead/hanging proxy or network) → route around to another Codex account + retry.
         if (canRetry && rotateCodex(Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) continue;
@@ -1609,7 +1621,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
       // 429 → ROTATE + retry (route around) rather than forwarding the throttle to the bee.
       if (up.status === 429) {
-        upstream429++;
+        codexUpstream429++;
         if (canRetry) {
           const reset = parseRateReset(headersToObject(up.headers));
           if (rotateCodex(reset.resetAt ?? Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) {
