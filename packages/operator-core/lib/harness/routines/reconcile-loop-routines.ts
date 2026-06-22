@@ -63,7 +63,19 @@
  * infinity comparison is done in SQL — so the invalid-Date trap cannot bite here.
  */
 import type { Sql } from 'postgres';
+import { appendFileSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
+
+/** TEMP diagnostic (EI-2549) — fleet-wide loop re-arm is silently a no-op; this records the
+ *  runtime path to a file (test-safe: no console, so vitest-fail-on-console is unaffected). REMOVE
+ *  once the root cause is found. */
+function dbg(line: string): void {
+  try {
+    appendFileSync('/tmp/loop-reconcile-dbg.log', `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* never let diagnostics affect the routine */
+  }
+}
 
 /** A dropped lifecycle report is inferred only once the session's last GENUINE activity
  *  (coord_presence.last_active_at — NOT the keepalive heartbeat_at) has been quiet for at
@@ -174,8 +186,18 @@ export async function reconcileLoopRoutines(
      WHERE r.active = TRUE
        AND r.reschedule_interval_sec IS NOT NULL
        AND r.target_owner_id IS NOT NULL
-       AND (r.next_fire_at = 'infinity'::timestamptz OR (r.trigger_config ? 'cron'))
+       AND (r.next_fire_at = 'infinity'::timestamptz OR jsonb_exists(r.trigger_config, 'cron'))
   `;
+
+  dbg(
+    `ENTER nowMs=${nowMs} rows=${rows.length} :: ` +
+      rows
+        .map(
+          (r) =>
+            `${r.target_owner_id?.slice(0, 12)}{parked=${r.parked},lastFired=${r.last_fired_at ? r.last_fired_at.getTime() : 'null'},lc=${r.lifecycle_completed_at ? r.lifecycle_completed_at.getTime() : 'null'},pres=${r.presence_last_active_at ? r.presence_last_active_at.getTime() : 'null'}}`,
+        )
+        .join(' '),
+  );
 
   const result: LoopRebaseResult = { rearmed: 0, loops: [] };
 
@@ -208,6 +230,9 @@ export async function reconcileLoopRoutines(
         completedAt = lastFiredMs;
         via = 'stuck-backstop';
       } else {
+        dbg(
+          `SKIP ${row.target_owner_id?.slice(0, 12)} parked=${row.parked} sigNull lcNull=${!row.lifecycle_completed_at} presGtFired=${(row.presence_last_active_at?.getTime() ?? 0) > lastFiredMs} ageMs=${nowMs - lastFiredMs} stuckMs=${stuckParkMs(intervalMs)}`,
+        );
         continue; // still in flight / nothing to fold — leave it
       }
 
@@ -229,6 +254,7 @@ export async function reconcileLoopRoutines(
                  OR next_fire_at > ${reArmDate} )
         RETURNING id
       `;
+      dbg(`UPDATE ${row.target_owner_id?.slice(0, 12)} via=${via} reArm=${reArmDate.getTime()} matched=${updated.length}`);
       if (updated.length > 0) {
         result.rearmed++;
         result.loops.push({
@@ -253,5 +279,6 @@ export async function reconcileLoopRoutines(
     }
   }
 
+  dbg(`EXIT rearmed=${result.rearmed}`);
   return result;
 }

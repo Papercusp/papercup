@@ -470,6 +470,12 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
   observerUnsub = onGovernorPause((ev) => {
     const { accountId } = parseGovernorKey(ev.key);
     if (!accountId) return; // a global bucket — not an account pause
+    // A TRANSPORT pause (egress-proxy circuit) is NOT a budget/rate signal — the account's Anthropic quota
+    // is fine; its proxy briefly flapped (the gateway already routes around it). Counting it toward the
+    // sustained-penalty threshold falsely marks a healthy account "sustainedly limited / exhausted" and can
+    // trigger a PAID scale-out (2026-06-22: aviynw at 6% 5h-util paused 6.7h, penaltyCount 32 — overwhelmingly
+    // its flaky Rayobyte proxy, not real 429s). Rate-exhaustion is a QUOTA verdict; skip transport entirely.
+    if (ev.source === 'transport') return;
     const ws = workspaceId();
     const t = now();
     void (async () => {

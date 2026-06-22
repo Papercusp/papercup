@@ -27,6 +27,7 @@ import { createPgListenSource, createPgNotifySink } from '@papercusp/sync/server
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';
 import { getOperatorCache } from './cache/instance';
+import { emitSystemEvent } from './events/engine';
 
 export type SyncEvent = LibSyncEvent;
 export type SubscribeHandle = LibSubscribeHandle;
@@ -35,6 +36,29 @@ export interface Subscriber {
 }
 
 const CHANNEL = 'sync_invalidate';
+
+/**
+ * Bridge a raw PG-trigger `<schema>.<table>.changed` event to the camelCase query names
+ * existing useSyncQuery consumers subscribe to (P-006/P-067) — AND tap it into the in-process
+ * reaction matcher (caching-layer-tag-eca KEYSTONE) so the `cache.bumpTags` ECA rule, and any
+ * other reaction registered on a `*.changed` key, fire on REAL DB changes. The bus `bridge` is
+ * the single per-event hook that carries the trigger's `args` (workspace_id, op, and the row PK
+ * from mig 368), so it is the correct place to feed the change stream into the event system.
+ *
+ * `emitSystemEvent` never throws and the bump is flag-gated downstream (CACHE_TAG_ECA, default
+ * ON; OFF ⇒ the rule's `when` is false ⇒ no-op). Non-`.changed` events are ignored. Without this
+ * tap the cache layer is built but INERT — nothing invalidates on a real write.
+ */
+export function bridgeTriggerEvent(
+  name: string,
+  args?: Record<string, unknown>,
+): ReturnType<typeof queryNamesForTriggerEvent> {
+  if (name.endsWith('.changed')) {
+    const ws = typeof args?.workspace_id === 'string' ? args.workspace_id : undefined;
+    emitSystemEvent({ tool: name, args: args ?? {}, ...(ws ? { workspaceId: ws } : {}) });
+  }
+  return queryNamesForTriggerEvent(name, args);
+}
 
 const bus = createInvalidationBus({
   // Dedicated single LISTEN connection on the embedded-PG admin URL.
@@ -61,7 +85,7 @@ const bus = createInvalidationBus({
   // caching-layer-tag-eca P-006: pass the trigger's `args` (workspace_id, op,
   // row id from mig 368) so a per-row query can be SCOPE-invalidated by id
   // instead of full-busting; queries without a per-id scope still full-bust.
-  bridge: (name, args) => queryNamesForTriggerEvent(name, args),
+  bridge: (name, args) => bridgeTriggerEvent(name, args),
   log: (m) => console.log(m),
   onError: (where, e) => console.error(`[sync-sse] ${where} failed:`, e),
 });

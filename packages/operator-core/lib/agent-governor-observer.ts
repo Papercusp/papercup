@@ -39,6 +39,9 @@ export function initAgentGovernorObserver(): void {
   if (initialized) return;
   initialized = true;
   onGovernorPause((ev) => {
+    // A transport pause (egress-proxy circuit) is not a rate-limit — surfacing "rate-limited — paused"
+    // for a flaky proxy is misleading noise. The egress circuit has its own observability.
+    if (ev.source === 'transport') return;
     const now = Date.now();
     if (now - (lastSurfaced.get(ev.key) ?? 0) < SURFACE_THROTTLE_MS) return;
     lastSurfaced.set(ev.key, now);

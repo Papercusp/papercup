@@ -14,6 +14,7 @@ let capturedListen: ((raw: string) => void) | null = null;
 const notifySql = vi.fn(async (..._args: unknown[]) => [] as unknown[]); // called as a tagged template
 type BridgeTarget = string | { name: string; args: Record<string, unknown> };
 let bridgeReturn: (name: string, args?: Record<string, unknown>) => BridgeTarget[] = () => [];
+const emitSysEvt = vi.fn();
 
 const T0 = 1_700_000_000_000;
 
@@ -22,6 +23,7 @@ beforeEach(() => {
   capturedListen = null;
   notifySql.mockClear();
   bridgeReturn = () => [];
+  emitSysEvt.mockClear();
   // The dedupe Map is pinned to globalThis → clear it so each test starts fresh.
   delete (globalThis as unknown as { __syncNotifyDedupe?: unknown }).__syncNotifyDedupe;
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -38,6 +40,7 @@ afterEach(() => {
   vi.doUnmock('./embedded-pg-discovery');
   vi.doUnmock('./sync-resolver/table-to-query-names');
   vi.doUnmock('./cache/instance');
+  vi.doUnmock('./events/engine');
 });
 
 async function load() {
@@ -58,6 +61,7 @@ async function load() {
     queryNamesForTriggerEvent: (name: string, args?: Record<string, unknown>) =>
       bridgeReturn(name, args),
   }));
+  vi.doMock('./events/engine', () => ({ emitSystemEvent: emitSysEvt }));
   return import('./sync-sse');
 }
 
@@ -125,6 +129,25 @@ describe('sync-sse LISTEN fan-out + replay', () => {
     expect(seen).toEqual([{ workspace_id: 'w1', op: 'UPDATE', id: 'widget-42' }]);
     const scoped = sub.mock.calls.find((c) => c[0].name === 'widget.byId')![0];
     expect(scoped.args).toEqual({ id: 'widget-42' });
+  });
+
+  it('taps emitSystemEvent for a <table>.changed event so cache.bumpTags fires on real DB changes', async () => {
+    // caching-layer-tag-eca KEYSTONE: a real DB change (sync_invalidate NOTIFY) must reach the
+    // in-process reaction matcher so the cache.bumpTags ECA rule invalidates — otherwise the
+    // cache layer is built but INERT. bridgeTriggerEvent is the tap.
+    const { bridgeTriggerEvent } = await load();
+    bridgeTriggerEvent('harness_shared.widget.changed', { workspace_id: 'w1', op: 'UPDATE', id: 'widget-42' });
+    expect(emitSysEvt).toHaveBeenCalledTimes(1);
+    expect(emitSysEvt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: 'harness_shared.widget.changed',
+        args: { workspace_id: 'w1', op: 'UPDATE', id: 'widget-42' },
+        workspaceId: 'w1',
+      }),
+    );
+    // a non-.changed bridged/query event is NOT fed into the reaction matcher
+    bridgeTriggerEvent('featureQueue.byHarness', { slug: 'x' });
+    expect(emitSysEvt).toHaveBeenCalledTimes(1);
   });
 
   it('backfillSince replays only events with a higher id than the last seen', async () => {
