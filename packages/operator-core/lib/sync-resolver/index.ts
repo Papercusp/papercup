@@ -1242,7 +1242,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       harnessSlug: z.string(),
       kind: z.string().optional(),
       state: z.string().optional(),
-      limit: z.number().int().positive().max(500).default(300),
+      limit: z.number().int().positive().max(2000).default(2000),
     }),
     resolve: async (args) => {
       const { harnessSlug, kind, state, limit } = args as {
@@ -1251,16 +1251,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         state?: string;
         limit: number;
       };
-      const [{ listEnrichedWorkItems }, { isWorkItemKind }] = await Promise.all([
+      const [{ listEnrichedWorkItems }, { isWorkItemKind, countWorkItems }] = await Promise.all([
         import('../endpoint-route/routes/harness/work-items'),
         import('../work-items'),
       ]);
-      return (await listEnrichedWorkItems({
-        harness: harnessSlug,
-        kind: kind && isWorkItemKind(kind) ? kind : undefined,
-        state,
-        limit,
-      })) as unknown[];
+      const k = kind && isWorkItemKind(kind) ? kind : undefined;
+      const [rows, total] = await Promise.all([
+        listEnrichedWorkItems({ harness: harnessSlug, kind: k, state, limit }),
+        countWorkItems({ harness: harnessSlug, kind: k, state }),
+      ]);
+      // Stash the true total on the first row's `_meta` so the flat-row sync
+      // contract is preserved (no envelope) — same pattern as `coord.feed`. The
+      // UI reads `rows[0]?._meta?.total` to show "N of TOTAL" instead of letting
+      // the (possibly capped) downloaded length read as the total.
+      return rows.map((r, i) => (i === 0 ? { ...r, _meta: { total } } : r)) as unknown[];
     },
   },
 
