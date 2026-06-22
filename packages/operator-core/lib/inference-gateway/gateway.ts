@@ -565,7 +565,9 @@ async function readBody(req: http.IncomingMessage): Promise<Buffer> {
  * finally cancels the reader on natural end OR an early destroy(), so a discarded body never leaks the
  * upstream connection.
  */
-async function peekBody(
+// Exported for direct unit tests (byte-exact head/rest split + cap-boundary correctness is load-bearing —
+// a bug here truncates/corrupts the error body the gateway forwards, or buffers a 200 stream).
+export async function peekBody(
   webStream: ReadableStream<Uint8Array>,
   capBytes: number,
 ): Promise<{ head: Buffer; rest: Readable | null }> {
