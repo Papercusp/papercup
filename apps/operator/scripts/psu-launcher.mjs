@@ -1390,6 +1390,18 @@ export function forkBootstrapBody(session, account = null) {
   };
 }
 
+export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account } = {}) {
+  return {
+    role,
+    agent,
+    workspace,
+    harness_slug: harness,
+    feature,
+    plan,
+    ...(account ? { account } : {}),
+  };
+}
+
 /**
  * src/dst for seeding a fork's fresh isolated config dir with the original's
  * transcripts. Pure — exported for tests. We copy the whole `projects/` subtree
@@ -1615,10 +1627,11 @@ async function brainFlow(args = {}) {
 // the role prompt + signed role-scoped .mcp.json (NOT a *-su wrapper).
 async function roleFlow(args, role, rolesMeta) {
   const consumes = (rolesMeta || []).find((r) => r.id === role)?.consumes ?? { feature: 'none', plan: 'none' };
-  let agent, workspace, harness, feature, plan;
+  let agent, workspace, harness, feature, plan, account;
   if (args.picker) {
     agent = args.agent || (await pickRoleBackend());
     workspace = args.workspace || (await pickWorkspace());
+    account = args.account || (await pickAccount(workspace, agent));
     harness = args.harness || (await pickHarnessRequired(workspace));
     if (args.feature) feature = args.feature;
     else if (consumes.feature === 'none') feature = null;
@@ -1635,6 +1648,7 @@ async function roleFlow(args, role, rolesMeta) {
     }
     agent = args.agent;
     workspace = args.workspace || null;
+    account = args.account || null;
     // No --harness = a WORKSPACE-LEVEL role session (owner-confirmed,
     // hive-agent-tabs P-003: operator/planner launch harness-less — the SU
     // model). bootstrap-role still 400s a feature-consuming role without one.
@@ -1645,7 +1659,7 @@ async function roleFlow(args, role, rolesMeta) {
 
   const res = await api('/api/agent-mcp/console/bootstrap-role', {
     method: 'POST',
-    body: JSON.stringify({ role, agent, workspace, harness_slug: harness, feature, plan }),
+    body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account })),
   });
 
   // omp role sessions load the coordination extension (lock enforcement + coord +
@@ -1676,6 +1690,7 @@ async function roleFlow(args, role, rolesMeta) {
     `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +
       `  ·  ${res.harnessSlug ? `harness ${res.harnessSlug}` : 'workspace-level (no harness)'}  ·  session ${res.sessionId ?? '?'}`,
   );
+  if (res.accountNotice) console.error(`psu: ${res.accountNotice}`);
   console.error(`psu: cwd ${res.cwd}  —  role-scoped MCP (${res.role}); resume from here`);
   // Role sessions are AGENT sessions across all backends: the marker arms the
   // hook-level scheduler guard (bash gate / omp coord-hook / codex hooks.json)

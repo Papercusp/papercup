@@ -12,8 +12,8 @@
  */
 import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
-import { createFailoverPool } from './account-failover';
-import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type InferenceGateway } from './gateway';
+import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
+import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type AccountPool, type ActiveAccount, type InferenceGateway } from './gateway';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
@@ -134,6 +134,38 @@ function makeWindowProjector(
   };
 }
 
+function createOptionalFailoverPool(
+  entries: readonly ActiveAccount[],
+  opts: FailoverPoolOptions = {},
+): AccountPool {
+  let inner: AccountPool | null = entries.length ? createFailoverPool(entries, opts) : null;
+  const unavailable = () => new Error('inference-gateway: no Codex account pool configured');
+  return {
+    active() {
+      if (!inner) throw unavailable();
+      return inner.active();
+    },
+    onExhausted(exhaustedId, resetAt) {
+      return inner?.onExhausted(exhaustedId, resetAt) ?? null;
+    },
+    select(accountId) {
+      return inner?.select?.(accountId) ?? null;
+    },
+    readmit(accountId) {
+      inner?.readmit?.(accountId);
+    },
+    reload(next) {
+      if (next.length === 0) {
+        inner = null;
+        opts.log?.('info', 'inference-gateway: Codex account pool hot-reloaded → []');
+        return;
+      }
+      if (inner?.reload) inner.reload(next);
+      else inner = createFailoverPool(next, opts);
+    },
+  };
+}
+
 export async function startGatewayService(opts: GatewayServiceOptions = {}): Promise<RunningGatewayService> {
   const log = opts.log ?? ((lvl, m) => console.log(`[inference-gateway:${lvl}] ${m}`));
   const makeResolver = opts.makeResolver ?? makeCredentialResolver;
@@ -182,7 +214,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       const resolver = makeBearerCredentialResolver(a.credentialRef);
       return { accountId: a.accountId, token: () => resolver.current(), invalidateToken: () => resolver.invalidate(), egress: a.egress };
     });
-  const codexPool = codexAccounts.length ? createFailoverPool(buildBearerEntries(codexAccounts), { log }) : undefined;
+  const codexPool = createOptionalFailoverPool(buildBearerEntries(codexAccounts), { log });
   const unobserve = observePool(primary.accountId, opts.workspace, log);
 
   const gateway = createInferenceGateway({
@@ -224,7 +256,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     }
     const built = buildResolved(next);
     pool.reload(built.entries);
-    if (codexPool?.reload && nextCodex.length > 0) {
+    if (codexPool.reload) {
       codexPool.reload(buildBearerEntries(nextCodex));
     }
     accounts = next;
