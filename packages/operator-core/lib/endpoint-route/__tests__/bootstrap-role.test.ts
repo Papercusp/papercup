@@ -17,6 +17,7 @@ const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
 const buildRoleLaunchSpecMock = vi.fn();
 const roleConsumesMock = vi.fn();
 const writeRoleCodexHomeMock = vi.fn();
+const resolveAccountPinMock = vi.fn();
 // EI-155: mock the interactive-claude config-dir materializer so this unit test
 // never symlinks the dev box's real ~/.claude into a session dir.
 const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
@@ -35,7 +36,8 @@ vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock })
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
-vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (...a: unknown[]) => writeInteractiveClaudeConfigMock(...a) }));
+vi.mock('../routes/agent-mcp/bootstrap-su', () => ({ resolveAccountPin: (...a: unknown[]) => resolveAccountPinMock(...a) }));
+vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (opts: { sid: string }) => writeInteractiveClaudeConfigMock(opts) }));
 // No-op the best-effort saved-prompts materialize side effect — this unit test
 // isn't exercising it (the materialize integration test is), and running it for
 // real would query the DB + write/prune the dev box's ~/.claude/commands.
@@ -44,8 +46,8 @@ vi.mock('../../saved-prompts-materialize', () => ({
   materializeHarnessPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
   materializeCodexPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
 }));
-const getPlanContextBySlugMock = vi.fn(async () => '## Source Plan Context\n\n**Plan:** `p1`');
-vi.mock('../../plan-context-for-feature', () => ({ getPlanContextBySlug: (...a: unknown[]) => getPlanContextBySlugMock(...a) }));
+const getPlanContextBySlugMock = vi.fn(async (_slug?: string) => '## Source Plan Context\n\n**Plan:** `p1`');
+vi.mock('../../plan-context-for-feature', () => ({ getPlanContextBySlug: (slug: string) => getPlanContextBySlugMock(slug) }));
 
 const CTX: RouteContext = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
 
@@ -63,6 +65,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(7);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
+  resolveAccountPinMock.mockResolvedValue({ env: {}, notice: null, accountId: null, provider: null });
   getPlanContextBySlugMock.mockResolvedValue('## Source Plan Context\n\n**Plan:** `p1`');
   writeRoleCodexHomeMock.mockReturnValue({
     codexHome: '/tmp/role-codex-homes/session-7',
@@ -219,6 +222,24 @@ describe('bootstrap-role', () => {
     // No .mcp.json written into the harness cwd for codex.
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'codex' }),
+    );
+  });
+
+  it('codex account pin is resolved and baked into the role CODEX_HOME config', async () => {
+    resolveAccountPinMock.mockResolvedValue({
+      env: { PAPERCUSP_ACCOUNT_ID: 'codex-main' },
+      notice: 'pinned to Codex account codex-main (routed through the inference gateway).',
+      accountId: 'codex-main',
+      provider: 'codex',
+    });
+    const res = await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001', account: 'codex-main' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', 'codex-main', 'codex');
+    expect(json.accountNotice).toMatch(/pinned to Codex account codex-main/i);
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
+    expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ codexGatewayAccountId: 'codex-main' }),
     );
   });
 

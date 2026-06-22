@@ -2,16 +2,23 @@
 import { test, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { startGatewayService, type RunningGatewayService } from './launch';
 
 let upstream: http.Server | undefined;
 let svc: RunningGatewayService | undefined;
+let tempDir: string | undefined;
 
 afterEach(async () => {
   await svc?.stop();
   svc = undefined;
   await new Promise<void>((r) => (upstream ? upstream.close(() => r()) : r()));
   upstream = undefined;
+  if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  tempDir = undefined;
+  delete process.env.OPENAI_BASE_URL_UPSTREAM;
 });
 
 async function startUpstream(): Promise<{ base: string; lastAuth: () => string | undefined }> {
@@ -134,4 +141,44 @@ test('/admin/config + /admin/reload expose the live config + on-demand hot-reloa
   const c2 = (await (await fetch(`${base}/admin/config`)).json()) as { version: number; accounts: string[] };
   assert.equal(c2.version, 2);
   assert.deepEqual([...c2.accounts].sort(), ['a', 'c']);
+});
+
+test('Codex account pool can hot-reload from empty to live without a gateway restart', async () => {
+  const up = await startUpstream();
+  process.env.OPENAI_BASE_URL_UPSTREAM = up.base;
+  tempDir = mkdtempSync(join(tmpdir(), 'codex-gw-token-'));
+  const codexTokenPath = join(tempDir, 'codex-main.token');
+  writeFileSync(codexTokenPath, 'codex-token\n', { mode: 0o600 });
+
+  const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
+  let codexDb: typeof claudeDb = [];
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  const base = `http://127.0.0.1:${svc.port}`;
+
+  const before = await fetch(`${base}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-4.1', input: 'hi' }),
+  });
+  assert.equal(before.status, 503);
+
+  codexDb = [{ accountId: 'codex-main', credentialRef: `token:${codexTokenPath}`, source: 'pool' as const }];
+  const changed = await svc.reloadPool();
+  assert.equal(changed.changed, true);
+
+  const after = await fetch(`${base}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'codex-main' },
+    body: JSON.stringify({ model: 'gpt-4.1', input: 'hi' }),
+  });
+  assert.equal(after.status, 200);
+  assert.equal(up.lastAuth(), 'Bearer codex-token');
 });

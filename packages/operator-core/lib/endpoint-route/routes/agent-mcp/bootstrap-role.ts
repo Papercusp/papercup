@@ -45,6 +45,7 @@ import {
 } from '../../../saved-prompts-materialize';
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
+import { resolveAccountPin } from './bootstrap-su';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -102,6 +103,8 @@ export interface BootstrapRoleResult {
    * `envelopeEnv.CODEX_HOME` for the launcher.
    */
   codexHome: string | null;
+  /** Human-facing account pin result; null when no pin was requested or it resolved cleanly to default behavior. */
+  accountNotice?: string | null;
   /** Non-secret env the launcher exports into the child. */
   envelopeEnv: Record<string, string>;
 }
@@ -130,6 +133,7 @@ const post = defineTool({
       harness_slug?: string | null;
       feature?: string | null;
       plan?: string | null;
+      account?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -157,6 +161,7 @@ const post = defineTool({
     const harnessSlug = body.harness_slug?.trim() || null;
     const feature = body.feature?.trim() || null;
     const plan = body.plan?.trim() || null;
+    const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent);
 
     // Feature + plan gating from the single source (roleConsumes / consumes).
     const consumes = roleConsumes(role, harnessSlug ?? '');
@@ -278,6 +283,7 @@ const post = defineTool({
           // The session's coordination identity → the activity-bridge hook reports
           // this worker's tool calls under it (codex bakes it; can't env-expand).
           sid,
+          codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
         });
         codexHome = ch.codexHome;
         mcpJsonPath = ch.configPath; // config.toml — diagnostics
@@ -396,6 +402,7 @@ const post = defineTool({
       promptFile,
       mcpJsonPath,
       codexHome,
+      accountNotice: accountPin.notice,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
         PAPERCUSP_ROLE: role,
@@ -406,6 +413,7 @@ const post = defineTool({
         PAPERCUSP_SID: sid,
         ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
+        ...accountPin.env,
         ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),
         ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),

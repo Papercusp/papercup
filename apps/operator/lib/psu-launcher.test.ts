@@ -17,6 +17,7 @@ import {
   GATEWAY_ACCOUNT_HEADER,
   addDirArgs,
   forkBootstrapBody,
+  roleBootstrapBody,
   forkSeedPaths,
   findUntrackedSession,
   claudeStoreHasSession,
@@ -284,6 +285,21 @@ describe('psu-launcher arg parsing', () => {
     });
     // No account → NO `account` key at all (byte-identical to the pre-account body).
     expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' }, null)).not.toHaveProperty('account');
+  });
+
+  it('roleBootstrapBody folds a chosen account into role launches', () => {
+    expect(
+      roleBootstrapBody({ role: 'worker', agent: 'codex', workspace: 'ws1', harness: 'h1', feature: 'F-001', plan: null, account: 'codex-main' }),
+    ).toEqual({
+      role: 'worker',
+      agent: 'codex',
+      workspace: 'ws1',
+      harness_slug: 'h1',
+      feature: 'F-001',
+      plan: null,
+      account: 'codex-main',
+    });
+    expect(roleBootstrapBody({ role: 'worker', agent: 'codex', workspace: 'ws1', harness: 'h1', feature: 'F-001', plan: null })).not.toHaveProperty('account');
   });
 
   it('forkSeedPaths points at the projects/ subtree of each config dir', () => {
