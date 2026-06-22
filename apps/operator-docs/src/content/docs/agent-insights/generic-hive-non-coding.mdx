@@ -4,9 +4,27 @@ description: How a Hive runs non-coding work. `generic-hive` is a built-in `kind
 discovered: 2026-06-15
 tags: [blueprint, hive, generalization, acceptance, affinity, generic-hive, domain-profile]
 status: active
+documents:
+  - libs/papercusp/packages/orchestrator/src/blueprint/loader.ts
+  - libs/papercusp/packages/orchestrator/src/blueprint/schema.ts
+  - libs/papercusp/packages/harness/blueprints/work/blueprint.yaml
+  - packages/operator-core/lib/dbos/orchestrator-finalize.ts
+  - packages/operator-core/lib/fleet/placement-affinity.ts
+  - libs/papercusp/packages/orchestrator/src/prompt-build.ts
+  - packages/operator-core/lib/agent-tools/hive/create.ts
+plans:
+  - hive-blueprint-generalization-2026-06-15
 sidebar:
   order: 62
 ---
+
+> **⚠️ Renamed since this was written.** The blueprint this page calls **`generic-hive`** (and its
+> coding sibling **`hive`**) are now **legacy ids aliased to `work` and `coding`** —
+> `libs/papercusp/packages/orchestrator/src/blueprint/loader.ts` maps `hive→coding` /
+> `generic-hive→work`. `blueprintId: 'generic-hive'` still resolves via the alias, but the canonical
+> blueprint dirs are `blueprints/work/` + `blueprints/coding/`. The domain-profile **mechanism** below
+> (judge acceptance, artifacts output, topic affinity, the schema fields) is unchanged — only the
+> blueprint *names* moved; substitute `work`/`coding` for the current ids.
 
 ## What
 
