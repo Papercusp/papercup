@@ -1446,6 +1446,38 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // featuresConsolidated.byHive — CROSS-MEMBER browse (WI-259 P-006, D-010).
+  // Features across EVERY member harness of a shared hive, latest first. Each row
+  // already carries `harness_slug` = the authoring member's slug = its ORIGIN, so
+  // the UI can label + drill back to that member. The per-harness reads
+  // (featuresConsolidated.bySlug) are UNCHANGED — member-origin-scoped stays the
+  // default; this is the EXPLICIT cross-member view a hive rollup consumes.
+  //
+  // Why this works with NO schema change: post-WI-259-P-002 the membership guard
+  // lands each member's content locally under that member's own slug, and joining
+  // a hive (discovery/join-hive) registers each member harness with `hive_slug=H`.
+  // So the member-slug SET is just the registry projects whose hive_slug points at
+  // the home — resolved here exactly like `learning.improvements` (loadHarnessRegistry
+  // + hiveMemberHarnessScopes). Best-effort: a registry read failure degrades to the
+  // hive-home-slug-only read rather than 500ing the rollup.
+  'featuresConsolidated.byHive': {
+    argsSchema: z.object({ hiveHomeSlug: z.string(), workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { hiveHomeSlug, workspaceId } = args as { hiveHomeSlug: string; workspaceId?: string };
+      const memberSlugs = await resolveHiveMemberSlugs(hiveHomeSlug, workspaceId);
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
+      const { and, desc, eq, inArray } = await import('drizzle-orm');
+      const t = generated.harnessFeaturesConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      const slugFilter = inArray(t.harnessSlug, memberSlugs);
+      return (await db
+        .select()
+        .from(t)
+        .where(workspaceId != null ? and(slugFilter, eq(t.workspaceId, workspaceId)) : slugFilter)
+        .orderBy(desc(t.updatedTs))) as unknown[];
+    },
+  },
+
   // featuresConsolidated.byPlanSlug — features promoted from a specific plan,
   // across all harnesses, ordered by created_ts desc. Uses the first-class
   // source_plan_slug column added in migration 084 (indexed; fast).
