@@ -77,6 +77,18 @@ describe('resolveBoundAccount', () => {
     mockedLoad.mockRejectedValue(new Error('pg down'));
     await expect(resolveBoundAccount('ws')).rejects.toThrow(/account-pool load failed/);
   });
+
+  it('trims surrounding whitespace on PAPERCUSP_ACCOUNT_ID before matching a pool account', async () => {
+    process.env.PAPERCUSP_ACCOUNT_ID = '  acct-b  ';
+    mockedLoad.mockResolvedValue({ accounts: [acct('acct-a', 'ref:a'), acct('acct-b', 'ref:b')] } as never);
+    expect(await resolveBoundAccount('ws')).toEqual({ accountId: 'acct-b', credentialRef: 'ref:b', source: 'env' });
+  });
+
+  it('treats a whitespace-only PAPERCUSP_ACCOUNT_ID as NO pin (falls through to the sole pool account)', async () => {
+    process.env.PAPERCUSP_ACCOUNT_ID = '   ';
+    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] } as never);
+    expect(await resolveBoundAccount('ws')).toEqual({ accountId: 'only', credentialRef: 'ref:only', source: 'sole-pool-account' });
+  });
 });
 
 describe('resolveAccountPool (EI-535 failover)', () => {
@@ -155,6 +167,34 @@ describe('resolveAccountPool (EI-535 failover)', () => {
       .mockRejectedValueOnce(new Error('blip'))
       .mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a', 'b']);
+  });
+
+  it('retries up to POOL_LOAD_ATTEMPTS (3): succeeds on the LAST attempt after 2 transient failures', async () => {
+    mockedLoad
+      .mockRejectedValueOnce(new Error('blip-1'))
+      .mockRejectedValueOnce(new Error('blip-2'))
+      .mockResolvedValue({ accounts: [acct('a', 'ref:a')] } as never);
+    expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a']);
+    expect(mockedLoad).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails closed after EXACTLY POOL_LOAD_ATTEMPTS (3) attempts — does not retry forever', async () => {
+    mockedLoad.mockRejectedValue(new Error('pg down'));
+    await expect(resolveAccountPool('ws')).rejects.toThrow(/account-pool load failed/);
+    expect(mockedLoad).toHaveBeenCalledTimes(3);
+  });
+
+  it('an EMPTY codex pool resolves to [] — codex has no local-login fallback (only claude does)', async () => {
+    // Only a claude account is registered; the codex pool is empty. claude empty → local fallback,
+    // but codex empty MUST return [] (there is no box-local codex login to degrade to).
+    mockedLoad.mockResolvedValue({ accounts: [acct('claude-a', 'ref:claude-a')] } as never);
+    expect(await resolveAccountPool('ws', 'codex')).toEqual([]);
+  });
+
+  it('trims surrounding whitespace on PAPERCUSP_ACCOUNT_ID when choosing the primary', async () => {
+    process.env.PAPERCUSP_ACCOUNT_ID = '  b  ';
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] } as never);
+    expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['b', 'a', 'c']);
   });
 });
 

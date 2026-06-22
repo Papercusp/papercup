@@ -12,6 +12,7 @@
 
 import { registerReactionRule } from './registry';
 import { formatHandoff, type HandoffArgs } from './format-handoff';
+import { registerCacheTagEcaRule } from './cache-eca-rule';
 
 /**
  * D-008 — the motivating rule: defer → render on the agent's pane.
@@ -50,3 +51,11 @@ registerReactionRule({
   onlyOnSuccess: true,
   source: 'events-file',
 });
+
+/**
+ * caching-layer-tag-eca-2026-06-22 P-004 — the keystone: a `<table>.changed` event
+ * from the change stream bumps the affected cache tags. Registered via its own
+ * module so the (sync-cached) flag gate + the deterministic tag scheme live next to
+ * the built-in `cache.bumpTags` action. Flag-gated (CACHE_TAG_ECA, default ON).
+ */
+registerCacheTagEcaRule();

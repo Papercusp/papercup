@@ -65,6 +65,20 @@ export { guardReaction, MAX_REACTION_DEPTH } from '@papercusp/event-reaction';
 export { formatHandoff, type HandoffArgs } from './format-handoff';
 export { fireReactionInProcess, buildReactionCtx } from './dispatch-reaction';
 export {
+  isBuiltinReactionAction,
+  fireBuiltinReactionAction,
+  BUILTIN_ACTIONS,
+  CACHE_BUMP_TAGS_ACTION,
+} from './builtin-actions';
+export {
+  registerCacheTagEcaRule,
+  cacheTagEcaEnabled,
+  tableNameFromChangedEvent,
+  tagsForTableChange,
+  CACHE_TAG_ECA_RULE_ID,
+} from './cache-eca-rule';
+export { TABLE_CHANGED_KEY } from './registry';
+export {
   durableReactionsEnabled,
   runDurableReaction,
   setDurableReactionRunner,

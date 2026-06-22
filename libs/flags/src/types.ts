@@ -907,6 +907,26 @@ export const FLAGS = {
   // cutover, flipped ON after the migration+backfill is confirmed applied in prod. OFF ⇒ the
   // authoritative event-fold (today's behavior, byte-identical). KNOWN_DARK_FLAGS.
   COORD_OPEN_ESCALATIONS_PROJECTION: "papercusp-coord-open-escalations-projection",
+  // caching-layer-tag-eca-2026-06-22 P-004: wire the operator cache to the change
+  // stream — a `<schema>.<table>.changed` event (emit_change_notify, mig 368 carries
+  // args.id + workspace_id) fires the built-in `cache.bumpTags` reaction action, which
+  // bumps the per-(workspace, tag) generation for `['<table>', '<table>:<id>']` so every
+  // tagged getOrSet entry is lazily stale on its next read. DEFAULT ON (alpha
+  // flags-default-on): the action + rule are complete + tested and the bump is a SAFE
+  // no-op side effect (it only marks cache generations; with no consumers yet nothing
+  // breaks) — the kill-switch is purely precautionary. OFF ⇒ the rule's `when` falls
+  // false ⇒ no invalidation (byte-identical to no cache). Reading the live change stream
+  // INTO emitSystemEvent is a focused follow (the sync bus's bridge sees only the event
+  // name, not args.id/workspace_id) — see the P-004 completion note.
+  CACHE_TAG_ECA: "papercusp-cache-tag-eca",
+  // caching-layer-tag-eca-2026-06-22 P-018 (operational hardening): the operator
+  // L1 cache READ kill-switch (distinct from CACHE_TAG_ECA, which only gates the
+  // invalidation ECA rule). DEFAULT ON: the cache serves/single-flights getOrSet
+  // entries. OFF ⇒ the singleton's `bypass` returns true ⇒ every getOrSet runs its
+  // factory directly (no L1 read/write) — byte-identical to having no cache, the
+  // panic switch if a cache consumer ever serves wrong/stale data in prod. Read
+  // SYNC-cached (the getOrSet hot path can't await), refreshed on boot + flag change.
+  CACHE_LAYER: "papercusp-cache-layer",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1409,6 +1429,16 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // harmless while OFF; flip ON only after the migration+backfill is verified in prod.
   // OFF ⇒ the authoritative event-fold (byte-identical). KNOWN_DARK_FLAGS.
   [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true,
+  // DEFAULT ON (caching-layer-tag-eca-2026-06-22 P-004): the cache↔change-stream ECA rule.
+  // The action + rule are complete + tested and a tag-generation bump is a safe no-op side
+  // effect (no consumers yet ⇒ nothing breaks); OFF ⇒ the rule no-ops (byte-identical). The
+  // live change-stream → emitSystemEvent wiring is a focused follow (see types.ts comment).
+  [FLAGS.CACHE_TAG_ECA]: true,
+  // DEFAULT ON (caching-layer-tag-eca-2026-06-22 P-018): the operator L1 cache read
+  // kill-switch. ON ⇒ getOrSet uses L1; OFF ⇒ getOrSet bypasses straight to the factory
+  // (byte-identical to no cache). Default-on per alpha policy — the bypass is the panic
+  // switch, not a dark gate.
+  [FLAGS.CACHE_LAYER]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

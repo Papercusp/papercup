@@ -18,3 +18,7 @@ export type { PgProjectionStoreConfig } from './pg-projection-store';
 
 export { GuardedProjectionIndex } from './guarded-projection-index';
 export type { ProjectionErrorSink, GuardedProjectionIndexOptions } from './guarded-projection-index';
+
+// The operator's singleton Cache instance (P-004) — the one process-wide cache
+// the operator reads/writes through and the `cache.bumpTags` ECA action bumps.
+export { getOperatorCache, setOperatorCache, installOperatorCache, resetOperatorCacheForTests } from './instance';

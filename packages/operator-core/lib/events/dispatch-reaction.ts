@@ -26,6 +26,7 @@ import {
 import { withWorkspace } from '@papercusp/db-org';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { activeWorkspaceId } from '../workspace-registry';
+import { fireBuiltinReactionAction, isBuiltinReactionAction } from './builtin-actions';
 import type { ReactionCause } from './types';
 
 export interface FireReactionResult {
@@ -96,11 +97,22 @@ export async function fireReactionInProcess(opts: {
   /** Capability scope for a plugin/blueprint rule (D-012). Unset ⇒ first-party trusted. */
   capability?: string;
 }): Promise<FireReactionResult> {
+  const workspaceId =
+    opts.parentCtx.workspaceId ?? opts.parentCtx.principal?.workspaceId ?? activeWorkspaceId();
+
+  // Built-in NON-TOOL reaction actions (e.g. `cache.bumpTags`). These are
+  // first-party in-process side effects, not projected tools — they never run
+  // through the auth/quota dispatcher. Intercept BEFORE the tool lookup
+  // (`cache.bumpTags` has no projected-tool entry). Workspace is required: a
+  // cache invalidation is workspace-scoped (D-010).
+  if (isBuiltinReactionAction(opts.fire)) {
+    if (!workspaceId) return { ok: false, error: 'no workspace to scope the reaction' };
+    return fireBuiltinReactionAction(opts.fire, opts.args, workspaceId);
+  }
+
   const projected = lookupByMcpName(opts.fire);
   if (!projected) return { ok: false, error: `unknown reaction tool "${opts.fire}"` };
 
-  const workspaceId =
-    opts.parentCtx.workspaceId ?? opts.parentCtx.principal?.workspaceId ?? activeWorkspaceId();
   if (!workspaceId) return { ok: false, error: 'no workspace to scope the reaction' };
 
   try {

@@ -26,6 +26,7 @@ import {
 import { createPgListenSource, createPgNotifySink } from '@papercusp/sync/server/pg';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';
+import { getOperatorCache } from './cache/instance';
 
 export type SyncEvent = LibSyncEvent;
 export type SubscribeHandle = LibSubscribeHandle;
@@ -41,6 +42,15 @@ const bus = createInvalidationBus({
     open: () =>
       postgres(getHarnessAdminUrl(), { max: 1, idle_timeout: 0, connect_timeout: 30 }),
     channel: CHANNEL,
+    // caching-layer-tag-eca P-017 — cold-bust on (re)connect. Fires on the initial
+    // LISTEN AND every reconnect (postgres-js re-issues LISTEN after a dropped
+    // connection and re-invokes this `onlisten`). A fire-and-forget
+    // `pg_notify('sync_invalidate', …)` → `cache.bumpTags` that fired while this
+    // single LISTEN connection was down is NEVER replayed here, so an L1 entry built
+    // before the gap could outlive an invalidation it missed. Clearing the entire L1
+    // on reconnect makes every entry rebuild — the audit's cold-bust requirement. On
+    // the very first connect the L1 is empty, so the clear is a harmless no-op.
+    onListen: () => getOperatorCache().clearL1(),
   }),
   // pg_notify through the shared org pool — same connection budget every
   // other writer manages (opening a fresh client per notify exhausted
@@ -48,7 +58,10 @@ const bus = createInvalidationBus({
   notify: createPgNotifySink({ getSql: () => getOrgPg().sql, channel: CHANNEL }),
   // P-067: bridge raw PG-trigger `<schema>.<table>.changed` events to the
   // camelCase query names existing useSyncQuery consumers subscribe to.
-  bridge: (name) => queryNamesForTriggerEvent(name),
+  // caching-layer-tag-eca P-006: pass the trigger's `args` (workspace_id, op,
+  // row id from mig 368) so a per-row query can be SCOPE-invalidated by id
+  // instead of full-busting; queries without a per-id scope still full-bust.
+  bridge: (name, args) => queryNamesForTriggerEvent(name, args),
   log: (m) => console.log(m),
   onError: (where, e) => console.error(`[sync-sse] ${where} failed:`, e),
 });

@@ -21,12 +21,30 @@ type ReactionEngine = ReactionRegistry<ToolInvocationEvent, string>;
 
 const GLOBAL_KEY = '__papercuspReactionEngine__';
 
+/** The wildcard trigger key every `<schema>.<table>.changed` event also matches. */
+export const TABLE_CHANGED_KEY = '*.changed';
+
+/**
+ * The trigger key(s) an event matches rules on. The primary key is the event's
+ * `tool` (the rule index, e.g. `coord:handoff` or `harness_shared.harness_plans.changed`).
+ *
+ * A table-change event (`<schema>.<table>.changed`, emitted from the sync change
+ * stream via `emitSystemEvent`) ALSO matches the wildcard `'*.changed'` key — so a
+ * single rule keyed on `'*.changed'` reacts to a change on ANY table without
+ * enumerating the open-ended table set (caching-layer-tag-eca-2026-06-22 P-004:
+ * the cache-invalidation rule reads the concrete table off `e.tool`).
+ */
+function keyOf(event: ToolInvocationEvent): string | string[] {
+  if (event.tool.endsWith('.changed')) return [event.tool, TABLE_CHANGED_KEY];
+  return event.tool;
+}
+
 function engine(): ReactionEngine {
   const g = globalThis as Record<string, unknown>;
   let e = g[GLOBAL_KEY] as ReactionEngine | undefined;
   if (!e) {
     e = new ReactionRegistry<ToolInvocationEvent, string>({
-      keyOf: (event) => event.tool,
+      keyOf,
       onError: (err, rule) => {
         // eslint-disable-next-line no-console
         console.warn(

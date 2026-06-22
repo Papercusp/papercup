@@ -28,6 +28,7 @@
     "@papercusp/eval-battery": "*",
     "@papercusp/event-reaction": "*",
     "@papercusp/failure-detector": "*",
+    "@papercusp/flags": "*",
     "@papercusp/locks-core": "*",
     "@papercusp/model-pricing": "*",
     "@papercusp/p2p-voice": "*",

@@ -144,7 +144,7 @@ describe('SentinelTab rendering', () => {
     render(<SentinelTab active />);
     await waitFor(() => expect(screen.getByText('Audience mode')).toBeTruthy());
 
-    fireEvent.click(screen.getByRole('button', { name: 'User-friendly' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Novice' }));
     await waitFor(() => expect(patches.length).toBeGreaterThan(0));
     expect(patches[0].body).toEqual({ audienceMode: 'novice' });
   });

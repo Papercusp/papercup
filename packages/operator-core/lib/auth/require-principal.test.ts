@@ -10,7 +10,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('.', () => ({
+// getSessionUser lives in lib/auth.ts (NOT a lib/auth/index.ts barrel). The cookie
+// resolver imports it via '../../auth' and this test reads its handle via '../auth' —
+// both resolve to lib/auth.ts. Mock THAT module (a bare '.' resolved to the
+// non-existent lib/auth/index.ts, so the mock silently missed and every test threw
+// `vi.mocked(...).mockResolvedValue is not a function` — EI/green-checkpoint red).
+// importOriginal-spread so the heavy auth module's other exports survive.
+vi.mock('../auth', async (orig) => ({
+  ...(await orig<typeof import('../auth')>()),
   getSessionUser: vi.fn(async () => null),
 }));
 vi.mock('../device-jwt', () => ({

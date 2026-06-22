@@ -169,3 +169,38 @@ describe('Cache — L1 + negative caching + cold-bust', () => {
     expect(calls).toBe(2);
   });
 });
+
+describe('Cache — kill-switch bypass (P-018)', () => {
+  it('bypass=true ⇒ getOrSet always runs the factory (no L1 read/write/single-flight)', async () => {
+    let disabled = false;
+    const c = new Cache({ bypass: () => disabled });
+    let calls = 0;
+    const f = (): string => {
+      calls++;
+      return 'v';
+    };
+
+    // Enabled: cached after the first build.
+    expect(await c.getOrSet('w', 'k', f)).toBe('v');
+    expect(await c.getOrSet('w', 'k', f)).toBe('v');
+    expect(calls).toBe(1);
+
+    // Disabled: every getOrSet re-runs the factory, ignoring the warm entry.
+    disabled = true;
+    expect(await c.getOrSet('w', 'k', f)).toBe('v');
+    expect(await c.getOrSet('w', 'k', f)).toBe('v');
+    expect(calls).toBe(3);
+    // No L1 reads/writes happened while bypassed — stats untouched past the warm build.
+    expect(c.stats.builds).toBe(1);
+
+    // Re-enabling serves the still-warm pre-bypass entry (bypass never evicted it).
+    disabled = false;
+    expect(await c.getOrSet('w', 'k', f)).toBe('v');
+    expect(calls).toBe(3);
+  });
+
+  it('bypass still enforces the workspace-scope guard (D-010)', async () => {
+    const c = new Cache({ bypass: () => true });
+    await expect(c.getOrSet('', 'k', () => 'x')).rejects.toThrow(/workspaceId/);
+  });
+});

@@ -38,6 +38,13 @@ const UNIT = process.env.PAPERCUSP_GATEWAY_WATCHDOG_UNIT || 'papercup-inference-
  *  immediately). A standalone supervisor that runs precisely WHEN the operator/PG may be down is the
  *  canonical "must be a file, not Postgres" case (storage-policy). Env-tunable. */
 const LOG_FILE = process.env.PAPERCUSP_GATEWAY_WATCHDOG_LOG || join(homedir(), '.papercusp', 'gateway-watchdog.log');
+// Proactive DEAD-PROXY alert thresholds (EI-2537). Always-on observability (a durable log line; NEVER affects
+// the restart decision), env-tunable like every other watchdog knob. A proxy is "dead" when its volume-fair
+// egressFailRateByAccount crosses DEADPROXY_RATE over at least DEADPROXY_MIN_ATTEMPTS attempts (the floor
+// filters small-sample noise); re-alerted at most every DEADPROXY_REALERT_MS per account (anti-spam debounce).
+const DEADPROXY_MIN_ATTEMPTS = Number(process.env.PAPERCUSP_GATEWAY_DEADPROXY_MIN_ATTEMPTS) || 20;
+const DEADPROXY_RATE = Number(process.env.PAPERCUSP_GATEWAY_DEADPROXY_RATE) || 0.5;
+const DEADPROXY_REALERT_MS = Number(process.env.PAPERCUSP_GATEWAY_DEADPROXY_REALERT_MS) || 10 * 60_000;
 
 let lastTotal = -1;
 let frozenSince = 0;
@@ -45,6 +52,7 @@ let frozenSelfHeal = -1; // selfHealReclaims captured when the current freeze st
 let unreachableSince = 0;
 let lastRestart = 0;
 const restartTimes = []; // epoch ms of recent restarts (rolling 1h window for the circuit breaker)
+const deadProxyLastAlert = new Map(); // accountId -> epoch ms last DEAD-PROXY alert (per-account anti-spam debounce)
 
 let logDirEnsured = false;
 const log = (m) => {
@@ -104,6 +112,28 @@ export function externalStallReason(s, selfHealAtFreezeStart) {
   return null;
 }
 
+/** Rank egress proxies that are chronically failing (EI-2537): an account whose volume-fair
+ *  egressFailRateByAccount (= egressFailsByAccount / egressAttemptsByAccount, computed gateway-side) is
+ *  >= rateThreshold over >= minAttempts attempts. The min-attempts floor filters small-sample noise (a 1/1
+ *  blip reads 100% but is not a dead proxy). Returns the offenders worst-first. Pure (no I/O) so a unit
+ *  test can drive it with synthetic /stats; the poll loop logs the result + debounces per account. The
+ *  RATE is the source-of-truth signal because a raw fail count ranks the BUSIEST proxy worst, not the
+ *  deadest (the 2026-06-22 audit: aviynw had the most raw fails only because it carried the most traffic;
+ *  definitelyahuman was the true dead proxy at ~95% rate). */
+export function deadProxyAlerts(stats, { minAttempts = DEADPROXY_MIN_ATTEMPTS, rateThreshold = DEADPROXY_RATE } = {}) {
+  const rate = (stats && stats.egressFailRateByAccount) || {};
+  const attempts = (stats && stats.egressAttemptsByAccount) || {};
+  const fails = (stats && stats.egressFailsByAccount) || {};
+  const out = [];
+  for (const [id, r] of Object.entries(rate)) {
+    const a = Number(attempts[id]) || 0;
+    if (a >= minAttempts && Number(r) >= rateThreshold) {
+      out.push({ accountId: id, rate: Number(r), attempts: a, fails: Number(fails[id]) || 0 });
+    }
+  }
+  return out.sort((x, y) => y.rate - x.rate);
+}
+
 async function poll() {
   let s;
   try {
@@ -153,11 +183,30 @@ async function poll() {
     frozenSelfHeal = -1;
   }
   lastTotal = total;
+
+  // Proactive DEAD-PROXY alert (EI-2537) — INDEPENDENT of the wedge logic above. Name a chronically-failing
+  // egress proxy in the durable log the instant its volume-fair rate crosses the threshold, so the worst
+  // Rayobyte proxy is caught at poll granularity + session-independently, instead of waiting for a human to
+  // read /stats. Pure logging; fully isolated in try/catch so a malformed /stats can never disturb the
+  // restart path. Debounced per account so a sustained dead proxy logs at most once per DEADPROXY_REALERT_MS.
+  try {
+    for (const dp of deadProxyAlerts(s)) {
+      const last = deadProxyLastAlert.get(dp.accountId) || 0;
+      if (now - last >= DEADPROXY_REALERT_MS) {
+        deadProxyLastAlert.set(dp.accountId, now);
+        log(
+          `DEAD-PROXY: '${dp.accountId}' egress failing ${Math.round(dp.rate * 100)}% (${dp.fails}/${dp.attempts} attempts) >= ${Math.round(DEADPROXY_RATE * 100)}% threshold — fix or pull its egress proxy (it is the dominant share of the bee-facing "api error" leak).`,
+        );
+      }
+    }
+  } catch (e) {
+    log(`dead-proxy check error (non-fatal): ${e.message}`);
+  }
 }
 
 function start() {
   log(
-    `up — port ${PORT}, poll ${POLL_MS}ms, freeze ${FREEZE_MS}ms, debounce ${DEBOUNCE_MS}ms, cap ${MAX_RESTARTS_PER_HR}/hr, unit ${UNIT}; suppress-restart-on-external-stall ON; durable log ${LOG_FILE}`,
+    `up — port ${PORT}, poll ${POLL_MS}ms, freeze ${FREEZE_MS}ms, debounce ${DEBOUNCE_MS}ms, cap ${MAX_RESTARTS_PER_HR}/hr, unit ${UNIT}; suppress-restart-on-external-stall ON; dead-proxy alert >=${Math.round(DEADPROXY_RATE * 100)}% over >=${DEADPROXY_MIN_ATTEMPTS} attempts; durable log ${LOG_FILE}`,
   );
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
 }

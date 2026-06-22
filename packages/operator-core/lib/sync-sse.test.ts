@@ -12,7 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let capturedListen: ((raw: string) => void) | null = null;
 const notifySql = vi.fn(async (..._args: unknown[]) => [] as unknown[]); // called as a tagged template
-let bridgeReturn: (name: string) => string[] = () => [];
+type BridgeTarget = string | { name: string; args: Record<string, unknown> };
+let bridgeReturn: (name: string, args?: Record<string, unknown>) => BridgeTarget[] = () => [];
 
 const T0 = 1_700_000_000_000;
 
@@ -93,6 +94,32 @@ describe('sync-sse LISTEN fan-out + replay', () => {
     expect(names).toContain('featureQueue.byHarness');
     const bridged = sub.mock.calls.find((c) => c[0].name === 'featureQueue.byHarness')![0];
     expect(bridged.args).toBeUndefined();
+  });
+
+  it('forwards the trigger args to the bridge and SCOPES a { name, args } target by row id', async () => {
+    // caching-layer-tag-eca P-006: the bus now hands the trigger args
+    // (workspace_id, op, id) to the bridge; a per-row query returns a scoped
+    // { name, args } so the client invalidates just that row's cache key.
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    bridgeReturn = (name, args) => {
+      seen.push(args);
+      if (name !== 'harness_shared.widget.changed') return [];
+      const id = args?.id;
+      return typeof id === 'string' ? [{ name: 'widget.byId', args: { id } }] : ['widget.byId'];
+    };
+    const { subscribe } = await load();
+    const sub = vi.fn();
+    await subscribe(sub);
+    capturedListen!(
+      JSON.stringify({
+        name: 'harness_shared.widget.changed',
+        args: { workspace_id: 'w1', op: 'UPDATE', id: 'widget-42' },
+      }),
+    );
+    // bridge saw the row id from the trigger payload
+    expect(seen).toEqual([{ workspace_id: 'w1', op: 'UPDATE', id: 'widget-42' }]);
+    const scoped = sub.mock.calls.find((c) => c[0].name === 'widget.byId')![0];
+    expect(scoped.args).toEqual({ id: 'widget-42' });
   });
 
   it('backfillSince replays only events with a higher id than the last seen', async () => {

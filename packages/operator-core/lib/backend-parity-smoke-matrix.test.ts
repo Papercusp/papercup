@@ -1,6 +1,13 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+
+// Coverage paths in BACKEND_PARITY_SMOKE_MATRIX are repo-root-relative. Resolve them
+// against the repo root derived from THIS file's location — NOT process.cwd(), which is
+// the package dir under `test:affected` (the doubled-path "expected false to be true"
+// red the green gate caught). lib → operator-core → packages → repo root = ../../..
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 import {
   BACKEND_FEATURE_CAPABILITIES,
   accountProviderForInteractiveBackend,
@@ -15,7 +22,9 @@ import {
 const ALL_BACKENDS: readonly InteractiveBackend[] = ['claude', 'codex', 'omp'];
 
 function repoPathExists(path: string): boolean {
-  return existsSync(join(process.cwd(), path)) || existsSync(join(process.cwd(), '..', '..', path));
+  // Resolve against the location-derived repo root (REPO_ROOT) — robust regardless of
+  // process.cwd() (repo root under a root vitest run, the package dir under test:affected).
+  return existsSync(join(REPO_ROOT, path));
 }
 
 describe('BACKEND_PARITY_SMOKE_MATRIX', () => {

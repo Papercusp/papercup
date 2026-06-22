@@ -248,7 +248,11 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
   };
 }
 
-interface FeatureRowDb {
+/** The porsager `sql` instance type the org-scoped pool hands back — shared by the
+ *  composable WHERE-fragment builders (claimFloorsWhereSql) + the spec-driven resolver. */
+export type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
+export interface FeatureRowDb {
   feature_id: string;
   item_kind: string | null;
   harness_slug: string;
@@ -270,7 +274,7 @@ interface FeatureRowDb {
   audit_verdict: string | null;
   verified_author_github_user_id: number | string | null;
 }
-function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
+export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   return {
     id: r.feature_id,
     kind: (r.item_kind as FeatureFamilyKind) || 'feature',
@@ -309,7 +313,7 @@ function coerceGithubUserId(raw: number | string | null | undefined): number | n
   return Number.isFinite(n) ? n : null;
 }
 
-const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
+export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
   taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
   origin, audit_verdict, verified_author_github_user_id`;
@@ -1100,17 +1104,98 @@ export interface ClaimNextFilter {
 }
 
 /**
+ * The GLOBAL HARD FLOORS of a feature-family self-select, as ONE composable `sql`
+ * WHERE fragment (hybrid-bee-scheduler-work-stealing-2026-06-22 D-002/D-010). These
+ * are the system-enforced eligibility gates a bee's claim-spec can NARROW + REORDER
+ * but can NEVER override or re-assert: workspace + feature-family kind, G2 admission,
+ * unclaimed, claimable status, swarm affinity, redundancy fan-out, and the readiness
+ * `NOT EXISTS` blocking clause (P-005, the F1 split-brain fix).
+ *
+ * Extracted so the deterministic spec-driven resolver (`scheduler/get-next.ts`) ANDs
+ * in the IDENTICAL floors — there is exactly one definition, so a floor can never
+ * drift between the two claim paths. The fragment references columns UNQUALIFIED
+ * (and the blocking subquery references the table by its full name), so it is only
+ * valid composed into an inner SELECT over `harness_shared.harness_features_consolidated`.
+ *
+ * The `kind` floor is intentionally NOT here: it is a caller-supplied NARROWING (an
+ * optional restriction to one feature-family kind), not a floor the spec can't touch.
+ */
+export interface ClaimFloorsOpts {
+  harness: string;
+  /** The active workspace id (scopes both the row filter and the admission trust leg). */
+  workspaceId: string;
+  /** Claimable statuses (default ['todo']). */
+  states?: string[];
+  /** THIS Swarm's id — when set, honors per-item swarm_affinity (per-Hive lease). */
+  swarmId?: string;
+  /** Skip high-stakes (redundancy > 1) items (redundancy flag on). */
+  excludeRedundant?: boolean;
+}
+export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
+  const states = opts.states ?? ['todo'];
+  return sql`
+    harness_slug = ${opts.harness}
+    AND workspace_id = ${opts.workspaceId}
+    AND item_kind IN ('feature', 'research-task', 'chunk')
+    -- G2 admission (shared-hive-trust-admission P-002): never self-select a remote,
+    -- un-admitted item — the same gate the feature frontier enforces (P-010 trust leg,
+    -- ws-scoped via the same ws this query filters on).
+    AND ${autoPickableWhereSql(sql, opts.workspaceId)}
+    AND (taken_by IS NULL OR taken_by = '')
+    AND status = ANY(${states}::text[])
+    AND ${opts.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${opts.swarmId})` : sql`TRUE`}
+    -- P-014: under the redundancy flag, high-stakes (redundancy > 1) items fan out via
+    -- claim_replica to N Swarms, so an exactly-once claim must NOT grab them. Flag OFF ⇒
+    -- clause omitted, the claim never reads the redundancy column, byte-identical to before.
+    AND ${opts.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`}
+    -- P-005 (F1 fix): RESPECT blocking — never self-select a row that has a PRESENT,
+    -- NON-TERMINAL blocker, the SAME readiness the orchestrator frontier enforces
+    -- (frontier-readiness.ts / work-item-blocking.ts). The block edges live in the
+    -- dedicated work_item_deps table (dep_type='blocks'), keyed by harness-qualified refs
+    -- ('<harness>#<feature_id>' for features, bare 'EI-<n>' for issues — featureRef /
+    -- issues:link), in the single coordination workspace ('default'). A blocker is
+    -- SATISFIED iff TERMINAL or ABSENT; we exclude the row only when a present blocker is
+    -- non-terminal — feature terminal = status IN ('passed','deprecated'); issue terminal =
+    -- state IN ('resolved','closed') (the cross-family set, ALL_TERMINAL_STATUSES). An
+    -- absent blocker ref (no matching feature/issue row) never blocks.
+    AND NOT EXISTS (
+      SELECT 1
+        FROM harness_shared.work_item_deps d
+       WHERE d.workspace_id = 'default'
+         AND d.dep_type = 'blocks'
+         AND d.blocked_ref = harness_shared.harness_features_consolidated.harness_slug
+                               || '#' || harness_shared.harness_features_consolidated.feature_id
+         AND (
+           EXISTS (
+             SELECT 1 FROM harness_shared.harness_features_consolidated bf
+              WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                AND bf.status NOT IN ('passed', 'deprecated')
+           )
+           OR EXISTS (
+             SELECT 1 FROM harness_shared.engineer_issues bi
+              WHERE bi.workspace_id = 'default'
+                AND bi.issue_id = d.blocker_ref
+                AND bi.state NOT IN ('resolved', 'closed')
+           )
+         )
+    )`;
+}
+
+/**
  * The tuple-space associative `in` (D-004) + work-stealing claim (D-007): atomically
  * claim the OLDEST unclaimed feature-family work-item matching the template, via
  * `SELECT … FOR UPDATE SKIP LOCKED`. Competing consumers each grab a DIFFERENT row
  * (skip-locked, no blocking, no double-claim); ordering by created_ts ASC steals the
  * most-starved tail of the queue, which balances load AND prevents old-item starvation.
  * Returns the claimed item, or null when nothing matches.
+ *
+ * The eligibility floors are the shared {@link claimFloorsWhereSql} fragment — the
+ * SAME floors the spec-driven `scheduler/get-next.ts` resolver ANDs in, so the two
+ * claim paths can never diverge (D-002).
  */
 export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
-  const states = filter.states ?? ['todo'];
   // Co-location affinity (P-002): only when the caller passes its Swarm id (it does so
   // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
   // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
@@ -1123,54 +1208,15 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
      WHERE (harness_slug, feature_id) = (
        SELECT harness_slug, feature_id
          FROM harness_shared.harness_features_consolidated
-        WHERE harness_slug = ${filter.harness}
-          AND workspace_id = ${ws}
-          AND item_kind IN ('feature', 'research-task', 'chunk')
-          -- G2 admission (shared-hive-trust-admission P-002): never self-select a
-          -- remote, un-admitted item — the same gate the feature frontier enforces
-          -- (with the P-010 trust leg, ws-scoped via the same ws this query filters on).
-          AND ${autoPickableWhereSql(sql, ws)}
+        WHERE ${claimFloorsWhereSql(sql, {
+          harness: filter.harness,
+          workspaceId: ws,
+          states: filter.states,
+          swarmId: filter.swarmId,
+          excludeRedundant: filter.excludeRedundant,
+        })}
+          -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
           AND ${filter.kind ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
-          AND (taken_by IS NULL OR taken_by = '')
-          AND status = ANY(${states}::text[])
-          AND ${filter.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
-          -- P-014: under the redundancy flag, high-stakes (redundancy > 1) items are dispatched
-          -- via claim_replica to N Swarms, so claim_next must NOT grab them exactly-once. Flag
-          -- OFF ⇒ clause omitted, claim never reads the redundancy column, byte-identical to before.
-          AND ${filter.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`}
-          -- P-005 (F1 fix): RESPECT blocking — never self-select a row that has a PRESENT,
-          -- NON-TERMINAL blocker, the SAME readiness the orchestrator frontier enforces
-          -- (frontier-readiness.ts / work-item-blocking.ts). The block edges live in the
-          -- dedicated work_item_deps table (dep_type='blocks'), keyed by harness-qualified refs
-          -- ('<harness>#<feature_id>' for features, bare 'EI-<n>' for issues — featureRef /
-          -- issues:link), in the single coordination workspace ('default'). A blocker is
-          -- SATISFIED iff TERMINAL or ABSENT; we exclude the row only when a present blocker is
-          -- non-terminal — feature terminal = status IN ('passed','deprecated'); issue terminal =
-          -- state IN ('resolved','closed') (the cross-family set, ALL_TERMINAL_STATUSES). An
-          -- absent blocker ref (no matching feature/issue row) never blocks. (Scope: features stay
-          -- claimable, issues do not — that's P-007; this is an inline filter, not a maintained
-          -- column — that's P-004.)
-          AND NOT EXISTS (
-            SELECT 1
-              FROM harness_shared.work_item_deps d
-             WHERE d.workspace_id = 'default'
-               AND d.dep_type = 'blocks'
-               AND d.blocked_ref = harness_shared.harness_features_consolidated.harness_slug
-                                     || '#' || harness_shared.harness_features_consolidated.feature_id
-               AND (
-                 EXISTS (
-                   SELECT 1 FROM harness_shared.harness_features_consolidated bf
-                    WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                      AND bf.status NOT IN ('passed', 'deprecated')
-                 )
-                 OR EXISTS (
-                   SELECT 1 FROM harness_shared.engineer_issues bi
-                    WHERE bi.workspace_id = 'default'
-                      AND bi.issue_id = d.blocker_ref
-                      AND bi.state NOT IN ('resolved', 'closed')
-                 )
-               )
-          )
         -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
         -- RESPECTS the Queen's priority — affinity match first, then lower feature_order (the
         -- per-harness wave/plan order the Queen steers, D-003/D-009), then oldest-first

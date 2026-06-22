@@ -20,21 +20,53 @@
  * The `T` is the FULL `<schema>.<table>` string that the PG trigger
  * emits.
  *
- * Note on args: PG-trigger events don't carry per-row scoping args
- * (just the workspace_id GUC). The bridge emits events with NO `args`
- * field — clients invalidate the full query cache for that name (the
- * SSEAdapter calls `queryClient.invalidateQueries({ queryKey: [name] })`
- * which is correct: any subscriber to that name refetches with its own
- * args).
+ * Scoped (per-row) invalidation — caching-layer-tag-eca-2026-06-22 P-006:
+ * migration 368 made `emit_change_notify` emit the changed row's PK in
+ * `args.id` (+ a corrected `args.workspace_id`). Where a mapped query is
+ * keyed PER-ROW, the bridge now uses `args.id` to invalidate ONLY that
+ * row's cache key instead of full-busting the whole query.
+ *
+ *   - A bare-STRING entry (the default, and every entry today) → FULL-BUST:
+ *     the bridge emits the name with NO `args`, so the SSEAdapter's
+ *     name-only predicate invalidates every cache entry under that name.
+ *     This is correct and unchanged for queries keyed by harness_slug /
+ *     workspace_id / plan_slug etc. — a `byHarness` list isn't keyed by the
+ *     changed row's surrogate PK, so per-row scoping can't narrow it.
+ *
+ *   - A `{ name, scope }` entry → SCOPED when the event carries `args.id`
+ *     AND `scope(rowId, workspaceId)` returns a key object. The bridge emits
+ *     the name WITH those `args`, so the SSEAdapter exact-matches just the
+ *     one consumer key (`['sync', name, args]`). `scope` MUST return the
+ *     COMPLETE args object the consumer subscribes with (TanStack hashes the
+ *     full key structurally; a partial object matches nothing). Returns
+ *     `null` to opt out of scoping for this event → the bridge falls back to
+ *     a full-bust for that name. When the event has NO `id` (a table without
+ *     an `id` column — most `harness_shared.*` tables key on a natural
+ *     composite, so `to_jsonb(row)->'id'` is JSON null), every entry
+ *     full-busts regardless.
+ *
+ * The fan-out (and the 90s (name,args) dedupe in the bus) stays cheap: a
+ * scoped event dedupes per row, a full-bust dedupes per name.
  */
+
+/** Build the scope (consumer-key) args for a per-row query from the event's
+ *  row PK + workspace. Return `null` to fall back to a full-bust. */
+export type ScopeKeyBuilder = (
+  rowId: string,
+  workspaceId: string | undefined,
+) => Record<string, unknown> | null;
+
+/** A mapped target: a bare query name (full-bust) or a name + per-row scope. */
+export type QueryNameTarget = string | { name: string; scope: ScopeKeyBuilder };
 
 /**
  * Map of (schema.table) → camelCase queryNames that scope reads on it.
  * Keys are the exact strings the PG trigger emits in the `name` field
  * (`harness_shared.<table>.changed` becomes the lookup key after
- * stripping the `.changed` suffix).
+ * stripping the `.changed` suffix). Values are {@link QueryNameTarget}s —
+ * a bare string full-busts; `{ name, scope }` opts into per-row scoping.
  */
-export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> = {
+export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTarget[]>> = {
   // The harness registry is one JSONB row per workspace (mig 025); its
   // trigger (mig 222) is what defeats the bus's 90s source-side dedupe for
   // back-to-back registry changes (EI-206 — a create followed by a delete
@@ -179,25 +211,89 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   'harness_shared.insights_first_visit': ['insightsFirstVisit.byHarness'],
 };
 
+/** The PG-trigger payload shape (`emit_change_notify`, migration 368). */
+export interface TriggerEventArgs {
+  workspace_id?: unknown;
+  op?: unknown;
+  /** The changed row's `id` PK; absent (JSON null) for id-less tables. */
+  id?: unknown;
+}
+
+/** A bridged invalidation target: a bare name (full-bust) or name + scoped
+ *  args. Mirrors `@papercusp/sync/server`'s `BridgeTarget` (kept local so this
+ *  module stays import-light; the bus accepts `string | { name, args }`). */
+export type BridgedInvalidation =
+  | string
+  | { name: string; args: Record<string, unknown> };
+
+/** Coerce the trigger payload's `id` to a non-empty string, else undefined.
+ *  Postgres `to_jsonb(row)->'id'` yields a JSON null for id-less tables and a
+ *  JSON number/string otherwise; either form normalizes here. */
+function rowIdOf(args: TriggerEventArgs | undefined): string | undefined {
+  const raw = args?.id;
+  if (raw == null) return undefined;
+  if (typeof raw === 'string') return raw.length > 0 ? raw : undefined;
+  if (typeof raw === 'number' || typeof raw === 'bigint') return String(raw);
+  return undefined;
+}
+
+function workspaceIdOf(args: TriggerEventArgs | undefined): string | undefined {
+  const raw = args?.workspace_id;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+}
+
 /**
- * Given a trigger-event name like `harness_shared.<table>.changed`,
- * return the camelCase query names that should ALSO be invalidated.
- * Returns an empty array for unknown tables (no bridge mapping).
+ * Resolve ONE mapped target against an event's row id + workspace.
  *
- * Pure function — caller emits the synthesized events.
+ *   - bare string → bare name (FULL-BUST), unchanged behavior.
+ *   - `{ name, scope }` → SCOPED `{ name, args }` when `rowId` is present AND
+ *     `scope(rowId, workspaceId)` returns a key object; otherwise the bare
+ *     name (full-bust fallback — no id, or scope opted out for this event).
+ *
+ * Pure + exported so the scoping decision is unit-testable directly against a
+ * `{ name, scope }` target (the live registry has only full-bust entries yet).
  */
-export function queryNamesForTriggerEvent(triggerEventName: string): readonly string[] {
+export function resolveBridgeTarget(
+  target: QueryNameTarget,
+  rowId: string | undefined,
+  workspaceId: string | undefined,
+): BridgedInvalidation {
+  if (typeof target === 'string') return target;
+  if (rowId !== undefined) {
+    const scopedArgs = target.scope(rowId, workspaceId);
+    if (scopedArgs !== null) return { name: target.name, args: scopedArgs };
+  }
+  return target.name;
+}
+
+/**
+ * Given a trigger-event name like `harness_shared.<table>.changed` (+ the
+ * trigger's `args` payload), return the bridged invalidation targets. See
+ * {@link resolveBridgeTarget} for the per-target scope/full-bust decision.
+ *
+ * Returns an empty array for unknown tables / malformed names. Pure —
+ * caller emits the synthesized events.
+ */
+export function queryNamesForTriggerEvent(
+  triggerEventName: string,
+  triggerArgs?: TriggerEventArgs,
+): readonly BridgedInvalidation[] {
   // Strip the `.changed` suffix.
   if (!triggerEventName.endsWith('.changed')) return [];
   const tableKey = triggerEventName.slice(0, -'.changed'.length);
-  return TABLE_TO_QUERY_NAMES[tableKey] ?? [];
+  const targets = TABLE_TO_QUERY_NAMES[tableKey];
+  if (targets === undefined) return [];
+
+  const rowId = rowIdOf(triggerArgs);
+  const workspaceId = workspaceIdOf(triggerArgs);
+  return targets.map((t) => resolveBridgeTarget(t, rowId, workspaceId));
 }
 
 /** Test-only — enumerate every camelCase name covered by the bridge. */
 export function allBridgedQueryNames(): string[] {
   const set = new Set<string>();
-  for (const names of Object.values(TABLE_TO_QUERY_NAMES)) {
-    for (const n of names) set.add(n);
+  for (const targets of Object.values(TABLE_TO_QUERY_NAMES)) {
+    for (const t of targets) set.add(typeof t === 'string' ? t : t.name);
   }
   return Array.from(set).sort();
 }

@@ -113,20 +113,22 @@ describe('coord:ack', () => {
   it('acks a real message back to its sender', async () => {
     const m = await sendMessage(id('alice'), { to: ['*'], summary: 'please review' });
     const body = parse(await run(ackTool, { msg_id: m.msg_id }));
+    // Bulk envelope (bulk-endpoint-standardization-2026-06-21): one ack is n=1 of
+    // the batch; the per-message result self-describes under results[0].
     expect(body.ok).toBe(true);
-    expect(body.acked).toBe(m.msg_id);
-    expect(body.acked_from).toBe('alice'); // addressed back at the sender
-    expect(body.ack_msg_id).toBeTruthy();
+    expect(body.results[0].acked).toBe(m.msg_id);
+    expect(body.results[0].acked_from).toBe('alice'); // addressed back at the sender
+    expect(body.results[0].ack_msg_id).toBeTruthy();
 
     // The ack is now in the thread.
     const thread = parse(await run(threadTool, { root_msg_id: m.msg_id }));
     expect(thread.entries.some((e: { kind: string; from: string }) => e.kind === 'ack' && e.from === 'me')).toBe(true);
   });
 
-  it('returns unknown_msg_id (isError) for a msg_id that does not exist', async () => {
+  it('returns a per-item unknown_msg_id for a msg_id that does not exist', async () => {
     const res = await run(ackTool, { msg_id: 'never' });
-    expect(res.isError).toBe(true);
-    expect(parse(res)).toMatchObject({ ok: false, error: 'unknown_msg_id' });
+    // Bulk verbs never set top-level isError; a bad item surfaces under results[i].
+    expect(parse(res)).toMatchObject({ ok: true, results: [{ ok: false, error: 'unknown_msg_id' }] });
   });
 });
 

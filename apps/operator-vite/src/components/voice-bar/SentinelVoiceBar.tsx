@@ -84,7 +84,7 @@ const VOICE_BAR_CSS = `
 }
 .pc-voice-bar__brand { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
 .pc-voice-bar__brand svg { color: var(--accent, #8b5cf6); flex-shrink: 0; }
-.pc-voice-bar__title { font-size: 12.5px; font-weight: 800; letter-spacing: 0.01em; color: var(--fg, #e7f7ff); white-space: nowrap; }
+.pc-voice-bar__title { font-size: 12.5px; font-weight: 800; color: var(--fg, #e7f7ff); white-space: nowrap; }
 .pc-voice-bar__subtitle { font-size: 10.5px; font-weight: 600; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
 .pc-voice-bar__spacer { flex: 1 1 auto; }
 .pc-voice-bar__controls { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
