@@ -36,6 +36,12 @@ export type {
   FacadeNamespaceIndexEntry,
   ToolArgsType,
 } from '@papercusp/tooldef';
+// The shared keyed-array bulk I/O contract (bulk-endpoint-standardization D-001).
+// Lives here — the lowest package both operator-core tools AND the agent-mcp
+// read-side tools (artifacts/features) can import (dep direction is
+// operator-core → agent-mcp). operator-core/lib/agent-tools/_bulk.ts re-exports it.
+export { scalarOrArray, toList, mergeIds, runBulk, bulkContent } from './_bulk';
+export type { BulkItemResult, BulkEnvelope } from './_bulk';
 // Papercusp's role config (plan P-010): exporting AGENT_ROLES pulls in
 // role-config.ts, whose `declare module` augmentation registers the built-in
 // roles with tooldef's `RoleRegistry` — so the re-exported `AgentRole` below

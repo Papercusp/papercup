@@ -227,8 +227,6 @@ describe('papercuspTierFor', () => {
   });
 });
 
-import { lookupByMcpName, _resetProjectionRegistryForTests } from '@papercusp/tooldef';
-
 describe('JSON schema flattening for OpenAI compat', () => {
   beforeEach(() => {
     _resetCatalogForTests();
