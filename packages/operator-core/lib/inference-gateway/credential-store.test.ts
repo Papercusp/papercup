@@ -154,3 +154,128 @@ test('makeCredentialResolver — file: serves a still-fresh token without refres
   assert.equal(await r.current(), 'good');
   assert.equal(refreshes(), 0, 'fresh token is not refreshed');
 });
+
+// ── Backlog #6: credential-store deeper edges (continuation; prior owner su-c8455e93) ──
+
+test('parseCredentialRef — expands ~ to $HOME for bare/file:/token: refs; env: trims the var name', () => {
+  const prevHome = process.env.HOME;
+  process.env.HOME = '/home/tester';
+  try {
+    assert.deepEqual(parseCredentialRef('~/x'), { kind: 'file', path: '/home/tester/x' });
+    assert.deepEqual(parseCredentialRef('file:~/c.json'), { kind: 'file', path: '/home/tester/c.json' });
+    assert.deepEqual(parseCredentialRef('token:~/.claude/tok'), { kind: 'token', path: '/home/tester/.claude/tok' });
+    // env: names a process.env var — surrounding whitespace is trimmed off the name.
+    assert.deepEqual(parseCredentialRef('env:  MY_KEY  '), { kind: 'env', path: 'MY_KEY' });
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
+});
+
+test('withOAuthBeta — splits a multi-flag header, trims + drops empties, dedups a mid-list oauth flag', () => {
+  // whitespace around commas + an empty segment are normalised away; oauth appended last
+  assert.equal(withOAuthBeta('flag-a , , flag-b'), 'flag-a,flag-b,oauth-2025-04-20');
+  // oauth already present mid-list → not duplicated, first-seen order preserved
+  assert.equal(withOAuthBeta('flag-a,oauth-2025-04-20,flag-b'), 'flag-a,oauth-2025-04-20,flag-b');
+  // an all-whitespace header collapses to just the required oauth flag
+  assert.equal(withOAuthBeta('   '), 'oauth-2025-04-20');
+});
+
+test('makeCredentialResolver — rejects an env: ref (env is a bearer-only channel)', () => {
+  assert.throws(() => makeCredentialResolver('env:SOME_KEY'), /env: is only valid for bearer accounts/);
+});
+
+test('makeCredentialResolver — token: empty file throws rather than serving an empty bearer', async () => {
+  const path = join(dir, 'empty-tok');
+  await fs.writeFile(path, '   \n');
+  const r = makeCredentialResolver(`token:${path}`);
+  await assert.rejects(r.current(), /empty setup-token/);
+});
+
+test('makeBearerCredentialResolver — env: reads process.env, trims it, throws when unset or empty', async () => {
+  const VAR = `IG_TEST_CRED_${process.pid}`;
+  const prev = process.env[VAR];
+  try {
+    process.env[VAR] = '  sk-from-env  ';
+    const r = makeBearerCredentialResolver(`env:${VAR}`);
+    assert.equal(r.kind, 'token', 'env channel reports as a non-refreshing token');
+    assert.equal(await r.current(), 'sk-from-env');
+    // unset var → a fresh resolver throws
+    delete process.env[VAR];
+    await assert.rejects(makeBearerCredentialResolver(`env:${VAR}`).current(), /empty or unset/);
+    // whitespace-only var → also throws
+    process.env[VAR] = '   ';
+    await assert.rejects(makeBearerCredentialResolver(`env:${VAR}`).current(), /empty or unset/);
+  } finally {
+    if (prev === undefined) delete process.env[VAR];
+    else process.env[VAR] = prev;
+  }
+});
+
+test('makeBearerCredentialResolver — file: rejects empty file, JSON without access_token, and malformed JSON', async () => {
+  const empty = join(dir, 'empty-bearer');
+  await fs.writeFile(empty, '   \n');
+  await assert.rejects(makeBearerCredentialResolver(`file:${empty}`).current(), /empty bearer token/);
+
+  const noTok = join(dir, 'no-access.json');
+  await fs.writeFile(noTok, JSON.stringify({ tokens: { refresh_token: 'r' } }));
+  await assert.rejects(makeBearerCredentialResolver(`file:${noTok}`).current(), /no tokens\.access_token/);
+
+  const bad = join(dir, 'bad.json');
+  await fs.writeFile(bad, '{ not valid json ');
+  await assert.rejects(makeBearerCredentialResolver(`file:${bad}`).current(), /failed to parse/);
+});
+
+test('makeCredentialResolver — file: invalidate() drops the cache so a post-401 read re-refreshes', async () => {
+  const { provider, refreshes } = fakeClaude();
+  registerProvider(provider);
+  const path = join(dir, 'b.json');
+  const expired: ClaudeCredentialBundle = {
+    claudeAiOauth: { accessToken: 'stale', refreshToken: 'RT', expiresAt: Date.now() - 1000 },
+  };
+  await fs.writeFile(path, JSON.stringify(expired));
+
+  const r = makeCredentialResolver(`file:${path}`);
+  assert.equal(await r.current(), 'refreshed-1');
+  assert.equal(refreshes(), 1);
+
+  // Mimic the 401 path: invalidate the in-memory cache, and the bundle has since gone stale again.
+  r.invalidate();
+  const expiredAgain: ClaudeCredentialBundle = {
+    claudeAiOauth: { accessToken: 'refreshed-1', refreshToken: 'RT2', expiresAt: Date.now() - 1000 },
+  };
+  await fs.writeFile(path, JSON.stringify(expiredAgain));
+  assert.equal(await r.current(), 'refreshed-2', 'invalidate re-reads disk and refreshes again');
+  assert.equal(refreshes(), 2);
+});
+
+test('bundleTokenStorage — read tolerates a bundle missing the claudeAiOauth block', async () => {
+  const path = join(dir, 'empty-bundle.json');
+  await fs.writeFile(path, JSON.stringify({}));
+  const cfg = await bundleTokenStorage(path).read('inference-gateway', path);
+  assert.equal(cfg.access, undefined);
+  assert.equal(cfg.access_refresh, undefined);
+  assert.equal(cfg.access_expires_at, null);
+});
+
+test('bundleTokenStorage — update clears expiresAt on a non-number value, leaves it untouched when the key is absent', async () => {
+  const path = join(dir, 'b2.json');
+  const base: ClaudeCredentialBundle = {
+    claudeAiOauth: { accessToken: 'AT', refreshToken: 'RT', expiresAt: 5000, subscriptionType: 'max' },
+  };
+  const store = bundleTokenStorage(path);
+
+  // key present but null (the getOAuthToken writeback when a provider returns no expiry) → cleared
+  await fs.writeFile(path, JSON.stringify(base));
+  await store.update('inference-gateway', path, { access: 'AT2', access_expires_at: null });
+  let after = JSON.parse(await fs.readFile(path, 'utf8')) as ClaudeCredentialBundle;
+  assert.equal(after.claudeAiOauth.accessToken, 'AT2');
+  assert.equal(after.claudeAiOauth.expiresAt, undefined, 'null expires_at clears the field');
+  assert.equal(after.claudeAiOauth.subscriptionType, 'max', 'still preserves unrelated fields');
+
+  // key absent from the patch → expiresAt is left exactly as it was
+  await fs.writeFile(path, JSON.stringify(base));
+  await store.update('inference-gateway', path, { access: 'AT3' });
+  after = JSON.parse(await fs.readFile(path, 'utf8')) as ClaudeCredentialBundle;
+  assert.equal(after.claudeAiOauth.expiresAt, 5000, 'absent expires_at key leaves the field unchanged');
+});
