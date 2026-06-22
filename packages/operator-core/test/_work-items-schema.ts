@@ -257,3 +257,37 @@ export const SUBSTRATE_OUTBOX_DDL = `
   );
   CREATE INDEX IF NOT EXISTS substrate_outbox_drain_idx
     ON harness_shared.substrate_outbox (workspace_id, harness_slug, drained_at, id);`;
+
+/**
+ * The migration-103 workspace_id fill (fill_workspace_id_from_projects) + a BEFORE INSERT
+ * trigger on work_items. Pre-unification this trigger lived on harness_features_consolidated
+ * (fill_ws_features_trg); that table is now a compat VIEW, so the fill must run on the
+ * work_items BASE — an INSERT through the auto-updatable hfc view fires the base's triggers.
+ * Federation send-side tests apply this so a feature written WITHOUT workspace_id gets it
+ * stamped from harness_shared.projects (by slug), matching the drain's workspace_id filter.
+ * REQUIRES harness_shared.projects to exist (the function reads it at trigger time).
+ */
+export const FILL_WORKSPACE_ID_DDL = `
+  -- The fill trigger only stamps when workspace_id is '' / NULL. The helper's work_items
+  -- uses DEFAULT 'default' (so engine tests that OMIT the column get a value without this
+  -- trigger); but the prod fill path keys off the '' default, so reset it here — otherwise
+  -- an omitting INSERT gets 'default' and the fill (→ workspace from projects) never runs,
+  -- leaving the outbox row keyed on 'default' and the drain's workspace filter missing it.
+  ALTER TABLE harness_shared.work_items ALTER COLUMN workspace_id SET DEFAULT '';
+  CREATE OR REPLACE FUNCTION harness_shared.fill_workspace_id_from_projects()
+  RETURNS TRIGGER AS $fwip$
+  BEGIN
+    IF NEW.workspace_id IS NULL OR NEW.workspace_id = '' THEN
+      SELECT workspace_id INTO NEW.workspace_id
+        FROM harness_shared.projects WHERE slug = NEW.harness_slug LIMIT 1;
+      IF NEW.workspace_id IS NULL OR NEW.workspace_id = '' THEN
+        NEW.workspace_id := 'default';
+      END IF;
+    END IF;
+    RETURN NEW;
+  END;
+  $fwip$ LANGUAGE plpgsql;
+  DROP TRIGGER IF EXISTS fill_ws_work_items_trg ON harness_shared.work_items;
+  CREATE TRIGGER fill_ws_work_items_trg
+    BEFORE INSERT ON harness_shared.work_items
+    FOR EACH ROW EXECUTE FUNCTION harness_shared.fill_workspace_id_from_projects();`;

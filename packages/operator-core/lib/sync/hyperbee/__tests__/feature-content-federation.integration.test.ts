@@ -67,6 +67,11 @@ import { buildIssuesProjection } from '../projections/issues';
 // drop is exercised exactly as production applies it.
 import { buildHarnessProjectionApply } from '../projections/register-all';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  SUBSTRATE_OUTBOX_DDL,
+  FILL_WORKSPACE_ID_DDL,
+} from '../../../../test/_work-items-schema';
 // WI-259 STEP 1 (P-001) membership-aware admission case (below) — these route the
 // PROCESS-GLOBAL getOrgPg() at a migrated throwaway DB so boot.ts's STEP 1 reads
 // (hiveHomeSlugForHarness + resolveHiveMemberDeviceSet, both hardcoded to getOrgPg()
@@ -211,84 +216,12 @@ const FRAMEWORK_ROLES_DDL = `
 async function setupPeerSchema(sql: postgres.Sql, memberSlug: string = HARNESS_SLUG): Promise<void> {
   await sql.unsafe(FRAMEWORK_ROLES_DDL);
 
-  // The two consolidated tables — full column set the projections write, plus
-  // the G1 provenance columns (097) the trigger + projections rely on. NOT NULL
-  // workspace_id DEFAULT '' mirrors migration 102's ALTER on issues; features
-  // get workspace_id from migration 009. We create both with the column present.
+  // P-010 unification: work_items is the base table + hfc/ei compat views (replaces the
+  // hand-rolled consolidated tables). projects maps harness_slug → WORKSPACE_ID for the
+  // fill trigger; the work_items CDC capture (mig 375) is the real post-unification
+  // send-side (stamps table_name harness_features_consolidated / engineer_issues per family).
+  await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await sql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      workspace_id        TEXT NOT NULL DEFAULT '',
-      harness_slug        TEXT NOT NULL,
-      feature_id          TEXT NOT NULL,
-      title               TEXT,
-      summary             TEXT,
-      status              TEXT,
-      attempts            INT,
-      claims              TEXT,
-      notes               TEXT,
-      metadata            JSONB,
-      kind                TEXT,
-      project_id          TEXT,
-      expected_cost_cents INT,
-      tags                JSONB,
-      needs_human_review  BOOLEAN,
-      ts                  BIGINT,
-      created_ts          BIGINT,
-      updated_ts          BIGINT,
-      parent_id           TEXT,
-      goal_id             TEXT,
-      taken_by            TEXT,
-      taken_at            TIMESTAMPTZ,
-      expires_at          TIMESTAMPTZ,
-      item_kind           TEXT NOT NULL DEFAULT 'feature', -- dispatch columns (migs 136/178/191/195)
-      feature_order       INTEGER,
-      swarm_affinity      TEXT,
-      redundancy          INTEGER,
-      payload             JSONB,
-      author_pubkey       TEXT,
-      origin              TEXT NOT NULL DEFAULT 'local',
-      fed_ts              BIGINT, -- EI-79 step 2 (mig 181): PG-level LWW guard column
-      verified_author_github_user_id BIGINT, -- mig 273: the federated-ingest projection writes this; without it B's apply INSERT throws "column does not exist" and the feature never lands
-      -- The design/plan-link columns the harness-features projection now INSERTs/updates
-      -- (baseline DDL). Without these the apply INSERT throws "column ... does not exist",
-      -- the WI-255 quarantine drops the op, and the feature never federates (the Stage 6
-      -- red this restores). Types mirror the baseline: see_also/source_plan_item_ids text[],
-      -- needs_design/discarded_design_work boolean NOT NULL DEFAULT false, rest text.
-      needs_design          BOOLEAN NOT NULL DEFAULT FALSE,
-      design_status         TEXT,
-      design_spec_id        TEXT,
-      discarded_design_work BOOLEAN NOT NULL DEFAULT FALSE,
-      source_plan_slug      TEXT,
-      source_plan_item_ids  TEXT[],
-      see_also              TEXT[] NOT NULL DEFAULT '{}'::text[],
-      wave                  TEXT,
-      completion_ref        JSONB,
-      deprecation_reason    TEXT,
-      PRIMARY KEY (harness_slug, feature_id)
-    );
-    CREATE TABLE harness_shared.harness_issues_consolidated (
-      harness_slug      TEXT NOT NULL,
-      issue_id          TEXT NOT NULL,
-      title             TEXT NOT NULL,
-      severity          TEXT NOT NULL,
-      source            TEXT NOT NULL,
-      status            TEXT NOT NULL,
-      found_at          TIMESTAMPTZ NOT NULL,
-      found_during      TEXT,
-      repro             TEXT,
-      evidence          TEXT,
-      suggested_fix     TEXT,
-      code_pointer      TEXT,
-      linked_feature_id TEXT,
-      attempts          INT NOT NULL DEFAULT 0,
-      notes             JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_ts        BIGINT NOT NULL,
-      updated_ts        BIGINT NOT NULL,
-      author_pubkey     TEXT,
-      origin            TEXT NOT NULL DEFAULT 'local',
-      fed_ts            BIGINT, -- EI-79 step 2 (mig 181): PG-level LWW guard column
-      PRIMARY KEY (harness_slug, issue_id)
-    );
     CREATE TABLE harness_shared.projects (
       id           TEXT PRIMARY KEY,
       name         TEXT NOT NULL,
@@ -300,43 +233,30 @@ async function setupPeerSchema(sql: postgres.Sql, memberSlug: string = HARNESS_S
     );
   `);
 
-  // Map the harness slug → the workspace_id the booted handle drains on, so the
-  // migration-103 fill trigger (fill_workspace_id_from_projects, keyed by slug)
-  // stamps the matching value and the drain's `workspace_id` filter matches.
-  // `memberSlug` defaults to HARNESS_SLUG (the shared-slug tests); the slug-mismatch
-  // case (WI-261) passes each peer's DISTINCT member slug so its own writes resolve
-  // the workspace_id and drain onto its own log.
+  // Map the harness slug → the workspace_id the booted handle drains on, so the fill
+  // trigger stamps the matching value and the drain's `workspace_id` filter matches.
+  // `memberSlug` defaults to HARNESS_SLUG; the slug-mismatch case (WI-261) passes each
+  // peer's DISTINCT member slug so its own writes resolve the workspace_id.
   await sql`
     INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id, created_ts, updated_ts)
     VALUES ('p-fed', 'Fed', 'active', ${memberSlug}, ${WORKSPACE_ID}, 0, 0)
   `;
 
-  // Apply the REAL send-side migrations verbatim (102 outbox+capture trigger,
-  // 103 workspace_id fill trigger). These reference the framework roles created
-  // above and the consolidated tables created above.
-  for (const file of ['archive/102-substrate-outbox.sql', 'archive/103-issues-workspace-id-fill-trigger.sql']) {
-    const sqlText = readFileSync(join(SQL_DIR, file), 'utf8');
-    await sql.unsafe(sqlText);
-  }
-
-  // EI-79 step 2 (mig 181): the consolidated tables grow a `fed_ts` LWW-guard
-  // column, and the broad `OLD.* IS DISTINCT FROM NEW.*` capture trigger must
-  // MASK it (fed_ts is capture-wall-clock bookkeeping; left in the compare it
-  // re-enqueues every own-log merge-back forever — the convergence guard below).
-  await sql.unsafe(`
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
-    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
-    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
-      AFTER UPDATE ON harness_shared.harness_features_consolidated
-      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
-      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('feature_id');
-    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
-      AFTER UPDATE ON harness_shared.harness_issues_consolidated
-      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
-      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');
-  `);
+  // The outbox surface, the workspace_id fill (now on the work_items BASE — hfc is a
+  // compat VIEW), and the work_items capture (mig 375). 375 captures feature rows under
+  // table_name='harness_features_consolidated' and issue rows under 'engineer_issues',
+  // so the read-side projections demux exactly as before the unification.
+  await sql.unsafe(SUBSTRATE_OUTBOX_DDL);
+  await sql.unsafe(FILL_WORKSPACE_ID_DDL);
+  const stripMig = (s: string) =>
+    s
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return !t.startsWith('\\') && !/^(begin|commit);$/i.test(t);
+      })
+      .join('\n');
+  await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '375-work-items-cdc-capture.sql'), 'utf8')));
 }
 
 /**
