@@ -137,8 +137,38 @@ export function setOperatorMode(next: OperatorMode): void {
   } catch { /* ignore */ }
 }
 
+/** Read the effective `silenceVoice` (herald muted) + write the per-user
+ *  override. Drives the toggle's "Off" state — the same flag the old
+ *  "Pause the herald" control set (sentinel-tui-shared-backend §9, 2026-06-22). */
+function useOperatorSilenced(): [boolean, (v: boolean) => void] {
+  const [silenced, setSilencedLocal] = useState(false);
+  useEffect(() => {
+    if (typeof fetch !== 'function') return;
+    let cancelled = false;
+    fetch('/api/agent-mcp/operator-voice-prefs')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p) => {
+        const v = (p as { silenceVoice?: unknown } | null)?.silenceVoice;
+        if (!cancelled && typeof v === 'boolean') setSilencedLocal(v);
+      })
+      .catch(() => { /* prefs unreadable — default unmuted */ });
+    return () => { cancelled = true; };
+  }, []);
+  const setSilenced = useCallback((v: boolean) => {
+    setSilencedLocal(v); // optimistic
+    if (typeof fetch !== 'function') return;
+    void fetch('/api/user/preferences', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ silenceVoice: v }),
+    }).catch(() => { /* best-effort; local state already reflects it */ });
+  }, []);
+  return [silenced, setSilenced];
+}
+
 export function OperatorActiveToggle() {
   const [mode, setMode] = useOperatorMode();
+  const [silenced, setSilenced] = useOperatorSilenced();
   const sleepUntil = useOperatorSleepUntil();
   const sub = useOperatorSub();
   // Persona name from the active brand pack — "Sentinel" in the-hive, "Operator"
@@ -146,14 +176,25 @@ export function OperatorActiveToggle() {
   // to the lexicon pack). Reactive via useLexicon → flag-hooks useFlag.
   const t = useLexicon();
   const persona = t('operator');
-  const active = mode === 'active';
+  // OFF is the 3rd toggle state (owner 2026-06-22): replaces the separate
+  // "Pause the herald" control and drives the same `silenceVoice` flag, so the
+  // herald is muted exactly as Pause did. OFF outranks active/passive display.
+  const off = silenced;
+  const active = !off && mode === 'active';
   const sleepingMs = sleepUntil > 0 ? sleepUntil - Date.now() : 0;
   const sleeping = active && sleepingMs > 0;
   // Quiet = active mode that exhausted the silence ladder. Subordinate
   // to sleeping (if both, sleep wins because it has a deadline).
   const quiet = active && !sleeping && sub === 'quiet_wait';
 
+  // Click cycles Active → Passive → Off → Active (sleeping/quiet wake as before).
   const onClick = useCallback(() => {
+    if (off) {
+      // Off → Active: un-mute the herald and re-engage.
+      setSilenced(false);
+      setMode('active');
+      return;
+    }
     if (sleeping) {
       writeSleepUntilMs(0);
       try { window.dispatchEvent(new Event(SLEEP_CHANGE_EVENT)); } catch { /* ignore */ }
@@ -164,8 +205,13 @@ export function OperatorActiveToggle() {
       // in the chat to resume. Surfacing the state is the value.
       return;
     }
-    setMode(active ? 'passive' : 'active');
-  }, [active, setMode, sleeping, quiet]);
+    if (active) {
+      setMode('passive');
+      return;
+    }
+    // Passive → Off: mute the herald (silenceVoice).
+    setSilenced(true);
+  }, [off, active, sleeping, quiet, setMode, setSilenced]);
 
   const sleepLabel = sleeping
     ? sleepingMs < 60_000
@@ -173,27 +219,33 @@ export function OperatorActiveToggle() {
       : `${Math.ceil(sleepingMs / 60_000)}m`
     : '';
 
-  const stateClass = sleeping ? 'sleeping' : quiet ? 'quiet' : active ? 'active' : 'passive';
-  const label = sleeping
-    ? `Sleeping ${sleepLabel}`
-    : quiet
-      ? 'Quiet'
-      : active ? 'Active' : 'Passive';
-  const aria = sleeping
-    ? `${persona} sleeping for ${sleepLabel}. Click to wake.`
-    : quiet
-      ? `${persona} is quiet — type to pick up where you left off.`
-      : active
-        ? `${persona} interaction mode: active. Click to set passive.`
-        : `${persona} interaction mode: passive. Click to set active.`;
-  const title = sleeping
-    ? `${persona} went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
-    : quiet
-      ? `${persona} went silent after the silence ladder ran out. Type to wake it.`
-      : active
-        ? `${persona} is active — speaks proactively. Click to make passive.`
-        : `${persona} is passive — only responds when spoken to. Click to make active.`;
-  const dotKind = (sleeping || quiet) ? 'static' : active ? 'pulsing' : 'static';
+  const stateClass = off ? 'off' : sleeping ? 'sleeping' : quiet ? 'quiet' : active ? 'active' : 'passive';
+  const label = off
+    ? 'Off'
+    : sleeping
+      ? `Sleeping ${sleepLabel}`
+      : quiet
+        ? 'Quiet'
+        : active ? 'Active' : 'Passive';
+  const aria = off
+    ? `${persona} is off — voice muted. Click to turn on (active).`
+    : sleeping
+      ? `${persona} sleeping for ${sleepLabel}. Click to wake.`
+      : quiet
+        ? `${persona} is quiet — type to pick up where you left off.`
+        : active
+          ? `${persona} interaction mode: active. Click to set passive.`
+          : `${persona} interaction mode: passive. Click to turn off.`;
+  const title = off
+    ? `${persona} is off — the herald is muted (replaces "Pause the herald"). Click to turn it back on.`
+    : sleeping
+      ? `${persona} went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
+      : quiet
+        ? `${persona} went silent after the silence ladder ran out. Type to wake it.`
+        : active
+          ? `${persona} is active — speaks proactively. Click to make passive.`
+          : `${persona} is passive — only responds when spoken to. Click to turn it off (mute).`;
+  const dotKind = (off || sleeping || quiet) ? 'static' : active ? 'pulsing' : 'static';
 
   return (
     <>
@@ -252,6 +304,11 @@ const TOGGLE_CSS = `
   border-color: rgba(148, 163, 184, 0.30);
   color: var(--fg-mute, #94a3b8);
   cursor: default;
+}
+.op-active-toggle--off {
+  background: rgba(148, 163, 184, 0.10);
+  border-color: rgba(148, 163, 184, 0.40);
+  color: var(--fg-mute, #94a3b8);
 }
 
 .op-active-toggle-dot {

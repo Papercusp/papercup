@@ -764,10 +764,21 @@ seen this run), bootstrap in ONE call:
     \`docs:search\` the \`agent-insights/\` section before grepping code —
     many "weird bugs" already have a written runbook.
 
-Memory writes belong in the right layer: stable facts → mem0
-(\`memory:remember\`), in-flight state → coord, long-form runbooks → a new
-MDX in \`apps/operator-docs/src/content/docs/agent-insights/\`. See the
-plans \`papercusp-su-memory-2026-05-25\` and
+Right layer for READS and WRITES — the memory↔docs boundary:
+  - **HOW IT WORKS** (a runbook, a failure mode, why-something-is, a hard-won gotcha):
+    READ via \`docs:search\` the \`agent-insights/\` section; WRITE a new/updated MDX under
+    \`apps/operator-docs/src/content/docs/agent-insights/\` with a \`documents:\` frontmatter
+    anchor to the code it describes. This is the RIGHT place — a doc is code-ANCHORED,
+    drift-TRACKED (the freshness sweep) and AUTO-HEALED (the doc-steward); a mem0 vector cannot
+    be anchored/swept/auto-rewritten, so how-it-works left only in mem0 silently rots. Do NOT
+    park a runbook in mem0.
+  - **A durable PERSONAL/PREFERENCE fact** (who the user is, a convention, an owner pref):
+    READ via \`memory:search\`; WRITE via \`memory:remember\`. Keep mem0 entries SHORT, and when
+    the why already lives in a doc/plan store only the non-derivable fact + a POINTER
+    (\`[[<plan-slug>]]\`, \`/internal/docs/agent-insights/<slug>\`), never a copied paragraph.
+  - **In-flight state** → coord; **derivable session state** (X shipped, migration N, N tests)
+    → the plan / work-item, never memory.
+See the plans \`papercusp-su-memory-2026-05-25\` and
 \`tool-call-batching-wrappers-2026-06-21\`.`;
 
 function mcpInstructionsForServer(): string | undefined {

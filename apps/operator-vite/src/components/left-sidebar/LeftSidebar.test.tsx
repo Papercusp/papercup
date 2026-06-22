@@ -9,7 +9,7 @@
  * the chromeless-route null-out. nuqs runs via the real testing adapter so the
  * atomic useQueryStates write is exercised end-to-end.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
@@ -32,7 +32,30 @@ vi.mock('./HivesTab', () => ({ default: () => <div data-testid="panel-hives" /> 
 
 import LeftSidebar from './LeftSidebar';
 
+beforeAll(() => {
+  // The vitest jsdom localStorage shim can be broken (`getItem is not a function`);
+  // install a real in-memory Storage so components rendered in the tree that read
+  // localStorage at render (VoiceButton's wake/ptt-hint useState init; LeftSidebar's
+  // own width restore) don't crash. Mirrors AdvShell.test.tsx's pattern.
+  const store = new Map<string, string>();
+  const ls: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => {
+      store.set(k, String(v));
+    },
+    removeItem: (k: string) => {
+      store.delete(k);
+    },
+    key: (i: number) => Array.from(store.keys())[i] ?? null,
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: ls, configurable: true });
+});
 beforeEach(() => {
+  localStorage.clear();
   H.overwatchOn = false;
   H.pathname = '/adv';
   document.body.className = '';

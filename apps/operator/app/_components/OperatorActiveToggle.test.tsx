@@ -63,16 +63,29 @@ describe('OperatorActiveToggle', () => {
     render(<OperatorActiveToggle />);
     expect(screen.getByText('Passive')).toBeTruthy();
     const btn = screen.getByRole('button');
-    expect(btn.getAttribute('aria-label')).toMatch(/Click to set active/i);
+    expect(btn.getAttribute('aria-label')).toMatch(/Click to turn off/i);
   });
 
-  it('clicking while passive flips the mode back to active (and clears sleep)', () => {
+  it('clicking while passive turns the herald OFF (3-state cycle)', () => {
+    // New cycle (owner 2026-06-22): Active → Passive → Off → Active. Clicking
+    // while Passive mutes the herald (silenceVoice via the voice-prefs PATCH),
+    // surfaced optimistically as the "Off" label — it no longer flips to active.
     h.mode = 'passive';
     render(<OperatorActiveToggle />);
     fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByText('Off')).toBeTruthy();
+    expect(h.writeMode).not.toHaveBeenCalledWith('active');
+  });
+
+  it('cycles Passive → Off → Active on repeated clicks', () => {
+    h.mode = 'passive';
+    render(<OperatorActiveToggle />);
+    const btn = screen.getByRole('button');
+    fireEvent.click(btn); // Passive → Off (optimistic silence)
+    expect(screen.getByText('Off')).toBeTruthy();
+    h.writeMode.mockClear();
+    fireEvent.click(btn); // Off → Active (un-mute + re-engage)
     expect(h.writeMode).toHaveBeenCalledWith('active');
-    // Flipping TO active wakes the operator → writes sleepUntil 0.
-    expect(h.writeSleep).toHaveBeenCalledWith(0);
   });
 
   it('shows a Sleeping label + a wake-on-click when a future sleepUntil is set', () => {

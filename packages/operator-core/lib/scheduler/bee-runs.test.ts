@@ -6,8 +6,19 @@
  * the spec head), so they unit-test with synthetic rows and no PG. listBeeRuns (the I/O glue over
  * listFleetAssignments + the spec batch) is exercised by the integration suites.
  */
-import { describe, expect, it } from 'vitest';
-import { idleReason, toBeeRun, summarizeBeeRuns, type BeeRun, type RunningSpecHead } from './bee-runs';
+import { describe, expect, it, vi } from 'vitest';
+
+// listBeeRuns is thin I/O glue — mock its two collaborators (the real deriveActivity is kept so
+// toBeeRun's projection stays under test) to exercise the filter + dedup + spec-join in isolation.
+vi.mock('../fleet/assignments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fleet/assignments')>();
+  return { ...actual, listFleetAssignments: vi.fn() };
+});
+vi.mock('./claim-spec-store', () => ({ getClaimSpecHeadsForBees: vi.fn() }));
+
+import { idleReason, toBeeRun, summarizeBeeRuns, listBeeRuns, type BeeRun, type RunningSpecHead } from './bee-runs';
+import { listFleetAssignments } from '../fleet/assignments';
+import { getClaimSpecHeadsForBees } from './claim-spec-store';
 import type { FleetAssignmentRow } from '../fleet/assignments';
 import type { ItemActivity } from '../item-activity';
 
@@ -101,5 +112,34 @@ describe('summarizeBeeRuns', () => {
 
   it('an empty run set rolls up to all-zero', () => {
     expect(summarizeBeeRuns([])).toEqual({ total: 0, progressing: 0, idle: 0, stalled: 0, dead: 0 });
+  });
+});
+
+describe('listBeeRuns (I/O glue over fleet_assignment + the spec batch)', () => {
+  const mockList = vi.mocked(listFleetAssignments);
+  const mockSpecs = vi.mocked(getClaimSpecHeadsForBees);
+
+  it('keeps only live work-item-claims (with an item), and joins each bee\'s spec head', async () => {
+    mockList.mockResolvedValue([
+      row({ source: 'work_item_claim', agentId: 'su-a', workItemId: 'F-1' }),
+      row({ source: 'work_item_claim', agentId: 'su-b', workItemId: 'F-2' }),
+      row({ source: 'plan_item_lease', agentId: 'su-c', workItemId: 'P-1' }), // a lease, not a bee run
+      row({ source: 'work_item_claim', agentId: 'su-d', workItemId: null }), // claim w/o an item → excluded
+      row({ source: 'presence', agentId: 'su-e', workItemId: null }), // presence row, not a claim
+    ] as FleetAssignmentRow[]);
+    mockSpecs.mockResolvedValue(new Map([['su-a', { specId: 'spec-A', revision: 2 }]]));
+
+    const runs = await listBeeRuns({ harness: 'papercup', workspaceId: 'ws-1' });
+
+    expect(runs.map((r) => r.item)).toEqual(['F-1', 'F-2']); // leases / presence / item-less claims dropped
+    expect(runs.find((r) => r.bee === 'su-a')!.spec).toEqual({ specId: 'spec-A', revision: 2 });
+    expect(runs.find((r) => r.bee === 'su-b')!.spec).toBeNull(); // no stored spec → null (DEFAULT ordering)
+    expect(mockSpecs).toHaveBeenCalledWith(['su-a', 'su-b'], 'ws-1'); // deduped bee set, workspace-scoped
+  });
+
+  it('returns [] when there are no live claims', async () => {
+    mockList.mockResolvedValue([]);
+    mockSpecs.mockResolvedValue(new Map());
+    expect(await listBeeRuns({ workspaceId: 'ws-1' })).toEqual([]);
   });
 });

@@ -167,7 +167,8 @@ export default function SentinelTab({ active }: { active: boolean }) {
   const voiceOn = eff('speakSuggestions', FALLBACK_WORKSPACE.speakSuggestions) === true;
   const nudges = eff('proactiveTicksEnabled', FALLBACK_WORKSPACE.proactiveTicksEnabled) === true;
   const cadence = eff('speakCadenceStatus', FALLBACK_WORKSPACE.speakCadenceStatus) === true;
-  const dnd = eff('silenceVoice', FALLBACK_WORKSPACE.silenceVoice) === true;
+  // "Pause the herald" (silenceVoice) moved to the Active/Passive/Off toggle in
+  // the voice bar (owner 2026-06-22) — its Off state drives silenceVoice now.
 
   const busy = (key: string) => busyKey === key;
 
@@ -256,21 +257,9 @@ export default function SentinelTab({ active }: { active: boolean }) {
               />
             </section>
 
-            {/* Do-not-disturb / pause — hushes the herald. */}
-            <section className="pc-queen__section pc-queen__section--pause">
-              <div className="pc-queen__section-head">
-                <span className="pc-queen__section-title">Do not disturb</span>
-              </div>
-              <SentinelToggle
-                label="Pause the herald"
-                checked={dnd}
-                isOverridden={over('silenceVoice', FALLBACK_WORKSPACE.silenceVoice)}
-                busy={busy('silenceVoice')}
-                onChange={(v) => void setOverride('silenceVoice', v)}
-                onReset={() => void reset('silenceVoice')}
-              />
-              <span className="pc-queen__hint">When on, the Sentinel stays quiet until you turn it back off.</span>
-            </section>
+            {/* "Do not disturb / Pause the herald" moved to the Active/Passive/Off
+                toggle in the voice bar (owner 2026-06-22): the toggle's Off state
+                now drives silenceVoice. Removed from here to avoid two controls. */}
 
             <button
               type="button"
