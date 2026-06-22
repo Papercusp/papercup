@@ -128,6 +128,34 @@ test('N consecutive transport failures OPEN the egress circuit (account paused +
   assert.equal(s.egressFailRateByAccount.DEAD, 1, 'egressFailRateByAccount = fails/attempts = 3/3 = 1.0 (dead proxy)');
 });
 
+test('EXTENDED ABSORB (requestAbsorbMs) — keeps retrying past the slot-hold deadline and SUCCEEDS instead of 429ing the caller (2026-06-22)', async () => {
+  let calls = 0;
+  // A transient 429 (x-should-retry:true) on the first attempts, then a 200 — i.e. the account recovers.
+  const fetchImpl = (async () => {
+    calls++;
+    if (calls <= 2) {
+      return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'x-should-retry': 'true' },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, servedBy: 'OK' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A'), acct('B')]), // 2 accounts → a 429 ROTATES (proceed=true), then the deadline triggers the absorb
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 50,
+    internalRetryDeadlineMs: 0, // hit the slot-hold deadline IMMEDIATELY so each 429 triggers the absorb path
+    requestAbsorbMs: 5000, // ENABLE extended absorption (off by default)
+  });
+  port = await gw.listen(0);
+  const res = await post();
+  assert.equal(res.status, 200, 'absorb-retry held the caller through the transient 429s + returned the eventual 200 — never a shed 429');
+  assert.ok(calls >= 3, `it kept re-acquiring + retrying through the 429s until the 200 (calls=${calls})`);
+});
+
 test('GET /admin/route?owner — reports the account that served an identified owner\'s most-recent turn (routed-account visibility, 2026-06-22)', async () => {
   gw = createInferenceGateway({
     pool: createFailoverPool([acct('OK')]),

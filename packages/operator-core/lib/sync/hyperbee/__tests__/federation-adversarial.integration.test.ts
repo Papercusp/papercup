@@ -245,7 +245,7 @@ function fullFeatureValue(id: string, title: string) {
     project_id: null,
     expected_cost_cents: null,
     tags: null,
-    needs_human_review: null,
+    needs_human_review: false, // NOT NULL in the prod-faithful work_items (helper); a real federated feature always carries it
     ts: null,
     created_ts: null,
     updated_ts: null,

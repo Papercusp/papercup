@@ -338,6 +338,12 @@ import { VirtualGrid } from '@papercusp/grid-core';
 - Reach for raw `virtualMode` only when you need an **external/shared** scroll
   element, or paged/infinite-scroll sync (`@papercusp/sync`'s
   `useSyncVirtualizer`). For "I have an array, render it cheaply", use VirtualGrid.
+- **Copy & print:** VirtualGrid re-wires **Ctrl+C copy** itself (over the full
+  `rows` array, built at copy-time — so `toCopyText` columns still work). It does
+  **not** restore the full-page **print mirror** — that renders every row into a
+  hidden `<table>`, which would defeat virtualization, so Ctrl+P prints only the
+  on-screen window (copy → paste is the path for the full set). Pass
+  `disableCopySupport` to opt out of the copy handler.
 
 **Rule of thumb:** any grid whose row count is unbounded or can exceed a few
 hundred uses VirtualGrid. Capping the fetch to keep render cheap is the
