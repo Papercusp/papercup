@@ -115,10 +115,12 @@ describe('detectEngines', () => {
     expect(r.stt).toBeNull();
   });
 
-  it('does NOT select webspeech without leak acknowledgement', async () => {
+  it('falls back to local whisper (NOT webspeech) without leak acknowledgement', async () => {
+    // webspeech leaks audio to the cloud; without the ack it must not be chosen —
+    // but with local whisper up, STT degrades to voicemode rather than silently off.
     mockFetch.mockImplementation(okHealth);
     const r = await detectEngines({ ...basePrefs, sttEngine: 'webspeech', webSpeechLeakAcked: false });
-    expect(r.sttKind).toBe('off');
+    expect(r.sttKind).toBe('voicemode');
   });
 
   it('selects webspeech when leak acknowledged', async () => {
@@ -140,17 +142,32 @@ describe('detectEngines', () => {
     expect(r.ctx.deepgramApiKey).toBe('d');
   });
 
-  it('does NOT select deepgram without leak acknowledgement', async () => {
+  it('falls back to local whisper (NOT deepgram) without leak acknowledgement', async () => {
     mockFetch.mockImplementation(okHealth);
     vi.mocked(creds.readDeepgramKey).mockResolvedValue('dg-key');
     const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: false });
-    expect(r.sttKind).toBe('off');
+    expect(r.sttKind).toBe('voicemode');
   });
 
-  it('does NOT select deepgram without configured key', async () => {
+  it('falls back to local whisper when deepgram is requested but has no key', async () => {
+    // The real-world bug this guards (broken voice round-trip, 2026-06-22): a user
+    // with sttEngine=deepgram and no key had STT silently OFF — speech never
+    // transcribed. With local whisper up it now degrades to voicemode instead.
     mockFetch.mockImplementation(okHealth);
     const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: true });
+    expect(r.sttKind).toBe('voicemode');
+  });
+
+  it('stays OFF when the chosen STT engine is unavailable AND local whisper is down', async () => {
+    // The fallback is gated on a reachable local whisper; with :2022 down there is no
+    // safe keyless STT, so it correctly remains off (never silently uses a cloud engine).
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes(':2022')) return failHealth();
+      return okHealth();
+    });
+    const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: true });
     expect(r.sttKind).toBe('off');
+    expect(r.stt).toBeNull();
   });
 
   it('selects deepgram when key + leak ack present', async () => {
