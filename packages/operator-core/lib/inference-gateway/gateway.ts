@@ -428,6 +428,15 @@ export interface GatewayStats {
   /** Per-account egress transport-failure tally (2026-06-22 audit) — which proxy is failing, for the Rayobyte
    *  fix (log-independent, since the journald circuit-open logs are unreliable). Empty when no egress proxies. */
   egressFailsByAccount: Record<string, number>;
+  /** Per-account upstream-ATTEMPT tally (2026-06-22 audit) — the DENOMINATOR for egressFailsByAccount. A single
+   *  bee request can make several attempts (failover rotations), so this counts attempts-through-this-account's-
+   *  proxy, not distinct requests. Only accounts that reached the egress dial appear. */
+  egressAttemptsByAccount: Record<string, number>;
+  /** Per-account egress transport-failure RATE = egressFailsByAccount / egressAttemptsByAccount (0..1, 4dp). The
+   *  VOLUME-FAIR culprit signal: raw fail counts rank the BUSIEST proxy worst, but a low-traffic proxy failing
+   *  95% of its few attempts is the true dead proxy. Sort DESC by this to pick the Rayobyte proxy to fix/pull.
+   *  Only accounts with ≥1 attempt appear. */
+  egressFailRateByAccount: Record<string, number>;
   /** Count of in-process self-heal slot-reclaims (EI-2086) — how many times the release valve pre-empted
    *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
    *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
@@ -719,6 +728,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // WHICH proxy is failing and fix the right one. The journald 'EGRESS CIRCUIT OPEN' logs are unreliable, so
   // this is the durable, log-independent culprit signal for the Rayobyte fix.
   const egressFailsByAccount = new Map<string, number>();
+  // Per-account upstream ATTEMPT tally — the DENOMINATOR for egressFailsByAccount, so /stats can surface a
+  // VOLUME-FAIR egress failure RATE (2026-06-22 audit). Raw fail counts rank the BUSIEST proxy worst (the
+  // hand-triaged "aviynw is the culprit" was just the busiest account); the normalized rate finds the true
+  // dead proxy — a low-traffic account failing 95% of its few attempts. Counts every attempt that reaches the
+  // egress dial (post token-refresh), so a single bee request that failover-rotates increments once per account.
+  const egressAttemptsByAccount = new Map<string, number>();
   /** Per-account TRANSPORT pause the egress circuit set (= the resetAt handed to gov.penalize), so the
    *  half-open probe can lift exactly THAT pause on recovery without ever shortening a real 429 pause. */
   const egressPauseUntil = new Map<string, number>();
@@ -927,6 +942,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       upstreamErrors,
       egressCircuitOpens,
       egressFailsByAccount: Object.fromEntries(egressFailsByAccount),
+      egressAttemptsByAccount: Object.fromEntries(egressAttemptsByAccount),
+      egressFailRateByAccount: Object.fromEntries(
+        [...egressAttemptsByAccount].map(([id, attempts]) => [
+          id,
+          attempts > 0 ? Math.round(((egressFailsByAccount.get(id) ?? 0) / attempts) * 10_000) / 10_000 : 0,
+        ]),
+      ),
       selfHealReclaims,
       stallsRecorded,
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
@@ -1212,6 +1234,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         };
         let up: Response;
         try {
+          // Per-account egress ATTEMPT tally (denominator for egressFailsByAccount → /stats egressFailRateByAccount).
+          // Counted here (token refresh already succeeded, so the egress proxy is about to be dialed) — a token
+          // stall above never reached the proxy and must not count as an egress attempt.
+          egressAttemptsByAccount.set(active.accountId, (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1);
           const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
           if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
           // Per-account IP routing: forward this account's request through its dedicated egress
