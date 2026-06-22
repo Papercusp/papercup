@@ -65,6 +65,15 @@ type Db = Sql | TransactionSql;
  *  Matches the fleet_assignment view's 10-minute liveness window (mig 225). */
 export const STALE_CLAIM_GRACE_MS = STALE_MS;
 
+/** WHY a claim was reclaimed (agent-activity-liveness-truth P-003, D-001/D-004):
+ *  - 'dead'       — holder not alive per the alias-aware rule, past the grace window
+ *                   (the original behavior).
+ *  - 'spawn-exit' — holder is an alias of a CONFIRMED-terminal spawn (failed/cancelled/
+ *                   exited/killed) — freed IMMEDIATELY, no grace (spawn death → release).
+ *  - 'stalled'    — holder is ALIVE but made no item-scoped progress in the window
+ *                   (a claim is not progress, D-001). Flag-gated (RECLAIM_STALLED). */
+export type ClaimReason = 'dead' | 'spawn-exit' | 'stalled';
+
 /** What the reaper did to a freed row. */
 export type StaleClaimAction =
   /** Mid-flight row reset → `todo`, back in the claimable pool. */
@@ -93,6 +102,8 @@ export interface ReleasedClaim {
   requeue_count: number;
   /** What the reaper did — derived, drives caller logging/broadcast. */
   action: StaleClaimAction;
+  /** WHY the claim was reclaimed — dead | spawn-exit | stalled (P-003). */
+  reason: ClaimReason;
 }
 
 export interface StaleClaimSweepResult {
@@ -108,6 +119,7 @@ interface ReleasedRow {
   former_status: string;
   new_status: string;
   requeue_count: number;
+  reason: ClaimReason;
 }
 
 /** Classify a freed row from its former/new status + counter. */
@@ -146,29 +158,76 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
 }
 
 /**
- * Release every work-item claim whose holder is dead per the alias-aware
- * liveness rule, and requeue the mid-flight ones (bounded by the requeue cap).
- * One atomic statement; returns the released rows (with former/new status,
- * counter, and a derived action) for logging/broadcast.
+ * Release every reclaimable work-item claim and requeue the mid-flight ones
+ * (bounded by the requeue cap). One atomic statement; returns the released rows
+ * (with former/new status, counter, a derived action, and the REASON) for
+ * logging/broadcast. Three reclaim legs (agent-activity-liveness-truth P-003):
+ *
+ *   (a) DEAD       — holder not alive per the alias-aware rule, past the grace
+ *                    window (the original behavior — transient-quiet protection).
+ *   (b) SPAWN-EXIT — holder is an alias of a CONFIRMED-terminal spawn
+ *                    (failed/cancelled/exited/killed, finished within the last
+ *                    hour). Freed IMMEDIATELY, NO grace: a spawn's death should
+ *                    free its claim now, not after the 10-min lease lag (the
+ *                    incident — the gate-fix bee died, its reds sat owned ~1h).
+ *                    Self-contained (keys off the terminal spawn row), so it ties
+ *                    claim-release to spawn-death without a cross-tick hook.
+ *   (c) STALLED    — holder ALIVE but no item-scoped progress in the window (a
+ *                    claim is not progress, D-001). FLAG-GATED via `includeStalled`
+ *                    (RECLAIM_STALLED, default OFF) because it frees a LIVE agent's
+ *                    claim — a live-placement change D-003 says land attended.
+ *
+ * improvement-runner is never freed by (b)/(c): it is not a spawn alias and never
+ * heartbeats (so never "alive"); the explicit guard on (c) is belt-and-braces.
  */
 export async function reclaimStaleWorkItemClaims(
   sql: Db,
-  opts: { graceMs?: number; requeueCap?: number } = {},
+  opts: { graceMs?: number; requeueCap?: number; includeStalled?: boolean; stalledMs?: number } = {},
 ): Promise<StaleClaimSweepResult> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const stalledSec = Math.max(1, Math.round((opts.stalledMs ?? STALE_CLAIM_GRACE_MS) / 1000));
   const cap = opts.requeueCap ?? staleReclaimRequeueCap();
+  const includeStalled = opts.includeStalled === true;
   const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
   const rows = await sql<ReleasedRow[]>`
     WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
-    dead AS (
+    -- Aliases of RECENTLY-terminal spawns — confirmed dead, no grace (P-003/D-004).
+    -- Bounded to the last hour so the cross-join stays tiny (older terminal spawns
+    -- were already grace-freed by the DEAD leg).
+    dead_spawn AS (
+      SELECT a.alias
+        FROM harness_shared.spawned_agents n
+        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+       WHERE n.status IN ('failed', 'cancelled', 'exited', 'killed')
+         AND COALESCE(n.finished_at, n.cancelled_at, n.heartbeat_at) > now() - interval '1 hour'
+         AND a.alias IS NOT NULL AND a.alias <> ''
+    ),
+    reclaimable AS (
       SELECT f.workspace_id, f.harness_slug, f.feature_id, f.item_kind,
              f.taken_by AS former_taken_by, f.status AS former_status,
-             f.requeue_count AS former_requeue_count
+             f.requeue_count AS former_requeue_count,
+             -- Priority-ordered reason (spawn-exit before dead before stalled).
+             CASE
+               WHEN EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by) THEN 'spawn-exit'
+               WHEN NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by) THEN 'dead'
+               ELSE 'stalled'
+             END AS reason
         FROM harness_shared.harness_features_consolidated f
        WHERE f.taken_by IS NOT NULL AND f.taken_by <> ''
-         AND f.taken_at IS NOT NULL
-         AND (now() - f.taken_at) > make_interval(secs => ${graceSec})
-         AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
+         AND (
+           -- (a) DEAD: holder not alive, past the grace window.
+           ( f.taken_at IS NOT NULL
+             AND (now() - f.taken_at) > make_interval(secs => ${graceSec})
+             AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by) )
+           -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
+           OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)
+           -- (c) STALLED (flag-gated): holder ALIVE but not progressing in the window.
+           OR ( ${includeStalled ? sql`(
+                  EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
+                  AND f.taken_by <> 'improvement-runner'
+                  AND (now() - COALESCE(f.last_progress_at, f.taken_at)) > make_interval(secs => ${stalledSec})
+                )` : sql`false`} )
+         )
          FOR UPDATE OF f SKIP LOCKED
     )
     UPDATE harness_shared.harness_features_consolidated f
@@ -186,12 +245,12 @@ export async function reclaimStaleWorkItemClaims(
                THEN (CASE WHEN d.former_requeue_count + 1 >= ${cap} THEN 'blocked' ELSE 'todo' END)
              ELSE d.former_status END,
            updated_ts = ${Date.now()}
-      FROM dead d
+      FROM reclaimable d
      WHERE f.workspace_id = d.workspace_id
        AND f.harness_slug = d.harness_slug
        AND f.feature_id = d.feature_id
     RETURNING d.workspace_id, d.harness_slug, d.feature_id, d.item_kind,
-              d.former_taken_by, d.former_status,
+              d.former_taken_by, d.former_status, d.reason,
               f.status AS new_status, f.requeue_count AS requeue_count`;
   return {
     released: rows.map((r) => ({
@@ -204,6 +263,7 @@ export async function reclaimStaleWorkItemClaims(
       new_status: r.new_status,
       requeue_count: r.requeue_count,
       action: classify(r, cap),
+      reason: r.reason,
     })),
   };
 }

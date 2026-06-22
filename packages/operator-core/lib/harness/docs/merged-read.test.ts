@@ -22,6 +22,11 @@ vi.mock('./doc-record', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./doc-record')>()),
   listDocRecords: vi.fn(),
 }));
+// buildMergedDocs now DERIVES the workspace from the harness (P-002/D-003); this PG-free
+// unit isn't exercising registry resolution, so stub the derive to echo the (omitted) ws.
+vi.mock('../workspace-for-harness', () => ({
+  resolveWorkspaceForHarness: vi.fn(async (_h: string, ws?: string) => ws ?? 'test-ws'),
+}));
 
 const mockPaths = vi.mocked(resolveHarnessDocPaths);
 const mockBodies = vi.mocked(listDocBodies);

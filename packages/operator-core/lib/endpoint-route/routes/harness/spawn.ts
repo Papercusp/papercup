@@ -36,6 +36,11 @@ import { emitPipelineEvent } from '../../../events/pipeline-events';
 import { recordAdvSession, markAdvSessionEnded } from '../../../adv-sessions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { operatorApiBase } from '../../../operator-api-base';
+import { resolveSpawnBackendModel } from '../../../harness-invoke-once';
+import {
+  backendFeatureGuard,
+  interactiveBackendFromSpawnBackend,
+} from '../../../backend-feature-capabilities';
 
 const launch = defineTool({
   method: 'POST',
@@ -215,6 +220,8 @@ const invoke = defineTool({
     const extra: string[] = Array.isArray((body as any)?.extra)
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
+    const spawnModelPin =
+      typeof (body as any)?.spawnModel === 'string' ? ((body as any).spawnModel as string).trim() : '';
     // Per-hive override (domain-generic-hive-architecture-2026-06-18 P-012/P-013/D-013):
     // the loopback invoke route is the single chokepoint for the HTTP-based autonomous
     // spawns (queen via bpkind=hive, overwatch, launch blueprints) — all of which carry a
@@ -263,6 +270,17 @@ const invoke = defineTool({
     let hiveSpawnId: string | null = null;
     let advSessionRowId: number | null = null;
     if (isHiveLaunch || isOverwatchLaunch) {
+      const trackedBackend = resolveSpawnBackendModel(role, spawnModelPin || undefined, undefined).backend;
+      const trackedInteractiveBackend = interactiveBackendFromSpawnBackend(trackedBackend);
+      const trackedGuard = backendFeatureGuard(trackedInteractiveBackend, 'forced-native-session-id');
+      if (!trackedGuard.supported) {
+        return Response.json({
+          ok: false,
+          error:
+            `tracked ${isOverwatchLaunch ? 'overwatch' : 'hive'} launch requires native session id support for resume, ` +
+            `but ${trackedInteractiveBackend} does not support forced-native-session-id: ${trackedGuard.reason}`,
+        }, { status: 400 });
+      }
       nativeSessionId = randomUUID();
       hiveSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
       // overwatch-role-2026-06-15 B-04: the overwatch is a tracked/resumable loop
@@ -356,7 +374,6 @@ const invoke = defineTool({
     // :3170 — so only the bench hive's Queen is pinned, every other hive keeps its sonnet floor. FAIL-CLOSED
     // by the same two guarantees as the bee pin: the governor WAITS on a paused opus bucket (never
     // substitutes) and the model-tiers floor-clamp never downgrades below the pinned model.
-    const spawnModelPin = typeof (body as any)?.spawnModel === 'string' ? ((body as any).spawnModel as string).trim() : '';
     if (spawnModelPin) env.PAPERCUSP_SPAWN_MODEL = spawnModelPin;
     // overwatch-role-2026-06-15 B-04 (C-3): the overwatch's precomputed
     // OverwatchBrief (assembled by the system:overwatch-launch action). invoke.ts

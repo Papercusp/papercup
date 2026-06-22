@@ -213,6 +213,7 @@ describe('bootstrap-role', () => {
     expect(json.promptFile).toBe('/tmp/role-codex-homes/session-7/AGENTS.md');
     expect(json.mcpJsonPath).toBe('/tmp/role-codex-homes/session-7/config.toml');
     expect(json.envelopeEnv.CODEX_HOME).toBe('/tmp/role-codex-homes/session-7');
+    expect(json.envelopeEnv.PAPERCUSP_NATIVE_SESSION_ID).toBeUndefined();
     // The CODEX_HOME is built from the SAME signed role-scoped url as claude/omp,
     // and bakes the SAME sid the primitive minted (EI-4: url client === PAPERCUSP_SID
     // === codex-home baked client).
@@ -222,6 +223,9 @@ describe('bootstrap-role', () => {
     // No .mcp.json written into the harness cwd for codex.
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'codex' }),
+    );
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ sessionId: expect.anything() }),
     );
   });
 

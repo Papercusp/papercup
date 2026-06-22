@@ -21,7 +21,9 @@ const SPAWNED_DDL = `
     session_owner text,
     run_id text,
     status text NOT NULL,
-    heartbeat_at timestamptz
+    heartbeat_at timestamptz,
+    finished_at timestamptz,
+    cancelled_at timestamptz
   )`;
 const ENGINEER_ISSUES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
@@ -84,14 +86,30 @@ async function seedItem(
   takenAgoMin: number,
   status = 'todo',
   requeueCount = 0,
+  lastProgressAgoMin: number | null = null,
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (workspace_id, harness_slug, feature_id, item_kind, title, status, requeue_count, taken_by, taken_at, created_ts, updated_ts)
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, requeue_count, taken_by, taken_at, last_progress_at, created_ts, updated_ts)
     VALUES
       (${WS}, ${H}, ${featureId}, 'feature', ${featureId}, ${status}, ${requeueCount}, ${takenBy},
        ${takenBy ? sql`now() - make_interval(mins => ${takenAgoMin})` : null},
+       ${lastProgressAgoMin == null ? null : sql`now() - make_interval(mins => ${lastProgressAgoMin})`},
        ${Date.now()}, ${Date.now()})`;
+}
+
+/** Seed a spawned_agents row. status defaults to a terminal 'failed'; finishedAgoMin
+ *  controls finished_at (recency bound for the spawn-exit leg). */
+async function seedSpawn(
+  spawnId: string,
+  aliases: { sessionOwner?: string; runId?: string } = {},
+  status = 'failed',
+  finishedAgoMin = 1,
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.spawned_agents (spawn_id, session_owner, run_id, status, heartbeat_at, finished_at)
+    VALUES (${spawnId}, ${aliases.sessionOwner ?? spawnId}, ${aliases.runId ?? null}, ${status},
+            now() - interval '20 minutes', now() - make_interval(mins => ${finishedAgoMin}))`;
 }
 
 async function statusOf(featureId: string): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {

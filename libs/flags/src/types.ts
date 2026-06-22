@@ -295,6 +295,15 @@ export const FLAGS = {
   // behavior). Safe always-on (only removes an opus ESCALATION, never below a role's
   // floor; self-healing as the window decays); the flag is the operator's escape hatch.
   OPUS_BUDGET_PACING: "papercusp-opus-budget-pacing",
+  // agent-activity-liveness-truth-2026-06-21 P-003 (D-001/D-003/D-004): arm the
+  // STALLED leg of the stale-claim reconciler. ON: reclaimStaleWorkItemClaims ALSO
+  // frees a claim whose holder is ALIVE but has made no item-scoped progress within
+  // the window (last_progress_at stale) — a claim is not progress (D-001) — requeuing
+  // the item so the Queen/agents re-pick it. OFF (default): only DEAD-holder + the
+  // confirmed-terminal-spawn legs free claims (today's behavior + the new immediate
+  // spawn-death release, both safe). DARK because freeing a LIVE agent's claim
+  // changes live placement on a fleet-critical hot path (D-003: land it attended).
+  RECLAIM_STALLED: "papercusp-reclaim-stalled",
   // self-learning-frontier-2026-06-12 (P-020 / FB-06): the replay harness —
   // re-run an agent from a historical transcript point (or synthetic context)
   // under a modified prompt/policy and judge the divergence; the substrate for
@@ -1112,6 +1121,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ships built + tested + DARK, arming only when self-learning-frontier
   // P-001 closes (consume-edges P-013 live proof + owner ratification). The
   // pending flip is surfaced in the plan's ## Now + every lane report.
+  // OFF by default — DELIBERATE (agent-activity-liveness-truth P-003, D-003): the
+  // STALLED-reclaim leg frees a LIVE agent's claim, a live-placement change on a
+  // fleet-critical hot path that must land ATTENDED. OFF = the dead-holder + the
+  // confirmed-terminal-spawn (immediate spawn-death) reclaim legs only — both safe;
+  // the pending flip is surfaced in the plan's ## Now + the lane report.
+  [FLAGS.RECLAIM_STALLED]: false,
   [FLAGS.NEGATIVE_SPACE_MINER]: false,
   // OFF by default — same D-001 dark-ship rule as NEGATIVE_SPACE_MINER above:
   // frontier learning loops arm only when self-learning-frontier P-001 closes

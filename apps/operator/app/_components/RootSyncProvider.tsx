@@ -1,6 +1,6 @@
 'use client';
 import type { ReactNode } from 'react';
-import { HarnessZeroProvider } from '../../providers/HarnessZeroProvider';
+import { HarnessSyncProvider } from '../../providers/HarnessSyncProvider';
 import { installDesktopIpcPolyfills } from '@papercusp/operator-core/lib/transport-adapters/desktop-bootstrap';
 import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
 import { installWorkspaceParamEventSource } from '@papercusp/operator-core/lib/transport-adapters/workspace-eventsource';
@@ -8,7 +8,7 @@ import { installCallToolResolver } from '@papercusp/operator-core/lib/call-tool-
 import { installIpcInspector } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
 
 /**
- * Root sync provider. Wraps the app in `HarnessZeroProvider` and, on
+ * Root sync provider. Wraps the app in `HarnessSyncProvider` and, on
  * Tauri, installs the desktop IPC polyfills so same-origin /api/*
  * `fetch` and every `EventSource` ride the IPC bridge instead of the
  * webview's HTTP connection pool.
@@ -46,5 +46,5 @@ if (typeof window !== 'undefined') {
 }
 
 export function RootSyncProvider({ children }: { children: ReactNode }) {
-  return <HarnessZeroProvider>{children}</HarnessZeroProvider>;
+  return <HarnessSyncProvider>{children}</HarnessSyncProvider>;
 }

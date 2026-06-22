@@ -68,7 +68,7 @@ export function NotificationCenter() {
   }, []);
   // Outside-click + ESC handled by Radix Popover via harness/Popover wrapper.
 
-  // HarnessZeroProvider is now hoisted to root layout (2026-05-07,
+  // HarnessSyncProvider is now hoisted to root layout (2026-05-07,
   // resolved by Paperclip's harness-phases-const fix); useSyncQuery
   // works on every route. Server emits notifySyncInvalidate('toastLog.recent')
   // on every /api/toast-log POST → SSEAdapter invalidates → refetch.

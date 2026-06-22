@@ -278,6 +278,19 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
       vi.unstubAllEnvs();
     }
   });
+
+  it('mints NO session id for the codex backend (codex resumes by CODEX_HOME rollout)', async () => {
+    vi.stubEnv('AGENT_CMD', 'codex exec');
+    try {
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      expect(res.ok).toBe(true);
+      const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
+      expect(opts?.forceSessionId).toBeUndefined();
+      expect(findUpdate()).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', () => {

@@ -23,6 +23,7 @@ import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '../agent-tools/coordination/notify-gc';
 import { gcResolvedEscalationFamilies } from '../agent-tools/coordination/escalation-log-gc';
+import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
@@ -154,6 +155,19 @@ const coordEscalationGcWorkflow = DBOS.registerWorkflow(coordEscalationGcTick, {
   name: 'coordEscalationGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(coordEscalationGcWorkflow, { name: 'coordEscalationGc', crontab: '0 15 4 * * *' });
+
+// Daily 04:45 (off the 04:00/04:15/04:30 GC stampede): per-plan retention cap for
+// the plan_revisions spine — keep the newest N revisions per plan, delete the older
+// tail. Every plans:* write appends a full content_snapshot, so a hot plan would
+// otherwise grow unbounded. infra-fail-fast C4/P-012. Safety (current state always
+// preserved, no federation trigger) in revisions-gc.ts.
+async function planRevisionsGcTick(): Promise<void> {
+  await DBOS.runStep(() => gcOldPlanRevisions(), { name: 'plan-revisions-gc' });
+}
+const planRevisionsGcWorkflow = DBOS.registerWorkflow(planRevisionsGcTick, {
+  name: 'planRevisionsGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(planRevisionsGcWorkflow, { name: 'planRevisionsGc', crontab: '0 45 4 * * *' });
 
 // Every 6h: global substrate_outbox backstop GC — sweeps orphaned/old
 // federation-queue rows the per-harness inline GC never reaches. An un-booted or

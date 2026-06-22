@@ -32,6 +32,19 @@ vi.mock('@papercusp/db-org', async () => {
 });
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: async () => ({ projects: [{ slug: 'demo', path: h.repo }] }),
+  // resolveHarnessRepoRoot (harness-repo.ts) resolves the content path through this since the
+  // repo-less-hive change (2026-06-19); a normal repo harness ⇒ its own path.
+  resolveHarnessContentPath: (
+    reg: { projects: Array<{ slug: string; path: string }> },
+    slug: string,
+  ) => reg.projects.find((p) => p.slug === slug)?.path,
+}));
+// The docs helpers now DERIVE the workspace from the harness (P-002/D-003); this fixture PG
+// has only mig 172 (no projects/registry table to resolve 'demo'), and the test asserts on
+// harness 'demo' regardless of workspace — pin the derive to one constant workspace so every
+// (workspace_id, harness_slug) read/write stays self-consistent.
+vi.mock('../workspace-for-harness', () => ({
+  resolveWorkspaceForHarness: async (_h: string, ws?: string) => ws ?? 'default',
 }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: async () => ({}) }));
 

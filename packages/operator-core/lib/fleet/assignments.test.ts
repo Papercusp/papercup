@@ -231,3 +231,96 @@ describe('orphanedClaims', () => {
     expect(orphanedClaims(rows).map((r) => r.agentId)).toEqual(['su-1']);
   });
 });
+
+// ── agent-activity-liveness-truth P-005: the single derived truth ───────────────
+// (reuses the `workClaim` row builder defined above for the P-021 work-list tests)
+
+describe('deriveActivity — the view-row projection of the truth (P-005, D-002)', () => {
+  it('free when unclaimed', () => {
+    expect(deriveActivity({ agentId: null, orphaned: false, stalled: null, lastProgressAt: null, holderAlive: false })).toBe('free');
+  });
+  it('dead when the holder is gone (orphaned), regardless of progress', () => {
+    expect(deriveActivity({ agentId: 'bee-1', orphaned: true, stalled: false, lastProgressAt: '2026-06-22T00:00:00Z', holderAlive: false })).toBe('dead');
+  });
+  it('stalled when alive but not progressing (the second half of the incident)', () => {
+    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: true, lastProgressAt: null, holderAlive: true })).toBe('stalled');
+  });
+  it('progressing ONLY when alive AND has real progress — the one "actively worked" state', () => {
+    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: '2026-06-22T00:00:00Z', holderAlive: true })).toBe('progressing');
+  });
+  it('alive (grace) when freshly claimed by a live holder with no progress yet', () => {
+    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: null, holderAlive: true })).toBe('alive');
+  });
+  it('reserved when claimed but holder liveness is not affirmatively alive', () => {
+    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: null, holderAlive: false })).toBe('reserved');
+  });
+
+  // The load-bearing cross-check: the SQL view's stalled/orphaned booleans, once
+  // projected by deriveActivity, must AGREE with the pure canonical classifier on
+  // the same inputs — so the SQL reconciler and the TS readers can never drift.
+  it('agrees with classifyItemActivity on representative claim states', () => {
+    const NOW = 1_800_000_000_000;
+    const fresh = NOW - 60_000; // within window
+    const old = NOW - 30 * 60_000; // past the 10-min window
+    type Case = { holderAlive: boolean; lastProgressAt: number | null; takenAt: number };
+    const cases: Case[] = [
+      { holderAlive: true, lastProgressAt: fresh, takenAt: old }, // progressing
+      { holderAlive: true, lastProgressAt: null, takenAt: fresh }, // alive (grace)
+      { holderAlive: true, lastProgressAt: old, takenAt: old }, // stalled
+      { holderAlive: false, lastProgressAt: fresh, takenAt: fresh }, // dead (view) / reserved? → see note
+    ];
+    for (const c of cases) {
+      const classifier = classifyItemActivity(
+        { takenBy: 'bee-1', takenAt: c.takenAt, lastProgressAt: c.lastProgressAt, holderAlive: c.holderAlive },
+        { now: NOW },
+      );
+      // Project the view booleans the way migration 358 computes them for a
+      // work_item_claim leg (holder_alive=false ⇒ orphaned; alive+stale ⇒ stalled).
+      const stalled = c.holderAlive && NOW - (c.lastProgressAt ?? c.takenAt) > 600_000;
+      const orphaned = !c.holderAlive;
+      const projected = deriveActivity({
+        agentId: 'bee-1',
+        orphaned,
+        stalled,
+        lastProgressAt: c.lastProgressAt == null ? null : new Date(c.lastProgressAt).toISOString(),
+        holderAlive: c.holderAlive,
+      });
+      // Both sides agree on the single most important property: is it reclaimable
+      // (dead/stalled) vs actively worked? The view collapses unknown-holder to
+      // dead while the classifier may say reserved within grace, so we assert the
+      // safety-critical equivalence (reclaimable ⇔ reclaimable), not label identity.
+      expect(isReclaimable(projected)).toBe(isReclaimable(classifier as ItemActivity) || (orphaned && classifier === 'reserved'));
+    }
+  });
+});
+
+describe('stalledClaims / reclaimableClaims (P-002/P-005)', () => {
+  it('stalledClaims keeps active stalled rows only', () => {
+    const rows = [
+      workClaim({ agentId: 'bee-1', stalled: true }),
+      workClaim({ agentId: 'bee-2', stalled: false }),
+      workClaim({ agentId: 'bee-3', stalled: true, claimActive: false }), // lapsed
+    ];
+    expect(stalledClaims(rows).map((r) => r.agentId)).toEqual(['bee-1']);
+  });
+  it('reclaimableClaims is the union of dead (orphaned) and stalled', () => {
+    const rows = [
+      workClaim({ agentId: 'dead', orphaned: true, stalled: false }),
+      workClaim({ agentId: 'stuck', orphaned: false, stalled: true }),
+      workClaim({ agentId: 'healthy', orphaned: false, stalled: false }),
+    ];
+    expect(reclaimableClaims(rows).map((r) => r.agentId).sort()).toEqual(['dead', 'stuck']);
+  });
+});
+
+describe('groupByAgent — surfaces stalled like orphaned (P-005)', () => {
+  it('a live holder sitting on a non-progressing work-item reads as stalled, not covered', () => {
+    const groups = groupByAgent([
+      workClaim({ agentId: 'bee-stuck', stalled: true, holderPresent: true, holderAlive: true }),
+    ]);
+    const g = groups.find((x) => x.agentId === 'bee-stuck')!;
+    expect(g.stalled).toBe(true);
+    expect(g.orphaned).toBe(false);
+    expect(g.doing?.activity).toBe('stalled'); // the head-of-line is NOT progressing
+  });
+});

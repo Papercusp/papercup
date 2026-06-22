@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 434,
+  "count": 516,
   "tools": [
     {
       "name": "ablation:report",
@@ -176,7 +176,7 @@
           "POST"
         ]
       },
-      "description": "Register (or update) a Claude Max subscription in the Queen's account pool. `credentialRef` is a Claude Max OAuth credential — `token:<path>` (a `claude setup-token`) | `file:<path>` / absolute / `~` (a refreshable `.credentials.json` bundle) — a REFERENCE, never the secret. There is NO static-API-key channel (this deployment runs on Max subscriptions, not billed API keys). Optional `egress` pins the account to its own outbound IP (per-account IP routing). Re-registering an existing id updates credentialRef/label/egress, preserving bindings + rate state. Returns {ok, account}.",
+      "description": "Register (or update) a provider account in the pool. `provider:'claude'` (default) uses a Claude Max OAuth credential: `token:<path>` (`claude setup-token`) | `file:<path>` / absolute / `~` (`.credentials.json`). `provider:'codex'` uses a bearer credential for the Codex/OpenAI-compatible gateway: `token:<path>` or `env:NAME`. Credential refs are references, never the secret. Optional `egress` pins the account to its own outbound IP. Re-registering an existing id updates credentialRef/provider/label/egress, preserving bindings + rate state. Returns {ok, account}.",
       "capabilities": [
         "harness:write"
       ],
@@ -295,6 +295,37 @@
       "guidance": {
         "when": "An account is rate-limited and you want to move its work onto a fresh account NOW (the same action the auto-scale-out takes; this is the manual lever).",
         "notWhen": "Just inspecting state — accounts:status. No fresh account is available (it will report no-fresh-account)."
+      }
+    },
+    {
+      "name": "accounts:scale_policy",
+      "http": {
+        "path": "/api/agent-tools/accounts/scale_policy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the account scale-out trigger policy: windowMs (penalty accumulation window) + sustainedPenaltyThreshold (≥N penalties in the window ⇒ \"sustainedly limited\", which gates PAID auto-scale-out). Default 15min / 3. set is audited + one-call-revertible. Tunes WHEN scale-out fires; provisioning stays owner-gated (accounts:scale_out).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "During a provider rate-limit storm: raise the threshold to avoid over-provisioning paid machines on transient 429 bursts, or lower it to scale out earlier under sustained limiting — live, no redeploy.",
+        "notWhen": "To actually provision now, use accounts:scale_out (owner-gated). To pause/exclude an account use the accounts:* session-override tools. EXHAUSTED_UTIL/DRAIN_FULL_UTIL are not covered (structural consts, follow-up).",
+        "chaining": "accounts:status shows the per-account sustained-limit state; config:list-overrides shows the active override."
       }
     },
     {
@@ -566,7 +597,7 @@
           "POST"
         ]
       },
-      "description": "List multi-turn chat sessions for a harness slug (active by default; pass includeArchived=true to see all).",
+      "description": "List multi-turn chat sessions for a harness slug (active by default; pass includeArchived=true to see all). Bounded: limit clamped 1..100, default 100; page older chats with offset. Rows are summaries (turn_count, tokens, cost, timestamps) WITHOUT the transcript body — use agent_chats:get for a chat's turns.",
       "capabilities": [
         "agent_chats:read"
       ],
@@ -1363,6 +1394,24 @@
       }
     },
     {
+      "name": "blueprint:publish",
+      "http": {
+        "path": "/api/agent-tools/blueprint/publish",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List a local/private blueprint on the Comb: resolves the member repo's GitHub coords + publishes a kind='blueprint' listing (listing_ref = blueprintId) with the operator's gh token + attestation. DELTA-NOT-COPY — the blueprint is listed keeping its `extends:`, so an install composes it against the upstream parent and inherits upstream improvements. Lands PENDING (D-007) — an operator must approve it before it is publicly visible.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
+        "notWhen": "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
+        "chaining": "Run after the blueprint files are committed + pushed via the project's normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing."
+      }
+    },
+    {
       "name": "blueprint:validate",
       "http": {
         "path": "/api/agent-tools/blueprint/validate",
@@ -1540,6 +1589,37 @@
       }
     },
     {
+      "name": "capability:computer",
+      "http": {
+        "path": "/api/agent-tools/capability/computer",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Operate a sandboxed desktop (GUI) — screenshot, click, type, key, scroll — using the canonical computer-use action vocabulary. Returns a screenshot image after each action so you can see the result. ONLY for genuinely visual/GUI steps: for anything scriptable (files, CLIs, APIs) prefer capability:bash, and for web pages prefer a browser tool — both are faster and more reliable than pixel-clicking.",
+      "capabilities": [
+        "capability:computer"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` first to see, then act on what you see.",
+        "notWhen": "Anything scriptable (create files, run a program, hit an API) → capability:bash. A web page → a browser tool (DOM automation is more reliable + cheaper than pixel-clicking). Never use this to operate the host machine — it only drives the agent's leased sandbox desktop.",
+        "chaining": "screenshot → inspect the image → left_click/type/key at the coordinates you see → screenshot to confirm. Repeat."
+      }
+    },
+    {
       "name": "capability:edit",
       "http": {
         "path": "/api/agent-tools/capability/edit",
@@ -1633,6 +1713,37 @@
       }
     },
     {
+      "name": "capability:grant_role",
+      "http": {
+        "path": "/api/agent-tools/capability/grant_role",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Runtime-grant capabilities to a role (unioned into loadRoleCapabilities, flag-gated). Replaces editing BLUEPRINT_ROLE_CAPS + redeploying to unblock a role. Privilege-escalation surface — enforces D-007: no protected-floor caps (secrets:*/processes:kill), cannot grant above the granter's own envelope, operator-authority only. Audited + one-call-revertible. Dark until papercusp-capability-grant-tool is enabled.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A role is blocked from its job for lack of a capability and you (operator/architect/queen) need to grant it live, instead of editing role-principal-caps.ts + redeploying.",
+        "notWhen": "To REMOVE a cap, use capability:revoke_role. The protected floor (secrets:*, processes:kill) can never be granted. While the papercusp-capability-grant-tool flag is off this refuses (the grant surface is owner-ratified, D-007).",
+        "chaining": "config:list-overrides shows active grants (concern role-capability-grants); config:reset-overrides wipes them."
+      }
+    },
+    {
       "name": "capability:inspect",
       "http": {
         "path": "/api/agent-tools/capability/inspect",
@@ -1695,6 +1806,37 @@
       }
     },
     {
+      "name": "capability:revoke_role",
+      "http": {
+        "path": "/api/agent-tools/capability/revoke_role",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Remove runtime-granted capabilities from a role (the inverse of capability:grant_role). Only affects the runtime grant store, never code-level role caps. Operator-authority, audited + one-call-revertible. Dark until papercusp-capability-grant-tool is enabled.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Walk back a runtime capability grant — confine a role after a grant proves too broad, or clean up grants. Reducing privilege, so always safe.",
+        "notWhen": "To GRANT a cap, use capability:grant_role. To wipe ALL runtime grants at once (incident), use config:reset-overrides on the role-capability-grants concern.",
+        "chaining": "config:list-overrides shows the active grants before/after."
+      }
+    },
+    {
       "name": "capability:write",
       "http": {
         "path": "/api/agent-tools/capability/write",
@@ -1723,6 +1865,37 @@
         "when": "Create a new file, or fully replace an existing one. For a partial change to an existing file prefer capability:edit.",
         "notWhen": "A small in-place change — use capability:edit (exact string replacement). Reading first — use capability:read.",
         "chaining": "capability:read (if overwriting) → capability:write. On a file_locked result, wait/pivot/coordinate with the holder."
+      }
+    },
+    {
+      "name": "capability_envelope:set_role",
+      "http": {
+        "path": "/api/agent-tools/capability_envelope/set_role",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read/set/clear a fleet role's runtime capability-envelope override (denyCapabilities / allowCapabilities), merged over the baked ROLE_ENVELOPES. Confine or loosen a role live (e.g. re-confine a misbehaving bee to read-only) without a deploy. DARK (papercusp-capability-envelope-overrides) + requires the CAPABILITY_ENVELOPE enforcement flag to bite. The universal floor (secrets:*/processes:kill) always applies. set/clear audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Incident response: confine a hallucinating/misbehaving role to read-only (denyCapabilities: capability:fs-write/capability:bash) or restore it, live. get to inspect the active override.",
+        "notWhen": "To TIGHTEN the universal protected floor use capability_envelope:set_protected (tighten-only). To change quota use quota tools; tiers use capability_tier:set. Loosening cannot bypass the protected floor.",
+        "chaining": "config:list-overrides shows the active envelope overrides; config:reset-overrides reverts them. Needs the owner to flip papercusp-capability-envelope-overrides + CAPABILITY_ENVELOPE to enforce."
       }
     },
     {
@@ -1820,6 +1993,223 @@
       "guidance": {
         "when": "You need a yes/no, accept/reject, or pick-one-of decision from the user before continuing. Renders clickable buttons in the chat; the tool returns the choice as its result. You can keep working in the same turn after the result lands.",
         "notWhen": "For OPEN-ENDED questions (\"describe what you want\", \"paste the error\"), keep using plain text. Use 2-3 options; 4+ only when genuinely distinct (6 hard max)."
+      }
+    },
+    {
+      "name": "code:run",
+      "http": {
+        "path": "/api/agent-tools/code/run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in one call; returns ONLY the script's returned summary. Collapses many tool round-trips into one. Use dryRun:true to preview write-effect mutations without executing them.",
+      "capabilities": [
+        "capability:bash"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "A task needs MANY tool calls with control flow — loop/branch/filter over results (e.g. list N items then act per item, fan-out reads, retry-until). Orchestrate them in ONE code:run and return a compact summary instead of paying a round-trip per call. Call code:tools first to fetch the exact typed tools.ns.verb(args) signatures for the namespaces you will use (fewer arg-shape errors). Pass title+description so the run is saved as a reusable RECIPE other agents in your hive can find + reuse (every successful run is captured; title+description make it discoverable instead of an auto-derived label).",
+        "notWhen": "A single tool call, or a step that needs YOUR judgment mid-flow (read a result, then decide) — call tools directly. Preview mutations with dryRun before a committing run.",
+        "chaining": "code:tools { namespaces } → write the script against the typed signatures → code:run { dryRun:true } → inspect plannedMutations → code:run { dryRun:false }"
+      }
+    },
+    {
+      "name": "code:tools",
+      "http": {
+        "path": "/api/agent-tools/code/tools",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "On-demand typed signatures for code:run. No args → the namespace index (cheap). { namespaces } / { names } → full TS `tools.ns.verb(args)` signatures for just those, scoped to your allowed set. Read the signatures, then write a code:run script.",
+      "capabilities": [
+        "agent_tools:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Before writing a code:run script, to fetch the exact typed signatures for the namespaces you will use instead of guessing arg shapes. Start with no args to list namespaces, then request the one or two you need.",
+        "notWhen": "A single direct tool call (no script), or you already know the signatures. This is a lookup — it executes nothing.",
+        "chaining": "code:tools {} → pick namespaces → code:tools { namespaces } → code:run { script }"
+      }
+    },
+    {
+      "name": "computer:list_desktops",
+      "http": {
+        "path": "/api/agent-tools/computer/list_desktops",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List the sandbox-desktop leases held in this operator process — each hive that holds a desktop and its display/width/height. Use to confirm computer:provision_desktop landed or to spot a leaked lease.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "queen"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Checking which hives currently hold a sandbox desktop — after provisioning, before a VNC view, or auditing for leaks.",
+        "notWhen": "Driving a desktop (capability:computer) or standing one up (computer:provision_desktop).",
+        "chaining": "computer:provision_desktop → computer:list_desktops (verify) → computer:release_desktop."
+      }
+    },
+    {
+      "name": "computer:provision_desktop",
+      "http": {
+        "path": "/api/agent-tools/computer/provision_desktop",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Provision a sandboxed GUI desktop (isolated Xvfb + openbox, never host :0) for a hive so its bees can operate it via capability:computer. Optionally launches GUI apps on it. Idempotent (returns the existing desktop; apps launch only on first provision). Tear down with computer:release_desktop or hive:dissolve.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "queen"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Equipping a hive for visual/GUI work — before a bee in that hive uses capability:computer. Pass `apps` to pre-launch the programs the bee will operate (e.g. a browser, a spreadsheet).",
+        "notWhen": "For scriptable work (files/CLIs/APIs) no desktop is needed — bees use capability:bash. On a deployed desktop FRAME the per-slot Xvfb is leased by the frame bootstrap (acquireAgentDisplay), not this tool.",
+        "chaining": "computer:provision_desktop { hive, apps } → spawn/let a bee in that hive call capability:computer → computer:list_desktops to inspect → computer:release_desktop when done."
+      }
+    },
+    {
+      "name": "computer:release_desktop",
+      "http": {
+        "path": "/api/agent-tools/computer/release_desktop",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Tear down a hive's sandbox desktop (kill its Xvfb + apps, free the display) without dissolving the hive. Idempotent — a no-op if the hive holds no desktop. (hive:dissolve releases automatically.)",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "queen"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A hive is done with GUI work but stays alive — reclaim the Xvfb/display. Also good demo hygiene after computer:provision_desktop.",
+        "notWhen": "Tearing down the whole hive — hive:dissolve already releases the desktop. There is nothing to release if the hive never provisioned one.",
+        "chaining": "computer:list_desktops to see what is leased → computer:release_desktop { hive }."
+      }
+    },
+    {
+      "name": "config:list-overrides",
+      "http": {
+        "path": "/api/agent-tools/config/list-overrides",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read every live runtime-config override diverging from baked defaults, across all registered concerns (watchdog tunables, …). Each key reports its effective value, the layer that set it, and the latest audit row. The observability surface over the runtime-config control tools so the override layer is never opaque.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You (or an operator debugging odd fleet behavior) need to see what runtime config has been changed away from its baked defaults — every override across all concerns, in one place, with who/when.",
+        "notWhen": "To CHANGE a value, use that concern's set tool (e.g. improvements:set-watchdog-tunables). To revert overrides to defaults, use config:reset-overrides.",
+        "chaining": "config:reset-overrides to revert a concern (or all) back to baked defaults."
+      }
+    },
+    {
+      "name": "config:reset-overrides",
+      "http": {
+        "path": "/api/agent-tools/config/reset-overrides",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Revert runtime-config overrides back to baked defaults — one concern (concern:\"watchdog-tunables\") or all (all:true). Each reset is audited + one-call-revertible via the control harness. The mid-incident \"undo the overrides\" companion to config:list-overrides.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Roll back runtime-config changes to baked defaults — a single concern after a bad tune, or everything at once during an incident (\"reset all overrides\").",
+        "notWhen": "To SEE what's overridden first, use config:list-overrides. To change one value, use that concern's set tool.",
+        "chaining": "config:list-overrides before to see what will reset, and after to confirm it cleared."
       }
     },
     {
@@ -2113,9 +2503,9 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You have a question and want the fastest correct answer without needlessly interrupting a peer. Always include topics so a miss reaches the right people. For a harness-specific question pass harness.",
-        "notWhen": "For an open-ended discussion (no single answer), use conversations:post. To turn-block on a peer/human, use coord:escalate / coord:handoff instead — coord:ask is deliberately non-blocking.",
-        "chaining": "topics:list → coord:ask (with topics). On a miss you get a conversation_id; conversations:get to read replies, conversations:resolve when answered."
+        "when": "DEFAULT FIRST MOVE for any question you cannot answer from your own knowledge or the code — it routes to the peer/expert who owns the area (knowledge-first, non-blocking). Reach for this BEFORE escalating to the owner/human: ask peers here first; only ask the owner (coord:ask-owner / coord:escalate) if the best answer is still unclear after asking. Always include topics so a miss reaches the right people; pass harness for a harness-specific question.",
+        "notWhen": "For an open-ended discussion (no single answer), use conversations:post. Do NOT jump to coord:ask-owner / coord:escalate (interrupting the owner) before trying coord:ask — escalate to the owner only when peers + knowledge leave the answer unclear. coord:ask is deliberately non-blocking; to turn-block on a peer/handoff use coord:escalate / coord:handoff.",
+        "chaining": "topics:list → coord:ask (with topics). On a miss you get a conversation_id; conversations:get to read replies, conversations:resolve when answered. Still unclear after peers replied? THEN coord:ask-owner / coord:escalate."
       }
     },
     {
@@ -2324,7 +2714,7 @@
           "POST"
         ]
       },
-      "description": "List escalations addressed to the human. Default: all. Filter by status=open (resolved is null) or status=resolved (resolved is set).",
+      "description": "List escalations addressed to the human — NEWEST-FIRST and bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. `truncated:true` means older escalations exist beyond the window — raise maxRecords or narrow by status.",
       "capabilities": [
         "coord:read"
       ],
@@ -2445,6 +2835,37 @@
       }
     },
     {
+      "name": "coord:handoff_config",
+      "http": {
+        "path": "/api/agent-tools/coord/handoff_config",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the stale-handoff auto-expiry TTL (handoffTtlMs): a pending coordination handoff older than this is auto-expired by the periodic reconcile sweep. Default 12h. set is audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Shorten the TTL to clear stale handoff offers faster (a successor chasing a dead offer wastes a turn), or lengthen it if legitimate handoffs routinely sit unaccepted longer than 12h.",
+        "notWhen": "For stale work-item CLAIMS use work_items:reclaim_config; for idle sessions use coord:session_reaper_config. This only governs pending HANDOFF expiry.",
+        "chaining": "coord:handoffs lists open handoffs; config:list-overrides shows the active override."
+      }
+    },
+    {
       "name": "coord:handoffs",
       "http": {
         "path": "/api/agent-tools/coord/handoffs",
@@ -2452,7 +2873,7 @@
           "POST"
         ]
       },
-      "description": "List handoff records, each annotated with its acceptance file if one exists. Optional `status` filters to open (no acceptance) or accepted.",
+      "description": "List handoff records, each annotated with its acceptance/expiry sibling if one exists. Optional `status` filters to open (no acceptance, not auto-expired), accepted, or expired (auto-expired by the stale-handoff reconcile after sitting pending past the 12h TTL — F-FIX-037).",
       "capabilities": [
         "coord:read"
       ],
@@ -2472,7 +2893,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "Diagnostics — \"who handed what to whom?\" or \"what handoffs to me are still open?\".",
+        "when": "Diagnostics — \"who handed what to whom?\", \"what handoffs to me are still open?\", or \"which lapsed unaccepted?\" (status: \"expired\").",
         "notWhen": "A single known msg_id — there is no read-by-id tool yet; the listing is small."
       }
     },
@@ -2542,6 +2963,39 @@
       }
     },
     {
+      "name": "coord:orient",
+      "http": {
+        "path": "/api/agent-tools/coord/orient",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "One agent wake-orientation + session-bootstrap read: your assignments (+lane+load), the claimable backlog, your inbox summary, and the recent plan-events delta — plus, when you pass `intent`, a memory recall for it AND a coord:declare-intent so peers see you. Collapses the mandated bootstrap (memory:search + coord:inbox + coord:plan-events + coord:declare-intent, with assignments + claimable) into ONE round-trip. coord:glance is the fleet-health read.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "At the START of a turn / on waking. Pass `intent` (your one-line task) to get, in ONE round-trip: assignments + claimable backlog + inbox summary + recent plan-events + a memory recall for `intent` + your intent DECLARED to peers — the whole mandated bootstrap. Omit `intent` for a lighter re-orientation (no recall / no declare).",
+        "notWhen": "Fleet-wide wake/health state for a status surface (coord:glance); full message bodies or history (coord:inbox); the whole presence roster (coord:presence). Do NOT pass a throwaway `intent` just to fire the declare — declare a real lane.",
+        "chaining": "Bundles: fleet:assignments + work_items:list + coord:inbox + coord:plan-events [+ memory:search + coord:declare-intent when `intent` is set] — prefer this at wake over calling them separately. → work_items:pickup { id, intent } the item you take."
+      }
+    },
+    {
       "name": "coord:plan-events",
       "http": {
         "path": "/api/agent-tools/coord/plan-events",
@@ -2549,7 +3003,7 @@
           "POST"
         ]
       },
-      "description": "Read the plan-event history — created / now_updated / decision_added / item_added / item_status_changed / promoted events across all plans. Optional `since_ts` returns only events strictly later than that ISO timestamp; `plan_slug` narrows to one plan. Distinct from coord:inbox (which scans messages, not plan-events).",
+      "description": "Read the plan-event history — created / now_updated / decision_added / item_added / item_status_changed / promoted events across all plans. Returns the most-recent events first-bounded (a no-arg call is always size-capped so it never overflows the result), newest kept. Widen with `since_ts` (events strictly later than that ISO timestamp), `plan_slug` (one plan), `files_back` (N rotation files), or `limit` (max events). Returns `{ events, total, truncated }`. Distinct from coord:inbox (which scans messages, not plan-events).",
       "capabilities": [
         "coord:read"
       ],
@@ -2668,6 +3122,37 @@
       "guidance": {
         "when": "Sharing context, asking a question, or handing off work. wake:'required' ONLY when the recipient is idle and MUST act now (a Queen waking a sleeping bee) — a miss returns recipient_absent. wake:'optimistic' when a durable backstop catches a miss (the Queen survey re-dispatches). A running recipient already sees the inject mid-turn — a wake is wasted on it.",
         "notWhen": "For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don't set a wake for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in)."
+      }
+    },
+    {
+      "name": "coord:session_reaper_config",
+      "http": {
+        "path": "/api/agent-tools/coord/session_reaper_config",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the idle-session reaper grace (sessionReaperGraceMs): a dead-process session is reaped once its owner has been gone past this window. Default = the 10-min liveness window. A set with dryRun returns a WOULD-REAP count at the proposed grace (marks nothing) to de-risk the change. set is audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Tune how aggressively dead-process ghost sessions are reaped — shorten to reclaim the operator footprint faster, lengthen if a just-launched session is being reaped before its first presence beat. dryRun first to see the would-reap count.",
+        "notWhen": "For stale work-item claims use work_items:reclaim_config; for handoff expiry use coord:handoff_config. To ARM the reaper itself, flip FLAGS.IDLE_SESSION_REAPER via /admin/features (this only tunes the grace).",
+        "chaining": "set with dryRun:true previews the would-reap count; config:list-overrides shows the active override."
       }
     },
     {
@@ -2840,7 +3325,7 @@
           "POST"
         ]
       },
-      "description": "Read your coordination watermark — the last-read ISO timestamps for messages / escalations / plan-events plus the subscription notify msg_ids already surfaced. Pass `messages_since_ts` to coord:inbox to see only what is new since your last turn.",
+      "description": "Read a coordination watermark — last-read ISO timestamps for messages / escalations / plan-events + the notify msg_ids surfaced. DEFAULT: your own. Pass `agent` to read a PEER's: their `read_through_ts` (messages_shown_ts) is a READ-RECEIPT — ≥ your message's ts ⇒ they've SEEN it (ping them, don't re-route); behind ⇒ not yet seen (wait, or wake if idle). With `agent`+`sent_ts` you get a direct `seen` boolean.",
       "capabilities": [
         "coord:read"
       ],
@@ -2860,7 +3345,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "Turn start — the OMP coordination extension calls this to scope the inbox to new entries.",
+        "when": "Turn start — the OMP coordination extension calls this to scope the inbox to new entries. To check if a PEER has seen a message you sent (READ-RECEIPT, EI-2042): coord:watermark { agent: <their ownerId from coord:presence>, sent_ts: <your message ts> } → seen:true means it was injected into their context.",
         "notWhen": "Routine reads — coord:inbox without a watermark returns the full inbox."
       }
     },
@@ -3301,6 +3786,37 @@
       }
     },
     {
+      "name": "db:migrate-policy",
+      "http": {
+        "path": "/api/agent-tools/db/migrate-policy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the deploy-migration connection policy: lockTimeoutMs (the DDL lock_timeout the deploy migrator uses — default 15000, the value behind two deploy outages) and statementTimeoutMs (optional; null to unset). set is audited + one-call-revertible via the control harness; migrate.ts reads it fail-safe (defaults on any read error).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before a deploy whose migration legitimately needs longer to acquire its lock — raise lockTimeoutMs for that window — or to add a statement_timeout, without editing migrate.ts and redeploying through the path you are tuning.",
+        "notWhen": "For the BOOT-time migration lock_timeout (it runs before PG config is readable — stays an env/code default per the plan keep-hardcoded list). To see all live overrides, config:list-overrides.",
+        "chaining": "config:list-overrides shows the active override; config:reset-overrides reverts it to the 15000 default."
+      }
+    },
+    {
       "name": "db:next-migration",
       "http": {
         "path": "/api/agent-tools/db/next-migration",
@@ -3329,6 +3845,37 @@
         "when": "BEFORE creating a new SQL migration file — reserve the number first instead of `ls | tail`, so a concurrent agent cannot pick the same NNN.",
         "notWhen": "Applying a migration (that is the boot auto-apply / db:migrate) or checking drift (db:check_drift).",
         "chaining": "db:next-migration { name } → write the returned path → restart the operator (boot auto-applies) or db:migrate."
+      }
+    },
+    {
+      "name": "db:txn-timeouts",
+      "http": {
+        "path": "/api/agent-tools/db/txn-timeouts",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read/set/reset the per-workspace transaction timeouts (lockTimeoutMs / statementTimeoutMs) applied by inWorkspaceTxn, merged over the baked 5s/5s defaults. Mid-incident, raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish — no deploy. Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical 5s/5s. set/reset audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "State-mutating tools are failing with workspace_contended (PG lock_timeout 55P03 / statement_timeout 57014) under same-workspace contention, and you need to widen the window for the incident — raise lockTimeoutMs and/or statementTimeoutMs. get to inspect the effective timeouts + override.",
+        "notWhen": "Not for the DEPLOY-migration lock_timeout (db:migrate-policy), nor for the BOOT migration timeout (env/code). This only sizes the per-workspace inWorkspaceTxn lock_timeout/statement_timeout.",
+        "chaining": "config:list-overrides shows the active txn-timeouts override; config:reset-overrides reverts it. The kill-switch papercusp-txn-timeouts-config (default ON) forces the baked 5s/5s defaults when OFF."
       }
     },
     {
@@ -3812,6 +4359,36 @@
       }
     },
     {
+      "name": "dev:pg_query",
+      "http": {
+        "path": "/api/agent-tools/dev/pg_query",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a read-only SELECT / WITH…SELECT against the operator Postgres (the canonical store behind plans, work-items, issues, observations, tool_invocations, scorecards, recipes, …). Read-only enforced; statement_timeout 5s; rows capped.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee",
+        "queen",
+        "scoper",
+        "reviewer",
+        "validator",
+        "worker"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A filtered / aggregate / recency read of PG-CANONICAL state. Plans, work-items, issues, observations (engineer_issues), tool_invocations, scorecards are PG tables — the `*:list` tools and `docs/plans/*.md` files are PROJECTIONS. Query PG directly instead of fetching a whole `*:list` and post-filtering (which returns a huge result that spills to a file → don't then jq the projection). Example — recent plans this workspace: `SELECT plan_slug,status,created FROM harness_shared.harness_plans WHERE created >= '2026-06-17' AND workspace_id = '<ws>' ORDER BY created DESC LIMIT 50`. Aggregates (counts/group-by) are first-class here and awkward to jq.",
+        "notWhen": "To CHANGE state — use the documented write verbs (plans:*, work_items:*, issues:* — they emit audit + sync invalidation). Writes are rejected here anyway (read-only transaction). For code-graph queries use `gitnexus:query`; for prose full-text use `search:fulltext` / `search:semantic`.",
+        "chaining": "Alias any duplicate output column names (the result is wrapped in a subquery for the row cap, and PG rejects duplicate subquery columns). Pass `maxRows` to widen the cap up to 2000; if `truncated` is true, add a tighter WHERE / LIMIT rather than raising the cap blindly."
+      }
+    },
+    {
       "name": "dev:pg_table_sizes",
       "http": {
         "path": "/api/agent-tools/dev/pg_table_sizes",
@@ -3833,6 +4410,44 @@
       "guidance": {
         "when": "Diagnostic: per-table sizes + row counts. Use when investigating storage growth.",
         "notWhen": "For application data analysis, query the relevant tools directly. pg_table_sizes is an ops view."
+      }
+    },
+    {
+      "name": "dev:pipeline_position",
+      "http": {
+        "path": "/api/agent-tools/dev/pipeline_position",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read-only: where a change sits along the git-sync → green-checkpoint → release pipeline. Pass a repo-relative `path` (its latest commit) OR a `sha`; returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary. Answers \"did my edit land + is it live on :3070?\" without forensic git/PG/curl.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "queen",
+        "architect",
+        "worker",
+        "scoper",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "bee",
+        "sentinel",
+        "overwatch",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "After leaving an edit in the tree (git-sync owns commit/push), to confirm it reached origin/staging, passed the green gate into main, and deployed to the live :3070 operator — or to see WHY it is stuck (gate red/stalled).",
+        "notWhen": "To PAUSE sync (use locks:acquire_resource on git-sync:<slug>). For the whole-pipeline dashboard use the /admin Git tab; this is the targeted per-path/sha probe.",
+        "chaining": "Edit a file → (git-sync commits within minutes) → dev:pipeline_position{path} to confirm it reached staging/main/:3070."
       }
     },
     {
@@ -3867,7 +4482,7 @@
           "POST"
         ]
       },
-      "description": "Snapshot the fleet rate-limit layer now: live config (maxSimultaneousAgents + AIMD floor), fleet cap vs in-flight vs AIMD-effective concurrency, per (provider, model-class) governor buckets (paused/until, in-flight vs maxConcurrent, RPM/ITPM/OTPM headroom), and recent usage telemetry (token throughput, $spend, usage% where a provider ceiling is known). Buckets are empty until a governed agent turn has run. Use to see whether the fleet/gym is currently rate-limit-paced, paused, or AIMD-throttled.",
+      "description": "Snapshot the fleet rate-limit layer now: live config (maxSimultaneousAgents + AIMD floor), fleet cap vs in-flight vs AIMD-effective concurrency, per (provider, model-class) governor buckets (paused/until, in-flight vs maxConcurrent, RPM/ITPM/OTPM headroom), recent usage telemetry (token throughput, $spend, usage% where a provider ceiling is known), and the opusBudget pacing state (aggregate 5h opus utilization + zone + which criticality classes are shedding opus→sonnet to stay under the ceiling, B-GW-4). Buckets are empty until a governed agent turn has run. Use to see whether the fleet/gym is currently rate-limit-paced, paused, AIMD-throttled, or opus-budget-shedding.",
       "capabilities": [
         "intel:read"
       ],
@@ -3928,7 +4543,7 @@
           "POST"
         ]
       },
-      "description": "Probe the dev services now (:3070 operator, :3055 vite, :3350 scout, :8082 code-server, plus the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts) — up/down + status + latency. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
+      "description": "Probe the dev services now (:3070 operator, :3055 vite, :3350 scout, :8082 code-server, the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts, AND the papercup-bg-host DBOS ticker via routine fire-freshness) — up/down + status + latency. The \"bg-host-ticker\" entry is a SEPARATE service from :3070: when it reads down, git-sync + every scheduled routine are FROZEN even though :3070 is up — do NOT dev:restart the operator for that, the bg-host needs reviving. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
       "capabilities": [
         "intel:read"
       ],
@@ -3945,7 +4560,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "Confirm which dev services are up before testing against one, or diagnose a \"connection refused\" / stale-server symptom.",
+        "when": "Confirm which dev services are up before testing against one; diagnose a \"connection refused\" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the \"bg-host-ticker\" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).",
         "notWhen": "File/lock contention — that is locks:queue. Migration drift — db:check_drift."
       }
     },
@@ -4044,6 +4659,31 @@
       "guidance": {
         "when": "Read recent telemetry datapoints (errors, slow requests). For the /dev/telemetry dashboard.",
         "notWhen": "For per-agent audit, use `audit:list`. telemetry is observability-shaped, not action-shaped."
+      }
+    },
+    {
+      "name": "dev:tool_cooccurrence",
+      "http": {
+        "path": "/api/agent-tools/dev/tool_cooccurrence",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Pairwise tool co-occurrence (support / confidence / lift) grouped by spawn_id over MCP tool_invocations — which tools get invoked together in one agent turn. The deterministic candidate-generator for wrapper/bundle tools.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Find which agent tools are invoked TOGETHER in the same turn (spawn), ranked by support / confidence / lift — to spot bundle/wrapper candidates and feed code-recipes candidate generation. Analytical / offline; MCP-transport calls only.",
+        "notWhen": "For per-tool counts or latency use `dev:telemetry`; for a forensic per-agent timeline use `audit:list`. A high lift on tiny support is spurious — keep a support floor (minSupport), and remember lift != determinism: this NOMINATES pairs, a human/gate judges whether the steps are mechanical before wrapping.",
+        "chaining": "dev:tool_cooccurrence (find bonded pairs) → judge determinism → wrap as a composite (e.g. extend coord:orient) or feed code-recipes promotion."
       }
     },
     {
@@ -4386,7 +5026,7 @@
           "POST"
         ]
       },
-      "description": "Run an experiment: A/B a knob change against a battery via the eval-battery engine and get per-arm judge scores + the compareArms verdict. v1 runs the OFFLINE replay tier — re-run each synthetic case under each arm’s policy overlay and score outcome/process/divergence. Rides frontier:replay-harness (flag + governor budget; origin-tagged spend); refuses with NO spend if the replay flag is off or the budget is exhausted. Arms must address only the test’s knobSlice (experiment:catalog). A winner is a PROPOSAL — applying it rides commit→reproject + graduation, never this tool.",
+      "description": "Run an experiment: A/B a knob change against a battery via the eval-battery engine and get per-arm judge scores + the compareArms verdict. OFFLINE replay is the default front door (tier defaults to \"offline\", ~$0 deterministic) — re-run each synthetic case under each arm’s policy/model overlay and score outcome/process/divergence; rides frontier:replay-harness (flag + governor budget; origin-tagged spend), refusing with NO spend if dark/exhausted. Escalating to a spending tier (set tier:\"live\") requires escalation justification (a positive offline signal or a written couldn’t-isolate trigger; +costException for whole-instance/whole-Hive) and an armed governor budget — it fails closed. The gym live tier is reachable when its AbDeps are armed; instance/hive stay staged (their own loops drive them). Arms must address only the test’s knobSlice (experiment:catalog). A winner is a PROPOSAL — applying it rides commit→reproject + graduation, never this tool.",
       "capabilities": [
         "harness:write"
       ],
@@ -4768,6 +5408,37 @@
       }
     },
     {
+      "name": "fleet:opus_budget",
+      "http": {
+        "path": "/api/agent-tools/fleet/opus_budget",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the fleet opus-budget shed bands: reserveStart (shed background opus→sonnet), reserveHard (also shed normal), nearCap (pace critical), staleMs. Default 0.75/0.88/0.95. The only incident lever for opus shedding; set is audited + one-call-revertible, with monotonicity (reserveStart < reserveHard < nearCap < 1) enforced.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "During an opus capacity crunch, shed earlier (lower reserveStart) to reserve more 5h headroom, or relax the bands when budget is fine — live, no redeploy.",
+        "notWhen": "To change WHICH roles count as critical/background (those role lists are still code consts — a tracked follow-up). To READ live pacing/zone state, use dev:rate_governor_status.",
+        "chaining": "dev:rate_governor_status shows the live opusBudget zone take effect; config:list-overrides shows the active override."
+      }
+    },
+    {
       "name": "fleet:place_batch",
       "http": {
         "path": "/api/agent-tools/fleet/place_batch",
@@ -4957,6 +5628,72 @@
       }
     },
     {
+      "name": "gateway:reload",
+      "http": {
+        "path": "/api/agent-tools/gateway/reload",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "HOT-RELOAD the inference gateway account pool from the DB source-of-truth NOW (POST :8788/admin/reload) — applies a just-made accounts:register / accounts:remove / egress change to the RUNNING gateway immediately, NO restart (vs waiting for the gateway’s ~60s poll). Returns {ok, changed, version, accounts}; changed:false means the live pool already matched the DB.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Right after accounts:register / accounts:remove / an egress change, to apply it live without a gateway restart.",
+        "notWhen": "You can wait ~60s — the gateway polls + hot-reloads the DB pool on its own.",
+        "chaining": "accounts:register → gateway:reload → gateway:status."
+      }
+    },
+    {
+      "name": "gateway:status",
+      "http": {
+        "path": "/api/agent-tools/gateway/status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the inference gateway LIVE config (GET :8788/admin/config): the account-pool config version, the live account ids, and the admission/AIMD concurrency state. Use to see what pool + concurrency the RUNNING gateway is actually using, or to confirm a gateway:reload landed (the version bumped). Returns {ok, version, accounts, admission, aimd, ...}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Confirming what the running gateway is using right now, or verifying a hot-reload took effect (version bump).",
+        "notWhen": "Editing the pool itself — accounts:register / accounts:remove (then gateway:reload to apply live).",
+        "chaining": "accounts:register/remove → gateway:reload → gateway:status (confirm version + accounts)."
+      }
+    },
+    {
       "name": "generators:publish",
       "http": {
         "path": "/api/agent-tools/generators/publish",
@@ -5043,6 +5780,37 @@
         "when": "Scoring a completed gym run for the optimizer — the subjective reward the proposer optimizes. Use the TARGET blueprint's gym.rubric so a coding vs research target is judged on its own dimensions.",
         "notWhen": "Deterministic guardrails (regressions, planted-bug) — that is gym:signals, which the optimizer cannot game. Literal spec conformance — that is the target harness's own validator.",
         "chaining": "gym runner → collect+distill trace → gym:judge (rubric from target) → proposer reflects on the rationale."
+      }
+    },
+    {
+      "name": "gym:set-gates",
+      "http": {
+        "path": "/api/agent-tools/gym/set-gates",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set a harness's gym promotion gates: epsilon / delta (accept margins) + costCeiling (max cost multiple of baseline a champion may promote at). Default 0.1 / 0.5 / 3. The gym loop is human-gated, so these only steer its ADVISORY verdict. set is audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Tune a harness's gym accept strictness — raise epsilon/delta to demand a bigger measured win before a champion is flagged promotable, or raise costCeiling to tolerate a costlier champion.",
+        "notWhen": "To accept/reject a specific proposal use gym:accept (human gate). Judge WEIGHTS live in the blueprint gym rubric, not here. To arm the gym loop itself, see the gym autoloop config.",
+        "chaining": "config:list-overrides shows active per-harness gate overrides; config:reset-overrides reverts them."
       }
     },
     {
@@ -5148,7 +5916,7 @@
           "POST"
         ]
       },
-      "description": "Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding` blueprint override; validates it; then creates the harness via harness:create. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation}.",
+      "description": "Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding-factory` blueprint override; validates it; then creates the harness via harness:create. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation}.",
       "capabilities": [
         "harness:write"
       ],
@@ -5355,6 +6123,40 @@
       "guidance": {
         "when": "Once per workspace after the config.json→PG cutover, to lift any pre-existing harness config.json instance content into the registry. Safe to re-run (idempotent).",
         "notWhen": "Routine operation — this is a one-time backfill. New harnesses persist instance config to PG directly; nothing reads config.json on the live path."
+      }
+    },
+    {
+      "name": "harness:overview",
+      "http": {
+        "path": "/api/agent-tools/harness/overview",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "One 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:list / harness:status / issues:list / harness:escalation in ONE round-trip instead of four.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Answering \"what's the state of X\" / \"what's going on\" — pass `harness` for one harness's status + escalations + open issues, or omit it for the harness index + open issues, in one round-trip instead of harness:list + harness:status + issues:list + harness:escalation.",
+        "notWhen": "You need one harness in full detail (harness:status / harness:get), one issue (issues:get), or a topic-filtered issue sweep (issues:list { topic }). Do NOT call it in a loop over every harness — pass the one slug you care about.",
+        "chaining": "Bundles: harness:status + harness:escalation [+ harness:list] + issues:list — prefer this over calling them separately. → issues:get / issues:claim a problem it surfaces."
       }
     },
     {
@@ -5611,6 +6413,40 @@
       }
     },
     {
+      "name": "hive:add-member",
+      "http": {
+        "path": "/api/agent-tools/hive/add-member",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Wire an existing harness in as a MEMBER of a local Hive (sets its hive_slug so its work federates within the Hive and surfaces in the Queen's member-scoped hive:survey). Registry edit only — never moves the harness folder or run data; best-effort seeds the member's git-sync routine. Idempotent (re-adding is a no-op success). Use this to remediate a member-less Hive whose Queen surveys workspace-wide and escalates out-of-scope debris.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A Hive has no members so hive:survey falls back to workspace-wide scope (frontier empty / Queen-unresolvable escalations) — wire the real harness in. Also the producer for shared-hive federation membership.",
+        "notWhen": "Adding a person/device to a Hive (that is admission, a separate concern). Removing a member (re-point via the registry / hive:leave for a joined remote hive). Nesting a Hive home as a member (rejected — Hives compose as peers).",
+        "chaining": "hive:list / hive:get to find the Hive home + the member slug → hive:add-member → hive:start (or hive:wake) so the Queen surveys the now-scoped frontier → hive:survey to confirm members[] is non-empty + scope is hive-local."
+      }
+    },
+    {
       "name": "hive:ask",
       "http": {
         "path": "/api/agent-tools/hive/ask",
@@ -5679,6 +6515,30 @@
       }
     },
     {
+      "name": "hive:ban_member",
+      "http": {
+        "path": "/api/agent-tools/hive/ban_member",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "OWNER bans a member for repeat abuse: records the ban in the owner-signed policy (denies re-join, keyed on the stable github id) AND revokes their devices (write-block now; a READ cut-off at the next C-001 re-key epoch). Pass unban:true to lift. Requires holding the Hive key. revoke:false bans (policy-only) without revoking.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A member is a confirmed repeat abuser (see hive:moderation_queue) and you (the owner) want them removed AND unable to re-join.",
+        "notWhen": "Hiding one piece of content — that is hive:takedown. Revoking your OWN device — substrate:revoke_self_device.",
+        "chaining": "hive:moderation_queue → hive:ban_member → hive:moderation_resolve (mark actioned). The read cut-off completes when the C-001 re-key op-path lands."
+      }
+    },
+    {
       "name": "hive:beacon_consent",
       "http": {
         "path": "/api/agent-tools/hive/beacon_consent",
@@ -5710,6 +6570,37 @@
         "when": "Enabling, disabling, or checking this Hive's status-beacon publishing — the same consent the desktop publish-flow asks for, managed from the agent surface. Pass consent:true to opt a published hive into the beacon, consent:false to withdraw it, or omit consent to read the current value.",
         "notWhen": "Directory visibility (public/invite/private) — that's discovery:set_hive. Cross-Hive ask/work-request grants — hive:cross_grant. Within-Hive coordination — coord:* / topics.",
         "chaining": "discovery:set_hive { visibility:'public' } (make the hive discoverable) → hive:beacon_consent { hive, consent:true } (opt the now-public hive into the live beacon)."
+      }
+    },
+    {
+      "name": "hive:control_policy",
+      "http": {
+        "path": "/api/agent-tools/hive/control_policy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the hive placement-watchdog thresholds: breakerThreshold (failed placements → cursed-item breaker), recoveryDebounceMs (min gap between recovery wakes for one stalled unit), dormancyGraceMs (post-dormancy recovery-sweep grace), infraBreakerThreshold (bounded infra-loss breaker). Replaces the PAPERCUSP_HIVE_PLACEMENT_* env gates; set is audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Tune the placement watchdog live — e.g. raise breakerThreshold to give a flapping unit more recovery attempts before cursing it, or shorten recoveryDebounceMs to re-place stalled work faster during an incident.",
+        "notWhen": "For placement AFFINITY weights use hive:set-steering (D-005). For stale-claim reclaim use work_items:reclaim_config; for session reaping use coord:session_reaper_config.",
+        "chaining": "config:list-overrides shows the active override; config:reset-overrides reverts it."
       }
     },
     {
@@ -5754,7 +6645,7 @@
           "POST"
         ]
       },
-      "description": "Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish per visibility (public = P2P directory + Cupboard; invite = secret topic only; private = zero external writes). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.",
+      "description": "Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.",
       "capabilities": [
         "harness:write"
       ],
@@ -6018,6 +6909,122 @@
       }
     },
     {
+      "name": "hive:membership_decide",
+      "http": {
+        "path": "/api/agent-tools/hive/membership_decide",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "OWNER decision on a pending-join request: approve (trust-admit the joiner + their captured devices) or deny (never admitted). Requires this Swarm to hold the Hive key (the owning Swarm). The approval flips a pending joiner into the trust set and federates; a denial is final until the owner approves later.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A joiner is pending under approval-mode membership (see hive:membership_pending) and you (the owner) want to admit or reject them.",
+        "notWhen": "Banning an already-admitted member for abuse — use hive:ban_member (revoke + re-key teeth). Setting the membership mode itself — that is hive policy.",
+        "chaining": "hive:membership_pending (review the queue) → hive:membership_decide (per joiner)."
+      }
+    },
+    {
+      "name": "hive:membership_pending",
+      "http": {
+        "path": "/api/agent-tools/hive/membership_pending",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List a Hive's pending-join requests (the approval-mode admission queue). Under membership:'approval' a joiner stays pending until the owner approves; this is the owner's review queue. Read-only — decide with hive:membership_decide.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The Hive's membership policy is 'approval' and you (the owner) want to see who's waiting to join. Pair with hive:membership_decide to approve/deny.",
+        "notWhen": "For the trust roster (already-admitted members) use hive:get / harness:membership. Setting the membership MODE is hive policy (the policy authoring surface), not this.",
+        "chaining": "hive:membership_pending (review) → hive:membership_decide (approve/deny each)."
+      }
+    },
+    {
+      "name": "hive:moderation_queue",
+      "http": {
+        "path": "/api/agent-tools/hive/moderation_queue",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The owner's moderation queue — list member-filed reports for a Hive (default the open ones). Read-only. Act on a report with hive:moderation_resolve (action/dismiss), hive:takedown (hide content), or hive:ban_member.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You (the owner) want to review reports members filed via hive:report.",
+        "notWhen": "Filing a report (that is hive:report, member-side).",
+        "chaining": "hive:moderation_queue → hive:takedown / hive:ban_member / hive:moderation_resolve."
+      }
+    },
+    {
+      "name": "hive:moderation_resolve",
+      "http": {
+        "path": "/api/agent-tools/hive/moderation_resolve",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "OWNER resolves a moderation report: 'actioned' (you took action — e.g. a takedown/ban) or 'dismissed' (no action). Federates the resolution back. Requires holding the Hive key. Does NOT itself hide content or ban — use hive:takedown / hive:ban_member for that.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You reviewed a report (hive:moderation_queue) and want to mark it resolved.",
+        "notWhen": "You want to actually hide content (hive:takedown) or ban a member (hive:ban_member) — do that first, then resolve.",
+        "chaining": "hive:moderation_queue → (hive:takedown / hive:ban_member) → hive:moderation_resolve."
+      }
+    },
+    {
       "name": "hive:pause",
       "http": {
         "path": "/api/agent-tools/hive/pause",
@@ -6086,6 +7093,40 @@
       }
     },
     {
+      "name": "hive:report",
+      "http": {
+        "path": "/api/agent-tools/hive/report",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "File a moderation report against content or a member in a Hive. The report federates to the owner's moderation queue. Requires the owner to have enabled reporting (moderation.reportable in the Hive policy); otherwise reporting is off and this no-ops.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are a member of a Hive with reporting enabled and want to flag abusive content or a member to the owner.",
+        "notWhen": "You ARE the owner taking action — use hive:takedown (hide content) / hive:ban_member (ban a member). Reporting is the member→owner signal, not the owner action.",
+        "chaining": "hive:report (member flags) → owner reviews hive:moderation_queue → hive:moderation_resolve / hive:takedown / hive:ban_member."
+      }
+    },
+    {
       "name": "hive:request_work",
       "http": {
         "path": "/api/agent-tools/hive/request_work",
@@ -6127,7 +7168,7 @@
           "POST"
         ]
       },
-      "description": "Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` (the plans she may pick up NOW — eligibility, DISTINCT from a plan's lifecycle status), `eligibleHives` (the placement SCOPE — hives/harnesses she may place into, → survey allowedHarnesses), `pauseNewWork` / `pausedUntil` (pause starting new work, immediately or until an epoch-ms timestamp). Writes the owner-steering:* hive_settings, refreshes the panel (sync), AND wakes the Queen so she honours the change immediately. `clear:true` wipes ALL steering back to the default (no restriction); omitted fields are left unchanged (a null/[] value clears that one field).",
+      "description": "Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` / `eligibleHives` (what she may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, and the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxBees`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`) — each a SESSION override of a live operator seam. Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Queen so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.",
       "capabilities": [
         "harness:write"
       ],
@@ -6252,6 +7293,30 @@
         "when": "You are the Queen starting a placement wake — survey what to work on next (which plan matters, which ready items to place) across all member harnesses.",
         "notWhen": "You already hold a specific work-item id and just need to place it — go straight to fleet:spawn / the batch placement.",
         "chaining": "hive:survey → place the top frontier items (fleet:spawn / batch placement) and steer plan order (work_items:set_priority / plans:set-priority); hive:status to inspect the wake declaration."
+      }
+    },
+    {
+      "name": "hive:takedown",
+      "http": {
+        "path": "/api/agent-tools/hive/takedown",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "OWNER takedown: hide a piece of content across the Hive by adding its ref to the owner-signed moderation.takedownList (re-signed + federated; honest peers honor it as a tombstone, no resurrection). Pass restore:true to un-hide. Requires holding the Hive key.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A member reported content (hive:moderation_queue) that you (the owner) want hidden on every honest peer.",
+        "notWhen": "Banning the AUTHOR for repeat abuse — that is hive:ban_member (revoke + re-key teeth). Takedown hides content; ban removes a member.",
+        "chaining": "hive:moderation_queue → hive:takedown (hide) → hive:moderation_resolve (mark actioned)."
       }
     },
     {
@@ -6422,6 +7487,40 @@
       }
     },
     {
+      "name": "improvements:keyless-digest",
+      "http": {
+        "path": "/api/agent-tools/improvements/keyless-digest",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Triage surface for KEYLESS improvement items (no payload.watchdogKey — manual / non-watchdog EIs) — the un-managed backlog that never dedups, ages, or auto-closes. Returns the keyed-vs-keyless headline split, age-band rollup (fresh < 7d · aging 7–30d · stale ≥ 30d), and the review queue (keyless EIs ≥ 7d, oldest-first) with a per-item disposition (claim-or-close / follow-up-owner). Read-only — closes nothing; surfaces the pile so a human/Queen can drain it (P-014).",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To see and triage the un-managed backlog — the keyless EIs that the watchdog lifecycle (dedup/aging/auto-close) cannot touch because they carry no watchdogKey. Use it as the periodic keyless human-review digest: drain the stale-review queue (claim, close if obsolete, or convert a recurring one to a keyed form).",
+        "notWhen": "You want watchdog/auto-implement health — improvements:watchdog-status. You want the full captured (keyed) backlog triage — improvements:digest. You want one item — issues:get.",
+        "chaining": "improvements:keyless-digest → for each review item: issues:claim (take it), issues:close (obsolete), or re-file via improvements:capture with a stable key if it is a recurring signal. improvements:watchdog-status surfaces the same keyless headline split."
+      }
+    },
+    {
       "name": "improvements:learning_loops",
       "http": {
         "path": "/api/agent-tools/improvements/learning_loops",
@@ -6487,6 +7586,68 @@
         "when": "You finished working a dispatched/claimed improvement (usually as the implement worker). Fixed + tests green → outcome fixed with the evidence. Could not make it work → could-not-fix with what you tried. The fix would touch a protected surface (operator-core safety / deploy machinery / a migration) or needs judgment → needs-human.",
         "notWhen": "You only want to comment progress — issues:comment. You are closing a non-improvement issue — issues:close. The item was never captured (no EI/WI id) — improvements:capture it first if it is worth tracking.",
         "chaining": "improvements:digest → (dispatch/claim) → implement + test → improvements:resolve { id, outcome, summary, testsRun }."
+      }
+    },
+    {
+      "name": "improvements:set-auto-policy",
+      "http": {
+        "path": "/api/agent-tools/improvements/set-auto-policy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the auto-implement risk policy: autoKinds (the bug→change→feature graduation dial), maxPerRun / maxAttempts (dispatch ceilings), and TIGHTEN-ONLY protected-path/keyword additions (the baked TCB floor is unioned + never removable — no remove op by design, D-002). Inert until the IMPROVEMENT_AUTO_IMPLEMENT flag is armed; audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Graduate the auto-implement lane (widen autoKinds as trust is earned), tune the dispatch rate (maxPerRun/maxAttempts), or ADD a path/keyword to the never-auto protected set — live, no redeploy.",
+        "notWhen": "To REMOVE a baked protection (impossible by design — D-002 tighten-only). To arm auto-implement itself, flip FLAGS.IMPROVEMENT_AUTO_IMPLEMENT via /admin/features (this only configures the policy). To triage the queue, use improvements:digest.",
+        "chaining": "improvements:digest shows the auto/human partition under the current policy; config:list-overrides shows the active override; config:reset-overrides reverts it."
+      }
+    },
+    {
+      "name": "improvements:set-watchdog-tunables",
+      "http": {
+        "path": "/api/agent-tools/improvements/set-watchdog-tunables",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Live-tune the improvement-watchdog's collector bars + per-tick caps (its payload_template tunables) without a deploy. `get` reads the current standing tunables; `set` merges a patch through the control harness (dryRun preview, post-apply verify+auto-revert, audit, one-call revert). Keys are the watchdog PAYLOAD_TUNABLE_KEYS (e.g. transientMinCount, maxPerTick, structuralMinRate).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A watchdog collector is too noisy or too quiet on a running fleet (e.g. raise transientMinCount during a flaky-infra window, or lower a min-count to capture more) and you want to retune it live instead of poking the routine payload by hand or editing code.",
+        "notWhen": "To turn the watchdog on/off (flip its routine `active` — autoloop/routine control). To READ what it last captured, use improvements:watchdog-status. This tool tunes the payload layer; the maxPerTick env override still wins at tick time.",
+        "chaining": "improvements:watchdog-status to see current capture behavior; set with dryRun:true to preview the proposed-vs-current diff before applying."
       }
     },
     {
@@ -6757,7 +7918,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You are about to start work on an issue — claim it first so two agents do not duplicate the fix.",
-        "notWhen": "Just reading/triaging (no claim needed). To drop a claim, issues:release.",
+        "notWhen": "Just reading/triaging (no claim needed). To drop a claim, issues:release. A `claim_conflict` means a LIVE peer already holds it — coordinate with the `holder` (coord:send), do not blind-retry.",
         "chaining": "issues:list → issues:claim → (fix) → issues:close / issues:promote."
       }
     },
@@ -7747,6 +8908,108 @@
       }
     },
     {
+      "name": "loop:arm",
+      "http": {
+        "path": "/api/agent-tools/loop/arm",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Arm an engine-managed LOOP on your own session — the tracked replacement for Claude /loop. Each fire re-wakes THIS warm session ~intervalSec after your previous turn SETTLES (a warm coord wake, not a fresh run), so your context carries across iterations. The loop survives restarts, is observable (loop:status / fleet:assignments / fire-history), and inherits guardrails (failure-streak fire-gate + an optional cost-cap). End it with loop:end.",
+      "capabilities": [
+        "routines:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You (an su/interactive agent working directly with a user) agree to \"put this on a loop\" — keep advancing a plan/goal WARM on a recurring cadence. Arm it as the LAST thing before you end your turn.",
+        "notWhen": "Wall-clock recurrence (a fixed time each day) — that is a SCHEDULE (plans:set-schedule). A single future wake — events:await / a one-shot. The autonomous queen/bee/scout loop — that is its OWN system (hive:declare-wake / overwatch:declare-wake); never loop:arm from an autonomous-fleet agent. Do NOT self-pace with Claude's native /loop — declare an engine loop here instead (it is tracked + pauseable).",
+        "chaining": "loop:arm { intervalSec, goal, costCapCents? } → end your turn → the engine re-wakes you each iteration with the wakeup prompt (create + self-assign your work_items, work them, set_state) → loop:end to stop. loop:status to inspect."
+      }
+    },
+    {
+      "name": "loop:end",
+      "http": {
+        "path": "/api/agent-tools/loop/end",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "End the loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); re-arm anytime with loop:arm.",
+      "capabilities": [
+        "routines:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Better to loop:end than burn empty wakes spinning.",
+        "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is hive:pause.",
+        "chaining": "loop:arm to start; loop:status to check; loop:end to stop."
+      }
+    },
+    {
+      "name": "loop:status",
+      "http": {
+        "path": "/api/agent-tools/loop/status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Inspect the loop on your own session (or another owner's, with `ownerId`): active?, interval, parked (turn in flight), next/last fire, cost-cap. Returns null when no loop exists for the owner.",
+      "capabilities": [
+        "routines:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Check whether your loop is still armed + when it next fires, or inspect another agent's loop.",
+        "notWhen": "See the WORK a loop is producing — that is fleet:assignments (the self-assigned work_items). Whole-engine health — autoloop:status.",
+        "chaining": "loop:arm to start; loop:end to stop."
+      }
+    },
+    {
       "name": "memory:forget",
       "http": {
         "path": "/api/agent-tools/memory/forget",
@@ -7824,13 +9087,13 @@
           "POST"
         ]
       },
-      "description": "Replace the content of a memory entry while preserving its id and metadata.",
+      "description": "Edit a memory entry: replace its content and/or patch its metadata (kind, workspaceId, scope/recall-pool) — preserving its id. Metadata patches are vec-safe (no re-embed).",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "When the user corrects something you previously stored (\"actually it's Daniel, not Dan\"). Find the entry id via memory:search or memory:list first, then call this with the corrected content. Inform the user (\"Updating my memory: …\").",
-        "notWhen": "To REMOVE a memory entirely, use memory:forget. To add a NEW memory without replacing one, use memory:remember."
+        "when": "CONTENT: when the user corrects something you stored (\"actually it's Daniel, not Dan\") — pass `content`. METADATA HYGIENE: to re-tag a memory's `kind`, fix its `workspaceId`, or move it to the right recall `scope`/pool, pass those fields (no content needed). Find the id via memory:search / memory:list first. For a content edit, tell the user (\"Updating my memory: …\").",
+        "notWhen": "To REMOVE a memory entirely, use memory:forget. To ADD a new memory, use memory:remember. Do not change `scope` casually — it moves which queries can recall the memory."
       }
     },
     {
@@ -8157,7 +9420,8 @@
         "operator:converse"
       ],
       "agentRoles": [
-        "operator"
+        "operator",
+        "sentinel"
       ],
       "profile": "engineer"
     },
@@ -8250,23 +9514,6 @@
         "when": "Check whether a suggestion / scan candidate duplicates a recent one before committing it to the panel.",
         "notWhen": "For listing existing scans, use `operator:scans_list`."
       }
-    },
-    {
-      "name": "operator:delegate",
-      "http": {
-        "path": "/api/agent-tools/operator/delegate",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Delegate-to-claude streaming chat. Records the task as a work_item (kind=task), resolves session, builds MCP config, spawns claude with session resume + MCP tools; emits session→deltas→tool_calls→done. Thin sugar over work_items: writes the turn as a work_item thread comment (→ subscribe→inject to the operator) + a generated title.",
-      "capabilities": [
-        "operator:delegate"
-      ],
-      "agentRoles": [
-        "operator"
-      ],
-      "profile": "engineer"
     },
     {
       "name": "operator:multi_workspace",
@@ -9316,6 +10563,36 @@
       }
     },
     {
+      "name": "plans:arm-schedule",
+      "http": {
+        "path": "/api/agent-tools/plans/arm-schedule",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Arm a scheduled plan so it starts firing runs on its cadence (materializes its routine + sets schedule_active). Authoring (plans:set-schedule) does not arm; this does. Autonomy-gated (schedule-arm category): the Queen escalates unless graduated; the owner arms directly.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Activating a plan you already scheduled (plans:set-schedule) so it begins firing runs.",
+        "notWhen": "Authoring/editing the cadence (plans:set-schedule). Firing one run by hand (plans:run-now).",
+        "chaining": "plans:set-schedule → plans:arm-schedule → the routine fires system:plan-run on cadence. plans:disarm-schedule stops it."
+      }
+    },
+    {
       "name": "plans:attention",
       "http": {
         "path": "/api/agent-tools/plans/attention",
@@ -9337,7 +10614,8 @@
         "operator",
         "queen",
         "documenter",
-        "curator"
+        "curator",
+        "sentinel"
       ],
       "guidance": {
         "when": "You want everything awaiting the human / pickable, in one importance-sorted feed — the Planning tab inbox, or to find the single most-urgent open thing.",
@@ -9374,6 +10652,36 @@
         "when": "Once, after the revision spine ships, to give existing plans a history before their first live write — or to seed a single plan whose spine was never populated.",
         "notWhen": "Routine use. The spine is maintained automatically by every plans:* write verb; this is a migration, not an everyday tool.",
         "chaining": "plans:backfill-revisions → plans:revisions to confirm the chain."
+      }
+    },
+    {
+      "name": "plans:disarm-schedule",
+      "http": {
+        "path": "/api/agent-tools/plans/disarm-schedule",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Disarm (pause) a scheduled plan so it stops firing runs — sets schedule_active=false + deactivates its routine. The authored schedule is kept; plans:arm-schedule re-arms it.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Pausing a scheduled plan so it stops firing, without discarding its schedule.",
+        "notWhen": "Permanently removing the schedule — use plans:set-schedule { schedule: null }.",
+        "chaining": "plans:disarm-schedule (pause) ↔ plans:arm-schedule (resume)."
       }
     },
     {
@@ -9470,6 +10778,68 @@
       }
     },
     {
+      "name": "plans:get-item",
+      "http": {
+        "path": "/api/agent-tools/plans/get-item",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read ONE plan item (P-NNN) — its text, storedStatus + resolved effectiveStatus, importance, phase, blockedBy, and any blocking engineer-issues — from the PG-canonical structured index, WITHOUT loading + parsing the whole plan. The single-item read the surface lacked (vs plans:get the whole doc, or plans:items cross-plan).",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Inspecting one specific P-NNN (its status / blockers / phase / importance) without pulling the whole plan. The targeted read between plans:items (many) and plans:get (the whole plan).",
+        "notWhen": "You need the whole plan (Now / decisions / prose) — plans:get. Many items by status — plans:items.",
+        "chaining": "plans:get-item { slug, itemId } → plans:set-status / plans:set-item-blocked-by / plans:set-item-phase to act on it."
+      }
+    },
+    {
+      "name": "plans:get-template-data",
+      "http": {
+        "path": "/api/agent-tools/plans/get-template-data",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a plan's template TYPE + its STRUCTURED instance data (the `template_data` jsonb) — the structured read complement of plans:set-template-data, without parsing the markdown. Returns { template, templateData, version }; templateData is null until set. Read-only.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Reading a template-instance plan's structured data (e.g. a rubric instance's fields) to consume it programmatically — never scrape it out of the markdown.",
+        "notWhen": "You need the whole plan (Now / items / decisions / prose) — plans:get. Writing the data — plans:set-template-data. Listing plans of a template type — plans:list { template }.",
+        "chaining": "plans:get-template-data { slug } → plans:set-template-data { slug, data } to update it."
+      }
+    },
+    {
       "name": "plans:items",
       "http": {
         "path": "/api/agent-tools/plans/items",
@@ -9540,7 +10910,7 @@
           "POST"
         ]
       },
-      "description": "Validate plan files. Legacy plans are exempt. Returns errors + warnings per plan. CI should fail on any error; warnings are informational.",
+      "description": "Validate plan files. Legacy plans are exempt. CI should fail on any error; warnings are informational. With a `slug`: the full single report (errors + warnings). Without a slug: a BOUNDED summary across all plans (totals + per-code rollups + per-plan finding counts, with errors inlined) — warnings are collapsed to counts so the result never blows the agent size cap. Pass `full: true` for the complete per-plan dump (HTTP-safe; may overflow an agent caller on a large workspace).",
       "capabilities": [
         "plans:read"
       ],
@@ -9559,7 +10929,7 @@
       "guidance": {
         "when": "You're editing a plan and want to verify it parses cleanly, or you're running the doc-tree health check.",
         "notWhen": "You just want to read plans — use plans:list/get.",
-        "chaining": "plans:lint → plans:get { slug } for the failing plan to see context."
+        "chaining": "All-plans summary flags a plan with errors → plans:lint { slug } for its full findings → plans:get { slug } for context."
       }
     },
     {
@@ -9588,8 +10958,8 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You need a directory of plans — \"what plans exist\", \"what plans are active\", or the entry point before plans:get.",
-        "notWhen": "You already know the plan slug and want full contents — call plans:get directly.",
+        "when": "A directory of plans — \"what plans exist / are active\", or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or \"4d\") + order:\"updated\" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For a fast scan that skips item-count resolution, add compact:true.",
+        "notWhen": "You already know the plan slug and want full contents — call plans:get directly. For an ad-hoc/aggregate query no arg here exposes (group-by, joins), use dev:pg_query.",
         "chaining": "plans:list → plans:get { slug } (full plan) or plans:items { actionable: true } (pickable items across plans)."
       }
     },
@@ -9813,6 +11183,36 @@
       }
     },
     {
+      "name": "plans:run-now",
+      "http": {
+        "path": "/api/agent-tools/plans/run-now",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Fire one run of a scheduled plan immediately (a manual run), independent of its cadence — mints an instance plan + plan_runs row + run-scoped work items, like a scheduled fire.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Manually triggering a run of a scheduled plan now — testing the schedule, or an out-of-band run.",
+        "notWhen": "Changing the cadence (plans:set-schedule). Launching a plan as an interactive chat session (plans:launch).",
+        "chaining": "plans:set-schedule (author) → plans:run-now (fire one) → plans:runs (inspect the runs)."
+      }
+    },
+    {
       "name": "plans:run-transcript",
       "http": {
         "path": "/api/agent-tools/plans/run-transcript",
@@ -9966,6 +11366,37 @@
       }
     },
     {
+      "name": "plans:set-decision-body",
+      "http": {
+        "path": "/api/agent-tools/plans/set-decision-body",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Replace an existing decision's body — preserves the `### D-NNN — title` head and the `Date:` line, replaces everything else with the new body. Inside the plan lock, records a revision. The structured editor decisions lacked (plans:add-decision could only append; editing meant a plans:edit string-replace).",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "A decision's body needs revising — a correction, a clarification, an added caveat — keeping its id, title, and date. The structured alternative to a plans:edit on the decision block.",
+        "notWhen": "Recording a NEW decision (plans:add-decision). Changing a decision title (plans:edit — title lives on the head line). A whole-document rewrite (plans:set-content).",
+        "chaining": "plans:get (the decision body) → plans:set-decision-body → plans:get to confirm."
+      }
+    },
+    {
       "name": "plans:set-frontmatter",
       "http": {
         "path": "/api/agent-tools/plans/set-frontmatter",
@@ -9994,6 +11425,37 @@
         "when": "Promoting a legacy plan — one with no/malformed frontmatter — to a tracked plan, e.g. from the Plans admin tab triage screen.",
         "notWhen": "Editing a plan that already has valid frontmatter — that would clobber keys this verb does not model; use plans:set-content for a deliberate raw edit. Routine status flips on items use plans:set-status.",
         "chaining": "plans:list (isLegacy: true rows) → plans:set-frontmatter per plan → plans:get to confirm."
+      }
+    },
+    {
+      "name": "plans:set-frontmatter-field",
+      "http": {
+        "path": "/api/agent-tools/plans/set-frontmatter-field",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set or clear an ARBITRARY plan frontmatter key (e.g. `template`) — surgical (other keys preserved), inside the plan lock, records a revision + refreshes the plans list. The generic setter custom fields lacked (vs a raw plans:edit string-replace). Pass value:null to clear. RESERVED keys (slug/title/status/created/updated/owner/co_owners/initiative) are rejected with a pointer to their dedicated setter. Refuses a legacy plan — convert with plans:set-frontmatter first.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Setting a custom/template frontmatter field that has no dedicated setter (e.g. template:rubric) — the structured alternative to a plans:edit string-replace on the frontmatter.",
+        "notWhen": "A reserved/managed key — use its dedicated setter (status→plans:set-plan-status, owner/co_owners→plans:transfer-owner, initiative→plans:set-initiative, slug/title/created→plans:set-frontmatter). A whole-document edit — plans:set-content. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter.",
+        "chaining": "plans:get (mode:meta) to see current frontmatter → plans:set-frontmatter-field → plans:get to confirm."
       }
     },
     {
@@ -10059,6 +11521,68 @@
       }
     },
     {
+      "name": "plans:set-item-blocked-by",
+      "http": {
+        "path": "/api/agent-tools/plans/set-item-blocked-by",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set or clear an item's `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. The structured setter the surface lacked (vs a plans:edit string-replace).",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "An item's dependencies change — a new prerequisite surfaced, or a blocker cleared (blockedBy:[] to un-block). The structured alternative to a plans:edit on the item line.",
+        "notWhen": "Flipping lifecycle status (plans:set-status) or importance (plans:set-importance). Moving an item to another phase (plans:set-item-phase).",
+        "chaining": "plans:get-item { slug, itemId } to see current blockers → plans:set-item-blocked-by."
+      }
+    },
+    {
+      "name": "plans:set-item-phase",
+      "http": {
+        "path": "/api/agent-tools/plans/set-item-phase",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Move an item to a different phase — relocates the whole item line under the target `## Phase …` heading (an item's phase is positional, not an inline keyword), every token preserved. Creates the phase section if it doesn't exist. No-op when already there. Inside the plan lock, records a revision. The structured move vs a plans:edit cut-and-paste.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "An item belongs under a different phase — re-sequencing work across phases, or correcting a mis-placed item. The structured alternative to manually cutting + pasting the line with plans:edit.",
+        "notWhen": "Adding a NEW item (plans:add-item — it takes the phase directly). Changing status/importance/blockers (their dedicated setters). Renaming a phase heading itself (plans:edit / plans:set-content).",
+        "chaining": "plans:get-item { slug, itemId } to see the current phase → plans:set-item-phase."
+      }
+    },
+    {
       "name": "plans:set-now",
       "http": {
         "path": "/api/agent-tools/plans/set-now",
@@ -10066,7 +11590,7 @@
           "POST"
         ]
       },
-      "description": "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field. Auto-bumps frontmatter updated:.",
+      "description": "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (trim hard; long-form backlog/history/design detail belongs in the plan body via plans:set-content / set-content-chunk, not the Now block). Auto-bumps frontmatter updated:.",
       "capabilities": [
         "plans:write"
       ],
@@ -10086,7 +11610,7 @@
       "guidance": {
         "when": "Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.",
         "notWhen": "Per-item flip — that's plans:set-status. Or a decision — that's plans:add-decision.",
-        "chaining": "plans:set-status to flip current item → plans:set-now reflecting the new state."
+        "chaining": "plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — if either overflows, trim it and offload the detail to plans:set-content / set-content-chunk rather than retrying a too-long Now."
       }
     },
     {
@@ -10097,7 +11621,7 @@
           "POST"
         ]
       },
-      "description": "Flip a plan's lifecycle status (draft→ready approve, ready→draft demote, →shipped, →superseded reject). Plan-level frontmatter, not an item's status. Auto-bumps updated:.",
+      "description": "Flip a plan's lifecycle status (draft→ready approve, ready→draft demote, →shipped, →superseded reject). Plan-level frontmatter, not an item's status. Also the Queen↔Scout DEPRECATE handler: pass `learnings` with status='superseded' to also emit a salvage observation into Scout's digest (no dead ends) — see guidance.",
       "capabilities": [
         "plans:write"
       ],
@@ -10115,9 +11639,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded).",
-        "notWhen": "Flipping a P-NNN item's status — use plans:set-status. Converting a legacy plan that has no valid frontmatter — use plans:set-frontmatter first (this verb refuses it with no_status_line).",
-        "chaining": "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. Approving is optional before plans:start — starting a draft auto-approves it (draft→ready)."
+        "when": "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded). DEPRECATING a Queen↔Scout draft that won't reach ready: status='superseded' + `learnings:{tried,stalled,salvageable}` — one atomic call deprecates AND records the salvage observation (don't file a separate improvements:capture).",
+        "notWhen": "Flipping a P-NNN item's status — use plans:set-status. Converting a legacy plan that has no valid frontmatter — use plans:set-frontmatter first (this verb refuses it with no_status_line). `learnings` on a non-superseded status is ignored (it is a deprecate-only field).",
+        "chaining": "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. Approving is optional before plans:start — starting a draft auto-approves it (draft→ready). Deprecate: plans:set-plan-status { slug, status:'superseded', learnings:{…} } → the returned learningsObservation reports the emitted observation."
       }
     },
     {
@@ -10183,6 +11707,36 @@
       }
     },
     {
+      "name": "plans:set-schedule",
+      "http": {
+        "path": "/api/agent-tools/plans/set-schedule",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Author or clear a plan's schedule — make it recurring (RRULE or cron), one-shot (scheduledAt), and/or give it an expiry. Validates the RRULE. Does NOT arm it (arming is the autonomy-gated flow); pass schedule:null to un-schedule.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Turning a plan into a scheduled/recurring one, editing its cadence/expiry, or clearing its schedule.",
+        "notWhen": "Arming a saved schedule so it starts firing — that is the autonomy-gated arm step, not authoring. Flipping plan/item status uses plans:set-plan-status / plans:set-status.",
+        "chaining": "plans:set-schedule → (arm, autonomy-gated) → the routines engine fires system:plan-run; plans:run-now to fire one manually."
+      }
+    },
+    {
       "name": "plans:set-status",
       "http": {
         "path": "/api/agent-tools/plans/set-status",
@@ -10190,7 +11744,7 @@
           "POST"
         ]
       },
-      "description": "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); flipping to done/dropped releases your claim.",
+      "description": "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); flipping to done/dropped releases your claim AND clears the item's assignment (a finished item is held + assigned by no one).",
       "capabilities": [
         "plans:write"
       ],
@@ -10211,6 +11765,37 @@
         "when": "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked).",
         "notWhen": "You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.",
         "chaining": "plans:items { actionable: true } → plans:set-status { itemId, status: \"wip\" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On claim_conflict: coord:send the holder or pick another item."
+      }
+    },
+    {
+      "name": "plans:set-template-data",
+      "http": {
+        "path": "/api/agent-tools/plans/set-template-data",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Write a plan's STRUCTURED template instance data (the `template_data` jsonb), validated against its template TYPE's code-registry zod schema on write (validate-on-write). The plan must already declare a `template:` type (plans:set-frontmatter-field). Rejects fail-loud on an unknown type (no schema registered) or a schema violation — never silently strips. Advisory-locked, version-bumped, and recorded as a plan revision. Agents read/write the instance data structured here, never as markdown.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Writing/updating a template-instance plan's structured data (e.g. a rubric instance's fields) — the validated, revisioned setter for the `template_data` jsonb.",
+        "notWhen": "Declaring WHICH template type a plan is (the `template:` frontmatter) — use plans:set-frontmatter-field. Editing the plan's prose/items — plans:set-content / the assisted verbs. Reading the data back — plans:get-template-data.",
+        "chaining": "plans:set-frontmatter-field { key:\"template\", value:\"<type>\" } (declare the type) → plans:set-template-data { slug, data } → plans:get-template-data to confirm."
       }
     },
     {
@@ -10341,6 +11926,40 @@
       }
     },
     {
+      "name": "platform:dogfood_verify",
+      "http": {
+        "path": "/api/agent-tools/platform/dogfood_verify",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Assert the internal fork→PR dogfood loop round-tripped for a contributed PR: reads the WI↔PR producer row, the agent-review report, the merged state, and the completion_ref ship-stamp, and returns {ok, stages, featureId, gaps}. `ok` is true iff every required leg (prTracked, merged, shipped, linked) passed; the agent-review leg is optional. Read-only.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "After a member fork→PR contribution (platform:contribute) has been reviewed + merged, to confirm the whole loop closed — the WI shows shipped + linked PR. The brief's Done check.",
+        "notWhen": "Opening the PR — platform:contribute. Listing PRs — the PRs tab. Tidying forks — platform:fork_gc.",
+        "chaining": "platform:enable → platform:contribute {kind:'pr'} → (the system:pr-poll daemon reviews/merges) → platform:dogfood_verify { prUrl } to assert ok:true."
+      }
+    },
+    {
       "name": "platform:enable",
       "http": {
         "path": "/api/agent-tools/platform/enable",
@@ -10372,6 +11991,40 @@
         "when": "The user explicitly opts into platform mode / \"Papercusp inside Papercusp\" / wants this install to improve Papercusp-the-platform itself (layer 3). One call stands up the self-hive + arms the loops.",
         "notWhen": "Onboarding an ARBITRARY repo as a hive — hive:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a learning-pack) — platform:contribute (the separate, gated path).",
         "chaining": "platform:enable → improvements:learning_loops to see the armed (dark) layer-3 loops → arm the watchdog via the routines admin → platform:contribute to send an improvement upstream."
+      }
+    },
+    {
+      "name": "platform:fork_gc",
+      "http": {
+        "path": "/api/agent-tools/platform/fork_gc",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Collect ABANDONED contribution forks under the operator's account (the fork→PR path forks the upstream and never tears it down). KEEP-on-merge + stale-fork GC: never deletes an active fork (open PR) or a recently-pushed one, never another account's repo. DRY RUN by default — pass confirm:true to actually delete (needs the gh delete_repo scope). Root-only. Returns {ok, dryRun, evaluations, wouldCollect|collected, errors}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The operator wants to clean up dormant forks left behind by the fork→PR contribution path (e.g. after dogfooding, or on a periodic tidy). Default (no confirm) just REPORTS the abandoned forks.",
+        "notWhen": "Opening/merging a PR — that is the fork-PR hook / prs review route. Removing a hive membership — hive tooling. Deleting a repo you actively contribute to — this never collects a fork with an open PR.",
+        "chaining": "platform:fork_gc (dry-run report) → review wouldCollect → platform:fork_gc { confirm:true } to delete the abandoned forks."
       }
     },
     {
@@ -10621,6 +12274,37 @@
       }
     },
     {
+      "name": "prompt:role_override",
+      "http": {
+        "path": "/api/agent-tools/prompt/role_override",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read/set/clear a per-(harness, role) prompt override (the harness_prompt_overrides store, read live by the orchestrator; cleared ⇒ falls back to the committed repo prompt). ops: get | list | set | clear (clear with no role wipes all of the harness's overrides). set/clear are audited + one-call-revertible via the control harness.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Specialize or correct a role's prompt for a running harness without a deploy (e.g. sharpen the validator persona for this mission), or clear an override to revert to the committed default. get/list to inspect.",
+        "notWhen": "For the shared-base nudges across ALL roles (FRICTION_TRIPWIRE etc.) use P-017 prompt:set_fragment. A set REPLACES the whole role prompt for that harness; it does not merge.",
+        "chaining": "get/list first to see the current override; clear to revert to the committed prompt."
+      }
+    },
+    {
       "name": "rationale:feed",
       "http": {
         "path": "/api/agent-tools/rationale/feed",
@@ -10683,6 +12367,286 @@
       "guidance": {
         "when": "To backfill the rationale index (kind:\"all\") on a fresh DB, or force-resync one source after an out-of-band change. Routine maintenance is automatic.",
         "notWhen": "To READ the projection — that is rationale:feed."
+      }
+    },
+    {
+      "name": "recipes:candidates",
+      "http": {
+        "path": "/api/agent-tools/recipes/candidates",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Deterministic graduation worklist for code:run RECIPES: ranked PROMOTE candidates (recipes worth building into a tool, scored by run-frequency + distinct-agent reuse + success-rate + tool-set cohesion, 1-tool/duplicate ones excluded) + near-duplicate MERGE clusters. No LLM — counting only; YOU decide promote/merge. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "The Queen calls this in her cadence to find recipes worth promoting to a tool or merging. It returns deterministic signals + a rubric promotionScore per active recipe in the hive — promote a top candidate by filing a work-item (\"implement <recipe> as a defineTool\"), and review each merge cluster for consolidation into one recipe.",
+        "notWhen": "To browse or run recipes (recipes:list / recipes:search / recipes:run) — this is the graduation review, not the reuse path. It does NOT promote or merge anything itself; it surfaces candidates for you to act on via your plan/work-item system (the gate is the normal coding pipeline).",
+        "chaining": "recipes:candidates → (for a promote candidate) work_items:create \"implement <id> as a defineTool\" → (for a merge cluster) recipes:get each id to inspect, then consolidate. recipes:get { id } to read any candidate's script first."
+      }
+    },
+    {
+      "name": "recipes:get",
+      "http": {
+        "path": "/api/agent-tools/recipes/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Fetch one reusable code:run RECIPE by id — including its full script — so you can inspect what it does before recipes:run-ning it. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "When you have a recipe id (from recipes:list / recipes:search / a code:run result's similarRecipes) and want to read its script + metadata before reusing it.",
+        "notWhen": "To EXECUTE the recipe — use recipes:run (it runs the script under YOUR role-scoped envelope). To discover recipes by intent — recipes:search.",
+        "chaining": "recipes:search / recipes:list → recipes:get { id } (inspect) → recipes:run { id } (reuse)."
+      }
+    },
+    {
+      "name": "recipes:list",
+      "http": {
+        "path": "/api/agent-tools/recipes/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List reusable code:run RECIPES for your hive (most-run first). A recipe is a saved code:run script other agents authored; browse them to reuse instead of re-authoring. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Before authoring a multi-step code:run, to see what reusable recipes already exist in your hive — the hot ones surface first. If one fits, recipes:run it instead of re-writing the script.",
+        "notWhen": "When you already know the recipe id (recipes:get), or to find a recipe by intent (recipes:search ranks by semantic + tool-set similarity). This is the plain most-run-first browse.",
+        "chaining": "recipes:list → recipes:get { id } to inspect the script → recipes:run { id } to reuse it."
+      }
+    },
+    {
+      "name": "recipes:merge",
+      "http": {
+        "path": "/api/agent-tools/recipes/merge",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Consolidate near-duplicate code:run RECIPES into one survivor: each duplicate flips to status=merged (pointing at the survivor) and its run_count/success_count are folded onto the survivor so it reflects the cluster's total usage. One transaction; never merges a recipe into itself; ids outside your workspace are skipped. Reversible (a status flip).",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "After reviewing a near-duplicate MERGE CLUSTER from recipes:candidates and deciding which one survives — pass the keeper as survivorId and the rest as duplicateIds to collapse the cluster into one recipe whose counts reflect all of them.",
+        "notWhen": "To retire a stale one-off (recipes:sweep) or to promote a recipe to a tool (file a work-item). Do not merge recipes that are genuinely distinct just because they look similar — the dedup score is a worklist, the merge decision is yours. Inspect each script with recipes:get first.",
+        "chaining": "recipes:candidates (mergeClusters) → recipes:get { id } per member to confirm they're truly duplicates → recipes:merge { survivorId, duplicateIds }."
+      }
+    },
+    {
+      "name": "recipes:run",
+      "http": {
+        "path": "/api/agent-tools/recipes/run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a saved code:run RECIPE by id — the reuse path. The recipe's script executes under YOUR role-scoped tool envelope (NOT the author's — no privilege travels with a recipe); returns only the script's summary. Use dryRun:true to preview write-effect mutations.",
+      "capabilities": [
+        "capability:bash"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "When a recipe already does what you need (found via recipes:search / recipes:list, or a code:run result's similarRecipes) — run it by id instead of re-authoring the same script. It runs under YOUR envelope, so you can only reuse recipes whose tools you may call.",
+        "notWhen": "When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). Preview the recipe's mutations with dryRun before a committing run.",
+        "chaining": "recipes:search { query } → recipes:get { id } (inspect) → recipes:run { id, dryRun:true } → recipes:run { id }."
+      }
+    },
+    {
+      "name": "recipes:search",
+      "http": {
+        "path": "/api/agent-tools/recipes/search",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Search reusable code:run RECIPES by intent (hybrid BM25 + embedding + tool-set overlap). Use BEFORE authoring a multi-step code:run to find a recipe that already does it. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "BEFORE writing a multi-step code:run — describe what you want to do and this ranks the recipes in your hive that already do something similar (semantic + tool-set match). If a high-similarity recipe fits, recipes:run it instead of re-authoring.",
+        "notWhen": "To browse all recipes most-run-first (recipes:list), or when you already hold the id (recipes:get / recipes:run). code:run still auto-surfaces similarRecipes after the fact — this is the BEFORE-you-author check.",
+        "chaining": "recipes:search { query } → recipes:get { id } (inspect the top hit) → recipes:run { id } (reuse)."
+      }
+    },
+    {
+      "name": "recipes:sweep",
+      "http": {
+        "path": "/api/agent-tools/recipes/sweep",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retire the stale long-tail of never-reused one-off code:run RECIPES (active, last run older than staleDays AND run_count <= maxRunCount). NEVER retires a hot, recently-run, promoted, or merged recipe. dryRun (DEFAULT TRUE) previews the candidates without changing anything — pass dryRun:false to actually retire. Reversible (a status flip).",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Periodic hygiene (a Queen idle-turn task) to clear the long tail of one-off recipes that were authored on a single run and never reused. ALWAYS run it once with the default dryRun:true to review the candidates, then dryRun:false to retire them.",
+        "notWhen": "To merge near-duplicates (recipes:merge) or to find promote candidates (recipes:candidates). Don't lower staleDays/raise maxRunCount aggressively — that risks retiring recipes still finding their audience; the conservative defaults (30 days, <=1 run) target only true one-offs.",
+        "chaining": "recipes:sweep { dryRun: true } (review the would-retire list) → recipes:sweep { dryRun: false } (commit). recipes:get { id } to inspect any candidate before committing."
+      }
+    },
+    {
+      "name": "release:checkpoint-config",
+      "http": {
+        "path": "/api/agent-tools/release/checkpoint-config",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the green-checkpoint / release thresholds: stallReds + stallAgeMs (held-gate STALLED alert), chronicFlakeCount + flakeNotifyCooldownMs (chronic-flake quarantine nudge), deployBackoffMs (re-deploy backoff after a failed/rolled-back deploy of the same target). set is audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Tune the release pipeline live — e.g. shorten deployBackoffMs to re-deploy a fixed target sooner during an incident, or raise stallReds/stallAgeMs to quiet a noisy stall alert.",
+        "notWhen": "For the placement watchdog use hive:control_policy; for migrations use db:migrate-policy. vitest forks / suite-timeout (green-checkpoint.ts) and the health-probe timing are not covered here (separate consumers — follow-up).",
+        "chaining": "/admin/git shows the pipeline; config:list-overrides shows the active override; config:reset-overrides reverts it."
+      }
+    },
+    {
+      "name": "release:deploy",
+      "http": {
+        "path": "/api/agent-tools/release/deploy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Manual deploy lever + \"why isn't my change live?\" diagnosis. op:status (read-only — gate red/green/stalled, release-fixer status, how far :3070 is behind the green pin, + a recommendation; call FIRST when a gate-clean change isn't live). op:trigger (expedite a GREEN-but-stalled deploy; refuses unless green code is ahead; dry-run unless confirm:true; audited). op:force (operator/queen/architect ONLY, loud+audited: deploy an UN-GREEN commit past a red gate — needs acknowledgeRedTests + reason; the rare no-users-window escape). Wraps the deploy-cli chokepoint, fired DETACHED.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee",
+        "release-fixer",
+        "release-manager"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A committed, gate-clean change isn't live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).",
+        "notWhen": "Never force as a reflex to \"get my change out\" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.",
+        "chaining": "dev:pipeline_position{path} → release:deploy{op:status} → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds."
       }
     },
     {
@@ -10807,6 +12771,272 @@
       }
     },
     {
+      "name": "routines:list",
+      "http": {
+        "path": "/api/agent-tools/routines/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire. Read-only.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule).",
+        "notWhen": "To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status.",
+        "chaining": "routines:set to retune or pause a routine you find here (use its exact name + installSlug)."
+      }
+    },
+    {
+      "name": "routines:set",
+      "http": {
+        "path": "/api/agent-tools/routines/set",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, …) without raw SQL: change its cron and/or active flag (active:false = PAUSE, active:true = RESUME). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine's cadence (cron), or patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.",
+        "notWhen": "For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. (These routine rows are their own store; they do not appear in config:list-overrides.)",
+        "chaining": "routines:list first to get the exact name + installSlug; routines:list after to confirm the change."
+      }
+    },
+    {
+      "name": "rubrics:get",
+      "http": {
+        "path": "/api/agent-tools/rubrics/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read one rubric in full — its criteria (each with key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }).",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You have a rubric_id (from rubrics:list/search) and need its full criteria to grade against — e.g. Overwatch emitting the hive-coordination-health scorecard, or filing a structured observation.",
+        "notWhen": "Scanning many — rubrics:list (summary rows).",
+        "chaining": "rubrics:list → rubrics:get → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation."
+      }
+    },
+    {
+      "name": "rubrics:list",
+      "http": {
+        "path": "/api/agent-tools/rubrics/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List rubrics (shared standards for a system characteristic) — active first, then proposed. Filter by status / characteristic. A rubric carries the model (how it should work), method, rating scale + drift markers, and per-characteristic criteria that agents grade STRUCTURED OBSERVATIONS against. Returns summary rows; use rubrics:get for full criteria.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Scout: discover the rubric set to grade against.",
+        "notWhen": "You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search.",
+        "chaining": "rubrics:list { status: \"active\" } → rubrics:get { rubricId } → file a structured observation."
+      }
+    },
+    {
+      "name": "rubrics:propose",
+      "http": {
+        "path": "/api/agent-tools/rubrics/propose",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Propose a rubric (the shared standard for a system characteristic) → status \"proposed\". Any agent may propose — typically on noticing a cluster of free-text observations about one characteristic with no rubric. The Queen/owner ratifies it active (rubrics:ratify). Idempotent on rubric_id (re-propose updates the content).",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You see a recurring characteristic worth grading consistently and no rubric covers it. Author the criteria (each: model + how-to-investigate + drift markers); reference an agent-insights runbook via methodRef for the long-form method.",
+        "notWhen": "A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.",
+        "chaining": "rubrics:search (dedup) → rubrics:propose → rubrics:ratify (Queen/owner)."
+      }
+    },
+    {
+      "name": "rubrics:ratify",
+      "http": {
+        "path": "/api/agent-tools/rubrics/ratify",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Ratify a proposed rubric → status \"active\" (D-001: the Queen/owner gate — an active rubric becomes the shared definition every agent grades against). Returns the activated rubric.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the Queen/owner reviewing a proposed rubric and judge it a sound shared standard. Activating it makes every agent grade structured observations against it.",
+        "notWhen": "Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Queen.",
+        "chaining": "rubrics:list { status: \"proposed\" } → rubrics:get → rubrics:ratify."
+      }
+    },
+    {
+      "name": "rubrics:search",
+      "http": {
+        "path": "/api/agent-tools/rubrics/search",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Full-text search rubrics by id / characteristic / title / description. Use before rubrics:propose to avoid a duplicate, or to locate an existing standard by keywords.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before proposing a rubric (dedup), or to find a standard covering a characteristic by keyword.",
+        "notWhen": "You want a filtered list by status/characteristic — rubrics:list. You have the id — rubrics:get.",
+        "chaining": "rubrics:search → rubrics:get (use the existing one) / rubrics:propose (if none fits)."
+      }
+    },
+    {
+      "name": "rubrics:trend",
+      "http": {
+        "path": "/api/agent-tools/rubrics/trend",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The qualitative health TREND for a rubric — aggregate the every-turn Overwatch scorecard rating time-series per criterion over time, each with a direction (improving | worsening | stable | unknown), a rating distribution, first/latest rating, and the full chronological series. The health-over-time view (\"queen-placement-health: degraded, worsening over 5 ratings\"). Also returns a `staleness` signal (P-011): criteria the Overwatch persistently CANNOT assess (rated \"unknown\") — the rubric's model may have drifted from reality and should re-enter the queen↔scout loop for re-ratification. Reads the scorecards (P-013) — no new data.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want to see how a rubric's criteria have trended OVER TIME — is a characteristic improving or worsening? which criteria are degrading across recent wakes? Or whether the rubric ITSELF is STALE (its model drifted — `staleness.stale`). The qualitative health-over-time view, vs a single point-in-time scorecard.",
+        "notWhen": "You want the raw recent scorecards (point-in-time standing + completeness via missingKeys) — scorecards:list. You want the rubric DEFINITION (criteria/model/method) — rubrics:get. You want the cross-corpus ideation rollup — curation:state-of-hive.",
+        "chaining": "rubrics:list { status: \"active\" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId. If `staleness.stale`, re-ratify the rubric via the queen↔scout loop (revise template_data → plans:set-plan-status)."
+      }
+    },
+    {
       "name": "saved_prompts:list",
       "http": {
         "path": "/api/agent-tools/saved_prompts/list",
@@ -10826,6 +13056,74 @@
       "guidance": {
         "when": "When you need to inspect which saved `/name` prompts exist for a workspace or harness (e.g. to answer \"what prompts are defined?\" or before suggesting one).",
         "notWhen": "To create/edit/delete a prompt — that is the dashboard settings UI (POST /api/agent-mcp/saved-prompts). This tool is read-only."
+      }
+    },
+    {
+      "name": "scorecards:freshness",
+      "http": {
+        "path": "/api/agent-tools/scorecards/freshness",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Has the Overwatch emitted a COMPLETE scorecard for a rubric since a given time (its last wake)? The emission-freshness check (monitor-the-monitor): returns status = fresh (a COMPLETE scorecard landed in-window) | partial-only (scorecards landed but ALL incomplete — a silent truncation) | stale (NOTHING landed — a silent emission gap), plus emitted / complete / count / partialCount, lastEmittedAt, lastCompleteAt, and latestMissingKeys (what is unrated right now). Reads scorecards:list (P-013); a \"complete\" scorecard rates every rubric criterion.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want to know whether the Overwatch is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete hive-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.",
+        "notWhen": "You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion's rating TREND over time — rubrics:trend. You are FILING a scorecard — improvements:capture { lane: \"observation\", observation: { rubricRef, ratings } }.",
+        "chaining": "scorecards:freshness { rubricRef: \"hive-coordination-health\", since } → status stale/partial-only ⇒ the Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped."
+      }
+    },
+    {
+      "name": "scorecards:list",
+      "http": {
+        "path": "/api/agent-tools/scorecards/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read structured rubric SCORECARDS back — rubric-graded observations (a rubricRef + per-criterion {rating, evidence}) that the Overwatch emits every turn and Scout consumes. Filter by rubricRef + sourceHive + a since time-window; newest-first. Each row carries {issueId, createdAt, createdBy, sourceHive, rubricRef, ratings, nKeys, missingKeys, rubricResolved} — nKeys + missingKeys expose completeness (a partial scorecard rated < all the rubric criteria). The read side of monitoring-the-monitor (was write-only before).",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did the Overwatch emit a COMPLETE hive-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.",
+        "notWhen": "You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-hive. You are FILING a scorecard — improvements:capture { lane: \"observation\", observation: { rubricRef, ratings } }.",
+        "chaining": "scorecards:list { rubricRef: \"hive-coordination-health\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricId: rubricRef } for the criterion definitions."
       }
     },
     {
@@ -10940,6 +13238,24 @@
       }
     },
     {
+      "name": "sentinel:converse",
+      "http": {
+        "path": "/api/agent-tools/sentinel/converse",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Sentinel/Herald brain conversation turn. The operator:converse brain loaded with the always-on, voice-first Herald persona (role=sentinel). Same lifecycle (prompt build, budget gate, LLM stream, spend, mem0); only the persona differs.",
+      "capabilities": [
+        "operator:converse"
+      ],
+      "agentRoles": [
+        "operator",
+        "sentinel"
+      ],
+      "profile": "engineer"
+    },
+    {
       "name": "slash:dispatch",
       "http": {
         "path": "/api/agent-tools/slash/dispatch",
@@ -10969,6 +13285,50 @@
       "guidance": {
         "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the queen, a UI 'run this on that agent' action, a queen placing a precise command (not prose) onto a bee.",
         "notWhen": "Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue."
+      }
+    },
+    {
+      "name": "storage:prune",
+      "http": {
+        "path": "/api/agent-tools/storage/prune",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Delete a storage category's rows/entries older than N days (or all). Local-only safe categories only; federated categories are refused. Bloat tables also VACUUM FULL to reclaim disk. Pass dryRun to preview count + estimated reclaim.",
+      "capabilities": [
+        "storage:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner (or the Storage settings page) deliberately trims a local-only category — telemetry tables, the drained federation outbox, or on-disk session/scratch/flight-recorder stores.",
+        "notWhen": "To read sizes use storage:usage. Federated categories (plans/features/issues/coord) are refused — trimming would change what peers see.",
+        "chaining": "storage:usage → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }."
+      }
+    },
+    {
+      "name": "storage:usage",
+      "http": {
+        "path": "/api/agent-tools/storage/usage",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Live storage usage by category (PG tables grouped by federation class + on-disk stores), each with total size, an age distribution, and whether it is safe to trim. Read-only.",
+      "capabilities": [
+        "storage:read"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Inspecting what is consuming local storage, or before a trim, to see per-category size + the age distribution and which categories are federated (read-only).",
+        "notWhen": "To actually delete, use storage:prune (with dryRun first). This never deletes.",
+        "chaining": "storage:usage → storage:prune { category, olderThanDays, dryRun: true } → storage:prune { category, olderThanDays }."
       }
     },
     {
@@ -11071,6 +13431,37 @@
         "when": "User asks \"what tasks do I have?\", \"what's on my plate\", or you need a task id before calling `tasks:get`/`tasks:update`/`tasks:close`.",
         "notWhen": "For ONE task by id, use `tasks:get`. For creating a task, use `tasks:create`. For PROJECTS / FEATURES (work the harness is doing), use `harness:*` — tasks are separate from harness features.",
         "chaining": "Pair with `tasks:get` for detail on a specific row."
+      }
+    },
+    {
+      "name": "telemetry:set_buffer",
+      "http": {
+        "path": "/api/agent-tools/telemetry/set_buffer",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read/set/reset the dispatch telemetry-buffer sizing (maxPending / debounceMs / maxBatch) at runtime, merged over the baked defaults. Raise maxPending to ride out a PG-stall burst without shedding telemetry, or tune debounce/batch — no deploy. Empty override / kill-switch off (papercusp-telemetry-buffer-config) = byte-identical. set/reset audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Telemetry rows are being dropped under burst (the \"telemetry queue overflow\" warning) — raise maxPending; or tune flush debounce/batch for PG load. get to inspect the effective config + override.",
+        "notWhen": "Not for quota/rate limits (operator:rate_limit_config), nor for retention (storage settings). This only sizes the in-memory telemetry flush queue.",
+        "chaining": "config:list-overrides shows the active telemetry-buffer override; config:reset-overrides reverts it. The kill-switch papercusp-telemetry-buffer-config (default ON) forces the baked defaults when OFF."
       }
     },
     {
@@ -11533,7 +13924,8 @@
       ],
       "agentRoles": [
         "operator",
-        "architect"
+        "architect",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11556,7 +13948,8 @@
       ],
       "agentRoles": [
         "operator",
-        "architect"
+        "architect",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11579,7 +13972,8 @@
       ],
       "agentRoles": [
         "operator",
-        "architect"
+        "architect",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11602,7 +13996,8 @@
       ],
       "agentRoles": [
         "operator",
-        "architect"
+        "architect",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11624,12 +14019,37 @@
       ],
       "agentRoles": [
         "operator",
-        "architect"
+        "architect",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "Read who's in the active voice channel right now (presence is in-band — liveness IS the peer connection).",
         "notWhen": "The durable channel LIST is `voice:channels {op:'list'}` — status only covers the channel this node is in."
+      }
+    },
+    {
+      "name": "voice:transcript",
+      "http": {
+        "path": "/api/agent-tools/voice/transcript",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read live speech transcripts from the active voice channel: enable buffering (turns the ears on), then read the most-recent utterances or the delta since a cursor. The OBSERVE seam for an agent to react to spoken input WITHOUT the auto-reply brain.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Let an agent (e.g. a narrator/host) HEAR what peers said and react on its own terms — {op:'enable'} once, then poll {op:'read', since:<cursor>} for new utterances. Unlike voice:agent {op:'brain'}, this never auto-replies — you decide what to do with the speech.",
+        "notWhen": "For the agent to AUTO-converse (peer speech → spoken reply) use `voice:agent {op:'brain', on:true}` instead. Buffering needs the ears: {op:'enable'} turns them on; {op:'disable'} stops buffering but leaves the shared ears (toggle those via voice:agent).",
+        "chaining": "voice:join → voice:transcript {op:'enable'} → voice:transcript {op:'read'} (note the cursor) → … → voice:transcript {op:'read', since:<cursor>} for only what's new."
       }
     },
     {
@@ -11727,14 +14147,14 @@
       }
     },
     {
-      "name": "work_items:claim",
+      "name": "work_items:checkpoint",
       "http": {
-        "path": "/api/agent-tools/work_items/claim",
+        "path": "/api/agent-tools/work_items/checkpoint",
         "methods": [
           "POST"
         ]
       },
-      "description": "Claim a work-item (assign it to yourself, or to `assignee`). Claiming a feature sets taken_by; an issue sets assignee.",
+      "description": "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; blank/omitted clears. Returns { ok, results:[{ ok, id, harness, cleared, length, by | error }], counts } — correlate by id.",
       "capabilities": [
         "work_items:write"
       ],
@@ -11755,7 +14175,42 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are starting work on a work-item — claim it so peers do not duplicate.",
+        "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next fresh-context wake) needs to continue — what is done, what is left, current approach, gotchas, open threads. Keep it COMPRESSED (a digest, not a transcript).",
+        "notWhen": "Mid-task scratch state that the live transcript already holds — checkpoint only the durable, cross-boundary gist. Do not dump file contents or full tool output.",
+        "chaining": "work_items:checkpoint { id, checkpoint } before work_items:complete / on yield. Pass blank to clear a stale note."
+      }
+    },
+    {
+      "name": "work_items:claim",
+      "http": {
+        "path": "/api/agent-tools/work_items/claim",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Claim one OR many work-items (assign to yourself, or to `assignee`). Claiming a feature sets taken_by; an issue sets assignee. Single: { id, assignee? }. Many same assignee: { ids:[…], assignee? }. Many heterogeneous: items:[{ id, assignee?, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a claim_conflict on one item never fails the rest.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are starting work on work-item(s) — claim so peers do not duplicate. Claim a swath at once via { ids:[…] }.",
+        "notWhen": "A per-item `claim_conflict` means a LIVE peer holds it — coordinate with the `holder` (coord:send) or pick another item; do not blind-retry. (If the holder is dead, the stale-claim reclaim lane frees it.)",
         "chaining": "work_items:list → work_items:claim → work_items:set_state → work_items:release/close."
       }
     },
@@ -11869,7 +14324,7 @@
           "POST"
         ]
       },
-      "description": "Comment on a work-item (any kind). Appends to its thread and notifies subscribers. The thread is created on the first comment.",
+      "description": "Comment on one OR many work-items (any kind) in one call. Single: { id, body }. Many: items:[{ id, body, harness? }]. Appends to each item's thread (created on first comment) and notifies its subscribers. Returns { ok, results:[{ ok, id, post? | error }], counts } — correlate by id; a not-found item never fails the rest.",
       "capabilities": [
         "work_items:write"
       ],
@@ -11890,7 +14345,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have an update, a finding, or a question on a work-item that its followers should see.",
+        "when": "You have an update, finding, or question to post on one or more work-items. Comment on several at once via items:[…] instead of one call each.",
+        "notWhen": "A contextual aside not tied to a work-item → coord:send. A structured completion → work_items:complete.",
         "chaining": "work_items:get → work_items:comment; work_items:subscribe to follow the thread."
       }
     },
@@ -11902,7 +14358,7 @@
           "POST"
         ]
       },
-      "description": "Finish a work-item with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts the completion notification from the fields — you spend no tokens narrating. Optionally also transitions the item to a terminal `state`. Returns a `reflect` step (the self-learning friction prompt) to act on once, now.",
+      "description": "Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect, stateError? } | error], counts } — act on each returned `reflect` step once, now.",
       "capabilities": [
         "work_items:write"
       ],
@@ -11923,9 +14379,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You finished a work-item / plan-item / brief. Fill in the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it.",
+        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. Finish several at once via items:[…].",
         "notWhen": "For a contextual aside that is not a completion (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.",
-        "chaining": "work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed. Then read the returned `reflect` step (self-learning loop): if any friction marker bit you during this unit of work, file it once via improvements:capture — else capture nothing."
+        "chaining": "work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed. Then read each returned `reflect` step (self-learning loop): if any friction marker bit you, file it once via improvements:capture — else capture nothing."
       }
     },
     {
@@ -11936,7 +14392,7 @@
           "POST"
         ]
       },
-      "description": "Create a work-item of any kind — feature | research-task | chunk | bug | change. Returns a kind-independent WI-NNN id. bug/change file a tracked issue; feature/research-task/chunk enter the harness work queue (feature/research-task pickable by the pipeline; chunk is an execution sub-unit carrying a parent). Dedup with work_items:list/search first.",
+      "description": "Create ONE or MANY work-items of any kind — feature | research-task | chunk | bug | change. Returns kind-independent WI-NNN ids. bug/change file a tracked issue; feature/research-task/chunk enter the harness work queue. Single: { kind, title, … }. Many: items:[{ kind, title, … }] with batch-level harness / workspace / assign_all_to_self. Returns { ok, results:[{ ok, id, title, workItem } | { ok:false, title, error }], counts } — a mirror-duplicate or one bad item never fails the rest. Dedup with work_items:list/search first.",
       "capabilities": [
         "work_items:write"
       ],
@@ -11957,9 +14413,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to track a unit of work an agent will do. Pick the kind: bug (something broken), change (a desired one-off / DX ask), feature (a pipeline work-unit), research-task, or chunk (a sub-unit of a parent, pass `parent`).",
+        "when": "You want to track unit(s) of work an agent will do. Pick the kind: bug (broken), change (DX ask / one-off), feature (pipeline work-unit), research-task, or chunk (sub-unit, pass `parent`). File several at once via items:[…] instead of a round-trip each.",
         "notWhen": "A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.",
-        "chaining": "work_items:list (dedup) → work_items:create → work_items:claim when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run."
+        "chaining": "work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run."
       }
     },
     {
@@ -12004,7 +14460,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one work-item by id (WI-/F-/EI-…) across every kind. Pass `harness` to disambiguate a feature id that may repeat across harnesses.",
+      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest.",
       "capabilities": [
         "work_items:read"
       ],
@@ -12025,8 +14481,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have a work-item id and need its full state (kind, lifecycle, assignee, parent).",
-        "chaining": "work_items:list → work_items:get { id } for detail."
+        "when": "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
+        "notWhen": "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
+        "chaining": "work_items:list → work_items:get { ids:[…] } for detail on the ones you care about."
       }
     },
     {
@@ -12070,7 +14527,7 @@
           "POST"
         ]
       },
-      "description": "Link this work-item to a target (rel: blocks | relates | duplicates | fixes). Blocking works across kinds. Target = another work-item (target_id) or an explicit coord ref (target_kind + target_ref, e.g. a plan_item). Pass remove:true to unlink.",
+      "description": "Link one OR many work-items to targets (rel: blocks | relates | duplicates | fixes) — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12091,8 +14548,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You discovered a dependency/relationship: this work-item blocks/relates-to/duplicates/fixes another work-item or plan item.",
-        "chaining": "work_items:get both sides → work_items:link { rel:\"blocks\", target_id }."
+        "when": "You discovered one or more dependencies/relationships: a work-item blocks/relates-to/duplicates/fixes other work-items or plan items. Create several edges at once via items:[…].",
+        "chaining": "work_items:get both sides → work_items:link { rel:\"blocks\", target_id } (or items:[…])."
       }
     },
     {
@@ -12103,7 +14560,7 @@
           "POST"
         ]
       },
-      "description": "List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly.",
+      "description": "List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
       "capabilities": [
         "work_items:read"
       ],
@@ -12136,7 +14593,7 @@
           "POST"
         ]
       },
-      "description": "Observe a work-item WITHOUT claiming it (tuple-space `rd`): reports availability + who holds it. Distinct from claim (`in`).",
+      "description": "Observe one OR many work-items WITHOUT claiming (tuple-space `rd`) — pass `id` for one or `ids` for several (1–100): reports each item's availability + who holds it. Distinct from claim (`in`). Returns { ok, results:[{ ok, id, …observation | error }], counts } — correlate by id, not position.",
       "capabilities": [
         "work_items:read"
       ],
@@ -12157,19 +14614,19 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Inspect a work-item's claimability before deciding to claim it — read without taking.",
+        "when": "Inspect one or more work-items' claimability before deciding to claim — read without taking. Pass every id you are weighing at once.",
         "chaining": "work_items:observe → work_items:claim (if available)."
       }
     },
     {
-      "name": "work_items:promote",
+      "name": "work_items:pickup",
       "http": {
-        "path": "/api/agent-tools/work_items/promote",
+        "path": "/api/agent-tools/work_items/pickup",
         "methods": [
           "POST"
         ]
       },
-      "description": "Promote a bug/change work-item into a feature pipeline run (mints an F-FIX feature in the target harness and links it). An operator-scope item needs an explicit harness.",
+      "description": "Pick up a specific work-item in ONE call: fetch its full detail, claim it for you, and (when `intent` is given) declare your intent / plan lane. Collapses the get→claim(→declare-intent) round-trips into one and closes the get→claim race.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12190,9 +14647,74 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A filed bug/change is ready to be worked by the pipeline.",
+        "when": "You have decided to work a SPECIFIC work-item id — pickup fetches its detail, claims it, and optionally declares your intent in one round-trip instead of work_items:get → work_items:claim → coord:declare-intent.",
+        "notWhen": "You are still deciding whether to take it (inspect first with work_items:get), or you want the oldest unassigned item regardless of which (work_items:claim_next).",
+        "chaining": "work_items:list → work_items:pickup { id, intent } → work → work_items:complete."
+      }
+    },
+    {
+      "name": "work_items:promote",
+      "http": {
+        "path": "/api/agent-tools/work_items/promote",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Promote one OR many bug/change work-items into a feature pipeline run (mints an F-FIX feature in the target harness and links it). Single: { id, harness? }. Many: items:[{ id, harness? }]. An operator-scope item needs an explicit harness. Returns { ok, results:[{ ok, id, … | error }], counts } — correlate by id; one failure never fails the rest.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A filed bug/change is ready to be worked by the pipeline — for one item or several at once.",
         "notWhen": "It is a passing idea (leave it filed) or already a feature.",
         "chaining": "work_items:create { kind:\"bug\" } → work_items:promote { harness } → the pipeline picks up the feature."
+      }
+    },
+    {
+      "name": "work_items:reclaim_config",
+      "http": {
+        "path": "/api/agent-tools/work_items/reclaim_config",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the stale-claim reclaim policy: reclaimGraceMs (a heartbeat-less claim is presumed orphaned + reclaimed after this; default = the 10-min liveness window) and reclaimRequeueCap (requeues before a mid-flight item is dead-lettered to blocked; default 3). Threaded into the periodic reclaim sweep. set is audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Tighten reclaim (shorter grace) to free orphaned work faster after a crash wave, or loosen it to avoid reclaiming briefly-quiet live work; raise the requeue cap to retry flaky items more before dead-lettering.",
+        "notWhen": "For the presence/liveness window itself (shared STALE_MS source) this only overrides the RECLAIM grace. For handoff TTL use coord:handoff_config; for session reaping use coord:session_reaper_config.",
+        "chaining": "fleet:assignments shows orphaned claims; config:list-overrides shows the active override; config:reset-overrides reverts it."
       }
     },
     {
@@ -12237,7 +14759,7 @@
           "POST"
         ]
       },
-      "description": "Read a work-item's redundancy config + replica ledger: target N, each slot's status (claimed/complete/winner/loser), owner, lease expiry, and judge verdict (composite + rationale). The read view of a high-stakes item's redundant run.",
+      "description": "Read one OR many work-items' redundancy config + replica ledger (pass `id` for one or `ids` for several, all in the shared `harness`): target N, each slot's status (claimed/complete/winner/loser), owner, lease expiry, and judge verdict. Returns { ok, results:[{ ok, id, redundancy, completeCount, judgeable, replicas, … | error }], counts }.",
       "capabilities": [
         "work_items:read"
       ],
@@ -12258,7 +14780,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Checking how a high-stakes item is progressing across its Swarms — how many replicas have completed, whether it has been judged, and which replica won.",
+        "when": "Checking how one or more high-stakes items are progressing across their Swarms — how many replicas completed, whether judged, which replica won.",
         "notWhen": "A normal item (it has no replicas). The plain item state — that is work_items:get.",
         "chaining": "work_items:redundancy_status → (if ≥2 complete) work_items:judge_redundancy."
       }
@@ -12271,7 +14793,7 @@
           "POST"
         ]
       },
-      "description": "Release a work-item (clear its assignee / taken_by) so another agent can pick it up.",
+      "description": "Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error }], counts } — correlate by id; a not-found item never fails the rest.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12292,7 +14814,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You claimed a work-item but are no longer working it.",
+        "when": "You claimed work-item(s) but are no longer working them. Release several at once via ids:[…].",
         "chaining": "work_items:claim → … → work_items:release."
       }
     },
@@ -12304,7 +14826,7 @@
           "POST"
         ]
       },
-      "description": "Move a work-item to a position (`rank`, 0-based, 0 = head-of-line) within its assignee's ordered work-list — peers shift down to make room. This is the externalized per-agent queue the Queen reads for placement decisions. `writer`='bee' (default) for a bee resequencing its own list; `writer`='queen' for a Queen overlay (inject/rebalance) — the propose/dispose audit.",
+      "description": "Move one OR many work-items to a position (`rank`, 0-based, 0 = head-of-line) within their assignee's ordered work-list — peers shift down. Single: { id, rank }. Many: items:[{ id, rank, writer?, harness? }]. `writer`='bee' (default, a bee resequencing its own list) | 'queen' (Queen overlay). Returns { ok, results:[{ ok, id, … | error }], counts }.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12325,9 +14847,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are a bee resequencing your own work-list (move a just-discovered task up, push a blocked one down) OR the Queen injecting/rebalancing a bee's queue. Claim the item first — rank is per-assignee.",
+        "when": "You are a bee resequencing your own work-list, or the Queen injecting/rebalancing — for one item or several at once. Claim items first; rank is per-assignee.",
         "notWhen": "You only want to START an item (work_items:claim) or change its lifecycle state (work_items:set_state). Reorder changes ORDER, not ownership or state.",
-        "chaining": "work_items:claim (take it) → work_items:reorder (place it in your list) → fleet:assignments { agent } to see the ordered queue. The Queen: fleet:assignments (read load + head-of-line) → work_items:reorder { writer:\"queen\" }."
+        "chaining": "work_items:claim → work_items:reorder → fleet:assignments { agent } to see the ordered queue. The Queen: fleet:assignments → work_items:reorder { writer:\"queen\", items:[…] }."
       }
     },
     {
@@ -12364,14 +14886,14 @@
       }
     },
     {
-      "name": "work_items:set_priority",
+      "name": "work_items:set_live_verified",
       "http": {
-        "path": "/api/agent-tools/work_items/set_priority",
+        "path": "/api/agent-tools/work_items/set_live_verified",
         "methods": [
           "POST"
         ]
       },
-      "description": "The Queen's steer-don't-dispatch lever: set a work-item's BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder, which ranks one bee's already-claimed work-list.",
+      "description": "Mark a feature-family work-item LIVE-VERIFIED — an additive payload marker { at, by, deployedSha?, evidence? } that separates \"done\" (code on staging) from \"confirmed live\" (deployed + exercised). Does NOT change the lifecycle state. Confirm deployment first (release:deploy status / dev:pipeline_position), then record the deployedSha + evidence. clear:true retracts it (rollback). Read via work_items:get (payload.live_verified). Non-feature items return applicable:false.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12392,7 +14914,41 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next — position:'top'/'bottom' for most/least urgent, or an explicit integer. In a multi-Swarm Hive only the steering-lease holder commits; a non-holder's set returns proposed:true (recorded for the holding Queen to dispose; local placement is unaffected).",
+        "when": "A pipeline/operator work-item is done = code-on-staging, and you have now confirmed it DEPLOYED + exercised on the live host — record the deployedSha + what you exercised so \"shipped\" vs \"live\" is no longer ambiguous.",
+        "notWhen": "Not for the lifecycle state (work_items:set_state) — this is an additive live-confirmation marker, not a state. Issue-family items return applicable:false.",
+        "chaining": "release:deploy { op:\"status\" } / dev:pipeline_position (confirm the deployed SHA) → work_items:set_live_verified { id, deployedSha, evidence }. clear:true to retract on rollback. work_items:get shows payload.live_verified."
+      }
+    },
+    {
+      "name": "work_items:set_priority",
+      "http": {
+        "path": "/api/agent-tools/work_items/set_priority",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Queen's steer-don't-dispatch lever: set one OR many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }. Many: items:[{ workItem, priority?, position?, harness?, decision? }]. Each item: set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder (one bee's already-claimed work-list). Returns { ok, results:[{ ok, workItem, mode, … | error }], counts } — correlate by workItem.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next — position:'top'/'bottom' for most/least urgent, or an explicit integer; reprioritize several at once via items:[…]. In a multi-Swarm Hive only the steering-lease holder commits; a non-holder's set returns proposed:true (recorded for the holding Queen to dispose; local placement is unaffected).",
         "notWhen": "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
         "chaining": "curation:change-feed (what shipped / where momentum is) + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first."
       }
@@ -12439,7 +14995,7 @@
           "POST"
         ]
       },
-      "description": "Set a work-item's lifecycle state. feature-family: a feature status (todo|in_progress|passed|failing|deprecated…). issue-family: open|resolved|closed.",
+      "description": "Set the lifecycle state of one OR many work-items. feature-family: a feature status (todo|in_progress|passed|failing|deprecated…). issue-family: open|resolved|closed. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision? }]. Returns { ok, results:[{ ok, id, workItem? | error }], counts } — correlate by id; a not-found item never fails the rest.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12460,7 +15016,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You moved a work-item along its lifecycle (started, resolved, etc.).",
+        "when": "You moved one or more work-items along the lifecycle (started, resolved, etc.). Flip a whole wave at once via { ids:[…], state } or items:[…].",
         "chaining": "work_items:claim → … → work_items:set_state { state }."
       }
     },
@@ -12472,7 +15028,7 @@
           "POST"
         ]
       },
-      "description": "Subscribe to a work-item so its updates fan out to your inbox (mode: full | digest | mention).",
+      "description": "Subscribe to one OR many work-items so their updates fan out to your inbox — pass `id` for one or `ids` for several (shared `mode`: full | digest | mention). Returns { ok, results:[{ ok, id, error? }], counts }.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12493,7 +15049,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to follow a work-item you do not own (e.g. one that blocks yours).",
+        "when": "You want to follow one or more work-items you do not own (e.g. ones that block yours). Subscribe to several at once via `ids`.",
         "chaining": "work_items:get → work_items:subscribe."
       }
     },
@@ -12505,7 +15061,7 @@
           "POST"
         ]
       },
-      "description": "Tag a work-item with a topic (or untag with remove:true). Routes the work-item to that topic's subscribers.",
+      "description": "Tag one OR many work-items with a topic (or untag with remove:true) — routes the item to that topic's subscribers. Single: { id, topic }. Many same topic: { ids:[…], topic }. Many heterogeneous: items:[{ id, topic, harness?, remove? }]. Returns { ok, results:[{ ok, id, topic? | error }], counts } — correlate by id; a not-found item never fails the rest.",
       "capabilities": [
         "work_items:write"
       ],
@@ -12526,8 +15082,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want a work-item visible to agents following an area (topics:list to see topics).",
-        "chaining": "topics:list → work_items:tag { topic }."
+        "when": "You want a work-item visible to agents following an area (topics:list to see topics). Tag several at once via ids:[…]+topic or items:[…].",
+        "chaining": "topics:list → work_items:tag { topic } (or { ids, topic })."
       }
     }
   ]

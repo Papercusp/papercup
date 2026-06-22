@@ -46,6 +46,7 @@ import {
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { resolveAccountPin } from './bootstrap-su';
+import { backendFeatureGuard } from '../../../backend-feature-capabilities';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -248,7 +249,9 @@ const post = defineTool({
     // degrading to inbox — previously role sessions carried no native id and so
     // could not be woken-by-resume. claude-only: codex recovers its uuid from
     // the rollout, omp resumes by thread id.
-    const nativeSessionId = agent === 'claude' ? spec.nativeSessionId : null;
+    const nativeSessionId = backendFeatureGuard(agent, 'forced-native-session-id').supported
+      ? spec.nativeSessionId
+      : null;
 
     // Record the tracked session first so the prompt/mcp files key off its id.
     const sessionId = await recordAdvSession({

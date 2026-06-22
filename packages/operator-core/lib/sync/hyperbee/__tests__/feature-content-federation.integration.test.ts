@@ -79,6 +79,11 @@ import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discove
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
 import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
+// WI-259 P-004 defer/replay capstone — drives the REAL projections + buffer + drain hook.
+import { buildHiveMembersProjection, type HiveMemberRow } from '../projections/hive-members';
+import type { HarnessIssueRow } from '../projections/issues';
+import type { ProvenanceContext } from '../projection';
+import { PendingMembershipContent } from '../pending-membership-content';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../apps/operator/lib/sync/hyperbee/__tests__ → repo root is six levels up.
@@ -380,6 +385,19 @@ async function readIssue(sql: postgres.Sql, issueId: string) {
     SELECT issue_id, title, severity, status, origin
       FROM harness_shared.harness_issues_consolidated
      WHERE harness_slug = ${HARNESS_SLUG} AND issue_id = ${issueId}
+  `;
+  return rows[0];
+}
+
+/** Slug-parameterized `readIssue` — the WI-259 P-004 case reads an issue row under a GIVEN
+ *  (cross-member author) slug, which the hardcoded-HARNESS_SLUG `readIssue` can't address. */
+async function readIssueForSlug(sql: postgres.Sql, slug: string, issueId: string) {
+  const rows = await sql<
+    Array<{ issue_id: string; title: string; severity: string; status: string; origin: string }>
+  >`
+    SELECT issue_id, title, severity, status, origin
+      FROM harness_shared.harness_issues_consolidated
+     WHERE harness_slug = ${slug} AND issue_id = ${issueId}
   `;
   return rows[0];
 }
@@ -1277,6 +1295,202 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       ).toBeDefined();
       expect(await readFeatureForSlug(dbB.sql, B_SLUG, 'F-wi259')).toBeUndefined();
       expect(await readFeatureForSlug(dbB.sql, HIVE_HOME, 'F-wi259')).toBeUndefined();
+    },
+    60_000,
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // WI-259 P-004 — CONTENT-BEFORE-MEMBERSHIP defer / replay (the capstone).
+  //
+  // A member A's content op and A's `hive_members` row federate as SEPARATE ops, and the merge
+  // applies ops by LOG POSITION, not a global cross-table sort — so on peer B a cross-member
+  // content op can reach the apply seam BEFORE the `hive_members` op that adds its author. The
+  // P-002 membership guard then sees A ∉ members and would DROP it, and the cursor advances past
+  // it → lost. P-004 DEFERS such an op (author device known, just not yet a member) into the
+  // PendingMembershipContent buffer and RE-APPLIES it when A's `hive_members` row applies (the
+  // onMemberApplied drain in projections/hive-members.ts).
+  //
+  // The full two-peer swarm rig (the cases above) CANNOT exercise this: there membership is
+  // pre-seeded in PG, so the `hive_members` projection apply — which FIRES the drain — never runs
+  // for A. This case drives the REAL projections (issues + hive_members) + the REAL buffer + the
+  // REAL drain hook directly, over ONE migrated workspace PG (production's single-PG shape: the
+  // guard's getOrgPg membership read and the hive_members write hit the SAME DB), so the ordering
+  // is deterministic and every real seam (decideMemberContentOp → defer → invalidate → drain →
+  // re-apply → resolveHiveMemberDeviceSet) is on the path.
+  // ──────────────────────────────────────────────────────────────────────────
+  it(
+    'WI-259 P-004: a cross-member content op arriving BEFORE the author’s membership is DEFERRED, then DRAINS + lands when the member’s hive_members row applies',
+    async () => {
+      const HIVE_HOME = 'hive-home-p004';
+      const B_SLUG = 'joined-member-b'; // the receiving member harness (≠ A's author slug)
+      const A_SLUG = 'author-member-a'; // the (cross-member) slug A's content is authored under
+      const A_LOG_KEY = 'a-source-log-key-hex-p004'; // A's receiver-stamped sourceLogKeyHex
+      const idA = makeIdentityOverride('alice', 42, 'kc-alice'); // → idA.devicePubkey + userId
+
+      // ── Env-route the PROCESS-GLOBAL getOrgPg() at a migrated workspace DB so the guard's
+      //    resolveHiveMemberDeviceSet read AND the projections' writes hit ONE DB (prod shape). ──
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      // eslint-disable-next-line no-console
+      console.error('[P-004 DIAG] dbName=%s adminDsn=%s', orgDb.dbName, orgDb.adminDsn);
+      try {
+        const r = await orgDb.adminSql`SELECT current_database() d`;
+        // eslint-disable-next-line no-console
+        console.error('[P-004 DIAG] adminSql SELECT ok, current_database=%s', r[0]?.d);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[P-004 DIAG] adminSql SELECT FAILED:', e instanceof Error ? e.message : e);
+        throw e;
+      }
+      const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
+      const prevAppUrl = process.env.HARNESS_DATABASE_URL;
+      const prevWs = process.env.PAPERCUSP_WORKSPACE_ID;
+      const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+        else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
+        if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
+        else process.env.HARNESS_DATABASE_URL = prevAppUrl;
+        if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+        else process.env.PAPERCUSP_WORKSPACE_ID = prevWs;
+        if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+        else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      // Seed the hive row (hive_members FKs it; needs a valid raw-32 base64 Ed25519 pubkey).
+      // NOT A's hive_members row yet — that arrives in step (2), the whole point of the race.
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.hives
+          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-hive-home', 'Hive Home', null, 1, 1)
+      `;
+
+      // ── The REAL projections, bound to the SAME workspace DB + the SAME buffer instance (exactly
+      //    as boot.ts wires them: the content projection defers, the hive_members projection drains). ──
+      const buffer = new PendingMembershipContent();
+      const issuesProj = buildIssuesProjection({
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: B_SLUG, // B applies A's cross-member op only if A ∈ members
+        sql: orgDb.adminSql,
+        hiveHomeSlug: HIVE_HOME,
+        // A REMOTE op's provenance.authorPubkey IS its receiver-stamped sourceLogKeyHex; boot maps
+        // it → A's admit-verified device via admittedIdentities (boot.ts:607). Mirror that here.
+        resolveAuthorDevice: (k) => (k === A_LOG_KEY ? idA.devicePubkey : null),
+        pendingMemberContent: buffer,
+      });
+      const membersProj = buildHiveMembersProjection({
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: HIVE_HOME, // the hive_members projection demuxes on the hive-home slug
+        sql: orgDb.adminSql,
+        pendingMemberContent: buffer, // shares the buffer → its apply drains the deferred content
+      });
+
+      const aIssue: HarnessIssueRow = {
+        harness_slug: A_SLUG, // cross-member: ≠ B_SLUG → membership-gated
+        issue_id: 'I-defer',
+        title: 'A pre-membership issue',
+        severity: 'high',
+        source: 'test',
+        status: 'open',
+        found_at: 7000,
+        found_during: null,
+        repro: null,
+        evidence: null,
+        suggested_fix: null,
+        code_pointer: null,
+        linked_feature_id: null,
+        attempts: 0,
+        notes: [],
+        created_ts: 7000,
+        updated_ts: 7000,
+      };
+      const aIssueProv: ProvenanceContext = {
+        authorPubkey: A_LOG_KEY,
+        origin: 'remote',
+        ts: 7000,
+        fedHlc: 'hlc-issue-7000',
+      };
+
+      // ── (1) A's issue arrives BEFORE A's membership → the guard DEFERS it (author device known,
+      //    but A ∉ the empty member set). It is NOT applied, and NOT lost — it sits in the buffer. ──
+      _clearHiveMemberDeviceSetCacheForTest();
+      await issuesProj.writeToPg(aIssue, aIssueProv);
+      expect(
+        await readIssueForSlug(orgDb.adminSql, A_SLUG, 'I-defer'),
+        'a cross-member op whose author is not yet a member must NOT apply (it should defer)',
+      ).toBeUndefined();
+      expect(buffer.size(), 'the dropped cross-member op must be buffered, not lost').toBe(1);
+
+      // ── (2) A's hive_members row applies → the onMemberApplied DRAIN re-applies the deferred issue.
+      //    The projection apply invalidates the member-set cache (so the re-check reads fresh) THEN
+      //    drains the buffer for A's device + re-runs the deferred writeToPg, which now sees A ∈
+      //    members and applies it. This is the P-004 fix the swarm rig can't reach. ──
+      const aMember: HiveMemberRow = {
+        hive_home_slug: HIVE_HOME,
+        github_user_id: idA.userId,
+        github_username: 'alice',
+        device_attestations: [
+          {
+            device_pubkey: idA.devicePubkey,
+            gist_id: 'gist-alice',
+            gist_url: 'https://gist.github.com/alice',
+            device_label: 'alice-dev',
+            created_at: 1,
+            signature_by_device: 'sig',
+          },
+        ],
+        revoked_pubkeys: [],
+        binding_status: 'verified',
+      };
+      await membersProj.writeToPg(aMember, {
+        authorPubkey: '',
+        origin: 'remote',
+        ts: 8000,
+        fedHlc: 'hlc-member-8000',
+      });
+
+      expect(buffer.size(), 'the deferred op should have drained on the member apply').toBe(0);
+      const landed = await readIssueForSlug(orgDb.adminSql, A_SLUG, 'I-defer');
+      expect(
+        landed,
+        "the deferred cross-member issue did NOT land after A's membership federated — the P-004 " +
+          'drain (onMemberApplied → drainForDevices → re-apply) did not fire / re-check fresh membership',
+      ).toBeDefined();
+      expect(landed).toMatchObject({
+        issue_id: 'I-defer',
+        title: 'A pre-membership issue',
+        severity: 'high',
+        status: 'open',
+        origin: 'remote',
+      });
+
+      // ── (3) A genuine NON-member's deferred op is NOT resurrected by an UNRELATED member apply
+      //    (the drain is device-targeted) and expires via the buffer TTL — the bounded-buffer
+      //    guarantee (D-007 point 2) that keeps non-member content from lingering forever. ──
+      const ghostIssue: HarnessIssueRow = { ...aIssue, issue_id: 'I-ghost', harness_slug: 'never-a-member' };
+      await issuesProj.writeToPg(
+        { ...ghostIssue },
+        { authorPubkey: 'ghost-log-key', origin: 'remote', ts: 9000, fedHlc: 'hlc-ghost-9000' },
+      );
+      // resolveAuthorDevice('ghost-log-key') → null, so the guard can't confirm an identity → it is
+      // a 'drop' (no author device to wait on), NOT a 'defer'. So the buffer stays empty.
+      expect(buffer.size(), 'an op with no resolvable author identity is dropped, not deferred').toBe(0);
+      expect(await readIssueForSlug(orgDb.adminSql, 'never-a-member', 'I-ghost')).toBeUndefined();
     },
     60_000,
   );

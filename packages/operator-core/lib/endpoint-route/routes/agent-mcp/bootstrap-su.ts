@@ -477,7 +477,9 @@ const post = defineTool({
     // the false "not started by psu" path). omp's native handle is the
     // omp_thread_id (linked post-launch); codex resumes via its per-session
     // CODEX_HOME and can't have its rollout id forced — so both stay null.
-    const nativeSessionId = agent === 'claude' ? randomUUID() : null;
+    const nativeSessionId = backendFeatureGuard(agent, 'forced-native-session-id').supported
+      ? randomUUID()
+      : null;
 
     // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({

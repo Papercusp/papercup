@@ -1,4 +1,5 @@
 export type InteractiveBackend = 'claude' | 'codex' | 'omp';
+export type SpawnBackendLike = InteractiveBackend | 'claude-code';
 
 export type BackendFeature =
   | 'fresh-su'
@@ -127,4 +128,8 @@ export function backendFeatureGuard(backend: InteractiveBackend, feature: Backen
 
 export function backendFeatureUnsupportedReason(backend: InteractiveBackend, feature: BackendFeature): string | null {
   return backendFeatureGuard(backend, feature).reason;
+}
+
+export function interactiveBackendFromSpawnBackend(backend: SpawnBackendLike): InteractiveBackend {
+  return backend === 'claude-code' ? 'claude' : backend;
 }

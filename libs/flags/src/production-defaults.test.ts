@@ -42,6 +42,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.TESTING, // cut for V1
 
   // ── Genuinely incomplete/unsafe work (per the FLAG_DEFAULTS comments) ──
+  // agent-activity-liveness-truth-2026-06-21 P-003 (D-003): the STALLED leg of the stale-claim
+  // reconciler frees a LIVE agent's non-progressing claim — a live-placement change on a
+  // fleet-critical hot path that D-003 mandates landing ATTENDED/flag-gated. OFF ⇒ only the
+  // dead-holder + confirmed-terminal-spawn legs run (byte-identical reclaim outcome + the new
+  // immediate spawn-death release). Owner flips ON after an attended verify of the stalled leg.
+  FLAGS.RECLAIM_STALLED,
   // git-sync-dx-hardening-2026-06-17 P-004: derived per-agent commit attribution rewrites
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.

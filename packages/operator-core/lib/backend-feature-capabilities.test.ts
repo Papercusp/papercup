@@ -4,6 +4,7 @@ import {
   backendFeatureCapability,
   backendFeatureGuard,
   backendSupportsFeature,
+  interactiveBackendFromSpawnBackend,
   type BackendFeature,
   type InteractiveBackend,
 } from './backend-feature-capabilities';
@@ -57,5 +58,11 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
       supported: false,
       reason: expect.stringMatching(/not implemented/i),
     });
+  });
+
+  it('normalizes spawn backend names into the matrix backend keys', () => {
+    expect(interactiveBackendFromSpawnBackend('claude-code')).toBe('claude');
+    expect(interactiveBackendFromSpawnBackend('codex')).toBe('codex');
+    expect(interactiveBackendFromSpawnBackend('omp')).toBe('omp');
   });
 });

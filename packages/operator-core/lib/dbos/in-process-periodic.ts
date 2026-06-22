@@ -226,16 +226,33 @@ const staleClaimSweepCheck: PeriodicCheck = {
     // live-configurability-audit P-014: apply the stale-claim reclaim overrides (undefined ⇒ baked default).
     const { readCoordLivenessConfig } = await import('../coord-liveness-config');
     const livenessCfg = await readCoordLivenessConfig();
-    const r = await reclaimStaleWorkItemClaims(sql, { graceMs: livenessCfg.reclaimGraceMs, requeueCap: livenessCfg.reclaimRequeueCap });
+    // agent-activity-liveness-truth P-003 (D-003): the STALLED leg (free a LIVE but
+    // non-progressing holder) is flag-gated OFF by default — a live-placement change
+    // on a hot path. The DEAD + confirmed-terminal-spawn legs always run.
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    const includeStalled = await getFlag(FLAGS.RECLAIM_STALLED, 'system');
+    const r = await reclaimStaleWorkItemClaims(sql, {
+      graceMs: livenessCfg.reclaimGraceMs,
+      requeueCap: livenessCfg.reclaimRequeueCap,
+      includeStalled,
+    });
     if (r.released.length > 0) {
       const byAction = r.released.reduce<Record<string, number>>((acc, c) => {
         acc[c.action] = (acc[c.action] ?? 0) + 1;
         return acc;
       }, {});
+      const byReason = r.released.reduce<Record<string, number>>((acc, c) => {
+        acc[c.reason] = (acc[c.reason] ?? 0) + 1;
+        return acc;
+      }, {});
       console.warn(
-        `[stale-claims] released ${r.released.length} work-item claim(s) from dead holders ` +
-          `(${Object.entries(byAction).map(([a, n]) => `${a}:${n}`).join(', ')}): ` +
-          r.released.map((c) => `${c.harness_slug}/${c.feature_id}<-${c.former_taken_by} [${c.former_status}->${c.new_status}]`).join(', '),
+        `[stale-claims] released ${r.released.length} work-item claim(s) ` +
+          `(reasons: ${Object.entries(byReason).map(([a, n]) => `${a}:${n}`).join(', ')}; ` +
+          `${Object.entries(byAction).map(([a, n]) => `${a}:${n}`).join(', ')}): ` +
+          r.released.map((c) => `${c.harness_slug}/${c.feature_id}<-${c.former_taken_by} [${c.former_status}->${c.new_status} ${c.reason}]`).join(', '),
       );
       // Broadcast ONLY dead-letters: poison items that exhausted the requeue cap and
       // parked in `blocked`, which DO need human/Queen attention (D-006).

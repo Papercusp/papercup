@@ -1,7 +1,11 @@
 'use client';
 
 /**
- * HarnessZeroProvider — wraps every /harness/* route with a SyncProvider.
+ * HarnessSyncProvider — wraps every /harness/* route with a SyncProvider.
+ *
+ * (Renamed from `HarnessZeroProvider` 2026-06-22: the name was a leftover from
+ * the retired Rocicorp-Zero client transport — see the History note below — and
+ * misleadingly implied this provider still uses Zero. It is purely SSE now.)
  *
  * Transport: **SSE for every runtime** (desktop Tauri shell *and* plain
  * browser). The operator sidecar serves `/api/zero-harness/sse` itself —
@@ -52,7 +56,7 @@ const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 // survives the provider unmount/remount that happens on some route swaps.
 const queryClient = new QueryClient();
 
-export function HarnessZeroProvider({
+export function HarnessSyncProvider({
   children,
   userID = 'papercusp-anon',
   ssePollIntervalMs = DEFAULT_SSE_DRIFT_REPAIR_MS,

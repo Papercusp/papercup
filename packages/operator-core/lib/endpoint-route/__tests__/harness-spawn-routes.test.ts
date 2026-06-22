@@ -36,13 +36,20 @@ const buildInvokeOnce = vi.fn((..._args: unknown[]) => ({
   args: ['invoke-once.js', '--role', 'worker'],
   env: { PAPERCUSP_TEST: '1' },
 }));
+const resolveSpawnBackendModel = vi.fn(() => ({ backend: 'omp', model: '' }));
 vi.mock('../../harness-invoke-once', () => ({
   buildInvokeOnce: (...a: unknown[]) => buildInvokeOnce(...a),
   // The invoke route's spawn path (orchestrator-runner) also imports
   // resolveSpawnBackendModel from this module; the mock must mirror the full
   // named-export surface or Vitest 4's evaluator fails the link under
   // full-suite load (the route then 500s). See orchestrator-runner-spawn.test.
-  resolveSpawnBackendModel: () => ({ backend: 'omp', model: '' }),
+  resolveSpawnBackendModel: (...a: unknown[]) => resolveSpawnBackendModel(...a),
+}));
+const recordAdvSession = vi.fn(async () => 77);
+const markAdvSessionEnded = vi.fn(async () => {});
+vi.mock('../../adv-sessions', () => ({
+  recordAdvSession: (...a: unknown[]) => recordAdvSession(...a),
+  markAdvSessionEnded: (...a: unknown[]) => markAdvSessionEnded(...a),
 }));
 
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));
@@ -134,6 +141,7 @@ beforeEach(() => {
   resolveProject.mockResolvedValue(PROJECT);
   resolvePhasedProject.mockResolvedValue(PROJECT);
   launchRun.mockResolvedValue({ ok: true, logPath: '/log/run.out' });
+  resolveSpawnBackendModel.mockReturnValue({ backend: 'omp', model: '' });
   spawnMock.mockImplementation(() => makeFakeChild(0));
 });
 afterEach(() => vi.clearAllMocks());
@@ -276,6 +284,38 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(res.status).toBe(200);
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({ QUEEN_BRIEF: 'timer' });
+  });
+
+  it('fails closed when a tracked hive launch resolves to a backend without forced native session ids', async () => {
+    resolveSpawnBackendModel.mockReturnValue({ backend: 'codex', model: 'gpt-5' });
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen&bpkind=hive', post({}));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({ ok: false });
+    expect(body.error).toMatch(/forced-native-session-id|codex/i);
+    expect(recordAdvSession).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(buildInvokeOnce).not.toHaveBeenCalled();
+  });
+
+  it('tracks hive launches when the resolved backend supports forced native session ids', async () => {
+    resolveSpawnBackendModel.mockReturnValue({ backend: 'claude-code', model: '' });
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen&bpkind=hive', post({}));
+    expect(res.status).toBe(200);
+    expect(recordAdvSession).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'claude',
+      role: 'queen',
+      cwd: '/proj',
+      label: 'hive · papercup/queen',
+      sessionId: expect.stringMatching(/[0-9a-f-]{36}/),
+      coordOwnerId: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
+    }));
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({
+      PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/[0-9a-f-]{36}/),
+      PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
+    });
+    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0);
   });
 });
 

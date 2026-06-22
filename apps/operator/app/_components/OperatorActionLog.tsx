@@ -110,7 +110,7 @@ function useUserActions(slug: string | null, opts?: { onTransition?: Listener })
   // has connected yet.
   const seed = useRecentActionsSeed(slug);
 
-  // HarnessZeroProvider is hoisted to root layout — useSyncQuery works
+  // HarnessSyncProvider is hoisted to root layout — useSyncQuery works
   // on every route now (was blocked by a Turbopack chunking bug;
   // resolved by Paperclip's harness-phases-const fix). Server emits
   // notifySyncInvalidate('userActions.byHarness', {harnessSlug}) on

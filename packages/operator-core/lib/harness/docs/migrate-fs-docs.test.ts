@@ -12,6 +12,11 @@ import type { AnchorResult } from './manual-anchor';
 // exhaustive + disjoint. (harness-docs-integration-2026-06-05 Gap 10.)
 vi.mock('./harness-repo', () => ({ resolveHarnessDocPaths: vi.fn() }));
 vi.mock('./doc-fs', () => ({ listDocBodies: vi.fn(), readDocBody: vi.fn() }));
+// ingestHarnessDocs now DERIVES the workspace from the harness (P-002/D-003); this PG-free
+// unit isn't exercising registry resolution, so stub the derive to echo the (omitted) ws.
+vi.mock('../workspace-for-harness', () => ({
+  resolveWorkspaceForHarness: vi.fn(async (_h: string, ws?: string) => ws ?? 'test-ws'),
+}));
 // Keep the pure subject-detection helpers (frontmatterDocuments / inferSubjectFromBody —
 // own suite in manual-anchor.test.ts) real; only the PG/git-touching anchorManualDoc is mocked.
 vi.mock('./manual-anchor', async (importOriginal) => ({
