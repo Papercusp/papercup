@@ -126,20 +126,34 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.project_spec_revisions': ['projectSpecRevisions.byProject'],
 
   // ── Cross-harness *Consolidated tables ────────────────────────────
-  // workItems.byHarness reads BOTH families (features_consolidated + engineer_issues)
-  // plus spawned_agents for spine-position — all three tables re-fire it.
-  'harness_shared.harness_features_consolidated': [
+  // work_items is the UNIFIED base table (mig-374 renamed harness_features_consolidated
+  // -> work_items and backfilled engineer_issues into it). It carries emit_change_notify,
+  // so a write — including raw-SQL / FEDERATED — fires harness_shared.work_items.changed.
+  // This is the REAL invalidation producer for the work-item read families; the two
+  // *_consolidated / engineer_issues names below are now compat VIEWS over work_items
+  // (relkind 'v', so they cannot carry a row trigger and never emit .changed themselves —
+  // a write routed through a view's INSTEAD-OF trigger still lands on work_items and fires
+  // THIS event). The view keys are kept for documentation + are COVERAGE_EXEMPT in
+  // cache-tag-trigger-coverage.integration.test.ts.
+  'harness_shared.work_items': [
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
     'workItems.byHarness',
     // scheduler.running (the live-execution view) reads work-item claims (taken_by /
-    // taken_at / last_progress_at) off this table via fleet_assignment — a claim/progress
+    // taken_at / last_progress_at) off work_items via fleet_assignment — a claim/progress
     // flip refreshes the bee-run list (hybrid-bee-scheduler P-001).
     'scheduler.running',
   ],
+  // Compat view over work_items (post-374) — see the work_items producer above.
+  'harness_shared.harness_features_consolidated': [
+    'featuresConsolidated.bySlug',
+    'featuresConsolidated.byPlanSlug',
+    'workItems.byHarness',
+    'scheduler.running',
+  ],
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
-  // engineer_issues = the issue-family store of the unified work_items surface
-  // (trigger added in migration 215).
+  // engineer_issues = the issue-family compat view over work_items (post-374; the base
+  // table is the real producer above).
   'harness_shared.engineer_issues': ['workItems.byHarness'],
   'harness_shared.agent_runs_consolidated': [
     'agentRunsConsolidated.bySlug',
