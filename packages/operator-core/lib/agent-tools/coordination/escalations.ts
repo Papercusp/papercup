@@ -23,7 +23,7 @@ import {
   type EscalationRecord,
   type EscalationResolvedEvent,
 } from '@papercusp/coordination/core';
-import { coordLog, coordSql, coordWorkspaceId } from './log';
+import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import type { AgentIdentity } from './identity';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -115,7 +115,14 @@ export async function listEscalations(
   // of the unbounded full-surface event replay, when the flag is ON. Fail-safe:
   // any flag-read or projection-read error falls through to the authoritative
   // fold below (e.g. before mig 355 applies, the projection table won't exist).
-  if (opts.status === 'open') {
+  //
+  // Gate on coordHasPgFastPath(): the projection read goes through coordSql(),
+  // which — when the seam is the in-memory/fs double (tests) — falls back to a
+  // DIFFERENT (real org) PG store than the seam reads/writes. Taking it there
+  // would silently return another store's rows instead of the seam's seeded data
+  // (the listEscalations({status:'open'}) failures the green gate caught). Same
+  // contract readInbox/readAckedMsgIds gate on (see coordHasPgFastPath doc).
+  if (opts.status === 'open' && coordHasPgFastPath()) {
     let useProjection = false;
     try {
       useProjection = await getFlag(

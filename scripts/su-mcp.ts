@@ -15,6 +15,17 @@
  * initialize/initialized handshake) — a single POST `tools/call` returns the
  * result as one SSE `data:` frame.
  *
+ * TOKEN PARITY WITH THE NATIVE MCP TOOL: this client adopts the SAME result
+ * encoding the operator ships (token-efficient-tool-result-formats /
+ * token-efficient-agent-io) — it requests `format=compact` EXPLICITLY (→ TOON for
+ * arrays, JSON for objects, ~30% leaner reads), the same optimized output the
+ * native MCP transport gets by default. We send it explicitly rather than relying
+ * on the `transport==='mcp'` default so the optimization can't silently diverge
+ * (e.g. via the `Accept` header). Override per call with `--format=json` (lossless
+ * `full`) or `--format=csv`/`tsv`/`md` (`tabular`), exactly like the MCP path's
+ * `_meta.format`. We never request `structuredContent`, so the result is never
+ * doubly-encoded (compact + JSON) — same as the agent-facing MCP default.
+ *
  * Usage:
  *   tsx scripts/su-mcp.ts --list                       # list available tool names
  *   tsx scripts/su-mcp.ts <group:verb> '<jsonArgs>'    # call a tool
@@ -24,8 +35,10 @@
  *   --client=<id>      identity to act AS — default $PAPERCUSP_SID or the config's
  *                      static-client default (pass your own su-… id to own writes)
  *   --profile=<p>      optional profile
- *   --raw              print the full JSON-RPC result (default: unwrap a single
- *                      text content to its text, which is usually the tool's JSON)
+ *   --format=<f>       result encoding: compact (default — TOON/CSV, token-optimized)
+ *                      | json (full/lossless) | toon | csv | tsv | md | full | tabular
+ *   --raw              print the full JSON-RPC result incl. _meta (default: unwrap a
+ *                      single text content to its text — the compact-encoded payload)
  * Examples:
  *   tsx scripts/su-mcp.ts coord:whoami
  *   tsx scripts/su-mcp.ts work_items:create '{"kind":"task","title":"x","harness":"papercusp","assign_to":"su-…"}' --client=su-…
@@ -99,7 +112,11 @@ async function main(): Promise<void> {
     flags.client ?? process.env.PAPERCUSP_SID ?? '28dbf719-6c0e-4f42-a0d2-56d6be156634';
   const workspace = flags.workspace ?? process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace';
   const profile = flags.profile ?? process.env.PAPERCUSP_PROFILE ?? '';
-  const qs = new URLSearchParams({ superuser: '1', client, workspace });
+  // Token parity: explicitly request the operator's compact encoding (TOON/CSV) —
+  // the same optimization the native MCP transport applies by default — instead of
+  // relying on the implicit transport default. `--format=json` for lossless.
+  const format = flags.format ?? 'compact';
+  const qs = new URLSearchParams({ superuser: '1', client, workspace, format });
   if (profile) qs.set('profile', profile);
   const url = `${base}?${qs.toString()}`;
 

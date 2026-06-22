@@ -40,6 +40,7 @@ import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibil
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
 import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized, type ScopedContentError } from './run-git-sync';
+import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
@@ -728,6 +729,38 @@ async function loadAttributionRoster(workspaceId: string | null): Promise<Attrib
   }
 }
 
+/** P-003 (deterministic-commit-workitem-attribution-2026-06-22): the attribution roster,
+ *  preferring the DURABLE edit ledger (keyed by repo root) over live presence — so a commit is
+ *  attributed even after the editing agent's session ended (D-002), and carries the work-item(s)
+ *  it was claimed under. Ledger entries come FIRST so attributionMapForRepo's first-wins gives
+ *  them priority; presence fills any files the ledger window missed (and supplies agentLabels).
+ *  Best-effort throughout: a ledger-read failure degrades to presence, exactly as before. */
+async function loadAttributionRosterMerged(
+  slug: string,
+  workspaceId: string | null,
+): Promise<AttributionRosterEntry[]> {
+  let ledger: AttributionRosterEntry[] = [];
+  try {
+    const { projectDirForSlug } = await import('../../operator-notes');
+    const repoRoot = await projectDirForSlug(slug);
+    if (repoRoot) {
+      const { readEditAttributionRoster } = await import('../../edit-attribution');
+      ledger = (await readEditAttributionRoster(repoRoot)).map((e) => ({
+        agent: e.agent,
+        intent: e.intent,
+        files: e.files,
+        workItems: e.workItems,
+        planSlug: e.planSlug,
+        sessionId: e.sessionId,
+      }));
+    }
+  } catch {
+    /* best-effort: fall through to presence */
+  }
+  const presence = await loadAttributionRoster(workspaceId);
+  return [...ledger, ...presence];
+}
+
 /** P-006 (assign-don't-broadcast / F5): recipients for a content-guard escalation — the agents who
  *  declared the quarantined files (ASSIGNED, not a fleet broadcast). Returns ['*'] when derived
  *  attribution is OFF or nothing matched, so it degrades to today's broadcast. Gated on the same
@@ -752,6 +785,69 @@ async function assigneesForContentErrors(
     return agents.length ? agents : ['*'];
   } catch {
     return ['*'];
+  }
+}
+
+/**
+ * P-004 (deterministic-commit-workitem-attribution-2026-06-22): after a synced tick, read the
+ * `Papercusp-Work-Item/Agent/Session/Plan` trailers off the per-agent commits git-sync just made
+ * (run-git-sync wrote them) + their changed files, and persist them as git_sync_commit_attribution
+ * rows — the fast reverse-index the doc-drift (P-005) + merge-resolver (P-006) consumers join.
+ * DETERMINISTIC + best-effort (D-006): pure git reads + a bulk insert, NO LLM. Dedup by commit_sha
+ * (idempotent across ticks); bounded to the last 50 commits; superproject only for now (a
+ * superproject commit that touched a submodule shows the gitlink path — submodule-inner attribution
+ * is a follow-on). Never throws.
+ */
+async function recordSyncedCommitAttribution(slug: string, workspaceId: string): Promise<void> {
+  try {
+    const { projectDirForSlug } = await import('../../operator-notes');
+    const repoRoot = await projectDirForSlug(slug);
+    if (!repoRoot) return;
+    const { runGit } = await import('../docs/git-runner');
+
+    const logRes = await runGit(['log', '-n', '50', '--format=%H'], repoRoot);
+    if (logRes.code !== 0) return;
+    const shas = logRes.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (shas.length === 0) return;
+
+    // Which of these are already recorded? (idempotent re-run across ticks.)
+    const { sql } = getOrgPg();
+    const existing = await sql<{ commit_sha: string }[]>`
+      SELECT DISTINCT commit_sha FROM harness_shared.git_sync_commit_attribution
+       WHERE commit_sha = ANY(${shas})`;
+    const seen = new Set(existing.map((r) => r.commit_sha));
+
+    const rows: CommitAttributionRow[] = [];
+    for (const sha of shas) {
+      if (seen.has(sha)) continue;
+      const body = (await runGit(['show', '-s', '--format=%B', sha], repoRoot)).stdout;
+      const t = parsePapercuspTrailers(body);
+      // Only OUR attributed git-sync commits carry these — skip everything else.
+      if (!t.agent && t.workItems.length === 0) continue;
+      const filesRes = await runGit(['show', '--name-only', '--format=', sha], repoRoot);
+      const files = filesRes.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+      for (const file of files) {
+        const base = {
+          workspaceId,
+          harnessSlug: slug,
+          repo: 'superproject',
+          commitSha: sha,
+          file,
+          agentId: t.agent,
+          sessionId: t.sessionId,
+          planSlug: t.planSlug,
+        };
+        if (t.workItems.length === 0) {
+          rows.push(base);
+        } else {
+          // one row per (file × work-item) — honest multiplicity (D-003).
+          for (const wi of t.workItems) rows.push({ ...base, workItemId: wi });
+        }
+      }
+    }
+    await recordCommitAttribution(rows);
+  } catch {
+    // best-effort: commit attribution must never affect git-sync.
   }
 }
 
@@ -817,7 +913,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     outcome = await runGitSync(slug, {
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
-      loadRoster: attributionOn ? () => loadAttributionRoster(workspaceId) : undefined,
+      loadRoster: attributionOn ? () => loadAttributionRosterMerged(slug, workspaceId) : undefined,
     });
   } finally {
     if (lock.state === 'acquired') await releaseAll(cd, acquired);
@@ -867,6 +963,13 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.
     await clearGitSyncEscalation(slug, [ESCALATION_KIND]);
+    // P-004 (deterministic-commit-workitem-attribution): persist the commit->work-item link
+    // from the attributed commits git-sync just made (their trailers). Same flag-gate as the
+    // attribution roster; best-effort + deterministic (no LLM). Only on 'synced' — a 'nothing'
+    // tick made no new commits.
+    if (attributionOn && outcome.status === 'synced') {
+      await recordSyncedCommitAttribution(slug, workspaceId);
+    }
   }
 
   // EI-438 content guard (P-004/P-005): broken files were QUARANTINED this tick

@@ -307,6 +307,32 @@ export async function getClaim(
   return rows[0] ? claimFromDb(rows[0]) : null;
 }
 
+/**
+ * The owner's most-recently-active LIVE claim — its current lane. A cheap single-row
+ * read for the edit-attribution join (deterministic-commit-workitem-attribution P-001):
+ * at file-lock grant time we map the lock holder → the work-item it's working. NULL when
+ * the agent holds no live claim (an honest unattributed edit, D-003). Claims are keyed by
+ * owner (cf. releaseAllClaimsForOwner); an agent with several claims attributes to the
+ * most-recently-active one (D-003 accepts the coarseness).
+ */
+export async function getActiveClaimForOwner(
+  workspaceId: string,
+  owner: string,
+): Promise<WorkItemClaim | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<ClaimDbRow[]>`
+    SELECT workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+             owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
+             last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
+      FROM harness_shared.work_item_claims
+     WHERE workspace_id = ${workspaceId} AND owner = ${owner}
+       AND expires_ts > clock_timestamp()
+     ORDER BY last_activity_ts DESC
+     LIMIT 1
+  `;
+  return rows[0] ? claimFromDb(rows[0]) : null;
+}
+
 /** All live (non-lapsed) claims for a Hive — the "what's already taken" view the backlog reads. */
 export async function listLiveClaimsForHive(workspaceId: string, hiveSlug: string): Promise<WorkItemClaim[]> {
   const { sql } = getOrgPg();

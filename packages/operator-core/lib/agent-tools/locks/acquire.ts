@@ -49,6 +49,7 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { recordEditAttribution } from '../../edit-attribution';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
   FILE_LOCK_OP_KINDS,
@@ -199,6 +200,20 @@ export default defineTool({
     }
 
     if (first.ok) {
+      // P-001 (deterministic-commit-workitem-attribution-2026-06-22): capture this edit's
+      // attribution AT EDIT TIME (D-002) — fire-and-forget, best-effort; NEVER affects the
+      // lock or the hot path (D-006: deterministic, no LLM; the work-item is read from the
+      // claim the agent ALREADY holds). git-sync reads this ledger window to attribute its
+      // per-agent commits (P-003).
+      const attrId = resolveAgentIdentity(ctx);
+      void recordEditAttribution({
+        repoRoot: coordinationDomain,
+        files: first.held ?? paths,
+        agentId: ownerId,
+        intent: args.intent,
+        workspaceId: attrId.workspaceId ?? undefined,
+        contributor: attrId.userId ?? undefined,
+      });
       // Notify firehose removed at the source (D-002, fleet-coordination-painpoints):
       // lock_acquired had no push-consumer — an agent learns contention on its own acquire.
       return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held);

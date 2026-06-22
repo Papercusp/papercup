@@ -53,32 +53,37 @@ describe('coord:resolve handler', () => {
 
     const body = parse(res);
     expect(res.isError).toBeFalsy();
+    // Bulk envelope (bulk-endpoint-standardization-2026-06-21): one logical resolve
+    // is n=1 of the batch — the per-item result self-describes under results[0].
     expect(body.ok).toBe(true);
-    expect(body.escalation.resolved.choice).toBe('go');
-    expect(body.escalation.resolved.by).toBe('human');
+    expect(body.results[0].ok).toBe(true);
+    expect(body.results[0].escalation.resolved.choice).toBe('go');
+    expect(body.results[0].escalation.resolved.by).toBe('human');
     // Side effect: a linked live card (if any) is unblocked with the choice.
     expect(unblockLinkedCard).toHaveBeenCalledTimes(1);
     expect(vi.mocked(unblockLinkedCard).mock.calls[0][1]).toBe('go');
   });
 
-  it('returns not_found (isError) for an unknown msg_id and does not unblock', async () => {
+  it('returns a per-item not_found for an unknown msg_id and does not unblock', async () => {
     const res = await run({ msg_id: 'never', choice: 'x' });
     const body = parse(res);
-    expect(res.isError).toBe(true);
-    expect(body.ok).toBe(false);
-    expect(body.error).toBe('not_found');
+    // Bulk verbs never set top-level isError; a bad item surfaces as results[i].ok=false.
+    expect(body.ok).toBe(true);
+    expect(body.counts.failed).toBe(1);
+    expect(body.results[0].ok).toBe(false);
+    expect(body.results[0].error).toBe('not_found');
     expect(unblockLinkedCard).not.toHaveBeenCalled();
   });
 
-  it('returns already_resolved (isError) on a second resolve and does not re-unblock', async () => {
+  it('returns a per-item already_resolved on a second resolve and does not re-unblock', async () => {
     const e = await openEscalation(HUMAN, { severity: 'blocker', summary: 'need a call' });
     await run({ msg_id: e.msg_id, choice: 'first' });
     vi.mocked(unblockLinkedCard).mockReset();
 
     const res = await run({ msg_id: e.msg_id, choice: 'second' });
     const body = parse(res);
-    expect(res.isError).toBe(true);
-    expect(body.error).toBe('already_resolved');
+    expect(body.results[0].ok).toBe(false);
+    expect(body.results[0].error).toBe('already_resolved');
     expect(unblockLinkedCard).not.toHaveBeenCalled();
   });
 
@@ -95,13 +100,13 @@ describe('coord:resolve handler', () => {
       meta: { spawnRequest: true },
     });
 
-    // The call resolves to an envelope (does not throw).
+    // The call resolves to an envelope (does not throw); the gate surfaces as a
+    // per-item error under results[0], not a top-level isError.
     const res = await run({ msg_id: e.msg_id, choice: 'approve' });
     const body = parse(res);
-    expect(res.isError).toBe(true);
-    expect(body.ok).toBe(false);
-    expect(body.error).toBe('requires_spawn_approve');
-    expect(body.detail).toContain('new_subagent:approve');
+    expect(body.results[0].ok).toBe(false);
+    expect(body.results[0].error).toBe('requires_spawn_approve');
+    expect(body.results[0].detail).toContain('new_subagent:approve');
     // The brain-gated routing means NO side effects fired.
     expect(unblockLinkedCard).not.toHaveBeenCalled();
   });

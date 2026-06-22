@@ -87,4 +87,31 @@ describe('commitAttributedGroups (P-004)', () => {
     const res2 = await commitAttributedGroups(g2, '/repo', attribution, [], MSG);
     expect(res2).toEqual({ committedAny: false }); // benign — no error
   });
+
+  it('emits Papercusp-Agent/Work-Item/Session/Plan trailers when the attribution carries them (P-004 attribution)', async () => {
+    const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0' });
+    const attribution = new Map<string, FileAttribution>([
+      ['a.ts', { agent: 'ag1', intent: 'fix a', workItems: ['WI-1', 'WI-2'], sessionId: 'sess-9', planSlug: 'plan-x' }],
+    ]);
+    await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
+    const commit = calls.find((c) => c[0] === 'commit')!;
+    expect(commit).toContain('Papercusp-Agent: ag1');
+    expect(commit).toContain('Papercusp-Work-Item: WI-1, WI-2');
+    expect(commit).toContain('Papercusp-Session: sess-9');
+    expect(commit).toContain('Papercusp-Plan: plan-x');
+    // still carries the standard subject + Co-Authored-By
+    expect(commit).toContain('fix a [skip ci]');
+    expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
+  });
+
+  it('emits Papercusp-Agent but NO Work-Item/Session/Plan trailers when the attribution lacks them', async () => {
+    const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0' });
+    const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'x' }]]);
+    await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
+    const commit = calls.find((c) => c[0] === 'commit')!;
+    expect(commit).toContain('Papercusp-Agent: ag1');
+    expect(commit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
+    expect(commit.some((a) => a.startsWith('Papercusp-Session:'))).toBe(false);
+    expect(commit.some((a) => a.startsWith('Papercusp-Plan:'))).toBe(false);
+  });
 });

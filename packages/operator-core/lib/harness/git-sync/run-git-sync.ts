@@ -318,6 +318,16 @@ export async function commitAttributedGroups(
     await runGit(['add', '--', ...g.files], repoPath);
     const args = ['commit', '--no-verify', '-m', `${g.subject}${suffix}`];
     if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
+    // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
+    // trailers so the commit↔work-item link travels IN git history (and is read back
+    // post-sync into git_sync_commit_attribution). Deterministic — from the ledger-derived
+    // attribution, no LLM (D-004/D-006).
+    if (g.agent) args.push('-m', `Papercusp-Agent: ${g.agent}`);
+    if (g.workItems && g.workItems.length > 0) {
+      args.push('-m', `Papercusp-Work-Item: ${g.workItems.slice(0, 20).join(', ')}`);
+    }
+    if (g.sessionId) args.push('-m', `Papercusp-Session: ${g.sessionId}`);
+    if (g.planSlug) args.push('-m', `Papercusp-Plan: ${g.planSlug}`);
     const c = await runGit(args, repoPath);
     if (c.code === 0) committedAny = true;
     else if (!nothingToCommit(c)) {

@@ -20,6 +20,14 @@ export interface FileAttribution {
   intent?: string;
   /** Co-Authored-By email (best-effort; a synthetic agents address if unknown). */
   email?: string;
+  /** Work-item id(s) the agent had claimed when it made these edits — from the edit
+   *  ledger (deterministic-commit-workitem-attribution P-001/P-003). Drives the
+   *  `Papercusp-Work-Item:` trailer + the git_sync_commit_attribution rows (P-004). */
+  workItems?: string[];
+  /** The agent's plan slug at edit time (provenance; best-effort). */
+  planSlug?: string;
+  /** The agent's session id — for the `Papercusp-Session:` trailer + the link rows. */
+  sessionId?: string;
 }
 
 /** One commit git-sync will make this tick. */
@@ -32,6 +40,12 @@ export interface AttributedCommitGroup {
   subject: string;
   /** "Name <email>" for a Co-Authored-By trailer, or null (catch-all / unknown). */
   coAuthor: string | null;
+  /** Work-item id(s) for this commit's `Papercusp-Work-Item:` trailer + link rows (P-004). */
+  workItems?: string[];
+  /** Plan slug (provenance). */
+  planSlug?: string;
+  /** Session id for the `Papercusp-Session:` trailer + link rows (P-004). */
+  sessionId?: string;
 }
 
 /** The git-sync default subject (unchanged from today's single-commit message stem). */
@@ -93,6 +107,9 @@ export function groupFilesForAttribution(
       files: g.files.slice().sort(),
       subject: intentToSubject(g.attr.intent, g.attr.agentLabel),
       coAuthor: coAuthorTrailer(g.attr),
+      workItems: g.attr.workItems,
+      planSlug: g.attr.planSlug,
+      sessionId: g.attr.sessionId,
     }));
   groups.push({ agent: null, files: remainder.slice().sort(), subject: defaultSubject, coAuthor: null });
   return groups;
@@ -116,6 +133,10 @@ export interface AttributionRosterEntry {
   email?: string;
   /** Workspace-root-relative paths the agent is working on (coord:declare-intent current_files). */
   files: string[];
+  /** Work-item id(s) the agent has claimed (P-003 — from the edit ledger / claim). */
+  workItems?: string[];
+  planSlug?: string;
+  sessionId?: string;
 }
 
 export function attributionMapForRepo(
@@ -146,7 +167,15 @@ export function attributionMapForRepo(
       }
       if (rel == null || rel === '') continue;
       if (!map.has(rel)) {
-        map.set(rel, { agent: a.agent, agentLabel: a.agentLabel, intent: a.intent, email: a.email });
+        map.set(rel, {
+          agent: a.agent,
+          agentLabel: a.agentLabel,
+          intent: a.intent,
+          email: a.email,
+          workItems: a.workItems,
+          planSlug: a.planSlug,
+          sessionId: a.sessionId,
+        });
       }
     }
   }
