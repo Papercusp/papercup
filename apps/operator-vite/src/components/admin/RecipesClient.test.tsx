@@ -69,6 +69,18 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string }) =>
     opts.queryName === 'codeRecipes' ? recipesResult : candidatesResult,
 }));
+// The recipe table is virtualized (useVirtualizer). jsdom has no layout (0 scroll
+// height → 0 virtual items), so without this the rows never mount and content
+// assertions fail. Yield one virtual item per row so all rows render in the test.
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: (opts: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: opts.count }, (_, i) => ({ index: i, key: i, start: i * 40, size: 40, end: i * 40 + 40, lane: 0 })),
+    getTotalSize: () => opts.count * 40,
+    measureElement: () => {},
+    measure: () => {},
+  }),
+}));
 
 import RecipesClient from './RecipesClient';
 

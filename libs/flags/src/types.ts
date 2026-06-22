@@ -49,6 +49,13 @@ export const FLAGS = {
   // unit; D-007); OFF = the `classic` Papercusp pack. Fully reversible presentation
   // switch; @papercusp/lexicon resolves it.
   THE_HIVE: "papercusp-the-hive",
+  // shared-hive-member-content-federation-2026-06-20 (WI-259 P-006, D-010): gates the
+  // cross-member browse UI — the "Hive content" rollup panel that shows OTHER hive
+  // members' federated features + plans (member-origin-scoped) in-app. The read-path
+  // (featuresConsolidated.byHive / plans.byHive) is inert without this panel; per-member
+  // reads are unchanged. ON (alpha flags-default-on); OFF ⇒ the panel is not offered in
+  // the dock catalog (the rollup queries simply go unconsumed) — fully reversible.
+  CROSS_MEMBER_BROWSE: "papercusp-cross-member-browse",
   // blueprint-aware-harness-ui-2026-06-09 (P-008): gates the new SCHEMA-DRIVEN
   // harness settings panel (BlueprintSettingsPanel) that renders controls from the
   // harness blueprint's declared `params` (P-006), replacing the hardcoded
@@ -952,6 +959,10 @@ export const FLAGS = {
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
+  // DEFAULT ON (alpha flags-default-on): the cross-member browse "Hive content" rollup
+  // panel (WI-259 P-006, D-010). Additive + inert without a shared hive + federated
+  // content; OFF ⇒ the panel is not offered in the dock catalog. Reversible.
+  [FLAGS.CROSS_MEMBER_BROWSE]: true,
   // DEFAULT OFF (exception to alpha flags-default-on): an unverified HOT-PATH change
   // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
   // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.

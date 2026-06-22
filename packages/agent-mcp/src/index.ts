@@ -124,6 +124,8 @@ export type {
   StateSnapshot,
   VersionedSnapshot,
 } from '@papercusp/tooldef';
+export { diffSnapshot, applySnapshotDelta, chooseSnapshotEmission } from '@papercusp/tooldef';
+export type { SnapshotDelta, SnapshotEmission } from '@papercusp/tooldef';
 export {
   registerCard,
   resolveCardResponse,

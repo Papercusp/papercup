@@ -24,6 +24,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { setFrontmatterScalar } from './transfer-owner';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 /** Collapse whitespace/newlines so the value can never break out of its single
  *  frontmatter line; trim. Empty → null (clears the field). Exported for tests. */
@@ -42,7 +43,8 @@ export function currentInitiative(body: string): string | null {
 
 const argsSchema = z.object({
   harness: harnessArg,
-  slug: z.string().min(1).describe('Plan slug (filename stem) to label.'),
+  slug: z.string().min(1).optional().describe('Plan slug (filename stem) to label.'),
+  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to label in one call.'),
   initiative: z
     .string()
     .max(200)
@@ -53,6 +55,8 @@ const argsSchema = z.object({
     .max(400)
     .optional()
     .describe('Why — stored on the plan revision.'),
+}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+  message: 'pass `slug` or `slugs`',
 });
 
 type SetInitiativeValue =
@@ -86,66 +90,76 @@ export default defineTool({
     const next = normalizeInitiative(args.initiative);
     const rationale =
       args.rationale ?? (next ? `set initiative → ${next}` : 'clear initiative');
-    const rev = planRevisionCapture(
-      ctx as PlanRevisionCtx,
-      args.slug,
-      rationale,
-      harnessSlug ? { harnessSlug } : {},
-    );
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const rev = planRevisionCapture(
+          ctx as PlanRevisionCtx,
+          slug,
+          rationale,
+          harnessSlug ? { harnessSlug } : {},
+        );
 
-    const result = await withPlanLock<SetInitiativeValue>(
-      ctx as never,
-      {
-        slug: args.slug,
-        intent: 'plans:set-initiative',
-        ...(harnessSlug ? { harnessSlug } : {}),
-        afterWrite: rev.afterWrite,
-      },
-      async (current): Promise<{ newBody: string | null; value: SetInitiativeValue }> => {
-        if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
-        if (parsePlan(current, { filePath: `${args.slug}.md` }).isLegacy) {
-          return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+        const result = await withPlanLock<SetInitiativeValue>(
+          ctx as never,
+          {
+            slug,
+            intent: 'plans:set-initiative',
+            ...(harnessSlug ? { harnessSlug } : {}),
+            afterWrite: rev.afterWrite,
+          },
+          async (current): Promise<{ newBody: string | null; value: SetInitiativeValue }> => {
+            if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
+            if (parsePlan(current, { filePath: `${slug}.md` }).isLegacy) {
+              return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+            }
+            const from = currentInitiative(current);
+            let body = setFrontmatterScalar(current, 'initiative', next);
+            body = bumpUpdatedDate(body);
+            return { newBody: body, value: { ok: true, slug, from, to: next } };
+          },
+        );
+
+        if (result.kind === 'busy') {
+          return {
+            ok: false as const,
+            slug,
+            error: 'busy',
+            busy: result.busy.map((b) => ({
+              path: b.path,
+              owner_label: b.owner_label,
+              intent: b.intent,
+              expires_ts: b.expires_ts,
+            })),
+          };
         }
-        const from = currentInitiative(current);
-        let body = setFrontmatterScalar(current, 'initiative', next);
-        body = bumpUpdatedDate(body);
-        return { newBody: body, value: { ok: true, slug: args.slug, from, to: next } };
+
+        if (!result.value.ok) {
+          return { ok: false as const, slug, error: result.value.code };
+        }
+
+        return {
+          ok: true as const,
+          slug: result.value.slug,
+          from: result.value.from,
+          to: result.value.to,
+          revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+        };
       },
+      { keyOf: (slug) => ({ slug }) },
     );
 
-    if (result.kind === 'busy') {
-      return text(
-        {
-          error: 'busy',
-          busy: result.busy.map((b) => ({
-            path: b.path,
-            owner_label: b.owner_label,
-            intent: b.intent,
-            expires_ts: b.expires_ts,
-          })),
-        },
-        true,
-      );
+    if (env.counts.ok > 0) {
+      // Refresh the rail so the initiative facet updates immediately.
+      try {
+        const { notifySyncInvalidate } = await import('../../sync-sse');
+        await notifySyncInvalidate('plans.list', undefined);
+      } catch {
+        /* best-effort — the next natural refresh picks it up */
+      }
     }
 
-    if (!result.value.ok) {
-      return text({ error: result.value.code, slug: args.slug }, true);
-    }
-
-    // Refresh the rail so the initiative facet updates immediately.
-    try {
-      const { notifySyncInvalidate } = await import('../../sync-sse');
-      await notifySyncInvalidate('plans.list', undefined);
-    } catch {
-      /* best-effort — the next natural refresh picks it up */
-    }
-
-    return text({
-      ok: true,
-      slug: result.value.slug,
-      from: result.value.from,
-      to: result.value.to,
-      revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
-    });
+    return bulkContent(env);
   },
 });

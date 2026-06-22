@@ -24,6 +24,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 /**
  * Set/replace/remove ONE scalar frontmatter line, preserving every other key.
@@ -62,7 +63,8 @@ const emailList = z
 const argsSchema = z
   .object({
     harness: harnessArg,
-    slug: z.string().min(1).describe('Plan slug (filename stem) to transfer.'),
+    slug: z.string().min(1).optional().describe('Plan slug (filename stem) to transfer.'),
+    slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to transfer in one call.'),
     to: z
       .string()
       .email()
@@ -75,6 +77,9 @@ const argsSchema = z
       .optional()
       .describe('Why the handoff — stored on the plan revision (the durable transfer record).'),
   })
+  .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+    message: 'provide `slug` or `slugs`',
+  })
   .refine((a) => a.to !== undefined || a.coOwners !== undefined, {
     message: 'provide `to` (new owner) and/or `coOwners` (the co-owner list) — at least one.',
   });
@@ -83,11 +88,6 @@ type TransferValue =
   | { ok: true; slug: string; from: string | null; to: string | null; coOwners?: string[] }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'legacy_plan' };
-
-const text = (payload: Record<string, unknown>, isError = false) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-  ...(isError ? { isError: true as const } : {}),
-});
 
 export default defineTool({
   name: 'plans:transfer-owner',
@@ -110,84 +110,94 @@ export default defineTool({
     const rationale =
       args.rationale ??
       (args.to ? `transfer owner → ${args.to}` : 'update co-owners');
-    const rev = planRevisionCapture(
-      ctx as PlanRevisionCtx,
-      args.slug,
-      rationale,
-      harnessSlug ? { harnessSlug } : {},
-    );
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const rev = planRevisionCapture(
+          ctx as PlanRevisionCtx,
+          slug,
+          rationale,
+          harnessSlug ? { harnessSlug } : {},
+        );
 
-    const result = await withPlanLock<TransferValue>(
-      ctx as never,
-      {
-        slug: args.slug,
-        intent: 'plans:transfer-owner',
-        ...(harnessSlug ? { harnessSlug } : {}),
-        afterWrite: rev.afterWrite,
-      },
-      async (current): Promise<{ newBody: string | null; value: TransferValue }> => {
-        if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
-        if (parsePlan(current, { filePath: `${args.slug}.md` }).isLegacy) {
-          return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
-        }
-        const from = currentOwner(current);
-        let body = current;
-        if (args.to !== undefined) body = setFrontmatterScalar(body, 'owner', args.to);
-        if (args.coOwners !== undefined) {
-          body = setFrontmatterScalar(
-            body,
-            'co_owners',
-            args.coOwners.length > 0 ? args.coOwners.join(', ') : null,
-          );
-        }
-        body = bumpUpdatedDate(body);
-        return {
-          newBody: body,
-          value: {
-            ok: true,
-            slug: args.slug,
-            from,
-            to: args.to ?? from,
-            ...(args.coOwners !== undefined ? { coOwners: args.coOwners } : {}),
+        const result = await withPlanLock<TransferValue>(
+          ctx as never,
+          {
+            slug,
+            intent: 'plans:transfer-owner',
+            ...(harnessSlug ? { harnessSlug } : {}),
+            afterWrite: rev.afterWrite,
           },
+          async (current): Promise<{ newBody: string | null; value: TransferValue }> => {
+            if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
+            if (parsePlan(current, { filePath: `${slug}.md` }).isLegacy) {
+              return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+            }
+            const from = currentOwner(current);
+            let body = current;
+            if (args.to !== undefined) body = setFrontmatterScalar(body, 'owner', args.to);
+            if (args.coOwners !== undefined) {
+              body = setFrontmatterScalar(
+                body,
+                'co_owners',
+                args.coOwners.length > 0 ? args.coOwners.join(', ') : null,
+              );
+            }
+            body = bumpUpdatedDate(body);
+            return {
+              newBody: body,
+              value: {
+                ok: true,
+                slug,
+                from,
+                to: args.to ?? from,
+                ...(args.coOwners !== undefined ? { coOwners: args.coOwners } : {}),
+              },
+            };
+          },
+        );
+
+        if (result.kind === 'busy') {
+          return {
+            ok: false as const,
+            slug,
+            error: 'busy',
+            busy: result.busy.map((b) => ({
+              path: b.path,
+              owner_label: b.owner_label,
+              intent: b.intent,
+              expires_ts: b.expires_ts,
+            })),
+          };
+        }
+
+        if (!result.value.ok) {
+          return { ok: false as const, slug, error: result.value.code };
+        }
+
+        return {
+          ok: true as const,
+          slug: result.value.slug,
+          from: result.value.from,
+          to: result.value.to,
+          ...(result.value.coOwners !== undefined ? { coOwners: result.value.coOwners } : {}),
+          revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
         };
       },
+      { keyOf: (slug) => ({ slug }) },
     );
 
-    if (result.kind === 'busy') {
-      return text(
-        {
-          error: 'busy',
-          busy: result.busy.map((b) => ({
-            path: b.path,
-            owner_label: b.owner_label,
-            intent: b.intent,
-            expires_ts: b.expires_ts,
-          })),
-        },
-        true,
-      );
+    if (env.counts.ok > 0) {
+      // Refresh the rail so the new owner/co-owners badge shows immediately.
+      try {
+        const { notifySyncInvalidate } = await import('../../sync-sse');
+        await notifySyncInvalidate('plans.list', undefined);
+      } catch {
+        /* best-effort — the next natural refresh picks it up */
+      }
     }
 
-    if (!result.value.ok) {
-      return text({ error: result.value.code, slug: args.slug }, true);
-    }
-
-    // Refresh the rail so the new owner/co-owners badge shows immediately.
-    try {
-      const { notifySyncInvalidate } = await import('../../sync-sse');
-      await notifySyncInvalidate('plans.list', undefined);
-    } catch {
-      /* best-effort — the next natural refresh picks it up */
-    }
-
-    return text({
-      ok: true,
-      slug: result.value.slug,
-      from: result.value.from,
-      to: result.value.to,
-      ...(result.value.coOwners !== undefined ? { coOwners: result.value.coOwners } : {}),
-      revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
-    });
+    return bulkContent(env);
   },
 });

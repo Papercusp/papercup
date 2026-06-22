@@ -17,6 +17,7 @@ import DetailPanel from './DetailPanel';
 import AdvChatPanel from './AdvChatPanel';
 import AdvAgentsPanel from './AdvAgentsPanel';
 import MemberWorkPanel from './MemberWorkPanel';
+import HiveContentPanel from './HiveContentPanel';
 import AdvLogsPanel from './AdvLogsPanel';
 import AdvOverviewPanel from './AdvOverviewPanel';
 import AdvInsightsPanel from './AdvInsightsPanel';
@@ -71,6 +72,10 @@ function ensureRegistered() {
   // from the panel menu, not forced into the default layout (mirrors insights/
   // contributors). The per-agent sibling is adv:agents.
   panelRegistry.register('adv:member-work', MemberWorkPanel, { title: 'Members' });
+  // adv:hive-content — cross-member browse rollup (WI-259 P-006). Registered
+  // always (cheap + inert without a hive); its CATALOG availability is flag-gated
+  // (FLAGS.CROSS_MEMBER_BROWSE) in HarnessTopBar's allowedTypes.
+  panelRegistry.register('adv:hive-content', HiveContentPanel, { title: 'Hive content' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
   panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
   // Phase-8 Insights (P-073) — built + tested but previously had no in-shell

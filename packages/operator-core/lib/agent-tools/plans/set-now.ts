@@ -21,10 +21,12 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
   harness: harnessArg,
-  slug: z.string().min(1),
+  slug: z.string().min(1).optional(),
+  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to update with the same Now block in one call.'),
   state: z
     .string()
     .min(1)
@@ -49,6 +51,8 @@ const argsSchema = z.object({
     .describe(
       'Optional — a short why behind this state change. Stored on the plan revision and shown in the revision timeline (D-009). Routine progress updates can omit it; the launch seed prefers substantive set-content rationales.',
     ),
+}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+  message: 'pass `slug` or `slugs`',
 });
 
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
@@ -109,75 +113,69 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
-    const rev = planRevisionCapture(
-      ctx as PlanRevisionCtx,
-      args.slug,
-      args.rationale,
-      harnessSlug ? { harnessSlug } : {},
-    );
-    const result = await withPlanLock<SetNowValue>(
-      ctx as never,
-      {
-        slug: args.slug,
-        intent: `plans:set-now`,
-        ...(harnessSlug ? { harnessSlug } : {}),
-        afterWrite: rev.afterWrite,
-      },
-      async (current): Promise<{ newBody: string | null; value: SetNowValue }> => {
-        if (current === null) {
-          return { newBody: null, value: { ok: false, code: 'not_found' } };
-        }
-        const replaced = replaceNowBlock(current, args.state, args.next);
-        const final = bumpUpdatedDate(replaced);
-        return { newBody: final, value: { ok: true } };
-      },
-    );
-
-    if (result.kind === 'busy') {
-      return {
-        content: [
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const rev = planRevisionCapture(
+          ctx as PlanRevisionCtx,
+          slug,
+          args.rationale,
+          harnessSlug ? { harnessSlug } : {},
+        );
+        const result = await withPlanLock<SetNowValue>(
+          ctx as never,
           {
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'busy',
-              busy: result.busy.map((b) => ({
-                path: b.path,
-                owner_label: b.owner_label,
-                intent: b.intent,
-                expires_ts: b.expires_ts,
-              })),
-            }),
+            slug,
+            intent: `plans:set-now`,
+            ...(harnessSlug ? { harnessSlug } : {}),
+            afterWrite: rev.afterWrite,
           },
-        ],
-        isError: true,
-      };
-    }
+          async (current): Promise<{ newBody: string | null; value: SetNowValue }> => {
+            if (current === null) {
+              return { newBody: null, value: { ok: false, code: 'not_found' } };
+            }
+            const replaced = replaceNowBlock(current, args.state, args.next);
+            const final = bumpUpdatedDate(replaced);
+            return { newBody: final, value: { ok: true } };
+          },
+        );
 
-    if (!result.value.ok) {
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: result.value.code, slug: args.slug }) }],
-        isError: true,
-      };
-    }
+        if (result.kind === 'busy') {
+          return {
+            ok: false as const,
+            slug,
+            error: 'busy',
+            busy: result.busy.map((b) => ({
+              path: b.path,
+              owner_label: b.owner_label,
+              intent: b.intent,
+              expires_ts: b.expires_ts,
+            })),
+          };
+        }
 
-    await emitPlanEventForCaller(ctx, {
-      planSlug: args.slug,
-      event: 'now_updated',
-      after: args.next,
-      detail: args.state.slice(0, 200),
-    });
+        if (!result.value.ok) {
+          return { ok: false as const, slug, error: result.value.code };
+        }
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            filePath: result.filePath,
-            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
-          }),
-        },
-      ],
-    };
+        await emitPlanEventForCaller(ctx, {
+          planSlug: slug,
+          event: 'now_updated',
+          after: args.next,
+          detail: args.state.slice(0, 200),
+        });
+
+        return {
+          ok: true as const,
+          slug,
+          filePath: result.filePath,
+          revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+        };
+      },
+      { keyOf: (slug) => ({ slug }) },
+    );
+
+    return bulkContent(env);
   },
 });

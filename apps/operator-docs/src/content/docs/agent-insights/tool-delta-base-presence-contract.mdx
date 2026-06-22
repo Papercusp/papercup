@@ -11,6 +11,7 @@ documents:
   - libs/generic/tooldef/src/dispatch-stack.ts
   - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
   - packages/operator-core/lib/coord-schema.ts
+  - packages/operator-core/lib/agent-tools/plans/attention.ts
 ---
 
 ## The problem
@@ -165,5 +166,72 @@ byte-identical to today (zero overhead). A thrown `revision()` degrades to `full
 > the `format` capture) so the `not_modified` hit-rate per tool is a measurable
 > rollout signal — no DDL.
 
-Semantic `added/updated/removed` deltas (`changesSince`) are **Lane E** and build
-on this contract; they are NOT enabled by the `revision`-only declaration above.
+## Semantic deltas (Lane E) — `added` / `updated` / `removed` rows
+
+A delta-capable tool whose data is (or yields) a **row array** can graduate from
+`not_modified` to true semantic deltas by declaring `itemKey`. When the view
+changed and the harness asked for a delta (`_delta: "auto~<cursor>"`), the
+response carries ONLY the changed rows:
+
+```jsonc
+// _meta.delta
+{ "mode": "delta", "supported": true, "cursor": "<opaque>",
+  "checksum": "<set-hash>", "counts": { "added": 1, "updated": 1, "removed": 1 } }
+// body = the changes array (compact/TOON-eligible):
+[ { "change": "added",   "id": "P-9", "type": "plan-item", "data": { /* full row */ } },
+  { "change": "updated", "id": "E-2", "type": "coord-escalation", "data": { /* full row */ } },
+  { "change": "removed", "id": "P-1" } ]                       // removed carries id only
+```
+
+`added`/`updated` carry the **full row** (`data`) — a changed row never depends on
+the model's base; only completeness + removals do. The diff is **stateless**: the
+prior view's `{ itemKey → rowRevision }` digest is embedded in the cursor (`dg`),
+so `diffFromDigest(priorDigest, currentRows)` reconstructs added/updated/removed
+with no server-stored snapshot. (For an unbounded view that can't embed a digest,
+declare `changesSince(args, cursor, ctx)` instead — a watermark-backed query.)
+
+**The merge + checksum safety net (D-007).** The harness applies the changes to
+its retained base with `applySemanticDelta(base, changes, itemKey)`, then
+recomputes `computeViewChecksum` over the merged set and compares it to
+`_meta.delta.checksum`. **Any** mismatch — a missed removal, a mis-merge, an
+un-tombstoned drop — forces a full re-fetch. The worst untested path degrades to a
+wasted re-fetch, never a wrong action. All three helpers ship from
+[`delta-protocol.ts`](libs/generic/tooldef/src/delta-protocol.ts) so the server,
+the harness, and the tests share ONE implementation.
+
+**Capability for a semantic tool:**
+
+```ts
+delta: {
+  itemKey: (row) => row.id,           // stable per-row id (the merge key)
+  rowRevision: (row) => row.version,  // optional; defaults to a content hash
+  rowType: (row) => row.kind,         // optional; tags DeltaChange.type
+  rows: (data) => data.items,         // optional; extract the row array when data isn't itself one
+  maxDeltaAge: 5 * 60_000,            // periodic forced-full (bounds drift)
+  // revision omitted → derived from the item-set checksum
+}
+```
+
+The framework declines a semantic delta WHENEVER it isn't safe — and says why in
+`_meta.delta.reason`: `no_digest` (prior cursor had none), `max_age` (cursor too
+old → forced full), `delta_too_large` (the delta wasn't smaller than a full
+resend), `schema_changed` / `view_changed` (cursor doesn't match this view), or
+`changesSince_error`. An explicit `_delta: "not_modified"` is always honored as
+ETag-only (never upgraded to a delta body).
+
+### Exemplar: `plans:attention` (P-013)
+
+`plans:attention` is the first exemplar — the strongest ROI target (~9.6k tokens,
+~19k calls/6h, no `compact` escape). Its response is a GROUPED aggregate
+(`{ groups, tierCounts }`, untouched so the UI's `plans.attention` sync read is
+unaffected); the diffable unit is the FLAT `AttentionItem` set, extracted with
+`rows: (data) => data.groups.flatMap((g) => g.items)`. So an unchanged feed
+returns `not_modified` (no replay), a changed feed returns only the
+added/updated/removed items (checksum-verified), and first/stale/scope-change/
+over-age returns a full snapshot. A grouped view works because the AGENT's unit is
+the flat importance-sorted item list; the harness merges items and re-presents
+them (the groups are a UI presentation the agent doesn't need to reconstruct from
+a delta).
+
+> **Scope reminder.** Semantic deltas are scoped to OMP/psu (the base-presence
+> rule above). External Claude Code / Codex always get `full`.

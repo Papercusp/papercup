@@ -11,14 +11,21 @@ import { sseResponse } from '@papercusp/sse';
 import {
   snapshotWorkspace,
   subscribeWorkspace,
+  chooseSnapshotEmission,
   type VersionedSnapshot,
+  type SnapshotDelta,
 } from '@papercusp/agent-mcp';
 import { getSessionUser } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 type StateSnapshotVocabulary = {
+  /** Full per-run snapshot — the baseline on connect, and the fallback when a delta
+   *  can't be computed (P-009 agent-tool-delta-protocol). */
   snapshot: VersionedSnapshot;
+  /** Per-run data-carrying delta vs the last emitted snapshot — only to clients that
+   *  opt in with `?delta=1` (backward-compatible: others always get full snapshots). */
+  delta: SnapshotDelta;
 }
 
 export default defineTool({
@@ -37,20 +44,26 @@ export default defineTool({
       return new Response('unauthorized', { status: 401 });
     }
     const workspaceId = activeWorkspaceId();
+    // P-009 opt-in: a delta-aware client requests `?delta=1`. Others get full
+    // snapshots exactly as before — zero behaviour change until a client opts in.
+    const wantsDelta = new URL(req.url).searchParams.get('delta') === '1';
 
     return sseResponse<StateSnapshotVocabulary>({
       signal: req.signal,
       heartbeatMs: 15_000,
       initialHeartbeat: true,
       setup: async (sink) => {
-        for (const vs of snapshotWorkspace(workspaceId)) {
+        // Last snapshot emitted per run — the base a delta is computed against.
+        const lastByRun = new Map<string, VersionedSnapshot>();
+        const emit = (vs: VersionedSnapshot): void => {
           if (sink.closed) return;
-          sink.event('snapshot', vs);
-        }
-        const off = subscribeWorkspace(workspaceId, (vs) => {
-          if (sink.closed) return;
-          sink.event('snapshot', vs);
-        });
+          const out = chooseSnapshotEmission(lastByRun.get(vs.runId), vs, wantsDelta);
+          if (out.event === 'delta') sink.event('delta', out.data);
+          else sink.event('snapshot', out.data);
+          lastByRun.set(vs.runId, vs);
+        };
+        for (const vs of snapshotWorkspace(workspaceId)) emit(vs);
+        const off = subscribeWorkspace(workspaceId, (vs) => emit(vs));
         sink.onClose(off);
       },
     });
