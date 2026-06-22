@@ -47,6 +47,9 @@
 import { z } from 'zod';
 import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+// Flat-row sync reads carry page metadata (e.g. the true total) on row[0]._meta;
+// attachListMeta is the one place that convention lives. See ./list-meta.
+import { attachListMeta } from './list-meta';
 
 // ─── Registry types ─────────────────────────────────────────────────
 
@@ -1260,11 +1263,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         listEnrichedWorkItems({ harness: harnessSlug, kind: k, state, limit }),
         countWorkItems({ harness: harnessSlug, kind: k, state }),
       ]);
-      // Stash the true total on the first row's `_meta` so the flat-row sync
-      // contract is preserved (no envelope) — same pattern as `coord.feed`. The
-      // UI reads `rows[0]?._meta?.total` to show "N of TOTAL" instead of letting
-      // the (possibly capped) downloaded length read as the total.
-      return rows.map((r, i) => (i === 0 ? { ...r, _meta: { total } } : r)) as unknown[];
+      // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
+      // envelope) so the UI shows "N of TOTAL" instead of the capped length.
+      return attachListMeta(rows, { total }) as unknown[];
     },
   },
 
@@ -3044,10 +3045,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         before_ts: a.before_ts,
         limit: a.limit,
       });
-      // Stash the page metadata on the first row so the flat-row sync contract
-      // is preserved (no envelope wrapper). The UI reads `rows[0]?._meta`.
-      const meta = { total, byKind, nextCursor };
-      return rows.map((r, i) => (i === 0 ? { ...r, _meta: meta } : r));
+      // Carry page metadata on row[0]._meta (flat-row sync contract, no envelope).
+      return attachListMeta(rows, { total, byKind, nextCursor });
     },
   },
 
