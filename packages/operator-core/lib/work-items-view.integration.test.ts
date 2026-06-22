@@ -85,8 +85,8 @@ describe('migration 159 — the work_items UNION view', () => {
       taken_by: 'sess-A', // assignee → taken_by
       summary: 'bug body', // body → summary
     });
-    // operator scope → NULL harness_slug (excluded by per-harness filters).
-    expect(rows.find((r) => r.feature_id === 'WI-201')!.harness_slug).toBeNull();
+    // operator scope → '' sentinel harness_slug (D-U1; excluded by per-harness '= slug' filters).
+    expect(rows.find((r) => r.feature_id === 'WI-201')!.harness_slug).toBe('');
   });
 
   it('the DBOS-frontier-shaped read sees ONLY feature rows — unchanged contract', async () => {
@@ -151,14 +151,14 @@ describe('migration 159 — the work_items UNION view', () => {
     expect(await db.sql`SELECT 1 FROM harness_shared.harness_features_consolidated WHERE feature_id = 'F-100'`).toHaveLength(0);
   });
 
-  it('cross-family reclassification via the view is REFUSED (a cross-table move — engine’s job)', async () => {
+  it('cross-family reclassification is a plain item_kind UPDATE now (unified base — no cross-table move)', async () => {
     await seedBoth();
-    await expect(
-      db.sql`UPDATE harness_shared.work_items SET item_kind = 'feature' WHERE feature_id = 'WI-200'`,
-    ).rejects.toThrow(/cross-family reclassification/);
-    await expect(
-      db.sql`UPDATE harness_shared.work_items SET item_kind = 'bug' WHERE feature_id = 'F-100'`,
-    ).rejects.toThrow(/cross-family reclassification/);
+    // Pre-unification this was REFUSED by the union view's INSTEAD OF trigger (a cross-TABLE
+    // move, hfc↔engineer_issues). On the single work_items base table it is just an item_kind
+    // UPDATE on one row — allowed (P-010).
+    await db.sql`UPDATE harness_shared.work_items SET item_kind = 'feature' WHERE feature_id = 'WI-200'`;
+    const reclassified = await db.sql`SELECT item_kind FROM harness_shared.work_items WHERE feature_id = 'WI-200'`;
+    expect(reclassified[0]!.item_kind).toBe('feature');
   });
 
   it('the migration is idempotent (re-apply is a no-op)', async () => {
