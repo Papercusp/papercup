@@ -1390,6 +1390,20 @@ export function forkBootstrapBody(session, account = null) {
   };
 }
 
+export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
+  return {
+    agent: selections.agent,
+    workspace: selections.workspace,
+    harness_slug: selections.harness,
+    plan_slug: selections.plan,
+    ...(args.profile ? { profile: args.profile } : {}),
+    ...(brain ? { brain: true } : {}),
+    ...(args.account ? { account: args.account } : {}),
+    ...(args.launchContext ? { launch_context: args.launchContext } : {}),
+    cwd: process.cwd(),
+  };
+}
+
 export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account } = {}) {
   return {
     role,
@@ -1767,24 +1781,7 @@ async function main() {
 async function launchFreshSu(selections, args, { brain = false } = {}) {
   const res = await api('/api/agent-mcp/console/bootstrap-su', {
     method: 'POST',
-    body: JSON.stringify({
-      agent: selections.agent,
-      workspace: selections.workspace,
-      harness_slug: selections.harness,
-      plan_slug: selections.plan,
-      // P-023: playbook profile (engineer|power), assembled per-launch.
-      // Omitted → server defaults to engineer.
-      ...(args.profile ? { profile: args.profile } : {}),
-      ...(brain ? { brain: true } : {}),
-      // psu-account-chooser P-001: pin this session to a pool account. The server
-      // validates it (pool membership + session-override allow-list) and, when the
-      // gateway is on, folds gatewaySpawnEnv into the launch envelope; fail-soft.
-      ...(args.account ? { account: args.account } : {}),
-      // Our cwd — the server uses it for a no-harness launch (so the
-      // agent's cwd-scoped session resume works from the user's terminal,
-      // not the internal .papercusp dir). Ignored for harness launches.
-      cwd: process.cwd(),
-    }),
+    body: JSON.stringify(freshSuBootstrapBody(selections, args, { brain })),
   });
 
   // res.cwd is server-decided: the harness repo for a harness launch, or
@@ -1826,7 +1823,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // native-scheduler lockout the human su session deliberately keeps (D-003).
   if (brain && res.agent === 'claude') launchArgs.push(NATIVE_SCHEDULER_DENY_FLAG);
   // A kickoff launch-context (server-generated) layers in as a SECOND system
-  // prompt for claude/omp; codex would need it folded into AGENTS.md (deferred).
+  // prompt for claude/omp. Codex has no equivalent CLI flag, so bootstrap-su
+  // folds the same file into CODEX_HOME/AGENTS.md before returning.
   if (args.launchContext && res.agent !== 'codex') {
     launchArgs.push(res.agent === 'claude' ? '--append-system-prompt-file' : '--append-system-prompt', args.launchContext);
   }

@@ -17,6 +17,7 @@ import {
   GATEWAY_ACCOUNT_HEADER,
   addDirArgs,
   forkBootstrapBody,
+  freshSuBootstrapBody,
   roleBootstrapBody,
   forkSeedPaths,
   findUntrackedSession,
@@ -285,6 +286,22 @@ describe('psu-launcher arg parsing', () => {
     });
     // No account → NO `account` key at all (byte-identical to the pre-account body).
     expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' }, null)).not.toHaveProperty('account');
+  });
+
+  it('freshSuBootstrapBody forwards launch_context so Codex can fold it into AGENTS.md', () => {
+    const body = freshSuBootstrapBody(
+      { agent: 'codex', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      { profile: 'engineer', account: 'codex-main', launchContext: '/tmp/kickoff.md' },
+    );
+    expect(body).toMatchObject({
+      agent: 'codex',
+      workspace: 'ws1',
+      harness_slug: 'h1',
+      plan_slug: 'p1',
+      profile: 'engineer',
+      account: 'codex-main',
+      launch_context: '/tmp/kickoff.md',
+    });
   });
 
   it('roleBootstrapBody folds a chosen account into role launches', () => {

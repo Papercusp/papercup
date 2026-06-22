@@ -29,10 +29,14 @@
  * Server-only.
  */
 import {
+  cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -147,13 +151,65 @@ function resolveWorkspaceRoot(): string {
 function freshCodexHome(codexHome: string): string {
   rmSync(codexHome, { recursive: true, force: true });
   mkdirSync(codexHome, { recursive: true });
-  try {
-    const realAuth = join(homedir(), '.codex', 'auth.json');
-    if (existsSync(realAuth)) symlinkSync(realAuth, join(codexHome, 'auth.json'));
-  } catch {
-    /* best-effort — codex surfaces an auth error if missing */
-  }
+  inheritUserCodexHome(codexHome);
   return codexHome;
+}
+
+const CODEX_HOME_INHERIT_DIRS = ['skills', 'plugins', 'prompts'] as const;
+const CODEX_HOME_INHERIT_FILES = ['auth.json'] as const;
+
+/**
+ * Carry user-installed Codex capabilities into an isolated per-session home
+ * without copying volatile session state. Symlinks are intentional: auth token
+ * rotation and skill/plugin updates stay live, and the per-session home remains
+ * small enough to recreate every launch.
+ */
+function inheritUserCodexHome(codexHome: string): void {
+  const realHome = join(homedir(), '.codex');
+  try {
+    if (!existsSync(realHome)) return;
+    for (const name of CODEX_HOME_INHERIT_FILES) {
+      const src = join(realHome, name);
+      const dst = join(codexHome, name);
+      if (existsSync(src)) symlinkSync(src, dst);
+    }
+    for (const name of CODEX_HOME_INHERIT_DIRS) {
+      const src = join(realHome, name);
+      const dst = join(codexHome, name);
+      if (existsSync(src) && lstatSync(src).isDirectory()) symlinkSync(src, dst, 'dir');
+    }
+  } catch {
+    /* best-effort — codex surfaces missing auth/config issues itself */
+  }
+}
+
+function inheritedCodexTrustedWorkspaceToml(): string[] {
+  const realHome = join(homedir(), '.codex');
+  const source = join(realHome, 'config.toml');
+  if (!existsSync(source)) return [];
+  const out: string[] = [];
+  let keep = false;
+  for (const line of readFileSync(source, 'utf8').split(/\r?\n/)) {
+    const table = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (table) keep = table[1] === 'trusted_workspaces' || table[1].startsWith('trusted_workspaces.');
+    if (keep) out.push(line);
+  }
+  return out.length > 0 ? ['# Inherited trusted workspace state from ~/.codex/config.toml.', ...out, ''] : [];
+}
+
+function copyInheritedCodexPrompts(codexHome: string): void {
+  const prompts = join(codexHome, 'prompts');
+  if (!existsSync(prompts)) return;
+  try {
+    if (lstatSync(prompts).isSymbolicLink()) {
+      const managed = join(codexHome, 'prompts.user');
+      unlinkSync(prompts);
+      cpSync(join(homedir(), '.codex', 'prompts'), managed, { recursive: true, force: true, dereference: true });
+      symlinkSync(managed, prompts, 'dir');
+    }
+  } catch {
+    /* saved-prompt materialization can recreate prompts if inheritance fails */
+  }
 }
 
 /**
@@ -298,6 +354,7 @@ export function writeRoleCodexHome(opts: {
   // path wrote to a separate `role-codex-homes/` root the resume leg never
   // looked in, so a woken codex role session resumed from nothing.
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
+  copyInheritedCodexPrompts(codexHome);
 
   // AGENTS.md = the role prompt. codex has no per-launch system-prompt
   // flag; its instruction file is $CODEX_HOME/AGENTS.md (same mechanism
@@ -314,6 +371,7 @@ export function writeRoleCodexHome(opts: {
   const toml = [
     ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
+    ...inheritedCodexTrustedWorkspaceToml(),
     ...gatewayConfig.tables,
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
@@ -379,6 +437,7 @@ export function writeSuCodexHome(opts: {
   codexGatewayAccountId?: string | null;
 }): SuCodexHome {
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
+  copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
   writeFileSync(agentsPath, opts.promptText, { mode: 0o600 });
@@ -393,6 +452,7 @@ export function writeSuCodexHome(opts: {
   const toml = [
     ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
+    ...inheritedCodexTrustedWorkspaceToml(),
     ...gatewayConfig.tables,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
