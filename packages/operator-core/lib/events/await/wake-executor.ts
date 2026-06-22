@@ -191,12 +191,22 @@ export function resumeCommandFor(handle: {
   }
   if (handle.agent === 'omp') {
     if (!handle.ompThreadId) return null;
-    // omp takes no positional prompt on resume — inject it into the pty once
-    // the TUI is up (promptViaPty).
+    if (process.env.PAPERCUSP_OMP_RESUME_VIA_PTY === '1') {
+      // Fallback for older OMP builds: resume interactively and inject once the
+      // TUI is ready. The default modern path below is true headless one-turn.
+      return {
+        bin: 'omp',
+        args: ['-r', handle.ompThreadId, '--approval-mode', 'yolo'],
+        promptViaPty: true,
+      };
+    }
+    // OMP supports the same shape as `--continue "prompt"`: combine resume
+    // with `-p` and the wake text as the one turn. Prefer this over PTY
+    // injection so a wake has a bounded subprocess lifecycle.
     return {
       bin: 'omp',
-      args: ['-r', handle.ompThreadId, '--approval-mode', 'yolo'],
-      promptViaPty: true,
+      args: ['-r', handle.ompThreadId, '--approval-mode', 'yolo', '-p', wakeText],
+      promptViaPty: false,
     };
   }
   if (handle.agent === 'codex') {
@@ -665,16 +675,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         return child.pid ?? null;
       });
 
-    // A claude (`-p`) or codex (`exec resume`) resume is HEADLESS one-turn (set
-    // in resumeCommandFor) — it must run DETACHED with stdio:'ignore', NOT in a
-    // managed pty. In a pty claude's stdin is a TTY, so `-p` waits for
+    // A non-PTY resume is HEADLESS one-turn (set in resumeCommandFor) — it must
+    // run DETACHED with stdio:'ignore', NOT in a managed pty. In a pty claude's
+    // stdin is a TTY, so `-p` waits for
     // interactive input instead of consuming the positional prompt and exiting —
     // the process hangs alive, never runs the turn, and "delivered:resume" is a
     // lie (Stage-B finding, 2026-06-07: every pty resume sat idle 2+ min; the
-    // manual non-tty `-p` ran one turn and exited). codex `exec` is likewise
-    // non-interactive single-turn. The pty path stays for omp/interactive
-    // injection (promptViaPty), where a live TTY is the whole point.
-    if ((resume.bin === 'claude' || resume.bin === 'codex') && !resume.promptViaPty) {
+    // manual non-tty `-p` ran one turn and exited). codex `exec` and modern omp
+    // `-r … -p` are likewise non-interactive single-turn. The pty path stays as
+    // an explicit OMP fallback (promptViaPty), where a live TTY is the point.
+    if (!resume.promptViaPty) {
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env });
       if (pid2) return { kind: 'delivered', channel: 'resume-headless' };
       return { kind: 'error', error: 'headless resume spawn failed' };

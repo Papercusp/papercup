@@ -4,30 +4,53 @@
  * `documents:` frontmatter, or inference from the paths it references. Optionally
  * verify it against HEAD now. An unanchored manual doc stays allowed but visibly
  * "not drift-tracked".
+ *
+ * Bulk by default (the house keyed-array contract,
+ * bulk-endpoint-standardization-2026-06-21): anchor ONE doc inline
+ * ({ docId, documents?, verify?, title? }), or MANY heterogeneous
+ * (items:[{ docId, documents?, verify?, title?, harness? }]) → { ok, results:[{ ok,
+ * docId, source?, status?, anchored?, subjectRef? | error }], counts }. Each result
+ * self-describes its docId; one failed item never fails the rest. Harness is a
+ * batch default with a per-item override.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveHarnessScope, harnessArg } from '../_harness-scope';
+import { harnessArg, resolveBulkHarnessScopes } from '../_harness-scope';
 import { anchorManualDoc } from '../../harness/docs/manual-anchor';
+import { runBulk, bulkContent } from '../_bulk';
 
-const argsSchema = z.object({
-  harness: harnessArg,
+const documentsArg = z
+  .union([z.string(), z.array(z.string())])
+  .describe('What this doc documents: feature ids (F-3), file globs (src/**), or symbols (src/a.ts :: fn). Omit to read the doc\'s `documents:` frontmatter / infer from the paths it references.');
+
+const itemSpec = z.object({
   docId: z.string().min(1).describe("The manual doc's path relative to the docs root, e.g. 'guides/setup.md'."),
-  documents: z
-    .union([z.string(), z.array(z.string())])
-    .optional()
-    .describe('What this doc documents: feature ids (F-3), file globs (src/**), or symbols (src/a.ts :: fn). Omit to read the doc\'s `documents:` frontmatter / infer from the paths it references.'),
+  documents: documentsArg.optional(),
   verify: z.boolean().optional().describe('Also stamp the verify baseline to the current HEAD (you confirm the doc is current now).'),
   title: z.string().optional(),
+  harness: z.string().min(1).max(80).optional().describe('per-item harness (else the batch `harness` default)'),
 });
+
+const argsSchema = z
+  .object({
+    harness: harnessArg,
+    docId: z.string().min(1).optional().describe("single-anchor shorthand: the manual doc's path relative to the docs root, e.g. 'guides/setup.md'."),
+    documents: documentsArg.optional(),
+    verify: z.boolean().optional().describe('Also stamp the verify baseline to the current HEAD (applies to the inline doc).'),
+    title: z.string().optional(),
+    items: z.array(itemSpec).min(1).max(200).optional().describe('anchor many docs at once — each { docId, documents?, verify?, title?, harness? }'),
+  })
+  .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.docId), {
+    message: 'pass { docId, documents? } for one, or items:[{ docId, documents? }] for many',
+  });
 
 export default defineTool({
   name: 'harness_docs:anchor',
   description:
-    'Anchor a manual doc to the code it documents (its subject_ref) so drift is tracked; optionally verify it against HEAD. Unanchored manual docs remain allowed but flagged "not drift-tracked".',
+    'Anchor one OR many manual docs to the code they document (their subject_ref) so drift is tracked; optionally verify against HEAD. Single: { docId, documents? }. Many: items:[{ docId, documents?, verify?, title?, harness? }]. Returns { ok, results:[{ ok, docId, source?, status?, anchored?, subjectRef? | error }], counts } — correlate by docId not position; one failure never fails the rest. Unanchored manual docs remain allowed but flagged "not drift-tracked".',
   guidance: {
-    when: 'A human-authored doc should be drift-tracked: declare what code it covers. Run after writing/editing the doc, or to fix a wrong anchor.',
+    when: 'A human-authored doc should be drift-tracked: declare what code it covers. Run after writing/editing the doc, or to fix a wrong anchor. Anchor several at once via items:[…].',
     notWhen: 'For a generated doc use harness_docs:record (it sets a generated baseline). To only re-confirm currency use harness_docs:verify.',
     chaining: 'harness_docs:anchor { documents } → (later, on a drift nudge) harness_docs:verify.',
   },
@@ -37,20 +60,40 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const scope = resolveHarnessScope(args.harness, ctx as { harnessSlug?: string });
-    if (scope.kind !== 'harness') {
+    const list = args.items?.length
+      ? args.items
+      : [{ docId: args.docId as string, documents: args.documents, verify: args.verify, title: args.title, harness: undefined as string | undefined }];
+    const { gate, scopes } = resolveBulkHarnessScopes(list, args.harness, ctx as { harnessSlug?: string });
+    if (gate) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'harness_required' }) }], isError: true };
     }
-    const res = await anchorManualDoc({
-      harnessSlug: scope.slug,
-      docId: args.docId,
-      ...(args.documents !== undefined ? { documents: args.documents } : {}),
-      ...(args.verify !== undefined ? { verify: args.verify } : {}),
-      ...(args.title ? { title: args.title } : {}),
-    });
-    if (!res.ok) return { content: [{ type: 'text' as const, text: JSON.stringify(res) }], isError: true };
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, docId: res.record.docId, source: res.record.source, status: res.record.status, anchored: res.anchored, subjectRef: res.subjectRef }) }],
-    };
+    const env = await runBulk(
+      list,
+      async (it, i) => {
+        const scope = scopes[i];
+        if (scope.kind !== 'harness') {
+          return { ok: false as const, docId: it.docId, error: 'harness_required' };
+        }
+        const res = await anchorManualDoc({
+          harnessSlug: scope.slug,
+          docId: it.docId,
+          ...(it.documents !== undefined ? { documents: it.documents } : {}),
+          ...(it.verify !== undefined ? { verify: it.verify } : {}),
+          ...(it.title ? { title: it.title } : {}),
+        });
+        return res.ok
+          ? {
+              ok: true as const,
+              docId: res.record.docId,
+              source: res.record.source,
+              status: res.record.status,
+              anchored: res.anchored,
+              subjectRef: res.subjectRef,
+            }
+          : { ok: false as const, docId: it.docId, error: res.error };
+      },
+      { keyOf: (it) => ({ docId: it.docId }) },
+    );
+    return bulkContent(env);
   },
 });

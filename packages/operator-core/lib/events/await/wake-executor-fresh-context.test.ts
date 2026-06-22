@@ -101,12 +101,14 @@ describe('freshContextWarmInjectTarget', () => {
 describe('runFreshContextWarmInject', () => {
   let spawnFreshBee: ReturnType<typeof vi.fn>;
   let releaseClaim: ReturnType<typeof vi.fn>;
-  let log: ReturnType<typeof vi.fn>;
+  let log: (m: string) => void;
+  let logMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     spawnFreshBee = vi.fn(async () => ({ ok: true, spawnId: 'spawn-fresh-bee' }));
     releaseClaim = vi.fn(async () => {});
-    log = vi.fn();
+    logMock = vi.fn();
+    log = logMock as (m: string) => void;
   });
   afterEach(() => vi.clearAllMocks());
 
@@ -154,7 +156,7 @@ describe('runFreshContextWarmInject', () => {
     const r = await runFreshContextWarmInject(makeDelivery(null), VALID_TARGET, deps(), log);
     expect(r).toBe(false);
     expect(releaseClaim).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('not admitted'));
+    expect(logMock).toHaveBeenCalledWith(expect.stringContaining('not admitted'));
   });
 
   it('returns false (fail-soft) when the spawn throws', async () => {
@@ -162,14 +164,14 @@ describe('runFreshContextWarmInject', () => {
     const r = await runFreshContextWarmInject(makeDelivery(null), VALID_TARGET, deps(), log);
     expect(r).toBe(false);
     expect(releaseClaim).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('errored'));
+    expect(logMock).toHaveBeenCalledWith(expect.stringContaining('errored'));
   });
 
   it('still returns true when the (non-fatal) claim release fails after a successful spawn', async () => {
     releaseClaim.mockRejectedValueOnce(new Error('release hiccup'));
     const r = await runFreshContextWarmInject(makeDelivery(null), VALID_TARGET, deps(), log);
     expect(r).toBe(true); // the fresh bee is up; the stale claim release is best-effort
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('release claim'));
+    expect(logMock).toHaveBeenCalledWith(expect.stringContaining('release claim'));
   });
 
   it('defaults the log sink to a no-op (never throws without a logger)', async () => {

@@ -275,11 +275,25 @@ describe('resumeCommandFor', () => {
     }
   });
 
-  it('omp: thread resume, prompt rides the pty', () => {
+  it('omp: thread resume defaults to headless one-turn with the wake prompt', () => {
     const r = resumeCommandFor({ agent: 'omp', sessionId: null, ompThreadId: 'th-9' }, 'WAKE');
     expect(r!.bin).toBe('omp');
-    expect(r!.args).toEqual(['-r', 'th-9', '--approval-mode', 'yolo']);
-    expect(r!.promptViaPty).toBe(true);
+    expect(r!.args).toEqual(['-r', 'th-9', '--approval-mode', 'yolo', '-p', 'WAKE']);
+    expect(r!.promptViaPty).toBe(false);
+  });
+
+  it('omp: can fall back to PTY injection for older builds', () => {
+    const prev = process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+    process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = '1';
+    try {
+      const r = resumeCommandFor({ agent: 'omp', sessionId: null, ompThreadId: 'th-9' }, 'WAKE');
+      expect(r!.bin).toBe('omp');
+      expect(r!.args).toEqual(['-r', 'th-9', '--approval-mode', 'yolo']);
+      expect(r!.promptViaPty).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+      else process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = prev;
+    }
   });
 
   it('omp readiness detector recognizes prompt-like resume screens', () => {
@@ -505,58 +519,96 @@ describe('executeWake — the liveness ladder', () => {
     expect(spawnManagedPty).not.toHaveBeenCalled();
   });
 
-  it('exited omp → resume + readiness-gated prompt injection into the new pty', async () => {
-    const write = vi.fn(() => true);
-    const pty = fakeOmpPty();
-    const spawnManagedPty = vi.fn(() => pty);
-    const pending = executeWake(
+  it('exited omp → detached headless one-turn resume with prompt (no PTY)', async () => {
+    const spawnDetached = vi.fn(() => 2468);
+    const spawnManagedPty = vi.fn(() => fakeOmpPty());
+    const out = await executeWake(
       work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' }) }),
       deps({
         getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' })) as never,
         alive: vi.fn(() => false),
         spawnManagedPty: spawnManagedPty as never,
-        write: write as never,
+        spawnDetached,
       }),
     );
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(write).not.toHaveBeenCalled();
-    for (const cb of pty.onData) cb(Buffer.from('OMP ready\n> '));
-    // Audit P-034: the prompt must land as TWO writes — text, then the submit
-    // CR as a separate keystroke after a settle. The old single text+CR buffer
-    // tripped the TUI paste detector (CR → literal newline, turn never submits).
-    await vi.advanceTimersByTimeAsync(1);
-    expect(write).toHaveBeenCalledTimes(1);
-    const [ptyId, textBuf] = write.mock.calls[0] as unknown as [string, Buffer];
-    expect(ptyId).toBe('pty-omp');
-    expect(textBuf.toString()).not.toMatch(/\r$/);
-    await vi.advanceTimersByTimeAsync(400);
-    expect(write).toHaveBeenCalledTimes(2);
-    expect((write.mock.calls[1] as unknown as [string, Buffer])[1].toString()).toBe('\r');
-    await expect(pending).resolves.toEqual({ kind: 'delivered', channel: 'resume' });
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawnManagedPty).not.toHaveBeenCalled();
+    const [bin, args, o] = spawnDetached.mock.calls[0] as unknown as [
+      string, string[], { cwd: string; env: Record<string, string> },
+    ];
+    expect(bin).toBe('omp');
+    expect(args.slice(0, 4)).toEqual(['-r', 'th-1', '--approval-mode', 'yolo']);
+    expect(args).toContain('-p');
+    expect(args[args.length - 1]).toContain('lock:grant:t-1');
+    expect(o.env.PAPERCUSP_SID).toBe('su-abc');
   });
 
-  it('exited omp readiness timeout → error with transcript tail and pty cleanup', async () => {
+  it('exited omp PTY fallback → readiness-gated prompt injection into the new pty', async () => {
+    const prev = process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+    process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = '1';
+    const write = vi.fn(() => true);
+    const pty = fakeOmpPty();
+    const spawnManagedPty = vi.fn(() => pty);
+    try {
+      const pending = executeWake(
+        work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' }) }),
+        deps({
+          getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' })) as never,
+          alive: vi.fn(() => false),
+          spawnManagedPty: spawnManagedPty as never,
+          write: write as never,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(write).not.toHaveBeenCalled();
+      for (const cb of pty.onData) cb(Buffer.from('OMP ready\n> '));
+      // Audit P-034: the prompt must land as TWO writes — text, then the submit
+      // CR as a separate keystroke after a settle. The old single text+CR buffer
+      // tripped the TUI paste detector (CR → literal newline, turn never submits).
+      await vi.advanceTimersByTimeAsync(1);
+      expect(write).toHaveBeenCalledTimes(1);
+      const [ptyId, textBuf] = write.mock.calls[0] as unknown as [string, Buffer];
+      expect(ptyId).toBe('pty-omp');
+      expect(textBuf.toString()).not.toMatch(/\r$/);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(write).toHaveBeenCalledTimes(2);
+      expect((write.mock.calls[1] as unknown as [string, Buffer])[1].toString()).toBe('\r');
+      await expect(pending).resolves.toEqual({ kind: 'delivered', channel: 'resume' });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+      else process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = prev;
+    }
+  });
+
+  it('exited omp PTY fallback readiness timeout → error with transcript tail and pty cleanup', async () => {
+    const prev = process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+    process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = '1';
     const write = vi.fn(() => true);
     const pty = fakeOmpPty();
     const kill = vi.fn(() => true);
-    const pending = executeWake(
-      work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' }) }),
-      deps({
-        getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' })) as never,
-        alive: vi.fn(() => false),
-        spawnManagedPty: vi.fn(() => pty) as never,
-        write: write as never,
-        kill: kill as never,
-      }),
-    );
-    for (const cb of pty.onData) cb(Buffer.from('loading account router'));
-    await vi.advanceTimersByTimeAsync(16_000);
-    await expect(pending).resolves.toMatchObject({
-      kind: 'error',
-      error: expect.stringContaining('did not become ready'),
-    });
-    expect(write).not.toHaveBeenCalled();
-    expect(kill).toHaveBeenCalledWith('pty-omp');
+    try {
+      const pending = executeWake(
+        work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' }) }),
+        deps({
+          getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' })) as never,
+          alive: vi.fn(() => false),
+          spawnManagedPty: vi.fn(() => pty) as never,
+          write: write as never,
+          kill: kill as never,
+        }),
+      );
+      for (const cb of pty.onData) cb(Buffer.from('loading account router'));
+      await vi.advanceTimersByTimeAsync(16_000);
+      await expect(pending).resolves.toMatchObject({
+        kind: 'error',
+        error: expect.stringContaining('did not become ready'),
+      });
+      expect(write).not.toHaveBeenCalled();
+      expect(kill).toHaveBeenCalledWith('pty-omp');
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+      else process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = prev;
+    }
   });
 
   it('omp prompt helper accepts a quiet settled screen and captures transcript tail', async () => {

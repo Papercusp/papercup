@@ -90,6 +90,28 @@ export const HARNESS_REQUIRED_DETAIL =
   'automatically.)';
 
 /**
+ * Bulk harness-scope resolution (bulk-endpoint-standardization-2026-06-21): the
+ * harness_docs:* writers are bulk (single | items[]), each item with an OPTIONAL
+ * per-item `harness` override over the batch `harness` default. Resolve every
+ * item's effective scope here, and decide the ONE top-level gate: if NOT A SINGLE
+ * item can resolve to a concrete harness (batch default is non-harness AND no item
+ * overrides), the whole batch can't run → `gate:true` so the handler returns the
+ * top-level `{ ok:false, error:'harness_required' }` (isError) — the same shape
+ * the pre-bulk single tools returned, so the harness-scope-gate test holds. When
+ * at least one item resolves, the batch runs and an item whose own scope is
+ * non-harness becomes that item's `{ ok:false, error:'harness_required' }`.
+ */
+export function resolveBulkHarnessScopes<T extends { harness?: string }>(
+  items: readonly T[],
+  batchHarness: string | undefined,
+  ctx: { harnessSlug?: string | null } | null | undefined,
+): { gate: boolean; scopes: HarnessScope[] } {
+  const scopes = items.map((it) => resolveHarnessScope(it.harness ?? batchHarness, ctx));
+  const gate = scopes.length === 0 || scopes.every((s) => s.kind !== 'harness');
+  return { gate, scopes };
+}
+
+/**
  * For tools that resolve their harness through a **ctx-taking** helper (the
  * `plans:*` resolvers `ctxToPlanSourceOpts` / `resolveCtxHarnessSlug`): apply
  * the per-call `harness` arg by returning a ctx whose `harnessSlug` is the

@@ -140,24 +140,56 @@ describe('autoloop:control', () => {
   });
 });
 
-describe('wiki:backlinks', () => {
-  it('forwards target + harness to findWikiBacklinks', async () => {
-    const result_fixture = { target: 'doc', harness: null, hits: [] };
-    const findWikiBacklinks = vi.fn(async () => result_fixture);
+// wiki:backlinks is bulk (bulk-endpoint-standardization-2026-06-21): single
+// `target` | many `targets:[…]` → { ok, results:[{ ok, target, harness, hits[] |
+// error }], counts }, correlate by target not position.
+describe('wiki:backlinks (bulk keyed-array)', () => {
+  it('forwards target + harness=null to findWikiBacklinks, wraps in the envelope', async () => {
+    const findWikiBacklinks = vi.fn(async () => ({ target: 'doc', harness: null, hits: [] }));
     vi.doMock('../../wiki-backlinks', () => ({ findWikiBacklinks }));
     const { default: tool } = await import('../wiki/backlinks');
     const result = await tool.handler({ target: 'doc' }, MAKE_CTX());
     expect(findWikiBacklinks).toHaveBeenCalledWith('doc', null);
     const payload = parsePayload(result as never);
-    expect(payload).toEqual(result_fixture);
+    expect(payload).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect((payload as { results: unknown[] }).results[0]).toEqual({ ok: true, target: 'doc', harness: null, hits: [] });
   });
 
-  it('passes harness when provided', async () => {
-    const findWikiBacklinks = vi.fn(async () => ({ target: '', harness: '', hits: [] }));
+  it('passes the shared harness to every target', async () => {
+    const findWikiBacklinks = vi.fn(async () => ({ target: '', harness: 'sheets', hits: [] }));
     vi.doMock('../../wiki-backlinks', () => ({ findWikiBacklinks }));
     const { default: tool } = await import('../wiki/backlinks');
     await tool.handler({ target: 'd', harness: 'sheets' }, MAKE_CTX());
     expect(findWikiBacklinks).toHaveBeenCalledWith('d', 'sheets');
+  });
+
+  it('targets:[…] fans out over many pages → results correlated by target', async () => {
+    const findWikiBacklinks = vi.fn(async (target: string) => ({ target, harness: null, hits: [{ harness: 'h', filename: 'f.md', line: 1, snippet: target }] }));
+    vi.doMock('../../wiki-backlinks', () => ({ findWikiBacklinks }));
+    const { default: tool } = await import('../wiki/backlinks');
+    const payload = parsePayload((await tool.handler({ targets: ['a', 'b'] }, MAKE_CTX())) as never) as {
+      counts: { ok: number; failed: number };
+      results: Array<{ target: string }>;
+    };
+    expect(payload.counts).toEqual({ ok: 2, failed: 0 });
+    expect(payload.results.map((r) => r.target)).toEqual(['a', 'b']);
+  });
+
+  it('a per-target throw → that item { ok:false, target, error }; the batch survives', async () => {
+    const findWikiBacklinks = vi.fn(async (target: string) => {
+      if (target === 'bad') throw new Error('scan-failed');
+      return { target, harness: null, hits: [] };
+    });
+    vi.doMock('../../wiki-backlinks', () => ({ findWikiBacklinks }));
+    const { default: tool } = await import('../wiki/backlinks');
+    const payload = parsePayload((await tool.handler({ targets: ['ok', 'bad'] }, MAKE_CTX())) as never) as {
+      ok: boolean;
+      counts: { ok: number; failed: number };
+      results: Array<{ ok: boolean; target: string; error?: string }>;
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.counts).toEqual({ ok: 1, failed: 1 });
+    expect(payload.results[1]).toMatchObject({ ok: false, target: 'bad', error: 'scan-failed' });
   });
 });
 

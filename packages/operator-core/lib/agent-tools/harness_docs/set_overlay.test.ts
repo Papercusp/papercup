@@ -25,7 +25,10 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
     }
   ).handler(args, ctx);
 }
-const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
+const envelope = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
+// Bulk envelope (bulk-endpoint-standardization-2026-06-21): the single-form tests
+// below assert on the lone per-item result — unwrap results[0].
+const body = (r: { content: Array<{ text: string }> }) => envelope(r).results[0];
 
 function rec(over: Partial<HarnessDocRecord> & { source: DocSource }): HarnessDocRecord {
   return {
@@ -130,12 +133,38 @@ describe('harness_docs:set_overlay tool', () => {
     expect(mockSetOverlay).toHaveBeenCalledWith('demo', 'features/F-1.md', 'why');
   });
 
-  it('no resolvable harness scope → { ok:false, error:"harness_required" } and touches nothing', async () => {
+  it('no resolvable harness scope → top-level { ok:false, error:"harness_required" } and touches nothing', async () => {
     const res = await callTool({ docId: 'features/F-1.md', overlay: 'why' }, { harnessSlug: '*' });
     expect(res.isError).toBe(true);
-    expect(body(res)).toEqual({ ok: false, error: 'harness_required' });
+    expect(envelope(res)).toEqual({ ok: false, error: 'harness_required' });
     expect(mockGet).not.toHaveBeenCalled();
     expect(mockUpsert).not.toHaveBeenCalled();
     expect(mockSetOverlay).not.toHaveBeenCalled();
+  });
+
+  it('items:[…] sets MANY overlays → { ok, results, counts } correlated by docId', async () => {
+    mockGet.mockImplementation(async (_h: string, docId: string) =>
+      rec({ docId, source: 'augmented', overlay: 'why', generatedFromSha: 'sha' }),
+    );
+    const env = envelope(
+      await callTool({ items: [{ docId: 'a.md', overlay: 'why-a' }, { docId: 'b.md', overlay: 'why-b' }] }),
+    );
+    expect(env).toMatchObject({ ok: true, counts: { ok: 2, failed: 0 } });
+    expect(env.results.map((r: { docId: string }) => r.docId)).toEqual(['a.md', 'b.md']);
+    expect(mockSetOverlay).toHaveBeenCalledWith('demo', 'a.md', 'why-a');
+    expect(mockSetOverlay).toHaveBeenCalledWith('demo', 'b.md', 'why-b');
+  });
+
+  it('a per-item throw → that item { ok:false, docId, error }; the batch survives', async () => {
+    mockGet.mockImplementation(async (_h: string, docId: string) => {
+      if (docId === 'bad.md') throw new Error('boom');
+      return rec({ docId, source: 'augmented', overlay: 'why', generatedFromSha: 'sha' });
+    });
+    const env = envelope(
+      await callTool({ items: [{ docId: 'good.md', overlay: 'why' }, { docId: 'bad.md', overlay: 'why' }] }),
+    );
+    expect(env.ok).toBe(true);
+    expect(env.counts).toEqual({ ok: 1, failed: 1 });
+    expect(env.results[1]).toMatchObject({ ok: false, docId: 'bad.md', error: 'boom' });
   });
 });
