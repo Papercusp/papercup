@@ -31,9 +31,9 @@ import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
 import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
+import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { ensureStallWakerLoop } from '../inference-gateway/stall-waker-loop';
-import { evaluateOpusBudgetForSpawn, selectSpawnAccount } from '../deployment/account-pool-store';
+import { evaluateOpusBudgetForSpawn } from '../deployment/account-pool-store';
 import { classifyRoleCriticality, type WorkCriticality } from '../opus-budget-governor';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
@@ -1036,36 +1036,23 @@ export async function spawnAgentInHarness(
     extraEnv.PAPERCUSP_SPAWN_BACKEND = spawnModelBackend;
   }
 
-  // P-012 (hive-inference-gateway): when the INFERENCE_GATEWAY flag is ON (default OFF),
-  // point this bee at the localhost pacing gateway (ANTHROPIC_BASE_URL=127.0.0.1:<port>) so
-  // it egresses through ONE bound account paced against the unified 5h/7d budget (D-009)
-  // instead of bursting blind. The bee keeps its ~/.claude credential symlink (the gateway
-  // strips + reinjects auth), so flag-OFF instantly reverts to direct egress. Fails CLOSED:
-  // if the gateway service is down the bee's request is refused rather than bursting direct.
-  // P-004 (multi-credential routing): when INFERENCE_GATEWAY_MULTI_ACCOUNT is ALSO on, pin this bee
-  // to a pool account (sticky → harness-pin → 5h-budget drain) via ANTHROPIC_CUSTOM_HEADERS, so its
-  // per-credential conversation cache survives and the aggregate Max budget across subscriptions
-  // stays filled (D-003). Fail-soft: any error → no header → the gateway routes to its active()
-  // account (today's single-credential behavior).
+  // P-012/P-005: route spawned agents through the backend-aware gateway/account helper.
+  // Claude gets Anthropic base-url + custom account/owner headers; Codex gets only the
+  // provider-filtered account id consumed by its per-spawn CODEX_HOME gateway config; OMP
+  // gets no account/gateway env until an OMP adapter exists.
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
-  let routeAccountId: string | undefined;
-  if (gwOn && (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system'))) {
-    routeAccountId = await selectSpawnAccount(input.workspaceId, slug).catch(() => undefined);
-  }
-  // Pass the bee's spawnId as its OWNER id (gateway-rate-limit-stall-autowake P-001): the gateway tags a
-  // rate-limit shed with it, and the stall-waker wakes exactly this bee (its coord ownerId == spawnId) once
-  // the account recovers. Behaviour-neutral until the waker ships.
-  Object.assign(extraEnv, gatewaySpawnEnv(gwOn, { accountId: routeAccountId, ownerId: spawnId }));
+  Object.assign(
+    extraEnv,
+    await resolveSpawnGatewayEnv({
+      workspaceId: input.workspaceId,
+      slug,
+      ownerId: spawnId,
+      backend,
+    }),
+  );
   // Start the stall-waker poll loop once the gateway is in play (idempotent + unref'd): it watches the
   // gateway for rate-limit sheds and wakes a stalled bee when its account recovers (P-003).
   if (gwOn) ensureStallWakerLoop(input.workspaceId);
-  // account-aware-rate-governor-routing Phase 1: run the bee UNDER the selected account so the
-  // spawn-side governor (orchestrator-runner) keys its rate bucket PER-ACCOUNT
-  // (`anthropic:opus@<id>`) instead of the account-blind global `anthropic:opus`. Without this a
-  // single account's 429 pauses the class bucket and freezes EVERY opus spawn even while other
-  // accounts sit idle (owner's "rate-limit-with-headroom = routing bug"). selectSpawnAccount only
-  // ever returns an AVAILABLE account, so the keyed per-account bucket admits.
-  if (routeAccountId) extraEnv.PAPERCUSP_ACCOUNT_ID = routeAccountId;
 
   // capability:computer desktop lease (computer-tool-plan 2.4): if THIS hive holds a
   // leased sandbox desktop, thread its display into the bee's env so capability:computer

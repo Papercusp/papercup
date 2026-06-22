@@ -10,6 +10,11 @@
  */
 import { DEFAULT_GATEWAY_PORT } from './launch';
 import { ACCOUNT_HEADER, OWNER_HEADER } from './gateway';
+import {
+  accountProviderForInteractiveBackend,
+  interactiveBackendFromSpawnBackend,
+  type SpawnBackendLike,
+} from '../backend-feature-capabilities';
 
 export const GATEWAY_BASE_URL_ENV = 'ANTHROPIC_BASE_URL';
 /** The papercusp-specific override the in-process anthropic-direct SDK transport reads
@@ -68,32 +73,37 @@ export function gatewayLlmEnv(enabled: boolean): Record<string, string> {
  * its WEEKLY cap (silent 0-token wakes, the Queen placing nothing) while the 8-account pool sat idle.
  *
  * Evaluates the gateway flags (INFERENCE_GATEWAY, +_MULTI_ACCOUNT) and, when multi-account is on,
- * selects an AVAILABLE pool account; then composes `gatewaySpawnEnv` (ANTHROPIC_BASE_URL + the
- * account/owner routing headers) plus `PAPERCUSP_ACCOUNT_ID` (the per-account governor key, so a
- * single account's 429 can't pause the account-blind class bucket). Fail-soft: a selection miss →
- * no pin (the gateway routes to its `active()` account); flag OFF → `{}` (unchanged direct egress).
+ * selects an AVAILABLE pool account for the resolved backend provider. Claude composes
+ * `gatewaySpawnEnv` (ANTHROPIC_BASE_URL + account/owner routing headers) plus
+ * `PAPERCUSP_ACCOUNT_ID` (the per-account governor key). Codex emits only `PAPERCUSP_ACCOUNT_ID`;
+ * the per-spawn CODEX_HOME writer consumes it to add a model_provider gateway config. Unsupported
+ * backends (currently OMP) get `{}`. Fail-soft: a selection miss → no pin (the gateway routes
+ * Claude to its `active()` account); flag OFF → `{}` (unchanged direct egress).
  * Lazy-imports the flag + account-pool deps so this module stays import-light for the pure helpers
  * above (and so a route module importing it picks up no extra registration side-effects).
- *
- * FOLLOW-UP (durable): `operator-spawn.ts` still inlines the equivalent block (1045-1063) because it
- * ALSO drives `ensureStallWakerLoop` off the same `gwOn`; route it through this helper too so the two
- * chokepoints are structurally identical and can never drift again. The unit test guards the env
- * contract meanwhile.
  */
 export async function resolveSpawnGatewayEnv(opts: {
   workspaceId: string | undefined;
   slug: string | undefined;
   ownerId?: string;
+  backend?: SpawnBackendLike;
 }): Promise<Record<string, string>> {
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
+  if (!gwOn) return {};
+  const backend = interactiveBackendFromSpawnBackend(opts.backend ?? 'claude');
+  const provider = accountProviderForInteractiveBackend(backend);
+  if (!provider) return {};
   let accountId: string | undefined;
-  if (gwOn && (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system'))) {
+  if (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system')) {
     const { selectSpawnAccount } = await import('../deployment/account-pool-store');
-    accountId = await selectSpawnAccount(opts.workspaceId, opts.slug).catch(() => undefined);
+    accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
   }
-  const env = gatewaySpawnEnv(gwOn, { accountId, ownerId: opts.ownerId });
+  if (provider === 'codex') {
+    return accountId ? { PAPERCUSP_ACCOUNT_ID: accountId } : {};
+  }
+  const env = gatewaySpawnEnv(true, { accountId, ownerId: opts.ownerId });
   if (accountId) env.PAPERCUSP_ACCOUNT_ID = accountId;
   return env;
 }
