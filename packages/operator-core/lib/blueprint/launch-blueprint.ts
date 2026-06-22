@@ -554,7 +554,7 @@ export async function fireLaunchBlueprint(
 export async function fireLaunchBlueprintForEvent(
   eventKey: string,
   input: FireLaunchInput,
-): Promise<LaunchTarget | null> {
+): Promise<(LaunchTarget & { spawn: LaunchSpawnInfo | null }) | null> {
   const blueprintId = resolveLaunchTriggerEvent(eventKey);
   if (!blueprintId) {
     console.warn(`[launch-blueprint] no launch blueprint declares trigger event "${eventKey}"`);

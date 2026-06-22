@@ -769,6 +769,69 @@ test('per-account egress isolation: each pinned account routes via its OWN dispa
   assert.equal(dP, undefined, 'an account with no egress falls back to the default shared egress (no dispatcher)');
 });
 
+// The cache is keyed `<accountId>|<httpProxy>|<localAddress>` — so it must MISS (rebuild) when an account's
+// egress binding changes, not keep handing back the stale dispatcher (a re-pointed proxy IP / re-bound source
+// IP, e.g. after a pool hot-reload). The isolation test above proves the HIT side (same binding → same
+// dispatcher); these prove the MISS side per binding field.
+test('egress cache key includes proxyUrl — a re-pointed egress proxy on the SAME account rebuilds the dispatcher (no stale IP)', async () => {
+  const captured: unknown[] = [];
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured.push(init.dispatcher);
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'A' ? A : null) };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  const pin = () =>
+    ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await pin(); // builds + caches A's dispatcher for proxy :3128
+  A.egress = { proxyUrl: 'http://127.0.0.1:3129' }; // account egress re-pointed to a new proxy
+  await pin(); // key changed → MUST build a fresh dispatcher, not reuse the :3128 one
+  const [d1, d2] = captured;
+  assert.ok(d1 && d2, 'both requests egress via a dispatcher');
+  assert.notEqual(d1, d2, 'a changed proxyUrl rebuilds the dispatcher (cache key includes the proxy, not just accountId)');
+});
+
+test('egress cache key includes localAddress — a re-bound source IP on the SAME account rebuilds the dispatcher', async () => {
+  const captured: unknown[] = [];
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured.push(init.dispatcher);
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { localAddress: '127.0.0.1' } };
+  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'A' ? A : null) };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  const pin = () =>
+    ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await pin();
+  A.egress = { localAddress: '127.0.0.2' }; // re-bound to a different loopback source IP
+  await pin();
+  const [d1, d2] = captured;
+  assert.ok(d1 && d2);
+  assert.notEqual(d1, d2, 'a changed localAddress rebuilds the dispatcher (cache key includes the bound IP)');
+});
+
+test('close() tears down every cached egress dispatcher (no leaked connection pool on gateway shutdown)', async () => {
+  let captured: { close?: () => unknown; closed?: boolean; destroyed?: boolean } | undefined;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured = init.dispatcher as { close?: () => unknown; closed?: boolean; destroyed?: boolean };
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { localAddress: '127.0.0.1' } };
+  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'A' ? A : null) };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.ok(captured, 'A built an egress dispatcher');
+  assert.notEqual(captured!.closed, true, 'the dispatcher is open while the gateway is serving');
+  await gw.close();
+  // The gateway iterates the dispatcher cache and calls close() on each before clearing it — so the
+  // captured (real undici) dispatcher reports closed; nothing is left holding a socket pool open.
+  assert.equal(captured!.closed, true, 'gateway.close() closed the cached egress dispatcher (no leaked connection pool)');
+});
+
 test('a non-http(s) (socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3 / WI-284)', async () => {
   // undici's ProxyAgent is HTTP-CONNECT only; a socks:// URL would 502 EVERY request for this account.
   // The gateway must IGNORE it and fall back to default egress (no dispatcher), not hand fetch a broken one.

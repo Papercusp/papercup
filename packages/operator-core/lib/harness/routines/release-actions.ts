@@ -22,9 +22,11 @@
 
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
+import type postgres from 'postgres';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
+import { STALE_MS } from '../../liveness';
 
 /** Markers the release CLIs print their result JSON behind (P-008) — parse ONE delimited
  *  line instead of brace-slicing all of stdout (fragile to any log line with braces). MUST
@@ -390,13 +392,112 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string): Promis
   }
 }
 
+/** Persisted release-fixer dedup record (green-checkpoint routine metadata `last_fixer`). */
+export interface ReleaseFixerRecord {
+  /** Stable failure signature (sorted failing test files) — dedup key across candidates. */
+  signature?: string;
+  candidate?: string;
+  /** When the fixer was last dispatched for this signature (epoch ms). */
+  at?: number;
+  /** The dispatched fixer's spawn id (fire-and-forget path) — null on the DBOS-durable
+   *  path (which re-fires on crash itself) or a legacy record predating this field.
+   *  THE signal P-014/D-009 added: the id we check liveness against. */
+  spawnId?: string | null;
+  runId?: string | null;
+  /** When the human was last notified for this signature (notify cooldown, separate from dispatch). */
+  notifiedAt?: number;
+}
+
+export interface ReleaseFixerDecision {
+  /** (Re-)dispatch a fixer this tick. */
+  dispatch: boolean;
+  /** Notify the human this tick (rate-limited separately from dispatch). */
+  notify: boolean;
+  reason: 'fresh' | 'covered' | 'self-heal';
+}
+
+/** The fixer dedup / self-heal window (2h). The signature dedup that was the ONLY
+ *  guard before P-014; now the liveness check overrides it for a dead fixer. */
+export const RELEASE_FIXER_DEDUP_MS = 2 * 60 * 60_000;
+
 /**
- * P-006: dispatch a release-fixer agent for a held (not-green) gate, mirroring
- * git-sync's merge-resolver (git-sync-action.ts `spawnMergeResolver`). Resolves
- * the `release-fix` launch blueprint from the `green-checkpoint:red` trigger event
- * and invokes its role via the loopback invoke route. Deduped per red-candidate
- * via the green-checkpoint routine metadata (`last_fixer`) so the hourly tick
- * doesn't respawn a fixer while one is in flight for the same candidate.
+ * PURE dispatch decision (agent-activity-liveness-truth-2026-06-21 P-014 / D-009).
+ *
+ * The old dedup was purely TIME-based — skip a same-signature re-dispatch for 2h —
+ * so a fixer that DIED inside the window left the gate red + UNCOVERED for up to 2h
+ * (the 2026-06-21 incident: a dead gate-fix bee mistaken for "actively fixing it").
+ * Now liveness-aware: within the window we skip ONLY if the dispatched fixer is
+ * still ALIVE; a dead fixer re-dispatches immediately (self-heal). Notify is
+ * decided separately (rate-limited) so an hourly self-heal re-dispatch can't spam.
+ *
+ * @param fixerAlive caller's liveness verdict for the recorded fixer spawn:
+ *   `true` = running + fresh heartbeat (covered); `false` = confirmed GONE
+ *   (dead / finished / stale heartbeat) → re-dispatch; `null` = UNKNOWN (no spawn
+ *   id to check — a DBOS-durable fire that self-recovers, or a legacy record) →
+ *   treated as covered within the window, so we never regress to hammering.
+ */
+export function decideReleaseFixerDispatch(args: {
+  lf: ReleaseFixerRecord | null;
+  signature: string;
+  now: number;
+  fixerAlive: boolean | null;
+  dedupMs?: number;
+  notifyCooldownMs?: number;
+}): ReleaseFixerDecision {
+  const dedupMs = args.dedupMs ?? RELEASE_FIXER_DEDUP_MS;
+  const notifyCooldownMs = args.notifyCooldownMs ?? RELEASE_FIXER_DEDUP_MS;
+  const { lf, signature, now } = args;
+  const sameRecent =
+    !!lf && lf.signature === signature && typeof lf.at === 'number' && now - lf.at < dedupMs;
+  if (!sameRecent) {
+    // A fresh failure (new signature, or the prior one aged out) — dispatch + notify.
+    return { dispatch: true, notify: true, reason: 'fresh' };
+  }
+  // Same failure within the window: the liveness-aware gate (D-009).
+  if (args.fixerAlive !== false) {
+    // alive (true) OR unknown (null — durable/legacy) → a fixer is (presumed) on it.
+    return { dispatch: false, notify: false, reason: 'covered' };
+  }
+  // The previously-dispatched fixer is CONFIRMED GONE → self-heal: re-dispatch now.
+  // Re-notify only past the notify cooldown so an hourly self-heal doesn't spam.
+  const lastNotify = lf.notifiedAt ?? lf.at ?? 0;
+  return { dispatch: true, notify: now - lastNotify > notifyCooldownMs, reason: 'self-heal' };
+}
+
+/**
+ * Is the recorded release-fixer spawn still ALIVE — `running`/`restarting` with a
+ * heartbeat inside the shared STALE_MS window (the SAME liveness definition the
+ * fleet_assignment view + the stale-claim reconciler use, so they can't drift)?
+ * Returns `null` when there's no spawn id to check (a DBOS-durable fire / legacy
+ * record), which the decision treats as "presumed covered". Fail-soft: a query
+ * error returns null (presumed covered) rather than hammering a re-dispatch.
+ */
+export async function releaseFixerSpawnAlive(sql: postgres.Sql, spawnId: string | null | undefined): Promise<boolean | null> {
+  if (!spawnId) return null;
+  const graceSec = Math.max(1, Math.round(STALE_MS / 1000));
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT 1 FROM harness_shared.spawned_agents
+        WHERE spawn_id = $1 AND status IN ('running','restarting')
+          AND heartbeat_at IS NOT NULL AND (now() - heartbeat_at) < make_interval(secs => $2)
+        LIMIT 1`,
+      [spawnId, graceSec],
+    )) as unknown[];
+    return rows.length > 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * P-006 + P-014: dispatch a release-fixer agent for a held (not-green) gate,
+ * mirroring git-sync's merge-resolver. Fires the `release-fix` launch blueprint
+ * from the `green-checkpoint:red` trigger via fireLaunchBlueprintForEvent — the
+ * canonical, spawn-RECORDING, DBOS-DURABLE fire path the P-007 test already
+ * exercises (replacing the old raw fire-and-forget loopbackFetch that recorded no
+ * spawn + lost the fixer on a crash). Deduped per red-candidate via the
+ * green-checkpoint routine metadata (`last_fixer`) — now LIVENESS-AWARE (D-009): a
+ * dead fixer no longer blocks re-dispatch for 2h (the 2026-06-21 incident class).
  * Fail-safe: every step is best-effort and never throws into the routine tick.
  */
 async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string, failingTests?: string[]): Promise<void> {
@@ -412,74 +513,82 @@ async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string, fai
     `SELECT metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ lf: { signature?: string; candidate?: string; at?: number } | null }>;
+  )) as Array<{ lf: ReleaseFixerRecord | null }>;
   const lf = rows[0]?.lf ?? null;
-  if (lf?.signature === signature && typeof lf.at === 'number' && Date.now() - lf.at < 2 * 60 * 60_000) {
-    return; // same failure handled within the last 2h — don't re-notify or re-dispatch
-  }
-  await sql.unsafe(
-    `UPDATE harness_shared.routines
-        SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
-      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-    [ctx.installSlug, JSON.stringify({ last_fixer: { signature, candidate, at: Date.now(), status: 'dispatched' } })],
-  );
 
-  // P-003: a user-facing notification (native OS notification on desktop, mobile
-  // push) the moment the gate goes red — beyond the agent coord broadcast + the
-  // durable escalation. Fires once per fresh red candidate (the dedup above), and
-  // before the fixer dispatch so the human is told even if no fixer blueprint exists.
+  // D-009 liveness-aware dedup: within the window, skip ONLY if the previously-
+  // dispatched fixer is still alive. A dead/finished fixer re-dispatches now.
+  const sameSignature = !!lf && lf.signature === signature;
+  const fixerAlive = sameSignature ? await releaseFixerSpawnAlive(sql, lf?.spawnId) : null;
+  const now = Date.now();
+  const decision = decideReleaseFixerDispatch({ lf, signature, now, fixerAlive });
+  if (!decision.dispatch) return; // a live fixer is covering this gate — the good dedup
+
+  // Claim the dedup slot BEFORE firing (anti double-fire across ticks): a concurrent
+  // tick now sees a fresh `at` with no spawn id → fixerAlive=null → covered → skips.
+  // The spawn id is patched in after the fire below.
+  const notifiedAt = decision.notify ? now : (lf?.notifiedAt ?? null);
+  const writeRecord = (rec: ReleaseFixerRecord): Promise<unknown> =>
+    sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+      [ctx.installSlug, JSON.stringify({ last_fixer: rec })],
+    );
+  await writeRecord({ signature, candidate, at: now, spawnId: null, runId: null, notifiedAt: notifiedAt ?? undefined });
+
+  // P-003: a user-facing notification (native OS notification on desktop, mobile push).
+  // Rate-limited by decision.notify so an hourly self-heal re-dispatch doesn't spam.
+  if (decision.notify) {
+    try {
+      const { notifyAttention } = await import('../../attention-notify');
+      const selfHeal = decision.reason === 'self-heal';
+      await notifyAttention({
+        kind: 'intervention',
+        title: selfHeal ? 'Release gate still held — prior fixer died, re-dispatched' : 'Release gate held — staging→main blocked',
+        body:
+          `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${failingTests && failingTests.length > 0 ? `: ${failingTests.slice(0, 5).join(', ')}` : ''}); ` +
+          `${selfHeal ? 'the previous release-fixer ended without clearing it — a fresh one was' : 'a release-fixer was'} dispatched to diagnose it.`,
+        importance: 'high',
+        workspaceId: ctx.workspaceId,
+        data: { candidate: candidate.slice(0, 12), failing: (failingTests ?? []).slice(0, 10).join(','), selfHeal: String(selfHeal) },
+      });
+    } catch (e) {
+      console.warn(`[green-checkpoint] release-red notify failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // P-006/P-014: fire the release-fixer via the canonical spawn-recording, DBOS-durable
+  // path (fireLaunchBlueprintForEvent) so the fixer is liveness-trackable + survives a crash.
+  const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
+  let fired: Awaited<ReturnType<typeof fireLaunchBlueprintForEvent>> = null;
   try {
-    const { notifyAttention } = await import('../../attention-notify');
-    await notifyAttention({
-      kind: 'intervention',
-      title: 'Release gate held — staging→main blocked',
-      body: `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${failingTests && failingTests.length > 0 ? `: ${failingTests.slice(0, 5).join(', ')}` : ''}); a release-fixer was dispatched to diagnose it.`,
-      importance: 'high',
+    fired = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
+      installSlug: ctx.installSlug,
       workspaceId: ctx.workspaceId,
-      data: { candidate: candidate.slice(0, 12), failing: (failingTests ?? []).slice(0, 10).join(',') },
-    });
-  } catch (e) {
-    console.warn(`[green-checkpoint] release-red notify failed: ${e instanceof Error ? e.message : e}`);
-  }
-
-  // P-006: dispatch the release-fixer agent (the `release-fix` launch blueprint).
-  const { resolveLaunchTargetForEvent } = await import('../../blueprint/launch-blueprint');
-  const target = await resolveLaunchTargetForEvent('green-checkpoint:red', {
-    installSlug: ctx.installSlug,
-    workspaceId: ctx.workspaceId,
-  });
-  if (!target) return; // human notified; no fixer blueprint to dispatch
-  const { loopbackFetch } = await import('../../loopback-fetch');
-  void loopbackFetch(target.url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
       kickoff: `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.`,
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
       // P-010: the fixer's reproduce→classify→fix loop (maxTurns 30) needs far more than
-      // the old 280s; the invoke-route ceiling is 1200s. 900s. The signature dedup (2h)
-      // already prevents re-dispatch well beyond this.
+      // the old 280s; the invoke-route ceiling is 1200s. 900s. The liveness-aware dedup
+      // re-dispatches promptly if this fixer dies, so a long timeout is no longer a 2h gap.
       timeoutMs: 900_000,
-    }),
-  })
-    .then((res) =>
-      appendPipelineEvent({
-        workspaceId: ctx.workspaceId,
-        installSlug: ctx.installSlug,
-        kind: 'release_fixer',
-        status: res.ok ? 'ok' : 'failed',
-        detail: { candidate: candidate.slice(0, 12), httpStatus: res.status },
-      }),
-    )
-    .catch((e) =>
-      appendPipelineEvent({
-        workspaceId: ctx.workspaceId,
-        installSlug: ctx.installSlug,
-        kind: 'release_fixer',
-        status: 'error',
-        detail: { candidate: candidate.slice(0, 12), error: (e instanceof Error ? e.message : String(e)).slice(0, 200) },
-      }).catch(() => {}),
-    );
+    });
+  } catch (e) {
+    console.warn(`[green-checkpoint] release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
+  }
+  // Patch the recorded fixer's spawn id so the NEXT tick can check ITS liveness (D-009).
+  const spawnId = fired?.spawn?.spawnId ?? null;
+  const runId = fired?.spawn?.runId ?? null;
+  if (spawnId || runId) {
+    await writeRecord({ signature, candidate, at: now, spawnId, runId, notifiedAt: notifiedAt ?? undefined }).catch(() => {});
+  }
+  await appendPipelineEvent({
+    workspaceId: ctx.workspaceId,
+    installSlug: ctx.installSlug,
+    kind: 'release_fixer',
+    status: fired ? 'ok' : 'failed',
+    detail: { candidate: candidate.slice(0, 12), reason: decision.reason, spawnId: spawnId ?? undefined },
+  }).catch(() => {});
 }
 
 /** The fixed transient-unit name for the detached auto-deploy — fixed on

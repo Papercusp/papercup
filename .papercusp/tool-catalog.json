@@ -5247,7 +5247,7 @@
           "POST"
         ]
       },
-      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness joined in). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued` (items in rank order), `load` (work-item count) — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict judgment; the ordered plan → affinity). Surfaces orphaned claims (live lease, dead holder = abandoned work) and declared-but-unclaimed intents.",
+      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness AND progress joined in). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued` (items in rank order), `load` (work-item count) — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict judgment; the ordered plan → affinity). The single LIVE source for \"is X really being worked\": surfaces `orphaned` claims (live lease, DEAD holder) AND `stalled` claims (live holder, NO item-scoped progress in the window) — both reclaimable, neither \"covered\" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast (agent-activity-liveness-truth).",
       "capabilities": [
         "work_items:read"
       ],
@@ -5270,7 +5270,7 @@
       "guidance": {
         "when": "Answering \"who's running / what is agent X doing / what is X's ordered work-list / how loaded is X / is anyone on plan P\". This is the state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.",
         "notWhen": "You want to be notified of future changes (subscribe the fleet_assignment change-feed / your coord subscriptions) or you need full message history (coord:inbox).",
-        "chaining": "fleet:assignments { plan } → see an orphaned claim → work_items:release / plan_items:release to free it, or coord:send the holder. fleet:assignments { agent } before messaging an agent about its work."
+        "chaining": "fleet:assignments { plan } → see an orphaned OR stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release to free it, or pick it up yourself; never assume \"someone's on it\" from a coord message. fleet:assignments { agent } before messaging an agent about its work."
       }
     },
     {
@@ -7896,7 +7896,7 @@
           "POST"
         ]
       },
-      "description": "Claim an issue (assign it to yourself) before you start fixing it, so others know it is owned. Auto-subscribes you. Pass assignee to claim on behalf of another agent.",
+      "description": "Claim one OR many issues (assign to yourself, or to `assignee`) before fixing, so others know they are owned. Auto-subscribes you. Single: { id, assignee? }. Many same assignee: { ids:[…], assignee? }. Many heterogeneous: items:[{ id, assignee? }]. Returns { ok, results:[{ ok, id, issue? | error, holder? }], counts } — correlate by id; a claim_conflict on one item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -7917,8 +7917,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are about to start work on an issue — claim it first so two agents do not duplicate the fix.",
-        "notWhen": "Just reading/triaging (no claim needed). To drop a claim, issues:release. A `claim_conflict` means a LIVE peer already holds it — coordinate with the `holder` (coord:send), do not blind-retry.",
+        "when": "You are about to start work on issue(s) — claim first so two agents do not duplicate the fix. Claim several at once via ids:[…] or items:[…].",
+        "notWhen": "Just reading/triaging (no claim needed). To drop a claim, issues:release. A per-item `claim_conflict` means a LIVE peer already holds it — coordinate with the `holder` (coord:send), do not blind-retry.",
         "chaining": "issues:list → issues:claim → (fix) → issues:close / issues:promote."
       }
     },
@@ -7930,7 +7930,7 @@
           "POST"
         ]
       },
-      "description": "Set an issue's lifecycle state: resolved (fixed/answered), closed (won't-fix / no longer relevant), or open (reopen). Resolving notifies all subscribers, including mention-mode.",
+      "description": "Set one OR many issues' lifecycle state: resolved (fixed/answered), closed (won't-fix / no longer relevant), or open (reopen). Single: { id, state? }. Many same state: { ids:[…], state? }. Many heterogeneous: items:[{ id, state? }]. Resolving notifies all subscribers, including mention-mode. Returns { ok, results:[{ ok, id, issue? | error }], counts } — correlate by id; a not-found item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -7951,7 +7951,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "An issue is fixed (resolved) or is being dropped without a fix (closed). Reopen with state=open if it recurs.",
+        "when": "An issue is fixed (resolved) or is being dropped without a fix (closed). Reopen with state=open if it recurs. Close several at once via ids:[…]+state or items:[…].",
         "notWhen": "Promoting it to a tracked fix feature — issues:promote (which keeps it open/fixing until the feature lands)."
       }
     },
@@ -7963,7 +7963,7 @@
           "POST"
         ]
       },
-      "description": "Add a note to an issue's comment thread. Subscribers are notified. Use for investigation findings, repro details, or a status update on an issue you are working.",
+      "description": "Add a note to one OR many issues' comment threads. Subscribers are notified. Single: { id, body }. Many same body: { ids:[…], body }. Many heterogeneous: items:[{ id, body }]. Use for investigation findings, repro details, or a status update. Returns { ok, results:[{ ok, id, post? | error }], counts } — correlate by id; a not-found item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -7984,7 +7984,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have something to add to an existing issue — a repro, a root-cause finding, a decision, or progress.",
+        "when": "You have something to add to an existing issue — a repro, a root-cause finding, a decision, or progress. Comment on several at once via ids:[…]+body or items:[…].",
         "notWhen": "Editing the issue itself (issues:update) or resolving it (issues:close)."
       }
     },
@@ -8030,7 +8030,7 @@
           "POST"
         ]
       },
-      "description": "Read one engineer issue in full — fields, topic tags, the comment thread, and its links (e.g. what it blocks).",
+      "description": "Read one OR many engineer issues in full — fields, topic tags, the comment thread, and its links — in ONE call. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, issue?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest.",
       "capabilities": [
         "coord:read"
       ],
@@ -8051,9 +8051,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have an issue id (from issues:list/search) and want its detail before claiming, commenting, or fixing.",
+        "when": "You have one or more issue ids (from issues:list/search) and want their detail before claiming, commenting, or fixing. Pass every id you need at once via `ids` instead of calling per id.",
         "notWhen": "Scanning many — use issues:list.",
-        "chaining": "issues:list → issues:get → issues:claim / issues:comment / issues:close."
+        "chaining": "issues:list → issues:get { ids:[…] } → issues:claim / issues:comment / issues:close."
       }
     },
     {
@@ -8064,7 +8064,7 @@
           "POST"
         ]
       },
-      "description": "Link an issue to another object — e.g. this issue blocks a plan item or a feature. rel = blocks | relates | duplicates | fixes. target = a {kind, ref} like {plan_item, '<plan-slug>#P-003'} or {feature, '<harness>#F-012'} (a feature ref MUST be harness-qualified — bare 'F-012' is rejected). Pass unlink:true to remove.",
+      "description": "Link one OR many issues to another object — e.g. this issue blocks a plan item or a feature. rel = blocks | relates | duplicates | fixes. target = a {kind, ref} like {plan_item, '<plan-slug>#P-003'} or {feature, '<harness>#F-012'} (a feature ref MUST be harness-qualified — bare 'F-012' is rejected). Pass unlink:true to remove. Single: { id, targetKind, targetRef, rel?, unlink? }. Many heterogeneous: items:[{ id, targetKind, targetRef, rel?, unlink? }]. Returns { ok, results:[{ ok, id, rel?, target?, linked? | error }], counts } — correlate by id; one bad item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -8085,7 +8085,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "An issue blocks specific work (a plan item / feature) — link it so that work is shown blocked until the issue closes; or relate/dedup two issues. A feature ref is harness-qualified: \"<harness>#<feature_id>\" (e.g. \"papercup#F-12\").",
+        "when": "One or more issues block specific work (a plan item / feature) — link so that work is shown blocked until the issue closes; or relate/dedup issues. A feature ref is harness-qualified: \"<harness>#<feature_id>\" (e.g. \"papercup#F-12\"). Link several at once via items:[…].",
         "notWhen": "Tagging it to a topic area — issues:tag."
       }
     },
@@ -8131,7 +8131,7 @@
           "POST"
         ]
       },
-      "description": "Promote an issue into an F-FIX feature so the harness pipeline fixes it. A harness-scoped issue mints into its harness; an operator-scope issue needs a target harness. Records the linked feature; the issue stays open until the fix lands.",
+      "description": "Promote one OR many issues into F-FIX features so the harness pipeline fixes them. A harness-scoped issue mints into its harness; an operator-scope issue needs a target harness. Single: { id, harness? }. Many same harness: { ids:[…], harness? }. Many heterogeneous: items:[{ id, harness? }]. Records the linked feature; the issue stays open until the fix lands. Returns { ok, results:[{ ok, id, issue?, feature? | error }], counts } — correlate by id; one failure never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -8152,7 +8152,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "An issue is a real defect that should be FIXED by the pipeline (not just tracked or answered) — promote it to mint + link the fix feature.",
+        "when": "An issue is a real defect that should be FIXED by the pipeline (not just tracked or answered) — promote it to mint + link the fix feature. Promote several at once via ids:[…]+harness or items:[…].",
         "notWhen": "A question/discussion (resolve it), a nit you would not spend a feature on, or an issue already linked to a feature.",
         "chaining": "issues:get → issues:promote { harness } → the F-FIX feature dispatches in that harness; issues:close when it lands."
       }
@@ -8232,7 +8232,7 @@
           "POST"
         ]
       },
-      "description": "Follow a specific issue so its comments/updates/resolution inject into your inbox. mode = full | digest | mention. Pass unsubscribe:true to stop. (To follow an area, use topics:subscribe.)",
+      "description": "Follow one OR many specific issues so their comments/updates/resolution inject into your inbox. mode = full | digest | mention. Pass unsubscribe:true to stop. Single: { id, mode?, unsubscribe? }. Many: { ids:[…], mode?, unsubscribe? } or items:[{ id, mode?, unsubscribe? }]. Returns { ok, results:[{ ok, id, subscribed? | error }], counts } — correlate by id; a not-found item never fails the rest. (To follow an area, use topics:subscribe.)",
       "capabilities": [
         "coord:write"
       ],
@@ -8253,7 +8253,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You care about one specific issue (you reported it, depend on it, or can contribute) and want its updates pushed to you.",
+        "when": "You care about one or more specific issues (you reported them, depend on them, or can contribute) and want their updates pushed to you. Subscribe several at once via ids:[…] or items:[…].",
         "notWhen": "You want everything in an area — topics:subscribe is the scalable unit."
       }
     },
@@ -8265,7 +8265,7 @@
           "POST"
         ]
       },
-      "description": "Add or remove topic tags on an issue. Tagging it with a topic routes it to everyone subscribed to that topic — the main way an issue reaches the right people. topics:list to see/create topics.",
+      "description": "Add or remove topic tags on one OR many issues. Tagging routes an issue to everyone subscribed to that topic — the main way an issue reaches the right people. Single: { id, add?, remove? }. Many same tags: { ids:[…], add?, remove? }. Many heterogeneous: items:[{ id, add?, remove? }]. topics:list to see/create topics. Returns { ok, results:[{ ok, id, topics? | error }], counts } — correlate by id; a not-found item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -8286,7 +8286,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "An issue belongs to a relevance area (e.g. zero-cache, federation) so the people following that area should see it.",
+        "when": "One or more issues belong to a relevance area (e.g. zero-cache, federation) so the people following that area should see them. Tag several at once via ids:[…] or items:[…].",
         "notWhen": "The topic does not exist yet — topics:create it first (prefer an existing one).",
         "chaining": "topics:list → issues:tag { add:[topic] }."
       }
@@ -8299,7 +8299,7 @@
           "POST"
         ]
       },
-      "description": "Edit an issue's title / body / severity / kind / found-during / linked feature. Notifies subscribers. (State → issues:close; tags → issues:tag; comments → issues:comment.)",
+      "description": "Edit one OR many issues' title / body / severity / kind / found-during / linked feature. Notifies subscribers. Single: { id, …fields }. Many heterogeneous: items:[{ id, …fields }]. Returns { ok, results:[{ ok, id, issue? | error }], counts } — correlate by id; a not-found item never fails the rest. (State → issues:close; tags → issues:tag; comments → issues:comment.)",
       "capabilities": [
         "coord:write"
       ],
@@ -8320,7 +8320,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Refine an issue you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it.",
+        "when": "Refine issue(s) you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it. Edit several at once via items:[…].",
         "notWhen": "Resolving it (issues:close), adding a note (issues:comment), or routing it to a topic (issues:tag)."
       }
     },

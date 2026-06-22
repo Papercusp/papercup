@@ -33,8 +33,11 @@ import {
   shouldAutoServe,
   shouldBackOff,
   gateStallEscalationBody,
+  decideReleaseFixerDispatch,
+  RELEASE_FIXER_DEDUP_MS,
   type AutoServePlan,
   type DeployEventRow,
+  type ReleaseFixerRecord,
 } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
 
@@ -312,5 +315,69 @@ describe('shouldBackOff — P-013 deploy-failure back-off', () => {
   });
   it('tolerates a double-encoded JSON detail string', () => {
     expect(shouldBackOff(evt('failed', stored, 5 * 60_000, true), full, now)).toBe(true);
+  });
+});
+
+describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', () => {
+  const now = 1_700_000_000_000;
+  const SIG = 'a.test.ts,b.test.ts';
+  const rec = (over: Partial<ReleaseFixerRecord> = {}): ReleaseFixerRecord => ({
+    signature: SIG,
+    candidate: 'cafe',
+    at: now - 30 * 60_000, // 30 min ago (inside the 2h window)
+    spawnId: 's-fixer-1',
+    ...over,
+  });
+
+  it('FRESH: no prior record → dispatch + notify', () => {
+    const d = decideReleaseFixerDispatch({ lf: null, signature: SIG, now, fixerAlive: null });
+    expect(d).toEqual({ dispatch: true, notify: true, reason: 'fresh' });
+  });
+
+  it('FRESH: a DIFFERENT signature within the window → dispatch + notify (a new red)', () => {
+    const d = decideReleaseFixerDispatch({ lf: rec({ signature: 'other.test.ts' }), signature: SIG, now, fixerAlive: true });
+    expect(d).toMatchObject({ dispatch: true, reason: 'fresh' });
+  });
+
+  it('FRESH: same signature but the record AGED OUT past the window → dispatch + notify', () => {
+    const d = decideReleaseFixerDispatch({ lf: rec({ at: now - 3 * 60 * 60_000 }), signature: SIG, now, fixerAlive: false });
+    expect(d).toMatchObject({ dispatch: true, reason: 'fresh' });
+  });
+
+  it('COVERED: same signature, fixer ALIVE → skip (the good dedup — do not pile on)', () => {
+    const d = decideReleaseFixerDispatch({ lf: rec(), signature: SIG, now, fixerAlive: true });
+    expect(d).toEqual({ dispatch: false, notify: false, reason: 'covered' });
+  });
+
+  it('COVERED: same signature, liveness UNKNOWN (null — durable/legacy record) → skip, no regression', () => {
+    const d = decideReleaseFixerDispatch({ lf: rec({ spawnId: null }), signature: SIG, now, fixerAlive: null });
+    expect(d).toEqual({ dispatch: false, notify: false, reason: 'covered' });
+  });
+
+  it('SELF-HEAL: same signature, fixer DEAD → re-dispatch (the incident fix — was a 2h gap)', () => {
+    const d = decideReleaseFixerDispatch({ lf: rec({ notifiedAt: now - 30 * 60_000 }), signature: SIG, now, fixerAlive: false });
+    expect(d.dispatch).toBe(true);
+    expect(d.reason).toBe('self-heal');
+  });
+
+  it('SELF-HEAL: re-dispatch NOTIFY is rate-limited — notified recently → re-dispatch but suppress notify', () => {
+    const d = decideReleaseFixerDispatch({ lf: rec({ notifiedAt: now - 10 * 60_000 }), signature: SIG, now, fixerAlive: false });
+    expect(d.dispatch).toBe(true);
+    expect(d.notify).toBe(false); // last notify 10 min ago < 2h cooldown
+  });
+
+  it('SELF-HEAL: re-dispatch DOES notify once the notify cooldown elapses', () => {
+    const d = decideReleaseFixerDispatch({
+      lf: rec({ at: now - 30 * 60_000, notifiedAt: now - 3 * 60 * 60_000 }),
+      signature: SIG,
+      now,
+      fixerAlive: false,
+      notifyCooldownMs: 2 * 60 * 60_000,
+    });
+    expect(d).toMatchObject({ dispatch: true, notify: true, reason: 'self-heal' });
+  });
+
+  it('the 2h dedup window is the documented default', () => {
+    expect(RELEASE_FIXER_DEDUP_MS).toBe(2 * 60 * 60_000);
   });
 });
