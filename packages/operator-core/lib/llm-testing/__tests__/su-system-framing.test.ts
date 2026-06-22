@@ -20,6 +20,7 @@ import {
   buildSuSystemBlocks,
   filterCatalog,
   loadPlaybookBody,
+  mergeConsecutiveRoles,
   parseSuConfigDelta,
 } from '../targets/su';
 import { buildCatalog } from '../targets/su-catalog';
@@ -152,5 +153,47 @@ describe('su SUT systemPromptText replacement (self-learning-frontier P-023 / FB
     expect(body.startsWith(SU_PLAYBOOK_FRAMING)).toBe(false);
     expect(body).not.toMatch(/<!-- PAPERCUSP-SU:[A-Z-]+ -->/);
     expect(body.length).toBeGreaterThan(10_000);
+  });
+});
+
+describe('su SUT mergeConsecutiveRoles (compaction-seam role validity, agent-tool-delta-protocol P-006/P-007)', () => {
+  it('merges adjacent same-role turns so a compacted [user, user] pair is one valid turn', () => {
+    // What the runner's compaction seam produces before the delta turn: a
+    // summary user-block immediately followed by the turn's user message.
+    const merged = mergeConsecutiveRoles([
+      { role: 'user', content: '[earlier conversation compacted]' },
+      { role: 'user', content: 'what changed since then?' },
+    ]);
+    expect(merged).toEqual([
+      { role: 'user', content: '[earlier conversation compacted]\n\nwhat changed since then?' },
+    ]);
+  });
+
+  it('leaves an already-alternating history untouched (content preserved verbatim)', () => {
+    const history = [
+      { role: 'user' as const, content: 'list the items' },
+      { role: 'assistant' as const, content: 'A, B, C' },
+      { role: 'user' as const, content: 'what changed?' },
+    ];
+    expect(mergeConsecutiveRoles(history)).toEqual(history);
+  });
+
+  it('collapses a run of three same-role turns into one', () => {
+    const merged = mergeConsecutiveRoles([
+      { role: 'assistant', content: 'one' },
+      { role: 'assistant', content: 'two' },
+      { role: 'assistant', content: 'three' },
+    ]);
+    expect(merged).toEqual([{ role: 'assistant', content: 'one\n\ntwo\n\nthree' }]);
+  });
+
+  it('does not mutate the input array', () => {
+    const input = [
+      { role: 'user' as const, content: 'a' },
+      { role: 'user' as const, content: 'b' },
+    ];
+    const copy = input.map((m) => ({ ...m }));
+    mergeConsecutiveRoles(input);
+    expect(input).toEqual(copy);
   });
 });

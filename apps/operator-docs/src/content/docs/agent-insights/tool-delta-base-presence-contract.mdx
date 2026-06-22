@@ -1,0 +1,169 @@
+---
+title: "Tool result freshness: the delta base-presence contract"
+description: "How an agent tool answers `not_modified` instead of replaying an unchanged snapshot into the model's context — who owns the cursor, how the harness proves it still holds the base, and why this is base-presence-safe with no semantic deltas. The server half (framework plumbing) of agent-tool-delta-protocol; the harness half is the contract this page pins."
+discovered: 2026-06-22
+tags: [tool-results, delta, freshness, not-modified, cursor, mcp, tokens, negotiation, coord]
+status: current
+documents:
+  - libs/generic/tooldef/src/delta-protocol.ts
+  - libs/generic/tooldef/src/serialize-result.ts
+  - libs/generic/tooldef/src/define-tool.ts
+  - libs/generic/tooldef/src/dispatch-stack.ts
+  - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
+  - packages/operator-core/lib/coord-schema.ts
+---
+
+## The problem
+
+A list/snapshot tool (`plans:attention`, `fleet:assignments`, `coord:inbox`, …)
+re-serializes the **whole** view on every call. When an agent polls one across a
+loop, the same ~unchanged snapshot is replayed into the model's context turn
+after turn — pure token waste. The fix mirrors HTTP `ETag`/`If-None-Match`: let
+the tool answer **"nothing changed"** instead of the body.
+
+This page pins the **base-presence contract** (plan
+`agent-tool-delta-protocol-2026-06-22`, Lane B / P-004). The framework
+*plumbing* is in [`delta-protocol.ts`](libs/generic/tooldef/src/delta-protocol.ts);
+this is the rule the **agent harness** (OMP / psu turn-wrapper) must honor for
+that plumbing to be safe.
+
+## The two safe modes (no semantic deltas)
+
+The framework implements only two outcomes — never a partial body:
+
+- **`full`** — the complete snapshot. Needs no prior base in context. (Also what
+  an absent `_delta` means: today's behavior, unchanged.)
+- **`not_modified`** — *no data*, just `mode: not_modified` + a row `count` + a
+  fresh cursor. The harness re-presents the base it already holds.
+
+Because `not_modified` carries **no data to merge**, there is nothing the model
+can silently mis-merge. The silent-wrong-merge hazard only enters with semantic
+`added/updated/removed` delta bodies — that is a **separate, endpoint-opt-in
+layer** (Lane E) gated on the Lane-C behavior tests, and is deliberately NOT part
+of this contract.
+
+## Control rides the `_meta` envelope, never `arguments` (D-001)
+
+The freshness control field is `_meta.delta` on the MCP `tools/call` params (a
+sibling of `arguments`, alongside `format`/`structured`/`idempotencyKey` —
+[`_mcp-handler.ts`](packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts)),
+with a connection-level `?delta=` URL fallback mirroring `?format=`. It must NOT
+be a key inside `arguments`: ~9 `.strict()` tools and the converse/sentinel
+`additionalProperties:false` rejection-contract would `400` on an unknown
+`arguments` key. Wire form is a single string: `"<mode>"` or `"<mode>~<cursor>"`
+(the cursor is base64url, which never contains `~`).
+
+The negotiated outcome rides back on `_meta.delta`:
+
+```jsonc
+{ "mode": "full" | "not_modified",
+  "supported": true,            // did the endpoint declare a delta capability?
+  "cursor": "<opaque>",         // fresh cursor (omitted on bypass / non-capable)
+  "reason": "changed" }         // why full, when the client wanted otherwise
+```
+
+## Cursors are stateless and opaque (D-002)
+
+There is **no server-side snapshot store**. Everything needed to validate a
+cursor on the next call lives inside the base64url token: the **view
+fingerprint** (a hash of tool name + canonical args + scope + requested format),
+the **revision** it was issued at, and the endpoint **schema version**. The
+server recomputes the fingerprint + current revision and compares:
+
+| cursor vs current | result |
+| --- | --- |
+| fingerprint differs (different tool/args/scope/**format**) | `full` (`view_changed`) |
+| schemaVersion differs | `full` (`schema_changed`) |
+| malformed / unversioned | `full` (`cursor_malformed`) |
+| revision matches | **`not_modified`** |
+| revision advanced | `full` (`changed`) — here is the new state |
+
+No retention burden, no stale-base class of bug. A cursor minted for one view
+can never be honored for another.
+
+## The harness owns the base — mirror coord (D-006)
+
+`not_modified` is only useful if the **base snapshot is still in the model's
+context**. The server can validate the cursor/view/scope, but it **cannot** see
+whether the model still holds the base. So the **harness, not the model, owns
+cursor storage and base-presence tracking** — exactly as coord already does for
+OMP/psu agents ([`coord-schema.ts`](packages/operator-core/lib/coord-schema.ts)):
+`coord_watermarks` per-channel cursors, the `[coord+N]` positional injection, the
+`messages_shown_ts` read-receipt, and a `snapshot_rebootstrap_pending` flag that
+re-sends full state after compaction.
+
+The harness contract:
+
+1. **Store** each cursor keyed by **(tool name + canonical args + scope +
+   serialization format)** — the same tuple the fingerprint binds. A different
+   key ⇒ a different stored base.
+2. **Assert `haveBase`**: send `_meta.delta = "not_modified~<cursor>"` **only**
+   when the matching base snapshot is still verbatim in the current context.
+   Otherwise send `"full"` (or omit `_delta`).
+3. **Invalidate on compaction / session-resume**: when the turn wrapper compacts
+   history or resumes a session, the prior tool snapshots may be gone — clear the
+   stored cursors (or flag rebootstrap-pending), so the next call asks for `full`.
+   This is the `snapshot_rebootstrap_pending` move.
+4. **On a `not_modified` response**: re-present the retained base to the model;
+   it is never re-read off the wire. Refresh the stored cursor from
+   `_meta.delta.cursor`.
+5. **On a `full` response**: replace both the stored base and the cursor.
+6. **On `supported: false`**: the endpoint isn't delta-capable — stop sending
+   `_delta` for it.
+
+**Auto-expand-to-full on absent base is automatic, from both sides:** the harness
+simply never asserts `not_modified` without the base (so the model always has
+data to act on), and the server independently returns `full` on any
+cursor/scope/schema mismatch. There is no path where the model is left with
+neither a body nor a base.
+
+### Scope: only harnesses Papercusp's turn-wrapper controls
+
+LLM-facing `not_modified` is scoped to **OMP / psu** harnesses, where Papercusp
+owns the turn wrapper and can guarantee base-presence tracking. **External Claude
+Code / Codex** sessions get no turn-wrapper control, so the harness must **never**
+send `not_modified` for them — they always receive `full` (their MCP client may
+still use `?format=` etc., just not delta).
+
+## Small-response bypass
+
+Below ~256 bytes of full body
+([`DELTA_SMALL_RESPONSE_BYTES`](libs/generic/tooldef/src/delta-protocol.ts)) the
+framework skips delta machinery entirely and serves `full` with **no cursor** —
+a `not_modified` round-trip (cursor + envelope ≈ 120 bytes) barely saves anything
+for a tiny view.
+
+## Endpoint opt-in (the server half — what P-005 built)
+
+A tool opts in by declaring a `delta` capability on its `defineTool`
+([`define-tool.ts`](libs/generic/tooldef/src/define-tool.ts)). For this lane the
+minimal contract is just a `revision` source — the monotonic/checksum signal the
+framework compares against the cursor:
+
+```ts
+defineTool({
+  name: 'plans:attention',
+  // …args, handler returning { data } …
+  delta: {
+    revision: (args, ctx) => maxPlanRevisionSeq(args, ctx), // string | number | Promise
+    scope: (args, ctx) => `${ctx.workspaceId}:${ctx.harnessSlug}:${ctx.role}`,
+    schemaVersion: 'v1', // bump to invalidate every outstanding cursor at once
+  },
+});
+```
+
+Ready-made revision sources (audit-confirmed): `plan_revisions.seq`, a plan row's
+`version`/`contentHash`/`updatedAt`, cache generation counters, `coord_watermarks`
+timestamps. A tool with **no** `delta` capability is unaffected: a `_delta`
+request returns `full` + `supported:false`, and a call without `_delta` is
+byte-identical to today (zero overhead). A thrown `revision()` degrades to `full`
+(`revision_error`) — freshness never fails a call.
+
+> **Telemetry.** The served mode is captured into
+> `tool_invocations.metadata_json->>'deltaMode'`
+> ([`dispatch-stack.ts`](libs/generic/tooldef/src/dispatch-stack.ts), mirroring
+> the `format` capture) so the `not_modified` hit-rate per tool is a measurable
+> rollout signal — no DDL.
+
+Semantic `added/updated/removed` deltas (`changesSince`) are **Lane E** and build
+on this contract; they are NOT enabled by the `revision`-only declaration above.

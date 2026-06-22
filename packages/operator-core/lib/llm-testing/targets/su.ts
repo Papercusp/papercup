@@ -435,10 +435,16 @@ class SuSession implements ChatSession {
 
     // The conversation transcript for THIS turn (stateless: caller threads the
     // full history each send()). System prompt is the playbook; drop any
-    // 'system' entries from the message list.
-    const messages: AnthropicMessage[] = input.messages
-      .filter((m) => m.role !== 'system')
-      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    // 'system' entries from the message list, then MERGE consecutive same-role
+    // turns (see mergeConsecutiveRoles): the official Anthropic API auto-merges
+    // these but the inference-gateway PROXY this target routes through may not,
+    // and the runner's compaction seam (P-006) can legitimately leave a summary
+    // user-turn adjacent to the next user message.
+    const messages: AnthropicMessage[] = mergeConsecutiveRoles(
+      input.messages
+        .filter((m) => m.role !== 'system')
+        .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    );
 
     const ctrl = new AbortController();
     const TURN_CAP_MS = 240_000;
@@ -543,6 +549,31 @@ class SuSession implements ChatSession {
       isError: false,
     };
   }
+}
+
+/**
+ * Merge consecutive same-role messages into one (content joined by a blank
+ * line). The official Anthropic API auto-merges these, but the inference-gateway
+ * proxy this target routes through (and Bedrock/Vertex) may instead 400 with
+ * "roles must alternate" (anthropic-sdk-typescript#565). The runner's compaction
+ * seam (agent-tool-delta-protocol P-006) legitimately produces an adjacent pair
+ * — a summary `user` block followed by the turn's `user` message — so merging
+ * here keeps a compacted history valid AND faithful (the summary reads as the
+ * lead of that user turn). Only ever runs over the text-only wire history; the
+ * tool-loop's block content is assembled separately, after this mapping.
+ * Exported for a focused unit test.
+ */
+export function mergeConsecutiveRoles(msgs: AnthropicMessage[]): AnthropicMessage[] {
+  const out: AnthropicMessage[] = [];
+  for (const m of msgs) {
+    const prev = out[out.length - 1];
+    if (prev && prev.role === m.role && typeof prev.content === 'string' && typeof m.content === 'string') {
+      prev.content = `${prev.content}\n\n${m.content}`;
+    } else {
+      out.push({ ...m });
+    }
+  }
+  return out;
 }
 
 function renderToolResult(res: ToolResult): { text: string; isError: boolean } {
