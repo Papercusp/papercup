@@ -44,7 +44,14 @@ type UndiciDispatcher = import('undici').Dispatcher;
 type FetchInit = RequestInit & { dispatcher?: UndiciDispatcher };
 
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
-const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-retry-after
+// Pre-admission wait (NO admission slot held → cannot wedge): how long a request parks waiting for an
+// account's rate to clear before failing with a retry-after. Bumped 2→4 min (2026-06-22) so the gateway
+// ABSORBS more transient throttles for the caller (it succeeds after a longer wait instead of surfacing a
+// 429) — safe because no slot is held and the fail-fast-shed still bails immediately when the soonest reset
+// is BEYOND this window (a doomed request never waits the full budget). Kept comfortably under the bee CLI's
+// ~10-min SDK request timeout. Env-tunable. (The POST-admission 60s slot-hold deadline is a SEPARATE,
+// wedge-bounded budget and is NOT changed here.)
+const DEFAULT_MAX_QUEUE_WAIT_MS = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUE_WAIT_MS) || 4 * 60 * 1000;
 /** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
  *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
  *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the
