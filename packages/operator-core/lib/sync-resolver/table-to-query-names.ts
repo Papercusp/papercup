@@ -190,6 +190,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // dev.assignableMembers (P-016) unions live presence + offline members — a
     // presence flip moves a person between the online/offline groups in the picker.
     'dev.assignableMembers',
+    // scheduler.running derives each bee run's idle/blocked reason from the holder's
+    // presence liveness — a heartbeat/intent flip refreshes the live-execution view.
+    'scheduler.running',
   ],
   // hive_members (admission) is the offline half of the @-assign picker — a new
   // admitted member becomes assignable the moment they're admitted (P-016).
@@ -199,8 +202,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // also fires notifySyncInvalidate explicitly; this covers a FEDERATED steering
   // write arriving from a peer Swarm (the keys federate via the capture trigger).
   'harness_shared.hive_settings': ['hive.steering'],
-  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
-  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
+  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
+  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
+  // bee_claim_specs backs the per-run claim-spec specId@revision shown by the
+  // live-execution view (scheduler.running) — a Queen set_claim_spec re-steer bumps the
+  // revision a running bee shows (hybrid-bee-scheduler P-001 / D-007).
+  'harness_shared.bee_claim_specs': ['scheduler.running'],
   // dev.coordFeed is the live coordination firehose (the PresenceRail Activity
   // tab + the /adv Conversations Feed). The emit_change_notify trigger on
   // coord_event_log is filtered to ORIGINAL rows (body->>'notify_kind' IS NULL)
