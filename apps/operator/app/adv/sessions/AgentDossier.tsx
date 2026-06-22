@@ -85,10 +85,38 @@ interface AgentCoordState {
   openEscalations: CoordEscalationSummary[];
   error: string | null;
 }
+interface CodexHomeDiagnostics {
+  codexHome: string;
+  exists: boolean;
+  agentsPath: string;
+  agentsExists: boolean;
+  configPath: string;
+  configExists: boolean;
+  hooksPath: string;
+  hooksExists: boolean;
+  promptsPath: string;
+  promptsExists: boolean;
+  authPath: string;
+  authExists: boolean;
+  diagnosticsPath: string;
+  diagnosticsExists: boolean;
+  diagnostics: {
+    lockEnforcement?: string;
+    codexPreToolUseStatus?: string;
+    requiresExplicitPapercuspLocks?: boolean;
+    inheritedPromptsCopied?: boolean;
+  } | null;
+  latestRolloutId: string | null;
+  latestRolloutPath: string | null;
+  resumeStrategy: 'codex-resume-last-in-code-home';
+  resumeCommand: string;
+  error: string | null;
+}
 export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
   coord: AgentCoordState;
+  codex: CodexHomeDiagnostics | null;
 }
 
 function shortSource(s: string): string {
@@ -172,6 +200,7 @@ export default function AgentDossier({
   const { detail, error, loading } = useAgentDetail(ownerId);
   const locks = detail?.locks;
   const coord = detail?.coord;
+  const codex = detail?.codex;
 
   // Files this agent holds / waits on — to cross-mark the file list.
   const heldPaths = new Set(locks?.held.map((l) => l.path) ?? []);
@@ -228,6 +257,33 @@ export default function AgentDossier({
           <MetaRow label="window" value={entry.windowId} />
           <MetaRow label="omp thread" value={entry.ompThreadId} />
           <MetaRow label="user" value={entry.userId} />
+        </section>
+      ) : null}
+
+      {codex ? (
+        <section className="pc-dossier__section">
+          <h4 className="pc-dossier__h">
+            Codex Runtime
+            <span className="pc-dossier__badge-count">advanced</span>
+            {codex.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {codex.error}</span> : null}
+          </h4>
+          <MetaRow label="home" value={codex.codexHome} />
+          <MetaRow label="resume" value={codex.resumeCommand} />
+          <MetaRow label="rollout" value={codex.latestRolloutId ?? 'not recorded yet'} />
+          <MetaRow label="AGENTS.md" value={codex.agentsExists ? codex.agentsPath : 'missing'} />
+          <MetaRow label="config.toml" value={codex.configExists ? codex.configPath : 'missing'} />
+          <MetaRow label="hooks" value={codex.hooksExists ? 'configured' : 'missing'} />
+          <MetaRow label="auth" value={codex.authExists ? 'linked' : 'missing'} />
+          <MetaRow label="prompts" value={codex.promptsExists ? 'available' : 'missing'} />
+          <MetaRow label="lock status" value={codex.diagnostics?.lockEnforcement ?? 'unknown'} />
+          <MetaRow
+            label="PreToolUse"
+            value={codex.diagnostics?.codexPreToolUseStatus ?? 'unknown'}
+          />
+          <MetaRow
+            label="manual locks"
+            value={codex.diagnostics?.requiresExplicitPapercuspLocks ? 'required' : 'not required'}
+          />
         </section>
       ) : null}
 

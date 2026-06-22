@@ -282,6 +282,32 @@ describe('writeSuCodexHome', () => {
     expect(diag.codexPreToolUseStatus).toBe('upstream-inert-for-apply-patch-and-shell');
   });
 
+  it('reads non-secret CODEX_HOME diagnostics, including latest rollout id and resume command', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome, readCodexHomeDiagnostics } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 'diag', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+    const { mkdirSync } = await import('node:fs');
+    const rolloutDir = join(out.codexHome, 'sessions', '2026', '06', '21');
+    mkdirSync(rolloutDir, { recursive: true });
+    writeFileSync(
+      join(rolloutDir, 'rollout-2026-06-21T13-12-06-019eeb2b-0742-72a0-85a4-5dc505cfe62d.jsonl'),
+      '{}\n',
+    );
+
+    const diag = readCodexHomeDiagnostics('diag');
+    expect(diag.exists).toBe(true);
+    expect(diag.agentsExists).toBe(true);
+    expect(diag.configExists).toBe(true);
+    expect(diag.hooksExists).toBe(true);
+    expect(diag.diagnosticsExists).toBe(true);
+    expect(diag.diagnostics?.lockEnforcement).toBe('soft-hooks-configured');
+    expect(diag.latestRolloutId).toBe('019eeb2b-0742-72a0-85a4-5dc505cfe62d');
+    expect(diag.resumeStrategy).toBe('codex-resume-last-in-code-home');
+    expect(diag.resumeCommand).toContain('codex resume --last');
+    expect(diag.resumeCommand).toContain(out.codexHome);
+    expect(diag.configPath).toBe(out.configPath);
+  });
+
   it('the HUMAN su home gets NO native-scheduler guard (native-scheduler-lockout D-003)', async () => {
     await installFakeHooks();
     const { writeSuCodexHome } = await loadMod();

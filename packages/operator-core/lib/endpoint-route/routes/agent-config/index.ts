@@ -30,6 +30,9 @@ export default [
     auth: 'public',
     async handler() {
       const cfg = await readAgentConfig();
+      const { listResumableSessions } = await import('../../../adv-sessions');
+      const { readCodexHomeDiagnostics } = await import('../../../role-codex-home');
+      const latestCodexSession = (await listResumableSessions(50)).find((s) => s.agent === 'codex') ?? null;
       return Response.json({
         config: cfg,
         // The committed default tier menu — the EFFECTIVE workspace baseline when
@@ -38,6 +41,15 @@ export default [
         // operator-core constant import. Additive; existing consumers ignore it.
         defaultTiers: DEFAULT_MODEL_TIERS,
         binaries: detectBinaries(),
+        codexDiagnostics: latestCodexSession
+          ? {
+              sessionId: latestCodexSession.id,
+              ownerId: latestCodexSession.coordOwnerId,
+              startedAt: latestCodexSession.startedAt,
+              endedAt: latestCodexSession.endedAt,
+              home: readCodexHomeDiagnostics(latestCodexSession.id),
+            }
+          : null,
         effectiveBackend: effectiveBackend(cfg),
         envOverrides: {
           AGENT_BACKEND: process.env.AGENT_BACKEND ?? null,

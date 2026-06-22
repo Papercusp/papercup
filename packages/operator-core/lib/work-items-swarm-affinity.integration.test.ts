@@ -15,6 +15,7 @@
  * Mirrors work-items-claim.integration.test.ts's schema bootstrap.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -30,17 +31,7 @@ const readMigration = (f: string) =>
     .join('\n');
 
 // HFC with the swarm_affinity column (migration 191) baked in.
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL, feature_id text NOT NULL, title text, summary text,
-    status text NOT NULL DEFAULT 'todo', attempts bigint DEFAULT 0,
-    item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
-    taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
-    swarm_affinity text,
-    feature_order integer,
-    ts bigint, created_ts bigint, updated_ts bigint,
-    origin text NOT NULL DEFAULT 'local', audit_verdict text, verified_author_github_user_id bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {

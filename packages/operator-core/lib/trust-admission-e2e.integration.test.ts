@@ -35,6 +35,7 @@
  * Gated on Docker like the other *-integration tests (real testcontainer PG).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import type { HarnessFeatureRow } from './sync/hyperbee/projections/harness-features';
@@ -58,29 +59,7 @@ const { dispatchAuditorLane, selectRemotePendingFeatures } = await import('@pape
 const WS = 'default';
 const HARNESS = 'h1';
 
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    workspace_id text NOT NULL DEFAULT 'default',
-    harness_slug text NOT NULL,
-    feature_id text NOT NULL,
-    title text, summary text, status text DEFAULT 'todo',
-    item_kind text DEFAULT 'feature',
-    attempts integer, claims integer,
-    notes text, metadata jsonb, kind text, project_id text,
-    expected_cost_cents integer, tags jsonb, needs_human_review boolean,
-    ts bigint, goal_id text, expires_at timestamptz,
-    taken_by text, taken_at timestamptz,
-    parent_id text, payload jsonb,
-    assignee_rank integer, rank_writer text, rank_updated_at timestamptz,
-    swarm_affinity text, feature_order integer,
-    redundancy integer,
-    author_pubkey text, fed_ts bigint,
-    fed_hlc text,
-    origin text NOT NULL DEFAULT 'local',
-    audit_verdict text, audit_reasons text, audited_at timestamptz,
-    verified_author_github_user_id bigint,
-    created_ts bigint, updated_ts bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 // The verified-author producer source (hive_members, migration 185): a member's
 // attested devices + revoked blocklist + binding_status. resolveVerifiedAuthorGithubId
@@ -98,14 +77,8 @@ const HIVE_MEMBERS_DDL = `
     joined_at bigint,
     PRIMARY KEY (workspace_id, hive_home_slug, github_user_id))`;
 
-// The owner-keyed LOCAL trust list the admission predicate consults (P-009).
-const USER_TRUST_LIST_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (
-    workspace_id text NOT NULL,
-    trusted_github_user_id bigint NOT NULL,
-    note text,
-    created_ts bigint NOT NULL,
-    PRIMARY KEY (workspace_id, trusted_github_user_id))`;
+// The owner-keyed LOCAL trust list the admission predicate consults (P-009) —
+// USER_TRUST_LIST_DDL imported from ../test/_work-items-schema (shared superset).
 
 // addTrustedUser / removeTrustedUser append a security-grant audit row (fail-safe,
 // but the table must exist or it console.warns → vitest-fail-on-console.

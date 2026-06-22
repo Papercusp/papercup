@@ -16,6 +16,7 @@
  *   - claim_next's excludeRedundant filter skips high-stakes items.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import type { JudgeLlmCall } from './gym/primitives';
@@ -60,21 +61,7 @@ const WS = 'default';
 const HARNESS = 'h1';
 
 // Minimal feature table — just the columns the redundancy path + claim_next read/write.
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    workspace_id text NOT NULL DEFAULT 'default',
-    harness_slug text NOT NULL,
-    feature_id text NOT NULL,
-    title text, summary text, status text DEFAULT 'todo',
-    item_kind text DEFAULT 'feature',
-    taken_by text, taken_at timestamptz,
-    parent_id text, payload jsonb,
-    assignee_rank integer, rank_writer text, rank_updated_at timestamptz,
-    swarm_affinity text, feature_order integer,
-    redundancy integer,
-    origin text NOT NULL DEFAULT 'local', audit_verdict text, verified_author_github_user_id bigint,
-    created_ts bigint, updated_ts bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const REPLICAS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_replicas (

@@ -9,16 +9,53 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // writeAgentConfig hits PG + process.env — mock the write, keep the real
 // parsers (they ARE the subject under test via the route's drop detection).
-const { writeMock } = vi.hoisted(() => ({
+const { writeMock, readMock, listResumableSessionsMock, readCodexHomeDiagnosticsMock } = vi.hoisted(() => ({
   writeMock: vi.fn(async (cfg: unknown) => cfg),
+  readMock: vi.fn(async () => ({ backend: 'claude-code', cmd: '', models: {}, backends: {}, surfaceModels: {}, tiers: [], tierCeilings: {} })),
+  listResumableSessionsMock: vi.fn<(_limit?: number) => Promise<unknown[]>>(async () => []),
+  readCodexHomeDiagnosticsMock: vi.fn((sessionKey: unknown) => ({
+    codexHome: `/codex/session-${sessionKey}`,
+    exists: true,
+    agentsPath: `/codex/session-${sessionKey}/AGENTS.md`,
+    agentsExists: true,
+    configPath: `/codex/session-${sessionKey}/config.toml`,
+    configExists: true,
+    hooksPath: `/codex/session-${sessionKey}/hooks.json`,
+    hooksExists: true,
+    promptsPath: `/codex/session-${sessionKey}/prompts`,
+    promptsExists: true,
+    authPath: `/codex/session-${sessionKey}/auth.json`,
+    authExists: true,
+    diagnosticsPath: `/codex/session-${sessionKey}/papercusp-diagnostics.json`,
+    diagnosticsExists: true,
+    diagnostics: { lockEnforcement: 'soft-hooks-configured', requiresExplicitPapercuspLocks: true },
+    latestRolloutId: 'rollout-1',
+    latestRolloutPath: `/codex/session-${sessionKey}/sessions/rollout-1.jsonl`,
+    resumeStrategy: 'codex-resume-last-in-code-home',
+    resumeCommand: `CODEX_HOME='/codex/session-${sessionKey}' codex resume --last`,
+    error: null,
+  })),
 }));
 vi.mock('../../agent-config', async () => {
   const actual = await vi.importActual<typeof import('../../agent-config')>('../../agent-config');
-  return { ...actual, writeAgentConfig: writeMock };
+  return { ...actual, readAgentConfig: readMock, writeAgentConfig: writeMock };
 });
 vi.mock('../../agent-bin-detect', () => ({
-  detectBinaries: () => ({ claude: '/usr/bin/claude', omp: null, pi: null }),
+  detectBinaries: () => ({ claude: '/usr/bin/claude', codex: '/usr/bin/codex', omp: null, pi: null }),
 }));
+vi.mock('../../adv-sessions', () => ({
+  listResumableSessions: (limit?: number) => listResumableSessionsMock(limit),
+}));
+vi.mock('../../role-codex-home', () => ({
+  readCodexHomeDiagnostics: (sessionKey: string | number) => readCodexHomeDiagnosticsMock(sessionKey),
+}));
+
+async function callGet(): Promise<Response> {
+  const mod = await import('../routes/agent-config');
+  const route = (mod.default as unknown as Array<{ method: string; handler: (req: Request) => Promise<Response> }>)
+    .find((r) => r.method === 'GET')!;
+  return route.handler(new Request('http://localhost:3070/api/agent-config', { method: 'GET' }));
+}
 
 async function callPost(body: unknown): Promise<Response> {
   const mod = await import('../routes/agent-config');
@@ -44,6 +81,36 @@ const VALID_BODY = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  readMock.mockResolvedValue({ backend: 'claude-code', cmd: '', models: {}, backends: {}, surfaceModels: {}, tiers: [], tierCeilings: {} });
+  listResumableSessionsMock.mockResolvedValue([] as unknown[]);
+});
+
+describe('GET /agent-config diagnostics', () => {
+  it('returns codex binary detection and the latest tracked Codex CODEX_HOME diagnostics', async () => {
+    listResumableSessionsMock.mockResolvedValue([
+      { id: 40, agent: 'claude', coordOwnerId: 'su-c', startedAt: '2026-06-21T00:00:00.000Z', endedAt: null },
+      { id: 77, agent: 'codex', coordOwnerId: 'su-x', startedAt: '2026-06-21T01:00:00.000Z', endedAt: null },
+    ] as unknown[]);
+    const res = await callGet();
+    expect(res.status).toBe(200);
+    expect(listResumableSessionsMock).toHaveBeenCalledWith(50);
+    expect(readCodexHomeDiagnosticsMock).toHaveBeenCalledWith(77);
+    const json = await res.json();
+    expect(json.binaries.codex).toBe('/usr/bin/codex');
+    expect(json.codexDiagnostics.sessionId).toBe(77);
+    expect(json.codexDiagnostics.ownerId).toBe('su-x');
+    expect(json.codexDiagnostics.home.codexHome).toBe('/codex/session-77');
+    expect(json.codexDiagnostics.home.resumeCommand).toContain('codex resume --last');
+  });
+
+  it('returns null codexDiagnostics when no tracked Codex session exists yet', async () => {
+    listResumableSessionsMock.mockResolvedValue([
+      { id: 40, agent: 'claude', coordOwnerId: 'su-c', startedAt: '2026-06-21T00:00:00.000Z', endedAt: null },
+    ] as unknown[]);
+    const json = await (await callGet()).json();
+    expect(json.codexDiagnostics).toBeNull();
+    expect(readCodexHomeDiagnosticsMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /agent-config strict save', () => {

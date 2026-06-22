@@ -84,6 +84,7 @@ const DETAIL: AgentDetail = {
     openEscalations: [],
     error: null,
   },
+  codex: null,
 };
 
 describe('AgentDossier', () => {
@@ -122,6 +123,51 @@ describe('AgentDossier', () => {
     expect(getByText('pushed the fix')).toBeTruthy(); // coord last message
     expect(getByText('2 unread')).toBeTruthy(); // unread badge
     expect(getByText('over to codex')).toBeTruthy(); // open handoff
+  });
+
+  it('renders Codex runtime diagnostics when the selected agent has a tracked CODEX_HOME', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ...DETAIL,
+        codex: {
+          codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
+          exists: true,
+          agentsPath: '/home/user/.papercusp/su-codex-homes/session-77/AGENTS.md',
+          agentsExists: true,
+          configPath: '/home/user/.papercusp/su-codex-homes/session-77/config.toml',
+          configExists: true,
+          hooksPath: '/home/user/.papercusp/su-codex-homes/session-77/hooks.json',
+          hooksExists: true,
+          promptsPath: '/home/user/.papercusp/su-codex-homes/session-77/prompts',
+          promptsExists: true,
+          authPath: '/home/user/.papercusp/su-codex-homes/session-77/auth.json',
+          authExists: true,
+          diagnosticsPath: '/home/user/.papercusp/su-codex-homes/session-77/papercusp-diagnostics.json',
+          diagnosticsExists: true,
+          diagnostics: {
+            lockEnforcement: 'soft-hooks-configured',
+            codexPreToolUseStatus: 'upstream-inert-for-apply-patch-and-shell',
+            requiresExplicitPapercuspLocks: true,
+            inheritedPromptsCopied: true,
+          },
+          latestRolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
+          latestRolloutPath: '/home/user/.papercusp/su-codex-homes/session-77/sessions/rollout.jsonl',
+          resumeStrategy: 'codex-resume-last-in-code-home',
+          resumeCommand: "CODEX_HOME='/home/user/.papercusp/su-codex-homes/session-77' codex resume --last",
+          error: null,
+        },
+      } satisfies AgentDetail),
+    });
+    const { findByText, getByText } = render(
+      <AgentDossier ownerId="su-codex" entry={entry({ ownerId: 'su-codex', agent: 'codex', source: 'codex' })} onClose={() => {}} />,
+    );
+    expect(await findByText('Codex Runtime')).toBeTruthy();
+    expect(getByText('/home/user/.papercusp/su-codex-homes/session-77')).toBeTruthy();
+    expect(getByText("CODEX_HOME='/home/user/.papercusp/su-codex-homes/session-77' codex resume --last")).toBeTruthy();
+    expect(getByText('019eeb2b-0742-72a0-85a4-5dc505cfe62d')).toBeTruthy();
+    expect(getByText('soft-hooks-configured')).toBeTruthy();
+    expect(getByText('required')).toBeTruthy();
   });
 
   it('cross-marks a held file with the L lock marker', async () => {

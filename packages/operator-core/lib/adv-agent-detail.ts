@@ -17,6 +17,7 @@ import { coordLog } from './agent-tools/coordination/log';
 import { readAckedMsgIds } from './agent-tools/coordination/messages';
 import { listHandoffs, type HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
 import { listEscalations, type EscalationRecord } from './agent-tools/coordination/escalations';
+import { latestAdvSessionByCoordOwner } from './adv-sessions';
 import {
   ensureBootstrap,
   getTxPool,
@@ -25,6 +26,7 @@ import {
 } from './agent-tools/locks/su-lock-store';
 import { lockCoordinationDomain } from './agent-tools/locks/coordination-domain';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './role-codex-home';
 
 // ──────────────────────────── DTOs (the endpoint JSON contract) ────────────
 // Dates are ISO strings on the wire (readQueue returns Date objects; we map).
@@ -110,6 +112,7 @@ export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
   coord: AgentCoordState;
+  codex: CodexHomeDiagnostics | null;
 }
 
 // ──────────────────────────── pure shaping ─────────────────────────────────
@@ -277,8 +280,25 @@ export async function getAgentCoordState(owner: string): Promise<AgentCoordState
   }
 }
 
-/** The full Tier-3 dossier for one agent: locks + coord, fetched concurrently. */
+async function getAgentCodexDiagnostics(owner: string): Promise<CodexHomeDiagnostics | null> {
+  try {
+    const session = await latestAdvSessionByCoordOwner(owner);
+    if (session?.agent !== 'codex') return null;
+    return readCodexHomeDiagnostics(session.id);
+  } catch (e) {
+    return {
+      ...readCodexHomeDiagnostics(`unknown-${owner}`),
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+/** The full Tier-3 dossier for one agent: locks + coord + client diagnostics, fetched concurrently. */
 export async function getAgentDetail(owner: string): Promise<AgentDetail> {
-  const [locks, coord] = await Promise.all([getAgentLocks(owner), getAgentCoordState(owner)]);
-  return { ownerId: owner, locks, coord };
+  const [locks, coord, codex] = await Promise.all([
+    getAgentLocks(owner),
+    getAgentCoordState(owner),
+    getAgentCodexDiagnostics(owner),
+  ]);
+  return { ownerId: owner, locks, coord, codex };
 }

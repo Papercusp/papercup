@@ -48,8 +48,12 @@ vi.mock('./workspace-registry', async () => {
 
 const wi = await import('./work-items');
 const setPriorityTool = (await import('./agent-tools/work_items/set_priority')).default;
-const runSetPriority = async (args: Record<string, unknown>) =>
-  JSON.parse(
+// work_items:set_priority is bulk-standardized (bulk-endpoint-standardization-2026-06-21):
+// it returns the keyed-array envelope { ok, results:[{ ok, workItem, mode, … | error }],
+// counts }. Every call below is single-item, so the n=1 result is results[0] — return it
+// directly so the per-mode assertions (mode/action/priority/ok) read naturally.
+const runSetPriority = async (args: Record<string, unknown>) => {
+  const env = JSON.parse(
     (
       await (
         setPriorityTool as unknown as {
@@ -58,6 +62,8 @@ const runSetPriority = async (args: Record<string, unknown>) =>
       ).handler(args, { log() {}, workspaceId: 'default', role: 'operator' })
     ).content[0].text,
   );
+  return env.results[0];
+};
 const H = 'papercup';
 let db: FreshPgDb;
 

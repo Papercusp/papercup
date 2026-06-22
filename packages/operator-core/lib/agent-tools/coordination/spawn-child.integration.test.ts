@@ -29,6 +29,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 
@@ -103,16 +104,7 @@ const ASSERTIONS_DDL = `
 
 /** harness_features_consolidated — the columns the import lands + the
  *  dispatcher eligibility read needs (status/metadata/item_kind/origin/…). */
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    workspace_id text NOT NULL DEFAULT 'default',
-    harness_slug text NOT NULL, feature_id text NOT NULL,
-    title text, summary text, status text NOT NULL DEFAULT 'todo',
-    item_kind text NOT NULL DEFAULT 'feature',
-    metadata jsonb, claims text,
-    source_plan_slug text, source_plan_item_ids jsonb, wave text,
-    feature_order integer, origin text, audit_verdict text,
-    PRIMARY KEY (harness_slug, feature_id))`;
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 let db: FreshPgDb;
 

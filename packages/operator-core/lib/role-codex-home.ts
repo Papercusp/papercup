@@ -33,6 +33,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -425,6 +426,153 @@ export interface SuCodexHome {
   agentsPath: string;
   /** The config.toml (superuser MCP) path — diagnostics. */
   configPath: string;
+}
+
+export interface CodexPapercuspDiagnostics {
+  lockEnforcement?: string;
+  codexPreToolUseStatus?: string;
+  requiresExplicitPapercuspLocks?: boolean;
+  inheritedPromptsCopied?: boolean;
+}
+
+export interface CodexHomeDiagnostics {
+  codexHome: string;
+  exists: boolean;
+  agentsPath: string;
+  agentsExists: boolean;
+  configPath: string;
+  configExists: boolean;
+  hooksPath: string;
+  hooksExists: boolean;
+  promptsPath: string;
+  promptsExists: boolean;
+  authPath: string;
+  authExists: boolean;
+  diagnosticsPath: string;
+  diagnosticsExists: boolean;
+  diagnostics: CodexPapercuspDiagnostics | null;
+  latestRolloutId: string | null;
+  latestRolloutPath: string | null;
+  resumeStrategy: 'codex-resume-last-in-code-home';
+  resumeCommand: string;
+  error: string | null;
+}
+
+function readJsonObject(path: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function coerceCodexPapercuspDiagnostics(raw: Record<string, unknown> | null): CodexPapercuspDiagnostics | null {
+  if (!raw) return null;
+  return {
+    ...(typeof raw.lockEnforcement === 'string' ? { lockEnforcement: raw.lockEnforcement } : {}),
+    ...(typeof raw.codexPreToolUseStatus === 'string' ? { codexPreToolUseStatus: raw.codexPreToolUseStatus } : {}),
+    ...(typeof raw.requiresExplicitPapercuspLocks === 'boolean'
+      ? { requiresExplicitPapercuspLocks: raw.requiresExplicitPapercuspLocks }
+      : {}),
+    ...(typeof raw.inheritedPromptsCopied === 'boolean'
+      ? { inheritedPromptsCopied: raw.inheritedPromptsCopied }
+      : {}),
+  };
+}
+
+function latestCodexRollout(codexHome: string): { id: string; path: string } | null {
+  const root = join(codexHome, 'sessions');
+  const files: Array<{ path: string; mtimeMs: number }> = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 6) return;
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(p, depth + 1);
+      } else if (entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name)) {
+        let mtimeMs = 0;
+        try {
+          mtimeMs = lstatSync(p).mtimeMs;
+        } catch {
+          // keep deterministic enough if stat races with session cleanup
+        }
+        files.push({ path: p, mtimeMs });
+      }
+    }
+  };
+  walk(root, 0);
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path));
+  const latest = files[0];
+  if (!latest) return null;
+  const match = latest.path.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  return { id: match?.[1] ?? latest.path.split('/').pop()!.replace(/^rollout-/, '').replace(/\.jsonl$/, ''), path: latest.path };
+}
+
+export function readCodexHomeDiagnostics(sessionKey: string | number): CodexHomeDiagnostics {
+  const codexHome = codexHomeForSessionKey(sessionKey);
+  const agentsPath = join(codexHome, 'AGENTS.md');
+  const configPath = join(codexHome, 'config.toml');
+  const hooksPath = join(codexHome, 'hooks.json');
+  const promptsPath = join(codexHome, 'prompts');
+  const authPath = join(codexHome, 'auth.json');
+  const diagnosticsPath = join(codexHome, 'papercusp-diagnostics.json');
+  try {
+    const rollout = latestCodexRollout(codexHome);
+    return {
+      codexHome,
+      exists: existsSync(codexHome),
+      agentsPath,
+      agentsExists: existsSync(agentsPath),
+      configPath,
+      configExists: existsSync(configPath),
+      hooksPath,
+      hooksExists: existsSync(hooksPath),
+      promptsPath,
+      promptsExists: existsSync(promptsPath),
+      authPath,
+      authExists: existsSync(authPath),
+      diagnosticsPath,
+      diagnosticsExists: existsSync(diagnosticsPath),
+      diagnostics: coerceCodexPapercuspDiagnostics(readJsonObject(diagnosticsPath)),
+      latestRolloutId: rollout?.id ?? null,
+      latestRolloutPath: rollout?.path ?? null,
+      resumeStrategy: 'codex-resume-last-in-code-home',
+      resumeCommand: `CODEX_HOME=${shellSingleQuote(codexHome)} codex resume --last`,
+      error: null,
+    };
+  } catch (e) {
+    return {
+      codexHome,
+      exists: false,
+      agentsPath,
+      agentsExists: false,
+      configPath,
+      configExists: false,
+      hooksPath,
+      hooksExists: false,
+      promptsPath,
+      promptsExists: false,
+      authPath,
+      authExists: false,
+      diagnosticsPath,
+      diagnosticsExists: false,
+      diagnostics: null,
+      latestRolloutId: null,
+      latestRolloutPath: null,
+      resumeStrategy: 'codex-resume-last-in-code-home',
+      resumeCommand: `CODEX_HOME=${shellSingleQuote(codexHome)} codex resume --last`,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
 }
 
 /**

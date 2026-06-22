@@ -95,6 +95,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     rank_updated_at timestamptz,
     swarm_affinity text,
     fed_ts bigint,
+    fed_hlc text,
     redundancy integer,
     requeue_count integer NOT NULL DEFAULT 0,
     _search tsvector GENERATED ALWAYS AS (

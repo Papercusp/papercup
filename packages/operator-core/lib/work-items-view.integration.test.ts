@@ -15,6 +15,7 @@
  *  • cross-family reclassification via the view is refused (engine's job).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,32 +34,7 @@ const readMigration = (f: string) =>
 
 // Column-faithful hfc (full live shape, pg_dump 2026-06-05) — the view's explicit
 // 47-column SELECT requires every column to exist.
-const HFC_FULL_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL,
-    feature_id text NOT NULL,
-    title text, summary text, status text, attempts bigint, claims text, notes text,
-    metadata jsonb, kind text, project_id text, expected_cost_cents bigint, tags jsonb,
-    needs_human_review boolean, ts bigint, created_ts bigint, updated_ts bigint,
-    parent_id text, goal_id text, taken_by text, taken_at timestamptz, expires_at timestamptz,
-    workspace_id text NOT NULL DEFAULT 'default',
-    _search tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(summary,''))) STORED,
-    deprecation_reason text,
-    see_also text[] DEFAULT '{}'::text[] NOT NULL,
-    needs_design boolean DEFAULT false NOT NULL,
-    design_status text, design_spec_id text,
-    discarded_design_work boolean DEFAULT false NOT NULL,
-    completion_ref jsonb, created_by_github_user_id bigint,
-    working_users bigint[] DEFAULT '{}'::bigint[] NOT NULL,
-    worked_by_history jsonb DEFAULT '[]'::jsonb NOT NULL,
-    wave text, verified_done_at_remote_ts timestamptz, verifier_last_error text,
-    verifier_last_checked_at timestamptz, source_plan_slug text, source_plan_item_ids text[],
-    feature_order integer, author_pubkey text,
-    origin text DEFAULT 'local'::text NOT NULL,
-    audit_verdict text, audit_reasons text, audited_at timestamptz,
-    item_kind text DEFAULT 'feature'::text NOT NULL,
-    payload jsonb,
-    PRIMARY KEY (harness_slug, feature_id))`;
+const HFC_FULL_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 let db: FreshPgDb;
 

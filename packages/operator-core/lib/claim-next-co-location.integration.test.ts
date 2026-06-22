@@ -19,6 +19,7 @@
  *      engages in the real tool path), and is affinity-blind when the flag is off.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { FLAGS } from '@papercusp/flags';
@@ -29,16 +30,7 @@ const H = 'h1';
 const SWARM_A = 'pubkey-aaaa';
 const SWARM_B = 'pubkey-bbbb';
 
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL, feature_id text NOT NULL, title text, summary text,
-    status text NOT NULL DEFAULT 'todo', attempts bigint DEFAULT 0,
-    item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
-    taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
-    swarm_affinity text, feature_order integer, assignee_rank integer, rank_writer text,
-    rank_updated_at timestamptz, ts bigint, created_ts bigint, updated_ts bigint,
-    origin text NOT NULL DEFAULT 'local', audit_verdict text, verified_author_github_user_id bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {

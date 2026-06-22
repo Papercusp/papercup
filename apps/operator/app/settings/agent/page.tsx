@@ -65,12 +65,48 @@ interface AgentConfig {
 }
 interface DetectedBinaries {
   claude: string | null;
+  codex: string | null;
   omp: string | null;
   pi: string | null;
+}
+interface CodexHomeDiagnostics {
+  codexHome: string;
+  exists: boolean;
+  agentsPath: string;
+  agentsExists: boolean;
+  configPath: string;
+  configExists: boolean;
+  hooksPath: string;
+  hooksExists: boolean;
+  promptsPath: string;
+  promptsExists: boolean;
+  authPath: string;
+  authExists: boolean;
+  diagnosticsPath: string;
+  diagnosticsExists: boolean;
+  diagnostics: {
+    lockEnforcement?: string;
+    codexPreToolUseStatus?: string;
+    requiresExplicitPapercuspLocks?: boolean;
+    inheritedPromptsCopied?: boolean;
+  } | null;
+  latestRolloutId: string | null;
+  latestRolloutPath: string | null;
+  resumeStrategy: 'codex-resume-last-in-code-home';
+  resumeCommand: string;
+  error: string | null;
+}
+interface CodexSettingsDiagnostics {
+  sessionId: number;
+  ownerId: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  home: CodexHomeDiagnostics;
 }
 interface ConfigSnapshot {
   config: AgentConfig;
   binaries: DetectedBinaries;
+  codexDiagnostics: CodexSettingsDiagnostics | null;
   effectiveBackend: AgentBackend;
   envOverrides: { AGENT_BACKEND: string | null; AGENT_CMD: string | null; CLAUDE_CMD: string | null };
 }
@@ -243,6 +279,7 @@ export default function AgentSettingsPage() {
   if (!snapshot) return <div><h1>AI backend</h1><p style={{ color: 'var(--bad)' }}>Failed to load config.</p></div>;
 
   const { binaries, effectiveBackend, envOverrides } = snapshot;
+  const codexDiagnostics = snapshot.codexDiagnostics;
   const defaultCmd = backend === 'omp' || backend === 'auto' ? 'omp -p' : backend === 'codex' ? 'codex exec' : 'claude -p';
 
   return (
@@ -288,6 +325,11 @@ export default function AgentSettingsPage() {
               : <span style={{ color: 'var(--bad)' }}>✗ not found</span>}
           </li>
           <li>
+            <code>codex</code>: {binaries.codex
+              ? <span style={{ color: 'var(--good)' }}>✓ {binaries.codex}</span>
+              : <span style={{ color: 'var(--bad)' }}>✗ not found</span>}
+          </li>
+          <li>
             <code>omp</code>: {binaries.omp
               ? <span style={{ color: 'var(--good)' }}>✓ {binaries.omp}</span>
               : <span style={{ color: 'var(--fg-mute)' }}>not found ({' '}
@@ -312,6 +354,60 @@ export default function AgentSettingsPage() {
             </>
           )}
         </p>
+      </section>
+
+      <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          Codex diagnostics
+          <span className="pc-settings-status-pill">Advanced</span>
+        </h2>
+        {codexDiagnostics ? (
+          <dl className="pc-settings-status" style={{ marginTop: 10 }}>
+            <div>
+              <dt>Tracked session</dt>
+              <dd>
+                <code>#{codexDiagnostics.sessionId}</code>
+                {codexDiagnostics.ownerId ? <> · <code>{codexDiagnostics.ownerId}</code></> : null}
+              </dd>
+            </div>
+            <div>
+              <dt>CODEX_HOME</dt>
+              <dd><code>{codexDiagnostics.home.codexHome}</code></dd>
+            </div>
+            <div>
+              <dt>Resume command</dt>
+              <dd><code>{codexDiagnostics.home.resumeCommand}</code></dd>
+            </div>
+            <div>
+              <dt>Rollout</dt>
+              <dd>{codexDiagnostics.home.latestRolloutId ? <code>{codexDiagnostics.home.latestRolloutId}</code> : 'Not recorded yet'}</dd>
+            </div>
+            <div>
+              <dt>Artifacts</dt>
+              <dd>
+                {[
+                  codexDiagnostics.home.agentsExists ? 'AGENTS.md' : null,
+                  codexDiagnostics.home.configExists ? 'config.toml' : null,
+                  codexDiagnostics.home.hooksExists ? 'hooks.json' : null,
+                  codexDiagnostics.home.authExists ? 'auth.json' : null,
+                  codexDiagnostics.home.promptsExists ? 'prompts' : null,
+                ].filter(Boolean).join(' · ') || 'No generated artifacts found'}
+              </dd>
+            </div>
+            <div>
+              <dt>Lock status</dt>
+              <dd>
+                {codexDiagnostics.home.diagnostics?.lockEnforcement ?? 'Unknown'}
+                {codexDiagnostics.home.diagnostics?.requiresExplicitPapercuspLocks ? ' · explicit Papercusp locks required' : ''}
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <p style={{ fontSize: 13, margin: 0, color: 'var(--fg-mute)' }}>
+            No tracked Codex session has been launched yet. Once one exists, this panel shows its per-session
+            <code> CODEX_HOME </code> artifacts and resume path.
+          </p>
+        )}
       </section>
 
       <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -353,7 +449,7 @@ export default function AgentSettingsPage() {
             onCommit={setCmd}
           />
           <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {(['omp -p', 'claude -p', 'claude -p --dangerously-skip-permissions', ''] as const).map((preset) => (
+            {(['omp -p', 'codex exec', 'claude -p', 'claude -p --dangerously-skip-permissions', ''] as const).map((preset) => (
               <button
                 key={preset || 'clear'}
                 type="button"
