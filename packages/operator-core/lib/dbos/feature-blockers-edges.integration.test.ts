@@ -9,6 +9,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 
 const h: { sql: FreshPgDb['sql'] } = { sql: null as never };
 
@@ -37,17 +38,13 @@ beforeAll(async () => {
       rel text NOT NULL, created_by text, created_at timestamptz DEFAULT now() NOT NULL);
     CREATE UNIQUE INDEX IF NOT EXISTS coord_links_edge_uq
       ON harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel);
-    CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-      workspace_id text NOT NULL, harness_slug text NOT NULL, feature_id text NOT NULL,
-      status text, feature_order int, metadata jsonb,
-      item_kind text NOT NULL DEFAULT 'feature',
-      origin text DEFAULT 'local', audit_verdict text,
-      PRIMARY KEY (workspace_id, harness_slug, feature_id));
     CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
       workspace_id text, harness_slug text, plan_slug text, op_status text);
-    CREATE OR REPLACE VIEW harness_shared.work_items AS
-      SELECT * FROM harness_shared.harness_features_consolidated;
   `);
+  // P-010 unification: work_items is the TRUE base table + hfc/ei compat views
+  // (replaces the old minimal-hfc table + work_items-view setup).
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the syncFeatureBlockEdges dual-write target
 }, 90_000);
 
 afterAll(async () => {

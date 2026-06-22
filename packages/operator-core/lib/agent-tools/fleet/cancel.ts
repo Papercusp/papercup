@@ -1,11 +1,18 @@
 /**
- * fleet:cancel — transitive cancellation of a spawn subtree (P0, D-003).
+ * fleet:cancel — transitive cancellation of one OR many spawn subtrees (P0, D-003).
  *
  * Plan: fleet-as-supervised-blackboard-2026-06-04. The human/operator-cancel entry
  * point for the structured-concurrency nursery: cancelling a node fans cancellation
  * DOWN the entire spawn subtree and releases each descendant's work-item/plan-item
  * claims + file/resource locks immediately — instead of burning tokens for minutes
  * while N leases independently expire.
+ *
+ * Bulk by default (the house keyed-array contract,
+ * bulk-endpoint-standardization-2026-06-21 P-006): pass `spawn_id` for one or
+ * `spawn_ids` for several → { ok, results:[{ ok, spawn_id, cancelled, … | error }],
+ * counts }. Each result self-describes its spawn_id, so one bad root never poisons
+ * the rest and the caller correlates by spawn_id (not array position). `reason` /
+ * `workspace` are batch-level.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -14,70 +21,77 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { cancelSubtree } from '../../fleet/nursery';
+import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
 export default defineTool({
   name: 'fleet:cancel',
   profile: 'engineer',
   description:
-    'Cancel a spawn subtree: mark every active descendant cancelled and release its claims + locks NOW. The structured-concurrency abort — use it instead of waiting for leases to expire.',
+    'Cancel one OR many spawn subtrees: mark every active descendant cancelled and release its claims + locks NOW. Pass `spawn_id` for one or `spawn_ids` for several. The structured-concurrency abort — use it instead of waiting for leases to expire. Returns { ok, results:[{ ok, spawn_id, cancelled, … | error }], counts } — correlate by spawn_id, not position; one failure never fails the rest.',
   guidance: {
-    when: 'A human/operator aborts a unit of work, or a supervisor tears down a doomed subtree. Cancels the named spawn AND all its descendants transitively, freeing their locks + work-item/plan-item claims immediately.',
+    when: 'A human/operator aborts a unit of work, or a supervisor tears down a doomed subtree. Cancels the named spawn(s) AND all descendants transitively, freeing their locks + work-item/plan-item claims immediately. Tearing down several at once? Pass them all via `spawn_ids`.',
     notWhen: 'To cancel a single leaf with no children — that is the same call with a leaf spawn_id, but prefer it when you specifically mean the whole subtree.',
-    chaining: 'fleet:tree (inspect the subtree) → fleet:cancel { spawn_id }.',
+    chaining: 'fleet:tree (inspect the subtree) → fleet:cancel { spawn_id } | { spawn_ids:[…] }. Bulk: correlate each result by spawn_id, not position; one failure never fails the rest.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({
-    spawn_id: z.string().min(1).describe('Root of the subtree to cancel (this node + all descendants).'),
-    reason: z.string().max(500).optional().describe('Why — surfaced in the coord cancellation notice + audit.'),
-    workspace: z.string().max(120).optional(),
-  }),
+  args: z
+    .object({
+      spawn_id: z.string().min(1).optional().describe('Root of one subtree to cancel (this node + all descendants; n=1 shorthand for spawn_ids:[id]).'),
+      spawn_ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('Roots of the subtrees to cancel (1–100).'),
+      reason: z.string().max(500).optional().describe('Why — surfaced in the coord cancellation notice + audit (batch-level).'),
+      workspace: z.string().max(120).optional(),
+    })
+    .refine((a) => Boolean(a.spawn_id) || (a.spawn_ids?.length ?? 0) > 0, {
+      message: 'pass `spawn_id` (one) or `spawn_ids` (many)',
+    }),
   async handler(args, ctx) {
     const actor = resolveAgentIdentity(ctx);
     const workspaceId = args.workspace ?? actor.workspaceId ?? activeWorkspaceId();
     const { sql } = getOrgPg();
-    const res = await cancelSubtree(sql, {
-      workspaceId,
-      rootSpawnId: args.spawn_id,
-      reason: args.reason ?? 'fleet:cancel',
-      actor,
-    });
-    // EI-40: the subtree flip + lock/claim release above is the DURABLE half.
-    // The other half — actually SIGTERM/SIGKILL the running child so a cancelled
-    // operator-spawn stops making edits instead of running to INVOKE_TIMEOUT — is
-    // the in-process abort registry in fleet/operator-spawn. Only spawns THIS host
-    // launched are locally tracked; others' rows still flipped, and their
-    // lease/timeout reclaims them (unchanged). Dynamic import: operator-spawn
-    // statically pulls the DBOS featurePipeline registration, which must not load
-    // at tool-mount (mirrors fleet/spawn + operator/converse).
-    let processesAborted = 0;
+    const ids = mergeIds(args.spawn_id, args.spawn_ids);
+
+    // Local-process abort is best-effort and shared across the batch; resolve the
+    // abort fn ONCE (the dynamic import statically pulls DBOS featurePipeline, which
+    // must not load at tool-mount — mirrors fleet/spawn + operator/converse).
+    let abortLocalSpawn: ((id: string) => boolean) | null = null;
     try {
-      const { abortLocalSpawn } = await import('../../fleet/operator-spawn');
-      for (const c of res.cancelled) {
-        if (abortLocalSpawn(c.spawnId)) processesAborted++;
-      }
+      ({ abortLocalSpawn } = await import('../../fleet/operator-spawn'));
     } catch (err) {
       console.warn('[fleet:cancel] local process abort failed', err);
     }
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            root: res.rootSpawnId,
-            cancelled: res.cancelled.map((c) => c.spawnId),
-            processes_aborted: processesAborted,
-            already_terminal: res.alreadyTerminal,
-            claims_released: res.claimsReleased,
-            plan_claims_released: res.planClaimsReleased,
-            file_locks_released: res.locks.filePathsReleased,
-            resource_locks_released: res.locks.resourcesReleased,
-            notified: res.notified,
-          }),
-        },
-      ],
-    };
+
+    const env = await runBulk(
+      ids,
+      async (spawn_id) => {
+        const res = await cancelSubtree(sql, {
+          workspaceId,
+          rootSpawnId: spawn_id,
+          reason: args.reason ?? 'fleet:cancel',
+          actor,
+        });
+        let processes_aborted = 0;
+        if (abortLocalSpawn) {
+          for (const c of res.cancelled) {
+            if (abortLocalSpawn(c.spawnId)) processes_aborted++;
+          }
+        }
+        return {
+          ok: true as const,
+          spawn_id: res.rootSpawnId,
+          cancelled: res.cancelled.map((c) => c.spawnId),
+          processes_aborted,
+          already_terminal: res.alreadyTerminal,
+          claims_released: res.claimsReleased,
+          plan_claims_released: res.planClaimsReleased,
+          file_locks_released: res.locks.filePathsReleased,
+          resource_locks_released: res.locks.resourcesReleased,
+          notified: res.notified,
+        };
+      },
+      { keyOf: (spawn_id) => ({ spawn_id }) },
+    );
+    return bulkContent(env);
   },
 });

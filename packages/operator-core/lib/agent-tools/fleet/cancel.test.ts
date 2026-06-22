@@ -1,15 +1,18 @@
 /**
- * cancel.test.ts — fleet:cancel processes_aborted aggregation (Gap 10).
+ * cancel.test.ts — fleet:cancel processes_aborted aggregation + the bulk
+ * keyed-array contract (Gap 10; bulk-endpoint-standardization-2026-06-21 P-006).
  *
  * The durable subtree flip (cancelSubtree) is integration-tested via the nursery
- * rig. This unit locks the TOOL's second half — the local-process abort loop
- * (cancel.ts:54-62): for each cancelled node it calls abortLocalSpawn and counts
- * the trues into processes_aborted, and its try/catch SWALLOWS an
- * import/abort failure so the tool still returns ok:true.
+ * rig. This unit locks the TOOL's second half — the local-process abort loop:
+ * for each cancelled node it calls abortLocalSpawn and counts the trues into
+ * processes_aborted, and a failing dynamic import is swallowed so the tool still
+ * returns ok:true. Plus the bulk envelope: n=1 `{ spawn_id }` returns the SAME
+ * { ok, results:[…], counts } as `{ spawn_ids:[…] }`, keyed by spawn_id.
  *
  *   • 3 cancelled nodes, abortLocalSpawn → true/false/true ⇒ processes_aborted===2;
- *   • the dynamic import of ../../fleet/operator-spawn REJECTS ⇒ ok:true,
- *     processes_aborted:0 (the durable half already landed; the abort is best-effort).
+ *   • the dynamic import of ../../fleet/operator-spawn REJECTS ⇒ the item still
+ *     resolves ok:true, processes_aborted:0 (the durable half landed);
+ *   • spawn_ids:[…] cancels many, one failing root fails only itself.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,13 +39,13 @@ vi.mock('../../fleet/operator-spawn', () => ({ abortLocalSpawn: h.abortLocalSpaw
 import cancelTool from './cancel';
 
 const CTX = { workspaceId: 'default', role: 'operator' } as any;
-const parse = (res: any) => JSON.parse(res.content[0].text);
+const env = (res: any) => JSON.parse(res.content[0].text);
 
 const cancelled = (ids: string[]) => ids.map((spawnId) => ({ spawnId }));
 
-function baseCancelResult(ids: string[]) {
+function baseCancelResult(root: string, ids: string[]) {
   return {
-    rootSpawnId: 'root',
+    rootSpawnId: root,
     cancelled: cancelled(ids),
     alreadyTerminal: [],
     claimsReleased: 0,
@@ -59,25 +62,58 @@ beforeEach(() => {
   h.getOrgPg.mockReset().mockReturnValue({ sql: {} });
 });
 
-describe('fleet:cancel — processes_aborted aggregation (Gap 10)', () => {
-  it('counts only the abortLocalSpawn trues across the cancelled subtree', async () => {
-    h.cancelSubtree.mockResolvedValue(baseCancelResult(['s-a', 's-b', 's-c']));
+describe('fleet:cancel — bulk envelope + processes_aborted aggregation (Gap 10 / P-006)', () => {
+  it('n=1 { spawn_id } returns one keyed result; counts only abortLocalSpawn trues', async () => {
+    h.cancelSubtree.mockResolvedValue(baseCancelResult('root', ['s-a', 's-b', 's-c']));
     // true / false / true → exactly 2 live local handles signalled.
     h.abortLocalSpawn.mockReturnValueOnce(true).mockReturnValueOnce(false).mockReturnValueOnce(true);
 
-    const out = parse(await (cancelTool as any).handler({ spawn_id: 'root' }, CTX));
+    const b = env(await (cancelTool as any).handler({ spawn_id: 'root' }, CTX));
 
-    expect(out.ok).toBe(true);
-    expect(out.processes_aborted).toBe(2);
-    expect(out.cancelled).toEqual(['s-a', 's-b', 's-c']);
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    const r = b.results[0];
+    expect(r.ok).toBe(true);
+    expect(r.spawn_id).toBe('root');
+    expect(r.processes_aborted).toBe(2);
+    expect(r.cancelled).toEqual(['s-a', 's-b', 's-c']);
     expect(h.abortLocalSpawn).toHaveBeenCalledTimes(3);
     expect(h.abortLocalSpawn.mock.calls.map((c) => c[0])).toEqual(['s-a', 's-b', 's-c']);
   });
 
-  it('a failing dynamic import is swallowed: tool still returns ok:true, processes_aborted:0', async () => {
-    h.cancelSubtree.mockResolvedValue(baseCancelResult(['s-a', 's-b']));
-    // Force the `await import('../../fleet/operator-spawn')` to reject (mirrors a
-    // host whose DBOS-pulling module fails to load) — the catch must swallow it.
+  it('spawn_ids:[…] cancels many subtrees, each result keyed by spawn_id', async () => {
+    h.cancelSubtree.mockImplementation(async (_sql: unknown, opts: { rootSpawnId: string }) =>
+      baseCancelResult(opts.rootSpawnId, [`${opts.rootSpawnId}-child`]),
+    );
+    h.abortLocalSpawn.mockReturnValue(false);
+
+    const b = env(await (cancelTool as any).handler({ spawn_ids: ['root-a', 'root-b'] }, CTX));
+
+    expect(b.counts).toEqual({ ok: 2, failed: 0 });
+    expect(b.results.map((r: any) => r.spawn_id)).toEqual(['root-a', 'root-b']);
+    expect(b.results[0].cancelled).toEqual(['root-a-child']);
+  });
+
+  it('one failing root fails ONLY itself — batch survives (top-level ok:true)', async () => {
+    h.cancelSubtree.mockImplementation(async (_sql: unknown, opts: { rootSpawnId: string }) => {
+      if (opts.rootSpawnId === 'boom') throw new Error('subtree not found');
+      return baseCancelResult(opts.rootSpawnId, []);
+    });
+    h.abortLocalSpawn.mockReturnValue(false);
+
+    const b = env(await (cancelTool as any).handler({ spawn_ids: ['root-a', 'boom', 'root-b'] }, CTX));
+
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.results.map((r: any) => [r.spawn_id, r.ok])).toEqual([
+      ['root-a', true],
+      ['boom', false],
+      ['root-b', true],
+    ]);
+    expect(b.results[1].error).toContain('subtree not found');
+  });
+
+  it('a failing dynamic import is swallowed: items still ok:true, processes_aborted:0', async () => {
+    h.cancelSubtree.mockResolvedValue(baseCancelResult('root', ['s-a', 's-b']));
     h.abortLocalSpawn.mockImplementation(() => {
       throw new Error('should not be reached — import already failed');
     });
@@ -85,16 +121,16 @@ describe('fleet:cancel — processes_aborted aggregation (Gap 10)', () => {
       throw new Error('operator-spawn import boom');
     });
     vi.resetModules();
-    // Re-import the tool under the rejecting module mock.
     const { default: cancelToolFresh } = await import('./cancel');
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const out = parse(await (cancelToolFresh as any).handler({ spawn_id: 'root' }, CTX));
+    const b = env(await (cancelToolFresh as any).handler({ spawn_id: 'root' }, CTX));
 
-    expect(out.ok).toBe(true);
-    // The durable half (cancelled, claims_released, …) still rides the result.
-    expect(out.cancelled).toEqual(['s-a', 's-b']);
-    expect(out.processes_aborted).toBe(0);
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    const r = b.results[0];
+    expect(r.ok).toBe(true);
+    expect(r.cancelled).toEqual(['s-a', 's-b']);
+    expect(r.processes_aborted).toBe(0);
     expect(warn).toHaveBeenCalledWith('[fleet:cancel] local process abort failed', expect.anything());
     warn.mockRestore();
     vi.doUnmock('../../fleet/operator-spawn');

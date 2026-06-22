@@ -1,6 +1,11 @@
 ---
 title: "pui headless smoke: scratch zellij session, CR-not-LF keys, restore ViewState"
 description: "How to drive the pui TUI end-to-end without touching the user's workbench — and the three traps (tips dialog, \\n vs \\r, shared ViewState owner row)"
+discovered: 2026-06-12
+status: active
+documents:
+  - apps/tui/src/workbench.rs
+  - packages/operator-core/lib/endpoint-route/routes/tui
 ---
 
 Driving the **pui TUI** live (agent-run e2e) has no Tauri-style documented

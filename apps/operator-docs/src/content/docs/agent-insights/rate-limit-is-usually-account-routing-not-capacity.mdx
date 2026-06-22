@@ -4,6 +4,13 @@ description: "Papercusp runs LLM inference over a POOL of many Anthropic account
 discovered: 2026-06-17
 tags: [llm, rate-limit, 429, multi-account, inference-gateway, account-routing, spawn, governor, capacity, debugging]
 status: active
+documents:
+  - packages/operator-core/lib/fleet/operator-spawn.ts
+  - packages/operator-core/lib/dbos/orchestrator-runner.ts
+  - packages/operator-core/lib/inference-gateway/gateway.ts
+  - packages/operator-core/lib/agent-governor-pg-store.ts
+plans:
+  - inference-gateway-multi-credential-routing-2026-06-14
 ---
 
 ## The mistake this prevents

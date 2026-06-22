@@ -33,6 +33,14 @@ const ctxWith = (tx: unknown) =>
 const run = async (tool: { handler: (a: never, c: never) => Promise<unknown> }, args: Record<string, unknown>, tx: unknown) =>
   (await tool.handler(args as never, ctxWith(tx))) as { data: any; degraded?: boolean; degradedReasons?: string[] };
 
+/** harness:status is now a bulk tool (keyed-array envelope); parse it and
+ *  return the single result for the n=1 cases below. */
+const statusOne = async (args: Record<string, unknown>, tx: unknown) => {
+  const out = (await statusTool.handler(args as never, ctxWith(tx))) as { content: { text: string }[] };
+  const envBody = JSON.parse(out.content[0]!.text) as { ok: boolean; results: any[]; counts: { ok: number; failed: number } };
+  return envBody;
+};
+
 const REGISTRY_ROW = {
   payload: { projects: [{ slug: 'pot-verify', path: '/tmp/pot-verify' }, { slug: 'papercup', path: '/repo/papercup' }] },
 };
@@ -77,20 +85,21 @@ describe('harness:list — registry + projects merge', () => {
   });
 });
 
-describe('harness:status — registry-first resolution', () => {
+describe('harness:status — registry-first resolution (bulk envelope, n=1)', () => {
   it('finds a registry-only harness (the create → status round-trip)', async () => {
     const tx = fakeTx([
       { match: 'harness_registry', rows: [REGISTRY_ROW] },
       { match: 'FROM harness_shared.projects', rows: [] },
       { match: 'audit_log', rows: [{ ts: 1, action: 'created', actor: 'op', subject: 'pot-verify' }] },
     ]);
-    const r = await run(statusTool, { slug: 'pot-verify' }, tx);
-    expect(r.degraded).toBeUndefined();
-    expect(r.data.slug).toBe('pot-verify');
-    expect(r.data.status).toBe('registered');
-    expect(r.data.path).toBe('/tmp/pot-verify');
-    expect(r.data.source).toBe('registry');
-    expect(r.data.recentActivity).toHaveLength(1);
+    const b = await statusOne({ slug: 'pot-verify' }, tx);
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    const r = b.results[0];
+    expect(r.slug).toBe('pot-verify');
+    expect(r.status).toBe('registered');
+    expect(r.path).toBe('/tmp/pot-verify');
+    expect(r.source).toBe('registry');
+    expect(r.recentActivity).toHaveLength(1);
   });
 
   it('keeps the projects-row detail when one exists', async () => {
@@ -102,9 +111,9 @@ describe('harness:status — registry-first resolution', () => {
       },
       { match: 'audit_log', rows: [] },
     ]);
-    const r = await run(statusTool, { slug: 'papercup' }, tx);
-    expect(r.data.status).toBe('in_progress');
-    expect(r.data.budget_cents).toBe(100);
+    const b = await statusOne({ slug: 'papercup' }, tx);
+    expect(b.results[0].status).toBe('in_progress');
+    expect(b.results[0].budget_cents).toBe(100);
   });
 
   it('still resolves an org-only project (no registry entry)', async () => {
@@ -113,16 +122,17 @@ describe('harness:status — registry-first resolution', () => {
       { match: 'FROM harness_shared.projects', rows: [{ slug: 'barchart-landing', status: 'in_progress', updated_ts: 2 }] },
       { match: 'audit_log', rows: [] },
     ]);
-    const r = await run(statusTool, { slug: 'barchart-landing' }, tx);
-    expect(r.data.source).toBe('project');
-    expect(r.data.status).toBe('in_progress');
+    const b = await statusOne({ slug: 'barchart-landing' }, tx);
+    expect(b.results[0].source).toBe('project');
+    expect(b.results[0].status).toBe('in_progress');
   });
 
-  it('degrades when the slug exists nowhere', async () => {
+  it('a slug that exists nowhere fails its item (counts.failed===1, batch ok)', async () => {
     const tx = fakeTx([]);
-    const r = await run(statusTool, { slug: 'nope' }, tx);
-    expect(r.data).toBeNull();
-    expect(r.degraded).toBe(true);
-    expect(r.degradedReasons![0]).toContain('nope');
+    const b = await statusOne({ slug: 'nope' }, tx);
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0].ok).toBe(false);
+    expect(b.results[0].error).toContain('nope');
   });
 });

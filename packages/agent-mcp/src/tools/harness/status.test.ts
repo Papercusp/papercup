@@ -1,16 +1,21 @@
 /**
- * harness:status — registry⊕projects merge cases NOT covered by
- * list-status-registry.test.ts (Gap 12).
+ * harness:status — registry⊕projects merge cases (Gap 12) AND the bulk
+ * keyed-array dual-arity (bulk-endpoint-standardization-2026-06-21 P-006).
  *
  * list-status-registry.test.ts already pins: registry-only resolution, a
  * projects-row detail, an org-only (no-registry) project, and the
- * degrade-everywhere case. This file adds the remaining merge teeth:
+ * degrade-everywhere case. This file adds the remaining merge teeth (now read
+ * out of the bulk envelope's per-slug result):
  *   - BOTH stores present → the registry PATH wins while the project row
  *     supplies status / budget_cents / spent_cents (the "merge", not "pick")
  *   - recentActivity is bound to the slug (the audit query filters on subject)
  *     and survives into the envelope
- *   - the `slug` echoed in `data.slug` is the ARG, not a row column
- *   - arg schema requires a non-empty slug
+ *   - the `slug` echoed in the result is the ARG, not a row column
+ *   - arg schema requires `slug` (one) or `slugs` (many)
+ *
+ * Bulk contract: the n=1 `{ slug }` call returns the SAME { ok, results:[…],
+ * counts } envelope as `{ slugs:[…] }`; a not-found harness fails only ITSELF
+ * (top-level ok:true, counts.failed===1) while siblings resolve.
  *
  * Plus a fault-injection (the prompt's "prove non-vacuous" ask): if the
  * registry leg is silently dropped (regression to projects-only), a
@@ -45,11 +50,13 @@ const ctxWith = (tx: unknown) =>
     principal: { slug: 'system:operator', workspaceId: 'ws-1', capabilities: new Set<string>() },
   }) as never;
 
-const run = async (args: Record<string, unknown>, tx: unknown) =>
-  (await tool.handler(args as never, ctxWith(tx))) as {
-    data: any;
-    degraded?: boolean;
-    degradedReasons?: string[];
+type Out = { content: { text: string }[] };
+/** Run the bulk handler and parse the keyed-array envelope. */
+const env = async (args: Record<string, unknown>, tx: unknown) =>
+  JSON.parse(((await tool.handler(args as never, ctxWith(tx))) as Out).content[0]!.text) as {
+    ok: boolean;
+    results: any[];
+    counts: { ok: number; failed: number };
   };
 
 const REGISTRY_ROW = {
@@ -70,14 +77,16 @@ describe('harness:status — both stores merge (Gap 12)', () => {
       },
       { match: 'audit_log', rows: [] },
     ]);
-    const r = await run({ slug: 'papercup' }, tx);
-    expect(r.degraded).toBeUndefined();
-    expect(r.data.source).toBe('registry'); // registry leg present → source registry
-    expect(r.data.path).toBe('/repo/papercup'); // path comes from the registry
-    expect(r.data.status).toBe('in_progress'); // status comes from the project row
-    expect(r.data.budget_cents).toBe(100);
-    expect(r.data.spent_cents).toBe(12);
-    expect(r.data.updated_ts).toBe(5);
+    const b = await env({ slug: 'papercup' }, tx);
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    const r = b.results[0];
+    expect(r.ok).toBe(true);
+    expect(r.source).toBe('registry'); // registry leg present → source registry
+    expect(r.path).toBe('/repo/papercup'); // path comes from the registry
+    expect(r.status).toBe('in_progress'); // status comes from the project row
+    expect(r.budget_cents).toBe(100);
+    expect(r.spent_cents).toBe(12);
+    expect(r.updated_ts).toBe(5);
   });
 });
 
@@ -94,20 +103,62 @@ describe('harness:status — recentActivity (Gap 12)', () => {
         ],
       },
     ]);
-    const r = await run({ slug: 'papercup' }, tx);
+    const b = await env({ slug: 'papercup' }, tx);
     expect(boundBySubject).toContain('papercup'); // audit query filtered by slug
-    expect(r.data.recentActivity).toHaveLength(2);
-    expect(r.data.recentActivity[0].action).toBe('iterate');
+    expect(b.results[0].recentActivity).toHaveLength(2);
+    expect(b.results[0].recentActivity[0].action).toBe('iterate');
   });
 
-  it('echoes the ARG slug into data.slug (not a row column)', async () => {
+  it('echoes the ARG slug into the result (not a row column)', async () => {
     const { tx } = fakeTx([
       { match: 'harness_registry', rows: [REGISTRY_ROW] },
       { match: 'FROM harness_shared.projects', rows: [] },
       { match: 'audit_log', rows: [] },
     ]);
-    const r = await run({ slug: 'papercup' }, tx);
-    expect(r.data.slug).toBe('papercup');
+    const b = await env({ slug: 'papercup' }, tx);
+    expect(b.results[0].slug).toBe('papercup');
+  });
+});
+
+describe('harness:status — bulk keyed-array dual-arity (P-006)', () => {
+  it('n=1 { slug } returns the same { ok, results, counts } envelope (one result)', async () => {
+    const { tx } = fakeTx([
+      { match: 'harness_registry', rows: [REGISTRY_ROW] },
+      { match: 'FROM harness_shared.projects', rows: [] },
+      { match: 'audit_log', rows: [] },
+    ]);
+    const b = await env({ slug: 'papercup' }, tx);
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results).toHaveLength(1);
+    expect(b.results[0]).toMatchObject({ ok: true, slug: 'papercup', source: 'registry' });
+  });
+
+  it('slugs:[…] reads many; a not-found harness fails only itself', async () => {
+    // Registry knows only `papercup`; `gone` has no registry + no project row → not found.
+    const { tx } = fakeTx([
+      { match: 'harness_registry', rows: [REGISTRY_ROW] },
+      { match: 'FROM harness_shared.projects', rows: [] },
+      { match: 'audit_log', rows: [] },
+    ]);
+    const b = await env({ slugs: ['papercup', 'gone'] }, tx);
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 1, failed: 1 });
+    expect(b.results.map((r) => [r.slug, r.ok])).toEqual([
+      ['papercup', true],
+      ['gone', false],
+    ]);
+    expect(b.results[1]).toMatchObject({ ok: false, slug: 'gone' });
+    expect(b.results[1].error).toContain('gone');
+  });
+
+  it('dedups slug + slugs into one merged list', async () => {
+    const { tx } = fakeTx([
+      { match: 'harness_registry', rows: [REGISTRY_ROW] },
+      { match: 'FROM harness_shared.projects', rows: [] },
+      { match: 'audit_log', rows: [] },
+    ]);
+    const b = await env({ slug: 'papercup', slugs: ['papercup', 'gone'] }, tx);
+    expect(b.results.map((r) => r.slug)).toEqual(['papercup', 'gone']);
   });
 });
 
@@ -115,42 +166,44 @@ describe('harness:status — registry-fallback is non-vacuous (Gap 12 fault-inje
   // A registry-ONLY harness (no projects row) is exactly the case the P-004
   // fix exists for: pre-fix, harness:status read only `projects` and returned
   // "not found" for a freshly-created (registry-written) harness. If the
-  // registry leg were dropped today, `regEntry` would be null and — with no
-  // project row — the handler would degrade. This test fails the moment that
+  // registry leg were dropped today, the entry would be null and — with no
+  // project row — the item would fail. This test fails the moment that
   // regression returns, so the registry merge is provably load-bearing.
-  it('a registry-only harness resolves (would degrade if the registry leg were dropped)', async () => {
+  it('a registry-only harness resolves (would fail if the registry leg were dropped)', async () => {
     const { tx } = fakeTx([
       { match: 'harness_registry', rows: [REGISTRY_ROW] },
       { match: 'FROM harness_shared.projects', rows: [] }, // no project row
       { match: 'audit_log', rows: [] },
     ]);
-    const r = await run({ slug: 'papercup' }, tx);
-    expect(r.degraded).toBeUndefined();
-    expect(r.data).not.toBeNull();
-    expect(r.data.source).toBe('registry');
-    expect(r.data.status).toBe('registered'); // the registry-only default
+    const b = await env({ slug: 'papercup' }, tx);
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].source).toBe('registry');
+    expect(b.results[0].status).toBe('registered'); // the registry-only default
   });
 
-  it('control: with the registry row absent AND no project row, the SAME slug degrades', async () => {
+  it('control: with the registry row absent AND no project row, the SAME slug fails its item', async () => {
     // Proves the previous test is not vacuously green — remove the registry
-    // row and the identical call now degrades, so the registry leg is what
+    // row and the identical call now fails the item, so the registry leg is what
     // saved it above.
     const { tx } = fakeTx([
       { match: 'harness_registry', rows: [] },
       { match: 'FROM harness_shared.projects', rows: [] },
       { match: 'audit_log', rows: [] },
     ]);
-    const r = await run({ slug: 'papercup' }, tx);
-    expect(r.data).toBeNull();
-    expect(r.degraded).toBe(true);
-    expect(r.degradedReasons![0]).toContain('papercup');
+    const b = await env({ slug: 'papercup' }, tx);
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0].ok).toBe(false);
+    expect(b.results[0].error).toContain('papercup');
   });
 });
 
 describe('harness:status — arg schema + registration (Gap 12 / Gap 15)', () => {
-  it('requires a non-empty slug', () => {
+  it('requires `slug` (one) or `slugs` (many)', () => {
+    expect(tool.args.safeParse({}).success).toBe(false);
     expect(tool.args.safeParse({ slug: '' }).success).toBe(false);
     expect(tool.args.safeParse({ slug: 'sheets' }).success).toBe(true);
+    expect(tool.args.safeParse({ slugs: ['sheets', 'docs'] }).success).toBe(true);
   });
 
   it('is registered under harness:status with the harness:read capability', () => {

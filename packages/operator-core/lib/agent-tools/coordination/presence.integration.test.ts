@@ -107,3 +107,106 @@ describe('sweepStalePresence (real PG)', () => {
     expect(live.map((r) => r.ownerId)).not.toContain('gone');
   });
 });
+
+/**
+ * fetchWakeability (the P-001 IO seam, fleet-dispatch-wake-clarity-2026-06-22)
+ * against REAL Postgres. The `deriveSessionState` boundary is pure-unit-tested in
+ * presence-wakeability.test.ts; here we pin the two batch SQL queries — the
+ * column names + filter predicates that, if they ever drift, would SILENTLY
+ * degrade the wakeable/sessionState fields to absent (the inert-feature failure
+ * mode this plan exists to prevent). Reads through the module's own getOrgPg()
+ * handle; seeds the shared event_awaits + agent_activity tables under a unique
+ * owner prefix (cleaned per-test) so it never TRUNCATEs out a concurrent suite.
+ */
+describe('fetchWakeability (real PG)', () => {
+  // Unique prefix → our seeds never collide with another baseline-DSN suite's
+  // rows on these SHARED tables, and we DELETE only our own (no TRUNCATE).
+  const P = 'wkt-';
+  const own = (id: string) => `${P}${id}`;
+
+  async function clean(): Promise<void> {
+    await admin`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${`${P}%`}`;
+    await admin`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${`${P}%`}`;
+  }
+  beforeEach(clean);
+  afterAll(clean);
+
+  /** Seed one standing inbox-wake await (the `wakeable` signal). Defaults to a
+   *  LIVE await (unfired, uncancelled, unexpired, correctly-keyed). */
+  async function seedAwait(
+    id: string,
+    opts: { firedAt?: Date | null; cancelledAt?: Date | null; expiresTs?: Date | null; key?: string } = {},
+  ): Promise<void> {
+    const owner = own(id);
+    await admin`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, fired_at, cancelled_at, expires_ts)
+      VALUES (${owner}, ${opts.key ?? `${COORD_INBOX_WAKE_PREFIX}${owner}`},
+              ${opts.firedAt ?? null}, ${opts.cancelledAt ?? null}, ${opts.expiresTs ?? null})`;
+  }
+
+  /** Seed one agent_activity row at a chosen age (the `liveTurn` signal). */
+  async function seedActivity(
+    id: string,
+    opts: { kind: string; summary?: string; agoSec?: number },
+  ): Promise<void> {
+    await admin`
+      INSERT INTO harness_shared.agent_activity (owner_id, kind, summary, created_at)
+      VALUES (${own(id)}, ${opts.kind}, ${opts.summary ?? null},
+              ${new Date(Date.now() - (opts.agoSec ?? 0) * 1000)})`;
+  }
+
+  it('a live inbox-wake await + a running turn → { wakeable, liveTurn } (the dispatch-now signal)', async () => {
+    await seedAwait('live');
+    await seedActivity('live', { kind: 'tool', summary: '▶ npm test', agoSec: 3 });
+    const m = await fetchWakeability([own('live')]);
+    expect(m.get(own('live'))).toEqual({ wakeable: true, liveTurn: true });
+  });
+
+  it('a cancelled / fired / expired await is NOT wakeable (it would be the `ended` row)', async () => {
+    await seedAwait('cancelled', { cancelledAt: new Date() });
+    await seedAwait('fired', { firedAt: new Date() });
+    await seedAwait('expired', { expiresTs: new Date(Date.now() - 60_000) });
+    const ids = [own('cancelled'), own('fired'), own('expired')];
+    const m = await fetchWakeability(ids);
+    for (const id of ids) expect(m.get(id)?.wakeable).toBe(false);
+  });
+
+  it('a future-expiry await still counts as wakeable', async () => {
+    await seedAwait('future', { expiresTs: new Date(Date.now() + 60_000) });
+    const m = await fetchWakeability([own('future')]);
+    expect(m.get(own('future'))?.wakeable).toBe(true);
+  });
+
+  it('an await on a DIFFERENT event_key does not count as inbox-wakeable', async () => {
+    // A live await keyed on something other than coord:inbox-wake:<id> must NOT
+    // make the agent look dispatchable — the event_key predicate is load-bearing.
+    await seedAwait('otherkey', { key: 'lock:grant:abc' });
+    const m = await fetchWakeability([own('otherkey')]);
+    expect(m.get(own('otherkey'))?.wakeable).toBe(false);
+  });
+
+  it('only a trailing session-end marker → liveTurn=false (just-ended-but-still-warm; the heartbeat-lag fix)', async () => {
+    await seedAwait('justended');
+    await seedActivity('justended', { kind: 'lifecycle', summary: '■ session ended', agoSec: 5 });
+    const m = await fetchWakeability([own('justended')]);
+    expect(m.get(own('justended'))).toEqual({ wakeable: true, liveTurn: false });
+  });
+
+  it('activity AFTER the end-marker → liveTurn=true (a new turn resumed)', async () => {
+    await seedAwait('resumed');
+    await seedActivity('resumed', { kind: 'lifecycle', summary: 'session ended', agoSec: 30 });
+    await seedActivity('resumed', { kind: 'tool', summary: '✎ x.ts', agoSec: 2 });
+    const m = await fetchWakeability([own('resumed')]);
+    expect(m.get(own('resumed'))).toEqual({ wakeable: true, liveTurn: true });
+  });
+
+  it('an owner with no rows is present in the map as { wakeable:false, liveTurn:false }', async () => {
+    const m = await fetchWakeability([own('ghost')]);
+    expect(m.get(own('ghost'))).toEqual({ wakeable: false, liveTurn: false });
+  });
+
+  it('returns an empty map for an empty ownerIds list (no query fired)', async () => {
+    const m = await fetchWakeability([]);
+    expect(m.size).toBe(0);
+  });
+});

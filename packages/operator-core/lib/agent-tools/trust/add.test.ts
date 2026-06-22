@@ -23,7 +23,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ACTIVE_WS = 'ws-active';
 
-type Body = Record<string, unknown>;
+// Bulk envelope: { ok, results:[…], counts }. Permissive type so per-item reads
+// (b.results[0], b.results.map(...)) type-check in this PG-free unit.
+type Body = { ok: boolean; results: any[]; counts: { ok: number; failed: number }; [k: string]: unknown };
 const body = (r: { content: Array<{ text: string }> }): Body => JSON.parse(r.content[0]!.text);
 
 /** A ctx with the given principal fields; pass `null` to omit the principal entirely. */
@@ -67,38 +69,40 @@ async function listTool() {
   };
 }
 
-describe('trust:add — workspace resolution (privilege boundary)', () => {
-  it('(a) principal workspace is honoured — store called with that ws', async () => {
+describe('trust:add — workspace resolution (privilege boundary) + bulk envelope (P-006)', () => {
+  it('(a) n=1 principal workspace is honoured — store called with that ws; one keyed result', async () => {
     const tool = await addTool();
-    const res = body(await tool.handler({ githubUserId: 42 }, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
+    const b = body(await tool.handler({ githubUserId: 42 }, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
     expect(addTrustedUser).toHaveBeenCalledTimes(1);
     expect(addTrustedUser.mock.calls[0]![0]).toBe('ws-1');
     expect(activeWorkspaceId).not.toHaveBeenCalled();
-    expect(res).toMatchObject({ ok: true, workspaceId: 'ws-1' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, githubUserId: 42, workspaceId: 'ws-1' });
   });
 
   it("(b) SECURITY: principal workspace '*' falls back to the active workspace, NOT '*'", async () => {
     const tool = await addTool();
-    const res = body(await tool.handler({ githubUserId: 42 }, ctxWith({ workspaceId: '*', slug: 'owner' })));
+    const b = body(await tool.handler({ githubUserId: 42 }, ctxWith({ workspaceId: '*', slug: 'owner' })));
     expect(addTrustedUser.mock.calls[0]![0]).toBe(ACTIVE_WS);
     expect(addTrustedUser.mock.calls[0]![0]).not.toBe('*');
     expect(activeWorkspaceId).toHaveBeenCalledTimes(1);
-    expect(res).toMatchObject({ ok: true, workspaceId: ACTIVE_WS });
+    expect(b.results[0]).toMatchObject({ ok: true, workspaceId: ACTIVE_WS });
   });
 
   it('(c) no principal falls back to the active workspace', async () => {
     const tool = await addTool();
-    const res = body(await tool.handler({ githubUserId: 42 }, ctxWith(null)));
+    const b = body(await tool.handler({ githubUserId: 42 }, ctxWith(null)));
     expect(addTrustedUser.mock.calls[0]![0]).toBe(ACTIVE_WS);
-    expect(res).toMatchObject({ ok: true, workspaceId: ACTIVE_WS });
+    expect(b.results[0]).toMatchObject({ ok: true, workspaceId: ACTIVE_WS });
   });
 
-  it('(d) a rejecting store yields the error envelope { ok:false, reason, isError:true }', async () => {
+  it('(d) a rejecting store fails ONLY that item ({ ok:false, githubUserId, error }); batch ok:true', async () => {
     addTrustedUser.mockRejectedValueOnce(new Error('boom-add'));
     const tool = await addTool();
-    const res = await tool.handler({ githubUserId: 42 }, ctxWith({ workspaceId: 'ws-1' }));
-    expect(res.isError).toBe(true);
-    expect(body(res)).toMatchObject({ ok: false, reason: 'boom-add' });
+    const b = body(await tool.handler({ githubUserId: 42 }, ctxWith({ workspaceId: 'ws-1' })));
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, githubUserId: 42, error: 'boom-add' });
   });
 
   it('(e) actor defaults to "agent" when the principal has no slug', async () => {
@@ -112,23 +116,41 @@ describe('trust:add — workspace resolution (privilege boundary)', () => {
     await tool.handler({ githubUserId: 42, note: 'co-maintainer' }, ctxWith({ workspaceId: 'ws-1', slug: 'su-owner' }));
     expect(addTrustedUser.mock.calls[0]![1]).toMatchObject({ actor: 'su-owner', note: 'co-maintainer' });
   });
+
+  it('githubUserIds:[…] trusts many, each keyed by githubUserId; one failing id fails only itself', async () => {
+    addTrustedUser.mockImplementation(async (_ws: string, opts: { githubUserId: number }) => {
+      if (opts.githubUserId === 99) throw new Error('grant denied');
+      return { githubUserId: opts.githubUserId, note: null, createdTs: 1 };
+    });
+    const tool = await addTool();
+    const b = body(await tool.handler({ githubUserIds: [42, 99, 7] }, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.results.map((r: any) => [r.githubUserId, r.ok])).toEqual([
+      [42, true],
+      [99, false],
+      [7, true],
+    ]);
+    expect(b.results[1].error).toContain('grant denied');
+  });
 });
 
-describe('trust:remove — workspace resolution (privilege boundary)', () => {
-  it('(a) principal workspace is honoured', async () => {
+describe('trust:remove — workspace resolution (privilege boundary) + bulk envelope (P-006)', () => {
+  it('(a) n=1 principal workspace is honoured; one keyed result', async () => {
     const tool = await removeTool();
-    const res = body(await tool.handler({ githubUserId: 7 }, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
+    const b = body(await tool.handler({ githubUserId: 7 }, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
     expect(removeTrustedUser).toHaveBeenCalledWith('ws-1', 7, 'owner');
     expect(activeWorkspaceId).not.toHaveBeenCalled();
-    expect(res).toMatchObject({ ok: true, workspaceId: 'ws-1', githubUserId: 7, removed: true });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, workspaceId: 'ws-1', githubUserId: 7, removed: true });
   });
 
   it("(b) SECURITY: principal workspace '*' falls back to the active workspace", async () => {
     const tool = await removeTool();
-    const res = body(await tool.handler({ githubUserId: 7 }, ctxWith({ workspaceId: '*', slug: 'owner' })));
+    const b = body(await tool.handler({ githubUserId: 7 }, ctxWith({ workspaceId: '*', slug: 'owner' })));
     expect(removeTrustedUser).toHaveBeenCalledWith(ACTIVE_WS, 7, 'owner');
     expect(activeWorkspaceId).toHaveBeenCalledTimes(1);
-    expect(res).toMatchObject({ ok: true, workspaceId: ACTIVE_WS });
+    expect(b.results[0]).toMatchObject({ ok: true, workspaceId: ACTIVE_WS });
   });
 
   it('(c) no principal falls back to the active workspace + actor "agent"', async () => {
@@ -140,8 +162,19 @@ describe('trust:remove — workspace resolution (privilege boundary)', () => {
   it('projects removed:false from the store verbatim', async () => {
     removeTrustedUser.mockResolvedValueOnce({ removed: false });
     const tool = await removeTool();
-    const res = body(await tool.handler({ githubUserId: 7 }, ctxWith({ workspaceId: 'ws-1' })));
-    expect(res).toMatchObject({ ok: true, removed: false });
+    const b = body(await tool.handler({ githubUserId: 7 }, ctxWith({ workspaceId: 'ws-1' })));
+    expect(b.results[0]).toMatchObject({ ok: true, removed: false });
+  });
+
+  it('githubUserIds:[…] revokes many, each keyed by githubUserId', async () => {
+    removeTrustedUser.mockImplementation(async (_ws: string, id: number) => ({ removed: id !== 8 }));
+    const tool = await removeTool();
+    const b = body(await tool.handler({ githubUserIds: [7, 8] }, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
+    expect(b.counts).toEqual({ ok: 2, failed: 0 });
+    expect(b.results.map((r: any) => [r.githubUserId, r.removed])).toEqual([
+      [7, true],
+      [8, false],
+    ]);
   });
 });
 
