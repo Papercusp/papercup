@@ -14,9 +14,10 @@ import {
 } from './headroom';
 
 /**
- * Deploy accounts settings — the pool of Claude Max accounts used as
- * per-machine / remote-frame DEPLOY credentials + the fleet's pooled egress.
- * Link one by minting a credential with claude-code's own login and pasting it.
+ * Deploy accounts settings — the provider-account pool used by the inference
+ * gateway. Claude Max accounts back Anthropic-compatible fleet egress and
+ * deploy credentials; Codex accounts back OpenAI-compatible Codex account pins.
+ * Link one by minting or referencing the provider credential.
  *
  * Why paste-a-token (not an in-app OAuth redirect): claude.ai's authorize endpoint rejects a
  * hand-built URL (it needs claude-code's own client handshake), so the owner runs
@@ -24,9 +25,8 @@ import {
  * Accepts a `sk-ant-oat…` setup-token (→ token:) or a `.credentials.json` bundle (→ file:).
  * Never touches this box's ~/.claude. Backed by /api/admin/deploy-accounts{,/register,/remove}.
  *
- * Live 5h utilization comes from /api/admin/inference-gateway/stats — the gateway is the only
- * process that sees the unified rate-limit headers, and it reports the currently-bound account's
- * most-constraining window, so utilization shows on the account egress is routing through now.
+ * Live utilization comes from /api/admin/inference-gateway/stats when the gateway reports its
+ * current route, and falls back to each account row's last observed provider-limit projection.
  *
  * Lives under /settings/deploy-accounts (moved here from the /admin tabs). The
  * /settings layout supplies the chrome, so this page renders bare content.
@@ -39,7 +39,23 @@ interface AccountRow {
   boundTo: string[];
   available: boolean;
   sustainedlyLimited: boolean;
-  rate: { pausedUntil: number; penaltyCount: number };
+  rate: { pausedUntil: number; penaltyCount: number; utilization?: number; windowResetAt?: number };
+}
+
+type AccountProvider = NonNullable<AccountRow['provider']>;
+
+function accountProvider(row: Pick<AccountRow, 'provider'>): AccountProvider {
+  return row.provider === 'codex' ? 'codex' : 'claude';
+}
+
+function providerLabel(provider: AccountProvider): string {
+  return provider === 'codex' ? 'Codex' : 'Claude';
+}
+
+function providerCredentialHint(provider: AccountProvider): string {
+  return provider === 'codex'
+    ? 'Codex accounts use a bearer token or env:NAME reference for the OpenAI-compatible gateway route.'
+    : 'Claude accounts use a setup-token or .credentials.json bundle minted by claude setup-token.';
 }
 
 export default function DeployAccountsPage() {
@@ -134,7 +150,7 @@ export default function DeployAccountsPage() {
       resetForm();
       // Explicit success signal — the form reset alone is ambiguous if the
       // follow-up list refresh fails (refresh surfaces its own listError).
-      toast.success(`${provider === 'codex' ? 'Codex' : 'Max'} account "${accountId}" linked`);
+      toast.success(`${providerLabel(provider)} account "${accountId}" linked`);
       await refresh();
     } catch (e) {
       setAddError((e as Error).message);
@@ -202,7 +218,7 @@ export default function DeployAccountsPage() {
   const remove = useCallback(
     async (id: string) => {
       const ok = await askConfirm({
-        title: 'Remove Max account',
+        title: 'Remove account',
         body: `Remove account "${id}" from the pool? The credential file is left in place.`,
         confirmLabel: 'Remove',
         destructive: true,
@@ -272,7 +288,7 @@ export default function DeployAccountsPage() {
       <div className="pc-da__bar">
         <p className="pc-da__lede">
           Account pool used by the inference gateway. Claude Max accounts power pooled fleet egress and deploys;
-          Codex accounts route Codex sessions through the same account-pinning system.
+          Codex accounts route Codex sessions through the OpenAI-compatible account-pinning path.
         </p>
         {!addOpen && (
           <button className="pc-da__btn pc-da__btn--primary" onClick={() => setAddOpen(true)}>
@@ -299,6 +315,7 @@ export default function DeployAccountsPage() {
               onClick={() => {
                 setProvider('claude');
                 setAddError(null);
+                setValue('');
               }}
             >
               Claude
@@ -312,6 +329,9 @@ export default function DeployAccountsPage() {
                 setProvider('codex');
                 setLinkMode('token');
                 setAuthorizeUrl(null);
+                setLinkId(null);
+                setCode('');
+                setValue('');
                 setAddError(null);
               }}
             >
@@ -420,6 +440,7 @@ export default function DeployAccountsPage() {
               <label className="pc-da__field">
                 <span>{provider === 'codex' ? '3 · Paste the bearer token or env reference' : '3 · Paste the token (or a .credentials.json bundle)'}</span>
                 <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={3} placeholder={provider === 'codex' ? 'sk-…   or   env:OPENAI_API_KEY' : 'sk-ant-oat01-…   or   {&quot;claudeAiOauth&quot;:{…}}'} />
+                <small>{providerCredentialHint(provider)}</small>
               </label>
             </>
           )}
@@ -481,6 +502,7 @@ export default function DeployAccountsPage() {
         .pc-da__copy { padding: 4px 9px; font-size: 11px; flex: 0 0 auto; }
         .pc-da__field { display: grid; gap: 4px; width: 100%; margin-bottom: 10px; }
         .pc-da__field > span { font-size: 11px; color: color-mix(in srgb, var(--accent-soft), transparent 30%); font-weight: 650; }
+        .pc-da__field small { color: var(--fg-mute); font-size: 11.5px; line-height: 1.4; }
         .pc-da__field input, .pc-da__field textarea { background: color-mix(in srgb, var(--bg-deeper), transparent 20%); border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%); border-radius: 8px; color: var(--fg); padding: 8px 10px; font-size: 13px; font-family: ui-monospace, Menlo, monospace; }
         .pc-da__error { color: var(--bad); font-size: 12.5px; margin: 6px 0 0; }
         .pc-da__muted { color: color-mix(in srgb, var(--accent-soft), transparent 45%); font-size: 13px; }
@@ -530,7 +552,7 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
       header: 'Provider',
       width: 0.8,
       toCopyText: (a) => a.provider || 'claude',
-      render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{row.provider === 'codex' ? 'Codex' : 'Claude'}</span>,
+      render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(row))}</span>,
     },
     {
       key: 'status',
@@ -541,23 +563,22 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
     },
     {
       key: 'budget',
-      header: '5h budget',
+      header: 'Usage',
       width: 1.5,
-      toCopyText: (a) => isActiveAccount(headroom, a.id) && headroom?.utilizationPct !== undefined ? `${headroom.utilizationPct}%` : '—',
+      toCopyText: (a) => accountUsageText(a, headroom),
       render: ({ row }) => {
-        const active = isActiveAccount(headroom, row.id);
-        const pct = active ? headroom?.utilizationPct : undefined;
-        return pct !== undefined ? (
-          <div className="pc-da__util" title={`${headroom?.window ?? '5h'} window${headroom?.rejected ? ' — over budget' : ''}`}>
+        const usage = accountUsage(row, headroom);
+        if (!usage) return <span className="pc-da__muted">—</span>;
+        const pct = usage.pct;
+        return (
+          <div className="pc-da__util" title={`${usage.label}${usage.rejected ? ' — over budget' : ''}`}>
             <div className={`pc-da__util-bar pc-da__util-bar--${utilizationTone(pct)}`}>
               <span style={{ width: `${Math.min(100, pct)}%` }} />
             </div>
             <span className="pc-da__util-pct">
-              {pct}% · resets {formatResetIn(headroom?.resetInSec)}
+              {pct}%{usage.reset ? ` · resets ${usage.reset}` : ''}
             </span>
           </div>
-        ) : (
-          <span className="pc-da__muted">—</span>
         );
       },
     },
@@ -592,6 +613,35 @@ function accountStatusText(account: AccountRow): string {
   if (account.sustainedlyLimited) return 'limited';
   if (account.rate.pausedUntil > Date.now()) return `paused ${new Date(account.rate.pausedUntil).toLocaleTimeString()}`;
   return 'available';
+}
+
+function accountUsage(
+  account: AccountRow,
+  headroom: PoolHeadroom | null,
+): { pct: number; reset?: string; label: string; rejected?: boolean } | null {
+  if (isActiveAccount(headroom, account.id) && headroom?.utilizationPct !== undefined) {
+    return {
+      pct: headroom.utilizationPct,
+      reset: headroom.resetInSec !== undefined ? formatResetIn(headroom.resetInSec) : undefined,
+      label: `${headroom.window ?? (accountProvider(account) === 'codex' ? 'OpenAI' : '5h')} window`,
+      rejected: headroom.rejected,
+    };
+  }
+  const utilization = account.rate.utilization;
+  if (typeof utilization !== 'number' || !Number.isFinite(utilization)) return null;
+  const resetMs = account.rate.windowResetAt && account.rate.windowResetAt > Date.now()
+    ? Math.ceil((account.rate.windowResetAt - Date.now()) / 1000)
+    : undefined;
+  return {
+    pct: Math.round(utilization * 100),
+    reset: resetMs ? formatResetIn(resetMs) : undefined,
+    label: accountProvider(account) === 'codex' ? 'OpenAI account usage' : 'Claude 5h budget',
+  };
+}
+
+function accountUsageText(account: AccountRow, headroom: PoolHeadroom | null): string {
+  const usage = accountUsage(account, headroom);
+  return usage ? `${usage.pct}%${usage.reset ? ` reset ${usage.reset}` : ''}` : '—';
 }
 
 function accountStatus(account: AccountRow) {

@@ -48,6 +48,7 @@ import AccountsTab from './AccountsTab';
 const NOW = 1_800_000_000_000;
 const ACCOUNT = {
   id: 'acct-opus-1',
+  provider: 'claude',
   label: 'Opus Primary',
   credentialRef: 'file:/home/user/.claude/account.json',
   boundTo: ['papercup-hive'],
@@ -66,6 +67,26 @@ const ACCOUNT = {
   },
   egress: { localAddress: '10.0.0.5' },
   liveBuckets: [{ key: 'anthropic:opus', provider: 'anthropic', modelClass: 'opus', paused: false, pausedUntil: 0 }],
+};
+
+const CODEX_ACCOUNT = {
+  id: 'codex-main',
+  provider: 'codex',
+  label: 'Codex Primary',
+  credentialRef: 'env:OPENAI_API_KEY',
+  boundTo: [],
+  available: true,
+  sustainedlyLimited: false,
+  rate: {
+    pausedUntil: 0,
+    lastPenaltyAt: 0,
+    penaltyCount: 0,
+    windowStartedAt: NOW - 30_000,
+    utilization: 0.12,
+    windowResetAt: NOW + 2 * 60 * 60_000,
+    utilizationAt: NOW - 10_000,
+  },
+  liveBuckets: [{ key: 'openai:default', provider: 'openai', modelClass: 'default', paused: false, pausedUntil: 0 }],
 };
 
 beforeEach(() => {
@@ -106,6 +127,21 @@ describe('AccountsTab', () => {
     expect(screen.getByLabelText(/7d usage ~61%/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Force only acct-opus-1' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Exclude acct-opus-1' })).toBeTruthy();
+  });
+
+  it('renders Codex provider accounts with OpenAI-compatible usage wording', () => {
+    H.accounts = [CODEX_ACCOUNT];
+    H.expanded = 'codex-main';
+
+    render(<AccountsTab active />);
+
+    expect(screen.getByText('Codex Primary')).toBeTruthy();
+    expect(screen.getAllByText('Codex').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText(/OpenAI usage ~12%/)).toBeTruthy();
+    expect(screen.getByText('OpenAI window')).toBeTruthy();
+    expect(screen.getByText('Long window')).toBeTruthy();
+    expect(screen.getByText('openai/default')).toBeTruthy();
+    expect(screen.getByText(/Codex rows show OpenAI-compatible route usage/)).toBeTruthy();
   });
 
   it('surfaces session steering and expanded account detail', () => {

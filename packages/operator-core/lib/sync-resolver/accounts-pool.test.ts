@@ -31,8 +31,20 @@ describe('accounts.pool — read model', () => {
   const rows = [
     {
       id: 'a1',
+      provider: 'claude',
       label: 'A1',
       credentialRef: 'token:/home/x/.papercusp/deploy-credentials/a1',
+      boundTo: [],
+      available: true,
+      sustainedlyLimited: false,
+      rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 },
+      liveBuckets: [],
+    },
+    {
+      id: 'codex-main',
+      provider: 'codex',
+      label: 'Codex',
+      credentialRef: 'env:OPENAI_API_KEY',
       boundTo: [],
       available: true,
       sustainedlyLimited: false,
@@ -45,6 +57,7 @@ describe('accounts.pool — read model', () => {
     accountStatus.mockResolvedValue(rows);
     const out = await resolveNamedQueryV2('accounts.pool', {});
     expect(out).toEqual(rows);
+    expect(out).toContainEqual(expect.objectContaining({ id: 'codex-main', provider: 'codex' }));
     expect(accountStatus).toHaveBeenCalledWith('ws-test');
   });
 

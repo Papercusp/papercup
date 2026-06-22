@@ -23,6 +23,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   egressCircuitOpens: 0,
   selfHealReclaims: 0,
   stallsRecorded: 0,
+  codex: { requests: 0, upstream429: 0, failovers: 0, errors: 0 },
   pausedUntil: 0,
   cache: { read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0, hitRate: 0, byAccount: {} },
   ...over,

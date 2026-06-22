@@ -42,7 +42,7 @@ async function post(body: unknown) {
 
 function lastRegisterInput() {
   return h.registerAccount.mock.calls[0]?.[1] as
-    | { id: string; credentialRef: string; label?: string; egress?: { proxyUrl?: string; localAddress?: string } }
+    | { id: string; provider?: 'claude' | 'codex'; credentialRef: string; label?: string; egress?: { proxyUrl?: string; localAddress?: string } }
     | undefined;
 }
 
@@ -86,6 +86,32 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
   it('registers a setup-token as a token: credentialRef', async () => {
     await post({ accountId: 'a4', value: OAT });
     expect(lastRegisterInput()?.credentialRef).toMatch(/^token:/);
+  });
+
+  it('registers a Codex env credential without writing a token file', async () => {
+    const { status } = await post({ accountId: 'codex-main', provider: 'codex', value: 'env:OPENAI_API_KEY' });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()).toMatchObject({
+      id: 'codex-main',
+      provider: 'codex',
+      credentialRef: 'env:OPENAI_API_KEY',
+    });
+    expect(h.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('registers a pasted Codex bearer token as a private token file', async () => {
+    const { status } = await post({ accountId: 'codex-file', provider: 'codex', value: 'sk-openai-test-token' });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()).toMatchObject({
+      id: 'codex-file',
+      provider: 'codex',
+      credentialRef: 'token:/tmp/test-papercusp/deploy-credentials/codex-file.codex',
+    });
+    expect(h.writeFile).toHaveBeenCalledWith(
+      '/tmp/test-papercusp/deploy-credentials/codex-file.codex',
+      'sk-openai-test-token',
+      { mode: 0o600 },
+    );
   });
 
   it('400s an invalid accountId without writing anything', async () => {

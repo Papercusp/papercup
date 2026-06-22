@@ -938,6 +938,8 @@ body.has-left-sidebar .pc-header {
   background: transparent; border: none; cursor: pointer; text-align: left; padding: 0; color: inherit; font: inherit; }
 .pclsb-acct__labelrow { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; }
 .pclsb-acct__label { font-size: 11.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.pclsb-acct__provider { flex: 0 0 auto; display: inline-flex; align-items: center; height: 15px; padding: 0 5px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--fg-mute, #8a8a91) 34%, transparent); color: var(--fg-mute, #8a8a91); font-size: 8.5px; font-weight: 750; text-transform: uppercase; line-height: 1; letter-spacing: 0; }
+.pclsb-acct__provider--codex { color: var(--accent-cool, #c4b5fd); border-color: color-mix(in srgb, var(--accent, #8b5cf6) 45%, transparent); background: color-mix(in srgb, var(--accent, #8b5cf6) 12%, transparent); }
 .pclsb-acct__id { margin-top: -1px; font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #8a8a91); }
 .pclsb-acct__statuspill {
   justify-self: end; display: inline-flex; align-items: center; max-width: 82px; min-height: 18px; padding: 1px 6px; border-radius: 999px;

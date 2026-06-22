@@ -4,12 +4,14 @@
  *
  * This is now the SINGLE in-app account view (the standalone /adv "Accounts" tab was
  * removed — its data folded in here). Compact by default: each row shows status +
- * 5h/7d usage + the session-now Force/Exclude steering levers; expanding a row reveals
- * the full card — masked credential ref, availability + pause/penalty, 5h/7d windows
+ * provider usage + the session-now Force/Exclude steering levers; expanding a row reveals
+ * the full card — masked credential ref, availability + pause/penalty, provider windows
  * with reset + "as of", bound member harnesses, egress, live governor buckets, and a
  * per-account Reset (clear a stale projected pause). Adding / removing / linking an
- * account lives in Settings → Deploy accounts (the heavy wizard); a link sits in the
- * footer. Shares the override logic with nothing else now via useAccountOverride.
+ * account lives in Settings -> Deploy accounts (the heavy wizard); a link sits in the
+ * footer. Rows are provider-aware: legacy rows are Claude, explicit Codex rows show the
+ * OpenAI-compatible route instead of Anthropic Max copy. Shares the override logic with
+ * nothing else now via useAccountOverride.
  *
  * Data: full account rows ← accounts.pool sync query (live over SSE; register/remove/
  * reset/override fire notifySyncInvalidate('accounts.pool') so rows refresh). Override
@@ -50,6 +52,7 @@ interface AccountRate {
 }
 interface PoolAccount {
   id: string;
+  provider?: 'claude' | 'codex';
   label?: string;
   credentialRef: string;
   boundTo: string[];
@@ -58,6 +61,24 @@ interface PoolAccount {
   rate: AccountRate;
   egress?: { proxyUrl?: string; localAddress?: string };
   liveBuckets: { key: string; provider: string; modelClass: string; paused: boolean; pausedUntil: number }[];
+}
+
+type AccountProvider = NonNullable<PoolAccount['provider']>;
+
+function accountProvider(a: Pick<PoolAccount, 'provider'>): AccountProvider {
+  return a.provider === 'codex' ? 'codex' : 'claude';
+}
+
+function providerLabel(provider: AccountProvider): string {
+  return provider === 'codex' ? 'Codex' : 'Claude';
+}
+
+function primaryUsageLabel(provider: AccountProvider): string {
+  return provider === 'codex' ? 'OpenAI' : '5h';
+}
+
+function secondaryUsageLabel(provider: AccountProvider): string {
+  return provider === 'codex' ? 'Long' : '7d';
 }
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -164,8 +185,12 @@ export default function AccountsTab({ active }: { active: boolean }) {
   const poolSummary = useMemo(() => {
     const rows = accounts ?? [];
     const paused = rows.filter((a) => a.rate.pausedUntil > now).length;
+    const claude = rows.filter((a) => accountProvider(a) === 'claude').length;
+    const codex = rows.filter((a) => accountProvider(a) === 'codex').length;
     return {
       total: rows.length,
+      claude,
+      codex,
       available: rows.filter((a) => a.available && a.rate.pausedUntil <= now).length,
       paused,
       limited: rows.filter((a) => a.sustainedlyLimited).length,
@@ -199,6 +224,8 @@ export default function AccountsTab({ active }: { active: boolean }) {
         </div>
         <div className="pclsb-acct__summary" aria-label="Account pool summary">
           <span><b>{poolSummary.available}/{poolSummary.total}</b> avail</span>
+          <span><b>{poolSummary.claude}</b> Claude</span>
+          <span><b>{poolSummary.codex}</b> Codex</span>
           <span><b>{poolSummary.paused}</b> paused</span>
           <span><b>{poolSummary.limited}</b> limited</span>
           <span><b>{poolSummary.forced || poolSummary.excluded ? `${poolSummary.forced}/${poolSummary.excluded}` : 'off'}</b> steer</span>
@@ -237,6 +264,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
       ) : (
         <ul className="pclsb-acct__list">
           {accounts.map((a) => {
+            const provider = accountProvider(a);
             const isForced = forced.has(a.id);
             const isExcluded = excluded.has(a.id);
             const isOpen = expanded === a.id;
@@ -262,6 +290,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
                         <span className="pclsb-acct__labelrow">
                           <span className={`pclsb-acct__dot pclsb-acct__dot--${statusKind}`} aria-hidden />
                           <span className="pclsb-acct__label">{a.label || a.id}</span>
+                          <span className={`pclsb-acct__provider pclsb-acct__provider--${provider}`}>{providerLabel(provider)}</span>
                         </span>
                         <span className="pclsb-acct__id">{a.id}</span>
                       </button>
@@ -301,11 +330,12 @@ export default function AccountsTab({ active }: { active: boolean }) {
                   </div>
 
                   <div className="pclsb-acct__usage">
-                    <UsageMeter label="5h" value={a.rate.utilization} reset={reset5h} />
-                    <UsageMeter label="7d" value={a.rate.utilization7d} reset={reset7d} />
+                    <UsageMeter label={primaryUsageLabel(provider)} value={a.rate.utilization} reset={reset5h} />
+                    <UsageMeter label={secondaryUsageLabel(provider)} value={a.rate.utilization7d} reset={reset7d} />
                   </div>
 
                   <div className="pclsb-acct__facts">
+                    <span>{providerLabel(provider)}</span>
                     <span>{maskRef(a.credentialRef)}</span>
                     <span>{a.boundTo.length ? `${a.boundTo.length} bound` : 'unbound'}</span>
                     <span>{a.liveBuckets.length ? `${a.liveBuckets.length} bucket${a.liveBuckets.length === 1 ? '' : 's'}` : 'no buckets'}</span>
@@ -326,7 +356,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
                     </div>
                     <dl className="pclsb-acct__meta">
                       <div>
-                        <dt>5h window</dt>
+                        <dt>{provider === 'codex' ? 'OpenAI window' : '5h window'}</dt>
                         <dd>
                           {pct(a.rate.utilization)}
                           {reset5h && <span className="pclsb-acct__umute">{reset5h}</span>}
@@ -334,7 +364,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
                         </dd>
                       </div>
                       <div>
-                        <dt>7d window</dt>
+                        <dt>{provider === 'codex' ? 'Long window' : '7d window'}</dt>
                         <dd>
                           {pct(a.rate.utilization7d)}
                           {reset7d && <span className="pclsb-acct__umute">{reset7d}</span>}
@@ -398,8 +428,8 @@ export default function AccountsTab({ active }: { active: boolean }) {
         <SettingsIcon size={12} aria-hidden /> Add / remove accounts…
       </Link>
       <p className="pclsb-acct__foot">
-        Usage is the unified 5h + 7d utilization the inference gateway reads from Anthropic's headers — last observed value,
-        so an idle/limited account keeps its last-known %.
+        Usage is the last observed provider limit signal from the inference gateway. Claude rows show Max 5h + 7d windows;
+        Codex rows show OpenAI-compatible route usage when available.
       </p>
     </div>
   );
