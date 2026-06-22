@@ -35,7 +35,7 @@
  * Gated on Docker like the other *-integration tests (real testcontainer PG).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import type { HarnessFeatureRow } from './sync/hyperbee/projections/harness-features';
@@ -107,6 +107,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('trust-admission-e2e');
   h.sql = db.sql;
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   await db.sql.unsafe(HIVE_MEMBERS_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(AUDIT_LOG_DDL);

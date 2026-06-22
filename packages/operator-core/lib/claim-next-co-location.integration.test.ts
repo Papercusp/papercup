@@ -19,7 +19,7 @@
  *      engages in the real tool path), and is affinity-blind when the flag is off.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { FLAGS } from '@papercusp/flags';
@@ -101,6 +101,9 @@ beforeAll(async () => {
   await db.sql.unsafe(
     `CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (workspace_id text NOT NULL, trusted_github_user_id bigint NOT NULL, note text, created_ts bigint NOT NULL, PRIMARY KEY (workspace_id, trusted_github_user_id))`,
   );
+  // claim path's P-005 readiness clause reads work_item_deps + engineer_issues (this test creates neither otherwise).
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(ENGINEER_ISSUES_MIN_DDL);
 });
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`DELETE FROM harness_shared.harness_features_consolidated`; });

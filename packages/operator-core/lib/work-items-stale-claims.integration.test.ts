@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims } from './work-items-stale-claims';
 
 const PRESENCE_DDL = `
@@ -45,6 +45,7 @@ beforeAll(async () => {
   sql = db.sql;
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(ENGINEER_ISSUES_DDL);

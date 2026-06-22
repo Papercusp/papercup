@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -86,10 +86,10 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the dep table the P-005 readiness clause reads
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
-  await db.sql.unsafe(readMigration('367-work-item-deps.sql')).simple(); // the dep table the readiness clause reads
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.harness_features_consolidated
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,

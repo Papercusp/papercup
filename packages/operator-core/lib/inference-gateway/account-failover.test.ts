@@ -156,3 +156,47 @@ describe('createFailoverPool — readmit() (egress-circuit half-open recovery)',
     expect(p.active().accountId).toBe('b');
   });
 });
+
+describe('createFailoverPool — deeper edges (depth pass, su-7f3e0376)', () => {
+  it('when EVERY account is exhausted, active() still returns something (round-robin over paused) so egress never starves', () => {
+    const t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 3_600_000);
+    p.onExhausted('b', t + 3_600_000); // whole pool out of budget
+    const picks = [p.active().accountId, p.active().accountId, p.active().accountId, p.active().accountId];
+    // never undefined / never throws — the gateway still picks SOMETHING; the governor/retry loop paces it.
+    expect(picks.every((id) => id === 'a' || id === 'b')).toBe(true);
+    expect(picks).toContain('a');
+    expect(picks).toContain('b'); // the fallback still spreads across the (paused) pool, not pinning one
+  });
+
+  it('a SINGLE exhausted account: onExhausted returns null, yet active() still serves it (governor-paced)', () => {
+    const t = 1000;
+    const p = createFailoverPool([acct('solo')], { now: () => t });
+    expect(p.onExhausted('solo', t + 3_600_000)).toBeNull(); // no other account to fail over to
+    // ...but the one account must still egress — the gateway cannot refuse all traffic.
+    expect(p.active().accountId).toBe('solo');
+    expect(p.active().accountId).toBe('solo');
+  });
+
+  it('re-exhausting an already-paused account REFRESHES (extends) its reset — idempotent, not additive', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', 5_000); // a paused until 5000
+    p.onExhausted('a', 20_000); // re-exhaust → its reset is refreshed out to 20000
+    t = 6_000; // past the ORIGINAL 5000 reset, before the refreshed 20000
+    // a is still paused (the refresh extended it), so failing 'b' over finds NO available account.
+    // Had the reset NOT refreshed, a would have recovered at 5000 and this would return 'a' instead of null.
+    expect(p.onExhausted('b', t + 3_600_000)).toBeNull();
+  });
+
+  it('reload() to a SMALLER pool clamps the round-robin cursor and serves only the new set', () => {
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')]);
+    p.active(); // rrIdx → 1
+    p.active(); // rrIdx → 2 (near the end of the old 3-account pool)
+    p.reload!([acct('solo')]); // shrink to 1 — the cursor must clamp (2 % 1 = 0), no out-of-range read
+    expect(p.active().accountId).toBe('solo');
+    expect(p.active().accountId).toBe('solo');
+    expect(p.select!('a')).toBeNull(); // departed accounts are gone
+  });
+});
