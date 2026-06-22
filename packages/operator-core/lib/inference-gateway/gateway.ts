@@ -298,8 +298,13 @@ export interface GatewayDeps {
   /** Multi-account failover pool (EI-535). When present, supersedes accountId/token/invalidateToken:
    *  the gateway reads the active account per request + fails over on 5h exhaustion. */
   pool?: AccountPool;
+  /** Codex/OpenAI-compatible account pool. When present, non-Anthropic `/v1/*` routes
+   *  (for example `/v1/responses`) are forwarded through this pool with bearer injection. */
+  codexPool?: AccountPool;
   /** Upstream base URL. Default `https://api.anthropic.com`; a fake in tests. */
   upstreamBase?: string;
+  /** OpenAI-compatible upstream base URL. Default `https://api.openai.com`. */
+  openaiUpstreamBase?: string;
   /** `fetch` impl (injected in tests). Default global fetch. */
   fetchImpl?: typeof fetch;
   /** The governor for a model (default: the shared per-account `claude-code` governor). */
@@ -566,6 +571,7 @@ async function peekBody(
 
 export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
+  const openaiUpstreamBase = (deps.openaiUpstreamBase ?? 'https://api.openai.com').replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
   const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
@@ -1503,6 +1509,84 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
+  async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+    if (!deps.codexPool) {
+      req.resume();
+      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: 'inference-gateway: no Codex account pool configured' }, gateway: true });
+      return;
+    }
+    const bodyBuf = await readBody(req);
+    const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
+    const pinned = (wantAccount && deps.codexPool.select?.(wantAccount)) || null;
+    const active = pinned ?? deps.codexPool.active();
+    totalRequests++;
+    res.setTimeout(downstreamIdleMs, () => res.destroy());
+
+    let token: string;
+    try {
+      token = await withDeadline(active.token(), tokenTimeoutMs, `codex token '${active.accountId}'`);
+    } catch (e) {
+      upstreamErrors++;
+      log('error', `inference-gateway: Codex token read failed on '${active.accountId}': ${(e as Error).message}`);
+      sendJson(
+        res,
+        503,
+        { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: Codex token unavailable for '${active.accountId}'` }, gateway: true },
+        { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
+      );
+      return;
+    }
+
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
+      headers[k] = Array.isArray(v) ? v.join(', ') : v;
+    }
+    headers.authorization = `Bearer ${token}`;
+    headers['accept-encoding'] = 'identity';
+
+    const ac = new AbortController();
+    const stallTimer = setTimeout(() => ac.abort(new Error(`openai upstream stall: no headers for ${upstreamHeadersTimeoutMs}ms`)), upstreamHeadersTimeoutMs);
+    stallTimer.unref?.();
+    try {
+      const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
+      if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
+      const dispatcher = await dispatcherFor(active);
+      if (dispatcher) init.dispatcher = dispatcher;
+      const up = await doFetch(`${openaiUpstreamBase}${url}`, init as RequestInit);
+      clearTimeout(stallTimer);
+      if (up.status === 429) upstream429++;
+      else if (up.ok) aimd.recordSuccess();
+
+      const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: active.accountId };
+      up.headers.forEach((v, k) => {
+        if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
+      });
+      res.writeHead(up.status, outHeaders);
+      if (!up.body) {
+        res.end();
+        return;
+      }
+      Readable.fromWeb(up.body as any)
+        .on('error', () => res.destroy())
+        .pipe(res);
+    } catch (e) {
+      clearTimeout(stallTimer);
+      upstreamErrors++;
+      active.invalidateToken?.();
+      if (!res.headersSent) {
+        sendJson(
+          res,
+          502,
+          { type: 'error', error: { type: 'api_error', message: `inference-gateway: Codex upstream failed: ${(e as Error).message}` }, gateway: true },
+          { [ROUTED_ACCOUNT_HEADER]: active.accountId },
+        );
+      } else {
+        res.destroy();
+      }
+    }
+  }
+
   const server = http.createServer((req, res) => {
     const url = req.url ?? '/';
     if (req.method === 'GET' && url === '/healthz') {
@@ -1552,7 +1636,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     const pri = priorityFromLabel((req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined);
-    queue.run(pri, () => proxy(req, res, url)).catch((e) => {
+    const handler = url.startsWith('/v1/messages') ? proxy : proxyOpenAi;
+    queue.run(pri, () => handler(req, res, url)).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
       // instead of growing an unbounded backlog until it wedges.
