@@ -9,6 +9,7 @@ import {
   withOAuthBeta,
   bundleTokenStorage,
   makeCredentialResolver,
+  makeBearerCredentialResolver,
   type ClaudeCredentialBundle,
 } from './credential-store';
 import {
@@ -92,6 +93,31 @@ test('makeCredentialResolver — token: returns the raw setup-token, cached (no 
   assert.equal(await r.current(), 'sk-ant-oat-abc');
   r.invalidate();
   assert.equal(await r.current(), 'sk-ant-oat-CHANGED');
+});
+
+test('makeBearerCredentialResolver — file: extracts Codex auth.json tokens.access_token', async () => {
+  const path = join(dir, 'codex-auth.json');
+  await fs.writeFile(path, JSON.stringify({
+    auth_mode: 'chatgpt',
+    tokens: {
+      access_token: 'codex-access-token',
+      refresh_token: 'codex-refresh-token',
+    },
+  }));
+  const r = makeBearerCredentialResolver(`file:${path}`);
+  assert.equal(r.kind, 'file');
+  assert.equal(await r.current(), 'codex-access-token');
+  await fs.writeFile(path, JSON.stringify({ tokens: { access_token: 'changed' } }));
+  assert.equal(await r.current(), 'codex-access-token', 'serves cached token until invalidated');
+  r.invalidate();
+  assert.equal(await r.current(), 'changed');
+});
+
+test('makeBearerCredentialResolver — file: still accepts raw bearer token files', async () => {
+  const path = join(dir, 'raw-openai-token');
+  await fs.writeFile(path, '  sk-openai-test\n');
+  const r = makeBearerCredentialResolver(`file:${path}`);
+  assert.equal(await r.current(), 'sk-openai-test');
 });
 
 test('makeCredentialResolver — file: refreshes a near-expiry bundle once, then serves the cache', async () => {

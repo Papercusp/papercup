@@ -92,6 +92,7 @@ function assignmentFromPresence(p: FoldPresence): AgentAssignment {
     declaredPlanSlug: p.currentPlanSlug,
     claims: [],
     orphaned: false,
+    stalled: false,
     declaredUnclaimed: false,
     doing: null,
     queued: [],

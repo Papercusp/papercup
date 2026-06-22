@@ -27,6 +27,7 @@ import {
   type ApplyOpOpts,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
+import type { PendingMembershipContent } from '../pending-membership-content';
 import { buildContributorsProjection } from './contributors';
 import { buildFeatureClaimsProjection } from './feature-claims';
 import { buildFeatureQueueProjection } from './feature-queue';
@@ -109,6 +110,16 @@ export interface RegisterAllOpts {
    * drop). NOT keyed off `op.author_pubkey` — that field is caller-supplied / spoofable.
    */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
+  /**
+   * WI-259 P-004 (content-before-membership defer/replay): the per-apply-loop buffer for
+   * cross-member content ops the P-002 guard would DROP only because the author's `hive_members`
+   * row hasn't federated to this peer YET. Threaded into BOTH the 6 content projections (which
+   * `defer` into it at the guard drop) AND the hive_members projection (which `drainForDevices`
+   * + re-applies on a member apply — the onMemberApplied hook). Boot creates one per harness and
+   * wires it here; undefined ⇒ today's drop (no buffer). The content projections receive it via
+   * `opts`; hive_members receives it via the `hiveScoped` spread.
+   */
+  pendingMemberContent?: PendingMembershipContent;
 }
 
 /**

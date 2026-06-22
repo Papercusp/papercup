@@ -14,7 +14,7 @@ import { runGit, repoHeadSha } from './git-runner';
 import { resolveHarnessRepoRoot } from './harness-repo';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { upsertDocRecord, type HarnessDocRecord } from './doc-record';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
+import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
 export interface RecordGeneratedDocInput {
   harnessSlug: string;
@@ -42,12 +42,15 @@ function inferFromDocId(docId: string): SubjectRef[] {
 }
 
 export async function recordGeneratedDoc(input: RecordGeneratedDocInput): Promise<RecordGeneratedDocResult> {
-  const workspaceId = input.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const docId = input.docId.trim().replace(/^\.?\//, '');
   if (!docId) return { ok: false, error: 'doc_id_required' };
 
   const repoRoot = await resolveHarnessRepoRoot(input.harnessSlug);
   if (!repoRoot) return { ok: false, error: 'unknown_harness' };
+
+  // A harness's docs live in its workspace — derive it (never a silent 'default'); the
+  // repo-root check above already validated the harness, so this resolves (P-002 / D-003).
+  const workspaceId = await resolveWorkspaceForHarness(input.harnessSlug, input.workspaceId);
 
   const head = await repoHeadSha(repoRoot);
   if (!head) return { ok: false, error: 'no_head_sha' };

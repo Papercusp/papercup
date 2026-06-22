@@ -6,11 +6,21 @@
  * the harness work queue (harness_features_consolidated). A `chunk` carries a
  * `parent` (D-004).
  *
+ * Bulk by default (bulk-endpoint-standardization-2026-06-21): create ONE inline
+ * ({ kind, title, … }) or MANY (items:[{ kind, title, … }] + batch-level harness /
+ * workspace / assign_all_to_self) → { ok, results:[{ ok, id, title, workItem } |
+ * { ok:false, title, error, message?, existing? }], counts }. This RETIRES the old
+ * `work_items:create_batch` multiplexer (D-002): every item still runs the SAME
+ * per-item core (`createOneWorkItem`) — the EI-316 mirror-guard, EI-728 workspace
+ * resolution, the D-019/D-020 hive-scope gate, and the B-LOOP-4 atomic create+claim.
+ *
  * Emits (start-hive-wake-orchestration-2026-06-09 P-001 / D-001): a successful
  * create fires a `coord:emit` lifecycle notification scoped to the item's tagged
- * topics — new demand surfaces as an event. The Queen's default wake
- * subscription rides the same tool event (lib/hive/wake-defaults); the `urgent`
- * flag remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
+ * topics — new demand surfaces as an event. With the bulk envelope it fires PER
+ * created item via the D-007 event-layer fan-out (so a bulk create no longer
+ * silently drops the demand signal — D-003). The Queen's default wake subscription
+ * rides the same tool event (lib/hive/wake-defaults), per item; the `urgent` flag
+ * remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -18,25 +28,42 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { WORK_ITEM_KINDS } from '../../work-items';
 import { hiveArg } from '../_hive-scope';
-import { createOneWorkItem } from './_create-core';
+import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
+import { runBulk, bulkContent } from '../_bulk';
+
+/** One per-item create spec — the same per-item shape as the single-call fields. */
+const itemSpec = z.object({
+  kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]),
+  title: z.string().min(1).max(200),
+  summary: z.string().max(8000).optional().describe('body / summary text'),
+  harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
+  hive: hiveArg,
+  severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
+  parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
+  topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
+  payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
+  urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
+  force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard for this item.'),
+  assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4). Overrides assign_all_to_self for this item.'),
+});
 
 export default defineTool({
   name: 'work_items:create',
   profile: 'engineer',
   description:
-    'Create a work-item of any kind — feature | research-task | chunk | bug | change. Returns a kind-independent WI-NNN id. bug/change file a tracked issue; feature/research-task/chunk enter the harness work queue (feature/research-task pickable by the pipeline; chunk is an execution sub-unit carrying a parent). Dedup with work_items:list/search first.',
+    'Create ONE or MANY work-items of any kind — feature | research-task | chunk | bug | change. Returns kind-independent WI-NNN ids. bug/change file a tracked issue; feature/research-task/chunk enter the harness work queue. Single: { kind, title, … }. Many: items:[{ kind, title, … }] with batch-level harness / workspace / assign_all_to_self. Returns { ok, results:[{ ok, id, title, workItem } | { ok:false, title, error }], counts } — a mirror-duplicate or one bad item never fails the rest. Dedup with work_items:list/search first.',
   guidance: {
-    when: 'You want to track a unit of work an agent will do. Pick the kind: bug (something broken), change (a desired one-off / DX ask), feature (a pipeline work-unit), research-task, or chunk (a sub-unit of a parent, pass `parent`).',
+    when: 'You want to track unit(s) of work an agent will do. Pick the kind: bug (broken), change (DX ask / one-off), feature (pipeline work-unit), research-task, or chunk (sub-unit, pass `parent`). File several at once via items:[…] instead of a round-trip each.',
     notWhen: 'A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.',
-    chaining: 'work_items:list (dedup) → work_items:create → work_items:claim when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
+    chaining: 'work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  // New demand surfaces as an EVENT (start-hive-wake P-001 / D-001). Scoped to
-  // the item's tagged topics ([] when untagged ⇒ the lifecycle row is recorded
-  // with no inbox delivery — the audit value without fleet-wide noise; the
-  // Queen's wake rides the tool event itself, not this message).
+  // New demand surfaces as an EVENT (start-hive-wake P-001 / D-001). Scoped to the
+  // item's tagged topics ([] when untagged ⇒ a recorded lifecycle row with no inbox
+  // delivery). Fires PER created item through the D-007 fan-out (the per-item event's
+  // result.data is { ok, workItem, … } and args carries that item's `topics`).
   emits: [
     {
       fire: 'coord:emit',
@@ -58,57 +85,73 @@ export default defineTool({
       },
     },
   ],
-  args: z.object({
-    kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]),
-    title: z.string().min(1).max(200),
-    summary: z.string().max(8000).optional().describe('body / summary text'),
-    harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change'),
-    hive: hiveArg,
-    workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). Routes the write to this workspace instead of silently falling back to "default" when the harness→projects lookup misses (EI-728).'),
-    severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
-    parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
-    topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
-    payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
-    urgent: z
-      .boolean()
-      .optional()
-      .describe(
-        'URGENT enqueue: wake the brain (Pot operator) immediately instead of its slow cadence (floor-debounced — a burst coalesces to one wake). Reserve for genuinely-urgent work (a production fire), not routine filing.',
-      ),
-    force: z
-      .boolean()
-      .optional()
-      .describe(
-        'Override the mirror-duplicate guard (EI-316): create even when the title embeds an existing OPEN work-item id. Only set this when the reference is deliberate, not when you mean to work the referenced item.',
-      ),
-    assign_to: z
-      .string()
-      .max(120)
-      .optional()
-      .describe(
-        'Atomically CLAIM the new item for this agent id in the SAME create (loop-routines P-007 / D-008) — it lands already owned, never momentarily unclaimed, so no create→claim race window. General: any agent id; self-assign = your own ownerId. e.g. a loop wakeup self-assigning its work, or the Queen creating + placing onto a bee. Omit ⇒ the item lands unclaimed.',
-      ),
-  }),
+  args: z
+    .object({
+      // ── single-create shorthand (n=1) ──
+      kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]).optional(),
+      title: z.string().min(1).max(200).optional(),
+      summary: z.string().max(8000).optional().describe('body / summary text'),
+      harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
+      hive: hiveArg,
+      severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
+      parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
+      topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
+      payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
+      urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
+      force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard.'),
+      assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — it lands already owned, no create→claim race. Omit ⇒ unclaimed.'),
+      // ── bulk-create (n≥1) ──
+      items: z.array(itemSpec).min(1).max(100).optional().describe('create many work-items at once — each is a full create spec.'),
+      assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
+      // batch-level routing default for all items
+      workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). EI-728 routing for the inline create / every item.'),
+    })
+    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.kind) && Boolean(a.title)), {
+      message: 'pass { kind, title } for one, or items:[{ kind, title }] for many',
+    }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    // The per-item creation core (mirror-guard + workspace resolution + hive-scope gate
-    // + the atomic create+claim) is extracted to `_create-core` so this single-item
-    // handler and the bulk `work_items:create_batch` loop apply it IDENTICALLY. It never
-    // throws — a failure (mirror duplicate, hive_required, or a createWorkItem rejection)
-    // comes back as `{ ok: false, … }`, preserving the prior envelope shapes exactly.
-    const res = await createOneWorkItem(args, {
-      ownerId: ident.ownerId,
-      workspaceId: ctx.workspaceId,
-      harnessSlug: ctx.harnessSlug,
-    });
-    const payload = res.ok
-      ? { ok: true, workItem: res.workItem }
-      : {
-          ok: false,
-          error: res.error,
-          ...(res.message !== undefined ? { message: res.message } : {}),
-          ...(res.existing !== undefined ? { existing: res.existing } : {}),
-        };
-    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+    const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };
+    const list: CreateOneWorkItemArgs[] = args.items?.length
+      ? args.items.map((it) => ({
+          ...it,
+          harness: it.harness ?? args.harness,
+          workspace: args.workspace,
+          assign_to: it.assign_to ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+        }))
+      : [
+          {
+            kind: args.kind as string,
+            title: args.title as string,
+            summary: args.summary,
+            harness: args.harness,
+            hive: args.hive,
+            workspace: args.workspace,
+            severity: args.severity,
+            parent: args.parent,
+            topics: args.topics,
+            payload: args.payload,
+            urgent: args.urgent,
+            force: args.force,
+            assign_to: args.assign_to ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+          },
+        ];
+    const env = await runBulk(
+      list,
+      async (spec) => {
+        const res = await createOneWorkItem(spec, createCtx);
+        return res.ok
+          ? { ok: true as const, id: res.workItem.id, title: spec.title, workItem: res.workItem }
+          : {
+              ok: false as const,
+              title: spec.title,
+              error: res.error,
+              ...(res.message !== undefined ? { message: res.message } : {}),
+              ...(res.existing !== undefined ? { existing: res.existing } : {}),
+            };
+      },
+      { keyOf: (spec) => ({ title: spec.title }) },
+    );
+    return bulkContent(env);
   },
 });

@@ -1,9 +1,11 @@
 /**
  * _create-core — the per-item work-item CREATION core, extracted from
  * `work_items/create.ts` WITHOUT behavior change (work-queue-completeness Phase B,
- * unified-work-item-ledger). The single `work_items:create` handler and the BULK
- * `work_items:create_batch` loop both call `createOneWorkItem` so the mirror-guard,
- * workspace resolution, and hive-scope gate are applied IDENTICALLY per item.
+ * unified-work-item-ledger). `work_items:create` is now dual-arity
+ * (bulk-endpoint-standardization-2026-06-21 P-002): its single-spec path and its
+ * `items:[…]` bulk loop both call `createOneWorkItem` so the mirror-guard, workspace
+ * resolution, and hive-scope gate are applied IDENTICALLY per item. (This core is
+ * what let the old `work_items:create_batch` multiplexer fold back into create.)
  *
  * It performs (in order, exactly as create.ts did inline):
  *   1. EI-316 mirror-duplicate guard (flag-gated) — refuse a title embedding an OPEN id.
@@ -28,7 +30,7 @@ import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
  */
 export const HIVE_GATED_KINDS: ReadonlySet<string> = new Set(['feature', 'research-task', 'chunk']);
 
-/** One per-item create spec — the shared shape `create.ts` + `create_batch.ts` accept. */
+/** One per-item create spec — the shared shape `create.ts` accepts (single + items[]). */
 export interface CreateOneWorkItemArgs {
   kind: string;
   title: string;

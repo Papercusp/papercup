@@ -23,16 +23,18 @@
  * idle reaper + a TTL kill any link the owner abandons.
  */
 import { spawn, type IPty } from '@lydell/node-pty';
-import { writeFile, mkdir, chmod, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
-import { registerAccount } from './account-pool';
+import { registerAccount, normalizeAccountProvider, type AccountProvider } from './account-pool';
 import { updateAccountPool, accountStatus, type AccountStatusRow } from './account-pool-store';
 import { papercuspPath } from '../papercusp-root';
 
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 // Match the authorize URL / the minted token in the CLI's (ANSI-stripped) output.
 const URL_RE = /https:\/\/\S*\/oauth\/authorize\?[^\s'"]+/;
+const CODEX_URL_RE = /https:\/\/auth\.openai\.com\/codex\/device\b/;
+const CODEX_USER_CODE_RE = /\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/;
 const TOKEN_RE = /sk-ant-oat[0-9]*-[A-Za-z0-9_-]+/;
 // Settle the code→token step on EITHER the minted token OR a rejection line, so a
 // bad/expired code fails fast with claude's own message instead of hanging out the
@@ -80,6 +82,12 @@ function readUntil(
       resolve(v);
     };
     const to = setTimeout(() => finish(null), timeoutMs);
+    const existing = stripAnsi(getBuf()).match(re);
+    if (existing) {
+      clearTimeout(to);
+      resolve(existing[0]);
+      return;
+    }
     const od = pty.onData((d) => {
       appendBuf(d);
       const m = stripAnsi(getBuf()).match(re);
@@ -95,6 +103,7 @@ interface PendingCliLink {
   buf: string;
   accountId: string;
   label?: string;
+  provider: AccountProvider;
   configDir: string;
   reaper: ReturnType<typeof setTimeout>;
   /** The deferred Enter-keystroke timer (cleared on cleanup so it can't fire late). */
@@ -123,20 +132,37 @@ function cleanup(linkId: string): void {
 export interface StartCliLinkInput {
   accountId: string;
   label?: string;
+  provider?: AccountProvider;
 }
-export type StartCliLinkResult = { ok: true; authorizeUrl: string; linkId: string } | { ok: false; error: string };
+export type StartCliLinkResult =
+  | { ok: true; authorizeUrl: string; linkId: string; provider: AccountProvider; userCode?: string }
+  | { ok: false; error: string };
 
-/** Spawn `claude setup-token` and capture the authorize URL it prints; hold the process. */
+/** Spawn the provider CLI and capture the browser-login URL it prints; hold the process. */
 export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLinkResult> {
   const accountId = input.accountId?.trim();
   if (!accountId || !ID_RE.test(accountId)) {
     return { ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' };
   }
-  const configDir = papercuspPath('deploy-credentials', `.setup-${accountId}-${randomBytes(4).toString('hex')}`);
+  const provider = normalizeAccountProvider(input.provider);
+  const configDir = papercuspPath(
+    'deploy-credentials',
+    provider === 'codex'
+      ? `.codex-setup-${accountId}-${randomBytes(4).toString('hex')}`
+      : `.setup-${accountId}-${randomBytes(4).toString('hex')}`,
+  );
   await mkdir(configDir, { recursive: true });
   let pty: IPty;
   try {
-    pty = spawn(process.env.CLAUDE_BIN || 'claude', ['setup-token'], {
+    pty = provider === 'codex'
+      ? spawn(process.env.CODEX_BIN || 'codex', ['login', '--device-auth'], {
+        name: 'xterm-256color',
+        cols: 4000,
+        rows: 50,
+        cwd: configDir,
+        env: { ...process.env, CODEX_HOME: configDir },
+      })
+      : spawn(process.env.CLAUDE_BIN || 'claude', ['setup-token'], {
       name: 'xterm-256color',
       cols: 4000, // ultra-wide → the long URL + token never wrap (a wrapped line breaks the regex)
       rows: 50,
@@ -145,7 +171,7 @@ export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLi
     });
   } catch (e) {
     await rm(configDir, { recursive: true, force: true }).catch(() => {});
-    return { ok: false, error: `couldn't launch the claude CLI: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
+    return { ok: false, error: `couldn't launch the ${providerLabel(provider)} CLI: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
   }
   const linkId = randomUUID();
   const entry: PendingCliLink = {
@@ -153,6 +179,7 @@ export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLi
     buf: '',
     accountId,
     label: input.label?.trim() || undefined,
+    provider,
     configDir,
     reaper: setTimeout(() => cleanup(linkId), LINK_TTL_MS),
   };
@@ -160,18 +187,28 @@ export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLi
 
   const url = await readUntil(pty, () => entry.buf, (d) => {
     entry.buf += d;
-  }, URL_RE, START_TIMEOUT_MS);
+  }, provider === 'codex' ? CODEX_URL_RE : URL_RE, START_TIMEOUT_MS);
 
   if (!url) {
     cleanup(linkId);
-    return { ok: false, error: 'the claude CLI did not produce an authorize URL (is `claude` installed + on PATH?)' };
+    return { ok: false, error: `the ${providerLabel(provider)} CLI did not produce an authorize URL (is \`${provider === 'codex' ? 'codex' : 'claude'}\` installed + on PATH?)` };
   }
-  return { ok: true, authorizeUrl: url, linkId };
+  if (provider === 'codex') {
+    const userCode = await readUntil(pty, () => entry.buf, (d) => {
+      entry.buf += d;
+    }, CODEX_USER_CODE_RE, START_TIMEOUT_MS);
+    if (!userCode) {
+      cleanup(linkId);
+      return { ok: false, error: 'the Codex CLI did not produce a device code' };
+    }
+    return { ok: true, authorizeUrl: url, linkId, provider, userCode };
+  }
+  return { ok: true, authorizeUrl: url, linkId, provider };
 }
 
 export interface CompleteCliLinkInput {
   linkId: string;
-  code: string;
+  code?: string;
   workspace?: string;
 }
 export interface CompleteCliLinkDeps {
@@ -187,10 +224,62 @@ function defaultNotify(): void {
     .catch(() => {});
 }
 
-/** Feed the pasted code into the held CLI, capture the minted token, write + register it. */
+function providerLabel(provider: AccountProvider): string {
+  return provider === 'codex' ? 'Codex' : 'Claude';
+}
+
+function extractCodexAccessToken(raw: string): string | null {
+  try {
+    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown } };
+    return typeof parsed?.tokens?.access_token === 'string' && parsed.tokens.access_token.trim()
+      ? parsed.tokens.access_token.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function completeCodexCliLink(
+  linkId: string,
+  l: PendingCliLink,
+  input: CompleteCliLinkInput,
+  deps: CompleteCliLinkDeps,
+): Promise<CompleteCliLinkResult> {
+  const sourceAuthPath = `${l.configDir}/auth.json`;
+  let raw: string;
+  try {
+    raw = await readFile(sourceAuthPath, 'utf8');
+  } catch {
+    return { ok: false, error: 'Codex login is not complete yet — enter the device code in the browser, then complete the link' };
+  }
+  const accessToken = extractCodexAccessToken(raw);
+  if (!accessToken) {
+    cleanup(linkId);
+    return { ok: false, error: 'Codex auth.json did not contain tokens.access_token — restart the add-account flow' };
+  }
+
+  try {
+    const credPath = papercuspPath('deploy-credentials', `${l.accountId}.codex-auth.json`);
+    await mkdir(dirname(credPath), { recursive: true });
+    await writeFile(credPath, raw, { mode: 0o600 });
+    await chmod(credPath, 0o600);
+    const credentialRef = `file:${credPath}`;
+    await updateAccountPool((p) => registerAccount(p, { id: l.accountId, provider: 'codex', credentialRef, label: l.label }, Date.now()), input.workspace);
+    const account = (await accountStatus(input.workspace)).find((a) => a.id === l.accountId) ?? null;
+    cleanup(linkId);
+    (deps.notify ?? defaultNotify)();
+    return { ok: true, account };
+  } catch (e) {
+    cleanup(linkId);
+    return { ok: false, error: `register failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
+  }
+}
+
+/** Feed the pasted code into the held CLI when needed, capture the credential, write + register it. */
 export async function completeCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
   const l = links.get(input.linkId);
   if (!l) return { ok: false, error: 'link expired or unknown — restart the add-account flow' };
+  if (l.provider === 'codex') return completeCodexCliLink(input.linkId, l, input, deps);
   const code = input.code?.trim();
   if (!code) return { ok: false, error: 'code required (paste the value claude.ai showed)' };
 

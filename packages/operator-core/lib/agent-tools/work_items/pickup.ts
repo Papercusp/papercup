@@ -65,11 +65,15 @@ export async function composePickup(args: PickupArgs, call: InnerCall): Promise<
     return { ok: false, step: 'get', error: gotItem?.error ?? `work_item '${args.id}' not found` };
   }
 
-  const claimed = (await call('work_items:claim', {
+  // work_items:claim is bulk (bulk-endpoint-standardization-2026-06-21): the
+  // envelope's top-level ok is ALWAYS true ("the batch ran"); the real claim
+  // outcome (incl. a claim_conflict) is the single entry of `results`.
+  const claimRes = (await call('work_items:claim', {
     id: args.id,
     ...(args.harness ? { harness: args.harness } : {}),
     ...(args.assignee ? { assignee: args.assignee } : {}),
-  })) as { ok?: boolean; workItem?: unknown; error?: string } | undefined;
+  })) as { ok?: boolean; results?: Array<{ ok?: boolean; workItem?: unknown; error?: string }> } | undefined;
+  const claimed = claimRes?.results?.[0];
   if (!claimed?.ok) {
     return { ok: false, step: 'claim', item: gotItem.workItem, claimed: false, error: claimed?.error ?? 'claim failed' };
   }

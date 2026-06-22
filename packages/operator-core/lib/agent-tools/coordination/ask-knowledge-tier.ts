@@ -22,6 +22,7 @@ import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../search/sources';
 import { buildQueryEmbedder } from '../search/embedder';
 import { getMemoryBackend, type MemoryBackend } from '../../memory/backend';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Injectable IO for the tier — defaults to the prod org handle + the
  *  configured MemoryBackend (generalize-memory-backend-swappable D-003).
@@ -107,7 +108,10 @@ export async function runKnowledgeTier(
       searched.push('mem0');
       const keys = new Set<string>();
       if (input.asker_id) keys.add(input.asker_id);
-      keys.add(`workspace:${input.workspaceId ?? 'default'}`);
+      // The operator-scope key resolves the REAL workspace (never a silent 'default'),
+      // matching the key answer-capture writes under — both fall back to activeWorkspaceId()
+      // so a captured answer is found in the right workspace, not a mixed 'default' bucket (D-003).
+      keys.add(`workspace:${(input.workspaceId ?? '').trim() || activeWorkspaceId()}`);
       if (input.harness_slug) keys.add(`harness:${input.harness_slug}`);
       const hits = await backend.search(input.query, { scope: [...keys], limit });
       for (const m of hits) {

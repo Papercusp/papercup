@@ -37,6 +37,8 @@ const base: FleetAssignmentRow = {
   holderIntent: null,
   holderPlanSlug: null,
   orphaned: false,
+  stalled: null,
+  lastProgressAt: null,
   declaredPlanMatches: null,
   assigneeRank: null,
   rankWriter: null,

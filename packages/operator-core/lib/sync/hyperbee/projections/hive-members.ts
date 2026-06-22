@@ -38,6 +38,10 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 import { invalidateHiveMemberDeviceSet } from '../hive-member-identity-set';
+import {
+  reapplyDrainedMemberContent,
+  type PendingMembershipContent,
+} from '../pending-membership-content';
 
 /** Wire-shape of a hive_members row in Hyperbee — the federated subset. Defensive
  *  on every field; a malformed remote op is dropped (decodeValue → null). */
@@ -75,6 +79,11 @@ export interface HiveMembersProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of getOrgPg().sql. */
   sql?: postgres.Sql;
+  /** WI-259 P-004: the content-before-membership defer buffer. When THIS member's row applies
+   *  (a join / device-change), drain + re-apply any cross-member content ops that were deferred
+   *  waiting on this member's device pubkeys (the onMemberApplied hook). Undefined ⇒ no drain
+   *  (buffer not wired / non-hive). Threaded via RegisterAllOpts (the `hiveScoped` spread). */
+  pendingMemberContent?: PendingMembershipContent;
 }
 
 /** Within a Hive's peer-log the member key is `<github_user_id>` (the Hive is
@@ -136,6 +145,31 @@ async function writeToPg(
   // the (ws, hiveHome) cache key. Shared hook: P-004's PendingMembershipContent drain
   // hangs off this same apply point (ee7e9 P-003 review refinement #1).
   invalidateHiveMemberDeviceSet(opts.workspaceId, opts.harnessSlug);
+  // WI-259 P-004 (the onMemberApplied DRAIN): this member just federated, so any cross-member
+  // content op deferred waiting on one of THIS member's device pubkeys can now apply. Drain those
+  // entries and re-run their writeToPg — the membership guard re-checks against the now-fresh set
+  // (invalidated just above), so it applies them instead of re-dropping. Runs AFTER the invalidate
+  // so the re-apply reads the up-to-date member set. NON-RE-ENTRANT: a content writeToPg never
+  // fires a hive_members apply, so re-applying deferred content cannot recurse into this drain.
+  // Best-effort: a re-apply throw must not abort this member apply (the op stays in the peer log).
+  if (opts.pendingMemberContent) {
+    const devices = memberDevicePubkeys(row);
+    if (devices.size > 0) {
+      await reapplyDrainedMemberContent(opts.pendingMemberContent.drainForDevices(devices, Date.now()));
+    }
+  }
+}
+
+/** This member's bound device pubkeys (base64), deduped — the identity grain the P-004 buffer
+ *  keys cross-member content deferrals on (matches resolveHiveMemberDeviceSet's grain). */
+function memberDevicePubkeys(row: HiveMemberRow): Set<string> {
+  const devices = new Set<string>();
+  for (const a of row.device_attestations ?? []) {
+    if (a && typeof a.device_pubkey === 'string' && a.device_pubkey.length > 0) {
+      devices.add(a.device_pubkey);
+    }
+  }
+  return devices;
 }
 
 async function deleteFromPg(

@@ -1,7 +1,7 @@
 /**
  * account-link-cli — the CLI-driven OAuth link (accounts-pool-tab-2026-06-15 P-002/D-016).
- * Drives a FAKE `claude setup-token` pty: start captures the URL the CLI prints; complete
- * feeds the code, captures the minted token, writes + registers it, and NEVER returns the token.
+ * Drives FAKE provider ptys: Claude captures a URL/code exchange; Codex captures a device
+ * URL/code and registers the isolated auth.json. Tokens never return to the caller.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
@@ -11,6 +11,7 @@ const h = vi.hoisted(() => {
     written: [] as string[],
     killed: 0,
     outcome: 'token' as 'token' | 'reject',
+    mode: 'claude' as 'claude' | 'codex',
   };
   const makePty = () => ({
     onData: (cb: (d: string) => void) => {
@@ -37,7 +38,11 @@ const h = vi.hoisted(() => {
   const spawn = vi.fn(() => {
     const p = makePty();
     // The CLI prints the authorize URL on launch.
-    setTimeout(() => state.dataCbs.forEach((cb) => cb('Open this URL:\r\nhttps://claude.com/cai/oauth/authorize?code=true&client_id=X&scope=user:inference&state=s\r\nPaste code: ')), 0);
+    setTimeout(() => state.dataCbs.forEach((cb) => cb(
+      state.mode === 'codex'
+        ? 'Open this link:\r\nhttps://auth.openai.com/codex/device\r\nEnter this one-time code\r\nABCD-12345\r\n'
+        : 'Open this URL:\r\nhttps://claude.com/cai/oauth/authorize?code=true&client_id=X&scope=user:inference&state=s\r\nPaste code: ',
+    )), 0);
     return p;
   });
   return {
@@ -47,6 +52,18 @@ const h = vi.hoisted(() => {
     mkdir: vi.fn(async () => {}),
     chmod: vi.fn(async () => {}),
     rm: vi.fn(async () => {}),
+    readFile: vi.fn(async (path: string) => {
+      if (path.endsWith('/auth.json')) {
+        return JSON.stringify({
+          auth_mode: 'chatgpt',
+          tokens: {
+            access_token: 'codex-access-token',
+            refresh_token: 'codex-refresh-token',
+          },
+        });
+      }
+      throw new Error(`unexpected readFile ${path}`);
+    }),
     updateAccountPool: vi.fn(async (mut: (p: { accounts: unknown[] }) => unknown) => mut({ accounts: [] })),
     accountStatus: vi.fn(async () => [
       { id: 'acme', label: 'Acme', credentialRef: 'token:/tmp/test/deploy-credentials/acme', boundTo: [], available: true, sustainedlyLimited: false, rate: {}, liveBuckets: [] },
@@ -56,9 +73,12 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('@lydell/node-pty', () => ({ spawn: h.spawn }));
-vi.mock('node:fs/promises', () => ({ writeFile: h.writeFile, mkdir: h.mkdir, chmod: h.chmod, rm: h.rm }));
+vi.mock('node:fs/promises', () => ({ readFile: h.readFile, writeFile: h.writeFile, mkdir: h.mkdir, chmod: h.chmod, rm: h.rm }));
 vi.mock('../papercusp-root', () => ({ papercuspPath: (...p: string[]) => '/tmp/test/' + p.join('/') }));
-vi.mock('./account-pool', () => ({ registerAccount: h.registerAccount }));
+vi.mock('./account-pool', () => ({
+  registerAccount: h.registerAccount,
+  normalizeAccountProvider: (provider: unknown) => (provider === 'codex' ? 'codex' : 'claude'),
+}));
 vi.mock('./account-pool-store', () => ({ updateAccountPool: h.updateAccountPool, accountStatus: h.accountStatus }));
 
 import { startCliLink, completeCliLink, __resetCliLinksForTest } from './account-link-cli';
@@ -68,6 +88,7 @@ afterEach(() => {
   h.state.dataCbs = [];
   h.state.written = [];
   h.state.outcome = 'token';
+  h.state.mode = 'claude';
   vi.clearAllMocks();
 });
 
@@ -83,6 +104,20 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     );
     expect(r.authorizeUrl).toContain('https://claude.com/cai/oauth/authorize');
     expect(r.linkId).toBeTruthy();
+  });
+
+  it('startCliLink spawns `codex login --device-auth` and returns the device URL + code', async () => {
+    h.state.mode = 'codex';
+    const r = await startCliLink({ accountId: 'codex-acme', label: 'Codex Acme', provider: 'codex' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(h.spawn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['login', '--device-auth'],
+      expect.objectContaining({ env: expect.objectContaining({ CODEX_HOME: expect.stringContaining('/tmp/test/deploy-credentials/.codex-setup-codex-acme-') }) }),
+    );
+    expect(r.authorizeUrl).toBe('https://auth.openai.com/codex/device');
+    expect(r.userCode).toBe('ABCD-12345');
   });
 
   it('completeCliLink feeds the code, captures the token, registers it, and NEVER returns the token', async () => {
@@ -108,6 +143,28 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     expect(regInput.credentialRef).toMatch(/^token:/);
     // SECURITY invariant: the token must never appear in the API result.
     expect(JSON.stringify(r)).not.toContain('sk-ant-oat01-TESTtoken');
+  });
+
+  it('completeCliLink registers a completed Codex auth.json as a codex file credential', async () => {
+    h.state.mode = 'codex';
+    const s = await startCliLink({ accountId: 'codex-acme', label: 'Codex Acme', provider: 'codex' });
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    const r = await completeCliLink({ linkId: s.linkId }, { notify: () => {} });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(h.writeFile).toHaveBeenCalledWith(
+      '/tmp/test/deploy-credentials/codex-acme.codex-auth.json',
+      expect.stringContaining('codex-access-token'),
+      expect.objectContaining({ mode: 0o600 }),
+    );
+    const regInput = h.registerAccount.mock.calls[0]?.[1] as { id: string; provider?: string; credentialRef: string };
+    expect(regInput).toMatchObject({
+      id: 'codex-acme',
+      provider: 'codex',
+      credentialRef: 'file:/tmp/test/deploy-credentials/codex-acme.codex-auth.json',
+    });
+    expect(JSON.stringify(r)).not.toContain('codex-access-token');
   });
 
   it('completeCliLink fails fast (no write/register) when claude rejects the code', async () => {

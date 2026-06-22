@@ -178,6 +178,8 @@ describe('watch owners (P-014 item 1 — per-bee drill-in watch panes)', () => {
       holderIntent: null,
       holderPlanSlug: null,
       orphaned: false,
+      stalled: null,
+      lastProgressAt: null,
       declaredPlanMatches: null,
       assigneeRank: null,
       rankWriter: null,

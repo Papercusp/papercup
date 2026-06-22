@@ -1,17 +1,23 @@
 /**
- * SU-S16 — code:run for a BATCH WRITE via the dry-run gate
- * (code-execution-tool-orchestration B-CX-3).
+ * SU-S16 — a HOMOGENEOUS batch write collapses into ONE bulk verb call
+ * (bulk-endpoint-standardization-2026-06-21 D-004; supersedes the original
+ * code-execution-tool-orchestration B-CX-3 framing).
  *
- * Question: code:run isn't read-only — its dry-run/confirm gate is built for
- * batching WRITES (preview every mutation in `plannedMutations`, then commit).
- * When the user asks to mutate every item in a collection, does the engineer
- * collapse the per-item write loop into ONE code:run (ideally dryRun:true first)
- * rather than firing `work_items:set_state` one call at a time?
+ * Question: when the user asks to apply the SAME mutation to every item in a
+ * collection (here: mark every open work item observed → one terminal state), does
+ * the engineer reach for the verb's BULK arg — ONE `work_items:set_state { ids:[…],
+ * state }` — instead of firing the write once per item?
+ *
+ * D-004 reconciliation: every repeated-call verb is now dual-arity (items[]/ids[]
+ * via _bulk), so a HOMOGENEOUS batch is one bulk call. `code:run` (its dry-run /
+ * confirm gate) is now reserved for HETEROGENEOUS / CONDITIONAL batches (different
+ * per-item logic, computed values, branching) — not a flat same-state sweep.
  *
  * `work_items:list` returns 9 open items; the per-item state change is the loop.
  *
- * Load-bearing assert (ERROR): `code:run` is called. Secondary (ERROR): at most
- * two direct `work_items:set_state` calls (the rest belong in the script).
+ * Load-bearing assert (ERROR): `work_items:set_state` is called. Secondary (ERROR):
+ * at most two `work_items:set_state` calls total — the 9 writes belong in ONE bulk
+ * `{ ids:[…], state }` call, not a per-item hand-loop.
  */
 
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
@@ -23,28 +29,28 @@ import { BATCH_WRITE_CONTEXT } from './_overrides';
 
 export const SU_S16_CODE_RUN_BATCH_WRITE: Scenario = {
   id: 'su-S16-code-run-batch-write',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
-    'A developer asks the engineer to mark every open work item in the papercusp harness as observed — a per-item WRITE over a collection. work_items:list returns 9 open items. The engineer should collapse the per-item work_items:set_state loop into ONE code:run (the dry-run/confirm gate is built for exactly this — preview the mutations, then commit) rather than issuing a write call per item.',
+    'A developer asks the engineer to mark every open work item in the papercusp harness as observed — the SAME state change applied to a collection. work_items:list returns 9 open items. The engineer should collapse the per-item write into ONE bulk work_items:set_state { ids:[…], state } call (every repeated-call verb is now dual-arity) rather than issuing a write per item or reaching for code:run (which is for heterogeneous/conditional batches).',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 6, maxWallSecs: 200, maxCostUsd: 1.5 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   toolOverride: BATCH_WRITE_CONTEXT,
   asserts: [
-    assertToolCalled(['code:run'], {
-      name: 'reaches-for-code-run-batch-write',
+    assertToolCalled(['work_items:set_state'], {
+      name: 'reaches-for-bulk-set-state',
       claim:
-        'Expected the engineer to collapse the per-item write over 9 work items into ONE code:run ' +
-        '(dry-run preview then commit) — code:run was never called.',
-      suggestion: 'Batch the writes in one code:run loop; use dryRun:true to preview plannedMutations, then commit.',
+        'Expected the engineer to mark the 9 open items via the bulk work_items:set_state ' +
+        '{ ids:[…], state } arg — work_items:set_state was never called.',
+      suggestion: 'Collapse the homogeneous per-item write into ONE work_items:set_state { ids:[…], state } call.',
     }),
     assertToolCallCountAtMost(['work_items:set_state'], 2, {
       name: 'does-not-hand-loop-writes',
-      claim: 'The engineer fired per-item work_items:set_state writes one at a time instead of batching them into code:run.',
-      suggestion: 'Do the per-item writes inside a code:run loop, previewed with dryRun, not one direct call per item.',
+      claim: 'The engineer fired per-item work_items:set_state writes one at a time instead of one bulk { ids:[…], state } call.',
+      suggestion: 'Pass all ids in a single work_items:set_state { ids:[…], state } call, not one direct call per item.',
     }),
   ],
   rubric: SU_RUBRIC,

@@ -555,11 +555,10 @@ import './scorecards/freshness';
 // a facade over the two per-kind tables (harness_features_consolidated + engineer_issues).
 // WI-NNN ids (D-008). Coexists with features:*/issues:* during the migration (their
 // retirement is the deferred, coordinated follow-on).
+// work_items:create is now dual-arity (bulk-endpoint-standardization-2026-06-21 P-002):
+// single spec OR items:[…] → keyed-array envelope, RETIRING the old create_batch
+// multiplexer (its bulk loop folded back into create via the shared _create-core).
 import './work_items/create';
-// BULK create (work-queue-completeness Phase B): create up to 100 items in one call,
-// each through the same per-item core as work_items:create (mirror-guard + workspace
-// resolution + hive-scope gate + atomic create+claim). One bad item never fails the batch.
-import './work_items/create_batch';
 import './work_items/get';
 import './work_items/list';
 import './work_items/search';
@@ -574,10 +573,9 @@ import './work_items/claim';
 // one round-trip — the #1 measured agent flow; also closes the get→claim race.
 import './work_items/pickup';
 import './work_items/release';
-// BULK mutation dispatcher (work-queue-completeness Phase B): apply ONE op
-// (claim|release|set_state|set_priority|tag|subscribe) to up to 200 items in one call,
-// each mapping to the existing single-op engine fn. One bad item never fails the batch.
-import './work_items/batch';
+// (work_items:batch RETIRED — bulk-endpoint-standardization-2026-06-21 P-002: every
+// verb it multiplexed — claim/release/set_state/set_priority/tag/subscribe — is now
+// itself dual-arity (items[]/ids[] via _bulk), so the op-multiplexer is redundant.)
 // Per-assignee ordered work-list (local-hive-orchestration P-020 / D-004 / D-008):
 // reorder moves an item within its assignee's queue; writer (bee|queen) = the
 // propose/dispose audit, gated by the existing automation tier (work_items:write → medium).

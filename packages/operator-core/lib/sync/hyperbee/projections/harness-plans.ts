@@ -22,7 +22,8 @@ import type postgres from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { observeMergedOp } from '../clobber-events';
-import { shouldApplyMemberContentOp } from '../member-content-guard';
+import { decideMemberContentOp } from '../member-content-guard';
+import type { PendingMembershipContent } from '../pending-membership-content';
 
 /**
  * P-007 — clobber detection for plans. A REMOTE plan apply (origin='remote')
@@ -124,6 +125,11 @@ export interface HarnessPlansProjectionOpts {
   /** WI-259 P-002: resolve an op's VERIFIED source-log device pubkey from its receiver-stamped
    *  sourceLogKeyHex (boot's admittedIdentities); threaded via RegisterAllOpts. */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
+  /** WI-259 P-004: the content-before-membership defer buffer. When the membership guard would
+   *  DROP a cross-member op ONLY because the author's hive_members row hasn't federated yet, the
+   *  op is buffered here (keyed on the author device) + re-applied when that member joins — not
+   *  lost. Undefined ⇒ today's drop (no buffer wired). Threaded via RegisterAllOpts. */
+  pendingMemberContent?: PendingMembershipContent;
 }
 
 async function planPartFederationOn(opts: HarnessPlansProjectionOpts): Promise<boolean> {
@@ -152,7 +158,27 @@ async function writeToPg(
   const sourceLogDevice = provenance?.authorPubkey
     ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
     : null;
-  if (!(await shouldApplyMemberContentOp(row.harness_slug, opts, sourceLogDevice))) return;
+  const memberDecision = await decideMemberContentOp(row.harness_slug, opts, sourceLogDevice);
+  if (memberDecision !== 'apply') {
+    // WI-259 P-004: a cross-member op the guard drops ONLY because the author's hive_members row
+    // hasn't federated to this peer yet (decision 'defer', author device known) is BUFFERED + re-
+    // applied when that member joins (the onMemberApplied drain), instead of lost to the advancing
+    // merge cursor. A genuine non-member's op also defers, but the buffer's TTL evicts it (D-007).
+    if (memberDecision === 'defer' && sourceLogDevice && opts.pendingMemberContent) {
+      opts.pendingMemberContent.defer(
+        {
+          authorDevice: sourceLogDevice,
+          tableTag: 'plans-by-slug',
+          rowKey: composeKey(row),
+          fedHlc: provenance?.fedHlc ?? null,
+          fedTs: provenance?.ts ?? null,
+          reapply: () => writeToPg(opts, row, provenance),
+        },
+        Date.now(),
+      );
+    }
+    return;
+  }
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';

@@ -18,7 +18,7 @@
 import { resolveHarnessDocPaths } from './harness-repo';
 import { listDocBodies, readDocBody } from './doc-fs';
 import { frontmatterDocuments, inferSubjectFromBody, anchorManualDoc } from './manual-anchor';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
+import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
 export interface IngestResult {
   ok: boolean;
@@ -37,10 +37,12 @@ export interface IngestOpts {
 
 /** Ingest one harness's FS docs → anchored manual records where a subject is declarable. */
 export async function ingestHarnessDocs(harnessSlug: string, opts: IngestOpts = {}): Promise<IngestResult> {
-  const workspaceId = opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const verify = opts.verifyAtHead ?? true;
   const paths = await resolveHarnessDocPaths(harnessSlug);
   if (!paths) return { ok: false, error: 'unknown_harness', scanned: 0, anchored: [], skipped: [] };
+  // A harness's docs live in its workspace — derive it (never a silent 'default'); the
+  // path check above already validated the harness, so this resolves (P-002 / D-003).
+  const workspaceId = await resolveWorkspaceForHarness(harnessSlug, opts.workspaceId);
 
   const files = await listDocBodies(paths.docsRoot);
   const anchored: string[] = [];

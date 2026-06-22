@@ -25,6 +25,14 @@ vi.mock('../../memory/backend', () => ({
   getMemoryBackend: () => getMemoryBackend(),
 }));
 
+// captureResolvedAnswer resolves an omitted workspace via activeWorkspaceId() (D-003 —
+// never a silent 'default'). Override it to a fixed value so the fallback path is
+// deterministic without a live workspace registry; all other exports stay real.
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../workspace-registry')>()),
+  activeWorkspaceId: () => 'active-ws',
+}));
+
 import { captureMem0Key, captureResolvedAnswer, type CaptureInput } from './answer-capture';
 
 type FakeBackend = {
@@ -67,9 +75,11 @@ describe('captureMem0Key — pseudo-user-key mapping', () => {
     expect(captureMem0Key('operator', null, 'ws-7')).toBe('workspace:ws-7');
   });
 
-  it('no workspace id → workspace:default (the fallback)', () => {
-    expect(captureMem0Key('operator', null, null)).toBe('workspace:default');
-    expect(captureMem0Key('operator', null, undefined)).toBe('workspace:default');
+  it('operator scope builds the workspace key from the (caller-resolved) workspace id', () => {
+    // captureMem0Key is now PURE + requires a CONCRETE workspace — the omitted-scope
+    // fallback (activeWorkspaceId()) lives in captureResolvedAnswer, not here (D-003).
+    expect(captureMem0Key('operator', null, 'default')).toBe('workspace:default');
+    expect(captureMem0Key('operator', null, 'papercusp-workspace')).toBe('workspace:papercusp-workspace');
   });
 
   it('harness scope WITHOUT a slug falls back to the workspace key (guards the CHECK-less core)', () => {
@@ -170,6 +180,18 @@ describe('captureResolvedAnswer', () => {
       workspace_id: 'ws-7',
     });
     expect(opts.metadata.harness_slug).toBeUndefined();
+  });
+
+  it('an omitted workspace_id resolves via activeWorkspaceId() — never the literal "default" (D-003)', async () => {
+    const b = fakeBackend();
+    getMemoryBackend.mockReturnValue(b);
+    // workspace_id blank → the operator-scope key falls back to the resolved active
+    // workspace (mocked 'active-ws'), matching what ask-knowledge-tier reads.
+    const res = await captureResolvedAnswer(baseInput({ workspace_id: '' }));
+    expect(res).toEqual({ target: 'mem0:workspace:active-ws', ok: true });
+    const [, opts] = b.remember.mock.calls[0];
+    expect(opts.scope).toBe('workspace:active-ws');
+    expect(opts.metadata).toMatchObject({ workspace_id: 'active-ws' });
   });
 
   it('happy path (harness) → writes under harness:<slug> with the harness metadata', async () => {

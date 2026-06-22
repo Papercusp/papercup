@@ -18,7 +18,7 @@ import {
   type CoordKind,
   type InboxOptions,
 } from '@papercusp/coordination/core';
-import { coordLog, coordWorkspaceId, coordSql } from './log';
+import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
 import { hasAudienceSelector, expandAudience } from './audience';
 import { hostAudienceResolvers, audienceMode } from './audience-host';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
@@ -154,6 +154,41 @@ export async function readInbox(
   ownerId: string,
   opts: InboxOptions = {},
 ): Promise<CoordEnvelope[]> {
+  // Recipient-pushdown fast path (fleet-concurrency-first P-003, round4 D-005):
+  // readInbox is the dominant `coord_event_log` call — every agent fires it every
+  // turn (always-armed inbox-wake + orient + manual coord:inbox). The old body
+  // loaded the ENTIRE `messages` surface (~23K rows) through readLines and filtered
+  // in JS, re-transferring + JSON-parsing + allocating every envelope on the
+  // operator's single event loop per call — the round-3/4 "heavy work on one thread"
+  // saturation, multiplied by fleet size. Push the inbox MEMBERSHIP predicate into
+  // Postgres so only this owner's + broadcast rows come back. The SQL predicate is
+  // exactly filterInbox's recipient+array conditions
+  // (`Array.isArray(to) && (to.includes(ownerId) || to.includes('*'))`), and
+  // filterInbox is STILL run as the final authority over the reduced set — so the
+  // output is byte-identical to the full-scan path (it re-applies the recipient
+  // check plus since/kinds/excludeOwn/sort). EI-401 precedent (readAckedMsgIds).
+  //
+  // Gated on a true PG backend (coordHasPgFastPath): an in-memory/fs seam (tests)
+  // keeps using readLines, since coordSql() would otherwise read getOrgPg() and miss
+  // the swapped store. Any query error falls through to the authoritative full read.
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'messages'
+           AND jsonb_typeof(body->'to') = 'array'
+           AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+         ORDER BY id ASC
+      `;
+      const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+      return filterInbox(lines, ownerId, opts);
+    } catch {
+      // Fall through to the authoritative full-surface read below.
+    }
+  }
   const lines = await coordLog.readLines('messages');
   return filterInbox(lines, ownerId, opts);
 }

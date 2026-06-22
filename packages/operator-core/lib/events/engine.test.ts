@@ -166,3 +166,90 @@ describe('emitSystemEvent (synthetic non-tool events)', () => {
     warn.mockRestore();
   });
 });
+
+// D-007 (bulk-endpoint-standardization-2026-06-21): a dual-arity verb returns the
+// `_bulk` keyed-array envelope; the dispatch layer must fan it out so every per-item
+// reaction rule + emits desugar fires once PER ITEM, reading the singular e.args.id /
+// e.result.data.workItem exactly as a single invocation would.
+describe('bulk-envelope fan-out (D-007)', () => {
+  const envelope = (results: Array<Record<string, unknown>>) => ({
+    ok: true,
+    results,
+    counts: {
+      ok: results.filter((r) => r.ok !== false).length,
+      failed: results.filter((r) => r.ok === false).length,
+    },
+  });
+  const bulkPe = (args: unknown, results: Array<Record<string, unknown>>, over: Partial<PostInvokeEvent> = {}) =>
+    pe({
+      toolName: 'wi:bulkverb',
+      args,
+      result: { ok: true, result: { content: [{ type: 'text', text: JSON.stringify(envelope(results)) }] } },
+      ...over,
+    });
+
+  it('fans an items:[…] envelope into one per-item event; rules read the singular e.args.id', async () => {
+    registerReactionRule({ id: 'r', on: 'wi:bulkverb', fire: 'sink:tool', args: (e) => ({ id: (e.args as { id: string }).id }) });
+    handleToolInvoked(bulkPe({ items: [{ id: 'WI-1' }, { id: 'WI-2' }] }, [{ ok: true, id: 'WI-1' }, { ok: true, id: 'WI-2' }]));
+    await flush();
+    expect(fired).toHaveBeenCalledTimes(2);
+    expect(fired.mock.calls.map((c) => (c[0].args as { id: string }).id).sort()).toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('per-item event carries results[i] as result.data (rules reading e.result.data.workItem fire per item)', async () => {
+    registerReactionRule({
+      id: 'r',
+      on: 'wi:bulkverb',
+      when: (e) => Boolean((e.result.data as { workItem?: unknown }).workItem),
+      fire: 'sink:tool',
+      args: (e) => ({ wi: (e.result.data as { workItem: { id: string } }).workItem.id }),
+    });
+    handleToolInvoked(
+      bulkPe({ ids: ['WI-1', 'WI-2'], state: 'passed' }, [
+        { ok: true, id: 'WI-1', workItem: { id: 'WI-1', state: 'passed' } },
+        { ok: true, id: 'WI-2', workItem: { id: 'WI-2', state: 'passed' } },
+      ]),
+    );
+    await flush();
+    expect(fired.mock.calls.map((c) => (c[0].args as { wi: string }).wi).sort()).toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('ids:[…] + a shared scalar reconstructs per-item { id, <scalar> }', async () => {
+    registerReactionRule({ id: 'r', on: 'wi:bulkverb', fire: 'sink:tool', args: (e) => e.args as Record<string, unknown> });
+    handleToolInvoked(bulkPe({ ids: ['WI-1'], state: 'passed', harness: 'h' }, [{ ok: true, id: 'WI-1' }]));
+    await flush();
+    expect(fired).toHaveBeenCalledOnce();
+    expect(fired.mock.calls[0][0].args).toEqual({ id: 'WI-1', state: 'passed', harness: 'h' });
+  });
+
+  it('a failed item is skipped by onlyOnSuccess; a succeeded sibling still fires', async () => {
+    registerReactionRule({ id: 'r', on: 'wi:bulkverb', fire: 'sink:tool', args: (e) => ({ id: (e.args as { id: string }).id }) });
+    handleToolInvoked(
+      bulkPe({ items: [{ id: 'OK' }, { id: 'BAD' }] }, [{ ok: true, id: 'OK' }, { ok: false, id: 'BAD', error: 'not found' }]),
+    );
+    await flush();
+    expect(fired).toHaveBeenCalledOnce();
+    expect((fired.mock.calls[0][0].args as { id: string }).id).toBe('OK');
+  });
+
+  it('a single { id } call returning an envelope fans out to exactly one event (n=1 ≡ single dispatch)', async () => {
+    registerReactionRule({ id: 'r', on: 'wi:bulkverb', fire: 'sink:tool', args: (e) => ({ id: (e.args as { id: string }).id }) });
+    handleToolInvoked(bulkPe({ id: 'WI-9' }, [{ ok: true, id: 'WI-9' }]));
+    await flush();
+    expect(fired).toHaveBeenCalledOnce();
+    expect((fired.mock.calls[0][0].args as { id: string }).id).toBe('WI-9');
+  });
+
+  it('a non-envelope { results } without counts is NOT fanned out — dispatched once unchanged', async () => {
+    registerReactionRule({ id: 'r', on: 'wi:bulkverb', fire: 'sink:tool' });
+    handleToolInvoked(
+      pe({
+        toolName: 'wi:bulkverb',
+        args: { id: 'X' },
+        result: { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, results: [{ ok: true }] }) }] } },
+      }),
+    );
+    await flush();
+    expect(fired).toHaveBeenCalledOnce();
+  });
+});

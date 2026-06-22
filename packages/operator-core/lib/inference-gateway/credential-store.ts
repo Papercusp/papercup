@@ -109,6 +109,20 @@ export interface CredentialResolver {
   readonly kind: 'token' | 'file';
 }
 
+function extractBearerFromFile(raw: string, path: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) throw new Error(`inference-gateway: empty bearer token at ${path}`);
+  if (!trimmed.startsWith('{')) return trimmed;
+  try {
+    const parsed = JSON.parse(trimmed) as { tokens?: { access_token?: unknown } };
+    const token = parsed?.tokens?.access_token;
+    if (typeof token === 'string' && token.trim()) return token.trim();
+  } catch {
+    throw new Error(`inference-gateway: bearer credential JSON at ${path} failed to parse`);
+  }
+  throw new Error(`inference-gateway: bearer credential JSON at ${path} has no tokens.access_token`);
+}
+
 /**
  * Build a resolver for one account's credentialRef. `token:` returns the staged setup-token
  * verbatim (cached; no expiry). `file:` returns the bundle's access token, refreshing via the
@@ -184,8 +198,7 @@ export function makeBearerCredentialResolver(credentialRef: string): CredentialR
         cachedToken = value;
         return cachedToken;
       }
-      cachedToken = (await fs.readFile(path, 'utf8')).trim();
-      if (!cachedToken) throw new Error(`inference-gateway: empty bearer token at ${path}`);
+      cachedToken = extractBearerFromFile(await fs.readFile(path, 'utf8'), path);
       return cachedToken;
     },
   };

@@ -27,6 +27,7 @@
  */
 
 import { getMemoryBackend } from '../../memory/backend';
+import { activeWorkspaceId } from '../../workspace-registry';
 import type { ConversationScope } from './conversations-store';
 
 export type CaptureTarget = 'mem0' | 'none';
@@ -57,10 +58,14 @@ export interface CaptureResult {
  * same keys) finds it:
  *   harness scope   → `harness:<slug>`
  *   operator scope  → `workspace:<workspace_id>`
+ *
+ * Pure: the caller (captureResolvedAnswer) resolves a CONCRETE workspaceId
+ * (activeWorkspaceId() when not threaded) BEFORE calling — never a silent 'default'
+ * here, which mixed captured answers across the WI-148 workspace split (D-003).
  */
-export function captureMem0Key(scope: ConversationScope, harnessSlug: string | null, workspaceId: string | null | undefined): string {
+export function captureMem0Key(scope: ConversationScope, harnessSlug: string | null, workspaceId: string): string {
   if (scope === 'harness' && harnessSlug) return `harness:${harnessSlug}`;
-  return `workspace:${workspaceId ?? 'default'}`;
+  return `workspace:${workspaceId}`;
 }
 
 export async function captureResolvedAnswer(input: CaptureInput): Promise<CaptureResult> {
@@ -88,7 +93,11 @@ export async function captureResolvedAnswer(input: CaptureInput): Promise<Captur
     return { target: 'mem0_unavailable', ok: false, detail: 'memory store unavailable; answer kept on the conversation row only' };
   }
 
-  const scopeKey = captureMem0Key(input.scope, input.harness_slug, input.workspace_id);
+  // Resolve the workspace for the operator-scope cache key — never a silent 'default'
+  // (which mixed captured answers across the WI-148 workspace split). The asker's
+  // ask-knowledge-tier reads under the SAME activeWorkspaceId()-resolved key (D-003).
+  const workspaceId = (input.workspace_id ?? '').trim() || activeWorkspaceId();
+  const scopeKey = captureMem0Key(input.scope, input.harness_slug, workspaceId);
   // Store as a Q→A fact so a semantic search on a paraphrase of the question
   // surfaces the answer. Anchor it to the source conversation for provenance.
   const content = `Q: ${input.question.trim()}\nA: ${input.answer.trim()}`;
@@ -100,7 +109,7 @@ export async function captureResolvedAnswer(input: CaptureInput): Promise<Captur
     asked_by: input.asker_id,
   };
   if (input.scope === 'harness' && input.harness_slug) metadata.harness_slug = input.harness_slug;
-  if (input.workspace_id) metadata.workspace_id = input.workspace_id;
+  metadata.workspace_id = workspaceId;
 
   try {
     const res = await backend.remember(content, { scope: scopeKey, kind: 'project', metadata });

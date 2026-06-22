@@ -5,7 +5,7 @@
  * the owner authorizes in a browser logged into the TARGET Max account, then POSTs
  * /link-complete with { linkId, code }. The PROVEN default is /register (setup-token
  * paste) — this is the beta alternative (claude.ai acceptance owner-verified on wake).
- * Body: { accountId, label? } → { ok, authorizeUrl, linkId } | { ok:false, error }.
+ * Body: { accountId, label?, provider? } → { ok, authorizeUrl, linkId, userCode? } | { ok:false, error }.
  */
 import { startCliLink } from '../../../deployment/account-link-cli';
 import { requireAllowedOriginOr403 } from '../../cors';
@@ -19,13 +19,13 @@ export default defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { accountId?: string; label?: string };
+    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex' };
     try {
       body = await req.json();
     } catch {
       return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
     }
-    const r = await startCliLink({ accountId: String(body?.accountId ?? ''), label: body?.label });
+    const r = await startCliLink({ accountId: String(body?.accountId ?? ''), label: body?.label, provider: body?.provider });
     return Response.json(r, { status: r.ok ? 200 : 400 });
   },
 });

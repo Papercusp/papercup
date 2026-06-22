@@ -1,6 +1,14 @@
 ---
 title: A default-ON flag turns "hermetic" unit tests into live-DB writers
 description: Flag-gated glue with a production default param defeats a factory's PG-free test contract — getOrgPg() falls back to localhost:5432, the dev box's LIVE operator DB.
+discovered: 2026-06-12
+tags: [flags, testing, vitest, postgres, getorgpg, learning-governor, gotcha]
+status: active
+documents:
+  - packages/operator-core/lib/scout/scout-cycle-action.ts
+  - packages/operator-core/lib/learning-governor/registrants.ts
+plans:
+  - self-learning-frontier-2026-06-12
 ---
 
 **The trap.** You add best-effort, flag-gated glue (governor mirror, ledger

@@ -113,3 +113,18 @@ export function coordSql(): Sql {
   const maybe = impl as Partial<{ getSql: () => Sql }>;
   return typeof maybe.getSql === 'function' ? maybe.getSql() : getOrgPg().sql;
 }
+
+/**
+ * Whether the currently-configured backend is the PG one — i.e. a targeted
+ * `coord_event_log` query through `coordSql()` will hit the SAME store the seam
+ * reads/writes. A swapped seam without a PG handle (the in-memory / fs double
+ * used in tests) returns false: there `coordSql()` falls back to `getOrgPg()`,
+ * which is a DIFFERENT (empty/unrelated) store, so a raw fast-path query would
+ * silently return zero rows instead of the double's seeded data. Callers running
+ * an EI-401-style SQL pushdown (readInbox / readAckedMsgIds) gate on this so the
+ * pushdown is taken ONLY when it's guaranteed to read the seam's own store, and
+ * the in-memory/fs seam keeps using the seam's `readLines` (correct, just slower).
+ */
+export function coordHasPgFastPath(): boolean {
+  return typeof (impl as Partial<{ getSql: () => Sql }>).getSql === 'function';
+}

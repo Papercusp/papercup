@@ -22,6 +22,7 @@ import { runEmbedBackfillOnce } from '../search/embed-backfill';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '../agent-tools/coordination/notify-gc';
+import { gcResolvedEscalationFamilies } from '../agent-tools/coordination/escalation-log-gc';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
@@ -139,6 +140,20 @@ const coordNotifyGcWorkflow = DBOS.registerWorkflow(coordNotifyGcTick, {
   name: 'coordNotifyGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
+
+// Daily 04:15 (off the 04:00 notify-gc / 04:30 dbos-gc stampede): physical retention
+// GC for the coord_event_log `escalations` surface — the dominant growth driver
+// (~35k rows, operational raise+resolve churn). Deletes RESOLVED, fully-aged,
+// operator-scope escalation FAMILIES atomically (the existing archiveResolvedEscalations
+// is a logical archive that only ADDS rows). infra-fail-fast C3/P-011. Safety rationale
+// in escalation-log-gc.ts (family-atomic, resolved-only, fully-aged, harness_slug NULL).
+async function coordEscalationGcTick(): Promise<void> {
+  await DBOS.runStep(() => gcResolvedEscalationFamilies(), { name: 'coord-escalation-gc' });
+}
+const coordEscalationGcWorkflow = DBOS.registerWorkflow(coordEscalationGcTick, {
+  name: 'coordEscalationGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(coordEscalationGcWorkflow, { name: 'coordEscalationGc', crontab: '0 15 4 * * *' });
 
 // Every 6h: global substrate_outbox backstop GC — sweeps orphaned/old
 // federation-queue rows the per-harness inline GC never reaches. An un-booted or

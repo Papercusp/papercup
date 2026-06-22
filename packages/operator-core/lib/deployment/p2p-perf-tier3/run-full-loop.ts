@@ -180,6 +180,10 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
   const scenario = opts.scenario;
 
   const hiveSlug = opts.hiveSlug ?? 'full-loop-hive';
+  // Synthetic ≥3-Swarm full-loop E2E test-rig scope (siblings 'full-loop-hive' /
+  // 'full-loop-h1') — a self-contained steer→contend→execute→converge scenario over loopback
+  // / ephemeral Hetzner frames that never reads or writes real workspace data, a local default.
+  // allow-scope-default: E2E test-rig local scope, never real workspace data (D-003).
   const workspaceId = opts.workspaceId ?? 'default';
   const harnessSlug = opts.harnessSlug ?? 'full-loop-h1';
   const backlogSize = opts.backlogSize ?? 12;

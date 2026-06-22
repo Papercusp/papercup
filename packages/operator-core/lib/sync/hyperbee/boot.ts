@@ -49,6 +49,7 @@ import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { drainQueuedEpochContent, type DrainedEpoch } from './hive-epoch-op-gate';
+import { PendingMembershipContent } from './pending-membership-content';
 import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
@@ -606,6 +607,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const resolveAuthorDevice = (sourceLogKeyHex: string): string | null =>
     admittedIdentities.get(sourceLogKeyHex)?.devicePubkey ?? null;
 
+  // ── WI-259 P-004 content-before-membership buffer (plan shared-hive-member-content-federation-
+  // 2026-06-20) ── ONE per booted apply loop (stateful across merge passes, like rekeyDeps.pending).
+  // The 6 content projections DEFER into it when the P-002 membership guard would drop a cross-member
+  // op only because the author's hive_members row hasn't federated to this peer yet; the hive_members
+  // projection DRAINS + re-applies on a member apply (the onMemberApplied hook). Inert (stays empty)
+  // for a non-hive harness — the guard returns 'drop' (never 'defer') without a hiveHomeSlug. Threaded
+  // into BOTH scopedApply (the real merge path) AND the global registry below.
+  const pendingMemberContent = new PendingMembershipContent();
+
   const buildScopedApply = (hiveHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
       workspaceId: opts.workspaceId,
@@ -613,6 +623,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       ownLogKeyHex: ownLog.keyHex,
       hiveHomeSlug,
       resolveAuthorDevice,
+      pendingMemberContent,
     });
 
   let hiveHomeProjectionSlug = await resolveHiveHomeProjectionSlug(opts.swarmBinding);
@@ -664,6 +675,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // Drain hook: feed the queue ONLY when the re-key is active (rekeyDeps non-null) — else
     // the hive_epoch_keys projection's onEpochKeyApplied stays undefined (today's behavior).
     ...(rekeyDeps ? { onEpochKeyApplied: recordEpochDrain } : {}),
+    // WI-259 P-004: share the content-before-membership buffer with the global registry too
+    // (same instance as scopedApply's), so a non-Model-B / CLI apply path defers + drains
+    // consistently. Inert for a non-hive harness.
+    pendingMemberContent,
   });
 
   // ── Per-harness scoped projection apply (D-021 collision fix). ──
@@ -1974,6 +1989,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             // Re-wire the drain hook onto the re-registered hive_epoch_keys projection (shared
             // boot-scope epochDrainQueue via recordEpochDrain) when the re-key is now active.
             ...(rekeyDeps ? { onEpochKeyApplied: recordEpochDrain } : {}),
+            // WI-259 P-004: keep the content-before-membership buffer wired on the joiner rebind
+            // (a mid-session join makes this harness a hive member — content may now defer/drain).
+            pendingMemberContent,
           });
         }
       } else if (process.env.PAPERCUSP_A003_TRACE === '1') {

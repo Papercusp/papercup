@@ -2,8 +2,8 @@
  * accounts:link-start / accounts:link-complete — the one-click OAuth add-account flow
  * (accounts-pool-tab-2026-06-15 P-002 / D-016). The agent-surface twin of the
  * /api/admin/deploy-accounts/link-* HTTP routes the SPA calls. Wrappers over
- * deployment/account-link-cli, which DRIVES the real `claude setup-token` CLI in a pty
- * (the CLI does claude.ai's client handshake; a hand-built URL is rejected — D-015).
+ * deployment/account-link-cli, which DRIVES the real provider CLI in a pty
+ * (`claude setup-token` or `codex login --device-auth`).
  * accounts:register (the setup-token paste) remains the manual alternative.
  */
 import { z } from 'zod';
@@ -29,10 +29,11 @@ export const accountsLinkStartTool = defineTool({
   args: z.object({
     id: z.string().min(1).describe('Stable account id (A-Za-z0-9 . _ - only)'),
     label: z.string().min(1).optional().describe('Optional human label'),
+    provider: z.enum(['claude', 'codex']).optional().describe('Provider to link. Defaults to claude.'),
     workspace: z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)'),
   }),
   async handler(args) {
-    return json(await startCliLink({ accountId: args.id, label: args.label }));
+    return json(await startCliLink({ accountId: args.id, label: args.label, provider: args.provider }));
   },
 });
 
@@ -50,7 +51,7 @@ export const accountsLinkCompleteTool = defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     linkId: z.string().min(1).describe('The opaque linkId from accounts:link-start'),
-    code: z.string().min(1).describe('The code claude.ai showed after authorizing (may be `code#state`)'),
+    code: z.string().min(1).optional().describe('The code claude.ai showed after authorizing (may be `code#state`). Not needed for Codex device auth.'),
     workspace: z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)'),
   }),
   async handler(args) {

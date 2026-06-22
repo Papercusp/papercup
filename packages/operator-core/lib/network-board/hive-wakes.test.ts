@@ -32,6 +32,8 @@ function fleetRow(over: Partial<FleetAssignmentRow> = {}): FleetAssignmentRow {
     holderIntent: null,
     holderPlanSlug: null,
     orphaned: false,
+    stalled: null,
+    lastProgressAt: null,
     declaredPlanMatches: null,
     assigneeRank: null,
     rankWriter: null,

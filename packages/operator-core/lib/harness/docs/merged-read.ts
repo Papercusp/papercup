@@ -16,7 +16,7 @@ import { recomputeDocStatus } from './freshness-sweep';
 import { runGit } from './git-runner';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { stringifySubjectRefs, type SubjectRef } from './subject-ref';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
+import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
 export interface MergedDocEntry {
   docId: string;
@@ -99,12 +99,14 @@ export interface BuildMergedDocsOpts {
 
 /** Build the merged docs tree for a harness. */
 export async function buildMergedDocs(harnessSlug: string, opts: BuildMergedDocsOpts = {}): Promise<MergedDocsResult> {
-  const workspaceId = opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const paths = await resolveHarnessDocPaths(harnessSlug);
   if (!paths) {
     return { ok: false, reason: 'unknown_harness', files: [], entries: [], activePath: null, content: null, activeEntry: null };
   }
   const { repoRoot, docsRoot } = paths;
+  // A harness's docs live in its workspace — derive it (never a silent 'default'); the
+  // path check above already validated the harness, so this resolves (P-002 / D-003).
+  const workspaceId = await resolveWorkspaceForHarness(harnessSlug, opts.workspaceId);
 
   const [fsFiles, records] = await Promise.all([
     listDocBodies(docsRoot),

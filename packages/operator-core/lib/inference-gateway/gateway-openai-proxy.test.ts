@@ -53,7 +53,12 @@ async function startUpstream(
     server,
     base: `http://127.0.0.1:${addr.port}`,
     last: state,
-    close: () => new Promise((r) => server.close(() => r())),
+    close: () =>
+      new Promise((r) => {
+        // Destroy any lingering (e.g. deliberately-stalled) connections so close() can't hang the afterEach.
+        (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+        server.close(() => r());
+      }),
   };
 }
 

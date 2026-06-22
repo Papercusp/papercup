@@ -19,7 +19,7 @@ import { runGit, repoHeadSha, repoChangedPaths } from './git-runner';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { sweepHarnessDocs, type SweepResult } from './freshness-sweep';
 import { listDocRecords } from './doc-record';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
+import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
 const DOCS_IDENTITY: AgentIdentity = {
   ownerId: 'system:doc-freshness',
@@ -51,7 +51,10 @@ export interface SweepAfterSyncInput {
  */
 export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput): Promise<SweepResult | null> {
   const { harnessSlug } = input;
-  const workspaceId = input.workspaceId || DEFAULT_WORKSPACE_ID;
+  // A harness's docs live in its workspace — derive it (never a silent 'default'). This
+  // whole sweep is best-effort (the caller swallows any throw), so a derive failure for an
+  // unregistered harness degrades to "no sweep", never a silent cross-workspace read (D-003).
+  const workspaceId = await resolveWorkspaceForHarness(harnessSlug, input.workspaceId);
 
   // Cheap early-out: a harness with no doc records can't have any drift.
   const records = await listDocRecords(harnessSlug, workspaceId);

@@ -142,7 +142,18 @@ export default defineTool({
     const text = Array.isArray(content) ? content[0]?.text : undefined;
     if (typeof text === 'string') {
       try {
-        return Response.json({ via: dispatch.tool, ...JSON.parse(text) });
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        // work_items:release is dual-arity (bulk-endpoint-standardization-2026-06-21
+        // P-002): a single-item dispatch returns the keyed-array envelope
+        // { ok, results:[one], counts }. Flatten the single result back so this
+        // route's response (and the TUI toast it feeds) keeps its { via, ok,
+        // workItem?, error? } shape. plan_items:release is not bulk → spread as-is.
+        const results = parsed.results;
+        const single =
+          Array.isArray(results) && results.length === 1 && parsed.counts && typeof parsed.counts === 'object'
+            ? (results[0] as Record<string, unknown>)
+            : parsed;
+        return Response.json({ via: dispatch.tool, ...single });
       } catch {
         return Response.json({ ok: false, via: dispatch.tool, error: text });
       }

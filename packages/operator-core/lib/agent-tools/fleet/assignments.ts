@@ -18,6 +18,7 @@ import {
   groupByAgent,
   listFleetAssignments,
   orphanedClaims,
+  stalledClaims,
   summarizeOrphan,
 } from '../../fleet/assignments';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
@@ -83,6 +84,10 @@ export default defineTool({
       (g) => args.include_stale || g.claims.length > 0 || g.alive,
     );
     const orphans = orphanedClaims(rows);
+    // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
+    // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
+    // no reader concludes "someone's on it" from a claim that isn't advancing.
+    const stalled = stalledClaims(rows);
     // Summary is computed over the FULL agent set so the counts stay accurate even
     // when the returned `agents` array is bounded below.
     const summary = {
@@ -90,6 +95,7 @@ export default defineTool({
       alive: agents.filter((a) => a.alive).length,
       claims: rows.filter((r) => r.source !== 'presence').length,
       orphaned_claims: orphans.length,
+      stalled_claims: stalled.length,
       declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
       // P-021: total work-item load across live agents (the warm-inject signal).
       work_item_load: agents.reduce((n, a) => n + a.load, 0),
@@ -112,6 +118,8 @@ export default defineTool({
             summary,
             // Abandoned work first — the reason this view is claim-primary.
             orphaned: orphans.map(summarizeOrphan),
+            // Stalled work (live holder, no progress) — also reclaimable, also "not covered".
+            stalled: stalled.map(summarizeOrphan),
             agents: boundedAgents,
             ...(agentsTruncated
               ? {

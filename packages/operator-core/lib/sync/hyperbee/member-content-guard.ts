@@ -45,26 +45,37 @@ export interface MemberContentGuardOpts {
 }
 
 /**
- * Should this op be applied to THIS harness's content projection?
- *   - own-slug op (rowHarnessSlug === harnessSlug) → ALWAYS apply (unchanged behavior), else
- *   - cross-member op → apply iff this harness is in a hive (hiveHomeSlug set) AND the op's
- *     VERIFIED source-log device pubkey ∈ the hive's CURRENT member device set; else DROP.
+ * The 3-way apply decision for a content op (WI-259 P-002 + P-004):
+ *   - `'apply'` — own-slug op (ALWAYS), or a cross-member op whose author IS a current member.
+ *   - `'drop'`  — a cross-slug op with NO membership grounds: a non-hive harness (no members to
+ *                 admit from), or a cross-member op with no VERIFIED source-log identity (can't
+ *                 confirm membership → fail-closed). These are dropped for good — NOT deferrable
+ *                 (no author identity to wait on / no hive at all).
+ *   - `'defer'` — a cross-member op whose author IS identified (source-log device resolved) but is
+ *                 not YET in the current member set. This is the P-004 content-before-membership
+ *                 race: the author may be a member whose `hive_members` row hasn't federated to
+ *                 this peer yet, so the op is buffered (PendingMembershipContent) keyed on the
+ *                 author device and re-applied when that member joins — rather than lost. A genuine
+ *                 non-member's op also lands here, but the buffer's TTL evicts it (D-007 point 2).
  *
- * The own-slug fast path takes ZERO async work (the common case — a harness applying its own
- * ops), so the member-set resolve only runs for genuinely cross-member ops.
+ * The own-slug fast path takes ZERO async work (the common case — a harness applying its own ops),
+ * so the member-set resolve only runs for genuinely cross-member ops.
  */
-export async function shouldApplyMemberContentOp(
+export type MemberContentDecision = 'apply' | 'drop' | 'defer';
+
+export async function decideMemberContentOp(
   rowHarnessSlug: string,
   opts: MemberContentGuardOpts,
   sourceLogDevicePubkey: string | null | undefined,
   deps?: MemberDeviceSetDeps,
-): Promise<boolean> {
+): Promise<MemberContentDecision> {
   // Own slug — apply (today's behavior; no membership work on the hot common path).
-  if (rowHarnessSlug === opts.harnessSlug) return true;
-  // Cross-slug op on a NON-hive harness — there are no members to admit from → drop.
-  if (!opts.hiveHomeSlug) return false;
-  // Cross-member op with no VERIFIED source-log identity — cannot confirm membership → drop (fail-closed).
-  if (!sourceLogDevicePubkey) return false;
+  if (rowHarnessSlug === opts.harnessSlug) return 'apply';
+  // Cross-slug op on a NON-hive harness — there are no members to admit from → drop (not deferrable).
+  if (!opts.hiveHomeSlug) return 'drop';
+  // Cross-member op with no VERIFIED source-log identity — cannot confirm membership, and there is
+  // no author identity to key a deferral on → drop (fail-closed).
+  if (!sourceLogDevicePubkey) return 'drop';
   // Membership lives in `harness_shared.hive_members` — WORKSPACE-shared, NOT per-harness content.
   // Read it from the workspace source (getOrgPg, sql omitted), the SAME seam STEP 1 admission uses
   // (boot.ts onAnnounce → resolveHiveMemberDeviceSet with no sql). Do NOT pass `opts.sql`: that is the
@@ -72,5 +83,23 @@ export async function shouldApplyMemberContentOp(
   // coincides with the workspace PG in production but diverges under a per-peer test topology. Passing
   // it sent the membership read at a content DB with no `hive_members` table (WI-259 close-gate repro).
   const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.hiveHomeSlug, undefined, deps);
-  return memberSet.has(sourceLogDevicePubkey);
+  // Member NOW → apply. Author identified but not yet a member → DEFER (P-004): the member row may
+  // simply not have federated to this peer yet (content-before-membership ordering).
+  return memberSet.has(sourceLogDevicePubkey) ? 'apply' : 'defer';
+}
+
+/**
+ * Should this op be applied to THIS harness's content projection? Thin wrapper over
+ * `decideMemberContentOp` (`=== 'apply'`) — the legacy boolean seam the projections used before
+ * P-004 introduced the defer branch. Kept for callers that don't buffer (and for the guard's own
+ * unit tests). A projection that wires a PendingMembershipContent buffer uses the 3-way decision
+ * directly so it can DEFER rather than drop the membership-not-yet-federated case.
+ */
+export async function shouldApplyMemberContentOp(
+  rowHarnessSlug: string,
+  opts: MemberContentGuardOpts,
+  sourceLogDevicePubkey: string | null | undefined,
+  deps?: MemberDeviceSetDeps,
+): Promise<boolean> {
+  return (await decideMemberContentOp(rowHarnessSlug, opts, sourceLogDevicePubkey, deps)) === 'apply';
 }

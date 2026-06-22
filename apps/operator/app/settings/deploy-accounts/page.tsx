@@ -86,6 +86,7 @@ export default function DeployAccountsPage() {
   const [provider, setProvider] = useState<'claude' | 'codex'>('claude');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [linkId, setLinkId] = useState<string | null>(null);
+  const [userCode, setUserCode] = useState<string | null>(null);
   const [code, setCode] = useState('');
 
   const refresh = useCallback(async () => {
@@ -124,6 +125,7 @@ export default function DeployAccountsPage() {
     setAddError(null);
     setAuthorizeUrl(null);
     setLinkId(null);
+    setUserCode(null);
     setCode('');
     setProvider('claude');
   }, [setAddOpen, setAccountId, setLabel]);
@@ -159,7 +161,7 @@ export default function DeployAccountsPage() {
     }
   }, [accountId, label, provider, value, resetForm, refresh]);
 
-  // OAuth mode step A: generate the claude.ai authorize URL (verifier kept server-side under linkId).
+  // OAuth mode step A: start the provider CLI and capture its browser-login URL.
   const startOAuth = useCallback(async () => {
     setAddError(null);
     if (!/^[A-Za-z0-9._-]+$/.test(accountId)) {
@@ -171,28 +173,29 @@ export default function DeployAccountsPage() {
       const r = await fetch('/api/admin/deploy-accounts/link-start', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountId, label: label || undefined }),
+        body: JSON.stringify({ accountId, label: label || undefined, provider }),
       });
       const j = await r.json();
       if (r.status === 404) throw new Error('OAuth linking isn’t available on this build yet — use “Paste a setup-token”.');
       if (!j.ok || !j.authorizeUrl || !j.linkId) throw new Error(j.error || 'could not start the OAuth link');
       setAuthorizeUrl(j.authorizeUrl as string);
       setLinkId(j.linkId as string);
+      setUserCode(typeof j.userCode === 'string' ? j.userCode : null);
     } catch (e) {
       setAddError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [accountId, label]);
+  }, [accountId, label, provider]);
 
-  // OAuth mode step B: exchange the pasted code → write credential → register (token stays server-side).
+  // OAuth mode step B: finish the held provider CLI and register the server-side credential.
   const completeOAuth = useCallback(async () => {
     setAddError(null);
     if (!linkId) {
       setAddError('Generate the authorize link first.');
       return;
     }
-    if (!code.trim()) {
+    if (provider === 'claude' && !code.trim()) {
       setAddError('Paste the code claude.ai showed you after you approved.');
       return;
     }
@@ -201,19 +204,19 @@ export default function DeployAccountsPage() {
       const r = await fetch('/api/admin/deploy-accounts/link-complete', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ linkId, code: code.trim() }),
+        body: JSON.stringify({ linkId, ...(code.trim() ? { code: code.trim() } : {}) }),
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'link failed');
       resetForm();
-      toast.success(`Max account "${accountId}" linked via OAuth`);
+      toast.success(`${providerLabel(provider)} account "${accountId}" linked via browser login`);
       await refresh();
     } catch (e) {
       setAddError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [linkId, code, accountId, resetForm, refresh]);
+  }, [linkId, code, provider, accountId, resetForm, refresh]);
 
   const remove = useCallback(
     async (id: string) => {
@@ -235,7 +238,8 @@ export default function DeployAccountsPage() {
   );
 
   const command = setupTokenCommand(accountId);
-  const activeLinkMode = provider === 'codex' ? 'token' : linkMode;
+  const activeLinkMode = linkMode;
+  const oauthProviderName = providerLabel(provider);
   const copyCommand = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(command);
@@ -263,7 +267,7 @@ export default function DeployAccountsPage() {
     !accountId ||
     (activeLinkMode === 'oauth'
       ? authorizeUrl
-        ? !code.trim()
+        ? provider === 'claude' && !code.trim()
         : false
       : !value.trim());
   const formStatus = addError
@@ -272,11 +276,13 @@ export default function DeployAccountsPage() {
       ? 'Saving changes...'
       : activeLinkMode === 'oauth'
         ? authorizeUrl
-          ? code.trim()
-            ? 'Ready to complete the link.'
-            : 'Paste the approval code to continue.'
+          ? provider === 'codex'
+            ? 'Enter the device code in the browser, then complete the link.'
+            : code.trim()
+              ? 'Ready to complete the link.'
+              : 'Paste the approval code to continue.'
           : accountId
-            ? 'Ready to generate the authorize link.'
+            ? `Ready to start the ${oauthProviderName} browser login.`
             : 'Enter an account ID to continue.'
         : value.trim()
           ? 'Ready to link this account.'
@@ -316,6 +322,10 @@ export default function DeployAccountsPage() {
                 setProvider('claude');
                 setAddError(null);
                 setValue('');
+                setAuthorizeUrl(null);
+                setLinkId(null);
+                setUserCode(null);
+                setCode('');
               }}
             >
               Claude
@@ -327,9 +337,10 @@ export default function DeployAccountsPage() {
               className={`pc-da__mode${provider === 'codex' ? ' is-active' : ''}`}
               onClick={() => {
                 setProvider('codex');
-                setLinkMode('token');
+                setLinkMode('oauth');
                 setAuthorizeUrl(null);
                 setLinkId(null);
+                setUserCode(null);
                 setCode('');
                 setValue('');
                 setAddError(null);
@@ -339,7 +350,7 @@ export default function DeployAccountsPage() {
             </button>
           </div>
 
-          {provider === 'claude' && <div className="pc-da__modes" role="tablist">
+          <div className="pc-da__modes" role="tablist">
             <button
               type="button"
               role="tab"
@@ -362,9 +373,9 @@ export default function DeployAccountsPage() {
                 setAddError(null);
               }}
             >
-              Paste a setup-token
+              {provider === 'codex' ? 'Paste a bearer token' : 'Paste a setup-token'}
             </button>
-          </div>}
+          </div>
 
           <label className="pc-da__field">
             <span>1 · Account ID</span>
@@ -379,19 +390,31 @@ export default function DeployAccountsPage() {
             !authorizeUrl ? (
               <div className="pc-da__step">
                 <p className="pc-da__step-hint">
-                  2 · We'll start a Claude login for this account and give you a link (this runs the real{' '}
-                  <code>claude setup-token</code> handshake on the server, so claude.ai accepts it). Open the link signed in
-                  as the <strong>TARGET Max account</strong>, approve, then paste the code claude shows you. The token is
-                  written server-side and never returned to the browser.
+                  {provider === 'codex' ? (
+                    <>
+                      2 · We'll start a Codex device login for this account and show you the OpenAI device code.
+                      Open the link signed in as the <strong>target ChatGPT/Codex account</strong>, enter the code,
+                      then complete the link. The credential is written server-side and never returned to the browser.
+                    </>
+                  ) : (
+                    <>
+                      2 · We'll start a Claude login for this account and give you a link (this runs the real{' '}
+                      <code>claude setup-token</code> handshake on the server, so claude.ai accepts it). Open the link signed in
+                      as the <strong>TARGET Max account</strong>, approve, then paste the code claude shows you. The token is
+                      written server-side and never returned to the browser.
+                    </>
+                  )}
                 </p>
               </div>
             ) : (
               <>
                 <div className="pc-da__step">
-                  <span className="pc-da__step-label">2 · Open &amp; approve (signed in as the target Max account)</span>
+                  <span className="pc-da__step-label">
+                    2 · Open &amp; approve (signed in as the target {provider === 'codex' ? 'Codex account' : 'Max account'})
+                  </span>
                   <div className="pc-da__cmd">
                     <a className="pc-da__authlink" href={authorizeUrl} target="_blank" rel="noreferrer">
-                      ↗ open the claude.ai authorize page
+                      ↗ open the {provider === 'codex' ? 'OpenAI device login page' : 'claude.ai authorize page'}
                     </a>
                     <button
                       type="button"
@@ -401,11 +424,32 @@ export default function DeployAccountsPage() {
                       Copy link
                     </button>
                   </div>
+                  {provider === 'codex' && userCode && (
+                    <div className="pc-da__cmd">
+                      <code>{userCode}</code>
+                      <button
+                        type="button"
+                        className="pc-da__btn pc-da__btn--ghost pc-da__copy"
+                        onClick={() => void navigator.clipboard?.writeText(userCode)}
+                      >
+                        Copy code
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <label className="pc-da__field">
-                  <span>3 · Paste the code claude.ai shows you</span>
-                  <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="code#state" />
-                </label>
+                {provider === 'claude' ? (
+                  <label className="pc-da__field">
+                    <span>3 · Paste the code claude.ai shows you</span>
+                    <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="code#state" />
+                  </label>
+                ) : (
+                  <div className="pc-da__step">
+                    <span className="pc-da__step-label">3 · Complete after the browser confirms login</span>
+                    <p className="pc-da__step-hint">
+                      Codex polls the device login in the held CLI process. When the browser says the login is complete, click Complete link.
+                    </p>
+                  </div>
+                )}
               </>
             )
           ) : (

@@ -14,7 +14,7 @@ import { readDocBody } from './doc-fs';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { parseDocumentsField, resolveAllAnchorPaths, type SubjectRef } from './subject-ref';
 import { upsertDocRecord, getDocRecord, verifyDoc, type HarnessDocRecord } from './doc-record';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
+import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
 /** Extract the raw `documents:` value from a markdown body's YAML frontmatter. */
 export function frontmatterDocuments(body: string): unknown {
@@ -90,13 +90,15 @@ export type AnchorResult =
  * 'untracked' (visibly not drift-tracked).
  */
 export async function anchorManualDoc(input: AnchorManualDocInput): Promise<AnchorResult> {
-  const workspaceId = input.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const docId = input.docId.trim().replace(/^\.?\//, '');
   if (!docId) return { ok: false, error: 'doc_id_required' };
 
   const paths = await resolveHarnessDocPaths(input.harnessSlug);
   if (!paths) return { ok: false, error: 'unknown_harness' };
   const { repoRoot, docsRoot } = paths;
+  // A harness's docs live in its workspace — derive it (never a silent 'default'); the
+  // path check above already validated the harness, so this resolves (P-002 / D-003).
+  const workspaceId = await resolveWorkspaceForHarness(input.harnessSlug, input.workspaceId);
 
   let documents = input.documents;
   if (documents == null) {
@@ -141,16 +143,19 @@ export async function anchorManualDoc(input: AnchorManualDocInput): Promise<Anch
 export async function verifyManualDoc(
   harnessSlug: string,
   docId: string,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<{ ok: true; verifiedSha: string } | { ok: false; error: string }> {
   const id = docId.trim().replace(/^\.?\//, '');
+  // Validate the harness FIRST (returns unknown_harness), then derive its workspace — never
+  // a silent 'default' for an omitted scope (P-002 / D-003).
+  const paths = await resolveHarnessDocPaths(harnessSlug);
+  if (!paths) return { ok: false, error: 'unknown_harness' };
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const existing = await getDocRecord(harnessSlug, id, workspaceId);
   if (!existing) return { ok: false, error: 'unknown_doc' };
   if (!existing.subjectRef || existing.subjectRef.length === 0) {
     return { ok: false, error: 'unanchored — declare documents: before verifying' };
   }
-  const paths = await resolveHarnessDocPaths(harnessSlug);
-  if (!paths) return { ok: false, error: 'unknown_harness' };
   const head = await repoHeadSha(paths.repoRoot);
   if (!head) return { ok: false, error: 'no_head_sha' };
   await verifyDoc(harnessSlug, id, head, workspaceId);
