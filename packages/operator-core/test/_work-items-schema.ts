@@ -110,8 +110,18 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   DROP VIEW IF EXISTS harness_shared.harness_features_consolidated;
   CREATE VIEW harness_shared.harness_features_consolidated AS
     SELECT * FROM harness_shared.work_items WHERE item_kind NOT IN ('bug', 'change', 'task');
-  DROP TABLE IF EXISTS harness_shared.engineer_issues CASCADE;
-  DROP VIEW IF EXISTS harness_shared.engineer_issues;
+  DO $eidrop$ BEGIN
+    -- Drop engineer_issues whether it is a leftover TABLE (mig 131) or a prior VIEW
+    -- (idempotent re-application): DROP TABLE IF EXISTS errors on a view and vice-versa,
+    -- so branch on relkind.
+    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'harness_shared' AND c.relname = 'engineer_issues') THEN
+      EXECUTE (SELECT CASE WHEN c.relkind = 'v' THEN 'DROP VIEW' ELSE 'DROP TABLE' END
+               || ' harness_shared.engineer_issues CASCADE'
+               FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'harness_shared' AND c.relname = 'engineer_issues');
+    END IF;
+  END $eidrop$;
   CREATE VIEW harness_shared.engineer_issues AS
     SELECT
       workspace_id,

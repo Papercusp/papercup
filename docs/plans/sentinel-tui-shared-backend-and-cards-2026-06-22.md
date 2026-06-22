@@ -4,6 +4,16 @@
 
 > This plan is grounded in a read of the old code (how it worked) and the current wiring. File:line refs included so the next engineer can trace it.
 
+> **⚠ SUPERSEDED (2026-06-22, same day).** This plan made the Sentinel =
+> `operator:converse` (a lighter brain) rendered in the webview + the `apps/tui`
+> ratatui. After driving the live zellij dock we found the owner's actual Sentinel
+> is the **`psu --agent=claude` Claude-Code pane**, and the owner directed it to
+> become a **full Claude TUI**. The Phase-1 (voice→`operator:converse`) and Phase-2
+> (ratatui cards) work shipped here targeted the **wrong surfaces**. The live
+> redesign is now **[sentinel-as-claude-tui-2026-06-22](./sentinel-as-claude-tui-2026-06-22.md)**.
+> Kept for history + the reusable bits (voice runtime, server card machinery, the
+> already-shipped UI changes).
+
 ---
 
 ## Status & active work (owner-directed, 2026-06-22)

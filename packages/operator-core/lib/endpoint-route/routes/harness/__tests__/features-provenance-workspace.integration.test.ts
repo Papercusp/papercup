@@ -19,7 +19,8 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { withTestSchema } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../../../test/_work-items-schema';
 import { updateFeatureProvenance } from '../features';
 
 const SLUG = `ei124-${randomBytes(4).toString('hex')}`;
@@ -32,24 +33,22 @@ const OTHER_WS = `ws-other-${randomBytes(3).toString('hex')}`;
 let sql: ReturnType<typeof postgres>;
 
 beforeAll(async () => {
-  const { connectionUri } = await withTestSchema();
-  sql = postgres(connectionUri, { onnotice: () => {} });
-  // Minimal consolidated table matching the real PRIMARY KEY (harness_slug,
-  // feature_id). IF NOT EXISTS so we co-exist with the full table another
-  // integration file may have already created in the shared container.
+  // Isolated DB (P-010: the unified helper DROP/CREATEs harness_shared objects, so it must
+  // not share the container's default schema with concurrent test files).
+  const adminUri = await getTestPg();
+  const dbName = `feat_prov_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  sql = postgres(u.toString(), { onnotice: () => {} });
   await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
-  await sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-      harness_slug text NOT NULL,
-      feature_id   text NOT NULL,
-      title text, status text,
-      workspace_id text NOT NULL,
-      source_plan_slug text,
-      source_plan_item_ids text[],
-      wave text,
-      PRIMARY KEY (harness_slug, feature_id)
-    )
-  `);
+  // P-010 unification: work_items base + hfc/ei compat views.
+  await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   // Seed one feature for our harness, in HARNESS_WS, with NO provenance yet —
   // exactly the post-base-insert state the import route writes.
   await sql`

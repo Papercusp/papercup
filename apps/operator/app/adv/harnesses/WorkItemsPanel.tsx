@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useEffect, useMemo, type CSSProperties } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSyncQuery } from '@papercusp/sync';
-import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
+import { readListTotal, listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { IssueStatusPill, KindPill, SeverityPill, StatusPill } from '../../harness/primitives';

@@ -4,6 +4,12 @@ description: "A standalone (non-corestore) hyperswarm transport — directory-sw
 discovered: 2026-06-09
 tags: [hyperswarm, dht, protomux, discovery, federation, hive-directory, cross-hive, substrate, transport, finding]
 status: active
+documents:
+  - packages/operator-core/lib/sync/hyperbee/directory-swarm.ts
+  - packages/operator-core/lib/cross-hive-transport.ts
+  - papercusp-desktop/bin/two-instance-hive-directory-smoke.sh
+plans:
+  - p2p-hive-directory-2026-06-06
 sidebar:
   order: 71
 ---
@@ -45,7 +51,7 @@ The corestore path (`joinHarnessSwarm` + `corestore.replicate`) still connects i
 ~525ms with `void discovery.flushed()` — only **standalone** transports are
 affected. Both standalone transports now run the refresh loop:
 `directory-swarm.ts` (`DEFAULT_REFRESH_MS = 2500`) and
-`cross-hive-swarm-transport.ts` (`refreshAll()` — its live test went from a 180s
+`cross-hive-transport.ts` (`refreshAll()` — its live test went from a 180s
 timeout to passing in ~700ms). An earlier memory/comment claimed `swarm.flush()`
 was the proven standalone driver and `discovery.flushed()` "poisons" it — that
 account is **superseded**; don't resurrect either driver.

@@ -1,6 +1,13 @@
 ---
 title: Per-turn token usage in claude stream-json lives in message_delta, not assistant events
 description: assistant events' message.usage is an early-stream snapshot (single-digit output_tokens); the real cumulative per-message usage arrives on the stream_event message_delta — burn analysis over assistant events alone under-counts ~100×.
+discovered: 2026-06-12
+status: active
+documents:
+  - packages/operator-core/lib/replay/regret/transcript-core.ts
+  - packages/operator-core/lib/harness-agent-runs.ts
+plans:
+  - self-learning-frontier-2026-06-12
 ---
 
 **The trap.** Parsing a persisted agent stream
@@ -39,6 +46,6 @@ self-learning-frontier P-021).
 
 **Scope.** This is about **per-turn** attribution. For a run's **total**
 usage, keep using the terminal `result` event (`total_cost_usd`, `usage`) —
-that is what `cost-cap.ts extractRunUsage` already does, and it is correct.
+that is what `harness-agent-runs.ts extractRunUsage` already does, and it is correct.
 The gap only bites code that needs the burn **timeline** (fleet EKG
 embeddings, regret-mining inflection turns, any per-turn pacing feature).

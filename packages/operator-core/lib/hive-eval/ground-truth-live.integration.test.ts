@@ -13,6 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { makeLiveGroundTruthDeps, liveGroundTruthPortsFromSql } from './ground-truth-live';
 import { collectGroundTruth, type GroundTruthCtx, type ObservedCommit } from './ground-truth';
 import { detectFabrication } from './outcome-metrics';
@@ -38,17 +39,9 @@ describe('live ground-truth reads (P-062, synthetic hive rows)', () => {
     u.pathname = `/${dbName}`;
     sql = postgres(u.toString(), { max: 4, onnotice: () => {} });
     await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
-    // Minimal stubs of the real tables — only the columns the live reads query.
+    // P-010 unification: work_items base + hfc/ei compat views (replaces the hfc stub).
+    await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     await sql.unsafe(`
-      CREATE TABLE harness_shared.harness_features_consolidated (
-        workspace_id text NOT NULL,
-        harness_slug text NOT NULL,
-        feature_id text NOT NULL,
-        status text,
-        verifier_last_error text,
-        audit_reasons text,
-        PRIMARY KEY (harness_slug, feature_id)
-      );
       CREATE TABLE harness_shared.spawned_agents (
         spawn_id text PRIMARY KEY,
         workspace_id text NOT NULL,

@@ -1,6 +1,15 @@
 ---
 title: fumadocs → Starlight migration (2026-05-20)
 description: What changed when we swapped fumadocs (Next-coupled) for Starlight (Astro, static HTML served from public/). Read this before touching apps/operator-docs/, packages/docs-engine/, or the MCP docs:* tool surface. (Update — the serving host is now the Hono host's bin/host-docs.ts, not Next; Next is retired.)
+discovered: 2026-05-20
+status: active
+documents:
+  - apps/operator/bin/host-docs.ts
+  - packages/docs-engine/src/adapters/starlight.ts
+  - apps/operator-docs/scripts/emit-md-twins.ts
+  - apps/operator-docs/astro.config.mjs
+plans:
+  - fumadocs-to-starlight-2026-05-20
 sidebar:
   order: 50
 ---
