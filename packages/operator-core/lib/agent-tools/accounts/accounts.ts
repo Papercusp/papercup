@@ -1,9 +1,9 @@
 /**
- * accounts:* — manage the Queen's pool of Claude accounts + inspect each account's
+ * accounts:* — manage the Queen's pool of provider accounts + inspect each account's
  * rate-limit headroom, and manually trigger a scale-out (`cloud-deployment-layer-2026-06-06`
  * Phase 7, P-019/P-020/P-021). Thin MCP surface over `lib/deployment/account-pool*`.
  *
- * An account = one Claude subscription (its own rate limits). Deploy-time selection
+ * A Claude account = one Claude subscription (its own rate limits). Deploy-time selection
  * (deploy:harness / deploy:hive) binds the most-available account per Swarm; sustained
  * limiting on a bound account auto-scales out onto a fresh one. These tools register
  * the pool, read its state, and give the owner a manual scale-out lever.
@@ -25,7 +25,7 @@ const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to t
 export default defineTool({
   name: 'accounts:register',
   description:
-    "Register (or update) a Claude Max subscription in the Queen's account pool. `credentialRef` is a Claude Max OAuth credential — `token:<path>` (a `claude setup-token`) | `file:<path>` / absolute / `~` (a refreshable `.credentials.json` bundle) — a REFERENCE, never the secret. There is NO static-API-key channel (this deployment runs on Max subscriptions, not billed API keys). Optional `egress` pins the account to its own outbound IP (per-account IP routing). Re-registering an existing id updates credentialRef/label/egress, preserving bindings + rate state. Returns {ok, account}.",
+    "Register (or update) a provider account in the pool. `provider:'claude'` (default) uses a Claude Max OAuth credential: `token:<path>` (`claude setup-token`) | `file:<path>` / absolute / `~` (`.credentials.json`). `provider:'codex'` uses a bearer credential for the Codex/OpenAI-compatible gateway: `token:<path>` or `env:NAME`. Credential refs are references, never the secret. Optional `egress` pins the account to its own outbound IP. Re-registering an existing id updates credentialRef/provider/label/egress, preserving bindings + rate state. Returns {ok, account}.",
   guidance: {
     when: 'Adding a Claude Max subscription the Queen can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.',
     notWhen: 'Setting the operator API key (operator:credentials). A one-off local run (no deploy).',
@@ -36,7 +36,8 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     id: z.string().min(1).describe('Stable account id (A-Za-z0-9 . _ - only; becomes part of the rate-bucket key)'),
-    credentialRef: z.string().min(1).describe('Claude Max OAuth credential: token:<path> (a claude setup-token) | file:<path> | absolute/~ path to a .credentials.json bundle'),
+    provider: z.enum(['claude', 'codex']).optional().describe("Provider for this account. Defaults to 'claude'."),
+    credentialRef: z.string().min(1).describe('Credential reference. Claude: token:<path> | file:<path> | absolute/~ .credentials.json. Codex: token:<path> or env:NAME bearer credential.'),
     label: z.string().min(1).optional().describe('Optional human label'),
     egress: z
       .object({
@@ -53,7 +54,7 @@ export default defineTool({
     const ws = args.workspace ?? activeWorkspaceId();
     try {
       const pool = await loadAccountPool(ws);
-      const next = registerAccount(pool, { id: args.id, credentialRef: args.credentialRef, label: args.label, egress: args.egress }, Date.now());
+      const next = registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress }, Date.now());
       await saveAccountPool(next, ws);
       return ok({ account: getAccount(next, args.id) });
     } catch (e) {

@@ -26,9 +26,12 @@ import {
   type AccountEgress,
   type AccountPool,
   type AccountRateState,
+  type AccountProvider,
   type ScalePolicy,
   type SpawnSelection,
   accountFull,
+  accountProvider,
+  accountsForProvider,
   bindAccount,
   clearSoftPin,
   decideScaleOut,
@@ -78,6 +81,10 @@ async function readAccountOverride(ws: string | undefined): Promise<AccountSessi
 export async function loadAccountPool(ws?: string): Promise<AccountPool> {
   const raw = await readOperatorState<AccountPool>('operator_account_pool', ws);
   return { accounts: raw?.accounts ?? [] };
+}
+
+export async function loadAccountPoolForProvider(provider: AccountProvider, ws?: string): Promise<AccountPool> {
+  return { accounts: accountsForProvider(await loadAccountPool(ws), provider) };
 }
 
 export async function saveAccountPool(pool: AccountPool, ws?: string): Promise<void> {
@@ -137,6 +144,7 @@ export async function selectSpawnAccount(
 ): Promise<string | undefined> {
   const pool = await loadAccountPool(ws).catch(() => null);
   if (!pool) return undefined;
+  const claudePool = { accounts: accountsForProvider(pool, 'claude') };
   const now = Date.now();
   // P-004: apply the owner's session-now override BEFORE selection (fail-soft, no-op when
   // unset). A `forced` allow-list restricts the candidates; `exclude` skips some. An
@@ -145,7 +153,7 @@ export async function selectSpawnAccount(
   const override = await readAccountOverride(ws);
   if (!isOverrideEmpty(override)) {
     const allowed = applyAccountOverride(
-      pool.accounts.map((a) => a.id),
+      claudePool.accounts.map((a) => a.id),
       override,
     );
     if (allowed.length === 0) return undefined;
@@ -153,15 +161,15 @@ export async function selectSpawnAccount(
     // pin it (the owner's explicit choice; pause/failover is handled downstream).
     if (allowed.length === 1) return allowed[0];
     const allow = new Set(allowed);
-    const sel = selectAccountForSpawn({ accounts: pool.accounts.filter((a) => allow.has(a.id)) }, now, {
+    const sel = selectAccountForSpawn({ accounts: claudePool.accounts.filter((a) => allow.has(a.id)) }, now, {
       harness,
       priorAccountId,
     });
     return resolveSelection(ws, sel, now);
   }
   // No override → today's exact path: no routing needed for ≤1 account.
-  if (pool.accounts.length <= 1) return undefined;
-  const sel = selectAccountForSpawn(pool, now, { harness, priorAccountId });
+  if (claudePool.accounts.length <= 1) return undefined;
+  const sel = selectAccountForSpawn(claudePool, now, { harness, priorAccountId });
   return resolveSelection(ws, sel, now);
 }
 
@@ -184,8 +192,10 @@ async function resolveSelection(ws: string | undefined, sel: SpawnSelection, now
  */
 export async function accountRoutingExhausted(ws?: string, now = Date.now()): Promise<boolean> {
   const pool = await loadAccountPool(ws).catch(() => null);
-  if (!pool || pool.accounts.length <= 1) return false;
-  return isClassExhausted(pool, now);
+  if (!pool) return false;
+  const claudePool = { accounts: accountsForProvider(pool, 'claude') };
+  if (claudePool.accounts.length <= 1) return false;
+  return isClassExhausted(claudePool, now);
 }
 
 /**
@@ -205,7 +215,7 @@ export async function evaluateOpusBudgetForSpawn(
   if (!pool) {
     return { aggregateUtil: null, headroom: null, zone: 'headroom', downgrade: false, pace: false, reason: 'opus budget: pool unreadable — admit (fail-soft)' };
   }
-  return evaluateOpusBudget({ pool, criticality, now, policy: await readOpusBudgetPolicy() });
+  return evaluateOpusBudget({ pool: { accounts: accountsForProvider(pool, 'claude') }, criticality, now, policy: await readOpusBudgetPolicy() });
 }
 
 /**
@@ -266,13 +276,14 @@ export async function selectAccountForDeploy(
   if (deployment.credentialRef) return deployment; // explicit pin wins
   const now = deps.now?.() ?? Date.now();
   const pool = await deps.loadPool(ws);
+  const claudePool = { accounts: accountsForProvider(pool, 'claude') };
   // P-004: restrict deploy-time binding to the owner's session-now override (fail-soft,
   // no-op when unset). If the override leaves no candidate, `chosen` is undefined → the
   // deployment is returned unchanged (frame-default credential), exactly as an empty pool.
   const override = await readAccountOverride(ws);
   const candidatePool = isOverrideEmpty(override)
-    ? pool
-    : { accounts: pool.accounts.filter((a) => applyAccountOverride([a.id], override).length > 0) };
+    ? claudePool
+    : { accounts: claudePool.accounts.filter((a) => applyAccountOverride([a.id], override).length > 0) };
   const chosen = selectAccountByHeadroom(candidatePool, now, { preferUnbound: true });
   if (!chosen) {
     deps.log?.('info', `[accounts] pool has no available account — '${slug}' deploys on the frame default credential`);
@@ -502,6 +513,7 @@ export function _resetAccountScaleObserver(): void {
 
 export interface AccountStatusRow {
   id: string;
+  provider: AccountProvider;
   label?: string;
   credentialRef: string;
   boundTo: string[];
@@ -521,6 +533,7 @@ export async function accountStatus(ws?: string, now = Date.now()): Promise<Acco
   const scalePolicy = await readScalePolicy();
   return pool.accounts.map((a) => ({
     id: a.id,
+    provider: accountProvider(a),
     label: a.label,
     credentialRef: a.credentialRef,
     boundTo: a.boundTo,

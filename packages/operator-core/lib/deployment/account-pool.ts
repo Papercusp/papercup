@@ -38,8 +38,20 @@ export interface AccountEgress {
   localAddress?: string;
 }
 
-/** One Claude subscription the Queen can draw from. */
+export const ACCOUNT_PROVIDERS = ['claude', 'codex'] as const;
+export type AccountProvider = (typeof ACCOUNT_PROVIDERS)[number];
+
+export function normalizeAccountProvider(provider: unknown): AccountProvider {
+  return provider === 'codex' ? 'codex' : 'claude';
+}
+
+/** One provider account the operator can draw from. Legacy rows without `provider` are Claude. */
 export interface ClaudeAccount {
+  /**
+   * Provider this account authenticates. Omitted legacy rows are treated as `claude`.
+   * `codex` accounts are routed only through Codex/OpenAI-compatible gateway paths.
+   */
+  provider?: AccountProvider;
   /**
    * Stable id within the pool. Validated to `[A-Za-z0-9._-]+` — it becomes part of
    * the governor bucket key (`<provider>:<modelClass>@<id>`), so it must not contain
@@ -157,6 +169,22 @@ export function getAccount(pool: AccountPool, id: string): ClaudeAccount | undef
   return pool.accounts.find((a) => a.id === id);
 }
 
+export function accountProvider(account: Pick<ClaudeAccount, 'provider'>): AccountProvider {
+  return normalizeAccountProvider(account.provider);
+}
+
+export function accountsForProvider(pool: AccountPool, provider: AccountProvider): ClaudeAccount[] {
+  return pool.accounts.filter((a) => accountProvider(a) === provider);
+}
+
+export function accountIdsForProvider(pool: AccountPool, provider: AccountProvider): string[] {
+  return accountsForProvider(pool, provider).map((a) => a.id);
+}
+
+export function poolForProvider(pool: AccountPool, provider: AccountProvider): AccountPool {
+  return { accounts: accountsForProvider(pool, provider) };
+}
+
 /** Find the account a given credentialRef belongs to (reverse lookup). */
 export function accountByCredentialRef(pool: AccountPool, credentialRef: string): ClaudeAccount | undefined {
   return pool.accounts.find((a) => a.credentialRef === credentialRef);
@@ -169,7 +197,7 @@ export function accountByCredentialRef(pool: AccountPool, credentialRef: string)
  */
 export function registerAccount(
   pool: AccountPool,
-  input: { id: string; credentialRef: string; label?: string; egress?: AccountEgress },
+  input: { id: string; credentialRef: string; label?: string; egress?: AccountEgress; provider?: AccountProvider },
   now: number,
 ): AccountPool {
   const id = input.id.trim();
@@ -179,14 +207,19 @@ export function registerAccount(
   const credentialRef = input.credentialRef.trim();
   if (!credentialRef) throw new AccountPoolError('credentialRef is required');
 
+  const provider = normalizeAccountProvider(input.provider);
+
   if (getAccount(pool, id)) {
     return {
       accounts: pool.accounts.map((a) =>
-        a.id === id ? { ...a, credentialRef, label: input.label ?? a.label, egress: input.egress ?? a.egress } : a,
+        a.id === id
+          ? { ...a, provider, credentialRef, label: input.label ?? a.label, egress: input.egress ?? a.egress }
+          : a,
       ),
     };
   }
   const account: ClaudeAccount = {
+    provider,
     id,
     credentialRef,
     label: input.label,

@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -660,7 +660,10 @@ export const GATEWAY_ACCOUNT_HEADER = 'x-papercusp-account';
  * The fresh-launch path gets this folded by the bootstrap-su POST; the RESUME path (no POST) builds it
  * here so it never depends on a server endpoint that may not be deployed where the launcher points.
  */
-export function gatewayPinEnv(account) {
+export function gatewayPinEnv(account, provider = 'claude') {
+  if (provider === 'codex') {
+    return { PAPERCUSP_ACCOUNT_ID: account };
+  }
   const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
   const port = Number.isFinite(p) && p > 0 ? p : 8788;
   return {
@@ -668,6 +671,47 @@ export function gatewayPinEnv(account) {
     ANTHROPIC_CUSTOM_HEADERS: `${GATEWAY_ACCOUNT_HEADER}: ${account}`,
     PAPERCUSP_ACCOUNT_ID: account,
   };
+}
+
+function tomlEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+export function codexGatewayConfigPatch(configText, account) {
+  const providerId = 'papercusp-codex-gateway';
+  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  const port = Number.isFinite(p) && p > 0 ? p : 8788;
+  const strip = (text) =>
+    text
+      .replace(/# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_ROOT\n?/g, '')
+      .replace(/# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_PROVIDER\n?/g, '')
+      .replace(/^\n+/, '');
+  const root = [
+    '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+    '# Route Codex model traffic through the Papercusp inference gateway account pin.',
+    `model_provider = "${providerId}"`,
+    '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
+    '',
+  ].join('\n');
+  const table = [
+    '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+    `[model_providers.${providerId}]`,
+    'name = "Papercusp Codex Gateway"',
+    `base_url = "http://127.0.0.1:${port}/v1"`,
+    'wire_api = "responses"',
+    'experimental_bearer_token = "papercusp-gateway"',
+    `http_headers = { "x-papercusp-account" = "${tomlEscape(account)}" }`,
+    '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+    '',
+  ].join('\n');
+  const stripped = strip(configText || '');
+  return `${root}${stripped.trimEnd()}\n\n${table}`;
+}
+
+function applyCodexGatewayPin(codexHome, account) {
+  const configPath = join(codexHome, 'config.toml');
+  const current = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
+  writeFileSync(configPath, codexGatewayConfigPatch(current, account), { mode: 0o600 });
 }
 
 /**
@@ -925,9 +969,12 @@ async function pickPlan(workspace, harness) {
 /** The account-pin choices the gateway offers for a workspace (gatewayOn + pool + session-override).
  *  Live `/options` endpoint — deployed everywhere, unlike a bespoke pin endpoint (deploy-skew safe).
  *  null on any error (fail-soft → no pin). */
-async function fetchAccountChoices(workspace) {
+async function fetchAccountChoices(workspace, agent = 'claude') {
   try {
-    const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+    const params = new URLSearchParams();
+    if (workspace) params.set('workspace', workspace);
+    if (agent) params.set('agent', agent);
+    const q = params.toString() ? `?${params.toString()}` : '';
     return (await api(`/api/agent-mcp/console/bootstrap-su/options${q}`)).accounts ?? null;
   } catch {
     return null;
@@ -953,8 +1000,8 @@ async function promptAccount(accounts) {
   return select({ message: 'Account (inference-gateway pin)', default: null, choices });
 }
 
-async function pickAccount(workspace) {
-  const accounts = await fetchAccountChoices(workspace);
+async function pickAccount(workspace, agent = 'claude') {
+  const accounts = await fetchAccountChoices(workspace, agent);
   return accounts ? promptAccount(accounts) : null;
 }
 
@@ -983,7 +1030,7 @@ export function accountPinnable(accounts, id) {
 async function chooseResumeAccount(session, args) {
   const plan = resumeAccountPlan(args);
   if (plan.source === 'none') return { id: null, env: {}, notice: null }; // --no-picker + no --account
-  const accounts = await fetchAccountChoices(session.workspaceId);
+  const accounts = await fetchAccountChoices(session.workspaceId, session.agent);
   if (!accounts?.gatewayOn || !(Array.isArray(accounts.pool) && accounts.pool.length)) {
     // Pinning is a no-op (gateway off / empty pool) → default-credential resume, byte-identical.
     return {
@@ -997,7 +1044,8 @@ async function chooseResumeAccount(session, args) {
   if (!accountPinnable(accounts, id)) {
     return { id: null, env: {}, notice: `--account ${id} ignored: not an allowed pool account — using the default credential.` };
   }
-  return { id, env: gatewayPinEnv(id), notice: `pinned to account ${id} (routed through the inference gateway).` };
+  const provider = accounts.provider || (session.agent === 'codex' ? 'codex' : 'claude');
+  return { id, provider, env: gatewayPinEnv(id, provider), notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).` };
 }
 
 /** Sentinel for the "no feature" picker row (optional-feature roles). */
@@ -1309,6 +1357,9 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   if (session.agent === 'codex' && session.id != null) {
     env.CODEX_HOME = join(homedir(), '.papercusp', 'su-codex-homes', `session-${session.id}`);
   }
+  if (session.agent === 'codex' && accountEnv?.provider === 'codex' && accountEnv?.id && env.CODEX_HOME) {
+    applyCodexGatewayPin(env.CODEX_HOME, accountEnv.id);
+  }
 
   // Surface whether the account re-pin took effect (or the fail-soft reason it
   // was skipped) so a resume is never silently unpinned — mirrors launchFreshSu.
@@ -1491,7 +1542,7 @@ async function resumeFlow(args = {}) {
       // the pin is spawn-env only, so a resume otherwise drops it (option 1).
       const acct = await chooseResumeAccount(tracked, args);
       if (args.fork) { await launchTrackedFork(tracked, args, acct); return; }
-      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: { env: acct.env, notice: acct.notice } });
+      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct });
       return;
     }
 
@@ -1514,7 +1565,7 @@ async function resumeFlow(args = {}) {
     // place (claude mints a random id; resumable only by uuid). launchResume handles it.
     // Account re-pin applies here too (a raw resume can be routed through the gateway).
     const acct = await chooseResumeAccount(untracked, args);
-    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: { env: acct.env, notice: acct.notice } });
+    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct });
     return;
   }
 
@@ -1548,7 +1599,7 @@ async function resumeFlow(args = {}) {
   // resuming — the pin is spawn-env only, otherwise lost on resume (option 1).
   const acct = await chooseResumeAccount(picked, args);
   if (args.fork) { await launchTrackedFork(picked, args, acct); return; }
-  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: { env: acct.env, notice: acct.notice } });
+  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct });
 }
 
 // `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old
@@ -1684,7 +1735,7 @@ async function main() {
     // psu-account-chooser P-005: offer a pool-account pin when one is meaningful
     // (gateway on + a non-empty pool). pickAccount returns null — and prompts
     // nothing — otherwise, so the default launch stays byte-identical.
-    if (!args.account) args.account = await pickAccount(workspace);
+    if (!args.account) args.account = await pickAccount(workspace, agent);
     selections = { agent, workspace, harness, plan };
   } else {
     selections = selectionsFromArgs(args);

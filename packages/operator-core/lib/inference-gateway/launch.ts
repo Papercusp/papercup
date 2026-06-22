@@ -11,7 +11,7 @@
  * Deps are injectable so the composition is hermetically testable without PG / `~/.claude`.
  */
 import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
-import { makeCredentialResolver, type CredentialResolver } from './credential-store';
+import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type InferenceGateway } from './gateway';
 
@@ -34,7 +34,7 @@ export interface GatewayServiceOptions {
    *  and yields a one-account, no-failover pool. */
   resolveAccount?: (ws?: string) => Promise<ResolvedAccount>;
   /** Resolve the full failover pool (EI-535). Default: resolveAccountPool. */
-  resolveAccounts?: (ws?: string) => Promise<ResolvedAccount[]>;
+  resolveAccounts?: (ws?: string, provider?: 'claude' | 'codex') => Promise<ResolvedAccount[]>;
   makeResolver?: (credentialRef: string, accountId: string) => CredentialResolver;
   /** Subscribe the account-pool projection feed; returns an unsubscribe. Default: initAccountScaleObserver (record-only). */
   observePool?: (accountId: string, ws: string | undefined, log: GatewayServiceOptions['log']) => () => void;
@@ -162,8 +162,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
 
   let accounts: ResolvedAccount[] = opts.resolveAccount
     ? [await opts.resolveAccount(opts.workspace)]
-    : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace);
+    : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace, 'claude');
   if (accounts.length === 0) throw new Error('inference-gateway: no account resolved');
+  let codexAccounts: ResolvedAccount[] = opts.resolveAccount
+    ? []
+    : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace, 'codex');
 
   const built0 = buildResolved(accounts);
   let resolvers = built0.resolvers;
@@ -174,11 +177,19 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   );
 
   const pool = createFailoverPool(built0.entries, { log });
+  const buildBearerEntries = (accts: ResolvedAccount[]) =>
+    accts.map((a) => {
+      const resolver = makeBearerCredentialResolver(a.credentialRef);
+      return { accountId: a.accountId, token: () => resolver.current(), invalidateToken: () => resolver.invalidate(), egress: a.egress };
+    });
+  const codexPool = codexAccounts.length ? createFailoverPool(buildBearerEntries(codexAccounts), { log }) : undefined;
   const unobserve = observePool(primary.accountId, opts.workspace, log);
 
   const gateway = createInferenceGateway({
     pool,
+    codexPool,
     upstreamBase: opts.upstreamBase,
+    openaiUpstreamBase: process.env.OPENAI_BASE_URL_UPSTREAM || undefined,
     concurrency: opts.concurrency,
     fetchImpl: opts.fetchImpl,
     log,
@@ -187,7 +198,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // `reloadPool` is a hoisted function declaration; `configVersion`/`accounts` are read lazily at
     // request time (after their initialisers run), so referencing them here is safe.
     onAdminReload: () => reloadPool(),
-    adminConfig: () => ({ version: configVersion, accounts: accounts.map((a) => a.accountId) }),
+    adminConfig: () => ({ version: configVersion, accounts: accounts.map((a) => a.accountId), codexAccounts: codexAccounts.map((a) => a.accountId) }),
   });
 
   const port = await gateway.listen(opts.port ?? DEFAULT_GATEWAY_PORT);
@@ -201,17 +212,23 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     const ids = (a: ResolvedAccount[]) => a.map((x) => x.accountId);
     const next = opts.resolveAccount
       ? [await opts.resolveAccount(opts.workspace)]
-      : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace);
+      : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace, 'claude');
+    const nextCodex = opts.resolveAccount ? [] : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace, 'codex');
     if (next.length === 0) {
       log('warn', 'inference-gateway: pool reload resolved an EMPTY pool — keeping the current pool (fail-safe)');
       return { changed: false, version: configVersion, accounts: ids(accounts) };
     }
-    if (!pool.reload || sigOf(next) === sigOf(accounts)) {
+    const unchanged = sigOf(next) === sigOf(accounts) && sigOf(nextCodex) === sigOf(codexAccounts);
+    if (!pool.reload || unchanged) {
       return { changed: false, version: configVersion, accounts: ids(accounts) };
     }
     const built = buildResolved(next);
     pool.reload(built.entries);
+    if (codexPool && nextCodex.length > 0) {
+      codexPool.reload(buildBearerEntries(nextCodex));
+    }
     accounts = next;
+    codexAccounts = nextCodex;
     resolvers = built.resolvers;
     primary = next[0];
     configVersion++;

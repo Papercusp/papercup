@@ -148,12 +148,15 @@ const optionsForOptions = defineTool({
 export async function resolveAccountPin(
   workspaceId: string,
   requested: string | null | undefined,
-): Promise<{ env: Record<string, string>; notice: string | null }> {
+  agent: SuAgent = 'claude',
+): Promise<{ env: Record<string, string>; notice: string | null; accountId: string | null; provider: 'claude' | 'codex' | null }> {
   const id = requested?.trim();
-  if (!id) return { env: {}, notice: null };
+  if (!id) return { env: {}, notice: null, accountId: null, provider: null };
   const fail = (why: string) => ({
     env: {} as Record<string, string>,
     notice: `--account ${id} ignored: ${why} — using the default credential.`,
+    accountId: null,
+    provider: null as 'claude' | 'codex' | null,
   });
   try {
     const { getFlag } = await import('@papercusp/flags/server');
@@ -162,19 +165,33 @@ export async function resolveAccountPin(
       return fail('the inference gateway is off (INFERENCE_GATEWAY)');
     }
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
+    const { accountProvider } = await import('../../../deployment/account-pool');
     const pool = await loadAccountPool(workspaceId);
-    const ids = new Set((pool.accounts ?? []).map((a: { id: string }) => a.id));
-    if (!ids.has(id)) return fail(`'${id}' is not in the account pool (see accounts:list)`);
+    const acct = (pool.accounts ?? []).find((a: { id: string }) => a.id === id);
+    if (!acct) return fail(`'${id}' is not in the account pool (see accounts:list)`);
+    const provider = accountProvider(acct as never);
+    const expected = agent === 'codex' ? 'codex' : 'claude';
+    if (provider !== expected) return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
     const { getAccountOverride } = await import('../../../deployment/account-session-override');
     const ov = await getAccountOverride(workspaceId);
     if (ov.excludeAccounts.includes(id)) return fail('it is in the session-override exclude list');
     if (ov.forcedAccounts.length > 0 && !ov.forcedAccounts.includes(id)) {
       return fail('it is outside the session-override allow-list (forcedAccounts)');
     }
-    const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
+    if (provider === 'claude') {
+      const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
+      return {
+        env: { ...gatewaySpawnEnv(true, { accountId: id }), PAPERCUSP_ACCOUNT_ID: id },
+        notice: `pinned to account ${id} (routed through the inference gateway).`,
+        accountId: id,
+        provider,
+      };
+    }
     return {
-      env: { ...gatewaySpawnEnv(true, { accountId: id }), PAPERCUSP_ACCOUNT_ID: id },
-      notice: `pinned to account ${id} (routed through the inference gateway).`,
+      env: { PAPERCUSP_ACCOUNT_ID: id },
+      notice: `pinned to Codex account ${id} (routed through the inference gateway).`,
+      accountId: id,
+      provider,
     };
   } catch (e: any) {
     return fail(`account resolution failed (${e?.message ?? e})`);
@@ -191,17 +208,20 @@ export async function resolveAccountPin(
  */
 export async function resolveAccountChoices(
   workspaceId: string,
-): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[] }> {
-  const empty = { gatewayOn: false, pool: [] as string[], forcedAccounts: [] as string[], excludeAccounts: [] as string[] };
+  agent: SuAgent = 'claude',
+): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[]; provider: 'claude' | 'codex' }> {
+  const provider = agent === 'codex' ? 'codex' : 'claude';
+  const empty = { gatewayOn: false, pool: [] as string[], forcedAccounts: [] as string[], excludeAccounts: [] as string[], provider };
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
     if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return empty;
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
-    const pool = (await loadAccountPool(workspaceId)).accounts.map((a: { id: string }) => a.id);
+    const { accountsForProvider } = await import('../../../deployment/account-pool');
+    const pool = accountsForProvider(await loadAccountPool(workspaceId), provider).map((a: { id: string }) => a.id);
     const { getAccountOverride } = await import('../../../deployment/account-session-override');
     const ov = await getAccountOverride(workspaceId);
-    return { gatewayOn: true, pool, forcedAccounts: ov.forcedAccounts, excludeAccounts: ov.excludeAccounts };
+    return { gatewayOn: true, pool, forcedAccounts: ov.forcedAccounts, excludeAccounts: ov.excludeAccounts, provider };
   } catch {
     return empty;
   }
@@ -242,6 +262,8 @@ const optionsGet = defineTool({
     const workspace = url.searchParams.get('workspace')?.trim() || activeWorkspaceId();
     const harness = url.searchParams.get('harness')?.trim() || null;
     const wantFeatures = url.searchParams.get('features') === '1';
+    const accountAgentRaw = url.searchParams.get('agent')?.trim();
+    const accountAgent = isSuAgent(accountAgentRaw) ? accountAgentRaw : 'claude';
 
     // ?harness=X&features=1 → feature list (for the psu --role feature picker).
     if (harness && wantFeatures) {
@@ -290,7 +312,7 @@ const optionsGet = defineTool({
     const roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
     // psu-account-chooser P-005: pool accounts the interactive picker offers (empty +
     // hidden unless the gateway is on — see resolveAccountChoices).
-    const accounts = await resolveAccountChoices(workspace);
+    const accounts = await resolveAccountChoices(workspace, accountAgent);
     return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts });
   },
 });
@@ -458,6 +480,10 @@ const post = defineTool({
 
     const sessionKey = sessionId ?? `t-${randomUUID()}`;
 
+    // psu-account-chooser: resolve before writing Codex launch artifacts so a Codex
+    // account pin can be baked into CODEX_HOME/config.toml.
+    const accountPin = await resolveAccountPin(workspace, body.account, agent);
+
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
     // gets a per-session CODEX_HOME (P-030); claude/omp get a launch-context
     // prompt file and rely on their USER-LEVEL papercusp-su MCP (it survives
@@ -469,7 +495,14 @@ const post = defineTool({
         // D-006: the superuser bearer is baked into the home's config.toml
         // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
         // Read it server-side — it never transits the bootstrap HTTP response.
-        const ch = writeSuCodexHome({ sessionKey, mcpUrl: spec.mcpUrl, promptText: spec.promptText, sid, token: readSuperuserToken() });
+        const ch = writeSuCodexHome({
+          sessionKey,
+          mcpUrl: spec.mcpUrl,
+          promptText: spec.promptText,
+          sid,
+          token: readSuperuserToken(),
+          codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
+        });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
       } else {
@@ -560,7 +593,6 @@ const post = defineTool({
     // psu-account-chooser P-002: when the launch carries an explicit `account`, fold
     // the gateway-pin env into the envelope (fail-soft — a skipped pin just adds a
     // notice the launcher prints, never an error).
-    const accountPin = await resolveAccountPin(workspace, body.account);
     Object.assign(envelopeEnv, accountPin.env);
 
     const result: BootstrapSuResult = {

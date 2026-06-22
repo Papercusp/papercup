@@ -14,10 +14,18 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { loadAccountPool } from '../deployment/account-pool-store';
-import { accountByCredentialRef, type AccountEgress, type AccountPool } from '../deployment/account-pool';
+import {
+  accountByCredentialRef,
+  accountProvider,
+  accountsForProvider,
+  type AccountEgress,
+  type AccountPool,
+  type AccountProvider,
+} from '../deployment/account-pool';
 
 export interface ResolvedAccount {
   accountId: string;
+  provider: AccountProvider;
   credentialRef: string;
   /** How it was resolved (for /healthz + logs). `pool` = one entry of a multi-account pool;
    *  `sole-pool-account` = the single registered account; `env` = the PAPERCUSP_ACCOUNT_ID pin;
@@ -64,20 +72,21 @@ async function loadPoolOrThrow(ws?: string): Promise<AccountPool> {
 
 export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount> {
   const pool = await loadPoolOrThrow(ws);
+  const accounts = accountsForProvider(pool, 'claude');
   const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
   if (wanted) {
-    const acct = pool.accounts.find((a) => a.id === wanted);
-    if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, egress: acct.egress, source: 'env' };
+    const acct = accounts.find((a) => a.id === wanted);
+    if (acct) return { accountId: acct.id, provider: 'claude', credentialRef: acct.credentialRef, egress: acct.egress, source: 'env' };
     throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
   }
-  if (pool.accounts.length === 1) {
-    const a = pool.accounts[0];
-    return { accountId: a.id, credentialRef: a.credentialRef, egress: a.egress, source: 'sole-pool-account' };
+  if (accounts.length === 1) {
+    const a = accounts[0];
+    return { accountId: a.id, provider: 'claude', credentialRef: a.credentialRef, egress: a.egress, source: 'sole-pool-account' };
   }
   // No env pin and 0 or >1 pool accounts → the box's own login. (>1 with no pin is ambiguous;
   // the local login is the safe, explicit default rather than guessing which pool account.)
   const localBundle = join(homedir(), '.claude', '.credentials.json');
-  return { accountId: 'local', credentialRef: `file:${localBundle}`, source: 'local-fallback' };
+  return { accountId: 'local', provider: 'claude', credentialRef: `file:${localBundle}`, source: 'local-fallback' };
 }
 
 /**
@@ -88,17 +97,22 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
  * Unlike resolveBoundAccount, a >1-account pool with no pin is NOT ambiguous here — the whole point
  * is to use them all, primary = pool order.
  */
-export async function resolveAccountPool(ws?: string): Promise<ResolvedAccount[]> {
+export async function resolveAccountPool(ws?: string, provider: AccountProvider = 'claude'): Promise<ResolvedAccount[]> {
   const pool = await loadPoolOrThrow(ws);
-  const all: ResolvedAccount[] = pool.accounts.map((a) => ({
+  const accounts = accountsForProvider(pool, provider);
+  const all: ResolvedAccount[] = accounts.map((a) => ({
     accountId: a.id,
+    provider: accountProvider(a),
     credentialRef: a.credentialRef,
     egress: a.egress,
     source: 'pool' as const,
   }));
-  if (all.length === 0) {
+  if (all.length === 0 && provider === 'claude') {
     const localBundle = join(homedir(), '.claude', '.credentials.json');
-    return [{ accountId: 'local', credentialRef: `file:${localBundle}`, source: 'local-fallback' }];
+    return [{ accountId: 'local', provider: 'claude', credentialRef: `file:${localBundle}`, source: 'local-fallback' }];
+  }
+  if (all.length === 0) {
+    return [];
   }
   const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
   if (wanted) {

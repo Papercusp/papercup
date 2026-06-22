@@ -98,6 +98,36 @@ function tomlEscape(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+function gatewayPort(): number {
+  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  return Number.isFinite(p) && p > 0 ? p : 8788;
+}
+
+function codexGatewayConfigToml(accountId?: string | null): { root: string[]; tables: string[] } {
+  if (!accountId) return { root: [], tables: [] };
+  const providerId = 'papercusp-codex-gateway';
+  return {
+    root: [
+      '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+      '# Route Codex model traffic through the Papercusp inference gateway account pin.',
+      `model_provider = "${providerId}"`,
+      '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
+      '',
+    ],
+    tables: [
+      '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      `[model_providers.${providerId}]`,
+      'name = "Papercusp Codex Gateway"',
+      `base_url = "http://127.0.0.1:${gatewayPort()}/v1"`,
+      'wire_api = "responses"',
+      'experimental_bearer_token = "papercusp-gateway"',
+      `http_headers = { "x-papercusp-account" = "${tomlEscape(accountId)}" }`,
+      '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      '',
+    ],
+  };
+}
+
 /** Single-quote a value for a shell command (env prefix). */
 function shellSingleQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
@@ -259,6 +289,8 @@ export function writeRoleCodexHome(opts: {
    *  into the activity-bridge hook so this worker's tool calls report under it.
    *  Omit → no activity hook (a role home without an identity). */
   sid?: string;
+  /** Optional Codex account pin; writes a custom model provider that points Codex at the inference gateway. */
+  codexGatewayAccountId?: string | null;
 }): RoleCodexHome {
   // ONE shared codex-home key (unify-launch-mechanics P-004): both role and su
   // codex sessions live under the SAME root the wake-executor resume leg reads
@@ -278,8 +310,11 @@ export function writeRoleCodexHome(opts: {
   // bearer_token_env_var. codex does NOT env-expand config.toml, so the
   // url is baked verbatim.
   const configPath = join(codexHome, 'config.toml');
+  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId);
   const toml = [
+    ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
+    ...gatewayConfig.tables,
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
     `url = "${tomlEscape(opts.mcpUrl)}"`,
@@ -340,6 +375,8 @@ export function writeSuCodexHome(opts: {
   /** Superuser bearer token, baked as an http_headers Authorization (D-006).
    *  Omit only when no token is installed → a degraded non-superuser home. */
   token?: string | null;
+  /** Optional Codex account pin; writes a custom model provider that points Codex at the inference gateway. */
+  codexGatewayAccountId?: string | null;
 }): SuCodexHome {
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
 
@@ -352,8 +389,11 @@ export function writeSuCodexHome(opts: {
   const sep = opts.mcpUrl.includes('?') ? '&' : '?';
   const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
   const configPath = join(codexHome, 'config.toml');
+  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId);
   const toml = [
+    ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
+    ...gatewayConfig.tables,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,

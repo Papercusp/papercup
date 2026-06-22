@@ -1,7 +1,7 @@
 /**
- * POST /api/admin/deploy-accounts/register — register a Claude deploy credential from a PASTED value.
+ * POST /api/admin/deploy-accounts/register — register a Claude or Codex gateway credential.
  *
- * Body: { accountId, label?, value }
+ * Body: { accountId, label?, provider?, value }
  *   value = either a `claude setup-token` long-lived token (`sk-ant-oat…`) → written raw and
  *           registered as `credentialRef: token:<path>`, OR a `.credentials.json` bundle (JSON with
  *           a `claudeAiOauth` block) → written as-is and registered as `credentialRef: file:<path>`.
@@ -30,13 +30,14 @@ export default defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { accountId?: string; label?: string; value?: string; egress?: { proxyUrl?: string; localAddress?: string } };
+    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex'; value?: string; egress?: { proxyUrl?: string; localAddress?: string } };
     try {
       body = await req.json();
     } catch {
       return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
     }
     const accountId = body?.accountId?.trim();
+    const provider = body?.provider === 'codex' ? 'codex' : 'claude';
     const value = body?.value?.trim();
     // Optional per-account egress (per-account IP routing) — only kept if a field is set.
     const proxyUrl = body?.egress?.proxyUrl?.trim();
@@ -45,35 +46,45 @@ export default defineTool({
     if (!accountId || !ID_RE.test(accountId)) {
       return Response.json({ ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' }, { status: 400 });
     }
-    if (!value) return Response.json({ ok: false, error: 'value required (a sk-ant-oat… token or a .credentials.json bundle)' }, { status: 400 });
-
-    // Discriminate: a setup-token (token:) vs a pasted .credentials.json bundle (file:).
-    const isBundle = value.startsWith('{');
-    if (isBundle) {
-      try {
-        const parsed = JSON.parse(value);
-        if (!parsed?.claudeAiOauth?.accessToken) {
-          return Response.json({ ok: false, error: 'bundle has no claudeAiOauth.accessToken' }, { status: 400 });
-        }
-      } catch {
-        return Response.json({ ok: false, error: 'value looked like JSON but failed to parse' }, { status: 400 });
-      }
-    } else if (!value.startsWith('sk-ant-oat')) {
-      return Response.json(
-        { ok: false, error: "value must be a setup-token (sk-ant-oat…) or a .credentials.json bundle ({…})" },
-        { status: 400 },
-      );
-    }
+    if (!value) return Response.json({ ok: false, error: provider === 'codex' ? 'value required (a bearer token or env:NAME reference)' : 'value required (a sk-ant-oat… token or a .credentials.json bundle)' }, { status: 400 });
 
     try {
-      const fileName = isBundle ? `${accountId}.credentials.json` : accountId;
-      const credPath = papercuspPath('deploy-credentials', fileName);
-      await mkdir(dirname(credPath), { recursive: true });
-      await writeFile(credPath, value, { mode: 0o600 });
-      await chmod(credPath, 0o600);
-      const credentialRef = `${isBundle ? 'file' : 'token'}:${credPath}`;
+      let credentialRef: string;
+      if (provider === 'claude') {
+        // Discriminate: a setup-token (token:) vs a pasted .credentials.json bundle (file:).
+        const isBundle = value.startsWith('{');
+        if (isBundle) {
+          try {
+            const parsed = JSON.parse(value);
+            if (!parsed?.claudeAiOauth?.accessToken) {
+              return Response.json({ ok: false, error: 'bundle has no claudeAiOauth.accessToken' }, { status: 400 });
+            }
+          } catch {
+            return Response.json({ ok: false, error: 'value looked like JSON but failed to parse' }, { status: 400 });
+          }
+        } else if (!value.startsWith('sk-ant-oat')) {
+          return Response.json(
+            { ok: false, error: "value must be a setup-token (sk-ant-oat…) or a .credentials.json bundle ({…})" },
+            { status: 400 },
+          );
+        }
+        const fileName = isBundle ? `${accountId}.credentials.json` : accountId;
+        const credPath = papercuspPath('deploy-credentials', fileName);
+        await mkdir(dirname(credPath), { recursive: true });
+        await writeFile(credPath, value, { mode: 0o600 });
+        await chmod(credPath, 0o600);
+        credentialRef = `${isBundle ? 'file' : 'token'}:${credPath}`;
+      } else if (value.startsWith('env:')) {
+        credentialRef = value;
+      } else {
+        const credPath = papercuspPath('deploy-credentials', `${accountId}.codex`);
+        await mkdir(dirname(credPath), { recursive: true });
+        await writeFile(credPath, value, { mode: 0o600 });
+        await chmod(credPath, 0o600);
+        credentialRef = `token:${credPath}`;
+      }
       await updateAccountPool((p) =>
-        registerAccount(p, { id: accountId, credentialRef, label: body.label?.trim() || undefined, egress }, Date.now()),
+        registerAccount(p, { id: accountId, provider, credentialRef, label: body.label?.trim() || undefined, egress }, Date.now()),
       );
       const account = (await accountStatus()).find((a) => a.id === accountId) ?? null;
       // Live UI reflection — the Accounts tab reads the accounts.pool sync query.

@@ -57,9 +57,10 @@ function expandHome(p: string): string {
  *  refreshable `.credentials.json` bundle). There is NO static-API-key channel: this deployment has
  *  no `ANTHROPIC_API_KEY`, and a raw billed key would 400 against the subscription-only
  *  `oauth-2025-04-20` beta the gateway sends. */
-export function parseCredentialRef(ref: string): { kind: 'token' | 'file'; path: string } {
+export function parseCredentialRef(ref: string): { kind: 'token' | 'file' | 'env'; path: string } {
   if (ref.startsWith('token:')) return { kind: 'token', path: expandHome(ref.slice(6)) };
   if (ref.startsWith('file:')) return { kind: 'file', path: expandHome(ref.slice(5)) };
+  if (ref.startsWith('env:')) return { kind: 'env', path: ref.slice(4).trim() };
   if (ref.startsWith('/') || ref.startsWith('~')) return { kind: 'file', path: expandHome(ref) };
   throw new Error(`inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/path — Claude Max OAuth only)`);
 }
@@ -118,6 +119,9 @@ export interface CredentialResolver {
 export function makeCredentialResolver(credentialRef: string, harnessKey?: string): CredentialResolver {
   ensureClaudeProvider();
   const { kind, path } = parseCredentialRef(credentialRef);
+  if (kind === 'env') {
+    throw new Error(`inference-gateway: unsupported Claude credentialRef '${credentialRef}' (env: is only valid for bearer accounts)`);
+  }
   const dedupKey = harnessKey ?? path;
 
   let cachedToken: string | undefined;
@@ -160,6 +164,29 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
       }
       cachedToken = token;
       return token;
+    },
+  };
+}
+
+export function makeBearerCredentialResolver(credentialRef: string): CredentialResolver {
+  const { kind, path } = parseCredentialRef(credentialRef);
+  let cachedToken: string | undefined;
+  return {
+    kind: kind === 'env' ? 'token' : kind,
+    invalidate() {
+      cachedToken = undefined;
+    },
+    async current() {
+      if (cachedToken) return cachedToken;
+      if (kind === 'env') {
+        const value = process.env[path]?.trim();
+        if (!value) throw new Error(`inference-gateway: env credential ${path} is empty or unset`);
+        cachedToken = value;
+        return cachedToken;
+      }
+      cachedToken = (await fs.readFile(path, 'utf8')).trim();
+      if (!cachedToken) throw new Error(`inference-gateway: empty bearer token at ${path}`);
+      return cachedToken;
     },
   };
 }
