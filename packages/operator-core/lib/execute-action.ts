@@ -381,6 +381,34 @@ async function doSendMessage(
   const placeholderFlag = PLACEHOLDER_REASON.test(reason);
   const { sql } = getOrgPg();
 
+  // Verify every recipient harness exists BEFORE inserting anything. A
+  // non-existent recipient has no `harness_<slug>` schema, so the INSERT
+  // below would throw a raw "schema ... does not exist" error. Over HTTP that
+  // surfaces as an opaque 500; for in-process callers (the operator scan loop,
+  // spinup_project's cross-schema transaction) it propagates as an unhandled
+  // exception and crashes the caller. Schema presence is the canonical
+  // existence check (same probe as harness-status-sweep). Pre-validating up
+  // front fails cleanly with a not_found response (→ 404) and never leaves a
+  // partial insert across a multi-recipient batch (WI-385).
+  const missingRecipients: string[] = [];
+  for (const recipient of action.to) {
+    const schema = slugToSchema(recipient);
+    const exists = await sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.schemata WHERE schema_name = ${schema}
+      ) AS exists
+    `;
+    if (!exists[0]?.exists) missingRecipients.push(recipient);
+  }
+  if (missingRecipients.length > 0) {
+    return {
+      ok: false,
+      actionId: '',
+      error: 'not_found',
+      detail: `recipient harness not found: ${missingRecipients.join(', ')}`,
+    };
+  }
+
   const toRole = action.toRole && /^[a-z][a-z0-9_-]*$/i.test(action.toRole) ? action.toRole : null;
   // Feature-id format check (Phase 3). Accept the canonical F-XXX-NNN
   // shape; reject silently → null so a malformed id can't be used to
