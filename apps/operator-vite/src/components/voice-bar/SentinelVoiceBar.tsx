@@ -48,7 +48,6 @@ export default function SentinelVoiceBar({ onCollapse }: { onCollapse?: () => vo
             className="pc-voice-bar__collapse"
             onClick={onCollapse}
             aria-label="Collapse sidebar"
-            title="Collapse sidebar"
           >
             <PanelLeftClose size={15} aria-hidden="true" />
           </button>

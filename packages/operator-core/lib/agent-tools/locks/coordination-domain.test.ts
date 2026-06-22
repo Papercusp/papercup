@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -36,6 +36,35 @@ describe('lockDomainForProjectDir', () => {
   it('falls back to the start dir when no .git ancestor exists', () => {
     const dir = mkdtempSync(join(tmpdir(), 'norepo-'));
     expect(lockDomainForProjectDir(dir)).toBe(realpathSync(dir));
+  });
+
+  it('ignores an empty / whitespace-only PAPERCUSP_LOCK_DOMAIN (never an empty domain that collapses all locks)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lockdom-empty-'));
+    mkdirSync(join(root, '.git'));
+    process.env.PAPERCUSP_LOCK_DOMAIN = '   ';
+    expect(lockDomainForProjectDir(root)).toBe(realpathSync(root)); // falls through, not '' nor the blank override
+  });
+
+  it('resolves a SYMLINKED path to the same domain as the real path (two paths to one checkout serialize)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lockdom-real-'));
+    mkdirSync(join(root, '.git'));
+    const link = `${root}-link`;
+    symlinkSync(root, link); // a second path that points at the same checkout
+    // Editing via the real path and via the symlink must key on the SAME (realpath) domain — else the
+    // two would split into independent namespaces and clobber (the dbos-system-completion D-015 bug).
+    expect(lockDomainForProjectDir(link)).toBe(realpathSync(root));
+    expect(lockDomainForProjectDir(link)).toBe(lockDomainForProjectDir(root));
+  });
+
+  it('keys on the NEAREST .git ancestor when repos are nested (a submodule serializes on its own root)', () => {
+    const outer = mkdtempSync(join(tmpdir(), 'lockdom-outer-'));
+    mkdirSync(join(outer, '.git'));
+    const inner = join(outer, 'sub');
+    mkdirSync(inner);
+    mkdirSync(join(inner, '.git')); // a nested repo (e.g. a submodule) with its OWN .git
+    const deep = join(inner, 'x', 'y');
+    mkdirSync(deep, { recursive: true });
+    expect(lockDomainForProjectDir(deep)).toBe(realpathSync(inner)); // the inner root wins, not the outer
   });
 });
 
