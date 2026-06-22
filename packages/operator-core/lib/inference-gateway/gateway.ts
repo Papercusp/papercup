@@ -52,6 +52,13 @@ const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 // ~10-min SDK request timeout. Env-tunable. (The POST-admission 60s slot-hold deadline is a SEPARATE,
 // wedge-bounded budget and is NOT changed here.)
 const DEFAULT_MAX_QUEUE_WAIT_MS = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUE_WAIT_MS) || 4 * 60 * 1000;
+// EXTENDED POST-ADMISSION ABSORPTION (env-gated, 2026-06-22). When > 0, on hitting the post-admission slot-hold
+// deadline (the wedge-bounded 60s) the gateway, instead of shedding a retryable 429, RELEASES its admission slot
+// and re-acquires — the re-acquire's wait holds NO slot, so it CANNOT wedge — looping until an account serves
+// or this POST-admission budget runs out. So the caller WAITS LONGER and succeeds instead of getting a 429. 0 =
+// OFF (current behavior: shed at 60s). Sized so maxQueueWaitMs + this stays under the bee CLI's ~10-min SDK
+// timeout. Ramp on after live verification; injectable per-gateway via deps.requestAbsorbMs for tests.
+const DEFAULT_REQUEST_ABSORB_MS = Number(process.env.PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS) || 0;
 /** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
  *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
  *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the
@@ -342,6 +349,9 @@ export interface GatewayDeps {
   governorFor?(model: string): RateLimitGovernor;
   /** Max admission wait before a synthetic 429+retry-after. Default 2 min. */
   maxQueueWaitMs?: number;
+  /** POST-admission extended-absorption budget (ms). >0 = on a slot-hold-deadline shed, release the slot +
+   *  re-acquire + retry (no slot held during the wait → no wedge) instead of 429ing, up to this budget. 0 = OFF. */
+  requestAbsorbMs?: number;
   /** Wall-clock ceiling on internal retrying before a request sheds + frees its slot (wedge-prevention
    *  ladder). Default 60s (`INTERNAL_RETRY_DEADLINE_MS`); tests inject a tiny value to exercise the shed. */
   internalRetryDeadlineMs?: number;
@@ -625,6 +635,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const openaiUpstreamBase = (deps.openaiUpstreamBase ?? 'https://api.openai.com').replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
+  const requestAbsorbMs = deps.requestAbsorbMs ?? DEFAULT_REQUEST_ABSORB_MS;
   const internalRetryDeadlineMs = deps.internalRetryDeadlineMs ?? INTERNAL_RETRY_DEADLINE_MS;
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   const upstreamHeadersTimeoutMs = deps.upstreamHeadersTimeoutMs ?? DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
