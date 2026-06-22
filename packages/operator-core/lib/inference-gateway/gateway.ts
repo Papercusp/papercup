@@ -1301,7 +1301,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const pauseMs = circuitOpen ? openMs : TRANSIENT_429_BACKOFF_MS;
             const resetAt = Date.now() + pauseMs;
             // take-MAX (recordPenalty) → this never SHORTENS a legitimate longer 429/usage-cap pause.
-            gov.penalize({ retryAfterMs: pauseMs, resetAt });
+            // transport:true — this pauses the account ONLY to route around its bad egress PROXY (pin-yield reads
+            // pausedUntil); it is NOT a rate/budget signal, so the account-pool exhaustion/scale-out observer +
+            // the fleet AIMD must NOT count it (a flaky proxy must never mark a quota-healthy account "exhausted").
+            gov.penalize({ retryAfterMs: pauseMs, resetAt, transport: true });
             if (circuitOpen) {
               egressCircuitOpens++;
               egressPauseUntil.set(active.accountId, resetAt); // mark the TRANSPORT pause so the probe can lift exactly it on recovery
