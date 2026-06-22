@@ -1,37 +1,137 @@
 #!/usr/bin/env node
 /**
- * bg-host (DBOS routines / git-sync / substrate) ticker watchdog — 2026-06-20.
+ * bg-host (DBOS routines / git-sync / substrate) ticker watchdog — 2026-06-20; freeze-signal rewritten
+ * 2026-06-22 (EI-2421/EI-2434).
  *
- * `papercup-bg-host`'s event loop gets STARVED under heavy box load (many concurrent agents), freezing the
- * routines + git-sync ticker: the process stays `active` (so systemd Restart=always NEVER fires) but the
- * journal goes SILENT and git-sync stops committing — so ALL fleet work stops persisting to origin/staging
- * (the recurring 2026-06-20 overnight freeze; restarted manually 2x). This polls the unit's journal; the
- * ticker normally logs routine/git-sync activity every ~30s, so if it's been SILENT while `active` for
- * FREEZE_SILENCE_S, the ticker is frozen → restart the unit to revive it (su-f9722's documented-safe fix:
- * Restart=always, working tree kopia-backed, separate from the user-facing :3070).
+ * `papercup-bg-host`'s event loop can get STARVED under heavy box load, freezing the routines + git-sync
+ * ticker: the process stays `active` (so systemd Restart=always NEVER fires) but routines stop firing and
+ * git-sync stops committing — ALL fleet work stops persisting to origin/staging (the recurring 2026-06-20
+ * overnight freeze). On a real freeze we restart the unit to revive it (working tree is kopia-backed,
+ * separate from the user-facing :3070).
+ *
+ * FREEZE SIGNAL — journald-INDEPENDENT (this is the 2026-06-22 fix). The original detector polled
+ * `journalctl -u papercup-bg-host` and restarted on journal SILENCE. But journald's stdout-socket capture
+ * wedged host-wide (EI-2434), so a perfectly HEALTHY, ticking bg-host showed an empty journal → the
+ * watchdog false-concluded "frozen" → `systemctl restart` → EI-2186 boot-reconcile reclaimed every
+ * in-flight bee spawn (the canary deaths, 2026-06-22). We now read the ticker's ACTUAL liveness directly
+ * from Postgres — `MAX(last_fired_at)` across active routines (the SAME signal dev:service_health uses,
+ * service-health.ts) — which the bg-host itself advances every tick and which no journald fault can fake.
+ * If the newest routine fired > FREEZE_SILENCE_S ago while the unit is active, the ticker is genuinely
+ * frozen → restart. If the freshness can't be read (psql/DB down), we treat it as UNKNOWN and skip — we
+ * NEVER conclude "frozen" from a missing signal, so a measurement fault can't cause a false restart.
  *
  * SAFE FOR UNATTENDED OPERATION: a restart debounce + a circuit breaker (MAX_RESTARTS_PER_HR per rolling
- * hour, then it STOPS and only logs) so a misfire can't restart-loop the ticker. journalctl failures are
- * treated as "unknown" (skipped), never as "frozen", to avoid false restarts.
+ * hour, then it STOPS and only logs) so a misfire can't restart-loop the ticker. Decisions are mirrored to
+ * a durable file (journald-independent) so a future incident is diagnosable even while journald is wedged.
  *
- * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR}.
+ * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG},
+ *   PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile } from 'node:child_process';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const UNIT = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host';
 const POLL_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POLL_MS) || 30_000;
-const FREEZE_SILENCE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SILENCE_S) || 100; // silent this long while active = frozen
+const FREEZE_SILENCE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SILENCE_S) || 100; // newest routine older than this while active = frozen
 const DEBOUNCE_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_DEBOUNCE_MS) || 5 * 60_000;
 const MAX_RESTARTS_PER_HR = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_MAX_RESTARTS_HR) || 8;
+/** Throttled "still monitoring + ticker healthy" line so the durable log proves the watchdog is ACTIVELY
+ *  reading freshness (not silently early-returning) — the operability gap that made this whole class
+ *  invisible for 44h. First healthy poll logs immediately, then at most every HEARTBEAT_MS. */
+const HEARTBEAT_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HEARTBEAT_MS) || 10 * 60_000;
+/** Durable, journald-INDEPENDENT decision log (EI-2434: journald can't be trusted to capture stdout). */
+const LOG_FILE = process.env.PAPERCUSP_BGHOST_WATCHDOG_LOG || join(homedir(), '.papercusp', 'bghost-watchdog.log');
 
 let lastRestart = 0;
+let lastHeartbeat = 0;
 const restartTimes = []; // epoch ms, rolling 1h, for the circuit breaker
-const log = (m) => console.log(`[bghost-watchdog ${new Date().toISOString()}] ${m}`);
+let logDirEnsured = false;
+const log = (m) => {
+  const line = `[bghost-watchdog ${new Date().toISOString()}] ${m}`;
+  console.log(line);
+  try {
+    if (!logDirEnsured) {
+      mkdirSync(dirname(LOG_FILE), { recursive: true });
+      logDirEnsured = true;
+    }
+    appendFileSync(LOG_FILE, line + '\n');
+  } catch {
+    /* durable log unavailable — console.log remains; never let logging crash the watchdog */
+  }
+};
 
 function sh(cmd, args) {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 10_000 }, (err, stdout) => resolve({ err, stdout: stdout || '' }));
+  return new Promise((resolve_) => {
+    execFile(cmd, args, { timeout: 10_000 }, (err, stdout) => resolve_({ err, stdout: stdout || '' }));
   });
+}
+
+/** Resolve the bg-host's DATABASE_URL self-contained (no unit/host-config change): explicit override →
+ *  process env → parse .env.local at the integration root (the same source the bg-host unit sources),
+ *  found relative to THIS script so it works regardless of cwd. Returns null if unresolved (→ UNKNOWN). */
+export function resolveDbUrl(readFile = readFileSync) {
+  if (process.env.PAPERCUSP_BGHOST_WATCHDOG_DB_URL) return process.env.PAPERCUSP_BGHOST_WATCHDOG_DB_URL;
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  try {
+    const root = process.env.PAPERCUSP_INTEGRATION_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const env = readFile(resolve(root, '.env.local'), 'utf8');
+    const m = env.match(/^\s*(?:export\s+)?DATABASE_URL\s*=\s*(.+?)\s*$/m);
+    if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+  } catch {
+    /* no .env.local / unreadable → unknown */
+  }
+  return null;
+}
+
+/** Parse psql's `-tAqc` scalar output for the routine-idle age in seconds. Empty / NULL (no active
+ *  routines or none fired yet) ⇒ null = UNKNOWN (never treat as frozen). */
+export function parseIdleSec(stdout) {
+  const v = String(stdout ?? '').trim();
+  if (v === '' || v.toLowerCase() === 'null') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Pure freeze verdict: a NUMBER idle age over the threshold = frozen; null (unknown) is NEVER frozen. */
+export function isFrozen(idleSec, freezeSilenceS = FREEZE_SILENCE_S) {
+  return idleSec != null && idleSec > freezeSilenceS;
+}
+
+/** Read DATABASE_URL out of a process's /proc/<pid>/environ (same-user readable). The bg-host's ACTUAL
+ *  running value — robust against .env.local not defining it literally (it doesn't on this box). */
+function readProcEnvUrl(pid, readFile = readFileSync) {
+  try {
+    for (const kv of readFile(`/proc/${pid}/environ`, 'utf8').split('\0')) {
+      if (kv.startsWith('DATABASE_URL=')) return kv.slice('DATABASE_URL='.length);
+    }
+  } catch {
+    /* not readable / process gone */
+  }
+  return null;
+}
+
+/** Async DB-URL resolution: sync sources (override / env / .env.local) first, then the ROBUST fallback —
+ *  the bg-host unit's own running DATABASE_URL via its /proc environ. Returns null if all fail (→ UNKNOWN). */
+async function resolveDbUrlAsync() {
+  const direct = resolveDbUrl();
+  if (direct) return direct;
+  const r = await sh('systemctl', ['--user', 'show', UNIT, '-p', 'MainPID', '--value']);
+  const pid = Number(r.stdout.trim());
+  return Number.isFinite(pid) && pid > 0 ? readProcEnvUrl(pid) : null;
+}
+
+/** Newest routine fire age (seconds) from Postgres — the bg-host's true liveness. null on any read fault. */
+async function routineIdleSec(dbUrl) {
+  if (!dbUrl) return null;
+  const q =
+    'SELECT EXTRACT(EPOCH FROM (now() - MAX(last_fired_at)))::int ' +
+    'FROM harness_shared.routines WHERE active = true AND last_fired_at IS NOT NULL';
+  const r = await sh('psql', [dbUrl, '-tAqc', q]);
+  if (r.err) return null;
+  return parseIdleSec(r.stdout);
 }
 
 function restart(reason) {
@@ -57,16 +157,30 @@ async function poll() {
     // not active → a crash; Restart=always handles that. Don't interfere.
     return;
   }
-  const j = await sh('journalctl', ['--user', '-u', UNIT, '--since', `-${FREEZE_SILENCE_S} sec`, '--no-pager', '-q']);
-  if (j.err) {
-    log(`journalctl failed (${j.err.message}) — skipping this poll (not concluding frozen)`);
+  const idleSec = await routineIdleSec(await resolveDbUrlAsync());
+  if (idleSec == null) {
+    // Liveness UNKNOWN (psql/DB unreadable) — NEVER conclude frozen from a missing signal (that was the
+    // EI-2434 false-restart bug). Skip this poll.
+    log(`routine-freshness UNKNOWN (psql/DB unreadable) — skipping (not concluding frozen)`);
     return;
   }
-  const lines = j.stdout.split('\n').filter((l) => l.trim().length > 0).length;
-  if (lines === 0) {
-    restart(`${UNIT} journal SILENT ${FREEZE_SILENCE_S}s while active — ticker frozen (no routine/git-sync activity)`);
+  if (isFrozen(idleSec)) {
+    restart(`${UNIT} newest routine fired ${idleSec}s ago (> ${FREEZE_SILENCE_S}s) while active — ticker genuinely frozen (PG-confirmed, journald-independent)`);
+    return;
+  }
+  // Healthy. Emit a throttled heartbeat so the durable log shows the watchdog is actively monitoring.
+  const now = Date.now();
+  if (now - lastHeartbeat >= HEARTBEAT_MS) {
+    lastHeartbeat = now;
+    log(`ticker healthy — newest routine fired ${idleSec}s ago (<= ${FREEZE_SILENCE_S}s)`);
   }
 }
 
-log(`up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms, cap ${MAX_RESTARTS_PER_HR}/hr`);
-setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
+function start() {
+  log(`up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms, cap ${MAX_RESTARTS_PER_HR}/hr; signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`);
+  setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
+}
+
+// Auto-start as the systemd unit (`node bghost-watchdog.mjs`). Tests set PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART=1
+// before importing to exercise the pure decision logic without the poll loop / network.
+if (process.env.PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART !== '1') start();
