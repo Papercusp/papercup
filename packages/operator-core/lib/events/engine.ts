@@ -126,8 +126,114 @@ export function emitSystemEvent(opts: {
   matchAndRun(event);
 }
 
+/**
+ * D-007 (bulk-endpoint-standardization-2026-06-21) — fan a bulk-envelope event
+ * out into one synthetic per-item event.
+ *
+ * A dual-arity verb (`{ id }` for n=1 OR `items:[…]`/`ids:[…]` for many) returns
+ * the `_bulk.ts` keyed-array envelope `{ ok:true, results:[{ ok, <key>, … }],
+ * counts }`. Dispatched as ONE event, its `args` is `{ items:[…] }` and its
+ * `result.data` is the whole envelope — so every per-tool reaction rule + every
+ * `emits:` desugar, all written to read the SINGULAR `e.args.id` /
+ * `e.result.data.workItem`, has its `when()` fall false and SILENTLY does not fire
+ * (stale rationale projection, missed plan-item reflect, dropped demand emit).
+ *
+ * The durable fix is HERE, at the single dispatch choke point, not in each of the
+ * N rules: detect the envelope and synthesize one event per result item —
+ * `args` reconstructed from `items[i]`/`ids[i]` (+ batch-level scalars) and
+ * `result.data` set to `results[i]` (self-describing key + the same per-item
+ * payload the single call returned: `workItem`, `completion`, …). Each synthetic
+ * event then matches exactly as a single invocation would, so bulk-converting a
+ * verb keeps EVERY downstream reaction with no rule edits. A single (n=1) call
+ * fans out into exactly one per-item event — identical to the pre-bulk dispatch.
+ * Non-bulk tools never match the shape and dispatch unchanged.
+ */
+interface BulkItemResultLike {
+  ok?: unknown;
+  id?: unknown;
+  slug?: unknown;
+  error?: unknown;
+  [k: string]: unknown;
+}
+
+/** The strict `_bulk.ts` envelope: `ok:true` + `results:[{ ok, … }]` + numeric counts. */
+function asBulkEnvelope(data: unknown): { results: BulkItemResultLike[] } | null {
+  if (!data || typeof data !== 'object') return null;
+  const d = data as { ok?: unknown; results?: unknown; counts?: unknown };
+  if (d.ok !== true || !Array.isArray(d.results)) return null;
+  const counts = d.counts as { ok?: unknown; failed?: unknown } | undefined;
+  if (!counts || typeof counts !== 'object') return null;
+  if (typeof counts.ok !== 'number' || typeof counts.failed !== 'number') return null;
+  // Every element a self-describing record with a boolean `ok` — this is what makes
+  // the envelope unambiguous vs an incidental `{ results, counts }` payload.
+  if (!d.results.every((r) => r && typeof r === 'object' && typeof (r as { ok?: unknown }).ok === 'boolean')) {
+    return null;
+  }
+  return { results: d.results as BulkItemResultLike[] };
+}
+
+/** Reconstruct the args a single invocation of one item would have run with. */
+function perItemArgs(bulkArgs: unknown, index: number, resultItem: BulkItemResultLike): Record<string, unknown> {
+  const a = (bulkArgs && typeof bulkArgs === 'object' ? bulkArgs : {}) as Record<string, unknown>;
+  // Batch-level scalars apply to every item (a shared `state`/`harness`/`topic`);
+  // the list fields + the single-call `id` are replaced by the per-item key.
+  const base: Record<string, unknown> = { ...a };
+  delete base.items;
+  delete base.ids;
+  delete base.id;
+  const item = Array.isArray(a.items) ? a.items[index] : undefined;
+  const inputItem = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+  // The correlation key the result self-describes (D-001), else the positional
+  // input id (ids[i] / the single id). work_items rules read `e.args.id`.
+  const key =
+    (typeof resultItem.id === 'string' ? resultItem.id : undefined) ??
+    (typeof resultItem.slug === 'string' ? resultItem.slug : undefined) ??
+    (Array.isArray(a.ids) ? (a.ids[index] as unknown) : undefined) ??
+    (typeof a.id === 'string' ? a.id : undefined);
+  return { ...base, ...inputItem, ...(key !== undefined ? { id: key } : {}) };
+}
+
+/**
+ * Explode a bulk-envelope event into one synthetic event per result item, or
+ * `null` when the event is not a bulk envelope (the overwhelmingly common case).
+ * Exported for direct unit testing.
+ */
+export function fanOutBulkEvent(event: ToolInvocationEvent): ToolInvocationEvent[] | null {
+  if (!event.result.ok) return null;
+  const env = asBulkEnvelope(event.result.data);
+  if (!env) return null;
+  return env.results.map((ri, i) => ({
+    tool: event.tool,
+    args: perItemArgs(event.args, i, ri),
+    // Per-item ok gates onlyOnSuccess exactly like a single call: a failed item's
+    // reactions are skipped, a succeeded item's fire. `result.data` is the
+    // self-describing item (carries workItem/completion/… for the rules to read).
+    result:
+      ri.ok === false
+        ? {
+            ok: false as const,
+            data: ri,
+            error: { code: 'bulk_item_failed', message: typeof ri.error === 'string' ? ri.error : 'item failed' },
+          }
+        : { ok: true as const, data: ri },
+    ctx: event.ctx,
+    ...(event.cause ? { cause: event.cause } : {}),
+  }));
+}
+
 /** Shared match + schedule tail for both event sources. Never throws. */
 function matchAndRun(event: ToolInvocationEvent): void {
+  // D-007: a bulk-envelope result fans out into one synthetic event per item so
+  // every per-item reaction rule + emits desugar fires exactly as for a single
+  // call. The bulk-level event itself is NOT matched — it is a carrier, not an
+  // invocation. Recursion terminates: a per-item `result.data` is a single item,
+  // never itself an envelope.
+  const perItem = fanOutBulkEvent(event);
+  if (perItem) {
+    for (const sub of perItem) matchAndRun(sub);
+    return;
+  }
+
   let actions: Array<MatchedAction<ToolInvocationEvent, string>>;
   try {
     actions = matchReactions(event);

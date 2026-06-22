@@ -77,10 +77,12 @@ afterEach(async () => {
   claudeUpstream = undefined;
 });
 
-/** Boot a gateway with a Codex pool + OpenAI upstream. `codexAccounts` defaults to two. */
+/** Boot a gateway with a Codex pool + OpenAI upstream. `codexAccounts` defaults to two;
+ *  `gwOpts` overrides createInferenceGateway deps (e.g. the stall-timeout knobs). */
 async function bootCodex(
   openaiReply: (req: http.IncomingMessage, res: http.ServerResponse, body: string) => void,
   codexAccounts: ActiveAccount[] = [codexAcct('cdx-1'), codexAcct('cdx-2')],
+  gwOpts: Partial<Parameters<typeof createInferenceGateway>[0]> = {},
 ) {
   openaiUpstream = await startUpstream(openaiReply);
   const codexPool = createFailoverPool(codexAccounts);
@@ -95,6 +97,7 @@ async function bootCodex(
     governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
     maxQueueWaitMs: 80,
     selfHeal: { enabled: false },
+    ...gwOpts,
   });
   port = await gw.listen(0);
 }
@@ -288,5 +291,71 @@ describe('proxyOpenAi — route isolation from the Claude proxy', () => {
     // the Claude path injects the claude bearer + the oauth beta (NOT a codex token)
     expect(claudeUpstream.last.headers['authorization']).toBe('Bearer claude-tok');
     expect(String(claudeUpstream.last.headers['anthropic-beta'])).toContain('oauth-2025-04-20');
+  });
+});
+
+describe('proxyOpenAi — stream-stall guards (parity with the Claude proxy)', () => {
+  // A server that accepts the request but NEVER responds (headers never arrive).
+  const hangHeaders = () => {
+    /* never write/end — the upstream stalls before sending response headers */
+  };
+  // A single-account codex pool so a stall makes exactly ONE attempt (no rotate) → deterministic timing.
+  const solo = () => [codexAcct('cdx-solo')];
+
+  it('a stream:true request aborts at the SHORT TTFB deadline, not the generous one (no slot squat)', async () => {
+    await bootCodex(hangHeaders, solo(), {
+      upstreamHeadersTimeoutMs: 1000, // generous (non-stream)
+      upstreamStreamHeadersTimeoutMs: 150, // short TTFB for streams
+    });
+    const start = Date.now();
+    const res = await postResponses({ model: 'gpt-x', input: 'hi', stream: true });
+    const elapsed = Date.now() - start;
+    expect(res.status).toBe(502); // single-account stall → forwarded as 502
+    // It must abort at ~150ms (stream TTFB), well under the 1000ms generous deadline.
+    expect(elapsed).toBeLessThan(700);
+  });
+
+  it('a NON-stream request keeps the GENEROUS headers deadline (regression guard — streams must not shorten it)', async () => {
+    await bootCodex(hangHeaders, solo(), {
+      upstreamHeadersTimeoutMs: 1000,
+      upstreamStreamHeadersTimeoutMs: 150,
+    });
+    const start = Date.now();
+    const res = await postResponses({ model: 'gpt-x', input: 'hi' }); // no stream
+    const elapsed = Date.now() - start;
+    expect(res.status).toBe(502);
+    // It must wait the generous ~1000ms, NOT the 150ms stream TTFB.
+    expect(elapsed).toBeGreaterThan(700);
+  });
+
+  it('a mid-stream upstream BODY stall is aborted by the body-idle guard (not left to the slow downstream-idle backstop)', async () => {
+    // Upstream: send 200 + headers + ONE chunk, then hang forever (never end, never send more).
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"type":"response.created"}\n\n');
+        // ...then stall mid-stream (no more bytes, no end).
+      },
+      solo(),
+      {
+        upstreamHeadersTimeoutMs: 2000,
+        upstreamStreamHeadersTimeoutMs: 2000, // headers arrive instantly — not the limiting factor here
+        upstreamBodyIdleTimeoutMs: 200, // the guard under test
+        downstreamIdleMs: 3000, // the OLD-path backstop — high, so only a real body-idle guard is fast
+      },
+    );
+    const start = Date.now();
+    const res = await postResponses({ model: 'gpt-x', input: 'hi', stream: true });
+    expect(res.status).toBe(200); // headers forwarded, then upstream stalls
+    let settled = 0;
+    try {
+      await res.text(); // the body read terminates when the gateway tears the stalled stream down
+    } catch {
+      /* a destroyed mid-stream connection rejects the body read — expected */
+    } finally {
+      settled = Date.now() - start;
+    }
+    // body-idle (200ms) must fire FAR before the 3000ms downstream-idle backstop.
+    expect(settled).toBeLessThan(1500);
   });
 });
