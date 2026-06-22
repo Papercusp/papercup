@@ -77,11 +77,39 @@ const NOTIFY_FUNCTION = 'emit_change_notify';
 /**
  * Cache-tag-backing tables that are MAPPED in TABLE_TO_QUERY_NAMES but
  * INTENTIONALLY do not carry the emit_change_notify trigger, EACH with the reason
- * + the condition to re-arm. Empty today — every mapped table is covered after
- * mig-373. A mapped table NOT here that lacks the trigger is the bug this guard
- * exists to catch.
+ * + the condition to re-arm. A mapped table NOT here that lacks the trigger is the
+ * bug this guard exists to catch.
+ *
+ * Two intentional categories today:
+ *
+ *   1. APPEND-HEAVY ACTIVITY LOGS — a per-row pg_notify on a high-write log is the
+ *      performance-doc notify-storm anti-pattern (/internal/docs/performance). Their
+ *      live invalidation is a coarse/debounced follow-up, NOT a per-row trigger
+ *      (caching-layer-tag-eca-2026-06-22 P-005; restored by mig-376 after a duplicate
+ *      373 over-attached them). RE-ARM: remove the entry only once the table gets a
+ *      genuinely cheap/debounced producer, not a raw per-row trigger.
+ *
+ *   2. COMPAT VIEWS over the unified work_items base table — engineer_issues and
+ *      harness_features_consolidated are relkind 'v' after mig-374, so they cannot
+ *      carry a row trigger. Their writes route (via INSTEAD-OF) to work_items, whose
+ *      emit_change_notify trigger fires work_items.changed — and work_items IS mapped
+ *      (to the same query names), so the invalidation reaches the bridge. RE-ARM:
+ *      remove the entry if the view is ever materialized into a real table.
  */
-const COVERAGE_EXEMPT: Record<string, string> = {};
+const COVERAGE_EXEMPT: Record<string, string> = {
+  // (1) append-heavy activity logs — notify-storm; debounced invalidation is a follow-up.
+  audit_log: 'append-heavy activity log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
+  agent_runs_consolidated: 'append-heavy run log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
+  user_actions: 'append-heavy action log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
+  harness_hook_logs: 'append-heavy hook log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
+  toast_log: 'append-heavy toast log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
+  feature_audit_consolidated:
+    'append-heavy audit log; per-row notify = notify-storm. Debounced invalidation TODO (P-005).',
+  // (2) compat views over work_items (mig-374) — cannot carry a row trigger; producer is work_items.
+  engineer_issues: 'compat VIEW over work_items (mig-374); invalidation fires from the mapped work_items base-table trigger.',
+  harness_features_consolidated:
+    'compat VIEW over work_items (mig-374); invalidation fires from the mapped work_items base-table trigger.',
+};
 
 /** The required tables = the keys of TABLE_TO_QUERY_NAMES, which are
  *  `harness_shared.<table>` strings. Parse them once; assert the schema is the
