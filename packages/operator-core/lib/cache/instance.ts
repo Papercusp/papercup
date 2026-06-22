@@ -40,12 +40,21 @@ const MAX_L1_ENTRIES = 50_000;
 
 // ── CACHE_LAYER kill-switch (P-018) ────────────────────────────────────────────
 // The cache READ path (getOrSet) is synchronous-fast and can't await a flag, so the
-// CACHE_LAYER flag is held in a SYNC-cached boolean refreshed on boot + every flag
-// change (the CACHE_TAG_ECA / WORKITEM_CLAIM_LEASE precedent). DEFAULT ON. We fail
-// SAFE: any read error (flag store hiccup) leaves the cache ENABLED — a transient
-// flag-read failure must not silently disable the cache. The `bypass` seam inverts
-// it: bypass === !enabled.
+// CACHE_LAYER flag is held in a SYNC-cached boolean refreshed on first use + every
+// flag change (the CACHE_TAG_ECA / WORKITEM_CLAIM_LEASE precedent). DEFAULT ON. We
+// fail SAFE: any read error (flag store hiccup) leaves the cache ENABLED — a
+// transient flag-read failure must not silently disable the cache. The `bypass` seam
+// inverts it: bypass === !enabled.
+//
+// The flag wiring is initialized LAZILY (on the first getOperatorCache / refresh),
+// NOT at module load: this module is in the import closure of `sync-sse.ts` (the
+// P-017 cold-bust wiring), and a module-load `onFlagChange(...)` would force EVERY
+// sync-sse importer's module graph to evaluate `@papercusp/flags/server` — breaking
+// the many unit tests that mock that module with only `getFlag`. Lazy init means
+// only code that actually USES the cache touches the flag subscription.
 let cacheLayerOn = true;
+let flagWiringInit = false;
+
 async function refreshCacheLayer(): Promise<void> {
   try {
     cacheLayerOn = await getFlag(FLAGS.CACHE_LAYER, systemDistinctId());
@@ -53,17 +62,23 @@ async function refreshCacheLayer(): Promise<void> {
     cacheLayerOn = true; // fail-safe ⇒ cache stays on (default behavior)
   }
 }
-void refreshCacheLayer();
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.CACHE_LAYER) void refreshCacheLayer();
-});
+
+/** Idempotently install the flag subscription + prime the sync-cached value. */
+function ensureFlagWiring(): void {
+  if (flagWiringInit) return;
+  flagWiringInit = true;
+  void refreshCacheLayer();
+  onFlagChange((key) => {
+    if (key === null || key === FLAGS.CACHE_LAYER) void refreshCacheLayer();
+  });
+}
 
 /** Whether the operator L1 cache layer is live (SYNC-cached CACHE_LAYER flag). */
 export function cacheLayerEnabled(): boolean {
   return cacheLayerOn;
 }
 
-/** Test-only: re-read CACHE_LAYER synchronously-awaitably (the boot `void` read may not have settled). */
+/** Test-only: re-read CACHE_LAYER synchronously-awaitably (the lazy `void` read may not have settled). */
 export async function _refreshCacheLayerForTests(): Promise<void> {
   await refreshCacheLayer();
 }
@@ -78,6 +93,7 @@ function operatorCacheConfig(extra: CacheConfig = {}): CacheConfig {
  * anchored on `globalThis` so every module (and a vitest graph) shares it.
  */
 export function getOperatorCache(): Cache {
+  ensureFlagWiring();
   const g = globalThis as Record<string, unknown>;
   let c = g[GLOBAL_KEY] as Cache | undefined;
   if (!c) {
@@ -94,6 +110,7 @@ export function getOperatorCache(): Cache {
  * `getOperatorCache()` rebuilds a fresh default.
  */
 export function setOperatorCache(config: CacheConfig = {}): Cache {
+  ensureFlagWiring();
   // Layer the caller's config OVER the operator defaults (bound + kill-switch
   // bypass), so an override still honors the CACHE_LAYER kill-switch unless the
   // test deliberately passes its own `bypass`.

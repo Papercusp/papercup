@@ -64,23 +64,34 @@ export default function SentinelVoiceBar() {
   );
 }
 
-// Slim horizontal strip in normal flow, directly under the sticky header. NOT
-// itself sticky: a second top:0 sticky element would slide under the header
-// (z 1300) and be hidden, and the header's exact height isn't a fixed constant.
-// PTT still works app-wide via the global backtick handler even when scrolled
-// past, so a non-sticky bar is the safe v1. Offsets (left sidebar) are inherited
-// from the body's `has-left-sidebar` padding, same as the header.
+// Slim horizontal strip that STICKS just under the sticky header (top: 58px =
+// the header's height; no header-height CSS var exists, and a few px of drift
+// only shifts the stick point slightly) so it stays visible while scrolling
+// rather than sliding behind the header. It is given a clear ACCENT treatment —
+// a left accent stripe + accent-tinted gradient + accent top border + shadow —
+// because the header and a plain dark bar share the SAME base color and were
+// visually indistinguishable: the bar read as a seamless extension of the nav,
+// so it couldn't be found (owner: "I'm on staging but don't see the voice bar").
+// Offsets (left sidebar) are inherited from the body's `has-left-sidebar` padding.
 const VOICE_BAR_CSS = `
 .pc-voice-bar {
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 7px 18px;
-  min-height: 42px;
+  min-height: 44px;
+  position: sticky;
+  top: 58px;
+  z-index: 1200;
+  border-top: 1px solid color-mix(in srgb, var(--accent, #8b5cf6) 55%, transparent);
   border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.18));
-  background: color-mix(in srgb, var(--bg-deep, #0b1220), transparent 16%);
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  border-left: 3px solid var(--accent, #8b5cf6);
+  background:
+    linear-gradient(color-mix(in srgb, var(--accent, #8b5cf6) 13%, transparent), transparent),
+    color-mix(in srgb, var(--bg-deep, #0b1220), transparent 6%);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.30);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
 }
 .pc-voice-bar__brand { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
 .pc-voice-bar__brand svg { color: var(--accent, #8b5cf6); flex-shrink: 0; }

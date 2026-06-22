@@ -180,66 +180,76 @@ export async function reconcileLoopRoutines(
   const result: LoopRebaseResult = { rearmed: 0, loops: [] };
 
   for (const row of rows) {
-    // A fired loop always has last_fired_at (claim sets it on park/advance); defensively
-    // skip a malformed row rather than rebasing off an unbounded window.
-    if (!row.last_fired_at) continue;
-    const lastFiredMs = row.last_fired_at.getTime();
-    const intervalMs = row.interval_sec * 1000;
+    // PER-ROW ISOLATION (engine-loop re-arm hardening, EI-2549): one malformed row must NEVER
+    // throw out of this loop and strand EVERY other loop's re-arm (a single bad row silently
+    // wedging the whole fleet's loops is exactly the failure class this guards). Log + continue.
+    try {
+      // A fired loop always has last_fired_at (claim sets it on park/advance); defensively
+      // skip a malformed row rather than rebasing off an unbounded window.
+      if (!row.last_fired_at) continue;
+      const lastFiredMs = row.last_fired_at.getTime();
+      const intervalMs = row.interval_sec * 1000;
 
-    // Resolve the re-arm time + provenance.
-    let completedAt: number;
-    let via: RebaseVia;
-    const signal = completionSignal(row, lastFiredMs, nowMs);
-    if (signal) {
-      completedAt = signal.completedAt;
-      via = signal.via;
-    } else if (
-      // Stuck-park backstop — a PARKED loop only: no completion signal, no post-fire
-      // activity (a legitimately long turn keeps producing activity, so its
-      // last_active_at would be > last_fired), and parked far past the fire.
-      row.parked &&
-      (row.presence_last_active_at?.getTime() ?? 0) <= lastFiredMs &&
-      nowMs - lastFiredMs >= stuckParkMs(intervalMs)
-    ) {
-      completedAt = lastFiredMs;
-      via = 'stuck-backstop';
-    } else {
-      continue; // still in flight / nothing to fold — leave it
-    }
-
-    const reArmDate = new Date(completedAt + intervalMs);
-
-    // ONE statement for BOTH kinds (d5a84's LEAST tip):
-    //   pure loop parked  → next_fire_at='infinity' matches → LEAST(infinity, X) = X (re-arm)
-    //   cron+loop (armed) → guarded by next_fire_at > X → LEAST(cron-next, X) = X (fold sooner)
-    // Idempotent + never-backwards: a re-aris loop sits at X (a finite past/future time);
-    // the first disjunct (=infinity) no longer matches and the second (next_fire_at > X) is
-    // false, so a re-pass is a no-op. A cron fire that is already sooner than X is left
-    // untouched (the WHERE never matches), so a cron's cadence is never delayed.
-    const updated = await db<{ id: string }[]>`
-      UPDATE harness_shared.routines
-         SET next_fire_at = LEAST(next_fire_at, ${reArmDate}), updated_at = now()
-       WHERE id = ${row.id}
-         AND reschedule_interval_sec IS NOT NULL
-         AND ( next_fire_at = 'infinity'::timestamptz
-               OR next_fire_at > ${reArmDate} )
-      RETURNING id
-    `;
-    if (updated.length > 0) {
-      result.rearmed++;
-      result.loops.push({
-        id: row.id,
-        targetOwnerId: row.target_owner_id,
-        completedAt,
-        nextFireAt: completedAt + intervalMs,
-        via,
-      });
-      if (via === 'stuck-backstop') {
-        console.warn(
-          `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) parked ` +
-            `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry`,
-        );
+      // Resolve the re-arm time + provenance.
+      let completedAt: number;
+      let via: RebaseVia;
+      const signal = completionSignal(row, lastFiredMs, nowMs);
+      if (signal) {
+        completedAt = signal.completedAt;
+        via = signal.via;
+      } else if (
+        // Stuck-park backstop — a PARKED loop only: no completion signal, no post-fire
+        // activity (a legitimately long turn keeps producing activity, so its
+        // last_active_at would be > last_fired), and parked far past the fire.
+        row.parked &&
+        (row.presence_last_active_at?.getTime() ?? 0) <= lastFiredMs &&
+        nowMs - lastFiredMs >= stuckParkMs(intervalMs)
+      ) {
+        completedAt = lastFiredMs;
+        via = 'stuck-backstop';
+      } else {
+        continue; // still in flight / nothing to fold — leave it
       }
+
+      const reArmDate = new Date(completedAt + intervalMs);
+
+      // ONE statement for BOTH kinds (d5a84's LEAST tip):
+      //   pure loop parked  → next_fire_at='infinity' matches → LEAST(infinity, X) = X (re-arm)
+      //   cron+loop (armed) → guarded by next_fire_at > X → LEAST(cron-next, X) = X (fold sooner)
+      // Idempotent + never-backwards: a re-armed loop sits at X (a finite past/future time);
+      // the first disjunct (=infinity) no longer matches and the second (next_fire_at > X) is
+      // false, so a re-pass is a no-op. A cron fire that is already sooner than X is left
+      // untouched (the WHERE never matches), so a cron's cadence is never delayed.
+      const updated = await db<{ id: string }[]>`
+        UPDATE harness_shared.routines
+           SET next_fire_at = LEAST(next_fire_at, ${reArmDate}), updated_at = now()
+         WHERE id = ${row.id}
+           AND reschedule_interval_sec IS NOT NULL
+           AND ( next_fire_at = 'infinity'::timestamptz
+                 OR next_fire_at > ${reArmDate} )
+        RETURNING id
+      `;
+      if (updated.length > 0) {
+        result.rearmed++;
+        result.loops.push({
+          id: row.id,
+          targetOwnerId: row.target_owner_id,
+          completedAt,
+          nextFireAt: completedAt + intervalMs,
+          via,
+        });
+        if (via === 'stuck-backstop') {
+          console.warn(
+            `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) parked ` +
+              `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry`,
+          );
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `[loop-reconcile] row '${row.id}' (owner ${row.target_owner_id}) failed to rebase — SKIPPED ` +
+          `(other loops unaffected): ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
+      );
     }
   }
 

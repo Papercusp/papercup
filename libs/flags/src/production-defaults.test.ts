@@ -341,6 +341,78 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
 ]);
 
 /**
+ * WHY each dark flag ships OFF — its ALLOWED reason, per CLAUDE.md "Feature flags + PostHog".
+ * Default-OFF is permitted ONLY for one of these four cases. Crucially there is NO
+ * "finished, owner flips ON after verifying" case — a finished + tested feature MUST ship ON
+ * (the author verifies-then-flips IN-TASK), so that excuse is literally un-typeable here. Every
+ * KNOWN_DARK_FLAGS entry must declare its case (the test below enforces 1:1 coverage).
+ *   - 'incomplete'      the code does not fully work yet, or is unverified on a path that matters.
+ *   - 'owner-authority' a privilege / security / destructive / autonomy surface the owner ratifies.
+ *   - 'cutover'         a reversible kill-switch the owner flips after an attended live verify.
+ *   - 'parked'          deliberately out of V1 scope (built-or-not, simply not shipping yet).
+ */
+type DarkCase = 'incomplete' | 'owner-authority' | 'cutover' | 'parked';
+const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase>([
+  // parked — deliberately out of V1 scope
+  [FLAGS.CLOUDFLARE_PUBLISH, 'parked'],
+  [FLAGS.HARNESS_PHASES, 'parked'],
+  [FLAGS.DESIGN, 'parked'],
+  [FLAGS.TESTING, 'parked'],
+  // incomplete — not fully working / unverified on a path that matters
+  [FLAGS.RECLAIM_STALLED, 'incomplete'],
+  [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
+  [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, 'incomplete'],
+  [FLAGS.HIVE_REKEY, 'incomplete'],
+  [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
+  [FLAGS.PLAN_PART_FEDERATION, 'incomplete'],
+  [FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'incomplete'],
+  [FLAGS.AUTHORITY_RPC_PROTOMUX, 'incomplete'],
+  [FLAGS.AUTHORITY_EVICTION_PROBE, 'incomplete'],
+  [FLAGS.SUBSTRATE_SIDECAR, 'incomplete'],
+  [FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT, 'incomplete'],
+  [FLAGS.CAPABILITY_ENVELOPE, 'incomplete'],
+  [FLAGS.FLEET_CAPABILITY_ONLY, 'incomplete'],
+  [FLAGS.CAPABILITY_EXEC_SANDBOX, 'incomplete'],
+  [FLAGS.EXTERNAL_BENCH, 'incomplete'],
+  [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT, 'incomplete'],
+  [FLAGS.BEE_TRANSCRIPT_CAP, 'incomplete'],
+  [FLAGS.WORKITEM_CLAIM_LEASE, 'incomplete'],
+  [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
+  [FLAGS.LOOPS, 'incomplete'],
+  // owner-authority — privilege / security / destructive / autonomy the owner ratifies
+  [FLAGS.WATCHDOG_AUTO_CLOSE, 'owner-authority'],
+  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, 'owner-authority'],
+  [FLAGS.IDLE_SESSION_REAPER, 'owner-authority'],
+  [FLAGS.IDLE_SESSION_REAPER_TERMINATE, 'owner-authority'],
+  [FLAGS.OPEN_SIGNUP, 'owner-authority'],
+  [FLAGS.NEGATIVE_SPACE_MINER, 'owner-authority'],
+  [FLAGS.NEOLOGISM_MINER, 'owner-authority'],
+  [FLAGS.REPLAY_HARNESS, 'owner-authority'],
+  [FLAGS.REGRET_MINING, 'owner-authority'],
+  [FLAGS.TRANSFER_HARNESS, 'owner-authority'],
+  [FLAGS.FLEET_EKG, 'owner-authority'],
+  [FLAGS.PROMPT_ABLATION, 'owner-authority'],
+  [FLAGS.DEFERRAL_INTEREST, 'owner-authority'],
+  [FLAGS.OWNER_PREFERENCE_RANKING, 'owner-authority'],
+  [FLAGS.CALIBRATION_MARKETS, 'owner-authority'],
+  [FLAGS.RED_QUEEN, 'owner-authority'],
+  [FLAGS.LEARNING_SLO_SENSORS, 'owner-authority'],
+  [FLAGS.GRADUATION_TRACKER, 'owner-authority'],
+  [FLAGS.QUEEN_AUTONOMY_ARMED, 'owner-authority'],
+  [FLAGS.QUEEN_FULL_AUTONOMY, 'owner-authority'],
+  [FLAGS.SCOUT_EXPERIMENT_RAIL, 'owner-authority'],
+  [FLAGS.OVERWATCH, 'owner-authority'],
+  [FLAGS.SENTINEL, 'owner-authority'],
+  [FLAGS.SENTINEL_PROACTIVE, 'owner-authority'],
+  // cutover — reversible kill-switch the owner flips after an attended live verify
+  [FLAGS.INFERENCE_GATEWAY, 'cutover'],
+  [FLAGS.COORD_PER_WORKSPACE, 'cutover'],
+  [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],
+  [FLAGS.UI_WORKSPACE_GUARD, 'cutover'],
+  [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
+]);
+
+/**
  * The dark allowlist must be RE-REVIEWED by this date. Past it, the review-by
  * test below goes red — forcing the team to walk every dark flag and either flip
  * the ones now ready to default-ON (remove them here) or consciously push this
@@ -398,5 +470,25 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
         `ready to default-ON (remove them here), then push DARK_FLAGS_REVIEW_BY out with a fresh ` +
         `look. Don't just bump the date — the review is the point.`,
     ).toBe(true);
+  });
+
+  it('every dark flag declares a valid reason — closes the "finished-pending-verify" loophole', () => {
+    // CLAUDE.md allows default-OFF ONLY for: incomplete | owner-authority | cutover | parked.
+    // There is deliberately NO "finished, owner flips after verifying" case — a finished + tested
+    // feature must ship ON (verify-then-flip in-task). Forcing every dark flag to pick a real case
+    // makes that excuse un-expressible. DARK_FLAG_CASE must be 1:1 with KNOWN_DARK_FLAGS (the
+    // DarkCase TYPE already rejects an invalid reason at compile time).
+    const untagged = [...KNOWN_DARK_FLAGS].filter((key) => !DARK_FLAG_CASE.has(key));
+    expect(
+      untagged,
+      `Dark flags with no DARK_FLAG_CASE reason: [${untagged.join(', ')}]. Tag each with ` +
+        `'incomplete' | 'owner-authority' | 'cutover' | 'parked'. There is NO "finished, owner ` +
+        `flips after verifying" case — if it's finished + tested, ship it ON (flip in-task).`,
+    ).toEqual([]);
+    const orphan = [...DARK_FLAG_CASE.keys()].filter((key) => !KNOWN_DARK_FLAGS.has(key));
+    expect(
+      orphan,
+      `DARK_FLAG_CASE tags a flag no longer in KNOWN_DARK_FLAGS (drift) — remove it: [${orphan.join(', ')}]`,
+    ).toEqual([]);
   });
 });
