@@ -1529,41 +1529,93 @@ export function createInferenceGateway(deps: GatewayDeps) {
     totalRequests++;
     res.setTimeout(downstreamIdleMs, () => res.destroy());
 
-    let token: string;
-    try {
-      token = await withDeadline(active.token(), tokenTimeoutMs, `codex token '${active.accountId}'`);
-    } catch (e) {
-      upstreamErrors++;
-      log('error', `inference-gateway: Codex token read failed on '${active.accountId}': ${(e as Error).message}`);
-      sendJson(
-        res,
-        503,
-        { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: Codex token unavailable for '${active.accountId}'` }, gateway: true },
-        { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
-      );
-      return;
-    }
+    // RESILIENCE PARITY with the Claude path (2026-06-22 audit): rotate to another Codex account + retry on
+    // a 429, a transport failure, or a token-read failure — instead of FORWARDING the error to the bee (the
+    // same "route around, don't surface" bug-class the Claude path was hardened against). `codexPool.onExhausted`
+    // marks the failing account out of rotation + returns the next one. Bounded by INTERNAL_RETRY_MAX_ATTEMPTS;
+    // the body is buffered (bodyBuf) so each attempt re-sends cleanly. The retry only runs BEFORE headers are
+    // written; once we stream a response we commit to it.
+    const rotateCodex = (resetAt: number): boolean => {
+      const next = deps.codexPool!.onExhausted(active.accountId, resetAt);
+      if (next && next.accountId !== active.accountId) {
+        failovers++;
+        active = next;
+        return true;
+      }
+      return false;
+    };
+    for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
+      const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1;
+      let token: string;
+      try {
+        token = await withDeadline(active.token(), tokenTimeoutMs, `codex token '${active.accountId}'`);
+      } catch (e) {
+        upstreamErrors++;
+        log('error', `inference-gateway: Codex token read failed on '${active.accountId}': ${(e as Error).message}`);
+        if (canRetry && rotateCodex(Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) continue;
+        if (!res.headersSent) {
+          sendJson(
+            res,
+            503,
+            { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: Codex token unavailable for '${active.accountId}'` }, gateway: true },
+            { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
+          );
+        }
+        return;
+      }
 
-    const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
-      headers[k] = Array.isArray(v) ? v.join(', ') : v;
-    }
-    headers.authorization = `Bearer ${token}`;
-    headers['accept-encoding'] = 'identity';
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
+        headers[k] = Array.isArray(v) ? v.join(', ') : v;
+      }
+      headers.authorization = `Bearer ${token}`;
+      headers['accept-encoding'] = 'identity';
 
-    const ac = new AbortController();
-    const stallTimer = setTimeout(() => ac.abort(new Error(`openai upstream stall: no headers for ${upstreamHeadersTimeoutMs}ms`)), upstreamHeadersTimeoutMs);
-    stallTimer.unref?.();
-    try {
-      const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
-      if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
-      const dispatcher = await dispatcherFor(active);
-      if (dispatcher) init.dispatcher = dispatcher;
-      const up = await doFetch(`${openaiUpstreamBase}${url}`, init as RequestInit);
-      clearTimeout(stallTimer);
-      if (up.status === 429) upstream429++;
-      else if (up.ok) aimd.recordSuccess();
+      const ac = new AbortController();
+      const stallTimer = setTimeout(() => ac.abort(new Error(`openai upstream stall: no headers for ${upstreamHeadersTimeoutMs}ms`)), upstreamHeadersTimeoutMs);
+      stallTimer.unref?.();
+      let up: Response;
+      try {
+        const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
+        if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
+        const dispatcher = await dispatcherFor(active);
+        if (dispatcher) init.dispatcher = dispatcher;
+        up = await doFetch(`${openaiUpstreamBase}${url}`, init as RequestInit);
+        clearTimeout(stallTimer);
+      } catch (e) {
+        clearTimeout(stallTimer);
+        upstreamErrors++;
+        active.invalidateToken?.();
+        // Transport failure (dead/hanging proxy or network) → route around to another Codex account + retry.
+        if (canRetry && rotateCodex(Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) continue;
+        if (!res.headersSent) {
+          sendJson(
+            res,
+            502,
+            { type: 'error', error: { type: 'api_error', message: `inference-gateway: Codex upstream failed: ${(e as Error).message}` }, gateway: true },
+            { [ROUTED_ACCOUNT_HEADER]: active.accountId },
+          );
+        } else {
+          res.destroy();
+        }
+        return;
+      }
+
+      // 429 → ROTATE + retry (route around) rather than forwarding the throttle to the bee.
+      if (up.status === 429) {
+        upstream429++;
+        if (canRetry) {
+          const reset = parseRateReset(headersToObject(up.headers));
+          if (rotateCodex(reset.resetAt ?? Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) {
+            try { await up.body?.cancel(); } catch { /* drain the throttle body before retrying */ }
+            continue;
+          }
+        }
+        // no rotate target / out of attempts → fall through and forward the 429 (the bee's CLI retries)
+      } else if (up.ok) {
+        aimd.recordSuccess();
+      }
 
       const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: active.accountId };
       up.headers.forEach((v, k) => {
@@ -1577,20 +1629,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       Readable.fromWeb(up.body as any)
         .on('error', () => res.destroy())
         .pipe(res);
-    } catch (e) {
-      clearTimeout(stallTimer);
-      upstreamErrors++;
-      active.invalidateToken?.();
-      if (!res.headersSent) {
-        sendJson(
-          res,
-          502,
-          { type: 'error', error: { type: 'api_error', message: `inference-gateway: Codex upstream failed: ${(e as Error).message}` }, gateway: true },
-          { [ROUTED_ACCOUNT_HEADER]: active.accountId },
-        );
-      } else {
-        res.destroy();
-      }
+      return;
     }
   }
 
@@ -1643,7 +1682,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     const pri = priorityFromLabel((req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined);
-    const handler = url.startsWith('/v1/messages') ? proxy : proxyOpenAi;
+    // Route the OpenAI-compatible Codex path (/v1/responses) to the Codex pool; EVERYTHING ELSE — /v1/messages
+    // AND any other /v1/* — goes to the Claude proxy (the gateway's primary). Defaulting UNKNOWN paths to Claude
+    // (not Codex) avoids a confusing "no Codex pool" 503 for a legitimate non-/v1/messages Claude request (e.g.
+    // a future /v1/… endpoint), and matches the only codex path the integration uses (2026-06-22 audit).
+    const handler = url.startsWith('/v1/responses') ? proxyOpenAi : proxy;
     queue.run(pri, () => handler(req, res, url)).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
