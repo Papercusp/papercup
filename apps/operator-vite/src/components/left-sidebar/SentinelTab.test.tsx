@@ -86,8 +86,8 @@ describe('SentinelTab rendering', () => {
     expect(screen.getAllByText('Voice').length).toBeGreaterThan(0);
     expect(screen.getByText('Proactive nudges')).toBeTruthy();
     expect(screen.getByText('Speak status / cadence')).toBeTruthy();
-    expect(screen.getByText('Pause the herald')).toBeTruthy();
-    expect(screen.getByText('Do not disturb')).toBeTruthy();
+    // "Pause the herald" (silenceVoice) + "Do not disturb" moved to the voice-bar
+    // Active/Passive/Off toggle (owner 2026-06-22) — they're no longer rows here.
   });
 
   it('does NOT fetch while the tab is inactive', () => {
@@ -125,17 +125,17 @@ describe('SentinelTab rendering', () => {
     vi.stubGlobal(
       'fetch',
       makeFetch({
-        workspace: { silenceVoice: false },
-        user: { silenceVoice: true },
+        workspace: { speakSuggestions: true },
+        user: { speakSuggestions: false },
         deletes,
       }),
     );
     render(<SentinelTab active />);
-    await waitFor(() => expect(screen.getByText('Pause the herald')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('Voice').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reset Pause the herald to default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Voice to default' }));
     await waitFor(() => expect(deletes.length).toBeGreaterThan(0));
-    expect(deletes.some((u) => u === '/api/user/preferences?key=silenceVoice')).toBe(true);
+    expect(deletes.some((u) => u === '/api/user/preferences?key=speakSuggestions')).toBe(true);
   });
 
   it('a segmented audience click PATCHes the per-user override', async () => {

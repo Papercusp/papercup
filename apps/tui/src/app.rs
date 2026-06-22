@@ -105,6 +105,19 @@ pub enum Action {
     /// is the message text (the reducer has already appended it + a streaming
     /// assistant bubble before returning this).
     SendChat(String),
+    /// Answer the focused inline card (sentinel-tui-shared-backend-and-cards
+    /// Phase 2a) — the run loop POSTs `/card-response`. The reducer has already
+    /// optimistically dismissed the card from `card_state`. `payload` is the
+    /// submit body (`{picks:[…]}` / `{value:…}`), absent for decline/cancel.
+    CardRespond {
+        correlation_id: String,
+        /// The card's own workspace (the wire `VersionedSnapshot.workspaceId`),
+        /// preferred over the loop-resolved fallback for the `/card-response`
+        /// `expectedWorkspaceId` gate.
+        workspace_id: Option<String>,
+        action: String,
+        payload: Option<serde_json::Value>,
+    },
     /// Edit the fleet's hard cap from the Overview top-bar (Brief 23 P-005) —
     /// the run loop PUTs `/api/operator/rate-limit-config` then refetches the
     /// read-model (the reducer already updated the local copy optimistically).
@@ -1410,6 +1423,16 @@ pub struct App {
     pub chat_oldest_seq: Option<i64>,
     /// True while an older-history page fetch is in flight (dedupes the trigger).
     pub chat_loading_earlier: bool,
+    /// Inline card state (sentinel-tui-shared-backend-and-cards-2026-06-22
+    /// Phase 2a): the open `chat:ask_choice` cards mirrored from the
+    /// state-channel snapshot + the live interaction (selection / input). The
+    /// focused card renders over the operator pane; answering POSTs
+    /// `/card-response`.
+    pub card_state: crate::card_view::CardState,
+    /// The active workspace id (resolved by the card loop at startup) — the
+    /// defense-in-depth `expectedWorkspaceId` for a `/card-response`. `None`
+    /// until resolved (dev / unscoped); the POST then omits the gate.
+    pub card_workspace: Option<String>,
     // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───
     /// Whether the operator chat is docked beside the active tab's content. The
     /// dock reuses `draw_chat` + the same `chat_*` state as the Operator tab (one
@@ -1652,6 +1675,8 @@ impl App {
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
             chat_loading_earlier: false,
+            card_state: crate::card_view::CardState::new(),
+            card_workspace: None,
             operator_dock_open: false,
             operator_dock_focused: false,
             voice_phase: VoicePhase::Idle,
@@ -1813,6 +1838,125 @@ impl App {
     /// a focused operator dock — and never while composing a typed message.
     pub fn voice_key_active(&self) -> bool {
         self.operator_input_active() && !self.chat_composing
+    }
+
+    /// Drive the focused inline card (sentinel-tui-shared-backend-and-cards
+    /// Phase 2a). Returns `Action::CardRespond` when the user commits an answer
+    /// (the reducer has already optimistically dismissed the card so the next
+    /// card surfaces immediately), else `Action::Render` for navigation.
+    ///
+    /// Keymap by presentation:
+    ///   - radio:    ↑/↓ k/j move · Enter / 1-9 pick (commits) · Esc declines/cancels
+    ///   - checkbox: ↑/↓ k/j move · Space / 1-9 toggle · Enter submits · Esc declines/cancels
+    ///   - text/date: type · Backspace · Enter submits · Esc declines/cancels
+    ///   - slider:   ←/→ h/l (and j/k) nudge · Enter submits · Esc declines/cancels
+    fn card_key(&mut self, code: KeyCode) -> Action {
+        use crate::card_view::{CardPresentation, CardResponse};
+        // Snapshot the focused card's shape (clone the small bits we branch on)
+        // so we don't hold an immutable borrow across the mutable card_state ops.
+        let Some(card) = self.card_state.focused() else {
+            return Action::Render;
+        };
+        let allow_decline = card.allow_decline;
+        let is_choice = matches!(
+            card.presentation,
+            CardPresentation::Radio { .. } | CardPresentation::Checkbox { .. }
+        );
+        let is_checkbox = matches!(card.presentation, CardPresentation::Checkbox { .. });
+        let is_slider = matches!(card.presentation, CardPresentation::Slider { .. });
+        let is_text = matches!(
+            card.presentation,
+            CardPresentation::Text { .. } | CardPresentation::Date { .. }
+        );
+
+        match code {
+            KeyCode::Esc => {
+                // Esc declines when the card allows it, else cancels the run
+                // (the brain's tool resolves {action:'cancel'}).
+                let action = if allow_decline { "decline" } else { "cancel" };
+                self.card_respond_action(action.to_string(), None)
+            }
+            KeyCode::Up | KeyCode::Char('k') if is_choice => {
+                self.card_state.move_sel(false);
+                Action::Render
+            }
+            KeyCode::Down | KeyCode::Char('j') if is_choice => {
+                self.card_state.move_sel(true);
+                Action::Render
+            }
+            KeyCode::Char(' ') if is_checkbox => {
+                self.card_state.toggle_checked();
+                Action::Render
+            }
+            // Slider nudge.
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('j') if is_slider => {
+                self.card_state.nudge_slider(false);
+                Action::Render
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('k') if is_slider => {
+                self.card_state.nudge_slider(true);
+                Action::Render
+            }
+            // Number pick (1-9). For radio this commits; for checkbox it toggles.
+            KeyCode::Char(c @ '1'..='9') if is_choice => {
+                let n = (c as u8 - b'0') as usize;
+                match self.card_state.pick_number(n) {
+                    Some(resp) => self.card_finish(resp),
+                    None => Action::Render, // checkbox toggle / out-of-range
+                }
+            }
+            KeyCode::Char(c) if is_text => {
+                self.card_state.type_char(c);
+                Action::Render
+            }
+            KeyCode::Backspace if is_text => {
+                self.card_state.backspace();
+                Action::Render
+            }
+            KeyCode::Enter => match self.card_state.submit() {
+                Some(resp) => self.card_finish(resp),
+                None => Action::Render, // empty text / nothing selected — wait
+            },
+            _ => Action::Render, // swallow stray keys (the card is modal)
+        }
+    }
+
+    /// Turn a committed `CardResponse` into a `/card-response` Action, after
+    /// optimistically dismissing the focused card so the next one surfaces.
+    fn card_finish(&mut self, resp: crate::card_view::CardResponse) -> Action {
+        use crate::card_view::CardResponse;
+        match resp {
+            CardResponse::SubmitPicks(picks) => self.card_respond_action(
+                "submit".to_string(),
+                Some(serde_json::json!({ "picks": picks })),
+            ),
+            CardResponse::SubmitValue(value) => self.card_respond_action(
+                "submit".to_string(),
+                Some(serde_json::json!({ "value": value })),
+            ),
+            CardResponse::Decline => self.card_respond_action("decline".to_string(), None),
+            CardResponse::Cancel => self.card_respond_action("cancel".to_string(), None),
+        }
+    }
+
+    /// Dismiss the focused card locally + emit the POST action. `None` when no
+    /// card is focused (defensive).
+    fn card_respond_action(
+        &mut self,
+        action: String,
+        payload: Option<serde_json::Value>,
+    ) -> Action {
+        let Some(correlation_id) = self.card_state.focused_correlation_id() else {
+            return Action::Render;
+        };
+        let workspace_id = self.card_state.focused_workspace_id();
+        self.card_state.dismiss(&correlation_id);
+        Action::CardRespond {
+            correlation_id,
+            workspace_id,
+            action,
+            payload,
+        }
     }
 
     /// Apply a voice-pipeline state change (`Event::Voice`). The pipeline task
@@ -4390,6 +4534,15 @@ impl App {
                 }
                 Action::Render
             }
+            // --- Inline cards (sentinel-tui-shared-backend-and-cards Phase 2a) ---
+            Event::CardSnapshot(env) => {
+                self.card_state.apply_snapshot(env);
+                Action::Render
+            }
+            Event::CardWorkspace(ws) => {
+                self.card_workspace = ws;
+                Action::None
+            }
             // --- Companion zellij plugin (P-004 / D-008) ---
             Event::CompanionReady(version) => {
                 self.companion_version = Some(version);
@@ -4470,6 +4623,15 @@ impl App {
         if self.show_notifs {
             self.show_notifs = false;
             return Action::Render;
+        }
+        // Inline card modal (sentinel-tui-shared-backend-and-cards Phase 2a):
+        // when an open `chat:ask_choice` card is focused on the operator surface,
+        // it's a BLOCKING prompt (the brain's tool call is awaiting) — capture
+        // navigation/answer keys here, before the composer/tab keys see them.
+        // Ctrl-C still quits (the universal escape hatch).
+        let ctrl_c_global = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
+        if self.operator_input_active() && self.card_state.has_card() && !ctrl_c_global {
+            return self.card_key(code);
         }
         // Comms detail popup (owner ask 2026-06-14): modal while open. Esc/`q`
         // close; `j`/`k` (↓/↑) step to the next/prev item WITHIN the focused

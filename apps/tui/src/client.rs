@@ -178,6 +178,74 @@ impl OperatorClient {
             .await
     }
 
+    /// Subscribe to the state-channel snapshot SSE for the active workspace
+    /// (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a). Each
+    /// `snapshot` frame's `data` is a `VersionedSnapshot` (`{runId, version,
+    /// snapshot:{openCards}}`) — the SAME stream the browser PendingCardsBar
+    /// consumes via `useStateSnapshots`. The TUI is a second consumer: it
+    /// renders the open `chat:ask_choice` cards inline and answers them through
+    /// `/card-response`. The route scopes to `activeWorkspaceId()` server-side,
+    /// so no query param is needed.
+    pub async fn subscribe_state_snapshot(&self) -> Result<mpsc::UnboundedReceiver<SseFrame>> {
+        self.subscribe_sse("/api/operator/state-snapshot").await
+    }
+
+    /// Answer a pending `ctx.askUser` card (POST /card-response). `correlation_id`
+    /// targets the blocked tool call; `workspace_id` is the defense-in-depth
+    /// `expectedWorkspaceId` gate. `action` ∈ {submit, decline, cancel}; `payload`
+    /// is the submit body (`{picks:[…]}` for choice, `{value:…}` for input).
+    /// The `conversation_id` only feeds the route's :id audit segment (the
+    /// correlator looks up by correlationId). Mirrors `postCardResponse`.
+    pub async fn card_respond(
+        &self,
+        conversation_id: &str,
+        correlation_id: &str,
+        workspace_id: &str,
+        action: &str,
+        payload: Option<serde_json::Value>,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let mut body = serde_json::json!({
+            "correlationId": correlation_id,
+            "workspaceId": workspace_id,
+            "action": action,
+        });
+        if let Some(p) = payload {
+            body["payload"] = p;
+        }
+        if let Some(r) = reason {
+            body["reason"] = serde_json::Value::String(r.to_string());
+        }
+        self.post_json(
+            &format!(
+                "/api/operator/conversations/{}/card-response",
+                urlencode(conversation_id)
+            ),
+            body,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Cancel every pending card under a runId (the chat-level "Cancel all").
+    /// Mirrors `postRunCancel` → POST /run-cancel.
+    pub async fn run_cancel(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        workspace_id: &str,
+    ) -> Result<()> {
+        self.post_json(
+            &format!(
+                "/api/operator/conversations/{}/run-cancel",
+                urlencode(conversation_id)
+            ),
+            serde_json::json!({ "runId": run_id, "workspaceId": workspace_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Load the workspace's active operator conversation + recent turns (oldest
     /// first). Auto-creates the conversation server-side if none exists.
     pub async fn load_conversation(&self, limit: u32) -> Result<ConversationLoad> {

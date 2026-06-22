@@ -1622,12 +1622,31 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 /// the latest (0 = pinned to the newest). The in-flight assistant bubble shows a
 /// live `<say>` preview via `chat_tags::live_preview`.
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
+    // Inline card (sentinel-tui-shared-backend-and-cards Phase 2a): when the
+    // operator brain has an open `chat:ask_choice` card, reserve a bottom strip
+    // for it (between the transcript and the composer) and render it there. The
+    // card's height scales with its content, clamped so the transcript stays
+    // visible. No card → the transcript fills the space as before.
+    let card_h = card_block_height(app, area);
+    let constraints = if card_h > 0 {
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(card_h),
+            Constraint::Length(3),
+        ]
+    } else {
+        vec![Constraint::Min(1), Constraint::Length(3)]
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .constraints(constraints)
         .split(area);
     let transcript_area = rows[0];
-    let composer_area = rows[1];
+    let (card_area, composer_area) = if card_h > 0 {
+        (Some(rows[1]), rows[2])
+    } else {
+        (None, rows[1])
+    };
 
     let inner_w = transcript_area.width.saturating_sub(2).max(1) as usize; // minus borders
     let mut lines: Vec<Line> = Vec::new();
@@ -1714,7 +1733,20 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     );
     f.render_widget(para, transcript_area);
 
-    let (ctitle, ctext, cstyle) = if app.voice_phase.is_active() {
+    // Inline card (Phase 2a): render the focused card into its reserved strip.
+    if let Some(ca) = card_area {
+        draw_card(f, app, ca);
+    }
+
+    let (ctitle, ctext, cstyle) = if app.card_state.has_card() {
+        // A blocking card is open — the composer is suspended; the card owns the
+        // keys (arrows/number/space/Enter). Tell the user where to act.
+        (
+            " Card — answer above ",
+            "↑↓ move · Enter/number pick · Space toggle · Esc skip".to_string(),
+            Theme::notify(),
+        )
+    } else if app.voice_phase.is_active() {
         // Voice PTT in flight (voice-mode-tui-port-2026-06-05 P2) — the composer
         // line becomes the voice status: phase badge, plus a live mic meter while
         // recording (key-up / `v` / Esc to end).

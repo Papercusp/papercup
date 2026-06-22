@@ -6,6 +6,20 @@
 
 ---
 
+## Status & active work (owner-directed, 2026-06-22)
+
+Three workstreams in flight (owner: "continue working on 1,2,3"):
+
+1. **Cross-surface one-thread unification** — voice (desktop webview) and the Sentinel text chat (zellij claude-TUI) now share the same `operator:converse` / Sentinel **brain** (Phase 1, shipped), but NOT yet one conversation **thread** across surfaces. Make the webview voice turn + the TUI text turn target the same `conversationId` (Phase 1 §5 + Phase 3). **Status: not started.**
+2. **Phase 2 — cards in the Claude TUI** — render the `openCards` snapshot as ratatui menus + POST `/card-response`; re-enable `chat:ask_choice` on `surface:'tui'` (Phase 2). **Status: in progress (delegated).**
+3. **Voice round-trip test + live verification** — a registered test in the `/admin/testing` **Voice domain** exercising transcript → bridge → `operator:converse` → spoken reply, plus a live simulated conversation via the agent-e2e bridge (needs a small dev test-seam to inject a transcript + read the spoken reply — also fills a real agent-e2e gap: there's no way to drive a conversational voice turn today). **Status: in progress.**
+
+**Shipped already (Phase 1 + the UI asks):** voice → `operator:converse` bridge · `speak()` unmute · STT local-whisper fallback · `fullAgentEngine`→off · left-rail voice bar · "Novice" rename · "Sentinel" rebrand (lexicon) · 3-state Active/Passive/Off toggle · heading removal · collapse control relocated · EI-2425 shell `no-store`.
+
+> **Official-plan note:** this markdown doc is the working plan. The PG-backed papercusp plan (`plans:*`) could NOT be created while the `papercusp-su` MCP is disconnected — promote this to a real `plans:new` entry (phases = the sections below) once the MCP reconnects.
+
+---
+
 ## 1. How the OLD system worked (the thing we're bringing back)
 
 **One brain, two modes (voice ≡ text).** The papercup sidebar chat was the front door:

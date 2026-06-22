@@ -4,6 +4,13 @@ description: A harness that goes shared (joins or publishes a hive after boot) m
 discovered: 2026-06-16
 tags: [hyperbee, federation, shared-hive, swarm, corestore, replication, re-key, reboot, EI-681, asymmetric-replication]
 status: active
+documents:
+  - packages/operator-core/lib/sync/hyperbee/boot.ts
+  - packages/operator-core/lib/sync/hyperbee/boot-all.ts
+  - packages/operator-core/lib/harness/join-hive.ts
+  - packages/operator-core/lib/hive-publish-from-repo.ts
+plans:
+  - hive-from-repo-hardening-2026-06-11
 ---
 
 When a harness "goes shared" at runtime — an owner **publishes** a hive, or a

@@ -12,6 +12,7 @@ mod agent_ctx;
 mod agent_pane_kind;
 mod app;
 mod bee;
+mod card_view;
 mod chat_tags;
 mod client;
 mod companion;
@@ -365,6 +366,11 @@ async fn run<B: Backend>(
     // operator conversation on open so the transcript is seeded from the same
     // thread the desktop surface shares.
     tokio::spawn(chat_load_history(tx.clone()));
+    // Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a):
+    // subscribe the state-channel snapshot SSE so open `chat:ask_choice` cards
+    // render inline in the operator pane (and resolve the active workspace once
+    // for the `/card-response` defense-in-depth gate).
+    tokio::spawn(card_snapshot_loop(tx.clone()));
     // Companion zellij plugin (P-004 / D-008): `pui`'s eyes + hands inside
     // zellij over a long-lived `zellij pipe` child. `None` when not running
     // inside zellij / without the plugin — orchestration then falls back to
@@ -898,6 +904,29 @@ async fn run<B: Backend>(
                     app.chat_history_for_send(),
                     workbench::workbench_owner(),
                     None, // typed turn — no spoken reply
+                    tx.clone(),
+                ));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::CardRespond {
+                correlation_id,
+                workspace_id,
+                action,
+                payload,
+            } => {
+                // Inline card answer (sentinel-tui-shared-backend-and-cards Phase
+                // 2a): POST /card-response so the server resolves the brain's
+                // blocked tool call. The reducer already optimistically dismissed
+                // the card; a fresh state-snapshot is the authoritative removal.
+                // Prefer the card's OWN workspace (wire snapshot) over the
+                // loop-resolved one for the defense-in-depth gate.
+                let ws = workspace_id.or_else(|| app.card_workspace.clone());
+                tokio::spawn(card_respond_send(
+                    app.conversation_id.clone(),
+                    correlation_id,
+                    ws,
+                    action,
+                    payload,
                     tx.clone(),
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -3269,6 +3298,87 @@ async fn activity_loop(tx: UnboundedSender<Event>) {
         }
         // Stream ended (upstream closed / dropped) → resubscribe shortly.
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Subscribe to `/api/operator/state-snapshot` (the state-channel SSE) and
+/// forward each `snapshot` frame as `Event::CardSnapshot` — the open
+/// `chat:ask_choice` cards the operator brain raises mid-turn (sentinel-tui-
+/// shared-backend-and-cards-2026-06-22 Phase 2a). Resolves the active workspace
+/// once up front (the `/card-response` defense-in-depth gate). Long-lived;
+/// resubscribes if the stream drops. A missing backend ends it quietly.
+async fn card_snapshot_loop(tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    // Resolve the active workspace once so card answers can carry the gate.
+    // Best-effort: `None` (dev / unscoped) just omits `expectedWorkspaceId`.
+    let ws = client.current_workspace().await.ok().flatten();
+    if tx.send(Event::CardWorkspace(ws)).is_err() {
+        return;
+    }
+    loop {
+        if tx.is_closed() {
+            return;
+        }
+        let mut sub = match client.subscribe_state_snapshot().await {
+            Ok(rx) => rx,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+        };
+        while let Some(fr) = sub.recv().await {
+            if fr.event != "snapshot" {
+                continue; // heartbeat etc.
+            }
+            if let Some(env) = card_view::SnapshotEnvelope::from_json(&fr.data) {
+                if tx.send(Event::CardSnapshot(env)).is_err() {
+                    return;
+                }
+            }
+        }
+        // Stream ended → resubscribe shortly.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// POST a card answer to `/card-response` (sentinel-tui-shared-backend-and-cards
+/// Phase 2a). The server resolves the brain's blocked tool call with the pick;
+/// a fresh state-snapshot then drops the card from `openCards`. Best-effort — a
+/// transport failure surfaces as `Event::ChatError` (the card was already
+/// optimistically dismissed; the next snapshot reconciles if the POST didn't
+/// land). `conversation_id` only feeds the route's audit segment.
+async fn card_respond_send(
+    conversation_id: Option<String>,
+    correlation_id: String,
+    workspace_id: Option<String>,
+    action: String,
+    payload: Option<serde_json::Value>,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::ChatError(format!("card-response: {e}")));
+            return;
+        }
+    };
+    // The route needs SOME :id segment; the correlator looks up by correlationId.
+    let conv = conversation_id.unwrap_or_default();
+    // The route's `expectedWorkspaceId` gate is required server-side (the body
+    // validator rejects an empty workspaceId). Fall back to the unscoped '*'
+    // marker when we couldn't resolve one — the correlator's workspace check
+    // skips when the gate matches the card's own workspace; an unresolved
+    // workspace means a dev/unscoped session where the card registered under
+    // the same activeWorkspaceId() this client reads.
+    let ws = workspace_id.unwrap_or_else(|| "*".to_string());
+    if let Err(e) = client
+        .card_respond(&conv, &correlation_id, &ws, &action, payload, None)
+        .await
+    {
+        let _ = tx.send(Event::ChatError(format!("card-response: {e}")));
     }
 }
 

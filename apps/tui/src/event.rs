@@ -236,6 +236,14 @@ pub enum Event {
     ChatDone,
     /// The operator converse stream errored (`error`, or transport failure).
     ChatError(String),
+    // --- Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a) ---
+    /// One per-run state-channel snapshot from `/api/operator/state-snapshot` —
+    /// the union of open `chat:ask_choice` cards for a run. The reducer folds it
+    /// into `card_state`; the focused card renders inline in the operator pane.
+    CardSnapshot(crate::card_view::SnapshotEnvelope),
+    /// The active workspace id the card loop resolved at startup — stamped onto
+    /// app state so a `/card-response` can carry the defense-in-depth gate.
+    CardWorkspace(Option<String>),
     // --- Companion zellij plugin (P-004 / D-008): the in-zellij vantage point.
     // Sourced from the `zellij pipe` child's stdout, not the backend. ---
     /// The companion plugin linked up (carries its version).

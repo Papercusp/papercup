@@ -1,6 +1,19 @@
 ---
 title: Hive-scoped federation (re-key from harness → Hive identity)
 description: "How a shared project's substrate federates at HIVE scope, not harness scope — the Ed25519-pubkey topic re-key, per-Hive admission (revoked-pubkey union), Track A coord/presence, and Track B lock authority. Read before touching lib/hive-federation.ts, lib/authority/*, lib/sync/hyperbee/{boot,boot-all,wire-presence}.ts, or anything that resolves a swarm topic / lock authority. Includes the complete P-003 anchor inventory — every capture trigger, PEER_LOG_TAG_TO_TABLE tag, drain-routing site, and lib/authority scope-key. Plan — shared-hive-federation-2026-06-08."
+discovered: 2026-06-08
+status: active
+documents:
+  - packages/operator-core/lib/hive-federation.ts
+  - packages/operator-core/lib/sync/hyperbee/boot.ts
+  - packages/operator-core/lib/sync/hyperbee/boot-all.ts
+  - packages/operator-core/lib/sync/hyperbee/wire-presence.ts
+  - packages/operator-core/lib/hive-membership-store.ts
+  - packages/operator-core/lib/authority/lock-authority.ts
+  - packages/operator-core/lib/authority/file-lock-routing.ts
+  - packages/operator-core/lib/identity/hive-keypair.ts
+plans:
+  - shared-hive-federation-2026-06-08
 sidebar:
   order: 50
 ---
