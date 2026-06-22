@@ -41,6 +41,7 @@ import {
 } from '@papercusp/operator-core/lib/cluster-fork';
 import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
 import { isBenignHostError } from './host-benign-errors';
+import { applyServerTimeouts } from './host-request-deadline';
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
 // crash-loop :3070 for the entire fleet. Two known classes originate inside the
@@ -161,6 +162,17 @@ function startRequestServers(): void {
     );
   } else {
     server = serve({ fetch: handler, port, hostname }, (info) => onListening(info.port));
+  }
+
+  // B2 (infra-fail-fast-build-integrity P-006) — the "safe half": explicit inbound
+  // Node server timeouts. OPT-IN (PAPERCUSP_HTTP_REQUEST_TIMEOUT_MS /
+  // PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS); unset → Node defaults unchanged. Marginal on
+  // Node 25 (they bound request RECEIPT, not handler runtime — the handler-deadline
+  // middleware in host-handler.ts covers the wedge), but the knobs let ops tune the
+  // slow-loris / stuck-body ceiling without a code change.
+  const appliedTimeouts = applyServerTimeouts(server as unknown as import('node:http').Server);
+  if (appliedTimeouts.requestTimeout !== undefined || appliedTimeouts.headersTimeout !== undefined) {
+    console.log('[hono-host] applied inbound server timeouts (ms):', appliedTimeouts);
   }
 
   // PTY WebSocket data plane (opt-in via PAPERCUSP_PTY_WS_PORT — bin/dev sets

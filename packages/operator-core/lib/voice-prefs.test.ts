@@ -27,7 +27,9 @@ describe('voice-channel settings defaults (P-016)', () => {
       voiceInputDevice: null,
       voiceOutputDevice: null,
       voiceInputMode: 'ptt',
-      voicePttKey: 'v',
+      // Backtick is the real PTT key (hardcoded + reserved in VoiceButton); the
+      // default mirrors it so prefs inspection isn't misled by a stale 'v'.
+      voicePttKey: '`',
       voiceAec: true,
       voiceNoiseSuppression: true,
       voiceInputGain: 1,

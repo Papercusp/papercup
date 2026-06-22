@@ -5,12 +5,13 @@
  * Ported from app/api/admin/llm-tests/findings/route.ts. `auth: 'public'`.
  */
 import postgres from 'postgres';
+import { sharedUtilityPoolMax } from '../../../resource-profile';
 import { getHarnessAdminUrl } from '../../../embedded-pg-discovery';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
-  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: 4, prepare: false });
+  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
   return pool;
 }
 

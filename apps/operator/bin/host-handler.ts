@@ -38,6 +38,7 @@ import {
   faultInjectionMiddleware,
 } from './host-fault-injection';
 import { backpressureMiddleware } from './host-backpressure';
+import { requestDeadlineMiddleware } from './host-request-deadline';
 
 const host = new Hono();
 
@@ -57,6 +58,14 @@ host.use('/api/*', apiCors);
 //        traffic. Runs early (after CORS preflight) so a shed costs no handler
 //        dispatch. Reuses the existing loop-lag signal.
 host.use('/api/*', backpressureMiddleware);
+
+// 2.3. Handler deadline (P-006 / B2). Inert unless PAPERCUSP_HTTP_HANDLER_DEADLINE=1;
+//       when on, bounds a non-streaming /api handler's time-to-Response and fast-503s a
+//       wedge (a stuck PG query / native hang) instead of hanging the client forever.
+//       Excludes MCP + every SSE/streaming endpoint + health + WS upgrades. Runs AFTER
+//       load-shedding (a shed request never starts a deadline) and BEFORE the rust /
+//       cross-app / local-API handlers, so its `next()` wraps the actual handler.
+host.use('/api/*', requestDeadlineMiddleware);
 
 // 2.5. Fault injection (EI-297) — test-only, inert unless the host started
 //      with PAPERCUSP_FAULT_INJECTION=1. Sits in front of every API path

@@ -78,4 +78,17 @@ export function getResourceProfile(): ResourceProfile {
   return getGenericResourceProfile();
 }
 
+/**
+ * Pool size for a SHARED single-purpose utility pool (dock-layouts, llm-testing
+ * storage/telemetry, operator-continue-chains, the admin llm-tests routes) — a
+ * small fixed pool scaled DOWN on an embedded/desktop PG that shares the box, so a
+ * laptop's embedded Postgres isn't oversubscribed (app-wide-load-traps § E, F-E4).
+ * A native/dedicated PG keeps 4; an embedded one drops to 2. This is NOT the big
+ * org request pool (that is `pgPoolMax`), and NOT for `max:1` LISTEN connections
+ * (those stay pinned direct).
+ */
+export function sharedUtilityPoolMax(): number {
+  return getResourceProfile().signals.embeddedPg ? 2 : 4;
+}
+
 export type { ResourceProfile, HostClass, HostRole, PowerSource } from '@papercusp/resource-profile';

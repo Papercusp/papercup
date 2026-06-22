@@ -21,6 +21,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { sharedUtilityPoolMax } from './resource-profile';
 
 import postgres from 'postgres';
 
@@ -28,7 +29,7 @@ import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
-  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: 4, prepare: false });
+  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
   return pool;
 }
 

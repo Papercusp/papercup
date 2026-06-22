@@ -338,7 +338,13 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   voiceInputDevice: null,
   voiceOutputDevice: null,
   voiceInputMode: 'ptt',
-  voicePttKey: 'v',
+  // The ACTUAL push-to-talk binding is hardcoded to the backtick (`) in
+  // VoiceButton.tsx (PTT_SHORTCUT_CODE='Backquote') — it is globally
+  // reserved/swallowed, which a normal letter like 'v' cannot be without
+  // hijacking typing. This field is not currently read to drive capture; the
+  // default is kept in sync with reality so prefs inspection (e.g.
+  // operator:voice-prefs) reports the real key instead of a stale 'v'.
+  voicePttKey: '`',
   voiceAec: true,
   voiceNoiseSuppression: true,
   voiceInputGain: 1,

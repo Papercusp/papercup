@@ -9,6 +9,7 @@
  */
 
 import postgres from 'postgres';
+import { sharedUtilityPoolMax } from './resource-profile';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 export const CURRENT_LAYOUT_SCHEMA_VERSION = 1 as const;
@@ -611,7 +612,7 @@ function validateFloating(f: FloatingGroup): void {
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
   if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), { max: 4, prepare: false });
+    pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
   }
   return pool;
 }
