@@ -416,6 +416,9 @@ export interface GatewayStats {
   /** Per-backend Codex/OpenAI counters (2026-06-22 audit) — kept SEPARATE from the Claude counters above so
    *  /stats distinguishes Codex health from Claude health. All zero until Codex accounts are configured. */
   codex: { requests: number; upstream429: number; failovers: number; errors: number };
+  /** Bee-FACING final 503s (2026-06-22 audit) — what the bee receives after the gateway exhausts internal
+   *  retries. Makes egress-proxy leakage visible (it isn't a rate shed, so shedAllThrottled never counted it). */
+  beeFacing503: { egressExhausted: number; tokenStall: number };
   /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
   unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
   pausedUntil: number;
@@ -741,6 +744,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let codexUpstream429 = 0;
   let codexFailovers = 0;
   let codexUpstreamErrors = 0;
+  // Bee-FACING final 503s (2026-06-22 audit). What the bee actually RECEIVES after the gateway exhausts its
+  // internal retries — distinct from the per-attempt upstreamErrors above and from shedAllThrottled (rate
+  // sheds). Before this they were invisible in /stats, hiding that egress-proxy degradation (not rate limits)
+  // had become the dominant bee-facing failure mode.
+  let beeEgressExhausted = 0; // 503 after all egress-proxy retries stalled/errored (the flaky-proxy leak)
+  let beeTokenStall = 0; // 503 from a stalled OAuth token refresh
   let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
 
   // Rate-limit STALL events (gateway-rate-limit-stall-autowake P-002): when the gateway sheds an
@@ -874,6 +883,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       selfHealReclaims,
       stallsRecorded,
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
+      beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       unified: snap.unified,
       pausedUntil: snap.pausedUntil,
       cache: cacheSnapshot(),
@@ -1132,6 +1142,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           log('error', `inference-gateway: token refresh failed on '${active.accountId}': ${(e as Error).message} — penalizing account + 503`);
           gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
           if (!res.headersSent) {
+            beeTokenStall++;
             sendJson(
               res,
               503,
@@ -1234,6 +1245,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // No healthy account left / rotation budget spent — return a RETRYABLE 503 (the bee's CLI
             // retries; the next request lands on the failover-rotated active()), never a terminal 502.
             if (!res.headersSent) {
+              beeEgressExhausted++;
               sendJson(
                 res,
                 503,
