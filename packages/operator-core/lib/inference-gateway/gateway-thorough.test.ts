@@ -417,6 +417,11 @@ describe('admin + observability endpoints', () => {
     expect(typeof c.concurrencyCap).toBe('number');
     expect(c.aimd).toBeTruthy();
     expect(typeof c.upstreamBase).toBe('string');
+    expect(c.providers).toEqual([
+      expect.objectContaining({ id: 'claude', configured: true, protocol: 'anthropic' }),
+      expect.objectContaining({ id: 'codex', configured: false, protocol: 'openai-compatible' }),
+      expect.objectContaining({ id: 'omp', configured: false, protocol: 'unsupported' }),
+    ]);
   });
 
   it('/admin/config merges the wired adminConfig (version + accounts)', async () => {
