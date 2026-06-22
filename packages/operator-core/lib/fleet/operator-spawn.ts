@@ -52,6 +52,7 @@ import { wakeParentOnChildDeath } from './parent-wake';
 import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { backendFeatureGuard, interactiveBackendFromSpawnBackend } from '../backend-feature-capabilities';
 
 /**
  * The deterministic SAFETY-FLOOR ceiling on concurrently-running spawns — the
@@ -805,7 +806,11 @@ export async function spawnAgentInHarness(
   // rollout, so they mint none. The UPDATE is best-effort — a not-yet-migrated DB
   // (session_id from mig 203) must never break a spawn.
   const { backend } = resolveSpawnBackendModel(role, spawnModelSpec ?? undefined, spawnModelBackend ?? undefined);
-  const forceSessionId = backend === 'claude-code' ? randomUUID() : undefined;
+  const nativeSessionGuard = backendFeatureGuard(
+    interactiveBackendFromSpawnBackend(backend),
+    'forced-native-session-id',
+  );
+  const forceSessionId = nativeSessionGuard.supported ? randomUUID() : undefined;
   if (forceSessionId) {
     try {
       await sql`UPDATE harness_shared.spawned_agents SET session_id = ${forceSessionId} WHERE spawn_id = ${spawnId}`;
