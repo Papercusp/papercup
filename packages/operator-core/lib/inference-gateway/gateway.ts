@@ -1230,7 +1230,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // retryable 429, and frees its admission slot — strictly before the self-heal valve (75s) / watchdog
       // (120s) would forcibly reclaim it. Computed from the slot-acquire moment (this is the same request
       // lifetime the inFlightReg `startedAt` tracks), so total slot-hold is bounded under any storm.
-      const retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
+      let retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
+      // EXTENDED ABSORPTION (env-gated): the wall-clock past which we stop the release-slot-and-re-acquire
+      // park-retry loop and finally shed. 0 = OFF (the slot-hold deadline above is the only bound, as before).
+      const absorbDeadlineAt = requestAbsorbMs > 0 ? Date.now() + requestAbsorbMs : 0;
       for (;;) {
         // Bound the OAuth token refresh (2026-06-20 token-hang wedge). active.token() does a deadline-less
         // network refresh AND runs before the per-attempt stall-guard below, so a stalled refresh used to
@@ -1581,6 +1584,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // it. This caps total slot-hold time, which is what stops the frozen-while-saturated wedge from
           // forming at the AIMD floor under a slow-upstream storm.
           if (proceed && Date.now() >= retryDeadlineAt) {
+            // EXTENDED ABSORPTION (env-gated, requestAbsorbMs). Rather than shed a retryable throttle 429 at the
+            // slot-hold deadline, if absorb budget remains, RELEASE the admission slot — the wedge ladder bounds
+            // SLOT-hold time, and we hold NO slot while parked, so this CANNOT wedge — then re-acquire (its wait
+            // admits nothing until an account is serviceable) and retry, so the caller WAITS and succeeds instead
+            // of erroring. Bounded by absorbDeadlineAt (kept under the CLI timeout). absorbDeadlineAt=0 (OFF) ⇒
+            // identical to before. The re-acquire's maxWait is clamped to the remaining absorb budget.
+            if (absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
+              clearStall();
+              peekedRest?.destroy();
+              release(); // free the slot NOW — nothing is admitted again until an account has serviceable budget
+              release = () => {}; // guard the `finally` against a double-release if the re-acquire below fails
+              const reacq = await gov.acquire(est, {
+                maxWaitMs: Math.min(maxQueueWaitMs, absorbDeadlineAt - Date.now()),
+                allowSoftPaused: serveSoft,
+              });
+              if (reacq) {
+                release = reacq;
+                retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry
+                attempt = 0;
+                log('warn', `inference-gateway: absorb-retry on '${active.accountId}' — holding the caller instead of 429ing (${Math.round((absorbDeadlineAt - Date.now()) / 1000)}s budget left)`);
+                continue;
+              }
+              // re-acquire timed out within the absorb budget → fall through to shed (release is the no-op → finally safe)
+            }
             proceed = false;
             shedAllThrottled++;
             log('warn', `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms hit on '${active.accountId}' (model ${model}) → shed 429, free slot (wedge-prevention ladder)`);
