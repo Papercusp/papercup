@@ -20,7 +20,9 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires, resolveSlug } from './_slug-requires';
-import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+// The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
+// barrel (see artifacts/load.ts for why: ESM circular-init + node-moduleResolution).
+import { runBulk, bulkContent } from '../../_bulk';
 
 
 function normalizeRelPath(rel: string): string {

@@ -21,7 +21,12 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
-import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+// The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
+// barrel: the barrel re-exports through index.ts, an ESM circular-init that
+// leaves runBulk/bulkContent undefined at runtime, AND the package-subpath
+// self-reference fails the production build's `node` moduleResolution. The
+// relative leaf resolves under both and dodges the cycle.
+import { runBulk, bulkContent } from '../../_bulk';
 
 const features = generated.harnessFeaturesConsolidatedInHarnessShared;
 const FeatureSelect = schemaOf(features).select;

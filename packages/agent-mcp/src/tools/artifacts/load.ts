@@ -23,7 +23,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires, resolveSlug } from './_slug-requires';
 import { SU_ROLES } from '../../role-config';
-import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+// The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
+// barrel: the barrel re-exports through index.ts, an ESM circular-init that
+// leaves runBulk/bulkContent undefined at runtime, AND the package-subpath
+// self-reference fails the production build's `node` moduleResolution. The
+// relative leaf resolves under both and dodges the cycle.
+import { runBulk, bulkContent } from '../../_bulk';
 
 // NB: 'tester' is not an AGENT_ROLES member and never was — the phantom
 // entry gated nothing (audit P-047).

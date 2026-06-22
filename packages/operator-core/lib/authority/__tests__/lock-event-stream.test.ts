@@ -299,3 +299,67 @@ describe('end-to-end instant handover (sink → peer-log → reader → fold →
     expect(recon.isHeldByOther('apps/b.ts', 'peer-9', T0 + 101)).toBe(false);
   });
 });
+
+// ── Deeper branch coverage: codec + reader robustness (depth pass, su-7f3e0376) ──
+// A corrupt federated op or a failed replica read must degrade SAFELY — never inject
+// a phantom lock and never crash a NEW authority's takeover.
+describe('reconstructLockSet — safety defaults', () => {
+  it('an acquire with no/undefined expiresAtMs is NOT held (?? 0 default — never a forever-lock)', () => {
+    const ev: LockEvent = { kind: 'acquire', scope: 'h', path: 'a.ts', owner: 'p1', ts: T0 }; // no TTL
+    expect(reconstructLockSet([ev], T0 + 1_000)).toEqual([]);
+  });
+
+  it('an acquire whose expiry EQUALS nowMs is expired (strict >, free at the boundary)', () => {
+    const held = reconstructLockSet([acquire('a.ts', 'p1', T0, 5_000)], T0 + 5_000); // expiry == now
+    expect(held).toEqual([]);
+  });
+});
+
+describe('peerLogOpToLockEvent — field validation + sanitisation', () => {
+  // Start from a VALID op, then corrupt one field — a malformed federated op must decode to null.
+  const corrupt = (mut: (v: Record<string, unknown>) => void) => {
+    const op = lockEventToPeerLogOp(acquire('a.ts', 'p1', T0), '');
+    mut(op.value as Record<string, unknown>);
+    return op;
+  };
+
+  it('rejects an op whose required field is missing or wrong-typed', () => {
+    expect(peerLogOpToLockEvent(corrupt((v) => { v.ts = 'nope'; }))).toBeNull(); // ts not a number
+    expect(peerLogOpToLockEvent(corrupt((v) => { v.scope = 1; }))).toBeNull(); // scope not a string
+    expect(peerLogOpToLockEvent(corrupt((v) => { delete v.owner; }))).toBeNull(); // owner missing
+    expect(peerLogOpToLockEvent(corrupt((v) => { v.kind = 'nope'; }))).toBeNull(); // kind invalid
+  });
+
+  it('sanitises a non-number expiresAtMs to undefined — a corrupt TTL never carries through (folds to not-held)', () => {
+    const decoded = peerLogOpToLockEvent(corrupt((v) => { v.expiresAtMs = 'soon'; }));
+    expect(decoded).not.toBeNull();
+    expect(decoded!.expiresAtMs).toBeUndefined();
+    expect(reconstructLockSet([decoded!], T0 + 1_000)).toEqual([]); // no valid TTL → not held (safe)
+  });
+});
+
+describe('PeerLogLockEventReader — read-side resilience', () => {
+  it('returns [] when resolveLogs() itself throws (total scope-resolution failure → heartbeat fallback)', async () => {
+    const reader = new PeerLogLockEventReader({ resolveLogs: () => { throw new Error('scope not booted'); } });
+    expect(await reader.readLockEvents('h', T0)).toEqual([]);
+  });
+
+  it('refreshes a replica via update() before scanning, and isolates an update() failure to that log', async () => {
+    let updated = 0;
+    const fresh: ReadableLog = {
+      get length() { return 1; },
+      async get() { return lockEventToPeerLogOp(acquire('a.ts', 'p1', T0), ''); },
+      async update() { updated++; },
+    };
+    const badUpdate: ReadableLog = {
+      get length() { return 1; },
+      async get() { return lockEventToPeerLogOp(acquire('b.ts', 'p2', T0), ''); },
+      async update() { throw new Error('replica refresh failed'); },
+    };
+    const reader = new PeerLogLockEventReader({ resolveLogs: () => [badUpdate, fresh] });
+    const events = await reader.readLockEvents('h', T0 + 1_000);
+    expect(updated).toBe(1); // the healthy replica WAS refreshed before its scan
+    // badUpdate's update() threw → it contributes nothing; the rest still read.
+    expect(events.map((e) => e.path)).toEqual(['a.ts']);
+  });
+});

@@ -40,8 +40,8 @@ const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
 });
 
 // Unwrap the house bulk envelope from a dispatched ToolResult.
-const envelopeOf = (r: { result?: { content: { text?: string }[] } }) =>
-  JSON.parse((r.result!.content[0] as { text: string }).text);
+const envelopeOf = (r: { result?: { content?: unknown[] } | null }) =>
+  JSON.parse((r.result!.content![0] as { text: string }).text);
 
 // Side-effect-import the 4 tool modules once. They self-register into the
 // projection registry; subsequent tests re-use the same registrations.

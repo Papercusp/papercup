@@ -20,7 +20,9 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
-import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+// The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
+// barrel (see features/get.ts for why: ESM circular-init + node-moduleResolution).
+import { runBulk, bulkContent } from '../../_bulk';
 
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 

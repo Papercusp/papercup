@@ -22,6 +22,7 @@ import { runEmbedBackfillOnce } from '../search/embed-backfill';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '../agent-tools/coordination/notify-gc';
+import { gcOldOperatorMessages } from '../agent-tools/coordination/message-log-gc';
 import { gcResolvedEscalationFamilies } from '../agent-tools/coordination/escalation-log-gc';
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { readRegistry } from '../workspace-registry';
@@ -141,6 +142,18 @@ const coordNotifyGcWorkflow = DBOS.registerWorkflow(coordNotifyGcTick, {
   name: 'coordNotifyGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
+
+// Daily 04:05 (after notify-gc, before escalation-gc): physical retention cap
+// for OPERATOR-SCOPE coord messages. Harness-scoped messages federate, so the GC
+// keeps them; rooted message threads are deleted only when the whole thread is
+// fully aged and unreferenced by coord_thread_posts (WI-401).
+async function coordMessagesGcTick(): Promise<void> {
+  await DBOS.runStep(() => gcOldOperatorMessages(), { name: 'coord-messages-gc' });
+}
+const coordMessagesGcWorkflow = DBOS.registerWorkflow(coordMessagesGcTick, {
+  name: 'coordMessagesGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(coordMessagesGcWorkflow, { name: 'coordMessagesGc', crontab: '0 5 4 * * *' });
 
 // Daily 04:15 (off the 04:00 notify-gc / 04:30 dbos-gc stampede): physical retention
 // GC for the coord_event_log `escalations` surface — the dominant growth driver

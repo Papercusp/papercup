@@ -23,7 +23,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { setClaimSpec, getClaimSpec, listRunningClaims } = await import('./claim-spec-store');
+const { setClaimSpec, getClaimSpec, getClaimSpecHeadsForBees } = await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

@@ -52,6 +52,8 @@ In code today, the Sentinel chat is the *operator* brain wearing the Herald pers
 
 This choice changes *which brain* Phases 1–3 wire voice/text/cards into. **Recommend confirming (A) vs (B) before Phase 1.** (My read: (A) matches the shipped lexicon + TUI role model, with the Queen reachable via dispatch; but this is the owner's call.)
 
+> **DECISION (owner, 2026-06-22): (A).** Sentinel is the conversational front-door persona (`operator:converse role=sentinel`); it **dispatches** engineering work to the Queen (the separate placement/engineer brain). So Phases 1–3 wire voice/text/cards into the **operator:converse / Sentinel** brain, and the Sentinel hands off to the Queen for engineering via the existing dispatch tools — we do NOT replace the converse brain with the Queen.
+
 ---
 
 ## 5. Quick wins (independent of the big plan — do now)
