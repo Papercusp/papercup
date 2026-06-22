@@ -400,6 +400,31 @@ export default defineTool({
       }
     }
 
+    // 5b. Doc-integrity TWIN of the git-sync seed (owner 2026-06-22): a repo harness
+    //     inherits doc-drift tracking, so a NEW coding hive is doc-honest FROM BIRTH —
+    //     its existing docs are registered as tracked records now, and the post-sync
+    //     freshness sweep self-bootstraps docs added later. Gated on requiresRepo (no
+    //     repo ⇒ no docs) + the inherited `knobs.docs.track` (default true via `base`;
+    //     `track:false` opts out). Best-effort + deterministic (no LLM, D-006): never
+    //     fails the create; outcome reported as `docTracking`.
+    let docTracking: import('../../harness/docs/seed-doc-tracking').SeedDocTrackingOutcome | undefined;
+    const docsKnob = (validation.blueprint!.knobs as Record<string, unknown>).docs as
+      | { track?: boolean }
+      | undefined;
+    if (requiresRepo && docsKnob?.track !== false) {
+      try {
+        const { seedHarnessDocTracking } = await import('../../harness/docs/seed-doc-tracking');
+        const { activeWorkspaceId } = await import('../../workspace-registry');
+        docTracking = await seedHarnessDocTracking({ harnessSlug: args.slug, workspaceId: activeWorkspaceId() });
+      } catch (e) {
+        docTracking = {
+          seeded: false,
+          reason: 'error',
+          message: (e instanceof Error ? e.message : String(e)).slice(0, 300),
+        };
+      }
+    }
+
     return {
       content: [
         {
@@ -418,6 +443,7 @@ export default defineTool({
             provisioning,
             scheduledRoutines,
             ...(gitSync ? { gitSync } : {}),
+            ...(docTracking ? { docTracking } : {}),
           }),
         },
       ],
