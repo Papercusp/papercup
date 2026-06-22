@@ -4,6 +4,10 @@ description: When an MCP/SSE client disconnects mid-stream, cancelling mcp-handl
 discovered: 2026-06-14
 tags: [operator, mcp, mcp-handler, sse, streams, hono-host, crash, EI-12]
 status: active
+documents:
+  - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
+  - apps/operator/bin/hono-host.ts
+  - packages/operator-core/lib/endpoint-route/routes/transport/__tests__/sse-prime.test.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';

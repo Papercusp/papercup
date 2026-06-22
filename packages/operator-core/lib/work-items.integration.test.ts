@@ -83,18 +83,12 @@ beforeAll(async () => {
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
-  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
-  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
-  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
-  // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
-  await db.sql.unsafe(`
-    ALTER TABLE IF EXISTS harness_shared.harness_features_consolidated
-      ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
-    ALTER TABLE IF EXISTS harness_shared.engineer_issues
-      ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
-      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
+  // P-010 unification: HFC_DDL already builds work_items + the hfc/engineer_issues
+  // compat views + the ei INSTEAD OF trigger, with the full column set (incl.
+  // assignee_rank/rank_writer/rank_updated_at; signal_origin lives in payload->'_ei').
+  // The old per-kind-table migrations (131/142/152) + inline rank/signal_origin ALTERs
+  // are superseded — re-applying them now conflicts (CREATE VIEW work_items over the
+  // base table; ALTER TABLE on a view).
   links = new PgLinkStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
 }, 90_000);
 
@@ -103,11 +97,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.engineer_issues,
+  await db.sql`TRUNCATE harness_shared.work_items,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
-                       harness_shared.harness_features_consolidated,
                        harness_shared.coord_event_log RESTART IDENTITY`;
   // Deterministic WI ids per test (the standalone sequence is not reset by TRUNCATE).
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;

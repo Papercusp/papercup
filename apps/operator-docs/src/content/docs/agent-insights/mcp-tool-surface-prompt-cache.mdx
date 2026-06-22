@@ -4,9 +4,20 @@ description: Every Anthropic call through Meridian inlines all connected MCP too
 discovered: 2026-05-29
 tags: [mcp, prompt-cache, meridian, tokens, performance]
 status: active
+documents:
+  - packages/agent-mcp/src/tool-manifest.ts
+  - packages/agent-mcp/snapshot-tools.sh
+  - libs/generic/tooldef/src/define-tool.ts
+  - packages/operator-core/lib/agent-tools/plans/new.ts
 sidebar:
   order: 40
 ---
+
+> **Note — transport retired.** The `OMP → Meridian (:3456)` path this page describes is RETIRED (renamed
+> to `anthropic-direct`, EI-399 / 2026-06-12; OMP is unpublished), so the per-request token figures are
+> historical for that path. The load-bearing lessons below — **keep the MCP tool surface lean + pin the
+> `tools/list` manifest** (`tool-manifest.ts`), and the **EI-302 stale-schema boolean-coercion** gotcha —
+> are transport-agnostic and current.
 
 ## What
 

@@ -85,6 +85,24 @@ them per-request. **So a DEAD-PROXY alert is NOT automatically a "pull the Rayob
 Verify with the `curl -x` test above first: healthy proxy ⇒ it's account-side throttling (the
 adaptive-RPM's job), not a proxy to escalate.
 
+## When the pool IS exhausted — two more fixes (2026-06-22)
+
+**Over-park.** An account-keyed bucket left a 429's pause UNCAPPED, so a TRANSIENT 429 (`x-should-retry:true`)
+that carried a far-future rolling-window reset parked the account for HOURS (aviynw: live 429 was
+x-should-retry:true, yet `pausedUntil` was ~7h). Fix (governor.ts `penalize`): a transient rate-429
+(`opts.rateLimited`) caps the pause to `ROLLING_WINDOW_REPROBE_MS` even on an account-keyed bucket — re-probe in
+~2 min instead of parking for hours. A genuine usage cap (no `rateLimited`) still parks uncapped — the
+sustained/scale-out signal keys off penalty COUNT, not pause length, so it's unaffected.
+
+**Auto-wake coverage.** The stall-waker (`stall-waker.ts` + `ensureStallWakerLoop`) re-wakes an IDENTIFIED bee's
+turn when its account recovers — *let them wait, then go through when capacity returns*. BUT `recordStall` only
+fired on the rare fast-shed exit, so the dominant failures (egress-exhausted 503, forwarded upstream-429)
+recorded nothing → `/admin/stalls` sat EMPTY while the whole pool was throttled → no bee was ever re-woken. Fix
+(gateway.ts): `recordStall` now fires on every bee-facing retryable exit (egress-exhausted 503, token-stall 503,
+forwarded 429/529) for a bee carrying `x-papercusp-owner`. **Caveat:** the waker only re-wakes a RESUMABLE
+session (a watching coord wake-key); a one-shot turn whose process exited can't be woken (re-spawn-on-stall is
+future scope). Verify it's working: `curl :8788/admin/stalls` should be non-empty when the pool is throttled.
+
 ## What's genuinely external (not a gateway bug)
 
 When most accounts are at their weekly cap and the one or two with headroom get Anthropic-side
