@@ -829,6 +829,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (recentStalls.length > STALL_BUFFER_MAX) recentStalls.splice(0, recentStalls.length - STALL_BUFFER_MAX);
   }
 
+  // Per-owner LAST-ROUTED account (routed-account-visibility, 2026-06-22): the account that ACTUALLY served
+  // this owner's most-recent turn, so a session can show "my turn → <account>" in its statusline (the gateway
+  // already strips the routing headers, so the caller never sees the response header directly). Updated on the
+  // served-response chokepoint; a bounded Map keyed by ownerId (delete-oldest over the cap). Read-only on
+  // GET /admin/route?owner=<id>. Cheap: one Map.set on the hot path.
+  interface RouteEntry { account: string; model: string; at: number; }
+  const ROUTE_MAP_MAX = 4096;
+  const lastRouteByOwner = new Map<string, RouteEntry>();
+  function recordRoute(ownerId: string | undefined, accountId: string, model: string): void {
+    if (!ownerId) return; // only identified callers (x-papercusp-owner present) are addressable
+    if (!lastRouteByOwner.has(ownerId) && lastRouteByOwner.size >= ROUTE_MAP_MAX) {
+      const oldest = lastRouteByOwner.keys().next().value; // Map preserves insertion order → oldest first
+      if (oldest !== undefined) lastRouteByOwner.delete(oldest);
+    }
+    lastRouteByOwner.set(ownerId, { account: accountId, model, at: Date.now() });
+  }
+
   // Prompt-cache instrumentation (#0, 2026-06-21): a PASSIVE per-account tally of cache read/write tokens
   // parsed from each response's usage (the `message_start` SSE event), so we can SEE the prompt-cache hit
   // rate per account + the cost of routing a bee off its cache-warm account. Zero hot-path cost: the
@@ -1573,6 +1590,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // Detectability: name the account this request ACTUALLY egressed on, so a silent fallback
         // off a pin (unknown id / paced-account failover) is visible to the caller, not invisible.
         outHeaders[ROUTED_ACCOUNT_HEADER] = active.accountId;
+        recordRoute(wantOwner, active.accountId, model); // per-owner last-routed → GET /admin/route (statusline)
         res.writeHead(up.status, outHeaders);
         if (peekedHead !== null) {
           // We already consumed this body via peekBody — write the peeked head, then stream any remainder.
@@ -1865,6 +1883,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // `?since=<epochMs>` returns only events after that watermark (the waker passes its last-seen `now`).
       const since = Number(url.match(/[?&]since=(\d+)/)?.[1] ?? 0);
       sendJson(res, 200, { ok: true, now: Date.now(), stalls: recentStalls.filter((s) => s.at > since) });
+      return;
+    }
+    if (req.method === 'GET' && url.startsWith('/admin/route')) {
+      // routed-account-visibility (2026-06-22): the account that served `?owner=<id>`'s most-recent turn, so a
+      // session's statusline can show "my turn → <account>". `{account:null}` when that owner hasn't been seen.
+      const owner = decodeURIComponent(url.match(/[?&]owner=([^&]+)/)?.[1] ?? '');
+      const e = owner ? lastRouteByOwner.get(owner) : undefined;
+      sendJson(res, 200, { ok: true, now: Date.now(), owner: owner || null, account: e?.account ?? null, model: e?.model ?? null, at: e?.at ?? null });
       return;
     }
     if (req.method === 'GET' && url === '/admin/config') {
