@@ -1325,6 +1325,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // scheduler.running — the live-execution view (hybrid-bee-scheduler-work-stealing
+  // P-001 / D-007): every live "bee run" (a bee executing a claimed work-item) in a
+  // harness, with its claimed-since / lease / heartbeat / progress + the derived
+  // idle-blocked reason + the claim-spec specId@revision it runs under. Projects the
+  // canonical fleet_assignment work-item-claim rows + the per-bee bee_claim_specs store
+  // (read off live state, not a separate store). Invalidated via the same
+  // claim/presence/nursery table bridge as fleetAssignments.byHarness, plus
+  // bee_claim_specs (a Queen re-steer bumps the shown revision).
+  'scheduler.running': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const [{ listBeeRuns }, { activeWorkspaceId }] = await Promise.all([
+        import('../scheduler/bee-runs'),
+        import('../workspace-registry'),
+      ]);
+      return listBeeRuns({ harness: harnessSlug, workspaceId: activeWorkspaceId() });
+    },
+  },
+
   // hiveRoster.byHive — presence-v2 Phase 3 fold (presence-v2-2026-06-14 P-006):
   // the unified per-agent live-state surface for ONE Hive. Folds coord:presence
   // (identity + the mig-277 last_active_at/agent_role/hive_slug scalars + the

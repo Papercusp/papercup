@@ -132,6 +132,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
     'workItems.byHarness',
+    // scheduler.running (the live-execution view) reads work-item claims (taken_by /
+    // taken_at / last_progress_at) off this table via fleet_assignment — a claim/progress
+    // flip refreshes the bee-run list (hybrid-bee-scheduler P-001).
+    'scheduler.running',
   ],
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   // engineer_issues = the issue-family store of the unified work_items surface
@@ -156,6 +160,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // the MemberWorkPanel repoint) is the same fold keyed by harness→hive.
     'hiveRoster.byHive',
     'hiveRoster.byHarness',
+    // scheduler.running resolves a bee run's holder liveness through the nursery
+    // identity aliases (the fleet_assignment view), so a spawn status/heartbeat flip
+    // moves a run between progressing/alive/dead.
+    'scheduler.running',
   ],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
   // fleet_assignment view = presence + plan-item claims + work-item claims.
