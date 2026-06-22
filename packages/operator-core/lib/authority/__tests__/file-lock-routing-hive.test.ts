@@ -4,8 +4,14 @@
  * harness-scoped (unchanged). Pure/seamed — injected resolvers + presence, no PG.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { routeFileLockOp } from '../file-lock-routing';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  routeFileLockOp,
+  configureFileLockDomainResolver,
+  getDomainToHarnessSlug,
+  configureFileLockHiveResolver,
+  getHarnessToHiveSlug,
+} from '../file-lock-routing';
 import { __resetRemotePeersCacheForTests } from '../remote-peers-cache';
 
 const NOW = 1_000_000_000_000;
@@ -88,5 +94,57 @@ describe('routeFileLockOp — Hive-aware (P-009)', () => {
   it('unknown domain → local (no federated scope)', async () => {
     const r = await routeFileLockOp('/x', { local: async () => 5 }, { domainToHarnessSlug: () => null });
     expect(r).toMatchObject({ via: 'local-authority', value: 5 });
+  });
+});
+
+// ── Global resolver seam + defaults (depth pass, su-7f3e0376) ────────────────
+// The tests above inject resolvers via deps; the module-GLOBAL resolvers (the
+// boot-wiring seam) + their local-only DEFAULTS were untested. The default-null
+// domain resolver is the single-box safety guarantee — if it were non-null, every
+// op on an unmanaged checkout would wrongly try to route to a remote authority.
+describe('routeFileLockOp — global resolver seam + defaults', () => {
+  afterEach(() => {
+    configureFileLockDomainResolver(null);
+    configureFileLockHiveResolver(null);
+  });
+
+  it('the global domain resolver defaults to null (local-only) and is install/reset-able', () => {
+    expect(getDomainToHarnessSlug()('/any')).toBeNull(); // default → no federated harness → local
+    configureFileLockDomainResolver((d) => (d === '/repo' ? 'repo-a' : null));
+    expect(getDomainToHarnessSlug()('/repo')).toBe('repo-a');
+    expect(getDomainToHarnessSlug()('/other')).toBeNull();
+    configureFileLockDomainResolver(null);
+    expect(getDomainToHarnessSlug()('/repo')).toBeNull(); // reset → back to the local-only default
+  });
+
+  it('the global hive resolver defaults to null (harness scope) and is install/reset-able', () => {
+    expect(getHarnessToHiveSlug()('repo-a')).toBeNull();
+    configureFileLockHiveResolver((h) => (h === 'repo-a' ? 'my-hive' : null));
+    expect(getHarnessToHiveSlug()('repo-a')).toBe('my-hive');
+    configureFileLockHiveResolver(null);
+    expect(getHarnessToHiveSlug()('repo-a')).toBeNull();
+  });
+
+  it('routeFileLockOp falls back to the GLOBAL domain resolver when deps has no override (default null → local)', async () => {
+    let ran = false;
+    const r = await routeFileLockOp('/repo', { local: async () => { ran = true; return 7; } }, { now: () => NOW });
+    expect(ran).toBe(true); // no global resolver + no deps override → unmanaged → local
+    expect(r).toMatchObject({ via: 'local-authority', value: 7 });
+  });
+
+  it('routeFileLockOp routes through a GLOBALLY-installed domain resolver (no deps override)', async () => {
+    configureFileLockDomainResolver(() => 'repo-a'); // boot-wired mapping
+    const r = await routeFileLockOp(
+      '/repo',
+      { local: async () => 8 },
+      {
+        now: () => NOW,
+        skipRemotePeersFastPath: true,
+        harnessToHiveSlug: () => null,
+        fetchPresenceRows: async (h) => { expect(h).toBe('repo-a'); return [row('aaa')]; },
+        resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }),
+      },
+    );
+    expect(r.via).toBe('fail-open'); // global resolver mapped /repo → repo-a → routed to the (remote) authority
   });
 });

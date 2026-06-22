@@ -17,6 +17,13 @@ export interface DriftedDoc {
   reason: string;
   /** 'generated' | 'manual' | 'augmented'. */
   source: string;
+  /**
+   * P-005 (deterministic-commit-workitem-attribution): the work-item(s) that recently changed
+   * this doc's anchored code — DERIVED from git_sync_commit_attribution (D-006: no extra agent
+   * tool call). Tells the doc-steward WHY the code drifted, so it can read the work-item's intent
+   * instead of reverse-engineering the diff. Absent when the change wasn't attributed.
+   */
+  workItems?: string[];
 }
 
 /**

@@ -102,7 +102,7 @@ const CODEX_LOCK_ENFORCEMENT_NOTE = [
   '---',
   '## Codex Lock Enforcement Status',
   '',
-  'Codex PreToolUse hooks for file edits and shell commands are currently soft in Papercusp: hooks.json is installed when local hook scripts exist, but current Codex builds do not reliably fire those hooks for apply_patch or shell. Before editing files or running commands that mutate shared state, explicitly acquire Papercusp locks with locks:acquire and release them with locks:release.',
+  'Papercusp installs per-session Codex hooks when local hook scripts are present: PreToolUse acquires file locks for apply_patch/Edit/Write and gates shell resource conflicts, while PostToolUse releases locks and reports coordination/activity. If diagnostics show hooks missing or offline, explicitly acquire Papercusp locks with locks:acquire before writing and release them with locks:release.',
   '',
 ].join('\n');
 
@@ -236,12 +236,10 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * the installer §4f + an earlier version of this wrote, which codex silently
  * ignored). We write `hooks.json`.
  *
- * LOCK HOOKS CURRENTLY INERT (D-011): codex 0.135/0.136-alpha do NOT actually
- * fire PreToolUse for `apply_patch` OR `Bash` in practice (upstream openai/codex
- * #20204 / #16732 — open). So the *lock* config is *correct + ready* but
- * enforces nothing until codex's hook emission is fixed upstream. codex lock
- * coordination is SOFT meanwhile (the playbook instructs voluntary `locks:*`
- * calls). claude's user-level lock hooks DO fire — only codex is affected.
+ * LOCK HOOKS: current Codex discovers this per-session `hooks.json` and fires
+ * PreToolUse/PostToolUse for `apply_patch` (plus the Edit/Write aliases) and
+ * shell/MCP tool names. The launcher passes `--dangerously-bypass-hook-trust`
+ * because this home contains only Papercusp-managed hooks.
  *
  * COORD PUSH HOOK (SU only) — NOT inert. When `coordSid` is given (SU sessions
  * pass their session id), we ALSO add a PostToolUse coord-inbox hook. Unlike
@@ -315,10 +313,7 @@ export function writeCodexLockHooks(
   // bash-resource-gate with the agent marker BAKED (codex hands hooks a
   // minimal env, same reason the coord/activity hooks bake PAPERCUSP_SID), so
   // shell-created OS schedules (crontab/at/batch/systemd-run) are denied and
-  // wakes can only live in the harness routines table. INERT today like the
-  // lock hooks above (codex PreToolUse emission is broken upstream, D-011) —
-  // correct + ready for when it fires; the prompt layer carries the rule
-  // meanwhile.
+  // wakes can only live in the harness routines table.
   const gate = join(dir, 'pretooluse-bash-resource-gate.sh');
   if (opts.agentSession && existsSync(gate)) {
     preToolUse.push({
@@ -345,9 +340,9 @@ function writeCodexHomeDiagnostics(
   opts: { hooksInstalled: boolean; inheritedPromptsCopied: boolean },
 ): void {
   const body = {
-    lockEnforcement: opts.hooksInstalled ? 'soft-hooks-configured' : 'soft-hooks-missing',
-    codexPreToolUseStatus: 'upstream-inert-for-apply-patch-and-shell',
-    requiresExplicitPapercuspLocks: true,
+    lockEnforcement: opts.hooksInstalled ? 'hooks-configured' : 'hooks-missing',
+    codexPreToolUseStatus: opts.hooksInstalled ? 'codex-hooks-stable-pretooluse' : 'hooks-not-installed',
+    requiresExplicitPapercuspLocks: !opts.hooksInstalled,
     inheritedPromptsCopied: opts.inheritedPromptsCopied,
   };
   writeFileSync(join(codexHome, 'papercusp-diagnostics.json'), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });

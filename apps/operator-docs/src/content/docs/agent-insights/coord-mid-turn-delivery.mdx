@@ -29,7 +29,7 @@ timer); the **system** rides the tool stream.
 | Client | Where | Mechanism |
 | --- | --- | --- |
 | **Claude** | `~/.claude/settings.json` PostToolUse, matcher `*` | `apps/operator/scripts/hooks/cc/posttooluse-coord-inbox.sh` → `hookSpecificOutput.additionalContext` (exit 0, **no** `decision`). |
-| **Codex** | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` (**SU sessions only**) | same script, written by `role-codex-home.ts` `writeSuCodexHome` with a **baked `PAPERCUSP_SID`**. Codex fires PostToolUse for **Bash / apply_patch / MCP** (not WebSearch) — independent of the PreToolUse-on-edits gap (#20204) that keeps the *lock* hook inert on codex. |
+| **Codex** | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` (**SU sessions only**) | same script, written by `role-codex-home.ts` `writeSuCodexHome` with a **baked `PAPERCUSP_SID`**. Current Codex fires PostToolUse for **Bash / apply_patch / MCP** (not WebSearch), and the same hooks file also carries PreToolUse lock/resource gates for `apply_patch`/shell. |
 | **OMP** | `coord-hook.ts` `tool_result` handler | `pollInboxDelta()` → `pi.sendMessage(…, { deliverAs: 'steer' })`. `ToolResultEvent` carries no content, so steer-append is the vector (not content-replacement). |
 
 The shell hook **gates on `PAPERCUSP_SID`** (psu sessions only) + the su-token,

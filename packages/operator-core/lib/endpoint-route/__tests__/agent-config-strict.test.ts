@@ -28,7 +28,7 @@ const { writeMock, readMock, listResumableSessionsMock, readCodexHomeDiagnostics
     authExists: true,
     diagnosticsPath: `/codex/session-${sessionKey}/papercusp-diagnostics.json`,
     diagnosticsExists: true,
-    diagnostics: { lockEnforcement: 'soft-hooks-configured', requiresExplicitPapercuspLocks: true },
+    diagnostics: { lockEnforcement: 'hooks-configured', requiresExplicitPapercuspLocks: false },
     latestRolloutId: 'rollout-1',
     latestRolloutPath: `/codex/session-${sessionKey}/sessions/rollout-1.jsonl`,
     resumeStrategy: 'codex-resume-last-in-code-home',

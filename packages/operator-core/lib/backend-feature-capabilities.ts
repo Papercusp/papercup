@@ -77,21 +77,15 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'slash-tool-prompts': supported('$CODEX_HOME/prompts slash-tool prompt materialization'),
     'account-pinning': supported('Codex account id baked into per-session model_provider gateway config'),
     'gateway-routing': supported('OpenAI-compatible /v1 gateway route with account header'),
-    'file-lock-enforcement': soft(
-      'locks are configured in hooks.json and the playbook requires explicit locks',
-      'Codex PreToolUse hooks are currently inert for apply_patch/shell, so enforcement is prompt/platform guarded until upstream hook emission works',
-    ),
-    'native-fork': unsupported(
-      'capability-gated in the launcher',
-      'Codex CLI has no Claude-style native fork-session flag; branch by launching a new Codex session with explicit launch_context instead of pretending to native-fork',
-    ),
+    'file-lock-enforcement': supported('per-session hooks.json PreToolUse/PostToolUse for apply_patch/Edit/Write and shell gates'),
+    'native-fork': supported('codex fork [SESSION_ID] / codex fork --last'),
     'brain-pinning': unsupported(
       'retired psu --brain and bootstrap brain paths; use operator/sentinel converse',
       'Pinned brain sessions were retired on 2026-06-21; use the backend-neutral operator/sentinel converse surface or a normal psu session',
     ),
     'forced-native-session-id': unsupported(
       'tracked via CODEX_HOME and rollout id discovery',
-      'Codex CLI cannot be launched with a forced native session UUID',
+      'Codex CLI can resume/fork native rollout UUIDs, but cannot be launched with a caller-chosen native session UUID',
     ),
     'runtime-home-inheritance': supported('per-session CODEX_HOME inherits auth, skills, plugins, prompts, and trusted-workspace state'),
     'mcp-http-auth': supported('per-session config.toml bakes HTTP MCP Authorization headers'),

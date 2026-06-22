@@ -66,9 +66,10 @@ beforeEach(() => {
 });
 
 describe('locks:acquire — outcome branches', () => {
-  it('guidance tells Codex agents to lock explicitly instead of relying on hooks', () => {
+  it('guidance describes managed Codex hook support plus explicit-lock fallback', () => {
     const guidance = `${tool.guidance?.when ?? ''}\n${tool.guidance?.notWhen ?? ''}`;
-    expect(guidance).toMatch(/Codex file edits, acquire explicitly/);
+    expect(guidance).toMatch(/managed Codex homes install PreToolUse\/PostToolUse lock hooks/);
+    expect(guidance).toMatch(/hooks are missing\/offline/);
     expect(guidance).not.toMatch(/automatic on every client/);
     expect(guidance).not.toMatch(/single incidental edit needs no manual call/);
   });

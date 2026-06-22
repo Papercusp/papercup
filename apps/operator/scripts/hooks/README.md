@@ -2,9 +2,8 @@
 
 The cooperative `locks:*` + `coord:*` + `activity:*` MCP surfaces are
 **universal** across the host CLIs; where the host emits tool-call hooks, those
-hooks make the surfaces **enforced / automatic**. Codex currently has the
-lock-hook caveat called out below. There are two hook families, attached three
-ways:
+hooks make the surfaces **enforced / automatic**. There are two hook families,
+attached three ways:
 
 | Family       | Lives in | Claude | Codex | OMP |
 |--------------|----------|--------|-------|-----|
@@ -35,14 +34,13 @@ edit tools), a `hookSpecificOutput` decision on stdout. All are **fail-open**
 | `posttooluse-activity-report.sh`      | PostToolUse  | **Activity bridge** — mirror every native tool call into `harness_shared.agent_activity` → the pui fleet view + curator (papercusp-worker-integration-2026-06-04). Fire-and-forget + detached, so it adds no latency. |
 | `pretooluse-bash-resource-gate.sh`    | PreToolUse   | Refuse a destructive Bash command that collides with an EXCLUSIVE hold on a registered named resource. |
 
-**Codex caveat (D-006):** Codex does **not** currently fire PreToolUse for
-edits/Bash (upstream openai/codex #20204), so the *lock* PreToolUse is
-config-ready-but-inert on Codex — lock coordination there is voluntary
-(`locks:*` calls). Codex's **PostToolUse DOES fire**, so the coord-inbox +
-activity-report hooks work on Codex. Claude fires both. Because Codex hands
-hooks a **minimal env**, the Codex `hooks.json` **bakes** `PAPERCUSP_SID`
-(+ `PAPERCUSP_AGENT=codex`) into the command; Claude reads them from the
-inherited session env, so its `settings.json` entry is just the script path.
+**Codex env caveat (D-006):** Codex hands hooks a **minimal env**, so the Codex
+`hooks.json` **bakes** `PAPERCUSP_SID` (+ `PAPERCUSP_AGENT=codex`) into the
+command; Claude reads them from the inherited session env, so its
+`settings.json` entry is just the script path. Current Codex supports
+PreToolUse/PostToolUse matchers for `Bash`, `apply_patch` (plus `Edit`/`Write`
+aliases), and MCP tools; missing hook scripts still degrade fail-open, so
+diagnostics tell agents when explicit `locks:*` calls are required.
 
 Installed to `~/.papercusp/hooks/cc/` by `install-standalone-mcp.sh`, which
 also merges the Claude `settings.json` entries. The Codex entries are written

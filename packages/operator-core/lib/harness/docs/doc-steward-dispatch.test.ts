@@ -14,7 +14,8 @@ vi.mock('../../blueprint/launch-blueprint', () => ({
 import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
 
 const docs: DriftedDoc[] = [
-  { docId: 'agent-insights/a.mdx', anchorPaths: ['src/a.ts'], reason: 'src/a.ts changed', source: 'manual' },
+  // P-005: workItems (the change cause) rides along in the batch.
+  { docId: 'agent-insights/a.mdx', anchorPaths: ['src/a.ts'], reason: 'src/a.ts changed', source: 'manual', workItems: ['WI-42'] },
   { docId: 'b.mdx', anchorPaths: ['src/b.ts', 'src/c.ts'], reason: 'src/b.ts changed', source: 'generated' },
 ];
 
@@ -41,6 +42,8 @@ describe('dispatchDocStewardForDrift (doc-steward P-008)', () => {
     const extra = input.extra as string[];
     expect(extra[0]).toBe('--doc-drift');
     expect(JSON.parse(extra[1])).toEqual({ docs });
+    // P-005: the change-cause work-item(s) ride along so the doc-steward knows WHY.
+    expect(JSON.parse(extra[1]).docs[0].workItems).toEqual(['WI-42']);
     // the human kickoff names the docs
     expect(input.kickoff as string).toContain('agent-insights/a.mdx');
     expect(input.kickoff as string).toContain('b.mdx');

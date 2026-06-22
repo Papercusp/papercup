@@ -90,13 +90,14 @@ export function parseArgs(argv) {
     // CODEX_HOME.
     else if (a === '--resume') out.resume = true;
     else if (a.startsWith('--resume=')) { out.resume = true; out.resumeId = a.slice('--resume='.length) || null; }
-    // Fork the resumed session instead of appending to it (claude --fork-session):
-    // claude mints a NEW session id seeded with the original's history, leaving the
-    // original's id + transcript untouched. psu additionally hands the fork a FRESH
-    // coord identity (new PAPERCUSP_SID, no adv-row link — see resumeEnvFor) so it
-    // can run CONCURRENTLY with the still-live original without colliding on
-    // locks/presence/inbox-wake — the whole point of forking vs. a second --resume.
-    // claude-only; resume-only.
+    // Fork the resumed session instead of appending to it. Claude uses
+    // `--fork-session`; Codex uses `codex fork`. Both mint a NEW native session
+    // seeded with the original's history, leaving the original id + transcript
+    // untouched. psu additionally hands the fork a FRESH coord identity (new
+    // PAPERCUSP_SID, no adv-row link unless the tracked Claude fork path can mint
+    // one — see resumeEnvFor) so it can run CONCURRENTLY with the still-live
+    // original without colliding on locks/presence/inbox-wake. OMP still has no
+    // native branch command.
     else if (a === '--fork' || a === '--fork-session') out.fork = true;
     else if (a === '--no-plan') out.noPlan = true;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
@@ -178,7 +179,7 @@ export function addDirArgs(agent, dirs = []) {
 
 export function forkUnsupportedMessage(agent) {
   return (
-    `psu: --fork is only supported for claude sessions; ${agent} has no native fork-session. ` +
+    `psu: --fork is not supported for ${agent} sessions; ${agent} has no native branch command. ` +
     `To branch safely, write a brief/transcript excerpt and launch a new ${agent} session with ` +
     `\`psu --agent=${agent} --launch-context=<brief.md>\` plus the same workspace/harness/plan flags as needed, ` +
     `or re-run without --fork to resume in place. psu will not silently append to the original when a fork was requested.`
@@ -360,10 +361,10 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
  * CODEX_HOME the caller points at.
  */
 export function resumeArgsFor(session, { coordExtPath, fork = false, forkSessionId = null, addDir = [] } = {}) {
-  // --fork-session is a claude concept; omp/codex have no branch-the-session flag,
+  // --fork is native for claude and codex; omp has no branch-the-session flag,
   // and silently appending to the original would be the very clobber the user asked
   // to avoid. Refuse loudly instead.
-  if (fork && session.agent !== 'claude') {
+  if (fork && session.agent !== 'claude' && session.agent !== 'codex') {
     throw new Error(forkUnsupportedMessage(session.agent));
   }
   // `session.sessionId` is the agent's NATIVE session id (a UUID) when known —
@@ -393,10 +394,11 @@ export function resumeArgsFor(session, { coordExtPath, fork = false, forkSession
   if (session.agent === 'codex') {
     // Bypass flags + any --add-dir BEFORE the `resume` subcommand (all top-level
     // codex options). CODEX_HOME (the session's home) is set by the caller.
-    // `resume <uuid>` (UUIDs take precedence) for an exact session; `resume --last`
-    // otherwise.
-    const resume = session.sessionId ? ['resume', session.sessionId] : ['resume', '--last'];
-    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', ...addDirArgs('codex', addDir), ...resume] };
+    // `resume <uuid>` / `fork <uuid>` (UUIDs take precedence) for an exact
+    // session; `resume --last` / `fork --last` otherwise.
+    const subcommand = fork ? 'fork' : 'resume';
+    const target = session.sessionId ? [subcommand, session.sessionId] : [subcommand, '--last'];
+    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', ...addDirArgs('codex', addDir), ...target] };
   }
   throw new Error(`resumeArgsFor: unknown agent: ${session.agent}`);
 }
@@ -1332,10 +1334,10 @@ function fmtAge(iso) {
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
 function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null } = {}) {
-  // --fork is claude-only — refuse early with a clear message rather than letting
+  // --fork is native for claude/codex — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
-  if (fork && session.agent !== 'claude') {
+  if (fork && session.agent !== 'claude' && session.agent !== 'codex') {
     console.error(forkUnsupportedMessage(session.agent));
     process.exit(2);
   }
@@ -1394,7 +1396,8 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
  * plan and lands in the ORIGINAL's cwd (harness_slug:null so the server doesn't
  * relocate cwd — the seeded transcript is keyed by the original's cwd, and claude
  * resolves --resume by CLAUDE_CONFIG_DIR + the encoded cwd it runs in, so the fork
- * MUST run in that same cwd). agent is always claude (the only fork-session backend).
+ * MUST run in that same cwd). agent is claude here because tracked forks need a
+ * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
  */
 export function forkBootstrapBody(session, account = null) {
   return {
@@ -1464,7 +1467,7 @@ export function forkSeedPaths(origConfigDir, forkConfigDir) {
  * already carries the original's system prompt — appending it again would double it.
  *
  * Falls back to the plain untracked fork (launchResume) when the session isn't a
- * forkable tracked claude session, or when bootstrap-su is unreachable/incomplete —
+ * forkable tracked claude session, including Codex native forks, or when bootstrap-su is unreachable/incomplete —
  * so `--fork` never hard-fails on the tracked path.
  */
 async function launchTrackedFork(session, args = {}, acct = { id: null, env: {}, notice: null }) {

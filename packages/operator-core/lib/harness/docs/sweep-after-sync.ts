@@ -138,6 +138,27 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     },
   });
 
+  // P-005 (doc-drift attribution): enrich each drifted doc with the work-item(s) that recently
+  // changed its anchored code (from git_sync_commit_attribution) so the doc-steward knows WHY the
+  // code drifted (D-006: derived, no extra agent call). Deterministic + best-effort; ONE query.
+  if (staleDocs.length > 0) {
+    try {
+      const { lookupDriftCauseWorkItems } = await import('../../edit-attribution');
+      const causes = await lookupDriftCauseWorkItems(
+        [...new Set(staleDocs.flatMap((d) => d.anchorPaths))],
+        { harnessSlug },
+      );
+      if (causes.size > 0) {
+        for (const d of staleDocs) {
+          const wis = [...new Set(d.anchorPaths.flatMap((f) => causes.get(f) ?? []))];
+          if (wis.length > 0) d.workItems = wis;
+        }
+      }
+    } catch {
+      /* best-effort: attribution enrichment must never break the sweep */
+    }
+  }
+
   // P-008 doc-steward — dispatch the LLM consumer to FIX the newly-drifted docs against the
   // current code (the deterministic counterpart to detection). Best-effort + flag-gated; the
   // sweep already deduped (once per drift episode), so this fires ONE doc-steward for the batch.

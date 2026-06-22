@@ -159,7 +159,7 @@ describe('writeRoleCodexHome', () => {
     const out = writeRoleCodexHome({ sessionKey: 8, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
     expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(false);
     const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
-    expect(diag.lockEnforcement).toBe('soft-hooks-missing');
+    expect(diag.lockEnforcement).toBe('hooks-missing');
     expect(diag.requiresExplicitPapercuspLocks).toBe(true);
   });
 
@@ -278,8 +278,9 @@ describe('writeSuCodexHome', () => {
     expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(true);
     expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
     const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
-    expect(diag.lockEnforcement).toBe('soft-hooks-configured');
-    expect(diag.codexPreToolUseStatus).toBe('upstream-inert-for-apply-patch-and-shell');
+    expect(diag.lockEnforcement).toBe('hooks-configured');
+    expect(diag.codexPreToolUseStatus).toBe('codex-hooks-stable-pretooluse');
+    expect(diag.requiresExplicitPapercuspLocks).toBe(false);
   });
 
   it('reads non-secret CODEX_HOME diagnostics, including latest rollout id and resume command', async () => {
@@ -300,7 +301,7 @@ describe('writeSuCodexHome', () => {
     expect(diag.configExists).toBe(true);
     expect(diag.hooksExists).toBe(true);
     expect(diag.diagnosticsExists).toBe(true);
-    expect(diag.diagnostics?.lockEnforcement).toBe('soft-hooks-configured');
+    expect(diag.diagnostics?.lockEnforcement).toBe('hooks-configured');
     expect(diag.latestRolloutId).toBe('019eeb2b-0742-72a0-85a4-5dc505cfe62d');
     expect(diag.resumeStrategy).toBe('codex-resume-last-in-code-home');
     expect(diag.resumeCommand).toContain('codex resume --last');

@@ -6,7 +6,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   hasRemotePeers,
+  hasRemoteHivePeers,
   invalidateRemotePeers,
+  invalidateRemoteHivePeers,
   __resetRemotePeersCacheForTests,
 } from '../remote-peers-cache';
 import { routeFileLockOp } from '../file-lock-routing';
@@ -116,5 +118,56 @@ describe('routeFileLockOp — remote-peers fast path', () => {
     );
     expect(res.via).toBe('fail-open');
     expect(res.value).toBe('L');
+  });
+});
+
+// ── Hive path + namespacing + invalidation (depth pass, su-7f3e0376) ─────────
+describe('hasRemoteHivePeers + cache namespacing (P-009)', () => {
+  it('a Hive with only self → false; with a remote Swarm → true', async () => {
+    expect(
+      await hasRemoteHivePeers('my-hive', {
+        now: () => NOW,
+        resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }),
+        fetchHivePresenceRows: async (h) => { expect(h).toBe('my-hive'); return [peerRow('aaa')]; },
+      }),
+    ).toBe(false);
+    invalidateRemoteHivePeers('my-hive'); // clear the hive entry so the next call re-resolves
+    expect(
+      await hasRemoteHivePeers('my-hive', {
+        now: () => NOW,
+        resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }),
+        fetchHivePresenceRows: async () => [peerRow('aaa'), peerRow('bbb', 'm2')],
+      }),
+    ).toBe(true);
+  });
+
+  it('hive: and harness keys NEVER collide — the same name yields independent entries', async () => {
+    const self = { githubUserId: 1, devicePubkey: 'aaa' };
+    // harness 'x' has a remote peer → true; hive 'x' is self-alone → false. Same name, opposite answers.
+    const harnessVal = await hasRemotePeers('x', {
+      now: () => NOW,
+      resolveSelf: async () => self,
+      fetchPresenceRows: async () => [peerRow('aaa'), peerRow('bbb', 'm2')],
+    });
+    const hiveVal = await hasRemoteHivePeers('x', {
+      now: () => NOW,
+      resolveSelf: async () => self,
+      fetchHivePresenceRows: async () => [peerRow('aaa')],
+    });
+    expect(harnessVal).toBe(true);
+    expect(hiveVal).toBe(false); // a collision would have served the cached harness `true`
+  });
+
+  it('invalidateRemotePeers() with no argument clears EVERY entry (harness + hive)', async () => {
+    const harnessFetch = vi.fn(async () => [] as ReturnType<typeof peerRow>[]);
+    const hiveFetch = vi.fn(async () => [] as ReturnType<typeof peerRow>[]);
+    const base = { now: () => NOW, resolveSelf: async () => null, ttlMs: 60_000 };
+    await hasRemotePeers('h1', { ...base, fetchPresenceRows: harnessFetch });
+    await hasRemoteHivePeers('hv1', { ...base, fetchHivePresenceRows: hiveFetch });
+    invalidateRemotePeers(); // no arg → clear ALL
+    await hasRemotePeers('h1', { ...base, fetchPresenceRows: harnessFetch });
+    await hasRemoteHivePeers('hv1', { ...base, fetchHivePresenceRows: hiveFetch });
+    expect(harnessFetch).toHaveBeenCalledTimes(2); // re-queried after the clear-all
+    expect(hiveFetch).toHaveBeenCalledTimes(2);
   });
 });

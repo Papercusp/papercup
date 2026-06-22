@@ -70,10 +70,13 @@ export const BACKEND_PARITY_SMOKE_MATRIX: readonly BackendParitySmokeRow[] = [
     capabilities: [
       { backend: 'claude', feature: 'fresh-su', state: 'supported' },
       { backend: 'claude', feature: 'resume', state: 'supported' },
+      { backend: 'claude', feature: 'native-fork', state: 'supported' },
       { backend: 'codex', feature: 'fresh-su', state: 'supported' },
       { backend: 'codex', feature: 'resume', state: 'supported' },
+      { backend: 'codex', feature: 'native-fork', state: 'supported' },
       { backend: 'omp', feature: 'fresh-su', state: 'supported' },
       { backend: 'omp', feature: 'resume', state: 'supported' },
+      { backend: 'omp', feature: 'native-fork', state: 'unsupported' },
     ],
   },
   {

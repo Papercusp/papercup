@@ -43,17 +43,16 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
     expect(backendSupportsFeature('codex', 'launch-context')).toBe(true);
     expect(backendSupportsFeature('codex', 'mcp-http-auth')).toBe(true);
     expect(backendSupportsFeature('codex', 'runtime-home-inheritance')).toBe(true);
+    expect(backendSupportsFeature('codex', 'native-fork')).toBe(true);
 
-    expect(backendFeatureCapability('codex', 'file-lock-enforcement').state).toBe('soft');
-    expect(backendFeatureCapability('codex', 'native-fork').state).toBe('unsupported');
-    expect(backendFeatureCapability('codex', 'native-fork').unsupportedReason).toMatch(/launch_context/i);
+    expect(backendFeatureCapability('codex', 'file-lock-enforcement').state).toBe('supported');
     expect(backendFeatureCapability('codex', 'forced-native-session-id').unsupportedReason).toMatch(/cannot/i);
   });
 
-  it('documents non-native fork fallbacks instead of pretending Codex/OMP can fork', () => {
+  it('documents native fork support where the current backend exposes it', () => {
     expect(backendFeatureCapability('codex', 'native-fork')).toMatchObject({
-      state: 'unsupported',
-      unsupportedReason: expect.stringMatching(/launch_context/i),
+      state: 'supported',
+      mechanism: expect.stringMatching(/codex fork/i),
     });
     expect(backendFeatureCapability('omp', 'native-fork')).toMatchObject({
       state: 'unsupported',

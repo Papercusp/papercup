@@ -209,3 +209,38 @@ export async function recordCommitAttribution(rows: CommitAttributionRow[]): Pro
     // best-effort: commit attribution must never affect git-sync.
   }
 }
+
+/**
+ * P-005 (doc-drift attribution): the work-item(s) that recently changed the given CODE files,
+ * read back from git_sync_commit_attribution. The doc-freshness sweep calls this for a drifted
+ * doc's anchored files so the doc-steward learns WHY the code changed (D-006: derived, no extra
+ * agent tool call). Best-effort — returns a `file → workItemIds` map, empty on any error.
+ * `lookbackHours` bounds it (default 14 days — the "what recently shaped this code" window).
+ */
+export async function lookupDriftCauseWorkItems(
+  files: string[],
+  opts: { harnessSlug?: string; lookbackHours?: number } = {},
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  try {
+    const uniq = [...new Set((files ?? []).filter(Boolean))];
+    if (uniq.length === 0) return out;
+    const { sql } = getOrgPg();
+    const rows = await sql<{ file: string; work_item_id: string }[]>`
+      SELECT DISTINCT file, work_item_id
+        FROM harness_shared.git_sync_commit_attribution
+       WHERE file = ANY(${uniq})
+         AND work_item_id IS NOT NULL
+         ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
+         AND ts >= now() - make_interval(hours => ${opts.lookbackHours ?? 24 * 14})
+    `;
+    for (const r of rows) {
+      const arr = out.get(r.file) ?? [];
+      if (!arr.includes(r.work_item_id)) arr.push(r.work_item_id);
+      out.set(r.file, arr);
+    }
+    return out;
+  } catch {
+    return out;
+  }
+}

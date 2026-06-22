@@ -60,6 +60,7 @@ import {
   type ParsedReport,
 } from '@papercusp/operator-core/lib/operator-converse-tags';
 import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
+import { setVoiceConverseHandler } from './voice/voice-converse-bridge';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
@@ -627,8 +628,10 @@ interface OperatorConversationContextValue {
   error: string | null;
   busy: boolean;
 
-  /** User-initiated send. Always allowed; restarts silence timer. */
-  sendUserMessage: (text: string) => void;
+  /** User-initiated send. Always allowed; restarts silence timer.
+   *  `opts.spoken` marks a voice-initiated turn so the assistant reply
+   *  is spoken back (voice → converse bridge, Phase 1). */
+  sendUserMessage: (text: string, opts?: { spoken?: boolean }) => void;
 
   /**
    * Explicit "I want suggestions now" trigger — fires the same path as
@@ -1242,6 +1245,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
          * fires another user_says_ready. Plan §C.5 / §D.4.
          */
         isAutoFire?: boolean;
+        /**
+         * True when the user turn that triggered this generation was
+         * SPOKEN (local-STT voice → converse bridge). The assistant
+         * reply is then spoken back via speak(), restoring "voice ≡
+         * text on one brain" (sentinel-tui-shared-backend Phase 1).
+         * Typed turns leave this false so text-chat replies stay silent.
+         */
+        spokenReply?: boolean;
       },
     ) => {
       // Abort any in-flight generation first (e.g. user sent a new message
@@ -1298,6 +1309,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           const assistantMessage: ChatMessage = { role: 'assistant', content: sayContent };
           if (collectedTools) assistantMessage.tools = collectedTools;
           dispatch({ type: 'append_message', message: assistantMessage });
+          // Voice ≡ text: when the user turn that triggered this
+          // generation was SPOKEN (local-STT → converse bridge), speak
+          // the assistant's reply back so a spoken turn gets a spoken
+          // answer from the SAME operator:converse brain. Only the
+          // <say> content is spoken — tool calls / reports are silent.
+          // Guarded by `spokenReply` (NOT just voiceActiveRef) so a
+          // turn the user TYPED while voice happens to be on stays
+          // silent. (sentinel-tui-shared-backend-and-cards Phase 1.)
+          if (opts?.spokenReply && sayContent.trim()) {
+            try {
+              speak(sayContent.trim(), 'system:operator', 'polite');
+            } catch { /* TTS unavailable — aria-live still published */ }
+          }
           // Engagement check tracks USER turns only. Assistant turns
           // (a) probe for the want-active phrase to seed G2's decline
           // window, AND (b) RESET that seed on subsequent non-want-active
@@ -1428,6 +1452,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             void runGeneration('continue', {
               messagesOverride: nextHistoryForAutoFire,
               isAutoFire: opts?.isAutoFire,
+              // Keep speaking chain steps that descend from a spoken turn.
+              spokenReply: opts?.spokenReply,
             });
             return; // do NOT also fire terminal auto-fire below
           }
@@ -1875,7 +1901,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // ── Public actions ──────────────────────────────────────────────────
 
   const sendUserMessage = useCallback(
-    (text: string) => {
+    (text: string, sendOpts?: { spoken?: boolean }) => {
       const trimmed = text.trim();
       if (!trimmed) return;
       // Optimistic id — swapped for the real PG id once the POST
@@ -1924,10 +1950,24 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // turn so the model sees what the user actually said. State hasn't
       // committed yet on this tick; reading state.messages would miss it.
       const nextHistory = [...stateRef.current.messages, userMsg];
-      void runGeneration(trigger, { messagesOverride: nextHistory });
+      // A spoken turn (voice → converse bridge) speaks its reply back.
+      void runGeneration(trigger, {
+        messagesOverride: nextHistory,
+        spokenReply: sendOpts?.spoken === true,
+      });
     },
     [runGeneration, persistTurn, cancelNudgeGraceTimer, resetContinueChain],
   );
+
+  // Publish sendUserMessage to the voice→converse bridge singleton so a
+  // spoken final-utterance (routed by VoiceAppBridge, outside the React
+  // tree) drives THIS operator:converse conversation — the same brain the
+  // TUI text chat drives. Cleared on unmount so a stale handler can't fire
+  // after the provider is gone. (sentinel-tui-shared-backend Phase 1.)
+  useEffect(() => {
+    setVoiceConverseHandler((text, opts) => sendUserMessage(text, opts));
+    return () => setVoiceConverseHandler(null);
+  }, [sendUserMessage]);
 
   const generateIdeas = useCallback(() => {
     // Explicit user request — reset the chain (it's a new ask) and

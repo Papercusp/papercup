@@ -222,9 +222,9 @@ describe('AgentDossier', () => {
           diagnosticsPath: '/home/user/.papercusp/su-codex-homes/session-77/papercusp-diagnostics.json',
           diagnosticsExists: true,
           diagnostics: {
-            lockEnforcement: 'soft-hooks-configured',
-            codexPreToolUseStatus: 'upstream-inert-for-apply-patch-and-shell',
-            requiresExplicitPapercuspLocks: true,
+            lockEnforcement: 'hooks-configured',
+            codexPreToolUseStatus: 'codex-hooks-stable-pretooluse',
+            requiresExplicitPapercuspLocks: false,
             inheritedPromptsCopied: true,
           },
           latestRolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
@@ -242,8 +242,8 @@ describe('AgentDossier', () => {
     expect(getAllByText('/home/user/.papercusp/su-codex-homes/session-77').length).toBeGreaterThan(0);
     expect(getByText("CODEX_HOME='/home/user/.papercusp/su-codex-homes/session-77' codex resume --last")).toBeTruthy();
     expect(getAllByText('019eeb2b-0742-72a0-85a4-5dc505cfe62d').length).toBeGreaterThan(0);
-    expect(getByText('soft-hooks-configured')).toBeTruthy();
-    expect(getByText('required')).toBeTruthy();
+    expect(getByText('hooks-configured')).toBeTruthy();
+    expect(getByText('not required')).toBeTruthy();
   });
 
   it('cross-marks a held file with the L lock marker', async () => {

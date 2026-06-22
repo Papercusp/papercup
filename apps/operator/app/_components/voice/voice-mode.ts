@@ -2007,12 +2007,14 @@ export function speak(
 ): void {
   if (!state.supported) return;
   if (!options.force) {
-    // Normal path: voice mode must be on AND tutorial complete AND we
-    // must be the leader tab. Test/preview buttons in /settings/voice
-    // pass force:true to bypass these gates — they ARE the explicit
-    // user request to make sound.
+    // Normal path: voice mode must be on AND we must be the leader tab.
+    // Test/preview buttons in /settings/voice pass force:true to bypass.
+    // (Removed the `oracle-tutorial-complete` gate 2026-06-22: that
+    //  sessionStorage flag was set ONLY by e2e specs, so in the real app it
+    //  silenced EVERY non-forced spoken reply — the root cause of "voice
+    //  gives no audible response". Voice-mode-on is the real gate; Phase 1 of
+    //  sentinel-tui-shared-backend-and-cards routes replies through here.)
     if (state.mode === 'off') return;
-    if (typeof window !== 'undefined' && sessionStorage.getItem('oracle-tutorial-complete') !== 'true') return;
   }
   // Aria-live publish — independent of TTS engine + leader election so
   // screen-reader users always see the same content the leader speaks.

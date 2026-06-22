@@ -76,7 +76,7 @@ agent/workspace/harness/plan:
 | `--profile=engineer\|power\|generic` | Which su playbook + dispatch tier (default `engineer`). Changes **both** the rendered playbook **and** the MCP dispatch gating, via `PAPERCUSP_PROFILE` — see [Profiles](#profiles). |
 | `--account=<id>` | Pin the session to a specific inference-gateway pool account; fail-soft to the default credential if the gateway is off or the id is unknown. |
 | `--brain` | Retired: fails closed with a tombstone message. Use the live operator/sentinel converse surface or a normal `psu` session. |
-| `--fork` / `--fork-session` | claude-only, resume-only: branch the resumed conversation into a **new** session id (seeded with the original's history) with a fresh coord identity, so the fork runs concurrently with the still-live original. |
+| `--fork` / `--fork-session` | claude + codex, resume-only: branch the resumed conversation into a **new** native session id (seeded with the original's history) with a fresh coord identity, so the fork runs concurrently with the still-live original. Claude tracked forks can pre-mint the fork id; Codex uses `codex fork` and discovers the resulting rollout later. |
 | `--add-dir=<dir>` | Repeatable; maps to claude's + codex's native `--add-dir` (omp has none → warned + skipped). Both space and `=` forms. |
 | `--model=<m>` | Backend model fuzzy-match passthrough. |
 | `--yes` / `-y` | Skip the "proceed anyway?" confirm when resuming an untracked (non-psu) session in scripts. |

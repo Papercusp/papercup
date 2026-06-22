@@ -231,15 +231,19 @@ describe('psu-launcher arg parsing', () => {
     ]);
   });
 
-  it('resumeArgsFor refuses --fork for non-claude agents (omp/codex have no fork-session)', () => {
+  it('resumeArgsFor maps Codex --fork to native codex fork, and still refuses OMP', () => {
     expect(() => resumeArgsFor({ agent: 'omp', ompThreadId: 't' }, { fork: true })).toThrow(/launch-context/);
-    expect(() => resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { fork: true })).toThrow(/launch-context/);
+    expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }, { fork: true }).args).toEqual([
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'fork', 'uuid-2',
+    ]);
+    expect(resumeArgsFor({ agent: 'codex' }, { fork: true }).args).toEqual([
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'fork', '--last',
+    ]);
   });
 
-  it('forkUnsupportedMessage documents the safe non-native fallback for Codex and OMP', () => {
-    expect(forkUnsupportedMessage('codex')).toContain('psu --agent=codex --launch-context=<brief.md>');
+  it('forkUnsupportedMessage documents the safe non-native fallback for OMP', () => {
     expect(forkUnsupportedMessage('omp')).toContain('psu --agent=omp --launch-context=<brief.md>');
-    expect(forkUnsupportedMessage('codex')).toContain('will not silently append');
+    expect(forkUnsupportedMessage('omp')).toContain('will not silently append');
   });
 
   it('resumeArgsFor forces the fork id via --session-id ONLY alongside --fork-session (tracked fork)', () => {
@@ -274,6 +278,9 @@ describe('psu-launcher arg parsing', () => {
     // codex: --add-dir is a TOP-LEVEL option, so it must precede the `resume` subcommand.
     expect(resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
       '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '--add-dir=/d', 'resume', 'u',
+    ]);
+    expect(resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { fork: true, addDir: ['/d'] }).args).toEqual([
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '--add-dir=/d', 'fork', 'u',
     ]);
   });
 
