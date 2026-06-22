@@ -215,7 +215,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
                       disabled={busy('audienceMode')}
                       onClick={() => void setOverride('audienceMode', m)}
                     >
-                      {m === 'engineer' ? 'Engineer' : 'User-friendly'}
+                      {m === 'engineer' ? 'Engineer' : 'Novice'}
                     </button>
                   ))}
                 </div>
