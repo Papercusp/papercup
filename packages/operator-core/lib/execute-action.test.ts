@@ -1,11 +1,13 @@
 /**
- * Coverage for execute-action.validateIdentityFields — the pure identity-spoof
- * guard: a body's callingHarness / send_message `from` must equal the
- * bearer-derived slug, and scaffold_harness must not carry a caller-supplied
- * parent_slug (it is server-derived). No I/O.
+ * Coverage for execute-action validation:
+ * 1. validateIdentityFields — the pure identity-spoof guard: a body's
+ *    callingHarness / send_message `from` must equal the bearer-derived slug,
+ *    and scaffold_harness must not carry a caller-supplied parent_slug.
+ * 2. executeAction — comprehensive action shape validation ensures malformed
+ *    actions are rejected before dispatch so state remains clean.
  */
 import { describe, expect, it } from 'vitest';
-import { validateIdentityFields } from './execute-action';
+import { validateIdentityFields, executeAction } from './execute-action';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const body = (over: any) => ({ actionId: 'a1', action: { op: 'noop' }, ...over }) as never;

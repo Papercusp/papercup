@@ -929,6 +929,127 @@ async function doCreateFeature(
   };
 }
 
+/**
+ * Validate that an action has the required fields for its op.
+ * Returns null on success, or a validation error descriptor on failure.
+ *
+ * This ensures that malformed actions are rejected BEFORE dispatch,
+ * so state remains clean (no partial writes or side effects).
+ */
+function validateActionShape(action: ExecuteAction): ExecuteActionResult | null {
+  const a = action as any;
+
+  switch (action.op) {
+    case 'send_message': {
+      if (!Array.isArray(a.to) || a.to.length === 0) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: to[] (non-empty array) required' };
+      }
+      if (typeof a.kind !== 'string' || !a.kind) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: kind (string) required' };
+      }
+      if (typeof a.subject !== 'string' || !a.subject) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: subject (string) required' };
+      }
+      if (typeof a.reason !== 'string' || a.reason.trim().length < 10) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: reason (≥10 chars) required' };
+      }
+      break;
+    }
+
+    case 'mark_message_status': {
+      if (typeof a.messageId !== 'string' || !a.messageId) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_message_status: messageId (string) required' };
+      }
+      if (!['acknowledged', 'archived'].includes(a.status)) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_message_status: status must be "acknowledged" or "archived"' };
+      }
+      break;
+    }
+
+    case 'spinup_project': {
+      if (typeof a.directiveId !== 'string' || !a.directiveId) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'spinup_project: directiveId (string) required' };
+      }
+      if (typeof a.projectName !== 'string' || !a.projectName) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'spinup_project: projectName (string) required' };
+      }
+      if (!Array.isArray(a.departments)) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'spinup_project: departments (array) required' };
+      }
+      if (typeof a.projectBudgetCents !== 'number' || a.projectBudgetCents < 0) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'spinup_project: projectBudgetCents (non-negative number) required' };
+      }
+      break;
+    }
+
+    case 'scaffold_harness': {
+      if (typeof a.projectSlug !== 'string' || !a.projectSlug) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'scaffold_harness: projectSlug (string) required' };
+      }
+      if (typeof a.template !== 'string' || !a.template) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'scaffold_harness: template (string) required' };
+      }
+      if (typeof a.spec !== 'string' || !a.spec) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'scaffold_harness: spec (string) required' };
+      }
+      break;
+    }
+
+    case 'pause_project': {
+      if (typeof a.projectSlug !== 'string' || !a.projectSlug) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'pause_project: projectSlug (string) required' };
+      }
+      break;
+    }
+
+    case 'resume_project': {
+      if (typeof a.projectSlug !== 'string' || !a.projectSlug) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'resume_project: projectSlug (string) required' };
+      }
+      break;
+    }
+
+    case 'mark_campaign_published': {
+      if (typeof a.messageId !== 'string' || !a.messageId) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_campaign_published: messageId (string) required' };
+      }
+      if (!Array.isArray(a.channels) || a.channels.length === 0) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_campaign_published: channels[] (non-empty array) required' };
+      }
+      break;
+    }
+
+    case 'add_directive_summary': {
+      if (typeof a.directiveId !== 'string' || !a.directiveId) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'add_directive_summary: directiveId (string) required' };
+      }
+      if (typeof a.summary !== 'string' || a.summary.trim().length < 10) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'add_directive_summary: summary (≥10 chars) required' };
+      }
+      break;
+    }
+
+    case 'create_feature': {
+      if (typeof a.harness_slug !== 'string' || !a.harness_slug) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'create_feature: harness_slug (string) required' };
+      }
+      if (typeof a.title !== 'string' || !a.title.trim()) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'create_feature: title (string) required' };
+      }
+      if (typeof a.reason !== 'string' || a.reason.trim().length < 10) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'create_feature: reason (≥10 chars) required' };
+      }
+      break;
+    }
+
+    default:
+      // Unknown op — will be caught by dispatchAction
+      break;
+  }
+
+  return null;
+}
+
 export async function dispatchAction(
   callerSlug: string,
   action: ExecuteAction,
@@ -966,6 +1087,14 @@ export async function executeAction(
   }
   if (!body.action || typeof body.action !== 'object' || !body.action.op) {
     return { ok: false, actionId: body.actionId, error: 'validation_error', detail: 'action.op required' };
+  }
+
+  // Validate action shape before dispatch — ensures state remains clean
+  // (validation happens before any side effects).
+  const shapeError = validateActionShape(body.action);
+  if (shapeError) {
+    shapeError.actionId = body.actionId;
+    return shapeError;
   }
 
   // Idempotency cache check.
