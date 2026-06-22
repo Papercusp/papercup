@@ -1176,20 +1176,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'projectSpecRevisions.byProject': {
     argsSchema: z.object({
       projectId: z.string(),
-      limit: z.number().int().positive().max(200).default(50),
+      // Generous bound — a local desktop app loads all of a project's revisions
+      // in practice; the cap only exists so a runaway project can't blow the
+      // live read. When it IS capped the carried total keeps the count honest.
+      limit: z.number().int().positive().max(500).default(500),
     }),
     resolve: async (args) => {
       const { projectId, limit } = args as { projectId: string; limit: number };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
+      const { count, desc, eq } = await import('drizzle-orm');
       const t = generated.projectSpecRevisionsInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.projectId, projectId))
-        .orderBy(desc(t.ts))
-        .limit(limit)) as unknown[];
+      const [rows, totalRows] = await Promise.all([
+        db.select().from(t).where(eq(t.projectId, projectId)).orderBy(desc(t.ts)).limit(limit),
+        db.select({ n: count() }).from(t).where(eq(t.projectId, projectId)),
+      ]);
+      // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
+      // envelope) so the UI shows "N of TOTAL" instead of the capped length.
+      const total = totalRows[0]?.n ?? rows.length;
+      return attachListMeta(rows, { total }) as unknown[];
     },
   },
 
