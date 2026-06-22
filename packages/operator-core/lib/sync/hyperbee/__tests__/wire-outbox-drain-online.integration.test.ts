@@ -40,6 +40,7 @@ import { wireOutboxForHarness } from '../wire-outbox';
 import type { OutboxDrainHandle } from '../outbox-drain';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { makeFakeBootedHandle } from './fake-booted-handle';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../packages/operator-core/lib/sync/hyperbee/__tests__ → repo root is six up.
@@ -215,6 +216,7 @@ describe('EI-521 — wireOutboxForHarness brings the drain loop ONLINE and auto-
     'a feature written AFTER wireOutboxForHarness is auto-drained by the loop (no manual drainOutboxOnce)',
     async () => {
       const db: FreshPgDb = await createFreshPgDb('ei521drain');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
       cleanups.push(() => db.cleanup());
       await setupSchema(db.sql);
 

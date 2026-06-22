@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+vi.mock('./presence', () => ({ listPresence: vi.fn() }));
 import {
   isSelectorOrWildcard,
   resolveBestEffort,
   resolveRecipientsAgainst,
+  resolveRecipients,
+  resolveBestEffortAgainstRoster,
 } from './recipient-resolve';
+import { listPresence } from './presence';
+
+const mockedList = vi.mocked(listPresence);
+const roster = (ids: string[]) => ids.map((ownerId) => ({ ownerId })) as Awaited<ReturnType<typeof listPresence>>;
 
 // Two `su-` agents (distinct uuids) + a `pus-` agent — the prefix `su-df00939e`
 // uniquely picks the first; the prefix `su-` is ambiguous across both.
@@ -107,5 +114,41 @@ describe('resolveBestEffort (the silent shared-layer twin)', () => {
   it('passes selectors/wildcards + exact ids through untouched', () => {
     const to = ['*', 'human', '@plan:x', 'su-fc2fd592-e760-42bd-8057-beb4d06eef52'];
     expect(resolveBestEffort(to, KNOWN)).toEqual(to);
+  });
+});
+
+// ── Host wrappers (depth pass, su-7f3e0376) — the fail-open / fail-soft semantics ──
+describe('resolveRecipients (host wrapper — fail-open against the live roster)', () => {
+  beforeEach(() => mockedList.mockReset());
+
+  it('resolves against the live roster when present', async () => {
+    mockedList.mockResolvedValue(roster(KNOWN));
+    const r = await resolveRecipients(['su-df00939e']);
+    expect(r.resolved).toEqual(['su-df00939e-1f16-410d-ac0d-ef1aebd41d96']);
+  });
+
+  it('FAILS OPEN (passes everything through) when the roster is EMPTY — never a false unknown', async () => {
+    // Both an empty roster AND an unavailable roster (listPresence throws → [] in the catch) converge
+    // on this same passthrough; the throw-path is the catch's twin, left to integration coverage.
+    mockedList.mockResolvedValue(roster([]));
+    const r = await resolveRecipients(['su-zzz99999', 'whoever']);
+    expect(r).toEqual({ resolved: ['su-zzz99999', 'whoever'], unknown: [], ambiguous: [] });
+  });
+});
+
+describe('resolveBestEffortAgainstRoster (host wrapper — broadcast short-circuit + fail-soft)', () => {
+  beforeEach(() => mockedList.mockReset());
+
+  it('SKIPS the roster read entirely when every entry is a selector/wildcard (broadcasts pay nothing)', async () => {
+    const out = await resolveBestEffortAgainstRoster(['*', 'human', '@plan:x']);
+    expect(out).toEqual(['*', 'human', '@plan:x']);
+    expect(mockedList).not.toHaveBeenCalled();
+  });
+
+  it('resolves a unique prefix against the roster when a concrete id is present', async () => {
+    mockedList.mockResolvedValue(roster(KNOWN));
+    expect(await resolveBestEffortAgainstRoster(['su-df00939e'])).toEqual([
+      'su-df00939e-1f16-410d-ac0d-ef1aebd41d96',
+    ]);
   });
 });

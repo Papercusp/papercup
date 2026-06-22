@@ -21,6 +21,7 @@ import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
 import type { PlanItemAssignmentRow } from '../projections/plan-item-assignments';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -55,6 +56,7 @@ describe('plan_item_assignments federation capture (real PG)', () => {
 
   beforeAll(async () => {
     db = await createFreshPgDb('pia_fed_trg');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
 
     await db.sql.unsafe(`
       DO $r$ BEGIN

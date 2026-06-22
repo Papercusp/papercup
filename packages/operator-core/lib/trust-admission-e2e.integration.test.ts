@@ -105,6 +105,7 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('trust-admission-e2e');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = db.sql;
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps

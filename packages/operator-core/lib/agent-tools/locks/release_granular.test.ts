@@ -31,4 +31,22 @@ describe('locks:release_granular handler', () => {
     expect(relM).toHaveBeenCalledWith({}, 'dom', 'me', '44444444-4444-4444-4444-444444444444');
     expect(body(out)).toMatchObject({ ok: true, released: ['', 'src', 'src/a.ts'] });
   });
+
+  it('releases selected lock_ids as a keyed bulk envelope', async () => {
+    relM.mockImplementation(async (_tx, _dom, _owner, lockId) => ({ released: [`released:${lockId}`] }) as never);
+    const out = (await tool.handler({
+      lock_ids: [
+        '44444444-4444-4444-4444-444444444444',
+        '55555555-5555-5555-5555-555555555555',
+      ],
+    } as never, {} as never)) as Out;
+    expect(body(out)).toMatchObject({
+      ok: true,
+      counts: { ok: 2, failed: 0 },
+      results: [
+        { ok: true, lock_id: '44444444-4444-4444-4444-444444444444', released: ['released:44444444-4444-4444-4444-444444444444'] },
+        { ok: true, lock_id: '55555555-5555-5555-5555-555555555555', released: ['released:55555555-5555-5555-5555-555555555555'] },
+      ],
+    });
+  });
 });

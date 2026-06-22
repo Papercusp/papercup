@@ -61,6 +61,7 @@ import type { OpEnvelope } from '../op-envelope-types';
 import { PgCoordLog } from '@papercusp/coordination/event-log';
 import { readInbox } from '../../../agent-tools/coordination/messages';
 import { configureCoordLog, resetCoordLog } from '../../../agent-tools/coordination/log';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 // getOrgPg → peer B's DB: buildHarnessProjectionApply's projections write through
 // it, so applying an op lands on peer B. Peer A is driven by its own raw client.
@@ -210,6 +211,7 @@ async function drainAtoB(sourceLogKeyHex = PEER_A_LOG): Promise<number> {
 
 beforeAll(async () => {
   dbA = await createFreshPgDb('cross_plan_fed_a');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   dbB = await createFreshPgDb('cross_plan_fed_b');
   await setupPeerSchema(dbA.sql);
   await setupPeerSchema(dbB.sql);

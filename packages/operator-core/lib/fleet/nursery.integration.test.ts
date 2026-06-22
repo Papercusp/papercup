@@ -18,6 +18,7 @@ import { recordSpawn, finishSpawn, getSpawn } from './spawn-tree';
 import type { LockTarget, LockReleaseResult } from './lock-release';
 import type { CancelNotice } from './nursery';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../test/_work-items-schema";
 
 // Post-migration-146 faithful shape (the columns the engine reads/writes).
 const SPAWNED_AGENTS_DDL = `
@@ -112,6 +113,7 @@ async function spawn(
 
 beforeAll(async () => {
   db = await createFreshPgDb('nursery');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(PLAN_ITEM_CLAIMS_DDL);

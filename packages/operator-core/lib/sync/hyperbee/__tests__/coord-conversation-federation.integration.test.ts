@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 import {
   buildCoordConversationProjection,
   type CoordConversationRow,
@@ -67,6 +68,7 @@ describe('coord_conversations federation (real PG)', () => {
 
   beforeAll(async () => {
     db = await createFreshPgDb('coord_conv_fed');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
 
     await db.sql.unsafe(`
       DO $r$ BEGIN

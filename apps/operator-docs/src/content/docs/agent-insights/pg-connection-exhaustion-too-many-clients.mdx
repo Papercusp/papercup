@@ -4,6 +4,14 @@ description: When psu / dev:pg_* / the whole MCP surface fail with "sorry, too m
 discovered: 2026-06-17
 tags: [postgres, connections, pool, performance, scalability, resource-profile, diagnostics, outage]
 status: active
+documents:
+  - libs/papercusp/libs/db/src/connection.ts
+  - libs/generic/resource-profile/src/index.ts
+  - scripts/pg-autotune.ts
+  - apps/operator/bin/serve.ts
+plans:
+  - backend-connection-scaling-2026-06-17
+  - operator-scalability-event-loop-2026-06-16
 sidebar:
   order: 60
 ---

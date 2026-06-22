@@ -70,6 +70,7 @@ import {
 } from '../projection';
 import { buildHarnessFeaturesProjection } from '../projections/harness-features';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../packages/operator-core/lib/sync/hyperbee/__tests__ → repo root is seven up.
@@ -484,6 +485,7 @@ describe('federation adversarial — wrong tableTag is silently dropped', () => 
     "the raw-table_name op does NOT project to B's PG over the real wire, while the tableTag op does",
     async () => {
       const dbB: FreshPgDb = await createFreshPgDb('advB');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
       cleanups.push(() => dbB.cleanup());
       await setupFeatureSchema(dbB.sql);
 

@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../test/_work-items-schema";
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {

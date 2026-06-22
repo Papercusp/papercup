@@ -95,6 +95,7 @@ async function seedFeature(id: string, createdTs: number) {
 
 beforeAll(async () => {
   db = await createFreshPgDb('wi-claims-concurrency');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = db.sql;
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await db.sql.unsafe(HFC_DDL);
@@ -102,9 +103,6 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   // claim_next selects FEATURE_COLS (incl. assignee_rank/rank_writer/rank_updated_at from
   // migrations 131/142/152 + the local-hive rank cols) — replicate work-items-claim setup.
-  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
-  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
-  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,

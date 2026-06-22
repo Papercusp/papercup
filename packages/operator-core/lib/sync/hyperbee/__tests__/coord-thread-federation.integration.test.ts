@@ -18,6 +18,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
 import { buildCoordThreadProjection, type CoordThreadRow } from '../projections/coord-thread';
 import { buildCoordThreadPostProjection, type CoordThreadPostRow } from '../projections/coord-thread-post';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -51,6 +52,7 @@ describe('coord_threads + coord_thread_posts federation (real PG + real PgThread
 
   beforeAll(async () => {
     db = await createFreshPgDb('coord_thr_fed');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     await stubRoles(db.sql);
     await ensureCoordCapabilityTables(db.sql);
     // Consolidated stubs for the 102 triggers.

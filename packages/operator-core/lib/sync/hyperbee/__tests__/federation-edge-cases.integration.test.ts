@@ -48,6 +48,7 @@ import { buildHarnessFeaturesProjection } from '../projections/harness-features'
 import { buildIssuesProjection } from '../projections/issues';
 import { buildUsageProjection } from '../projections/usage';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -385,6 +386,7 @@ interface TwoPeers {
  */
 async function bootTwoPeers(dbTag: string): Promise<TwoPeers> {
   const dbA: FreshPgDb = await createFreshPgDb(`${dbTag}A`);
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   cleanups.push(() => dbA.cleanup());
   const dbB: FreshPgDb = await createFreshPgDb(`${dbTag}B`);
   cleanups.push(() => dbB.cleanup());

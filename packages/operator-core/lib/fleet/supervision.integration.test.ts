@@ -17,6 +17,7 @@ import {
 } from './supervision';
 import type { LockTarget, LockReleaseResult } from './lock-release';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../test/_work-items-schema";
 
 const SPAWNED_AGENTS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
@@ -69,6 +70,7 @@ async function spawn(spawnId: string, opts: { parent?: string | null; strategy?:
 
 beforeAll(async () => {
   db = await createFreshPgDb('supervision');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(PLAN_ITEM_CLAIMS_DDL);

@@ -38,6 +38,7 @@ import { buildHarnessPlanPartsProjection, type PlanPartWireRow } from '../projec
 import { PgPlanPartsStore } from '../../../plan-parts/store';
 import { capturePlanParts } from '../../../plan-parts/federation';
 import { hashPlanContent, splitPlanIntoParts, type FederatedPart } from '@papercusp/plan-parser';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -212,6 +213,7 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
 
   beforeAll(async () => {
     db = await createFreshPgDb('plan_part_cutover');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     await setupSchema(db.sql);
     p = peer(db.sql, true); // flag ON
   }, 60_000);

@@ -58,4 +58,48 @@ describe('locks:release_resource handler', () => {
     expect(backUpM).toHaveBeenCalledTimes(1);
     expect(backUpM.mock.calls[0]![0]).toMatchObject({ resource: 'dev-server', waiters: ['w1'] });
   });
+
+  it('releases selected resource lock_ids as a keyed bulk envelope', async () => {
+    releaseM.mockImplementation(async (_tx, spec) => ({
+      released: [spec.lockId],
+      releasedModes: ['shared'],
+      exclusiveResources: [],
+      waiters: {},
+    }) as never);
+    const b = body(await call({
+      lock_ids: [
+        '11111111-1111-1111-1111-111111111111',
+        '22222222-2222-2222-2222-222222222222',
+      ],
+    }));
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 2, failed: 0 },
+      results: [
+        { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: ['11111111-1111-1111-1111-111111111111'], released_modes: ['shared'] },
+        { ok: true, lock_id: '22222222-2222-2222-2222-222222222222', released: ['22222222-2222-2222-2222-222222222222'], released_modes: ['shared'] },
+      ],
+    });
+  });
+
+  it('releases selected resource names and broadcasts per exclusive resource', async () => {
+    releaseM.mockImplementation(async (_tx, spec) => ({
+      released: [spec.resource],
+      releasedModes: ['exclusive'],
+      exclusiveResources: [spec.resource],
+      waiters: { [spec.resource as string]: [`waiter:${spec.resource}`] },
+    }) as never);
+    const b = body(await call({ resources: ['dev-server', 'db'] }));
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 2, failed: 0 },
+      results: [
+        { ok: true, resource: 'dev-server', exclusive_resources: ['dev-server'] },
+        { ok: true, resource: 'db', exclusive_resources: ['db'] },
+      ],
+    });
+    expect(backUpM).toHaveBeenCalledTimes(2);
+    expect(backUpM.mock.calls[0]![0]).toMatchObject({ resource: 'dev-server', waiters: ['waiter:dev-server'] });
+    expect(backUpM.mock.calls[1]![0]).toMatchObject({ resource: 'db', waiters: ['waiter:db'] });
+  });
 });

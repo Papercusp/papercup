@@ -36,6 +36,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { leaveHive, type LeaveHiveDeps } from './leave-hive';
 import { upsertHiveMember, getHiveMember } from '../hive-membership-store';
 import type { HarnessRegistry } from '../harness-registry';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../test/_work-items-schema";
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-lifecycle-gap';
@@ -74,6 +75,7 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('lifecycle-gap');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(`
     DO $r$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='harness_app') THEN CREATE ROLE harness_app NOLOGIN; END IF;

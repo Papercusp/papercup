@@ -1,6 +1,13 @@
 ---
 title: '"no such database: org_…" — PgBouncer default-on breaks getOrgPg env-routed integration tests'
 description: On a server-class host (the dev box), pgbouncerEnabled() is default-on, so getOrgPg reroutes to :6432 and ignores a testcontainer DSN — failing any integration test that env-routes getOrgPg at a throwaway DB. Fix - set PAPERCUSP_PGBOUNCER=0.
+discovered: 2026-06-22
+status: active
+documents:
+  - libs/papercusp/libs/db/src/connection.ts
+plans:
+  - backend-connection-scaling-2026-06-17
+  - shared-hive-member-content-federation-2026-06-20
 ---
 
 ## Symptom

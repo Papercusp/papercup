@@ -26,6 +26,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // __tests__/ → hyperbee/ → sync/ → lib/ → operator/ → apps/ → papercup/
@@ -65,6 +66,7 @@ describe('substrate-outbox capture triggers (Stage 1, real PG)', () => {
 
   beforeAll(async () => {
     db = await createFreshPgDb('substrate_outbox');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
 
     // The migration GRANTs to harness_app / harness_admin (the runtime roles);
     // the throwaway testcontainer DB has neither, so create no-login stubs so

@@ -24,6 +24,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -63,14 +64,11 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('delegated-tasks');
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
-  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
-  await db.sql.unsafe(readMigration('241-signal-provenance-origin.sql')).simple();
-  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
-  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
   await db.sql.unsafe(`
     ALTER TABLE IF EXISTS harness_shared.work_items

@@ -18,6 +18,7 @@ import { collectGroundTruth, type GroundTruthCtx, type ObservedCommit } from './
 import { detectFabrication } from './outcome-metrics';
 import { getScenario } from './scenarios';
 import type { HiveScenario } from './scenario';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../test/_work-items-schema";
 
 const scenario = getScenario('serial-pipeline') as HiveScenario; // work-items w1..w4
 
