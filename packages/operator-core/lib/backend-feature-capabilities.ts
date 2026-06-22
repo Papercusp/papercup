@@ -13,6 +13,12 @@ export type BackendFeature =
   | 'gateway-routing'
   | 'file-lock-enforcement'
   | 'native-fork'
+  | 'native-web-search'
+  | 'native-code-review'
+  | 'native-image-input'
+  | 'native-image-generation'
+  | 'native-subagents'
+  | 'native-app-server'
   | 'brain-pinning'
   | 'forced-native-session-id'
   | 'runtime-home-inheritance'
@@ -59,6 +65,24 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'gateway-routing': supported('Anthropic-compatible inference gateway route'),
     'file-lock-enforcement': supported('Claude PreToolUse/PostToolUse hooks'),
     'native-fork': supported('claude --fork-session'),
+    'native-web-search': supported('Claude WebSearch/WebFetch tool surface where enabled by policy'),
+    'native-code-review': unsupported(
+      'backend-neutral review workflow',
+      'Papercusp has no Claude-native review CLI integration equivalent to codex review; use the backend-neutral reviewer/work_items paths',
+    ),
+    'native-image-input': supported('Claude multimodal image attachment surface where enabled by the launched model'),
+    'native-image-generation': unsupported(
+      'backend-neutral asset workflow',
+      'Claude has no Papercusp-managed native image generation CLI surface equivalent to Codex image generation',
+    ),
+    'native-subagents': unsupported(
+      'Papercusp fleet/work_items delegation',
+      'Claude Task/subagent-style delegation is intentionally routed through Papercusp work_items/fleet coordination for durable cross-backend ownership',
+    ),
+    'native-app-server': unsupported(
+      'not a Claude CLI surface',
+      'Claude has no Codex-style app-server/remote TUI surface to integrate',
+    ),
     'brain-pinning': unsupported(
       'retired psu --brain and bootstrap brain paths; use operator/sentinel converse',
       'Pinned brain sessions were retired on 2026-06-21; use the backend-neutral operator/sentinel converse surface or a normal psu session',
@@ -79,6 +103,12 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'gateway-routing': supported('OpenAI-compatible /v1 gateway route with account header'),
     'file-lock-enforcement': supported('per-session hooks.json PreToolUse/PostToolUse for apply_patch/Edit/Write and shell gates'),
     'native-fork': supported('codex fork [SESSION_ID] / codex fork --last'),
+    'native-web-search': supported('codex --search / web_search = live, with cached search enabled by default'),
+    'native-code-review': supported('codex review --uncommitted/--base/--commit'),
+    'native-image-input': supported('codex -i/--image for interactive and exec/resume prompts'),
+    'native-image-generation': supported('Codex built-in image generation / $imagegen skill'),
+    'native-subagents': supported('Codex multi_agent/subagents feature with [agents] config'),
+    'native-app-server': supported('codex app-server / --remote TUI transport'),
     'brain-pinning': unsupported(
       'retired psu --brain and bootstrap brain paths; use operator/sentinel converse',
       'Pinned brain sessions were retired on 2026-06-21; use the backend-neutral operator/sentinel converse surface or a normal psu session',
@@ -105,6 +135,15 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
       'capability-gated in the launcher',
       'OMP has no Claude-style native fork-session flag; branch by launching a new OMP session with explicit launch_context instead of pretending to native-fork',
     ),
+    'native-web-search': unsupported('backend-neutral MCP/search tools', 'OMP has no Papercusp-managed native web-search CLI flag'),
+    'native-code-review': unsupported('backend-neutral review workflow', 'OMP has no Papercusp-managed native review CLI equivalent to codex review'),
+    'native-image-input': unsupported('backend-neutral attachment flow', 'OMP has no Papercusp-managed native image attachment parity path'),
+    'native-image-generation': unsupported('backend-neutral asset workflow', 'OMP has no Papercusp-managed native image generation surface'),
+    'native-subagents': unsupported(
+      'Papercusp fleet/work_items delegation',
+      'OMP delegation is intentionally routed through Papercusp work_items/fleet coordination for durable cross-backend ownership',
+    ),
+    'native-app-server': unsupported('not an OMP CLI surface', 'OMP has no Codex-style app-server/remote TUI surface to integrate'),
     'brain-pinning': unsupported(
       'retired psu --brain and bootstrap brain paths; use operator/sentinel converse',
       'Pinned brain sessions were retired on 2026-06-21; use the backend-neutral operator/sentinel converse surface or a normal psu session',

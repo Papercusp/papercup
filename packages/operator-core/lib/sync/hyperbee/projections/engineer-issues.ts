@@ -105,46 +105,58 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
-  // payload: bind via JSON.stringify(x)::text::jsonb — sql.json THROWS under the
-  // getOrgPg runtime client (agent-insights/postgres-js-jsonb-binding). null stays null.
-  const payloadText = row.payload == null ? null : JSON.stringify(row.payload);
+  // P-010 unification: apply the issue op to the work_items BASE table (engineer_issues is
+  // now a compat view → no ON CONFLICT). Map issue→work_items: issue_id→feature_id,
+  // scope→sentinel harness_slug ('' for operator) + issue-only cols into payload->'_ei',
+  // body→summary, state→status, assignee→taken_by, kind→item_kind. payload binds via
+  // ::text::jsonb (postgres-js-jsonb-binding gotcha).
+  const vSlug =
+    typeof row.scope === 'string' && row.scope.startsWith('harness:') ? row.scope.slice(8) : '';
+  const basePayload =
+    row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
+  const payloadText = JSON.stringify({
+    ...basePayload,
+    _ei: {
+      scope: row.scope ?? null,
+      severity: row.severity ?? null,
+      source: row.source ?? null,
+      found_during: row.found_during ?? null,
+      linked_feature_id: row.linked_feature_id ?? null,
+      created_by: row.created_by ?? null,
+      assigned_by: row.assigned_by ?? null,
+    },
+  });
   await sql`
-    INSERT INTO harness_shared.engineer_issues
-      (workspace_id, issue_id, scope, kind, title, body, severity, source, state,
-       assignee, assigned_by, assigned_at, payload, found_during, linked_feature_id,
-       created_by, created_at, updated_at, author_pubkey, origin, fed_ts, fed_hlc)
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
+       taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
+       created_ts, updated_ts, ts)
     VALUES
-      (${opts.workspaceId}, ${row.issue_id}, ${row.scope}, ${row.kind}, ${row.title},
-       ${row.body}, ${row.severity}, ${row.source}, ${row.state},
-       ${row.assignee}, ${row.assigned_by}, ${row.assigned_at}, ${payloadText}::text::jsonb,
-       ${row.found_during}, ${row.linked_feature_id}, ${row.created_by},
-       ${row.created_at}, now(), ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
-    ON CONFLICT (workspace_id, issue_id) DO UPDATE SET
-      scope             = EXCLUDED.scope,
-      kind              = EXCLUDED.kind,
-      title             = EXCLUDED.title,
-      body              = EXCLUDED.body,
-      severity          = EXCLUDED.severity,
-      source            = EXCLUDED.source,
-      state             = EXCLUDED.state,
-      assignee          = EXCLUDED.assignee,
-      assigned_by       = EXCLUDED.assigned_by,
-      assigned_at       = EXCLUDED.assigned_at,
-      payload           = EXCLUDED.payload,
-      found_during      = EXCLUDED.found_during,
-      linked_feature_id = EXCLUDED.linked_feature_id,
-      created_by        = EXCLUDED.created_by,
-      updated_at        = now(),
-      author_pubkey     = EXCLUDED.author_pubkey,
-      origin            = EXCLUDED.origin,
-      fed_ts            = EXCLUDED.fed_ts,
-      fed_hlc           = EXCLUDED.fed_hlc
-    -- PG-level LWW guard — drop a strictly-older op (created_at is immutable, preserved).
-    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_shared.engineer_issues.fed_hlc IS NOT NULL
-             AND EXCLUDED.fed_hlc >= harness_shared.engineer_issues.fed_hlc)
-       OR ((EXCLUDED.fed_hlc IS NULL OR harness_shared.engineer_issues.fed_hlc IS NULL)
-             AND (harness_shared.engineer_issues.fed_ts IS NULL
-                  OR EXCLUDED.fed_ts >= harness_shared.engineer_issues.fed_ts))
+      (${opts.workspaceId}, ${vSlug}, ${row.issue_id}, ${row.kind}, ${row.title},
+       ${row.body}, ${row.state}, ${row.assignee}, ${row.assigned_at},
+       ${payloadText}::text::jsonb, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc},
+       COALESCE((extract(epoch FROM ${row.created_at}::timestamptz) * 1000)::bigint,
+                (extract(epoch FROM now()) * 1000)::bigint),
+       (extract(epoch FROM now()) * 1000)::bigint,
+       (extract(epoch FROM now()) * 1000)::bigint)
+    ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
+      item_kind     = EXCLUDED.item_kind,
+      title         = EXCLUDED.title,
+      summary       = EXCLUDED.summary,
+      status        = EXCLUDED.status,
+      taken_by      = EXCLUDED.taken_by,
+      taken_at      = EXCLUDED.taken_at,
+      payload       = EXCLUDED.payload,
+      author_pubkey = EXCLUDED.author_pubkey,
+      origin        = EXCLUDED.origin,
+      fed_ts        = EXCLUDED.fed_ts,
+      fed_hlc       = EXCLUDED.fed_hlc,
+      updated_ts    = EXCLUDED.updated_ts
+    -- PG-level LWW guard — drop a strictly-older op.
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND work_items.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= work_items.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR work_items.fed_hlc IS NULL)
+             AND (work_items.fed_ts IS NULL OR EXCLUDED.fed_ts >= work_items.fed_ts))
   `;
 }
 
@@ -159,9 +171,10 @@ async function deleteFromPg(
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
-    DELETE FROM harness_shared.engineer_issues
+    DELETE FROM harness_shared.work_items
     WHERE workspace_id = ${opts.workspaceId}
-      AND issue_id = ${key}
+      AND feature_id = ${key}
+      AND item_kind IN ('bug', 'change', 'task')
       -- ts-guard the delete (a stale del must not erase a newer row).
       AND (
         (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)

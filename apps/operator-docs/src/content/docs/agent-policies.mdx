@@ -231,12 +231,14 @@ to free than to discover at merge time that two agents wrote different
 fixes for the same bug.
 
 The cooperative tool surface is universal across host CLIs. **Claude
-Code** users additionally get enforcement via a `PreToolUse` hook
-that refuses contested `Edit`/`Write`/`MultiEdit` automatically.
-OMP / Codex / Gemini agents currently rely on the playbook discipline
-above — they will stomp if their host CLI lacks a hook. Treat their
-participation as best-effort coordination; the system is fully
-enforced only when every concurrent CLI has a hook.
+Code** users get enforcement via a `PreToolUse` hook that refuses
+contested `Edit`/`Write`/`MultiEdit` automatically. Managed **Codex**
+sessions get the same class of enforcement from their per-session
+`CODEX_HOME/hooks.json` (`PreToolUse`/`PostToolUse` for `apply_patch`
+plus the documented `Edit`/`Write` matcher aliases and Bash resource
+gates). OMP gets its enforcement through the loaded `coord-hook.ts`.
+Only unmanaged or hookless CLIs fall back to playbook discipline; check
+the session diagnostics before assuming a shell is hard-enforced.
 
 When a contention surfaces to the user, **show both intents** (yours
 and the holder's) so the user can decide. "Agent X has `lib/foo.ts`

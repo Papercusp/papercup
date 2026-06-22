@@ -4,6 +4,13 @@ description: EI-127 root cause + fix — mcp-handler@1.1.0's POST branch news an
 discovered: 2026-06-14
 tags: [memory-leak, mcp, mcp-handler, operator-host, patch-package, EI-127, host-stability, sse-channel]
 status: active
+documents:
+  - patches/mcp-handler+1.1.0.patch
+  - libs/generic/sse/src/server/channel.ts
+  - packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-poststream-leak.test.ts
+  - apps/operator/bin/release/setup-release-checkout.sh
+plans:
+  - operator-memory-and-psu-resilience-2026-06-14
 ---
 
 ## What

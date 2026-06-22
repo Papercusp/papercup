@@ -23,6 +23,17 @@ vi.mock('../../../workspace-registry', () => ({
 vi.mock('../../../voice-prefs', () => ({
   loadVoicePrefs: vi.fn(async () => null),
 }));
+// The sentinel-role prompt gathers sentinel context (a bees/fleet_assignment PG
+// read). In a unit env that relation doesn't exist, so the real gatherSentinelContext
+// catches + console.warns "[sentinel-context] … failed" — which vitest-fail-on-console
+// turns into a test failure. This suite tests PERSONA LOADING, not the context block,
+// so stub the gathering PG-free (renderSentinelContext → '' ⇒ the section is skipped).
+vi.mock('../../../sentinel/sentinel-context', () => ({
+  buildSentinelContextDeps: vi.fn(() => ({})),
+  sentinelScopeLabel: vi.fn(() => 'test-hive'),
+  gatherSentinelContext: vi.fn(async () => ({})),
+  renderSentinelContext: vi.fn(() => ''),
+}));
 
 import { buildOperatorPrompt } from '../converse-prompt';
 

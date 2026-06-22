@@ -22,6 +22,12 @@ const FEATURES: BackendFeature[] = [
   'gateway-routing',
   'file-lock-enforcement',
   'native-fork',
+  'native-web-search',
+  'native-code-review',
+  'native-image-input',
+  'native-image-generation',
+  'native-subagents',
+  'native-app-server',
   'brain-pinning',
   'forced-native-session-id',
   'runtime-home-inheritance',
@@ -44,9 +50,42 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
     expect(backendSupportsFeature('codex', 'mcp-http-auth')).toBe(true);
     expect(backendSupportsFeature('codex', 'runtime-home-inheritance')).toBe(true);
     expect(backendSupportsFeature('codex', 'native-fork')).toBe(true);
+    expect(backendSupportsFeature('codex', 'native-web-search')).toBe(true);
+    expect(backendSupportsFeature('codex', 'native-code-review')).toBe(true);
+    expect(backendSupportsFeature('codex', 'native-image-input')).toBe(true);
+    expect(backendSupportsFeature('codex', 'native-image-generation')).toBe(true);
+    expect(backendSupportsFeature('codex', 'native-subagents')).toBe(true);
+    expect(backendSupportsFeature('codex', 'native-app-server')).toBe(true);
 
     expect(backendFeatureCapability('codex', 'file-lock-enforcement').state).toBe('supported');
     expect(backendFeatureCapability('codex', 'forced-native-session-id').unsupportedReason).toMatch(/cannot/i);
+  });
+
+  it('records Codex-native surfaces that no longer need to be treated as absent', () => {
+    expect(backendFeatureCapability('codex', 'native-web-search')).toMatchObject({
+      state: 'supported',
+      mechanism: expect.stringMatching(/--search|web_search/i),
+    });
+    expect(backendFeatureCapability('codex', 'native-code-review')).toMatchObject({
+      state: 'supported',
+      mechanism: expect.stringMatching(/codex review/i),
+    });
+    expect(backendFeatureCapability('codex', 'native-image-input')).toMatchObject({
+      state: 'supported',
+      mechanism: expect.stringMatching(/--image|-i/i),
+    });
+    expect(backendFeatureCapability('codex', 'native-image-generation')).toMatchObject({
+      state: 'supported',
+      mechanism: expect.stringMatching(/image generation|imagegen/i),
+    });
+    expect(backendFeatureCapability('codex', 'native-subagents')).toMatchObject({
+      state: 'supported',
+      mechanism: expect.stringMatching(/subagents|multi_agent/i),
+    });
+    expect(backendFeatureCapability('codex', 'native-app-server')).toMatchObject({
+      state: 'supported',
+      mechanism: expect.stringMatching(/app-server|remote/i),
+    });
   });
 
   it('documents native fork support where the current backend exposes it', () => {

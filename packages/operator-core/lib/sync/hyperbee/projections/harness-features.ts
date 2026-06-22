@@ -264,8 +264,8 @@ async function writeToPg(
       expires_at = EXCLUDED.expires_at,
       -- item_kind is the immutable discriminator: never let an op that doesn't
       -- carry it (defaulted to 'feature' above) flip a research-task/chunk back.
-      item_kind = CASE WHEN harness_features_consolidated.item_kind <> 'feature'
-                       THEN harness_features_consolidated.item_kind
+      item_kind = CASE WHEN work_items.item_kind <> 'feature'
+                       THEN work_items.item_kind
                        ELSE EXCLUDED.item_kind END,
       feature_order = EXCLUDED.feature_order,
       swarm_affinity = EXCLUDED.swarm_affinity,
@@ -296,11 +296,11 @@ async function writeToPg(
     -- When either side lacks an HLC (pre-P-010 / pre-314 history, or an append-
     -- path op), fall back to the wall-clock fed_ts guard (today's behaviour: a
     -- NULL stored fed_ts applies; a ts-less op cannot clobber a stamped row).
-    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_features_consolidated.fed_hlc IS NOT NULL
-             AND EXCLUDED.fed_hlc >= harness_features_consolidated.fed_hlc)
-       OR ((EXCLUDED.fed_hlc IS NULL OR harness_features_consolidated.fed_hlc IS NULL)
-             AND (harness_features_consolidated.fed_ts IS NULL
-                  OR EXCLUDED.fed_ts >= harness_features_consolidated.fed_ts))
+    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND work_items.fed_hlc IS NOT NULL
+             AND EXCLUDED.fed_hlc >= work_items.fed_hlc)
+       OR ((EXCLUDED.fed_hlc IS NULL OR work_items.fed_hlc IS NULL)
+             AND (work_items.fed_ts IS NULL
+                  OR EXCLUDED.fed_ts >= work_items.fed_ts))
   `;
 }
 
