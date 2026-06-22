@@ -215,3 +215,70 @@ describe('module singleton', () => {
     expect(getAuthorityEvictionMonitor()).toBeNull();
   });
 });
+
+// ── Deeper branch coverage (depth pass, su-7f3e0376) ────────────────────────
+describe('deeper edges — replay resistance, hot-path quiet, re-entrancy, partial-signal', () => {
+  it('observe ignores a stale/out-of-order lastSeenMs (no spurious heartbeat corrupts φ)', () => {
+    const m = new AuthorityEvictionMonitor();
+    primeBeats(m, PK.x); // beats at T0, +1000, +2000
+    expect(m.phi(PK.x, SILENT_NOW)).toBeGreaterThan(8); // long silence → high φ
+    // A replayed / out-of-order presence row (lastSeenMs <= last recorded) must NOT register as a
+    // fresh beat — else a stale row would falsely "revive" a dead peer and suppress its eviction.
+    m.observe([obs(PK.x, T0 + 1_500)], SILENT_NOW); // 1500 <= last-seen 2000 → skipped
+    expect(m.phi(PK.x, SILENT_NOW)).toBeGreaterThan(8); // φ unchanged — still high
+    // Positive control: a genuinely newer beat DOES reset φ low.
+    m.observe([obs(PK.x, SILENT_NOW)], SILENT_NOW);
+    expect(m.phi(PK.x, SILENT_NOW)).toBeLessThan(8);
+  });
+
+  it('beforeSelect stays OFF the probe path when the pool is healthy (no suspect, no prior eviction)', async () => {
+    let probes = 0;
+    const m = new AuthorityEvictionMonitor({ relayProbe: () => async () => { probes++; return false; } });
+    const fresh = [obs(PK.x, SILENT_NOW), obs(PK.y, SILENT_NOW)]; // everyone just beat → low φ
+    m.observe(fresh, SILENT_NOW);
+    expect([...m.beforeSelect('s', fresh, PK.self, SILENT_NOW)]).toEqual([]);
+    await new Promise((r) => setTimeout(r, 20)); // give any (wrongly-triggered) background refresh a tick
+    expect(probes).toBe(0); // healthy pool never probes — byte-identical to staleness-only selection
+  });
+
+  it('a high-φ SELF never triggers an eviction probe (we never evict ourselves)', async () => {
+    let probes = 0;
+    const m = new AuthorityEvictionMonitor({ relayProbe: () => async () => { probes++; return false; } });
+    primeBeats(m, PK.self); // self is the silent / high-φ one
+    m.observe([obs(PK.y, SILENT_NOW)], SILENT_NOW); // y is fresh
+    const observations = [obs(PK.self, T0 + 2_000), obs(PK.y, SILENT_NOW)];
+    expect([...m.beforeSelect('s', observations, PK.self, SILENT_NOW)]).toEqual([]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(probes).toBe(0); // self being suspicious is excluded from the refresh trigger
+  });
+
+  it('refresh is re-entrancy-guarded per scope — a concurrent refresh does not double-probe', async () => {
+    let resolveProbe!: () => void;
+    const gate = new Promise<void>((r) => (resolveProbe = r));
+    let probeRounds = 0;
+    const m = new AuthorityEvictionMonitor({
+      relayProbe: () => async () => { probeRounds++; await gate; return false; },
+    });
+    primeBeats(m, PK.x); // x silent / high-φ
+    const observations = [obs(PK.x, T0 + 2_000), obs(PK.y, SILENT_NOW)];
+    const first = m.refresh('s', observations, PK.self, SILENT_NOW); // in-flight, gated on the probe
+    const second = await m.refresh('s', observations, PK.self, SILENT_NOW); // re-entrant → returns the cache now
+    expect([...second]).toEqual([]); // no eviction yet — the second call did NOT run a probe round
+    resolveProbe();
+    expect([...(await first)]).toEqual([PK.x]); // the first refresh completes + evicts x
+    expect(probeRounds).toBe(1); // only the first refresh probed (no storm)
+  });
+
+  it('decide evicts on a PARTIAL signal: ≥1 reachable relay confirms dead even if another is unreachable', async () => {
+    const m = new AuthorityEvictionMonitor();
+    primeBeats(m, PK.x);
+    // relay y is reachable and reports dead; relay-2 is unreachable (no signal, not a "dead" vote).
+    const mixed: RelayProbe<PeerRef> = async (relay) => {
+      if (relay.devicePubkey === PK.y) return false; // reachable → reports dead
+      throw new PeerUnreachableError('relay-2 unreachable');
+    };
+    const d = await m.decide(peer(PK.x), [peer(PK.y), peer('relay-2')], mixed, SILENT_NOW);
+    // A single reachable dead-witness is a real signal (not our blindness) → evict.
+    expect(d).toEqual({ evict: true, reason: 'confirmed-dead' });
+  });
+});
