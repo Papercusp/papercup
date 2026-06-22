@@ -1229,6 +1229,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
           if (!res.headersSent) {
             beeTokenStall++;
+            // P-002 autowake-coverage (2026-06-22): record a stall so the stall-waker re-wakes an IDENTIFIED bee
+            // when this account recovers, instead of the bee just dying on a retryable 503 with nobody retrying.
+            recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
             sendJson(
               res,
               503,
@@ -1352,6 +1355,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // retries; the next request lands on the failover-rotated active()), never a terminal 502.
             if (!res.headersSent) {
               beeEgressExhausted++;
+              // P-002 autowake-coverage (2026-06-22): the dominant bee-facing-503 exit. Record a stall so the
+              // stall-waker re-wakes an IDENTIFIED bee once this account/proxy recovers — without this the bee
+              // just dies (the gateway's biggest "nothing goes through" path went unrecorded → /admin/stalls empty).
+              recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
               sendJson(
                 res,
                 503,
@@ -1584,6 +1591,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // (a 4xx client error, or a 429 we chose not to retry) is neither throttle nor clean-capacity,
         // so it neither shrinks nor grows the limit (a 429 already recorded its throttle above).
         if (up.status >= 200 && up.status < 300) aimd.recordSuccess();
+        // P-002 autowake-coverage (2026-06-22): a FORWARDED retryable rate-limit (a 429/529 the gateway could not
+        // retry away) to an IDENTIFIED bee → record a stall so the stall-waker re-wakes it when this account
+        // recovers. This is the DOMINANT "nothing goes through" exit (a forwarded upstream 429) that previously
+        // recorded nothing → /admin/stalls sat empty while the whole pool was throttled.
+        else if ((up.status === 429 || up.status === 529) && wantOwner) {
+          recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
+        }
 
         const outHeaders: Record<string, string> = {};
         up.headers.forEach((v, k) => {
