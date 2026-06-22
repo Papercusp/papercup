@@ -125,11 +125,11 @@ export async function assemblePresenceSnapshot(
     listFederatedPresence({ workspaceId: wsId, hiveSlug: hiveId }),
     sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
   ]);
-  const all = [...records, ...federated];
+  const all: RosterRow[] = [...records, ...federated];
   const active = all.filter((r) => !r.stale);
   const stale = all.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();
-  const isFederated = (r: { federated?: boolean }) => !!r.federated;
+  const isFederated = (r: RosterRow) => r.federated === true;
   // Tier-1 enrichment stays ACTIVE-only (cost, P-003); wakeability is fetched for
   // BOTH active AND stale locals — a stale (heartbeat>10min) row with a live await
   // is `parked`, not gone, and that is exactly the dispatch target P-001 surfaces.
@@ -153,7 +153,7 @@ export async function assemblePresenceSnapshot(
 
   /** Attach the P-001 wakeability signals. A federated/unknown row has no local
    *  entry → sessionState/wakeable stay absent (emitted as null by toStableRosterRow). */
-  const withWakeability = <T extends RosterRow>(r: T): T => {
+  const withWakeability = (r: RosterRow): RosterRow => {
     const w = wakeability.get(r.ownerId);
     if (!w) return r;
     return {
@@ -189,7 +189,10 @@ export async function assemblePresenceSnapshot(
   let wakeable = 0;
   for (const r of [...activeEnriched, ...staleEnriched]) {
     if (r.wakeable === true) wakeable += 1;
-    if (r.sessionState && r.sessionState in byState) byState[r.sessionState] += 1;
+    const state = r.sessionState;
+    if (state === 'live' || state === 'parked' || state === 'ended') {
+      byState[state] += 1;
+    }
   }
 
   return {

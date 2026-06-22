@@ -12,6 +12,10 @@ const snapshotGovernors = vi.fn<() => Array<{ key: string; state: { pausedUntil:
 const sqlCalls: string[] = [];
 let beeCount = 0;
 let activityRows: Array<Record<string, unknown>> = [];
+// self.objective legs (session-objective-display-2026-06-22): the caller's
+// in-execution work-item title, then the coord_presence intent fallback.
+let wipTitleRows: Array<{ title: string }> = [];
+let presenceRows: Array<Record<string, unknown>> = [];
 
 vi.mock('../wake-mode', () => ({
   getDefaultWakeMode: () => getDefaultWakeMode(),

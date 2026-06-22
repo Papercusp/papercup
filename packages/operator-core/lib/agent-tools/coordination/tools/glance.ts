@@ -21,11 +21,26 @@ import { COORD_ROLES } from '../roles';
 import { getDefaultWakeMode } from '../wake-mode';
 import { countAllPendingWakes } from '../pending-wakes';
 import { evaluateTips, GLANCE_AUDIENCES } from '../glance-tips';
+import { resolveAgentIdentity } from '../identity';
+import { getPresence } from '../presence';
 
 const DEFAULT_ACTIVITY_LIMIT = 12;
 
 /** Nursery heartbeats are supervisor-maintained; stale running rows are dead. */
 const BEE_FRESH_MS = 15 * 60_000;
+
+/**
+ * Coerce a candidate objective string to a non-empty trimmed value, or null.
+ * The fallback chain (wip-title → presence intent → null) MUST treat a blank
+ * value as "absent": `coord_presence.intent` is a NOT-NULL text column defaulting
+ * to '', so an undeclared intent reads back as '' (falsy but not nullish) and a
+ * bare `?? null` would render an empty `🔭  · ` segment in every client status line.
+ */
+export function normalizeObjective(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 export default defineTool({
   name: 'coord:glance',
@@ -56,7 +71,7 @@ export default defineTool({
       .optional()
       .describe('Recent activity rows to include (default 12; 0 to skip).'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const audience = args.audience ?? 'user';
     const activityLimit = args.activity_limit ?? DEFAULT_ACTIVITY_LIMIT;
     const { sql } = getOrgPg();
@@ -98,6 +113,31 @@ export default defineTool({
       state: args.state ?? {},
     });
 
+    // self.objective — the caller's CURRENT objective, for client status displays
+    // (session-objective-display-2026-06-22): their in-execution work-item title ??
+    // their declared coord intent. The single client-agnostic source the CC/Codex/OMP
+    // renders read, so the display tracks coordination state with no LLM file-writing.
+    // FAIL-OPEN: glance renders on every statusline tick, so any trouble → null and the
+    // existing render is unaffected.
+    let selfObjective: string | null = null;
+    try {
+      const { ownerId } = resolveAgentIdentity(ctx);
+      if (ownerId) {
+        const wipRows = await sql<Array<{ title: string }>>`
+          SELECT title FROM harness_shared.work_items
+          WHERE taken_by = ${ownerId} AND status IN ('wip', 'building', 'failing')
+          ORDER BY taken_at DESC NULLS LAST LIMIT 1`;
+        // intent is a NOT-NULL text column defaulting to '' (coord_presence) — an
+        // undeclared intent reads back as '' (falsy, not nullish), so a bare `?? null`
+        // would leak '' through and render an empty `🔭  · ` segment. Normalize blank
+        // titles/intents to null so the fallback chain is honestly wip → intent → null.
+        const title = normalizeObjective(wipRows[0]?.title);
+        selfObjective = title ?? normalizeObjective((await getPresence(ownerId))?.intent);
+      }
+    } catch {
+      selfObjective = null;
+    }
+
     return {
       content: [
         {
@@ -114,6 +154,7 @@ export default defineTool({
             governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
             activity,
             tips,
+            self: { objective: selfObjective },
           }),
         },
       ],

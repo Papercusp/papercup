@@ -70,6 +70,11 @@ export default defineTool({
     `;
     const id = Number(inserted[0]!.id);
 
+    // P-010 (agent-tool-delta-protocol): wake the /api/tui/intents/stream LISTEN bus
+    // so it drains this intent immediately — replaces the route's old 250ms poll.
+    // Fires after the INSERT commits; payload is the client_id the stream filters on.
+    await sql`SELECT pg_notify('tui_intents', ${clientId})`;
+
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const rows = await sql<Array<{ status: string; result: unknown; error_message: string | null }>>`

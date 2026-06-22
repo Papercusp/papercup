@@ -62,7 +62,7 @@ beforeEach(async () => {
 // Concurrent "pui client": flip the first pending intent to a terminal status.
 async function respond(status: string, result: unknown) {
   for (let i = 0; i < 300; i++) {
-    const r = await rootSql`UPDATE harness_shared.tui_intents SET status=${status}, result=${rootSql.json(result as object)}, completed_at=now() WHERE status='pending' RETURNING id`;
+    const r = await rootSql`UPDATE harness_shared.tui_intents SET status=${status}, result=${rootSql.json(result as never)}, completed_at=now() WHERE status='pending' RETURNING id`;
     if (r.length) return;
     await new Promise((res) => setTimeout(res, 10));
   }

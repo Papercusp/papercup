@@ -3,11 +3,15 @@
 # `coord:glance` (papercusp-worker-integration-2026-06-04 D-005 + the
 # coord-glance combined read, 2026-06-12). Two lines:
 #
-#   papercusp · ◇ su-9859e · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
+#   🔭 wire objective display · papercusp · ◇ su-9859e · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
 #   💡 Wake mode is manual — 2 staged wakes waiting; … /mcp__papercusp-su__tool:coord:wake-mode mode=auto
 #   ⋯ run /mcp__papercusp-su__tool:coord:glance for detail
 #
-# Line 1: THIS agent's own papercusp shorthand id (◇ <id> — the coord ownerLabel
+# Line 1 LEADS with this session's CURRENT objective (🔭 <objective> — its
+# in-execution work-item title ?? declared coord intent, from the glance
+# payload's `self.objective`; session-objective-display-2026-06-22) so the human
+# sees WHAT this terminal is doing before the fleet shorthand. Then THIS agent's
+# own papercusp shorthand id (◇ <id> — the coord ownerLabel
 # form, e.g. ◇ su-9859e, so a human can correlate the terminal with coord/fleet
 # tools; paired with the ◆ filled-diamond that marks the most-recent PEER),
 # wake-gate state (▶ auto / ⏸ manual, ✉ staged wakes), bees in flight,
@@ -57,6 +61,8 @@ import json, os, sys, textwrap, urllib.request, urllib.parse
 operator_url, token, me, fixture = sys.argv[1:5]
 HTTP_TIMEOUT = 1.5
 ACTIVITY_WINDOW = 12  # rows for the peer-glance scan
+GATEWAY_URL = os.environ.get('PAPERCUSP_GATEWAY_URL', 'http://127.0.0.1:8788')
+OBJECTIVE_MAX = 48  # clip a long objective so the 🔭 segment can't swallow line 1
 
 
 def call_tool(name, args):
@@ -132,11 +138,52 @@ def self_short(owner):
     return owner[:8]
 
 
+def routed_account(owner):
+    """The pool account that served THIS session's most-recent turn, from the inference gateway's
+    GET /admin/route?owner=<id> (routed-account visibility, 2026-06-22). The gateway strips its routing
+    headers before the caller sees them, so this read-back is how a session learns where its turn went.
+    Cheap + fail-open: a short timeout, None on any trouble (gateway down / owner unseen / not a psu session)."""
+    if not owner or owner == 'fixture':
+        return None
+    try:
+        u = GATEWAY_URL.rstrip('/') + '/admin/route?owner=' + urllib.parse.quote(owner, safe='')
+        raw = urllib.request.urlopen(u, timeout=0.6).read().decode('utf-8', 'replace')
+        return (json.loads(raw) or {}).get('account')
+    except Exception:
+        return None
+
+
+def objective_part(g):
+    """The leading 🔭 <objective> segment from the glance payload's `self.objective`
+    (session-objective-display-2026-06-22) — this session's CURRENT work-item title ??
+    declared coord intent, the single client-agnostic source every CLI status display reads.
+    ADDITIVE + FAIL-OPEN: None when the operator predates the field or the objective is
+    blank/absent, so the existing render is untouched. Clipped so a verbose objective can't
+    crowd out the fleet shorthand on line 1."""
+    if not isinstance(g, dict):
+        return None
+    obj = (g.get('self') or {}).get('objective')
+    if not isinstance(obj, str):
+        return None
+    obj = obj.strip()
+    if not obj:
+        return None
+    if len(obj) > OBJECTIVE_MAX:
+        obj = obj[:OBJECTIVE_MAX - 1].rstrip() + '…'
+    return f'🔭 {obj}'
+
+
 def lead():
-    """Line-1 prefix segments: 'papercusp' plus this agent's own ◇ id chip
-    (◇ = self, paired with ◆ = most-recent peer). Both render paths share it."""
+    """Line-1 prefix segments: 'papercusp', this agent's own ◇ id chip (◇ = self, paired with ◆ =
+    most-recent peer), and — when the gateway knows it — ⇢ <account>, the pool account that served this
+    session's most-recent turn. Both render paths share it. The 🔭 objective segment (objective_part) is
+    prepended by the caller ahead of these, so it leads line 1."""
     me_id = self_short(me)
-    return ['papercusp', f'◇ {me_id}'] if me_id else ['papercusp']
+    parts = ['papercusp', f'◇ {me_id}'] if me_id else ['papercusp']
+    acct = routed_account(me)
+    if acct:
+        parts.append(f'⇢ {acct}')
+    return parts
 
 
 def emit(lines, cols):

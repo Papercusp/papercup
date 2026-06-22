@@ -4,6 +4,11 @@
  * SSE push endpoint for the harness sync layer. Heartbeat + update +
  * invalidate events; Last-Event-ID replay from 60s ring buffer.
  *
+ * ⚠ NOT RETIRED — despite the name, THIS ROUTE is the LIVE desktop sync transport
+ * (apps/operator/providers/HarnessSyncProvider.tsx). The retired surface is the
+ * defunct `libs/zero-harness` PACKAGE (the Zero ZQL schema), NOT this endpoint.
+ * Don't conflate the two (agent-tool-delta-protocol-2026-06-22, Lane D / P-010).
+ *
  * Ported from app/api/zero-harness/sse/route.ts. `auth: 'public'`.
  */
 import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@papercusp/sse';

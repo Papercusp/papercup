@@ -2,20 +2,26 @@
  * GET /api/tui/intents/stream?client_id=X — SSE stream of pending intents for a
  * pui instance. The TUI analogue of /api/ui/intents/stream.
  *
- * Server-side 250ms poll of harness_shared.tui_intents (pui itself never polls —
- * it holds this one SSE connection and reacts to pushes, so the D-003 "no
- * polling in pui" invariant holds). `auth: 'public'` — loopback-gated inline.
+ * LISTEN/NOTIFY-driven (agent-tool-delta-protocol-2026-06-22, Lane D / P-010): `tui:dispatch`
+ * fires `NOTIFY tui_intents` on insert; the tui-intents bus wakes this route, which drains
+ * new pending rows since its cursor. NO polling (replaces the old 250ms `setTimeout` loop;
+ * the D-003 "no polling in pui" invariant still holds — pui only holds this SSE connection).
+ * The `status='pending'` filter IS the resume contract — pending intents redeliver until
+ * processed, so a reconnecting client (cursor reset to 0) re-receives anything outstanding.
+ *
+ * `auth: 'public'` — loopback-gated inline.
  */
 import { sseResponse } from '@papercusp/sse';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '../../../superuser-token';
+import { onTuiIntent } from '../../../tui-intents-bus';
 import { defineTool } from '@papercusp/agent-mcp';
-
-const POLL_MS = 250;
 
 type Events = {
   message: { id: number; intent: string; args: Record<string, unknown> };
 };
+
+const DRAIN_LIMIT = 50;
 
 export default defineTool({
   method: 'GET',
@@ -38,35 +44,50 @@ export default defineTool({
       initialHeartbeat: true,
       setup: (sink) => {
         let lastId = 0;
-        let pollTimer: NodeJS.Timeout | null = null;
+        let draining = false;
+        let dirty = false;
+        let unsubscribe: (() => void) | null = null;
 
-        const tick = async () => {
+        const drain = async (): Promise<void> => {
           if (sink.closed) return;
+          if (draining) { dirty = true; return; } // coalesce concurrent wakes
+          draining = true;
           try {
-            const rows = await sql<Array<{ id: number; intent: string; args: Record<string, unknown> }>>`
-              SELECT id, intent, args
-              FROM harness_shared.tui_intents
-              WHERE client_id = ${clientId}
-                AND status = 'pending'
-                AND id > ${lastId}
-              ORDER BY id ASC
-              LIMIT 50
-            `;
-            for (const row of rows) {
-              const rid = Number(row.id);
-              sink.event('message', { id: rid, intent: row.intent, args: row.args });
-              lastId = Math.max(lastId, rid);
-            }
+            do {
+              dirty = false;
+              const rows = await sql<Array<{ id: number; intent: string; args: Record<string, unknown> }>>`
+                SELECT id, intent, args
+                FROM harness_shared.tui_intents
+                WHERE client_id = ${clientId}
+                  AND status = 'pending'
+                  AND id > ${lastId}
+                ORDER BY id ASC
+                LIMIT ${DRAIN_LIMIT}
+              `;
+              for (const row of rows) {
+                if (sink.closed) return;
+                const rid = Number(row.id);
+                sink.event('message', { id: rid, intent: row.intent, args: row.args });
+                if (rid > lastId) lastId = rid;
+              }
+              if (rows.length === DRAIN_LIMIT) dirty = true; // full page — keep draining
+            } while (dirty && !sink.closed);
           } catch (e) {
             // eslint-disable-next-line no-console
-            console.warn('[tui-intents] poll error', e);
+            console.warn('[tui-intents] drain error', e);
+          } finally {
+            draining = false;
           }
-          if (!sink.closed) pollTimer = setTimeout(tick, POLL_MS);
         };
 
-        pollTimer = setTimeout(tick, 0);
+        unsubscribe = onTuiIntent((notifiedClientId) => {
+          if (notifiedClientId && notifiedClientId !== clientId) return;
+          void drain();
+        });
+        void drain(); // initial: deliver intents already pending at connect
+
         sink.onClose(() => {
-          if (pollTimer) clearTimeout(pollTimer);
+          if (unsubscribe) unsubscribe();
         });
       },
     });

@@ -23,7 +23,8 @@ function buildTransportFilter(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sql: any,
   transports: TransportFilter[] | null | undefined,
-): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
   if (!transports) return sql``;
   if (transports.length === 0) {
     // Caller asked for no rows. Returning `1=0` is the safest way to
@@ -141,6 +142,7 @@ export async function telemetryRollup(
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
+  const workspaceIds = input.workspaceIds ?? [];
   const tFilter = buildTransportFilter(sql, input.transports);
 
   type Row = {
@@ -168,12 +170,12 @@ export async function telemetryRollup(
           array_agg(DISTINCT workspace_id) AS workspaces
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
-          AND workspace_id = ANY(${input.workspaceIds!})
+          AND workspace_id = ANY(${sql.array(workspaceIds)})
           ${tFilter}
         GROUP BY tool_name
         ORDER BY call_count DESC
         LIMIT ${limit}
-      `) as Row[])
+      `) as unknown as Row[])
     : ((await sql`
         SELECT
           tool_name,
@@ -191,7 +193,7 @@ export async function telemetryRollup(
         GROUP BY tool_name
         ORDER BY call_count DESC
         LIMIT ${limit}
-      `) as Row[]);
+      `) as unknown as Row[]);
 
   return {
     entries: rows.map((r) => ({
@@ -235,6 +237,7 @@ export async function auditFeed(
   const sinceMs = Date.now() - hours * 3600 * 1000;
 
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
+  const workspaceIds = input.workspaceIds ?? [];
 
   type Row = { id: string; ts: string | number; workspace_id: string; actor: string | null; action: string; subject: string | null; details: unknown };
   const rows = wsFilter
@@ -242,17 +245,17 @@ export async function auditFeed(
         SELECT id, ts, workspace_id, actor, action, subject, details
         FROM harness_shared.audit_log
         WHERE ts > ${sinceMs}
-          AND workspace_id = ANY(${input.workspaceIds!})
+          AND workspace_id = ANY(${sql.array(workspaceIds)})
         ORDER BY ts DESC
         LIMIT ${limit}
-      `) as Row[])
+      `) as unknown as Row[])
     : ((await sql`
         SELECT id, ts, workspace_id, actor, action, subject, details
         FROM harness_shared.audit_log
         WHERE ts > ${sinceMs}
         ORDER BY ts DESC
         LIMIT ${limit}
-      `) as Row[]);
+      `) as unknown as Row[]);
 
   return {
     entries: rows.map((r) => ({
@@ -299,6 +302,7 @@ export async function listSessions(
   const { sql } = getOrgPg();
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
+  const workspaceIds = input.workspaceIds ?? [];
   const tFilter = buildTransportFilter(sql, input.transports);
 
   type Row = {
@@ -330,13 +334,13 @@ export async function listSessions(
           COALESCE(SUM(duration_ms), 0)::int AS total_duration_ms
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
-          AND workspace_id = ANY(${input.workspaceIds!})
+          AND workspace_id = ANY(${sql.array(workspaceIds)})
           AND spawn_id IS NOT NULL
           ${tFilter}
         GROUP BY spawn_id
         ORDER BY started_at DESC
         LIMIT ${limit}
-      `) as Row[])
+      `) as unknown as Row[])
     : ((await sql`
         SELECT
           spawn_id,
@@ -357,7 +361,7 @@ export async function listSessions(
         GROUP BY spawn_id
         ORDER BY started_at DESC
         LIMIT ${limit}
-      `) as Row[]);
+      `) as unknown as Row[]);
 
   return { entries: rows };
 }
@@ -417,7 +421,7 @@ export async function toolCooccurrence(
 
   const wsFrag =
     input.workspaceIds && input.workspaceIds.length > 0
-      ? sql`AND workspace_id = ANY(${input.workspaceIds})`
+      ? sql`AND workspace_id = ANY(${sql.array(input.workspaceIds)})`
       : sql``;
   const orderFrag =
     input.orderBy === 'lift'
@@ -438,7 +442,7 @@ export async function toolCooccurrence(
         ${wsFrag}
       GROUP BY spawn_id
     ) s
-  `) as { n: number }[];
+  `) as unknown as { n: number }[];
   const totalSpawns = totalRows[0]?.n ?? 0;
 
   type Row = {
@@ -490,7 +494,7 @@ export async function toolCooccurrence(
     CROSS JOIN tot
     ${orderFrag}
     LIMIT ${limit}
-  `) as Row[];
+  `) as unknown as Row[];
 
   return { totalSpawns, entries: rows };
 }
@@ -521,6 +525,7 @@ export async function activityFeed(
   const limit = Math.max(1, Math.min(500, input.limit ?? 50));
   const { sql } = getOrgPg();
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
+  const workspaceIds = input.workspaceIds ?? [];
 
   type Row = {
     id: string;
@@ -539,16 +544,16 @@ export async function activityFeed(
     ? ((await sql`
         SELECT id::text, workspace_id, harness_slug, tool_name, role, spawn_id, invoked_at, duration_ms, status, error_message
         FROM harness_shared.tool_invocations
-        WHERE workspace_id = ANY(${input.workspaceIds!})
+        WHERE workspace_id = ANY(${sql.array(workspaceIds)})
         ORDER BY invoked_at DESC
         LIMIT ${limit}
-      `) as Row[])
+      `) as unknown as Row[])
     : ((await sql`
         SELECT id::text, workspace_id, harness_slug, tool_name, role, spawn_id, invoked_at, duration_ms, status, error_message
         FROM harness_shared.tool_invocations
         ORDER BY invoked_at DESC
         LIMIT ${limit}
-      `) as Row[]);
+      `) as unknown as Row[]);
 
   return { entries: rows };
 }
