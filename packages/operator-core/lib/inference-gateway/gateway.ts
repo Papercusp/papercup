@@ -123,6 +123,18 @@ const EGRESS_FAIL_CIRCUIT_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_EGRES
 // is disabled or the proxy is genuinely dead. Shortened 60s→20s (2026-06-21) so a flaky proxy never strands
 // a token-healthy account for a full minute even in the probe-off fallback path.
 const EGRESS_CIRCUIT_OPEN_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_CIRCUIT_MS) || 20_000;
+/** FLAPPING BACKOFF (2026-06-22): a chronically-flapping egress proxy (circuit reopens soon after a readmit)
+ *  gets a progressively LONGER open — doubling per reopen up to this cap — so we stop readmitting-and-failing
+ *  it every EGRESS_CIRCUIT_OPEN_MS, which routes real bee requests back onto a known-bad proxy → 503. Observed
+ *  during a sustained Rayobyte outage: 134 circuit opens in 50 min thrashing the same proxies. */
+const EGRESS_CIRCUIT_OPEN_MAX_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_CIRCUIT_MAX_MS) || 300_000;
+/** A proxy stable (no reopen) for longer than this RESETS its flapping escalation — the next open is treated
+ *  as fresh (base duration), so a one-off blip never inherits a chronic flapper's long backoff. */
+const EGRESS_FLAP_RESET_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_FLAP_RESET_MS) || 300_000;
+/** Consecutive SUCCESSFUL egress probes required before readmitting a circuit-paused account. A flapping proxy
+ *  (passes a probe, then stalls the real request) rarely strings two spaced probes together → it stays out;
+ *  a genuinely-recovered proxy readmits after just one extra probe interval. =1 restores the old behavior. */
+const EGRESS_PROBE_READMIT_STREAK = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_READMIT_STREAK) || 2;
 /** Delay before the half-open egress PROBE fires after a circuit opens (egress-probe.ts re-tests the
  *  account's proxy through the same dispatcher). On success it clears the failure streak so the account
  *  readmits CLEAN at pause-expiry; `=0` disables the active probe (the natural pause-expiry half-open
@@ -687,6 +699,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // dedupes the half-open probe.
   const egressFailStreak = new Map<string, number>();
   const egressProbePending = new Set<string>();
+  // FLAPPING BACKOFF state (2026-06-22): per-account reopen count + last-open time, so a proxy that keeps
+  // reopening soon after readmit gets a progressively longer circuit-open (decays via EGRESS_FLAP_RESET_MS).
+  const egressReopenCount = new Map<string, number>();
+  const egressLastOpenAt = new Map<string, number>();
   /** Per-account TRANSPORT pause the egress circuit set (= the resetAt handed to gov.penalize), so the
    *  half-open probe can lift exactly THAT pause on recovery without ever shortening a real 429 pause. */
   const egressPauseUntil = new Map<string, number>();
@@ -702,30 +718,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
   function scheduleEgressProbe(account: ActiveAccount, gov: RateLimitGovernor, pausedUntil: number): void {
     if (EGRESS_PROBE_DELAY_MS <= 0 || egressProbePending.has(account.accountId)) return;
     egressProbePending.add(account.accountId);
+    let probeSuccessStreak = 0; // consecutive OK probes; readmit only at EGRESS_PROBE_READMIT_STREAK (flap filter)
     const runProbe = (): void => {
     const t = setTimeout(() => {
       void (async () => {
-        let recovered = false;
+        let readmitted = false;
         try {
           const probe = await probeEgress(
             { id: account.accountId, egress: account.egress } as ClaudeAccount,
             { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS },
           );
-          recovered = !!probe.exitIp;
-          if (recovered) {
-            egressFailStreak.delete(account.accountId);
-            gov.liftTransportPause(pausedUntil); // lift the transport pause NOW (no-op if a real 429 superseded it)
-            pool.readmit?.(account.accountId); // rejoin the round-robin immediately
-            egressPauseUntil.delete(account.accountId);
-            log('warn', `inference-gateway: egress probe for '${account.accountId}' RECOVERED (exit ${probe.exitIp}) — readmitted immediately`);
+          if (probe.exitIp) {
+            probeSuccessStreak++;
+            if (probeSuccessStreak >= EGRESS_PROBE_READMIT_STREAK) {
+              egressFailStreak.delete(account.accountId);
+              gov.liftTransportPause(pausedUntil); // lift the transport pause NOW (no-op if a real 429 superseded it)
+              pool.readmit?.(account.accountId); // rejoin the round-robin
+              egressPauseUntil.delete(account.accountId);
+              readmitted = true;
+              log('warn', `inference-gateway: egress probe for '${account.accountId}' RECOVERED (exit ${probe.exitIp}) after ${probeSuccessStreak} stable probes — readmitted`);
+            } else {
+              log('warn', `inference-gateway: egress probe for '${account.accountId}' OK ${probeSuccessStreak}/${EGRESS_PROBE_READMIT_STREAK} — confirming stability before readmit`);
+            }
           } else {
+            probeSuccessStreak = 0; // a failed probe means it's still flapping, not stably recovered
             log('warn', `inference-gateway: egress probe for '${account.accountId}' STILL DOWN (${probe.error ?? 'no exit IP'}) — stays circuit-paused`);
           }
         } catch (err) {
+          probeSuccessStreak = 0;
           log('warn', `inference-gateway: egress probe error for '${account.accountId}': ${(err as Error).message}`);
         } finally {
-          // Keep probing until the proxy recovers OR the circuit pause expires (then it readmits naturally).
-          if (!recovered && Date.now() < pausedUntil) runProbe();
+          // Keep probing until the proxy is CONFIRMED stable (readmitted) OR the circuit pause expires.
+          if (!readmitted && Date.now() < pausedUntil) runProbe();
           else egressProbePending.delete(account.accountId);
         }
       })();
@@ -1219,14 +1243,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;
             egressFailStreak.set(active.accountId, streak);
             const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
-            const pauseMs = circuitOpen ? EGRESS_CIRCUIT_OPEN_MS : TRANSIENT_429_BACKOFF_MS;
+            // FLAPPING BACKOFF: a proxy that reopens within EGRESS_FLAP_RESET_MS of its last open is chronic —
+            // double its open each time (capped) so we stop thrashing it; one stable for longer resets to base.
+            let openMs = EGRESS_CIRCUIT_OPEN_MS;
+            if (circuitOpen) {
+              const now = Date.now();
+              const stableFor = now - (egressLastOpenAt.get(active.accountId) ?? 0);
+              const reopen = stableFor < EGRESS_FLAP_RESET_MS ? (egressReopenCount.get(active.accountId) ?? 0) + 1 : 0;
+              egressReopenCount.set(active.accountId, reopen);
+              egressLastOpenAt.set(active.accountId, now);
+              openMs = Math.min(EGRESS_CIRCUIT_OPEN_MS * 2 ** reopen, EGRESS_CIRCUIT_OPEN_MAX_MS);
+            }
+            const pauseMs = circuitOpen ? openMs : TRANSIENT_429_BACKOFF_MS;
             const resetAt = Date.now() + pauseMs;
             // take-MAX (recordPenalty) → this never SHORTENS a legitimate longer 429/usage-cap pause.
             gov.penalize({ retryAfterMs: pauseMs, resetAt });
             if (circuitOpen) {
               egressCircuitOpens++;
               egressPauseUntil.set(active.accountId, resetAt); // mark the TRANSPORT pause so the probe can lift exactly it on recovery
-              log('warn', `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures) — out of rotation ≤${Math.round(pauseMs / 1000)}s; half-open probe lifts it the moment the proxy recovers`);
+              const reopen = egressReopenCount.get(active.accountId) ?? 0;
+              log('warn', `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures${reopen > 0 ? `, flap×${reopen}` : ''}) — out of rotation ≤${Math.round(pauseMs / 1000)}s; half-open probe readmits after ${EGRESS_PROBE_READMIT_STREAK} stable probes`);
               scheduleEgressProbe(active, gov, resetAt);
             }
             // ROUTE AROUND IT: rotate to a healthy account + retry on the same admission slot (like the
