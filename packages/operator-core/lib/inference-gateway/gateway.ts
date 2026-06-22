@@ -35,6 +35,7 @@ import {
 import { withOAuthBeta } from './credential-store';
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
+import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayPath } from './provider-adapters';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
@@ -645,6 +646,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const single: ActiveAccount = { accountId, token, invalidateToken: deps.invalidateToken };
       return { active: () => single, onExhausted: () => null };
     })();
+  const providerAdapters = makeGatewayProviderAdapters({
+    claudePool: pool,
+    codexPool: deps.codexPool ?? null,
+    anthropicUpstreamBase: upstreamBase,
+    openaiUpstreamBase,
+  });
 
   // Governor is per (model, account). Reading the active account at call time means a failover
   // transparently moves pacing onto the new account's fresh bucket. The QUEUE is the concurrency
@@ -1580,19 +1587,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }
 
   async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
-    if (!deps.codexPool) {
+    const adapter = providerAdapters.codex;
+    if (!adapter.pool || !adapter.upstreamBase) {
       req.resume();
-      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: 'inference-gateway: no Codex account pool configured' }, gateway: true });
+      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: adapter.unavailableMessage ?? 'inference-gateway: Codex provider unavailable' }, gateway: true });
       return;
     }
     const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
     let active: ActiveAccount;
     try {
-      const pinned = (wantAccount && deps.codexPool.select?.(wantAccount)) || null;
-      active = pinned ?? deps.codexPool.active();
+      const pinned = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
+      active = pinned ?? adapter.pool.active();
     } catch (e) {
       req.resume();
-      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || 'inference-gateway: no Codex account pool configured' }, gateway: true });
+      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable' }, gateway: true });
       return;
     }
     const bodyBuf = await readBody(req);
@@ -1631,7 +1639,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the body is buffered (bodyBuf) so each attempt re-sends cleanly. The retry only runs BEFORE headers are
     // written; once we stream a response we commit to it.
     const rotateCodex = (resetAt: number): boolean => {
-      const next = deps.codexPool!.onExhausted(active.accountId, resetAt);
+      const next = adapter.pool!.onExhausted(active.accountId, resetAt);
       if (next && next.accountId !== active.accountId) {
         codexFailovers++;
         active = next;
@@ -1682,7 +1690,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const dispatcher = await dispatcherFor(active);
         if (dispatcher) init.dispatcher = dispatcher;
         armStall(headersStallMs); // SHORT TTFB for streams; generous otherwise
-        up = await doFetch(`${openaiUpstreamBase}${url}`, init as RequestInit);
+        up = await doFetch(`${adapter.upstreamBase}${url}`, init as RequestInit);
         armStall(upstreamBodyIdleTimeoutMs); // headers arrived → switch to the per-chunk body-idle deadline
       } catch (e) {
         clearStall();
@@ -1783,6 +1791,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const s = stats();
       sendJson(res, 200, {
         ...(deps.adminConfig ? deps.adminConfig() : { hotReload: false }),
+        providers: gatewayProviderStatuses(providerAdapters),
         admission: s.admission,
         concurrencyCap: s.concurrencyCap,
         aimd: s.aimd,
@@ -1812,7 +1821,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // AND any other /v1/* — goes to the Claude proxy (the gateway's primary). Defaulting UNKNOWN paths to Claude
     // (not Codex) avoids a confusing "no Codex pool" 503 for a legitimate non-/v1/messages Claude request (e.g.
     // a future /v1/… endpoint), and matches the only codex path the integration uses (2026-06-22 audit).
-    const handler = url.startsWith('/v1/responses') ? proxyOpenAi : proxy;
+    const handler = providerForGatewayPath(url, providerAdapters).id === 'codex' ? proxyOpenAi : proxy;
     queue.run(pri, () => handler(req, res, url)).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
