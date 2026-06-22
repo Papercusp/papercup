@@ -51,9 +51,15 @@ export interface PerfBudgets {
    *  1746ms during the wedge). Only evaluated when an agent run merged it. warn then crit. */
   eventLoopLagP95WarnMs: number;
   eventLoopLagP95CritMs: number;
-  /** A capture older than this (ms) is STALE — don't threshold it (avoid alarming on
-   *  an old snapshot when the E1 cron hasn't run recently). */
+  /** A capture older than this (ms) is STALE — don't threshold its numbers (avoid
+   *  alarming on a briefly-old snapshot: the capture timer may have skipped a tick). */
   staleMs: number;
+  /** A capture older than this (ms) means the producer has DIED, not skipped a tick —
+   *  the host SLO monitor is BLIND. Surface as `warn` (never crit — the stale numbers
+   *  are untrustworthy) instead of a silent `unknown`, so a dead capture timer
+   *  (papercup-perf-signals-capture.timer, WI-324) is visible rather than failing open
+   *  forever. MUST be >> staleMs + the capture cadence so a normal gap stays `unknown`. */
+  blindMs: number;
 }
 
 /** Default per-thread budgets, grounded in the round-4 baseline + live evidence. */
@@ -65,6 +71,7 @@ export const PERF_BUDGETS: PerfBudgets = {
   eventLoopLagP95WarnMs: 250,
   eventLoopLagP95CritMs: 1000,
   staleMs: 10 * 60_000,
+  blindMs: 30 * 60_000,
 };
 
 export interface PerfVerdict {
@@ -123,7 +130,24 @@ export function evaluatePerfSignals(
     eventLoopLagP95Ms: lag, operatorReachable: reachable, ageMs,
     stale: ageMs !== null && ageMs > budgets.staleMs,
   };
-  if (v.stale) return { ...v, status: 'unknown' };
+  if (v.stale) {
+    // Present-but-stale: distinguish a brief gap (skipped a tick → `unknown`: numbers
+    // untrustworthy but not alarming) from a DEAD producer (age past blindMs → the host
+    // SLO monitor is blind → `warn`, so a stopped capture timer is visible instead of
+    // failing open forever). Never crit — stale numbers must not red the system (the
+    // original fail-safe). WI-324 recurrence guard.
+    if (ageMs !== null && ageMs > budgets.blindMs) {
+      const mins = Math.round(ageMs / 60_000);
+      return {
+        ...v,
+        status: 'warn',
+        reasons: [
+          `perf-signals capture ${mins}min stale (> ${Math.round(budgets.blindMs / 60_000)}min) — host SLO monitor blind; check papercup-perf-signals-capture.timer`,
+        ],
+      };
+    }
+    return { ...v, status: 'unknown' };
+  }
 
   // ── CRIT: definitive per-thread wedge (NOT loadavg — see the file header) ──────
   const crit: string[] = [];

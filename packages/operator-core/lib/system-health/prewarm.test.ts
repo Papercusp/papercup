@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 // preWarmSystemHealth only reads the flag + the workspace registry and kicks the
 // (injected) tick — mock those two so the test is DB-free. The real
 // runSystemHealthTick is never used here (a fake tick is injected).
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
+// onFlagChange must be in the mock: prewarm transitively loads capability-envelope-overrides.ts
+// / projected-tool-deps.ts, which `import { getFlag, onFlagChange }` and call onFlagChange(...)
+// at module load — a getFlag-only mock fails collection ("No onFlagChange export ... on the mock").
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(), onFlagChange: vi.fn() }));
 vi.mock('../workspace-registry', () => ({ readRegistry: vi.fn(), activeWorkspaceId: () => 'ws-default' }));
 
 import { preWarmSystemHealth } from './compute';

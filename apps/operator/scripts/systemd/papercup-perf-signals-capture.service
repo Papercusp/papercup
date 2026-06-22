@@ -1,0 +1,19 @@
+[Unit]
+Description=Papercusp perf-signals capture — host-side perf-signals-v1 snapshot feeding the SLO/CLOSE_WAIT guard
+# Read-only host probe (ss / ps / systemctl / /proc / :3070 CLOSE_WAIT).
+# Deliberately a systemd timer, NOT a DBOS scheduled workflow and NOT an
+# in-process operator tick (dbos-scheduler-consolidation-2026-06-03 D-004 +
+# EI-1622): these are dev-box host signals (infra monitoring, not product), and
+# a per-tick DBOS workflow_status row is the high-freq bloat that caused the
+# routine-engine freeze. Mirrors llm-test-nightly.service. See WI-324.
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# A read-only probe should finish in well under a second; fail open if a probe
+# (e.g. a wedged `ss`) hangs so the next tick is never blocked.
+TimeoutStartSec=60
+ExecStart=/home/marsh-office/papercupai-workspace/papercup/apps/operator/scripts/perf/capture-perf-signals.sh

@@ -47,9 +47,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
-  // docs-corpus WS2 P-008: the doc-steward auto-edits the doc corpus + spawns an agent per
-  // drift — an owner-authority surface flipped ON only after a verified end-to-end run.
-  FLAGS.DOC_STEWARD,
   // (PLAN_WORKITEM_PROMOTION + PLAN_ITEM_CLAIM_AUTO_CONVERT graduated to default-ON 2026-06-22,
   // owner-directed — the work-items-everywhere ledger's two halves were built+tested but left dark
   // (promotion dogfood-verified D-007; claim-auto-convert 48 green tests). Finished work ships ON,
@@ -365,8 +362,6 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.RECLAIM_STALLED, 'incomplete'],
   [FLAGS.LAZY_SUBSTRATE_BOOT, 'incomplete'],
   [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, 'incomplete'],
-  // owner-authority — auto-edits the doc corpus; owner ratifies after a verified run
-  [FLAGS.DOC_STEWARD, 'owner-authority'],
   [FLAGS.HIVE_REKEY, 'incomplete'],
   [FLAGS.INBOX_DURABLE_ESCALATIONS, 'incomplete'],
   [FLAGS.PLAN_PART_FEDERATION, 'incomplete'],

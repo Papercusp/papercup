@@ -422,8 +422,8 @@ const _g = globalThis as unknown as Singleton;
  */
 /**
  * One full verifier pass across every harness with verifiable work.
- * Exposed for the DBOS scheduled-workflow migration (dbos-durable-jobs-2026-05-31
- * Phase 2) — the legacy daemon tick now delegates to this.
+ * Exposed for the periodic scheduler: both the legacy daemon path and the
+ * lightweight in-process periodic check delegate to this single-run tick.
  */
 export async function runCompletionRefVerifierOnce(
   runGit: RunGitLsRemote = defaultRunGitLsRemote,
@@ -434,9 +434,9 @@ export async function runCompletionRefVerifierOnce(
   }
 }
 
-// Legacy startCompletionRefVerifier removed (consolidation P-005): DBOS owns the
-// schedule (periodic-workflows.ts `completionRefVerify`). `runCompletionRefVerifierOnce`
-// above is the single-run tick that workflow calls.
+// Legacy startCompletionRefVerifier removed (consolidation P-005). The
+// in-process periodic scheduler (dbos/in-process-periodic.ts) owns the cadence;
+// `runCompletionRefVerifierOnce` above is the single-run tick it calls.
 
 export function stopCompletionRefVerifier(): void {
   if (_g.__completionRefVerifierTimer) {

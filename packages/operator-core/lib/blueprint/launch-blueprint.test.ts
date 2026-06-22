@@ -85,6 +85,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       scan: 'scanner',
       implement: 'worker',
       'merge-resolution': 'merge-resolver',
+      // docs-corpus WS2 P-008: the doc-freshness consumer's decider IS the doc-steward role.
+      'doc-steward': 'doc-steward',
       // release-pipeline-resilience-2026-06-09 P-006: the gate-fixer's decider IS the release-fixer role.
       'release-fix': 'release-fixer',
       // git-sync-content-guard-2026-06-13 P-006: the content-guard fixer's decider IS the content-fixer role.

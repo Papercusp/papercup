@@ -1361,9 +1361,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // attributed commits). OFF = today's single `git add -A` commit, byte-identical. Owner
   // flips post-review (also listed in KNOWN_DARK_FLAGS).
   [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION]: false,
-  // DEFAULT OFF (docs-corpus WS2 P-008): the doc-steward auto-edits the doc corpus + spawns an
-  // agent per drift — an owner-authority surface flipped ON only after a verified end-to-end run.
-  [FLAGS.DOC_STEWARD]: false,
+  // DEFAULT ON (docs-corpus WS2 P-008): the doc-steward — the post-git-sync freshness sweep
+  // dispatches a doc-steward agent to re-sync a drifted doc to the current code. Owner-ratified
+  // ON 2026-06-22 (auto-doc-editing surface). Thoroughly tested (dispatch + blueprint + flag);
+  // best-effort + flag-gated so it can never wedge git-sync.
+  [FLAGS.DOC_STEWARD]: true,
   // DEFAULT OFF (P-142 / D-003) — genuinely incomplete-until-ramped: the operator-hosted
   // worker:chunk-loop is the coding HOT PATH and ships dark, then dark-launch → 25/50/100
   // ramp → retire (worker-chunk-loop-operator-hosted-2026-06-14). OFF = the subprocess

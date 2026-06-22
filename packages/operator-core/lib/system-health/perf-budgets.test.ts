@@ -91,11 +91,24 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     ).toBe('crit');
   });
 
-  it('unknown (never reds) on a STALE capture — even one that looks crit', () => {
-    const v = evaluatePerfSignals(sig({ operator_3070_reachable: false }, { capturedAt: '2026-06-19T15:00:00Z' }), NOW); // ~95min old
+  it('unknown (never reds) on a BRIEFLY-stale capture — even one that looks crit', () => {
+    // staleMs(10min) < age(15min) <= blindMs(30min): the timer skipped a tick — numbers
+    // untrustworthy → unknown, but not yet a "monitor blind" alarm.
+    const v = evaluatePerfSignals(sig({ operator_3070_reachable: false }, { capturedAt: '2026-06-19T16:20:00Z' }), NOW); // ~15min old
     expect(v.status).toBe('unknown');
     expect(v.stale).toBe(true);
     expect(v.degraded).toBe(false); // stale crit-looking data must NOT red the system
+  });
+
+  it('warn "monitor blind" on a VERY-stale capture (dead producer) — still never crit (WI-324 guard)', () => {
+    // age(95min) > blindMs(30min): the capture timer has DIED, not skipped a tick — the
+    // host SLO monitor is blind. Surface as warn so it is visible, but a stale crit-looking
+    // capture must STILL never red (degraded=false), preserving the original fail-safe.
+    const v = evaluatePerfSignals(sig({ operator_3070_reachable: false }, { capturedAt: '2026-06-19T15:00:00Z' }), NOW); // ~95min old
+    expect(v.status).toBe('warn');
+    expect(v.stale).toBe(true);
+    expect(v.degraded).toBe(false);
+    expect(v.reasons.join(' ')).toMatch(/blind|stale/i);
   });
 
   it('unknown on null / wrong-schema input', () => {

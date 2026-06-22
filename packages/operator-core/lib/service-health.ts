@@ -1,7 +1,7 @@
 /**
  * service-health — probe the local dev endpoints + detect up/down transitions
- * (plan fleet-coordination-painpoints, Phase 3b). Driven by a DBOS scheduled
- * workflow (periodic-workflows); transitions broadcast to coord. External
+ * (plan fleet-coordination-painpoints, Phase 3b). Driven by the lightweight
+ * in-process periodic scheduler; transitions broadcast to coord. External
  * liveness has no event source, so the probe is the one irreducible poll
  * (D-006) — but transition-only, never a per-tick firehose.
  *
@@ -227,8 +227,8 @@ export function lastServiceHealthAt(): number | null {
 
 /**
  * One service-health tick: probe all endpoints, broadcast a coord MESSAGE
- * (not notify — D-002) on each up/down transition. Driven by a DBOS scheduled
- * workflow. Returns the transitions for logging/tests.
+ * (not notify — D-002) on each up/down transition. Driven by the in-process
+ * periodic scheduler. Returns the transitions for logging/tests.
  */
 export async function runServiceHealthTick(): Promise<{ checked: number; transitions: HealthTransition[] }> {
   const results = await probeAll();

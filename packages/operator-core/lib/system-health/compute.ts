@@ -15,9 +15,10 @@
  *
  * Freshness mirrors learning-infra-health: a per-workspace module-singleton
  * cache, a `getSystemHealth` read surface that runs a live tick when stale (the
- * correctness floor — opening the tab always computes fresh), and a periodic
- * `runSystemHealthTick` (DBOS, dbos/periodic-workflows.ts) that invalidates
- * `health.snapshot` so an open tab stays SSE-live.
+ * correctness floor — opening the tab always computes fresh), and the
+ * in-process periodic `runSystemHealthTick` (dbos/in-process-periodic.ts) that
+ * invalidates `health.snapshot` so an open tab stays SSE-live without writing a
+ * DBOS workflow_status row.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { probeHttpReachable } from '../escalating-http-probe';
@@ -1160,8 +1161,8 @@ export function lastSystemHealth(workspaceId?: string): SystemHealth | null {
 
 /**
  * One health tick: recompute + cache + invalidate `health.snapshot` so an open
- * Health tab refreshes (SSE-live). Driven by the DBOS periodic workflow; also
- * run on-demand by `getSystemHealth` when the cache is stale.
+ * Health tab refreshes (SSE-live). Driven by the in-process periodic scheduler;
+ * also run on-demand by `getSystemHealth` when the cache is stale.
  */
 export async function runSystemHealthTick(workspaceId?: string): Promise<SystemHealth> {
   const ws = workspaceId ?? activeWorkspaceId();
@@ -1178,16 +1179,16 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
 
 /**
  * Pre-warm the per-workspace cache once at boot — the cold-cache perf fix
- * (system-health-tab-2026-06-15 P-003 follow-up). The scheduled DBOS tick
- * (`systemHealthTick`, :10/:40) keeps the cache warm in steady state, but for the
- * ~30s after a boot/deploy the cache is EMPTY, so the FIRST Health tab
+ * (system-health-tab-2026-06-15 P-003 follow-up). The in-process periodic tick
+ * keeps the cache warm in steady state, but for the ~30s after a boot/deploy the
+ * cache is EMPTY, so the FIRST Health tab
  * (`getSystemHealth`) or Overwatch pane (`getOverwatchSnapshot`) open
  * cold-computes the 15-collector aggregation (incl. the ~2.5s gateway probe) ON
  * the user's critical path (the 2-3s load the owner saw). Called once right after
- * DBOS launch (bootstrap.ts): it kicks one tick per registered workspace
- * FIRE-AND-FORGET (never blocks/fails boot) and is gated on the SAME
- * `SYSTEM_HEALTH_TAB` flag as the scheduled tick + the read surface. Returns the
- * number of workspaces whose warm-up was kicked off (0 when the flag is off).
+ * boot: it kicks one tick per registered workspace FIRE-AND-FORGET (never
+ * blocks/fails boot) and is gated on the SAME `SYSTEM_HEALTH_TAB` flag as the
+ * periodic tick + the read surface. Returns the number of workspaces whose
+ * warm-up was kicked off (0 when the flag is off).
  *
  * `tick` is injectable for unit testing; production passes the real
  * `runSystemHealthTick`.

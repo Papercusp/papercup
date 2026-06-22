@@ -10,6 +10,14 @@
  * re-exports it verbatim so the ~64 existing operator-core importers
  * (`import { … } from '../_bulk'`) are unchanged. Import the contract from here
  * (operator-core) or from `@papercusp/agent-mcp` (agent-mcp) — same symbols.
+ *
+ * Re-export from the LEAF subpath (`@papercusp/agent-mcp/_bulk`), NOT the barrel
+ * (`@papercusp/agent-mcp`): the barrel index pulls the whole package, and through
+ * some tools' import graphs (the memory tools) that forms an ESM circular init in
+ * which the barrel's `_bulk` re-exports are still `undefined` when the consumer's
+ * module body runs (`mergeIds is not a function` / `bulkContent is not a function`
+ * — the b1-timeout green-gate red). The leaf imports only `zod`, so it is
+ * cycle-free and the symbols are always defined regardless of import order.
  */
-export { scalarOrArray, toList, mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp';
-export type { BulkItemResult, BulkEnvelope } from '@papercusp/agent-mcp';
+export { scalarOrArray, toList, mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+export type { BulkItemResult, BulkEnvelope } from '@papercusp/agent-mcp/_bulk';

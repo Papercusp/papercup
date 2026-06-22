@@ -4,12 +4,10 @@
  *
  * `computeSystemHealth` (compute.ts) already aggregates 15 panels — dead routines,
  * queen/overwatch liveness, git-sync staleness, PG, the LLM account pool — and
- * `runSystemHealthTick` keeps a per-workspace cache warm. BUT that tick is a DBOS
- * periodic workflow on the BACKGROUND PRIMARY — exactly what dies in the freeze
- * class we guard against (bg-host down / BACKGROUND_WORKERS=0 regression): the
- * watcher dies with the watched, and the rollup only feeds the Health TAB
- * (passive — a human must be looking). Every freeze on 2026-06-19 was found by
- * hand, never surfaced.
+ * `runSystemHealthTick` keeps a per-workspace cache warm. EI-1622 moved that
+ * tick out of DBOS and into the in-process periodic scheduler, so it no longer
+ * writes workflow_status rows; this request-path alarm remains as the independent
+ * watcher for bg-host down / BACKGROUND_WORKERS=0 regressions and stale snapshots.
  *
  * This alarm runs on a :3070 REQUEST worker loop (in cluster mode the workers are
  * request-only, structurally separate from the bg primary; single-process degrades

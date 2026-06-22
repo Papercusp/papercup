@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh the Papercusp perf-signals-v1 capture every 2 min — keeps the SLO/CLOSE_WAIT guard live (perf-budgets staleMs=10min). See WI-324.
+
+[Timer]
+# First capture shortly after boot, then every 2 min — comfortably under the
+# 10-min staleMs so the budget verdict never silently degrades to `unknown`.
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=15s
+# Don't backfill a missed run after the box was asleep/off — a fresh capture is
+# what the guard wants, and a stale gap is handled by the staleness logic.
+Persistent=false
+Unit=papercup-perf-signals-capture.service
+
+[Install]
+WantedBy=timers.target

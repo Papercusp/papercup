@@ -162,9 +162,8 @@ async function sweepHarnessLanes(): Promise<void> {
 }
 
 /**
- * One sweep pass — the DBOS scheduled workflow (`harnessStatusSweep` in
- * periodic-workflows.ts, consolidation P-001) and the legacy in-process timer
- * both call this. Iteration column is orchestrator-owned; the sweeper never
+ * One sweep pass — the in-process periodic scheduler and the legacy fallback
+ * timer both call this. Iteration column is orchestrator-owned; the sweeper never
  * writes it. harness_status stalled detection moved to expirable-registry once
  * the schema grew an explicit expires_at column. This sweeper only handles
  * PID-liveness work that TTL can't model cleanly.
