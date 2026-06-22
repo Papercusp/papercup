@@ -350,6 +350,33 @@ async function resolveDesignTokens(args: { category?: string }): Promise<unknown
     : out;
 }
 
+/**
+ * Resolve a shared hive's member-harness SLUGS for the cross-member browse reads
+ * (WI-259 P-006, D-010). The member set is the hive home plus every locally-
+ * registered harness whose `hive_slug` points at the home (joining a hive
+ * registers each member harness with that stamp — discovery/join-hive). Mirrors
+ * the `learning.improvements` hive-scope resolution; returns BARE slugs (strips the
+ * `harness:` scope prefix `hiveMemberHarnessScopes` adds) for a `WHERE harness_slug
+ * IN (...)` content read. Best-effort: a registry read failure degrades to just
+ * `[hiveHomeSlug]` (the rollup still shows the home's own content) rather than
+ * throwing — a federation read must never 500 the tab.
+ */
+async function resolveHiveMemberSlugs(hiveHomeSlug: string, workspaceId?: string): Promise<string[]> {
+  try {
+    const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
+    const reg = await loadHarnessRegistry(workspaceId);
+    const slugs = hiveMemberHarnessScopes(reg.projects, hiveHomeSlug).map((s) => s.replace(/^harness:/, ''));
+    // hiveMemberHarnessScopes always includes the home, so this is non-empty; guard anyway.
+    return slugs.length > 0 ? slugs : [hiveHomeSlug];
+  } catch (err) {
+    console.warn(
+      '[sync-resolver] hive member-slug resolution failed:',
+      err instanceof Error ? err.message : err,
+    );
+    return [hiveHomeSlug];
+  }
+}
+
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // storage.usage — live storage usage by category for Settings → Storage
   // (storage-settings-page-2026-06-15 P-003). Reuses the audit introspection

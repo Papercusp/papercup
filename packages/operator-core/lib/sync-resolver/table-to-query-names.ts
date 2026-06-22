@@ -138,6 +138,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.work_items': [
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
+    // featuresConsolidated.byHive (WI-259 P-006) — the cross-member rollup. A
+    // FEDERATED content write lands on work_items under the AUTHOR member's slug and
+    // fires work_items.changed (emit_change_notify), so a peer member's new/edited
+    // feature live-refreshes every hive member's rollup. Coarse by design: a write
+    // to any member busts the whole hive rollup (the rollup is hive-grained).
+    'featuresConsolidated.byHive',
     'workItems.byHarness',
     // scheduler.running (the live-execution view) reads work-item claims (taken_by /
     // taken_at / last_progress_at) off work_items via fleet_assignment — a claim/progress
@@ -148,6 +154,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
+    'featuresConsolidated.byHive',
     'workItems.byHarness',
     'scheduler.running',
   ],
