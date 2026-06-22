@@ -56,7 +56,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.engineer_issues`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents`;
 });
 
 async function seedIssue(

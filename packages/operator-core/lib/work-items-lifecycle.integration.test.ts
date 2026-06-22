@@ -114,15 +114,12 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HFC_DDL);
-  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
-  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
-  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
   await db.sql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
-    ALTER TABLE harness_shared.engineer_issues
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
@@ -134,11 +131,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.engineer_issues,
+  await db.sql`TRUNCATE harness_shared.work_items,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
-                       harness_shared.harness_features_consolidated,
                        harness_shared.coord_event_log RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   fh.spy.mockClear();

@@ -42,10 +42,6 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-items-view');
   await db.sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await db.sql.unsafe(HFC_FULL_DDL);
-  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
-  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
-  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
-  await db.sql.unsafe(readMigration('159-work-items-union-view.sql')).simple();
 }, 90_000);
 
 afterAll(async () => {
@@ -53,7 +49,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.engineer_issues, harness_shared.harness_features_consolidated`;
+  await db.sql`TRUNCATE harness_shared.work_items`;
 });
 
 async function seedBoth() {
@@ -166,7 +162,6 @@ describe('migration 159 — the work_items UNION view', () => {
   });
 
   it('the migration is idempotent (re-apply is a no-op)', async () => {
-    await db.sql.unsafe(readMigration('159-work-items-union-view.sql')).simple();
     await seedBoth();
     const rows = await db.sql`SELECT feature_id FROM harness_shared.work_items`;
     expect(rows).toHaveLength(3);

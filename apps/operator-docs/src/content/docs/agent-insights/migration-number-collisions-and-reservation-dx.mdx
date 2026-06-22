@@ -4,6 +4,12 @@ description: "Two agents racing `ls | tail` pick the same NNN-*.sql number; on t
 discovered: 2026-06-20
 tags: [migrations, db, reservations, lint, ci, collision, dx, agent-coordination, footgun]
 status: active
+documents:
+  - packages/operator-core/lib/agent-tools/db/next_migration.ts
+  - scripts/next-migration.mjs
+  - scripts/lint-migrations.mjs
+  - libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js
+  - packages/operator-core/lib/migration-drift.ts
 ---
 
 ## What

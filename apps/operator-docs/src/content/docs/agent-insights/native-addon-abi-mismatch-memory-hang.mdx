@@ -4,6 +4,11 @@ description: "/api/health is 200 but memory:* / MCP calls hang forever. Root cau
 discovered: 2026-06-19
 tags: [memory, mem0, native-addons, better-sqlite3, abi, health, readiness, deploy, infra, hang]
 status: active
+documents:
+  - packages/operator-core/lib/memory/op-deadline.ts
+  - packages/operator-core/lib/native-addon-preflight.ts
+  - apps/operator/bin/host-bootstrap.ts
+  - packages/operator-core/lib/endpoint-route/routes/misc/health-deep.ts
 ---
 
 ## Symptom

@@ -43,7 +43,7 @@ const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 // patch the one missing column here (prod added it the same way: ADD COLUMN IF NOT
 // EXISTS fed_hlc TEXT). FLAG: fold fed_hlc into _work-items-schema.ts's superset.
 const HFC_FED_HLC_PATCH = `
-  ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_hlc text`;
+  ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc text`;
 
 // P-008: the admission records the verified-author resolver reads. Minimal shape
 // mirroring harness_shared.hive_members (migration 185): a member's bound devices

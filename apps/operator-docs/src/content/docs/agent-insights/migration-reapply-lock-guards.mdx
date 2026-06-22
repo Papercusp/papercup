@@ -4,6 +4,10 @@ description: The deploy pipeline re-applies every pending sql/<NNN> file on the 
 discovered: 2026-06-09
 tags: [migrations, deploy, postgres, locks, rls, release-pipeline]
 status: active
+documents:
+  - libs/papercusp/libs/db/sql/208-scout-ticks-and-lens-weights.sql
+  - libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js
+  - apps/operator/test/fresh-migrate.integration.test.ts
 ---
 
 ## What happened (live, 2026-06-09)

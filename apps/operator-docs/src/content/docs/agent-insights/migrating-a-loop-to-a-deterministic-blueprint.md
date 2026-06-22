@@ -4,6 +4,15 @@ description: The established pattern for deterministic-blueprints-migration — 
 discovered: 2026-06-13
 tags: [blueprints, deterministic-steps, coord-ops, migration, learning-loops, dbos]
 status: active
+documents:
+  - libs/papercusp/packages/orchestrator/src/blueprint/validate.ts
+  - packages/operator-core/lib/coord-ops/program-runner.ts
+  - packages/operator-core/lib/blueprint/blueprint-run-action.ts
+  - packages/operator-core/lib/negative-space/mine.ts
+  - packages/operator-core/lib/blueprint/materialize-triggers.ts
+  - libs/papercusp/packages/harness/blueprints/negative-space/blueprint.yaml
+plans:
+  - deterministic-blueprints-migration-2026-06-13
 sidebar:
   order: 60
 ---

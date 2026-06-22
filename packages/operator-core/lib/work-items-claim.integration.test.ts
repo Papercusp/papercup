@@ -56,21 +56,18 @@ beforeAll(async () => {
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
-  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
-  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple(); // adds engineer_issues.kind
-  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple(); // adds task kind + payload/assigned_by
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
   await db.sql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
-    ALTER TABLE harness_shared.engineer_issues
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
-beforeEach(async () => { await db.sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.engineer_issues`; });
+beforeEach(async () => { await db.sql`TRUNCATE harness_shared.work_items`; });
 
 describe('work_items claim — atomic `in` (D-004, real PG)', () => {
   it('two competing claims on one item ⇒ exactly one wins', async () => {

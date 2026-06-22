@@ -41,6 +41,7 @@
  */
 export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   CREATE SEQUENCE IF NOT EXISTS harness_shared.work_item_seq;
+  CREATE OR REPLACE FUNCTION harness_shared.next_work_item_id() RETURNS text LANGUAGE sql VOLATILE AS $wiid$ SELECT 'WI-' || nextval('harness_shared.work_item_seq')::text $wiid$;
   CREATE TABLE IF NOT EXISTS harness_shared.work_items (
     harness_slug text NOT NULL,
     feature_id text NOT NULL,
