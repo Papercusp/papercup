@@ -1515,10 +1515,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: 'inference-gateway: no Codex account pool configured' }, gateway: true });
       return;
     }
-    const bodyBuf = await readBody(req);
     const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
-    const pinned = (wantAccount && deps.codexPool.select?.(wantAccount)) || null;
-    const active = pinned ?? deps.codexPool.active();
+    let active: ActiveAccount;
+    try {
+      const pinned = (wantAccount && deps.codexPool.select?.(wantAccount)) || null;
+      active = pinned ?? deps.codexPool.active();
+    } catch (e) {
+      req.resume();
+      sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || 'inference-gateway: no Codex account pool configured' }, gateway: true });
+      return;
+    }
+    const bodyBuf = await readBody(req);
     totalRequests++;
     res.setTimeout(downstreamIdleMs, () => res.destroy());
 
