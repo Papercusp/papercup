@@ -3,7 +3,7 @@
  * (rubric-driven-observations-2026-06-20 P-004 / B7, D-002).
  *
  * The owner's #1 requirement: the Overwatch role MUST, EVERY turn, emit a STRUCTURED
- * SCORECARD against the 13-point `hive-coordination-health` rubric (rate each criterion
+ * SCORECARD against the (now 14-point) `hive-coordination-health` rubric (rate each criterion
  * + cite evidence), IN ADDITION TO its free-form observations. That requirement lives in
  * the canonical Overwatch persona (`blueprints/coding/prompts/overwatch.md`) as prompt
  * instructions — there is no runtime that forces an LLM to emit a tool call, so the
@@ -13,9 +13,10 @@
  * `{rating, evidence}` shape) would quietly kill the owner mandate. This pins it so any
  * such drift trips here.
  *
- * The 13 criterion keys below are the SHARED CONTRACT across B1 (improvements:capture
+ * The criterion keys below are the SHARED CONTRACT across B1 (improvements:capture
  * accept schema), B6 (the seeded `hive-coordination-health` rubric ids), and B7 (this
- * persona) — they are 1:1 with the owner's Q1..Q13 (hive-coordination-test-loop D-001).
+ * persona) — the founding 13 are 1:1 with the owner's Q1..Q13 (hive-coordination-test-loop
+ * D-001), plus `scheduler-usage` (the 14th, rubric mig 371).
  * If you change a key here you MUST change it in lockstep in the seeded rubric + the
  * capture schema, or the emitted ratings stop mapping to the rubric.
  */
@@ -25,7 +26,9 @@ import { harnessPath } from './harness-paths';
 
 const CANONICAL = harnessPath('blueprints', 'coding', 'prompts', 'overwatch.md');
 
-/** The 13 per-characteristic criterion keys — the canonical scorecard, owner Q1..Q13. */
+/** The per-characteristic criterion keys — the founding 13 (owner Q1..Q13) plus
+ *  `scheduler-usage` (14th, rubric mig 371 / hybrid-bee-scheduler-work-stealing-2026-06-22
+ *  P-004 — within-hive scheduler-usage health). */
 const CRITERION_KEYS = [
   'end-to-end-flow', // Q1
   'ideation-quality', // Q2
@@ -40,6 +43,7 @@ const CRITERION_KEYS = [
   'chatter-economy', // Q11
   'coordination-utilization', // Q12
   'tool-utilization', // Q13
+  'scheduler-usage', // Q14 (scheduler P-004)
 ] as const;
 
 describe('overwatch persona — the owner #1 hive-coordination-health scorecard mandate (D-002)', () => {
@@ -55,15 +59,16 @@ describe('overwatch persona — the owner #1 hive-coordination-health scorecard 
     expect(persona).toMatch(/hard turn-completion step/i);
   });
 
-  it('carries all 13 criterion keys — a complete scorecard (the B1/B6/B7 shared contract)', () => {
+  it('carries all 14 criterion keys — a complete scorecard (the B1/B6/B7 shared contract)', () => {
     for (const key of CRITERION_KEYS) {
       // Each key appears as inline code (the persona lists `key` — em-dash gloss).
       expect(persona, `criterion key \`${key}\` must be listed in the persona`).toContain(
         `\`${key}\``,
       );
     }
-    // Exactly thirteen — guards against a 14th sneaking in or one being dropped.
-    expect(CRITERION_KEYS).toHaveLength(13);
+    // Exactly fourteen — the founding 13 + scheduler-usage (mig 371). Guards against a
+    // 15th sneaking in or one being dropped; move this in lockstep with the seeded rubric.
+    expect(CRITERION_KEYS).toHaveLength(14);
   });
 
   it('pins the structured-observation emit shape (rubricRef + Record ratings via capture)', () => {

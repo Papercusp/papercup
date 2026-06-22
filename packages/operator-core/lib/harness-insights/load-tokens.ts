@@ -13,10 +13,9 @@
  * input + output + cache_read + cache_creation (the same expression load-spend.ts
  * uses), so the dashboard never reproduces the undercount it exists to expose.
  *
- * Per-account attribution is NOT available — there is no account column on
- * agent_usage_samples (routing is gateway-layer state), so the snapshot reports
- * `accountAttributionAvailable: false` and the UI renders an honest note rather
- * than a fabricated breakdown.
+ * Per-account attribution is available for rows stamped with
+ * agent_usage_samples.account_id; pre-migration/unpinned rows remain grouped as
+ * unattributed and hidden from the by-account chart.
  *
  * Pure logic — injectable runQuery (mirrors the per-card loaders). Defensive: a
  * missing table/column (pre-migration substrate) yields the empty snapshot so the
@@ -81,7 +80,7 @@ interface DayRow {
   cost_usd: string | number | null;
 }
 
-function emptySnapshot(windowMs: number): TokensDashboardSnapshot {
+function emptySnapshot(windowMs: number, accountAttributionAvailable = true): TokensDashboardSnapshot {
   return {
     windowMs,
     totals: {
@@ -96,8 +95,9 @@ function emptySnapshot(windowMs: number): TokensDashboardSnapshot {
     },
     byModel: [],
     byRole: [],
+    byAccount: [],
     byDay: [],
-    accountAttributionAvailable: false,
+    accountAttributionAvailable,
   };
 }
 
@@ -111,7 +111,7 @@ export async function loadHarnessTokens(
   const scope = [workspace_id, harness_slug, windowStart];
 
   try {
-    const [totalsRows, modelRows, roleRows, dayRows] = await Promise.all([
+    const [totalsRows, modelRows, roleRows, accountRows, dayRows] = await Promise.all([
       runQuery<TotalsRow>(
         `SELECT COUNT(*)                                                          AS runs,
                 COALESCE(SUM(cost_usd), 0)                                        AS total_usd,
@@ -144,6 +144,19 @@ export async function loadHarnessTokens(
                 COUNT(*)                                    AS runs
            FROM harness_shared.agent_usage_samples
           WHERE workspace_id = $1 AND harness_slug = $2 AND ts >= $3
+          GROUP BY 1
+          ORDER BY tokens DESC
+          LIMIT ${groupLimit}`,
+        scope,
+      ),
+      runQuery<GroupRow>(
+        `SELECT account_id AS key,
+                COALESCE(SUM(${TOKENS_EXPR}), 0) AS tokens,
+                COALESCE(SUM(cost_usd), 0)       AS cost_usd,
+                COUNT(*)                         AS runs
+           FROM harness_shared.agent_usage_samples
+          WHERE workspace_id = $1 AND harness_slug = $2 AND ts >= $3
+            AND account_id IS NOT NULL
           GROUP BY 1
           ORDER BY tokens DESC
           LIMIT ${groupLimit}`,
@@ -188,11 +201,12 @@ export async function loadHarnessTokens(
       },
       byModel: modelRows.map(toGroup),
       byRole: roleRows.map(toGroup),
+      byAccount: accountRows.map(toGroup),
       byDay: dayRows.map(toDay),
-      accountAttributionAvailable: false,
+      accountAttributionAvailable: true,
     };
   } catch {
     // Pre-migration substrate (missing column/table) — render the empty state.
-    return emptySnapshot(windowMs);
+    return emptySnapshot(windowMs, false);
   }
 }

@@ -45,9 +45,11 @@ import type { SystemHealth } from '../system-health/types';
 /** The rubric the Overwatch scorecards against (Owner requirement #1). */
 export const COORDINATION_RUBRIC_REF = 'hive-coordination-health';
 
-/** The 13 hive-coordination-health rubric criterion keys (must cover the rubric —
+/** The 14 hive-coordination-health rubric criterion keys (must cover the rubric —
  *  the capture completeness gate rejects an omitted key). Kept here so the pure
- *  synthesizer is self-contained + unit-testable without a rubric read. */
+ *  synthesizer is self-contained + unit-testable without a rubric read.
+ *  `scheduler-usage` (14th) added by hybrid-bee-scheduler-work-stealing-2026-06-22
+ *  P-004 (rubric mig 371) — the within-hive scheduler-usage health characteristic. */
 export const COORDINATION_CRITERIA = [
   'end-to-end-flow',
   'ideation-quality',
@@ -62,6 +64,7 @@ export const COORDINATION_CRITERIA = [
   'chatter-economy',
   'coordination-utilization',
   'tool-utilization',
+  'scheduler-usage',
 ] as const;
 
 export interface ScorecardRating {
@@ -87,7 +90,7 @@ const unknown = (): ScorecardRating => ({ rating: 'unknown', evidence: UNKNOWN_E
  * system-health brief. Only the MECHANICALLY-derivable criteria are rated from panel
  * data (end-to-end-flow, queen-workitem/plan-selection, watchdog-determinism,
  * bee-execution, ideation-quality's transport-death); every judgment-only criterion
- * is honestly 'unknown' (a deterministic floor cannot assess nuance). All 13 keys are
+ * is honestly 'unknown' (a deterministic floor cannot assess nuance). All 14 keys are
  * present, each with non-empty evidence (the capture completeness + evidence gates
  * require it). DB-free → unit-tested exhaustively.
  */
@@ -176,7 +179,9 @@ export function synthesizeCoordinationScorecard(health: SystemHealth): Record<st
           };
   } else r['bee-execution'] = unknown();
 
-  // judgment-only criteria — honest 'unknown' (a deterministic floor can't assess them)
+  // judgment-only criteria — honest 'unknown' (a deterministic floor can't assess them).
+  // scheduler-usage (per-bee spec authorship + get_next pickup + dedup-floor health) is a
+  // claim-path read the floor doesn't make, so it is honest 'unknown' here too.
   for (const k of [
     'parallel-distribution',
     'bee-observation-quality',
@@ -184,6 +189,7 @@ export function synthesizeCoordinationScorecard(health: SystemHealth): Record<st
     'chatter-economy',
     'coordination-utilization',
     'tool-utilization',
+    'scheduler-usage',
   ]) {
     r[k] = unknown();
   }

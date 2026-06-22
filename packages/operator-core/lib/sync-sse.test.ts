@@ -37,6 +37,7 @@ afterEach(() => {
   vi.doUnmock('@papercusp/db-org');
   vi.doUnmock('./embedded-pg-discovery');
   vi.doUnmock('./sync-resolver/table-to-query-names');
+  vi.doUnmock('./cache/instance');
 });
 
 async function load() {
@@ -50,8 +51,12 @@ async function load() {
   }));
   vi.doMock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
   vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: notifySql }) }));
+  // caching-layer-tag-eca P-017 wired a cold-bust onListen hook into sync-sse;
+  // stub the cache so the LISTEN start doesn't reach the real L1 instance.
+  vi.doMock('./cache/instance', () => ({ getOperatorCache: () => ({ clearL1: () => {} }) }));
   vi.doMock('./sync-resolver/table-to-query-names', () => ({
-    queryNamesForTriggerEvent: (name: string) => bridgeReturn(name),
+    queryNamesForTriggerEvent: (name: string, args?: Record<string, unknown>) =>
+      bridgeReturn(name, args),
   }));
   return import('./sync-sse');
 }

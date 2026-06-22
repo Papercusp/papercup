@@ -261,13 +261,14 @@ export interface TokensDashboardSnapshot {
   byModel: TokenGroupRow[];
   /** Spend by agent role, desc by tokens. */
   byRole: TokenGroupRow[];
+  /** Spend by provider account id, desc by tokens. Empty when samples are unattributed. */
+  byAccount: TokenGroupRow[];
   /** Daily token/cost trend across the window, ascending by time. */
   byDay: TokenTimeBucket[];
   /**
-   * Per-ACCOUNT attribution is NOT yet captured on `agent_usage_samples`
-   * (account routing is gateway-layer state, not a sample column), so the brief's
-   * "by account" axis renders an honest "not captured yet" note rather than a
-   * fabricated breakdown. Flipped true once an account column lands.
+   * True when `agent_usage_samples.account_id` is present and queried. The
+   * breakdown may still be empty if the selected window only has pre-migration or
+   * unpinned samples.
    */
   accountAttributionAvailable: boolean;
 }

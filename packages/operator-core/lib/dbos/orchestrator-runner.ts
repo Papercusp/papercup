@@ -1237,6 +1237,7 @@ export function wireOrchestratorInvokeRunner(): void {
       cacheReadTokens: ev.cacheReadTokens,
       cacheCreationTokens: ev.cacheCreationTokens,
       costUsd: ev.costUsd,
+      accountId: process.env.PAPERCUSP_ACCOUNT_ID,
     });
   });
   setPipelineInvokeRunner(realRunner);

@@ -253,6 +253,14 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
               emptyHint="No role attribution on these samples."
               testid="tokens-by-role"
             />
+            <Breakdown
+              title="By account"
+              icon={<UserRound size={14} aria-hidden />}
+              rows={snap.byAccount}
+              totalTokens={snap.totals.tokens}
+              emptyHint="No account attribution on these samples."
+              testid="tokens-by-account"
+            />
           </div>
 
           {!snap.accountAttributionAvailable ? (

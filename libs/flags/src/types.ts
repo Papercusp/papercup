@@ -989,8 +989,8 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // cutover (F-C1) is a reversible kill-switch the owner flips ON; OFF = today's
   // `default`-pinned coord, byte-identical. Listed in KNOWN_DARK_FLAGS.
   [FLAGS.COORD_PER_WORKSPACE]: false,
-  // DEFAULT OFF (deliberate) — per-workspace engineer-issues cutover, reversible
-  // kill-switch; OFF = today's `default`-pinned issue bus, byte-identical. Listed in KNOWN_DARK_FLAGS.
+  // DEFAULT ON (flipped 2026-06-22, owner-directed): per-workspace engineer-issues cutover.
+  // Reversible kill-switch; the old `default`-partition issues are preserved so a flip-off restores them.
   [FLAGS.ISSUES_PER_WORKSPACE]: true,
   [FLAGS.WORKITEM_CLAIM_LEASE]: false,
   // DEFAULT OFF (deliberate) — routines per-workspace ON CONFLICT (phase 1), reversible
@@ -1200,10 +1200,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // until the owner flips it (experiment-registry-invocation-api #2). Double-gated by
   // papercusp-replay-harness + the governor.
   [FLAGS.SCOUT_EXPERIMENT_RAIL]: false,
-  // OFF by default — a brand-new autonomous PLAN-WRITE behavior (the Scout `rubric`
-  // rail auto-authors a template:rubric draft per detected gap). Ships dark so the
-  // owner can observe gap quality before Scout starts creating draft plans live; the
-  // detection (P-008 rubricGaps) is always on, only the auto-authoring is gated.
+  // DEFAULT ON (flipped 2026-06-22, owner-directed): the Scout `rubric` rail auto-authors a
+  // template:rubric draft per detected gap. Drafts stay Queen-gated (invisible to rubrics:list
+  // until promoted), so this is reversible + low-blast.
   [FLAGS.SCOUT_RUBRIC_RAIL]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the
   // deferral-interest refit is a frontier learning loop (SQL-only, zero LLM
@@ -1292,13 +1291,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // would deny fleet tool calls before the B-18 cutover + B-05 capability tools exist. OFF =
   // observe-only/shadow (evaluate + annotate, never block). The B-18 flip is the arming act.
   [FLAGS.CAPABILITY_ENVELOPE]: false,
-  // P-008 — capability grant tool ships DARK (owner-authority / D-007); the flag gates the
-  // loadRoleCapabilities grant-union, so OFF = byte-identical capability resolution.
+  // DEFAULT ON (flipped 2026-06-22 — owner ratified the owner-authority surface in-session):
+  // gates the loadRoleCapabilities grant-union (capability:grant_role / revoke_role).
   [FLAGS.CAPABILITY_GRANT_TOOL]: true,
-  // P-007 — work-item redundancy is N× model spend; ships DARK (owner flips via /admin/features).
+  // DEFAULT ON (flipped 2026-06-22, owner-directed): enables the work-item redundancy capability.
+  // N× model spend is per-item opt-in (set_redundancy), not automatic on every item.
   [FLAGS.WORKITEM_REDUNDANCY]: true,
-  // P-009 — runtime capability-envelope overrides modify AUTH on the dispatch hot path (D-010);
-  // ship DARK. OFF = the sync-cache stays empty = byte-identical envelope resolution.
+  // DEFAULT ON (flipped 2026-06-22 — owner ratified in-session): runtime per-role capability-envelope
+  // overrides (D-010). No-op until an override is set (the sync-cache starts empty).
   [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES]: true,
   // P-020 — telemetry-buffer config is operational + safe (empty store = byte-identical); ships
   // ON per the default-on policy, as a kill-switch (OFF forces the baked telemetry-buffer defaults).
@@ -1424,10 +1424,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // plan-item claims orphaned their work-items from the Queen frontier (double-placement). 48 tests
   // green; flipped default-ON 2026-06-22 (owner-directed — finished work ships ON, not dark).
   [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: true,
-  // DEFAULT OFF (infra-perf-round4 P-005): gates the listEscalations read cutover onto the
-  // coord_open_escalations projection. The projection table+trigger (mig 355) are additive +
-  // harmless while OFF; flip ON only after the migration+backfill is verified in prod.
-  // OFF ⇒ the authoritative event-fold (byte-identical). KNOWN_DARK_FLAGS.
+  // DEFAULT ON (flipped 2026-06-22, owner-directed after a verify): gates the listEscalations read
+  // cutover onto the coord_open_escalations projection. mig 355 verified applied — the table +
+  // trigger exist + are live in harness_shared (the read now folds the projection, not the event log).
   [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true,
   // DEFAULT ON (caching-layer-tag-eca-2026-06-22 P-004): the cache↔change-stream ECA rule.
   // The action + rule are complete + tested and a tag-generation bump is a safe no-op side

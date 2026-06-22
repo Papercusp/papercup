@@ -4,7 +4,7 @@
  * (plan-templates-and-rubric-v2-2026-06-20 P-007). Migration 338 migrated the v1 table
  * seed (326/327) → a `template: rubric` plan (harness_plans), and Stage 2 drops the v1
  * table; this test applies the FULL migration set (createOrgTestDb) and asserts the store
- * (getRubric — now plans-only) resolves the seed ACTIVE with the LOCKED 13 canonical
+ * (getRubric — now plans-only) resolves the seed ACTIVE with the LOCKED 14 canonical
  * criterion keys — the interface the Overwatch scorecard (P-004) and Scout digest
  * grouping (P-006) reference. A drift in the criteria set (rename/drop/reorder) fails this.
  *
@@ -23,9 +23,11 @@ vi.mock('@papercusp/db-org', async () => {
 const rubrics = await import('./rubrics');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
-// The locked 13-criteria interface (rubric-driven-observations D-003) — 1:1 with the
-// owner's Q1-Q13 scorecard. Kept here as the test's own copy so a seed-vs-interface
-// drift is caught, not silently absorbed.
+// The locked criteria interface (rubric-driven-observations D-003) — the founding 13
+// (1:1 with the owner's Q1-Q13 scorecard) PLUS `scheduler-usage` (14th, appended by
+// rubric mig 371 / hybrid-bee-scheduler-work-stealing-2026-06-22 P-004). Kept here as
+// the test's own copy so a seed-vs-interface drift is caught, not silently absorbed.
+// Order matters — the assertion is `.toEqual` against criteria.map(c => c.key).
 const CANONICAL_KEYS = [
   'end-to-end-flow',
   'ideation-quality',
@@ -40,6 +42,7 @@ const CANONICAL_KEYS = [
   'chatter-economy',
   'coordination-utilization',
   'tool-utilization',
+  'scheduler-usage',
 ];
 
 let db: OrgTestDb;
@@ -69,7 +72,7 @@ describe('migration 338 — the hive-coordination-health rubric is served from i
     expect((r!.description ?? '').length).toBeGreaterThan(0);
   });
 
-  it('carries exactly the 13 canonical criteria, in order, each fully specified', async () => {
+  it('carries exactly the 14 canonical criteria, in order, each fully specified', async () => {
     const r = await rubrics.getRubric('hive-coordination-health');
     expect(r!.criteria.map((c) => c.key)).toEqual(CANONICAL_KEYS);
     for (const c of r!.criteria) {

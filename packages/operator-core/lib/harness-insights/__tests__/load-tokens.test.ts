@@ -17,12 +17,14 @@ function makeRunQuery(rows: {
   totals?: Row[];
   byModel?: Row[];
   byRole?: Row[];
+  byAccount?: Row[];
   byDay?: Row[];
 }) {
   const queries: string[] = [];
   const runQuery = vi.fn(async (query: string, _params: unknown[]) => {
     queries.push(query);
     if (query.includes('day_start')) return rows.byDay ?? [];
+    if (query.includes('account_id AS key')) return rows.byAccount ?? [];
     if (query.includes("NULLIF(model")) return rows.byModel ?? [];
     if (query.includes("NULLIF(role")) return rows.byRole ?? [];
     return rows.totals ?? [];
@@ -53,6 +55,7 @@ describe('loadHarnessTokens', () => {
         { key: 'claude-sonnet-4', tokens: 360_000_000, cost_usd: 4.5, runs: 60 },
       ],
       byRole: [{ key: 'bee', tokens: 3_000_000_000, cost_usd: 40, runs: 100 }],
+      byAccount: [{ key: 'acct-claude-a', tokens: 2_500_000_000, cost_usd: 35, runs: 80 }],
       byDay: [{ day_start: dayStart, tokens: 1_000_000, cost_usd: 12 }],
     });
 
@@ -71,17 +74,19 @@ describe('loadHarnessTokens', () => {
     expect(snap.byModel[0]).toMatchObject({ tokens: 2_900_000_000, costUsd: 38, runs: 60 });
     expect(snap.byRole).toHaveLength(1);
     expect(snap.byRole[0].key).toBe('bee');
+    expect(snap.byAccount).toEqual([
+      { key: 'acct-claude-a', tokens: 2_500_000_000, costUsd: 35, runs: 80 },
+    ]);
 
     // Day bucket label is the deterministic UTC 'MMM D'.
     expect(snap.byDay).toEqual([{ startMs: dayStart, label: 'Jun 14', tokens: 1_000_000, costUsd: 12 }]);
 
-    // Account attribution is honestly reported as unavailable.
-    expect(snap.accountAttributionAvailable).toBe(false);
+    expect(snap.accountAttributionAvailable).toBe(true);
     expect(snap.windowMs).toBe(7 * 24 * 60 * 60 * 1000);
 
     // THE load-bearing guard: every query is cache-inclusive (all four token
     // columns), so the dashboard can never reproduce the undercount it exposes.
-    expect(queries).toHaveLength(4);
+    expect(queries).toHaveLength(5);
     for (const q of queries) {
       expect(q).toContain('input_tokens');
       expect(q).toContain('output_tokens');
@@ -117,6 +122,7 @@ describe('loadHarnessTokens', () => {
     expect(snap.totals.runs).toBe(0);
     expect(snap.byModel).toEqual([]);
     expect(snap.byRole).toEqual([]);
+    expect(snap.byAccount).toEqual([]);
     expect(snap.byDay).toEqual([]);
   });
 
