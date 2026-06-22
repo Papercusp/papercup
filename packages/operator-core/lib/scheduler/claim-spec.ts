@@ -149,10 +149,20 @@ export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
   ]),
 );
 
+/**
+ * `viewSchema` carries the filter as an UNVALIDATED record. The strict
+ * `filterNodeSchema` above is a deeply-nested union, and Zod collapses any leaf
+ * failure (an unknown `field`, a bad `op`) into a single useless
+ * `"view.filter: Invalid input"` at the union root — it can't tell you *which*
+ * leaf or *why*. Since the whole point of the validator is a CLEAR error, the
+ * filter tree is instead walked semantically by `validateFilterNode`, which
+ * names the offending field/op/combinator at its exact path. The exported
+ * `filterNodeSchema` / `FilterNode` type stay available for consumers that want
+ * a strict structural Zod parse (e.g. the resolver compiling the query).
+ */
 export const viewSchema = z
   .object({
-    /** The query over the live DAG. Omit to match every item (then rank + floors decide). */
-    filter: filterNodeSchema.optional(),
+    filter: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 
@@ -206,7 +216,16 @@ export const claimSpecSchema = z
   })
   .strict();
 
-export type ClaimSpec = z.infer<typeof claimSpecSchema>;
+/**
+ * The full claim spec type. The Zod schema keeps `view.filter` permissive (an
+ * unvalidated record — see `viewSchema`) so leaf errors stay clear, but consumers
+ * (notably the `get_next` resolver) want the structured tree, so the exported
+ * type narrows `view.filter` to the typed `FilterNode` — the semantic walk in
+ * `validateClaimSpec` guarantees that shape at runtime once `ok === true`.
+ */
+export type ClaimSpec = Omit<z.infer<typeof claimSpecSchema>, 'view'> & {
+  view: { filter?: FilterNode };
+};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Validator — returns issues, never throws (mirrors blueprint:validate).
@@ -222,11 +241,16 @@ export interface ClaimSpecValidation {
 }
 
 /** Operators whose `value` must be a list. */
-const ARRAY_OPS = new Set<FilterOp>(['in']);
+const ARRAY_OPS = new Set<string>(['in']);
 /** Operators whose `value` must be a single scalar. */
-const SCALAR_OPS = new Set<FilterOp>(['=', '!=', '<', '<=', '>', '>=', 'contains', 'glob']);
+const SCALAR_OPS = new Set<string>(['=', '!=', '<', '<=', '>', '>=', 'contains', 'glob']);
 /** Operators that require a numeric `value`. */
-const NUMERIC_OPS = new Set<FilterOp>(['<', '<=', '>', '>=']);
+const NUMERIC_OPS = new Set<string>(['<', '<=', '>', '>=']);
+
+const FILTERABLE_FIELD_SET = new Set<string>(FILTERABLE_ITEM_FIELDS);
+const FILTER_OP_SET = new Set<string>(FILTER_OPS);
+/** Floor/derived fields that are never spec-controlled — named so the error explains WHY. */
+const FLOOR_FIELDS = new Set<string>(['blocked', 'cursed']);
 
 /**
  * Parse the `expr` head of a rank term: `model_fit(...)` → `model_fit`,
@@ -237,31 +261,86 @@ function rankExprHead(expr: string): string {
   return (paren === -1 ? expr : expr.slice(0, paren)).trim();
 }
 
-function validateFilterNode(node: FilterNode, path: string, errors: string[]): void {
-  if ('all' in node) {
-    node.all.forEach((child, i) => validateFilterNode(child, `${path}.all[${i}]`, errors));
+const FILTER_SCALAR_TYPES = new Set(['number', 'string', 'boolean']);
+function isFilterScalar(v: unknown): boolean {
+  return FILTER_SCALAR_TYPES.has(typeof v);
+}
+
+/**
+ * Walk the filter combinator tree, pushing a CLEAR, path-named error for each
+ * problem (the reason this is hand-walked rather than left to a Zod union — see
+ * `viewSchema`). A node is exactly one of: a `{field,op,value}` leaf, `{all:[…]}`,
+ * `{any:[…]}`, or `{not:…}`. Anything else (multiple keys, unknown key, non-object)
+ * is reported at its path. `node` is `unknown` because `viewSchema` keeps the
+ * filter unvalidated.
+ */
+function validateFilterNode(node: unknown, path: string, errors: string[]): void {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+    errors.push(`${path}: filter node must be an object (a leaf, or all/any/not), got ${Array.isArray(node) ? 'array' : typeof node}`);
     return;
   }
-  if ('any' in node) {
-    node.any.forEach((child, i) => validateFilterNode(child, `${path}.any[${i}]`, errors));
+  const obj = node as Record<string, unknown>;
+  const keys = Object.keys(obj);
+
+  // Combinators — each takes exactly its own key.
+  if ('all' in obj || 'any' in obj || 'not' in obj) {
+    const combinator = ('all' in obj ? 'all' : 'any' in obj ? 'any' : 'not') as 'all' | 'any' | 'not';
+    if (keys.length !== 1) {
+      errors.push(`${path}: combinator "${combinator}" must be the only key, found {${keys.join(', ')}}`);
+      return;
+    }
+    if (combinator === 'not') {
+      validateFilterNode(obj.not, `${path}.not`, errors);
+      return;
+    }
+    const children = obj[combinator];
+    if (!Array.isArray(children) || children.length === 0) {
+      errors.push(`${path}.${combinator}: must be a non-empty array of filter nodes`);
+      return;
+    }
+    children.forEach((child, i) => validateFilterNode(child, `${path}.${combinator}[${i}]`, errors));
     return;
   }
-  if ('not' in node) {
-    validateFilterNode(node.not, `${path}.not`, errors);
-    return;
+
+  // Otherwise it must be a leaf: {field, op, value}.
+  const extraKeys = keys.filter((k) => k !== 'field' && k !== 'op' && k !== 'value');
+  if (extraKeys.length > 0) {
+    errors.push(`${path}: unknown filter key(s) {${extraKeys.join(', ')}} — a leaf is {field, op, value}`);
   }
-  // Leaf. Field membership is already enforced by the Zod enum, but op/value
-  // coherence is not — name the concrete problem here.
-  const { op, value } = node;
+  const { field, op, value } = obj as { field?: unknown; op?: unknown; value?: unknown };
+
+  if (typeof field !== 'string') {
+    errors.push(`${path}: leaf "field" is required and must be a string`);
+  } else if (FLOOR_FIELDS.has(field)) {
+    errors.push(
+      `${path}: field "${field}" is a global hard floor, not spec-controlled — a spec can only narrow+reorder, never re-assert a floor`,
+    );
+  } else if (!FILTERABLE_FIELD_SET.has(field)) {
+    errors.push(`${path}: unknown filter field "${field}" (allowed: ${FILTERABLE_ITEM_FIELDS.join(', ')})`);
+  }
+
+  if (typeof op !== 'string' || !FILTER_OP_SET.has(op)) {
+    errors.push(`${path}: unknown filter op ${JSON.stringify(op)} (allowed: ${FILTER_OPS.join(', ')})`);
+    return; // op-dependent value checks below are meaningless without a known op
+  }
+
+  // value coherence — only meaningful once field+op are sane.
   const isArray = Array.isArray(value);
+  if (isArray) {
+    if (!(value as unknown[]).every(isFilterScalar)) {
+      errors.push(`${path}: every element of an array value must be a number, string, or boolean`);
+    }
+  } else if (!isFilterScalar(value)) {
+    errors.push(`${path}: value must be a number, string, boolean, or array thereof`);
+  }
   if (ARRAY_OPS.has(op) && !isArray) {
-    errors.push(`${path}: op "${op}" on field "${node.field}" requires an array value`);
+    errors.push(`${path}: op "${op}" on field "${String(field)}" requires an array value`);
   }
   if (SCALAR_OPS.has(op) && isArray) {
-    errors.push(`${path}: op "${op}" on field "${node.field}" requires a single scalar value, got an array`);
+    errors.push(`${path}: op "${op}" on field "${String(field)}" requires a single scalar value, got an array`);
   }
   if (NUMERIC_OPS.has(op) && !isArray && typeof value !== 'number') {
-    errors.push(`${path}: op "${op}" on field "${node.field}" requires a numeric value`);
+    errors.push(`${path}: op "${op}" on field "${String(field)}" requires a numeric value`);
   }
 }
 
@@ -269,9 +348,10 @@ function validateFilterNode(node: FilterNode, path: string, errors: string[]): v
  * Validate a claim spec, returning `{ ok, errors, warnings, spec }`. Never throws
  * (an authoring agent wants the issues back, not an exception — same contract as
  * `blueprint:validate`). Checks, in order:
- *   1. the Zod shape (unknown keys, wrong types, unknown filter fields/ops);
+ *   1. the Zod shape (unknown top-level keys, wrong types, bad rank mode/limits);
  *   2. `specVersion` ∈ supported versions;
- *   3. per-leaf op/value coherence;
+ *   3. the filter tree — combinator structure, known/non-floor field, known op,
+ *      op/value coherence — each problem named at its exact path;
  *   4. each rank term's `expr` resolves to a known field or rank function, and
  *      `weighted` mode supplies a finite weight on every term.
  */
@@ -319,7 +399,9 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
     }
   });
 
-  return { ok: errors.length === 0, errors, warnings, spec };
+  // The semantic walk above guarantees `view.filter` (when present) is a valid
+  // `FilterNode` once there are no errors; surface the narrowed `ClaimSpec` type.
+  return { ok: errors.length === 0, errors, warnings, spec: spec as ClaimSpec };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

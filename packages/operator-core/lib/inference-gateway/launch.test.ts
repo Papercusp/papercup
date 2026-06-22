@@ -182,3 +182,127 @@ test('Codex account pool can hot-reload from empty to live without a gateway res
   assert.equal(after.status, 200);
   assert.equal(up.lastAuth(), 'Bearer codex-token');
 });
+
+// ── Backlog #7: launch.ts hot-reload + composition deeper edges (continuation; su-7f3e0376) ──
+
+test('startGatewayService throws when the initial account pool resolves empty (fail-fast)', async () => {
+  await assert.rejects(
+    startGatewayService({
+      port: 0,
+      log: () => {},
+      resolveAccounts: async () => [],
+      makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+      observePool: () => () => {},
+    }),
+    /no account resolved/,
+  );
+});
+
+test('reloadPool keeps the live pool when the DB resolves EMPTY (fail-safe, no wipe)', async () => {
+  const up = await startUpstream();
+  let dbPool = [
+    { accountId: 'a', credentialRef: 'token:/a', source: 'pool' as const },
+    { accountId: 'b', credentialRef: 'token:/b', source: 'pool' as const },
+  ];
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts: async () => dbPool,
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  assert.equal(svc.configVersion(), 1);
+
+  // The DB momentarily resolves an empty pool (e.g. a transient read) — must NOT wipe the live pool.
+  dbPool = [];
+  const r = await svc.reloadPool();
+  assert.equal(r.changed, false, 'an empty resolution does not swap');
+  assert.equal(r.version, 1, 'version unchanged on an empty reload');
+  assert.deepEqual([...r.accounts].sort(), ['a', 'b'], 'the prior pool is retained');
+  assert.equal(svc.configVersion(), 1);
+
+  // PROOF the live pool still serves: a request pinned to 'a' still reaches the upstream with its token.
+  const res = await fetch(`http://127.0.0.1:${svc.port}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'a' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(up.lastAuth(), 'Bearer a-tok', 'live pool retained after the empty reload — no restart, no wipe');
+});
+
+test('reloadPool follows the back-compat single resolveAccount path (re-resolves + bumps on change)', async () => {
+  const up = await startUpstream();
+  const acct = { accountId: 'solo', credentialRef: 'token:/s', source: 'env' as const };
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccount: async () => ({ ...acct }),
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  assert.equal(svc.configVersion(), 1);
+
+  // Same bound account → reload is a no-op.
+  const noop = await svc.reloadPool();
+  assert.equal(noop.changed, false);
+  assert.equal(svc.configVersion(), 1);
+
+  // The bound account's credentialRef rotates → a real change → hot-reload bumps the version.
+  acct.credentialRef = 'token:/s2';
+  const changed = await svc.reloadPool();
+  assert.equal(changed.changed, true, 'a changed single account hot-reloads');
+  assert.equal(svc.configVersion(), 2);
+  assert.deepEqual(changed.accounts, ['solo']);
+});
+
+test('/admin/config exposes the live codexAccounts alongside the claude pool', async () => {
+  const up = await startUpstream();
+  const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/c', source: 'pool' as const }];
+  const codexDb = [{ accountId: 'codex-main', credentialRef: 'token:/x', source: 'pool' as const }];
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  const cfg = (await (await fetch(`http://127.0.0.1:${svc.port}/admin/config`)).json()) as {
+    version: number;
+    accounts: string[];
+    codexAccounts: string[];
+  };
+  assert.deepEqual(cfg.accounts, ['claude-main']);
+  assert.deepEqual(cfg.codexAccounts, ['codex-main'], 'codex pool surfaced in the live config');
+});
+
+test('proactive refresh timer invalidates only file-kind resolvers, never token-kind', async () => {
+  const up = await startUpstream();
+  let fileInvalidates = 0;
+  let tokenInvalidates = 0;
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts: async () => [
+      { accountId: 'filey', credentialRef: 'file:/f', source: 'pool' as const },
+      { accountId: 'tokey', credentialRef: 'token:/t', source: 'pool' as const },
+    ],
+    makeResolver: (_ref, id) =>
+      id === 'filey'
+        ? { kind: 'file', current: async () => 'f-tok', invalidate: () => { fileInvalidates++; } }
+        : { kind: 'token', current: async () => 't-tok', invalidate: () => { tokenInvalidates++; } },
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+    refreshIntervalMs: 25, // tiny — drive several proactive refreshes within the test window
+  });
+  await new Promise<void>((r) => setTimeout(r, 250));
+  assert.ok(fileInvalidates >= 1, `file-kind resolver is proactively refreshed (got ${fileInvalidates})`);
+  assert.equal(tokenInvalidates, 0, 'token-kind (no-expiry) resolver is never invalidated');
+});

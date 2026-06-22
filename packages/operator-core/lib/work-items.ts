@@ -1138,6 +1138,39 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           -- via claim_replica to N Swarms, so claim_next must NOT grab them exactly-once. Flag
           -- OFF ⇒ clause omitted, claim never reads the redundancy column, byte-identical to before.
           AND ${filter.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`}
+          -- P-005 (F1 fix): RESPECT blocking — never self-select a row that has a PRESENT,
+          -- NON-TERMINAL blocker, the SAME readiness the orchestrator frontier enforces
+          -- (frontier-readiness.ts / work-item-blocking.ts). The block edges live in the
+          -- dedicated work_item_deps table (dep_type='blocks'), keyed by harness-qualified refs
+          -- ('<harness>#<feature_id>' for features, bare 'EI-<n>' for issues — featureRef /
+          -- issues:link), in the single coordination workspace ('default'). A blocker is
+          -- SATISFIED iff TERMINAL or ABSENT; we exclude the row only when a present blocker is
+          -- non-terminal — feature terminal = status IN ('passed','deprecated'); issue terminal =
+          -- state IN ('resolved','closed') (the cross-family set, ALL_TERMINAL_STATUSES). An
+          -- absent blocker ref (no matching feature/issue row) never blocks. (Scope: features stay
+          -- claimable, issues do not — that's P-007; this is an inline filter, not a maintained
+          -- column — that's P-004.)
+          AND NOT EXISTS (
+            SELECT 1
+              FROM harness_shared.work_item_deps d
+             WHERE d.workspace_id = 'default'
+               AND d.dep_type = 'blocks'
+               AND d.blocked_ref = harness_shared.harness_features_consolidated.harness_slug
+                                     || '#' || harness_shared.harness_features_consolidated.feature_id
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM harness_shared.harness_features_consolidated bf
+                    WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                      AND bf.status NOT IN ('passed', 'deprecated')
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM harness_shared.engineer_issues bi
+                    WHERE bi.workspace_id = 'default'
+                      AND bi.issue_id = d.blocker_ref
+                      AND bi.state NOT IN ('resolved', 'closed')
+                 )
+               )
+          )
         -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
         -- RESPECTS the Queen's priority — affinity match first, then lower feature_order (the
         -- per-harness wave/plan order the Queen steers, D-003/D-009), then oldest-first
