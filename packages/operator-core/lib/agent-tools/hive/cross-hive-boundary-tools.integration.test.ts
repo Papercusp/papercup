@@ -41,10 +41,15 @@ import type { SendResult } from '../../cross-hive-transport';
 
 // Redirect EVERY store that routes through getOrgPg().sql (hive_settings, the cross-Hive
 // grants, the C-1 ask ledger) to the fixture's migrated admin client — so the tools, which
-// pass sql=undefined internally, hit the test PG. Only getOrgPg is imported from db-org
-// across the whole cross-Hive graph (verified), so a full-replace mock is safe.
+// pass sql=undefined internally, hit the test PG. PARTIAL mock: the import graph also pulls
+// `generated` (lib/memory/backend-selection) from db-org, so spread the real module and
+// override ONLY getOrgPg (the Drizzle build is lazy/on-call, so importing the real module
+// is safe; only a CALL to getOrgPg()/getOrgPgApp() would build Drizzle).
 const h = vi.hoisted(() => ({ sql: null as unknown }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { insertHiveIfAbsent } = await import('../../hive-store');

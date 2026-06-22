@@ -587,6 +587,10 @@ async function buildMcpToolContext(
   // Opt-in for lossless `structuredContent` alongside the compact text (P-010),
   // from `_meta.structured` / `?structured=1`. OFF by default.
   requestedStructured?: boolean,
+  // Client-negotiated freshness request (agent-tool-delta-protocol D-001), from
+  // `_meta.delta` / `?delta=` on the MCP URL. Threaded to ctx.requestedDelta so
+  // the result serializer can honor a `not_modified` request on a delta-capable tool.
+  requestedDelta?: string,
 ): Promise<UnifiedToolContext> {
   // Unscoped context: workspaceId/harnessSlug may be '*' — the superuser door,
   // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
@@ -683,6 +687,7 @@ async function buildMcpToolContext(
     profile: spawn.profile === 'generic' ? 'engineer' : (spawn.profile ?? 'engineer'),
     requestedFormat,
     requestedStructured,
+    requestedDelta,
     log: (msg) => {
       // eslint-disable-next-line no-console
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
@@ -922,7 +927,7 @@ const handler = createMcpHandler(
           params: {
             name: string;
             arguments?: Record<string, unknown>;
-            _meta?: { progressToken?: string | number; format?: string; idempotencyKey?: string };
+            _meta?: { progressToken?: string | number; format?: string; idempotencyKey?: string; delta?: string };
           };
         },
         extra: unknown,
@@ -944,6 +949,12 @@ const handler = createMcpHandler(
         const requestedStructured =
           (req.params._meta as { structured?: boolean } | undefined)?.structured === true ||
           urlFromExtra(extra)?.searchParams.get('structured') === '1';
+        // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, D-001): a
+        // per-call `_meta.delta` wins over a connection-level `?delta=` (mirrors
+        // `?format=`). The HARNESS — not the model — sets this and owns cursor
+        // storage + base-presence tracking; absent ⇒ no negotiation (serve full).
+        const requestedDelta =
+          req.params._meta?.delta ?? urlFromExtra(extra)?.searchParams.get('delta') ?? undefined;
         // mcp-handler passes the protocol's RequestHandlerExtra here,
         // which exposes a sendNotification function bound to the right
         // session. Use it to fire notifications/progress events.
@@ -1185,7 +1196,7 @@ const handler = createMcpHandler(
           const effectiveWs = effectiveDispatchWorkspace(spawnRes.ctx, dispatchArgs);
           const dispatchSpawnCtx =
             effectiveWs === spawnRes.ctx.workspaceId ? spawnRes.ctx : { ...spawnRes.ctx, workspaceId: effectiveWs };
-          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName, requestedFormat, requestedStructured);
+          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName, requestedFormat, requestedStructured, requestedDelta);
           // Legacy first-party tools (defineTool with default
           // requirePrincipal=true) hard-require ctx.principal + ctx.tx
           // in their projected wrapper (see registerLegacyAsProjected

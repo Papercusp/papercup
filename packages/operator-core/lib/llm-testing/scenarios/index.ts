@@ -105,6 +105,13 @@ import { SU_S20_OVERVIEW_NOT_FOR_SINGLE } from './su/S20-overview-not-for-single
 // and NOT over-apply it on a single known id (S22: the n=1 scalar form, no queue browse)?
 import { SU_S21_BULK_READ_NOT_HAND_LOOP } from './su/S21-bulk-read-not-hand-loop';
 import { SU_S22_BULK_NOT_FOR_SINGLE } from './su/S22-bulk-not-for-single';
+// SU-S23–S25: agent-tool-delta-protocol-2026-06-22 P-007 (Lane C de-risk gate) — the
+// LLM-facing semantic-delta merge contract: correct merge with base present (S23),
+// fallback to a full re-fetch when the base was compacted away (S24, uses the P-006
+// compaction seam), and the silently-wrong-merge detector (S25). Gates the production flag flip.
+import { SU_S23_DELTA_MERGE_BASE_PRESENT } from './su/S23-delta-merge-base-present';
+import { SU_S24_DELTA_FALLBACK_COMPACTED } from './su/S24-delta-fallback-compacted';
+import { SU_S25_DELTA_WRONG_MERGE_DETECTOR } from './su/S25-delta-wrong-merge-detector';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
@@ -200,6 +207,10 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S20_OVERVIEW_NOT_FOR_SINGLE,
   SU_S21_BULK_READ_NOT_HAND_LOOP,
   SU_S22_BULK_NOT_FOR_SINGLE,
+  // su delta-protocol Lane-C de-risk gate (agent-tool-delta-protocol-2026-06-22 P-007)
+  SU_S23_DELTA_MERGE_BASE_PRESENT,
+  SU_S24_DELTA_FALLBACK_COMPACTED,
+  SU_S25_DELTA_WRONG_MERGE_DETECTOR,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

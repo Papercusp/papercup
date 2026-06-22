@@ -111,6 +111,23 @@ export function assertToolCallCountAtMost(specs: string[], max: number, meta: Me
   };
 }
 
+/** ERROR unless `specs` (exact or `group:*`) were called AT LEAST `min` times in
+ *  total — the load-bearing "must have re-fetched" gate. Used by the delta
+ *  fallback scenario (agent-tool-delta-protocol P-007): when the base snapshot
+ *  was compacted away, the SUT must FALL BACK to a full re-fetch rather than
+ *  hallucinate-merge a delta against a base it no longer holds, so the snapshot
+ *  tool fires more times than the happy (base-present) path needs. */
+export function assertToolCallCountAtLeast(specs: string[], min: number, meta: Meta): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const count = allToolCalls(run).filter((tc) => nameMatches(tc.name, specs)).length;
+      return count >= min ? [] : [violation(meta)];
+    },
+  };
+}
+
 /** ERROR unless the given predicate finds a matching tool call. Use for
  *  compound conditions (e.g. design-phase:* OR docs:* with a design-ish arg). */
 export function assertToolMatch(

@@ -162,8 +162,8 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(`
     ALTER TABLE harness_shared.coord_conversations          ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
     ALTER TABLE harness_shared.coord_conversations          ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
+    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
     ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     ALTER TABLE harness_shared.plan_item_assignments         ADD COLUMN IF NOT EXISTS fed_ts BIGINT;

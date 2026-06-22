@@ -56387,6 +56387,10 @@ Private means dormant, not just hidden
 
 A `private` (or never-published) hive doesn’t announce on the DHT and **doesn’t federate** — the peer-to-peer machinery is a dormant, zero-risk path until you publish it `public` or `invite`. Setting a published hive back to `private` **withdraws** it: it stops being re-announced, and other peers age the listing out on a TTL. Only a *shared* (public/invite) hive actually syncs to other machines.
 
+Optional: a live status beacon
+
+A published hive can additionally broadcast a **live status beacon** (active agents, queue depth, focus) onto the directory gossip. It is **owner-consent, default-OFF**: `hive:beacon_consent { hive, consent: true }` to opt in (`false` to stop; omit `consent` to read). It only rides a **published** (public/invite) hive — enabling it on a private hive does nothing until you publish.
+
 ## 3. Discover a hive
 
 [Section titled “3. Discover a hive”](#3-discover-a-hive)
@@ -56407,6 +56411,7 @@ Joining a hive makes you a peer: you start federating its content, get a local v
 
 * **One-click join link** — `papercusp://harness?topic=…&github=…&repo_id=…`. The owner’s listing carries these (`memberLinks`); pasting one into the app (or clicking it) joins you to that exact hive. The link pins the swarm **topic** so you land on the owner’s hive, the GitHub `owner/repo`, and the immutable numeric `repo_id`.
 * **From the directory** — pick a hive in the Hives / Network board and join it.
+* **An invite hive** is joined with the owner’s **invite link / secret** (`papercusp://hive?pubkey=…&secret=…`). This join is **honest**: if the hive hasn’t actually announced yet (owner offline, withdrawn, or wrong secret) you’re told it didn’t connect and left subscribed — never handed a fake “joined.”
 
 Under the hood, joining wires up four things per member: a swarm federation handle, a git-sync routine, presence rows, and registry entries (a `remote_hive` view + the member harnesses). If no peer is reachable the moment you join, the join lands in a `phase_0_pending` state — that’s **not stuck**: it re-federates on your next boot (or as soon as a peer comes online), so you don’t need to redo it.
 
@@ -56522,7 +56527,9 @@ Leave is hive:leave — not hive:dissolve
 When an owner bans or revokes you:
 
 * The **write block and re-join denial are immediate** — your devices are dropped from federation and you can’t re-join.
-* **Read access is cut off at the next re-key.** Because the substrate is an append-only log, a revoked member’s *read* access to already-shared content isn’t severed the instant they’re banned — it’s cut at the next **re-key epoch** (the hive rotates its key, and the removed devices don’t get the new one). So removal is “no more writes / no re-join now; reading stops at the next re-key.”
+* **Read access cut-off ships with re-key (not yet live).** A true read cut-off — where removed devices can no longer *decrypt* new content — is the re-key feature (`shared-hive-rekey-2026-06-19`): on removal the hive advances a key **epoch** and re-wraps the new key to the *remaining* members only, so the removed device has no key for epoch N+1. That work is **implementation-complete but flag-dark** (`papercusp-hive-rekey`), so until the owner enables it, `ban_member`’s `revoke.live` is `false` and removal is a **write-block + re-join-deny only** — content already shared with the member stays readable to them.
+
+So **today** removal = no more writes / no re-join; the read cut-off arrives when re-key is enabled.
 
 Related device-level tools: **`substrate:revoke_self_device`** (revoke one of *your own* lost/rotated devices) and **`substrate:revoke_contributor`** (owner revokes another contributor, per-harness or per-hive).
 
@@ -56538,27 +56545,28 @@ Separately from membership, you keep a **local** trust list: a verified work ite
 
 [Section titled “At a glance — the tool map”](#at-a-glance--the-tool-map)
 
-| Step                | What you want            | Tool(s)                                                         |
-| ------------------- | ------------------------ | --------------------------------------------------------------- |
-| Create              | New hive                 | `hive:create`                                                   |
-| Create              | From a GitHub repo       | `hive:create_from_repo`                                         |
-| Create              | Add an existing harness  | `hive:add-member`                                               |
-| Share               | Publish / set visibility | `discovery:set_hive`                                            |
-| Discover            | Browse shared hives      | `discovery:hives`                                               |
-| Join                | Find a hive’s status     | `hive:get` / `hive:list`                                        |
-| Join (owner)        | Review join queue        | `hive:membership_pending`                                       |
-| Join (owner)        | Approve / deny           | `hive:membership_decide`                                        |
-| Collaborate         | Ask another hive         | `hive:ask` / `hive:request_work` / `hive:asks`                  |
-| Collaborate (owner) | Cross-hive grant         | `hive:cross_grant`                                              |
-| Moderate            | Report content / member  | `hive:report`                                                   |
-| Moderate (owner)    | Review reports           | `hive:moderation_queue`                                         |
-| Moderate (owner)    | Hide content             | `hive:takedown`                                                 |
-| Moderate (owner)    | Ban a member             | `hive:ban_member`                                               |
-| Moderate (owner)    | Close a report           | `hive:moderation_resolve`                                       |
-| Leave               | Leave a joined hive      | `hive:leave`                                                    |
-| Leave (owner)       | Tear down your hive      | `hive:dissolve`                                                 |
-| Removal             | Revoke a device          | `substrate:revoke_self_device` / `substrate:revoke_contributor` |
-| Trust               | Auto-run a peer’s work   | `trust:add` / `trust:list` / `trust:remove`                     |
+| Step                | What you want               | Tool(s)                                                         |
+| ------------------- | --------------------------- | --------------------------------------------------------------- |
+| Create              | New hive                    | `hive:create`                                                   |
+| Create              | From a GitHub repo          | `hive:create_from_repo`                                         |
+| Create              | Add an existing harness     | `hive:add-member`                                               |
+| Share               | Publish / set visibility    | `discovery:set_hive`                                            |
+| Share               | Live status beacon (opt-in) | `hive:beacon_consent`                                           |
+| Discover            | Browse shared hives         | `discovery:hives`                                               |
+| Join                | Find a hive’s status        | `hive:get` / `hive:list`                                        |
+| Join (owner)        | Review join queue           | `hive:membership_pending`                                       |
+| Join (owner)        | Approve / deny              | `hive:membership_decide`                                        |
+| Collaborate         | Ask another hive            | `hive:ask` / `hive:request_work` / `hive:asks`                  |
+| Collaborate (owner) | Cross-hive grant            | `hive:cross_grant`                                              |
+| Moderate            | Report content / member     | `hive:report`                                                   |
+| Moderate (owner)    | Review reports              | `hive:moderation_queue`                                         |
+| Moderate (owner)    | Hide content                | `hive:takedown`                                                 |
+| Moderate (owner)    | Ban a member                | `hive:ban_member`                                               |
+| Moderate (owner)    | Close a report              | `hive:moderation_resolve`                                       |
+| Leave               | Leave a joined hive         | `hive:leave`                                                    |
+| Leave (owner)       | Tear down your hive         | `hive:dissolve`                                                 |
+| Removal             | Revoke a device             | `substrate:revoke_self_device` / `substrate:revoke_contributor` |
+| Trust               | Auto-run a peer’s work      | `trust:add` / `trust:list` / `trust:remove`                     |
 
 ## See also
 

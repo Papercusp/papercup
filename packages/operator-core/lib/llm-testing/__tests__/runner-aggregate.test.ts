@@ -106,6 +106,10 @@ describe('scenario registry', () => {
       // bulk dual-arity reach + over-application guards (bulk-endpoint-standardization-2026-06-21 P-007)
       'su-S21-bulk-read-not-hand-loop',
       'su-S22-bulk-not-for-single',
+      // delta-protocol Lane-C de-risk gate (agent-tool-delta-protocol-2026-06-22 P-007)
+      'su-S23-delta-merge-base-present',
+      'su-S24-delta-fallback-compacted',
+      'su-S25-delta-wrong-merge-detector',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',

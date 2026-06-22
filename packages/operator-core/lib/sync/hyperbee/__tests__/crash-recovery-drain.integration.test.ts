@@ -35,6 +35,12 @@ import { buildHarnessFeaturesProjection } from '../projections/harness-features'
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  SUBSTRATE_OUTBOX_DDL,
+  FILL_WORKSPACE_ID_DDL,
+  HARNESS_ISSUES_CONSOLIDATED_FED_DDL,
+} from '../../../../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -71,28 +77,9 @@ afterEach(async () => {
  *  the fed_ts-masked UPDATE capture trigger. Mirrors feature-content-federation. */
 async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(FRAMEWORK_ROLES_DDL);
+  // P-010 unification: work_items base + hfc/ei compat views (instead of hand-rolled hfc/issues).
+  await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await sql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      workspace_id TEXT NOT NULL DEFAULT '', harness_slug TEXT NOT NULL, feature_id TEXT NOT NULL,
-      title TEXT, summary TEXT, status TEXT, attempts INT, claims TEXT, notes TEXT, metadata JSONB,
-      kind TEXT, project_id TEXT, expected_cost_cents INT, tags JSONB, needs_human_review BOOLEAN,
-      ts BIGINT, created_ts BIGINT, updated_ts BIGINT, parent_id TEXT, goal_id TEXT, taken_by TEXT,
-      taken_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, item_kind TEXT NOT NULL DEFAULT 'feature',
-      feature_order INTEGER, swarm_affinity TEXT, redundancy INTEGER, payload JSONB,
-      author_pubkey TEXT, origin TEXT NOT NULL DEFAULT 'local', fed_ts BIGINT,
-      verified_author_github_user_id BIGINT,
-      PRIMARY KEY (harness_slug, feature_id)
-    );
-    CREATE TABLE harness_shared.harness_issues_consolidated (
-      workspace_id TEXT NOT NULL DEFAULT '', harness_slug TEXT NOT NULL, issue_id TEXT NOT NULL,
-      title TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT 'minor', source TEXT NOT NULL DEFAULT 'su',
-      status TEXT NOT NULL DEFAULT 'open', found_at TIMESTAMPTZ NOT NULL DEFAULT now(), found_during TEXT,
-      repro TEXT, evidence TEXT, suggested_fix TEXT, code_pointer TEXT, linked_feature_id TEXT,
-      attempts INT NOT NULL DEFAULT 0, notes JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_ts BIGINT NOT NULL DEFAULT 0, updated_ts BIGINT NOT NULL DEFAULT 0,
-      author_pubkey TEXT, origin TEXT NOT NULL DEFAULT 'local', fed_ts BIGINT,
-      PRIMARY KEY (harness_slug, issue_id)
-    );
     CREATE TABLE harness_shared.projects (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, slug TEXT,
       workspace_id TEXT, created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL
@@ -102,17 +89,20 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
     INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id, created_ts, updated_ts)
     VALUES ('p-cr', 'CrashRecovery', 'active', ${HARNESS_SLUG}, ${WORKSPACE_ID}, 0, 0)
   `;
-  for (const file of ['archive/102-substrate-outbox.sql', 'archive/103-issues-workspace-id-fill-trigger.sql']) {
-    await sql.unsafe(readFileSync(join(SQL_DIR, file), 'utf8'));
-  }
-  await sql.unsafe(`
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
-    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
-      AFTER UPDATE ON harness_shared.harness_features_consolidated
-      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
-      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('feature_id');
-  `);
+  // P-010 unification send-side: outbox + fill (on work_items) + legacy issues table + the
+  // work_items CDC capture (mig 375).
+  await sql.unsafe(SUBSTRATE_OUTBOX_DDL);
+  await sql.unsafe(FILL_WORKSPACE_ID_DDL);
+  await sql.unsafe(HARNESS_ISSUES_CONSOLIDATED_FED_DDL);
+  const stripMig = (s: string) =>
+    s
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return !t.startsWith('\\') && !/^(begin|commit);$/i.test(t);
+      })
+      .join('\n');
+  await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '375-work-items-cdc-capture.sql'), 'utf8')));
 }
 
 /** Boot a single peer's own-log substrate (no swarm) at a fixed root, with a

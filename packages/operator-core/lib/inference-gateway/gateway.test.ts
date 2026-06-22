@@ -1249,7 +1249,11 @@ test('[B-GW-2 chaos] internal-retry DEADLINE bounds slot-hold: a perpetual TRANS
       res.writeHead(429, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'transient burst' } }));
     },
-    { concurrency: 4, internalRetryDeadlineMs: 200 },
+    // requestAbsorbMs: 0 PINS absorb OFF so this isolates the legacy SHED-at-deadline ladder. Absorb (default-on,
+    // 60s) would otherwise HOLD this perpetual transient 429 for the full absorb budget instead of shedding —
+    // its own (wedge-safe: slot RELEASED during the wait) path is covered by the EXTENDED ABSORB test. The shed
+    // ladder still runs in production once the absorb budget is spent; here we exercise it directly.
+    { concurrency: 4, internalRetryDeadlineMs: 200, requestAbsorbMs: 0 },
   );
   const t0 = Date.now();
   const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });

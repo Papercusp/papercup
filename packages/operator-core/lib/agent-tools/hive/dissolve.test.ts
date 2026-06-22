@@ -17,6 +17,7 @@ let clearWakeCalls: string[];
 let deregCalls: string[];
 let dropSchemaCalls: string[];
 let teardownLoopCalls: string[];
+let membershipDropCalls: string[];
 // P-021: when set, teardownHiveLearningLoop throws — proving the dissolve still
 // succeeds (best-effort; a failure WARNS, never fails the dissolve).
 let teardownLoopThrows: boolean;
@@ -33,6 +34,7 @@ beforeEach(() => {
   deregCalls = [];
   dropSchemaCalls = [];
   teardownLoopCalls = [];
+  membershipDropCalls = [];
   teardownLoopThrows = false;
   gateResult = { ok: true, tier: 'owner', reason: 'solo-unbound' };
   bees = [
@@ -73,6 +75,15 @@ beforeEach(() => {
       return { changed: true };
     },
   }));
+  // G24 (shared-hive-public-release-2026-06-22): dissolve's membership-teardown leg
+  // deletes the hive's hive_members rows (federated). PG-free here — the real fn's
+  // federation is proven by lifecycle-membership-teardown.integration.test.ts.
+  vi.doMock('../../hive-membership-store', () => ({
+    removeAllHiveMembers: async (_ws: string, slug: string) => {
+      membershipDropCalls.push(slug);
+      return 2;
+    },
+  }));
   vi.doMock('../../hive/provision-learning-loop', () => ({
     teardownHiveLearningLoop: async ({ hiveSlug }: { hiveSlug: string }) => {
       teardownLoopCalls.push(hiveSlug);
@@ -98,6 +109,7 @@ afterEach(() => {
     '../../hive/wake',
     '../../scaffold-harness-schema',
     '../../harness-membership',
+    '../../hive-membership-store',
     '../../hive/provision-learning-loop',
     '../../fleet/operator-spawn',
     '@papercusp/db-org',
@@ -117,6 +129,10 @@ describe('hive:dissolve', () => {
     expect((res.cancelledSpawns as string[]).sort()).toEqual(['s-bee-a', 's-bee-b']);
     expect(deregCalls).toEqual(['h']);
     expect(res.deregistered).toBe(true);
+    // G24: the hive's membership rows are torn down (the leg dissolve invokes,
+    // BEFORE deregister) and the dropped count is surfaced.
+    expect(membershipDropCalls).toEqual(['h']);
+    expect(res.membershipRowsDropped).toBe(2);
     // P-021: the per-hive learning loop is torn down (gym row + scout routine + governor registrants).
     expect(teardownLoopCalls).toEqual(['h']);
     expect(res.learningLoopTornDown).toBe(true);

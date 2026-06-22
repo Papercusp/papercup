@@ -1,0 +1,88 @@
+/**
+ * SU-S25 — the silently-wrong-merge DETECTOR
+ * (agent-tool-delta-protocol-2026-06-22 P-007, gate 3; D-007/D-008).
+ *
+ * This is the safety gate the owner BUILD decision (D-007) hinges on: the
+ * "silently wrong merge" — a delta applied so the result is plausible but wrong
+ * — must be a deterministic, gated test FAILURE, not an unobservable production
+ * hazard. Same mechanism as S23 (base present, full → delta) but the assertions
+ * are EXHAUSTIVE and the data adversarial: a correct merge has exactly one
+ * possible row set, and every wrong-merge failure mode is caught.
+ *
+ * The developer asks for the open work items (full snapshot of 5), then asks for
+ * the current list after the changes and is told to reply with ONLY the current
+ * items, one per line. The delta removes WI-7002, retitles WI-7004, and adds
+ * WI-7006.
+ *
+ * Detector asserts (all ERROR):
+ *   - REQUIRE every row of the correct merged set (4 kept/updated + 1 added) —
+ *     catches dropped-unchanged-row and ignored-add failures.
+ *   - FORBID the removed row's title (debounce) — catches a kept-removal.
+ *   - FORBID the stale pre-update value (naive-retry) — catches an unapplied
+ *     update (the row silently keeps its old data).
+ */
+
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
+import type { Scenario } from '@papercusp/testing-shell/llm';
+
+import { SU_RUBRIC } from '../../rubrics/su';
+import { assertTextRequires, assertTextForbids } from './_asserts';
+import { makeDeltaSnapshotOverride } from './_overrides';
+
+export const SU_S25_DELTA_WRONG_MERGE_DETECTOR: Scenario = {
+  id: 'su-S25-delta-wrong-merge-detector',
+  version: 1,
+  target: 'su',
+  transport: 'in-process',
+  description:
+    'A developer asks the engineer to list the current open work items (work_items:list returns a full snapshot of 5 items). The developer then says: "apply what changed and reply with ONLY the current open items, one title per line — nothing else." work_items:list returns a DELTA: WI-7002 removed, WI-7004 retitled to "Gateway pool circuit-breaker", WI-7006 added. The reply must be exactly the current merged set, with no removed item, no stale title, and nothing dropped.',
+  persona: BRIEF_ADMIN,
+  goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
+  caps: { maxTurns: 4, maxWallSecs: 180, maxCostUsd: 2 },
+  runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
+  get toolOverride() {
+    return makeDeltaSnapshotOverride();
+  },
+  asserts: [
+    // REQUIRE every correct current row — drops/omissions are wrong merges.
+    assertTextRequires(/CSV backend/i, {
+      name: 'has-kept-csv',
+      claim: 'Missing kept row WI-7001 ("Export picker → CSV backend") — a delta dropped an unchanged base row.',
+      suggestion: 'Retain unchanged base rows; a delta carries only changes.',
+    }),
+    assertTextRequires(/NUL bytes/i, {
+      name: 'has-kept-nul',
+      claim: 'Missing kept row WI-7003 ("Audit log drops NUL bytes") — a delta dropped an unchanged base row.',
+      suggestion: 'Retain unchanged base rows; a delta carries only changes.',
+    }),
+    assertTextRequires(/palette/i, {
+      name: 'has-kept-palette',
+      claim: 'Missing kept row WI-7005 ("Operator palette poll-to-push") — a delta dropped an unchanged base row.',
+      suggestion: 'Retain unchanged base rows; a delta carries only changes.',
+    }),
+    assertTextRequires(/circuit-breaker/i, {
+      name: 'has-updated-new',
+      claim: "Missing WI-7004's updated title ('Gateway pool circuit-breaker') — the change=updated row was not applied.",
+      suggestion: 'Replace the updated row with its new data from the delta.',
+    }),
+    assertTextRequires(/EROFS/i, {
+      name: 'has-added',
+      claim: 'Missing added row WI-7006 ("Sandbox npm-install EROFS") — the change=added row was ignored.',
+      suggestion: 'Add change=added rows to the merged list.',
+    }),
+    // FORBID the removed row + the stale value — silent wrong-merges.
+    assertTextForbids(/debounce/i, {
+      name: 'no-removed',
+      claim: 'Named the REMOVED row (WI-7002 "...debounce") as a current item — change=removed was not applied.',
+      suggestion: 'Drop change=removed ids from the merged result.',
+    }),
+    assertTextForbids(/naive-retry/i, {
+      name: 'no-stale-update',
+      claim: "Showed WI-7004's STALE pre-update title ('naive-retry') — the update was not applied (the row silently kept its old data).",
+      suggestion: 'When change=updated, use the new data and discard the old title.',
+    }),
+  ],
+  rubric: SU_RUBRIC,
+};
+
+export default SU_S25_DELTA_WRONG_MERGE_DETECTOR;

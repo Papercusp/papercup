@@ -533,6 +533,106 @@ export const COORD_INBOX_RESULT: ToolDispatchOverride = {
   },
 };
 
+// ===========================================================================
+// Delta-protocol fixtures + override (agent-tool-delta-protocol-2026-06-22
+// P-007 / D-007 / D-008).
+//
+// The delta-merge scenarios (S23/S24/S25) reproduce the LLM-facing
+// semantic-delta read against `work_items:list` (a list-of-rows view): the
+// override is STATEFUL — call 1 returns a FULL snapshot (mode:full), call 2 a
+// DELTA (mode:delta) of changes since the snapshot's cursor, call 3+ the
+// re-fetched current FULL list (mode:full). The result shape follows plan
+// D-003: `{ ok, mode, cursor, items, counts, note }`; the delta carries a
+// legible inline contract (like S08's `format: csv` marker) so the real su
+// persona — which does not yet know the protocol — can interpret it AND knows
+// to re-fetch full when it no longer holds the base.
+//
+// `makeDeltaSnapshotOverride` returns a FRESH instance each call so a scenario
+// can expose it via a GETTER (`get toolOverride()`), giving per-run-fresh
+// call-count state across `runMatrix` repeats (the runner reads
+// `scenario.toolOverride` once per run).
+// ===========================================================================
+
+/** The view rows are stable-keyed work items (id + title). */
+interface DeltaRow {
+  id: string;
+  title: string;
+}
+
+/** The base full snapshot (call 1, mode:full). */
+export const DELTA_BASE_ROWS: DeltaRow[] = [
+  { id: 'WI-7001', title: 'Export picker → CSV backend' },
+  { id: 'WI-7002', title: 'Flaky harness-fs-watcher debounce' }, // REMOVED by the delta
+  { id: 'WI-7003', title: 'Audit log drops NUL bytes' },
+  { id: 'WI-7004', title: 'Gateway pool naive-retry loop' }, // UPDATED by the delta
+  { id: 'WI-7005', title: 'Operator palette poll-to-push' },
+];
+
+/** The current truth after applying the delta — WI-7002 removed, WI-7004
+ *  retitled, WI-7006 added. This is what call 3+ (the re-fetch) returns and
+ *  what a correct merge must reproduce. */
+export const DELTA_CURRENT_ROWS: DeltaRow[] = [
+  { id: 'WI-7001', title: 'Export picker → CSV backend' },
+  { id: 'WI-7003', title: 'Audit log drops NUL bytes' },
+  { id: 'WI-7004', title: 'Gateway pool circuit-breaker' }, // updated title
+  { id: 'WI-7005', title: 'Operator palette poll-to-push' },
+  { id: 'WI-7006', title: 'Sandbox npm-install EROFS' }, // added
+];
+
+const DELTA_FULL_SNAPSHOT = {
+  ok: true,
+  mode: 'full',
+  cursor: 'wil-c1',
+  count: DELTA_BASE_ROWS.length,
+  items: DELTA_BASE_ROWS,
+};
+
+const DELTA_CHANGES = {
+  ok: true,
+  mode: 'delta',
+  cursor: 'wil-c2',
+  // Legible inline contract so the SUT can interpret it and knows the base rule.
+  note:
+    'mode=delta: these are the CHANGES since cursor wil-c1, NOT the full list. ' +
+    'Apply them to the full work_items:list snapshot you fetched earlier ' +
+    '(change=added|updated|removed; an updated/added row carries its full new data). ' +
+    'If you no longer have that earlier snapshot in context, do NOT guess — ' +
+    're-call work_items:list to get a fresh mode:full list.',
+  items: [
+    { change: 'removed', id: 'WI-7002' },
+    { change: 'updated', id: 'WI-7004', data: { id: 'WI-7004', title: 'Gateway pool circuit-breaker' } },
+    { change: 'added', id: 'WI-7006', data: { id: 'WI-7006', title: 'Sandbox npm-install EROFS' } },
+  ],
+  counts: { added: 1, updated: 1, removed: 1, unchanged: 3 },
+};
+
+const DELTA_REFETCH_FULL = {
+  ok: true,
+  mode: 'full',
+  cursor: 'wil-c2',
+  count: DELTA_CURRENT_ROWS.length,
+  items: DELTA_CURRENT_ROWS,
+};
+
+/**
+ * A fresh STATEFUL `work_items:list` override: 1st call → full snapshot, 2nd →
+ * delta, 3rd+ → re-fetched current full list. Each call is one model tool
+ * invocation. Returns a new instance per call (expose via a `get toolOverride()`
+ * getter for per-run-fresh state across matrix repeats). PASS_THROUGH for any
+ * other tool.
+ */
+export function makeDeltaSnapshotOverride(): ToolDispatchOverride {
+  let calls = 0;
+  return {
+    override(name) {
+      if (canonical(name) !== 'work_items:list') return PASS_THROUGH;
+      calls += 1;
+      const body = calls === 1 ? DELTA_FULL_SNAPSHOT : calls === 2 ? DELTA_CHANGES : DELTA_REFETCH_FULL;
+      return { content: [{ text: JSON.stringify(body) }] };
+    },
+  };
+}
+
 /**
  * SU-S19 (reach for harness:overview on "state of X"): a believable one-call overview
  * (status + escalations + open-issues snapshot) so the engineer who calls

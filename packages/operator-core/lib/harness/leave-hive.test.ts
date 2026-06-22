@@ -30,6 +30,8 @@ function fakes(initialProjects: HarnessRegistry['projects']) {
     routinesRemoved: [] as string[],
     presenceDropped: [] as string[],
     rmDirs: [] as string[],
+    /** leaver github_user_ids passed to the G27 membership-teardown leg. */
+    membersDropped: [] as number[],
     /** interleaved op log to assert tombstone precedes close per member. */
     order: [] as string[],
   };
@@ -63,6 +65,14 @@ function fakes(initialProjects: HarnessRegistry['projects']) {
     },
     rmDir: async (p) => {
       calls.rmDirs.push(p);
+    },
+    // G27 membership-teardown leg (seam-stubbed — no PG). The leaver resolves to a
+    // fixed id; dropMembers records the call. The REAL DELETE + federation is proven
+    // by lifecycle-membership-teardown.integration.test.ts.
+    resolveLeaverGithubUserId: async () => 7,
+    dropMembers: async (_sql, _ws, _home, uid) => {
+      calls.membersDropped.push(uid);
+      return 1;
     },
   };
   return { deps, calls };
@@ -102,6 +112,11 @@ describe('leaveHive (P-012)', () => {
     expect(drainAt).toBeLessThan(firstClose);
     // registry: view + members gone, the unrelated harness kept.
     expect(calls.registry.map((p) => p.slug)).toEqual(['papercup']);
+    // G27: the leaver's persistent membership row is torn down ONCE (keyed to the
+    // hive home + resolved leaver id), and the count + id are surfaced on the result.
+    expect(calls.membersDropped).toEqual([7]);
+    expect(res.membershipRowsDropped).toBe(1);
+    expect(res.leaverGithubUserId).toBe(7);
   });
 
   it('leaving by a member slug resolves + leaves the whole hive', async () => {

@@ -1297,9 +1297,10 @@ defineTestDomain({
       id: 'membership',
       label: 'Membership, settings & revocation',
       description:
-        'Per-Hive contributor admission (device pubkeys, the revoked-pubkey union), federated per-Hive settings, and owner revocation of a Hive contributor (blocklist into the owner row).',
+        'Per-Hive contributor admission (device pubkeys, the revoked-pubkey union), federated per-Hive settings, owner revocation of a Hive contributor (blocklist into the owner row), and the P-MEMBER/P-MOD owner-enforcement boundary end-to-end against real PG — open auto-admit, approval-mode pending → owner approve/deny, and ban/unban re-join refusal.',
       globs: [
         'packages/operator-core/lib/hive-membership-store.integration.test.ts',
+        'packages/operator-core/lib/hive-membership-admission.integration.test.ts',
         'packages/operator-core/lib/hive-settings-store.integration.test.ts',
         'packages/operator-core/lib/hive-revoke-contributor.test.ts',
       ],
