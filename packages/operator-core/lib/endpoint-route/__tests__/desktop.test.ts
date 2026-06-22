@@ -23,6 +23,7 @@ vi.mock('../../auth/require-principal', () => ({
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 vi.mock('../../agent-auth-detect', () => ({
   claudeSignedIn: vi.fn(() => true),
+  codexSignedIn: vi.fn(() => false),
   ompSignedIn: vi.fn(() => false),
   githubSignedIn: vi.fn(() => false),
   anyAgentSignedIn: vi.fn(() => true),
@@ -120,6 +121,13 @@ describe('buildLoginSpec', () => {
     expect(spec.command).toBe('/opt/bin/omp');
     expect(spec.args).toEqual(['/login']);
   });
+
+  it('codex: spawns `<resolved binary> login`', () => {
+    const spec = buildLoginSpec('codex', '/home/u', '/opt/bin/codex');
+    expect(spec.command).toBe('/opt/bin/codex');
+    expect(spec.args).toEqual(['login']);
+    expect(spec.cwd).toBe('/home/u');
+  });
 });
 
 describe('buildGithubLoginSpec', () => {
@@ -142,7 +150,7 @@ describe('desktop route ports', () => {
   it('GET /desktop/agent-auth-status returns per-provider status', async () => {
     const res = await appWith(desktopAgentAuthStatus as AnyRoute).request('/desktop/agent-auth-status');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ claude: true, omp: false, github: false });
+    expect(await res.json()).toEqual({ claude: true, codex: false, omp: false, github: false });
   });
 
   it('POST /desktop/agent-login-envelope rejects an unknown provider', async () => {
@@ -156,6 +164,13 @@ describe('desktop route ports', () => {
       .request('/desktop/agent-login-envelope', json({ provider: 'claude' }));
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ greetingCmd: 'claude /login' });
+  });
+
+  it('POST /desktop/agent-login-envelope builds a Codex repair command', async () => {
+    const res = await appWith(desktopAgentLoginEnvelope as AnyRoute)
+      .request('/desktop/agent-login-envelope', json({ provider: 'codex' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ greetingCmd: 'codex login' });
   });
 
   it('GET /desktop/git-identity returns a source field', async () => {

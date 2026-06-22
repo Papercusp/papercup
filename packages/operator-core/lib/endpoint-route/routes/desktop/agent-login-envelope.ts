@@ -9,7 +9,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 
 const PROVIDER_COMMANDS: Record<string, string> = {
   claude: 'claude /login',
+  codex: 'codex login',
   openai: 'omp /login',
+  omp: 'omp /login',
   // `gh auth login` is the GitHub CLI's interactive OAuth flow.
   github: 'gh auth login',
 };

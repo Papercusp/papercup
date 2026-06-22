@@ -33,6 +33,13 @@ export function ompSignedIn(): boolean {
   ]);
 }
 
+export function codexSignedIn(): boolean {
+  const home = homedir();
+  return anyExists([
+    join(home, '.codex', 'auth.json'),
+  ]);
+}
+
 /**
  * GitHub CLI auth status — `gh auth login` writes ~/.config/gh/hosts.yml
  * with the active user + token. Existence of that file is the same
@@ -48,5 +55,5 @@ export function githubSignedIn(): boolean {
 }
 
 export function anyAgentSignedIn(): boolean {
-  return claudeSignedIn() || ompSignedIn();
+  return claudeSignedIn() || codexSignedIn() || ompSignedIn();
 }

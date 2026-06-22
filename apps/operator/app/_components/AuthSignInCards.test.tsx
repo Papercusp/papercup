@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// AuthSignInCards — the one-click OAuth provider cards (Claude / ChatGPT).
+// AuthSignInCards — the one-click OAuth provider cards (Claude / Codex / OMP).
 // Pure-render component with three external deps mocked: isTauriNative (the
 // desktop-vs-browser fork), InlinePtyTerminal (the spawned pty child), and the
 // two /api/desktop fetches (pty-command specs + auth status). We assert the
@@ -32,10 +32,11 @@ import { AuthSignInCards } from './AuthSignInCards';
 
 const SPECS = {
   loginClaude: { command: 'claude', args: ['/login'], cwd: '/home', env: {} },
+  loginCodex: { command: 'codex', args: ['login'], cwd: '/home', env: {} },
   loginOmp: { command: 'omp', args: ['/login'], cwd: '/home', env: {} },
 };
 
-function mockFetch(authStatus: { claude: boolean; omp: boolean }) {
+function mockFetch(authStatus: { claude: boolean; codex: boolean; omp: boolean }) {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes('/api/desktop/setup-pty-commands')) {
@@ -60,11 +61,12 @@ afterEach(() => {
 
 describe('<AuthSignInCards />', () => {
   it('renders both provider cards and an optional intro', async () => {
-    vi.stubGlobal('fetch', mockFetch({ claude: false, omp: false }));
+    vi.stubGlobal('fetch', mockFetch({ claude: false, codex: false, omp: false }));
     render(<AuthSignInCards intro="Connect your accounts." />);
     expect(screen.getByText('Connect your accounts.')).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Claude account' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'ChatGPT account' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Codex account' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'OMP / ChatGPT account' })).toBeTruthy();
     // Sign-in buttons enable once the pty-command specs resolve.
     await waitFor(() =>
       expect((screen.getByRole('button', { name: /sign in to claude/i }) as HTMLButtonElement).disabled).toBe(false),
@@ -80,18 +82,19 @@ describe('<AuthSignInCards />', () => {
   });
 
   it('shows the "✓ Signed in" badge for a provider the status probe reports as connected', async () => {
-    vi.stubGlobal('fetch', mockFetch({ claude: true, omp: false }));
+    vi.stubGlobal('fetch', mockFetch({ claude: true, codex: false, omp: false }));
     render(<AuthSignInCards />);
     // Claude reports signed-in → badge + "Re-sign in" affordance.
     await waitFor(() => expect(screen.getByText('✓ Signed in')).toBeTruthy());
     expect(screen.getByRole('button', { name: /re-sign in to claude/i })).toBeTruthy();
-    // ChatGPT is not signed in → plain "Sign in".
-    expect(screen.getByRole('button', { name: /sign in to chatgpt/i })).toBeTruthy();
+    // Codex and OMP are not signed in → plain "Sign in".
+    expect(screen.getByRole('button', { name: /sign in to codex/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /sign in to omp \/ chatgpt/i })).toBeTruthy();
   });
 
   it('in browser dev (not Tauri), clicking a card shows the "use the desktop app" note instead of spawning a pty', async () => {
     tauriRef.value = false;
-    vi.stubGlobal('fetch', mockFetch({ claude: false, omp: false }));
+    vi.stubGlobal('fetch', mockFetch({ claude: false, codex: false, omp: false }));
     render(<AuthSignInCards />);
     const btn = await waitFor(() => {
       const b = screen.getByRole('button', { name: /sign in to claude/i }) as HTMLButtonElement;
@@ -105,7 +108,7 @@ describe('<AuthSignInCards />', () => {
 
   it('in the desktop app (Tauri), clicking a card mounts the inline pty terminal with the provider spec', async () => {
     tauriRef.value = true;
-    vi.stubGlobal('fetch', mockFetch({ claude: false, omp: false }));
+    vi.stubGlobal('fetch', mockFetch({ claude: false, codex: false, omp: false }));
     render(<AuthSignInCards />);
     const btn = await waitFor(() => {
       const b = screen.getByRole('button', { name: /sign in to claude/i }) as HTMLButtonElement;
@@ -119,12 +122,26 @@ describe('<AuthSignInCards />', () => {
     expect(screen.getByRole('button', { name: /running…/i })).toBeTruthy();
   });
 
-  it('the ChatGPT card spawns the omp login spec in the desktop app', async () => {
+  it('the Codex card spawns the codex login spec in the desktop app', async () => {
     tauriRef.value = true;
-    vi.stubGlobal('fetch', mockFetch({ claude: false, omp: false }));
+    vi.stubGlobal('fetch', mockFetch({ claude: false, codex: false, omp: false }));
     render(<AuthSignInCards />);
     const btn = await waitFor(() => {
-      const b = screen.getByRole('button', { name: /sign in to chatgpt/i }) as HTMLButtonElement;
+      const b = screen.getByRole('button', { name: /sign in to codex/i }) as HTMLButtonElement;
+      expect(b.disabled).toBe(false);
+      return b;
+    });
+    fireEvent.click(btn);
+    const term = await screen.findByTestId('pty-terminal');
+    expect(term.textContent).toContain('codex'); // loginCodex.command
+  });
+
+  it('the OMP / ChatGPT card spawns the omp login spec in the desktop app', async () => {
+    tauriRef.value = true;
+    vi.stubGlobal('fetch', mockFetch({ claude: false, codex: false, omp: false }));
+    render(<AuthSignInCards />);
+    const btn = await waitFor(() => {
+      const b = screen.getByRole('button', { name: /sign in to omp \/ chatgpt/i }) as HTMLButtonElement;
       expect(b.disabled).toBe(false);
       return b;
     });
@@ -135,7 +152,7 @@ describe('<AuthSignInCards />', () => {
 
   it('disables the OTHER provider button while one card is actively running', async () => {
     tauriRef.value = true;
-    vi.stubGlobal('fetch', mockFetch({ claude: false, omp: false }));
+    vi.stubGlobal('fetch', mockFetch({ claude: false, codex: false, omp: false }));
     render(<AuthSignInCards />);
     const claudeBtn = await waitFor(() => {
       const b = screen.getByRole('button', { name: /sign in to claude/i }) as HTMLButtonElement;
@@ -144,13 +161,14 @@ describe('<AuthSignInCards />', () => {
     });
     fireEvent.click(claudeBtn);
     await screen.findByTestId('pty-terminal');
-    // Claude is now active → the ChatGPT button is disabled (active !== null guard).
-    expect((screen.getByRole('button', { name: /sign in to chatgpt/i }) as HTMLButtonElement).disabled).toBe(true);
+    // Claude is now active → the other provider buttons are disabled (active !== null guard).
+    expect((screen.getByRole('button', { name: /sign in to codex/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /sign in to omp \/ chatgpt/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('on pty exit, shows the Done affordance and re-probes auth status; Done dismisses the terminal', async () => {
     tauriRef.value = true;
-    const fetchSpy = mockFetch({ claude: false, omp: false });
+    const fetchSpy = mockFetch({ claude: false, codex: false, omp: false });
     vi.stubGlobal('fetch', fetchSpy);
     render(<AuthSignInCards />);
     const btn = await waitFor(() => {

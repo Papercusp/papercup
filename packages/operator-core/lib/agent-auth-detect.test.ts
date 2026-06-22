@@ -15,7 +15,7 @@ vi.mock('node:os', async (orig) => {
   return { ...actual, homedir: () => '/home/u' };
 });
 
-import { claudeSignedIn, ompSignedIn, githubSignedIn, anyAgentSignedIn } from './agent-auth-detect';
+import { claudeSignedIn, codexSignedIn, ompSignedIn, githubSignedIn, anyAgentSignedIn } from './agent-auth-detect';
 
 /** Mark exactly the given absolute paths as existing. */
 function onlyExist(...present: string[]) {
@@ -52,6 +52,17 @@ describe('ompSignedIn', () => {
   });
 });
 
+describe('codexSignedIn', () => {
+  it('true when the Codex auth file exists', () => {
+    onlyExist('/home/u/.codex/auth.json');
+    expect(codexSignedIn()).toBe(true);
+  });
+  it('false when none exist', () => {
+    onlyExist();
+    expect(codexSignedIn()).toBe(false);
+  });
+});
+
 describe('githubSignedIn', () => {
   it('true when the gh hosts.yml exists', () => {
     onlyExist('/home/u/.config/gh/hosts.yml');
@@ -64,8 +75,10 @@ describe('githubSignedIn', () => {
 });
 
 describe('anyAgentSignedIn', () => {
-  it('true if Claude OR OMP is signed in (not gated on GitHub)', () => {
+  it('true if Claude, Codex, or OMP is signed in (not gated on GitHub)', () => {
     onlyExist('/home/u/.omp/agent/auth.json');
+    expect(anyAgentSignedIn()).toBe(true);
+    onlyExist('/home/u/.codex/auth.json');
     expect(anyAgentSignedIn()).toBe(true);
   });
   it('false when neither agent is signed in (even if GitHub is)', () => {

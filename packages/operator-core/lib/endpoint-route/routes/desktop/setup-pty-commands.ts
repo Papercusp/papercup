@@ -93,13 +93,22 @@ echo '==> done'
  * have it, otherwise we detect.
  */
 export function buildLoginSpec(
-  provider: 'claude' | 'omp',
+  provider: 'claude' | 'codex' | 'omp',
   home: string,
   absolutePath?: string | null,
 ): SpawnSpec {
   const resolved = absolutePath ?? detectBinaries()[provider];
+  const args = provider === 'codex' ? ['login'] : ['/login'];
   if (resolved) {
-    return { command: resolved, args: ['/login'], cwd: home, env: {} };
+    return { command: resolved, args, cwd: home, env: {} };
+  }
+  if (provider === 'codex') {
+    return {
+      command: 'bash',
+      args: ['-lc', 'codex login'],
+      cwd: home,
+      env: {},
+    };
   }
   return {
     command: 'bash',
@@ -137,6 +146,7 @@ export default defineTool({
     return Response.json({
       installRuntime: buildInstallSpec(os, home),
       loginClaude: buildLoginSpec('claude', home),
+      loginCodex: buildLoginSpec('codex', home),
       loginOmp: buildLoginSpec('omp', home),
       loginGithub: buildGithubLoginSpec(home),
     });

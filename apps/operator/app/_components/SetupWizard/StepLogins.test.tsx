@@ -18,7 +18,7 @@ vi.mock('./InlinePtyTerminal', () => ({ InlinePtyTerminal: () => <div data-testi
 import { StepLogins } from './StepLogins';
 
 let specsOk: boolean;
-let auth: { claude: boolean; omp: boolean };
+let auth: { claude: boolean; codex: boolean; omp: boolean };
 function installFetch() {
   const fn = vi.fn(async (url: string) => {
     const u = String(url);
@@ -27,6 +27,7 @@ function installFetch() {
       return new Response(
         JSON.stringify({
           loginClaude: { command: 'claude', args: ['/login'], cwd: '/', env: {} },
+          loginCodex: { command: 'codex', args: ['login'], cwd: '/', env: {} },
           loginOmp: { command: 'omp', args: ['/login'], cwd: '/', env: {} },
         }),
         { status: 200 },
@@ -44,7 +45,7 @@ function installFetch() {
 beforeEach(() => {
   isTauriNativeValue = false;
   specsOk = true;
-  auth = { claude: false, omp: false };
+  auth = { claude: false, codex: false, omp: false };
 });
 afterEach(() => {
   cleanup();
@@ -57,7 +58,8 @@ describe('StepLogins (SetupWizard sign-in step)', () => {
     render(<StepLogins />);
     expect(screen.getByText(/Sign in to your accounts/i)).toBeTruthy();
     expect(screen.getByRole('heading', { name: /Claude account/i })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: /ChatGPT account/i })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Codex account/i })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /OMP \/ ChatGPT account/i })).toBeTruthy();
   });
 
   it('keeps the sign-in buttons disabled until the pty specs resolve', async () => {
@@ -69,7 +71,7 @@ describe('StepLogins (SetupWizard sign-in step)', () => {
   });
 
   it('shows the "✓ Signed in" badge + a Re-sign-in label when a provider is authed', async () => {
-    auth = { claude: true, omp: false };
+    auth = { claude: true, codex: false, omp: false };
     installFetch();
     render(<StepLogins />);
     expect(await screen.findByText('✓ Signed in')).toBeTruthy();

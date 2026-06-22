@@ -14,7 +14,10 @@
  *                  the stateless anthropic-direct LLM client (judges,
  *                  sim-users, summarisers) and by Meridian for omp
  *                  users, so neither needs a separate Anthropic login.
- *   - chatgpt    → ChatGPT (via omp's Codex provider). Spawns
+ *   - codex      → Codex CLI. Spawns `codex login`. Writes
+ *                  `~/.codex/auth.json`, which Papercusp isolated
+ *                  CODEX_HOME launches symlink for ChatGPT/Codex auth.
+ *   - omp        → ChatGPT (via omp's Codex provider). Spawns
  *                  `omp /login`. Writes `~/.omp/agent/auth.json`.
  *                  When set, `models['operator'] = 'openai-codex/<m>'`
  *                  in /settings/agent makes the operator brain run
@@ -28,7 +31,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
 import { InlinePtyTerminal } from './SetupWizard/InlinePtyTerminal';
 
-type ProviderId = 'claude' | 'chatgpt';
+type ProviderId = 'claude' | 'codex' | 'omp';
 
 interface Provider {
   readonly id: ProviderId;
@@ -44,8 +47,14 @@ const PROVIDERS: readonly Provider[] = [
       'Sign in with your Anthropic account (Claude Pro/Max). Operator + judge + sim-user traffic rides this session directly — no per-token API charges. Writes ~/.claude/.credentials.json.',
   },
   {
-    id: 'chatgpt',
-    title: 'ChatGPT account',
+    id: 'codex',
+    title: 'Codex account',
+    summary:
+      'Sign in with your ChatGPT/OpenAI account for the Codex CLI. Writes ~/.codex/auth.json, which Papercusp Codex launches inherit through isolated CODEX_HOME homes.',
+  },
+  {
+    id: 'omp',
+    title: 'OMP / ChatGPT account',
     summary:
       "Sign in with your ChatGPT account (via omp's Codex provider). Lets you point the operator brain at gpt-5 / gpt-5.5 from Settings → AI backend. Writes ~/.omp/agent/auth.json.",
   },
@@ -60,11 +69,13 @@ interface SpawnSpec {
 
 interface PtyCommands {
   loginClaude: SpawnSpec;
-  loginOmp: SpawnSpec; // backend key is still loginOmp; UI surfaces as ChatGPT
+  loginCodex: SpawnSpec;
+  loginOmp: SpawnSpec;
 }
 
 interface AuthStatus {
   claude: boolean;
+  codex: boolean;
   omp: boolean;
 }
 
@@ -79,7 +90,7 @@ export function AuthSignInCards({ intro }: AuthSignInCardsProps) {
   const [active, setActive] = useState<ProviderId | null>(null);
   const [exited, setExited] = useState<ProviderId | null>(null);
   const [specs, setSpecs] = useState<PtyCommands | null>(null);
-  const [authStatus, setAuthStatus] = useState<AuthStatus>({ claude: false, omp: false });
+  const [authStatus, setAuthStatus] = useState<AuthStatus>({ claude: false, codex: false, omp: false });
   // Bump on every click so the pty terminal remounts fresh.
   const [attempt, setAttempt] = useState(0);
   // Browser-dev: which card showed the "use the desktop app" note.
@@ -110,13 +121,10 @@ export function AuthSignInCards({ intro }: AuthSignInCardsProps) {
   }, [refreshAuth]);
 
   const specFor = (id: ProviderId): SpawnSpec | undefined =>
-    id === 'claude' ? specs?.loginClaude : specs?.loginOmp;
+    id === 'claude' ? specs?.loginClaude : id === 'codex' ? specs?.loginCodex : specs?.loginOmp;
 
-  // Auth detection is still keyed by the backend's column names
-  // (claude/omp). 'chatgpt' here maps to the omp file probe — that
-  // file is what `omp /login` writes after the Codex flow finishes.
   const signedIn = (id: ProviderId): boolean =>
-    id === 'claude' ? authStatus.claude : authStatus.omp;
+    id === 'claude' ? authStatus.claude : id === 'codex' ? authStatus.codex : authStatus.omp;
 
   const startLogin = (id: ProviderId) => {
     if (!tauri) {

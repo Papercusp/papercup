@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Setup Wizard — sign-in step. Two cards: Anthropic (Claude) and
- * ChatGPT (via omp). All UI lives in the shared AuthSignInCards
+ * Setup Wizard — sign-in step. Provider cards for Claude, Codex, and
+ * OMP/ChatGPT. All UI lives in the shared AuthSignInCards
  * component so /settings/api-keys can mount the same cards.
  */
 import { AuthSignInCards } from '../AuthSignInCards';
