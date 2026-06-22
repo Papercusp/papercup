@@ -16,6 +16,16 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { ackDelivery, cancelAwait } from '../../events/await/store';
+import { bulkContent, runBulk } from '../_bulk';
+
+const cancelItemSchema = z
+  .object({
+    await_id: z.number().int().positive().optional().describe('The id events:await returned — retract the subscription.'),
+    delivery_id: z.number().int().positive().optional().describe('A pending/parked wake delivery id — acknowledge it as received.'),
+  })
+  .refine((a) => a.await_id != null || a.delivery_id != null, {
+    message: 'pass await_id and/or delivery_id',
+  });
 
 export default defineTool({
   name: 'events:cancel',
@@ -32,33 +42,49 @@ export default defineTool({
   args: z
     .object({
       await_id: z.number().int().positive().optional().describe('The id events:await returned — retract the subscription.'),
+      await_ids: z.array(z.number().int().positive()).min(1).max(200).optional().describe('await registrations to cancel'),
       delivery_id: z.number().int().positive().optional().describe('A pending/parked wake delivery id (from events:status or the inbox nudge) — acknowledge it as received.'),
+      delivery_ids: z.array(z.number().int().positive()).min(1).max(200).optional().describe('parked wake deliveries to acknowledge'),
+      items: z.array(cancelItemSchema).min(1).max(200).optional().describe('mixed await/delivery cancel or ack operations'),
     })
-    .refine((a) => a.await_id != null || a.delivery_id != null, {
-      message: 'pass await_id and/or delivery_id',
+    .refine((a) => a.await_id != null || a.delivery_id != null || (a.await_ids?.length ?? 0) > 0 || (a.delivery_ids?.length ?? 0) > 0 || (a.items?.length ?? 0) > 0, {
+      message: 'pass await_id/delivery_id, *_ids, or items',
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const out: Record<string, unknown> = { ok: true };
-    if (args.await_id != null) {
-      const cancelled = await cancelAwait({
-        awaitId: args.await_id,
-        subscriberId: identity.ownerId,
-        workspaceId: identity.workspaceId ?? undefined,
-      });
-      out.await_id = args.await_id;
-      out.cancelled = cancelled;
-      if (!cancelled) out.ok = false;
-    }
-    if (args.delivery_id != null) {
-      const acked = await ackDelivery({ deliveryId: args.delivery_id, subscriberId: identity.ownerId });
-      out.delivery_id = args.delivery_id;
-      out.acked = acked;
-      if (!acked && args.await_id == null) out.ok = false;
-    }
-    if (out.ok !== true) out.reason = 'not_found_or_not_yours_or_already_settled';
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(out) }],
-    };
+    const items = [
+      ...(args.await_id != null || args.delivery_id != null
+        ? [{ await_id: args.await_id, delivery_id: args.delivery_id }]
+        : []),
+      ...(args.await_ids ?? []).map((await_id) => ({ await_id })),
+      ...(args.delivery_ids ?? []).map((delivery_id) => ({ delivery_id })),
+      ...(args.items ?? []),
+    ];
+    const env = await runBulk(
+      items,
+      async (item) => {
+        const out: Record<string, unknown> = { ok: true };
+        if (item.await_id != null) {
+          const cancelled = await cancelAwait({
+            awaitId: item.await_id,
+            subscriberId: identity.ownerId,
+            workspaceId: identity.workspaceId ?? undefined,
+          });
+          out.await_id = item.await_id;
+          out.cancelled = cancelled;
+          if (!cancelled) out.ok = false;
+        }
+        if (item.delivery_id != null) {
+          const acked = await ackDelivery({ deliveryId: item.delivery_id, subscriberId: identity.ownerId });
+          out.delivery_id = item.delivery_id;
+          out.acked = acked;
+          if (!acked && item.await_id == null) out.ok = false;
+        }
+        if (out.ok !== true) out.error = 'not_found_or_not_yours_or_already_settled';
+        return out as { ok: boolean; await_id?: number; delivery_id?: number; error?: string };
+      },
+      { keyOf: (item) => ({ ...(item.await_id != null ? { await_id: item.await_id } : {}), ...(item.delivery_id != null ? { delivery_id: item.delivery_id } : {}) }) },
+    );
+    return bulkContent(env);
   },
 });

@@ -1417,6 +1417,7 @@ function AgentChatsView() {
   const [role, setRole] = useQueryState('acrole', parseAsString.withDefault(''));
   const [sel, setSel] = useQueryState('chat', parseAsString);
   const [list, setList] = useState<AgentChatRow[]>([]);
+  const [total, setTotal] = useState<number | undefined>(undefined);
   const [detail, setDetail] = useState<AgentChatDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1424,12 +1425,13 @@ function AgentChatsView() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await comms<{ items?: AgentChatRow[] }>('agent-chats', 'list', {
-        limit: 500,
+      const r = await comms<{ items?: AgentChatRow[]; total?: number }>('agent-chats', 'list', {
+        limit: COMMS_LIST_LIMIT,
         ...(harness ? { harness } : {}),
         ...(role ? { role } : {}),
       });
       setList(r.items ?? []);
+      setTotal(r.total);
       setError(null);
     } catch (e) {
       setError(errText(e));
@@ -1521,7 +1523,7 @@ function AgentChatsView() {
       <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
           <span>Agent chat sessions</span>
-          <strong>{loading ? '…' : list.length}</strong>
+          <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
         </div>
         {harnesses.length > 0 && (
           <div className="pc-coord__filters" role="group" aria-label="Harness filter">
@@ -1664,14 +1666,16 @@ interface MsgRow {
 
 function MessagesView() {
   const [list, setList] = useState<MsgRow[]>([]);
+  const [total, setTotal] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useQueryState('msg', parseAsString);
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await comms<{ items?: MsgRow[] }>('messages', 'list', { limit: 500 });
+      const r = await comms<{ items?: MsgRow[]; total?: number }>('messages', 'list', { limit: COMMS_LIST_LIMIT });
       setList(r.items ?? []);
+      setTotal(r.total);
       setError(null);
     } catch (e) {
       setError(errText(e));
@@ -1771,7 +1775,7 @@ function MessagesView() {
             <p>Work-item-scoped messages between agents (messages:send / inbox).</p>
           </div>
           <div className="pc-advfeed__filtermeta">
-            <strong>{loading ? 'loading…' : `${list.length} messages`}</strong>
+            <strong>{loading ? 'loading…' : `${listCountLabel(list.length, total)} messages`}</strong>
             <button type="button" className="pc-coord__chip pc-advfeed__refresh" aria-label="Reload messages" disabled={loading} onClick={() => void reload()}>
               <RefreshCw size={11} aria-hidden />
             </button>

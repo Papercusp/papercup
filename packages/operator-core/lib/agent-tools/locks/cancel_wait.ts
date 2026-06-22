@@ -11,6 +11,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryCancelWait } from './su-lock-store';
+import { bulkContent, runBulk } from '../_bulk';
 
 export default defineTool({
   name: 'locks:cancel_wait',
@@ -24,21 +25,27 @@ export default defineTool({
   capability: 'locks:write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'bee'],
-  args: z.object({
-    ticket_id: z.string().uuid(),
-  }),
+  args: z
+    .object({
+      ticket_id: z.string().uuid().optional().describe('single waiter ticket to cancel'),
+      ticket_ids: z.array(z.string().uuid()).min(1).max(200).optional().describe('waiter tickets to cancel in one call'),
+    })
+    .refine((a) => Boolean(a.ticket_id) || (a.ticket_ids?.length ?? 0) > 0, {
+      message: 'pass `ticket_id` or `ticket_ids`',
+    }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readIdentity(ctx);
-    const result = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-      tryCancelWait(tx, args.ticket_id, ownerId),
+    const ticketIds = Array.from(new Set([...(args.ticket_id ? [args.ticket_id] : []), ...(args.ticket_ids ?? [])]));
+    const env = await runBulk(
+      ticketIds,
+      async (ticketId) => {
+        const result = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+          tryCancelWait(tx, ticketId, ownerId),
+        );
+        return { ok: true as const, ticket_id: ticketId, cancelled: result.cancelled };
+      },
+      { keyOf: (ticketId) => ({ ticket_id: ticketId }) },
     );
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ ok: true, cancelled: result.cancelled }),
-        },
-      ],
-    };
+    return bulkContent(env);
   },
 });

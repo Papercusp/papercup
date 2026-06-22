@@ -14,15 +14,14 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getPlanRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
   harness: harnessArg,
-  slug: z.string().min(1).describe('Plan slug (filename stem).'),
-});
-
-const text = (payload: Record<string, unknown>, isError = false) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-  ...(isError ? { isError: true as const } : {}),
+  slug: z.string().min(1).optional().describe('Plan slug (filename stem).'),
+  slugs: z.array(z.string().min(1)).min(1).max(100).optional().describe('Plan slugs to read in one call.'),
+}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+  message: 'pass `slug` or `slugs`',
 });
 
 export default defineTool({
@@ -44,15 +43,22 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const opts = await ctxToPlanSourceOpts(sctx);
-    const row = await getPlanRow(args.slug, opts);
-    if (!row) return text({ error: 'not_found', slug: args.slug }, true);
-
-    return text({
-      ok: true,
-      slug: row.planSlug,
-      template: row.template,
-      templateData: row.templateData ?? null,
-      version: row.version,
-    });
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const row = await getPlanRow(slug, opts);
+        if (!row) return { ok: false as const, slug, error: 'not_found' };
+        return {
+          ok: true as const,
+          slug: row.planSlug,
+          template: row.template,
+          templateData: row.templateData ?? null,
+          version: row.version,
+        };
+      },
+      { keyOf: (slug) => ({ slug }) },
+    );
+    return bulkContent(env);
   },
 });

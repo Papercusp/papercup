@@ -6,6 +6,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { releaseIssue } from '../../issues-engineer';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 export default defineTool({
   name: 'issues:release',
@@ -18,11 +19,26 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ id: z.string().min(1) }),
+  args: z
+    .object({
+      id: z.string().min(1).optional().describe('single issue id to release'),
+      ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('issue ids to release in one call'),
+    })
+    .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
+      message: 'pass `id` or `ids`',
+    }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const issue = await releaseIssue(args.id);
-    if (!issue) return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'issue not found' }) }] };
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, issue: { id: issue.id, assignee: issue.assignee } }) }] };
+    const ids = mergeIds(args.id, args.ids);
+    const env = await runBulk(
+      ids,
+      async (id) => {
+        const issue = await releaseIssue(id);
+        if (!issue) return { ok: false as const, id, error: 'issue not found' };
+        return { ok: true as const, id, issue: { id: issue.id, assignee: issue.assignee } };
+      },
+      { keyOf: (id) => ({ id }) },
+    );
+    return bulkContent(env);
   },
 });

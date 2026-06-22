@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { SuLocksCoordinator } from './coordinator';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
@@ -23,10 +24,15 @@ export default defineTool({
   capability: 'locks:write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'bee'],
-  args: z.object({
-    lock_id: z.string().uuid(),
-    ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
-  }),
+  args: z
+    .object({
+      lock_id: z.string().uuid().optional().describe('single lock id to heartbeat'),
+      lock_ids: z.array(z.string().uuid()).min(1).max(200).optional().describe('lock ids to heartbeat in one call'),
+      ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
+    })
+    .refine((a) => Boolean(a.lock_id) || (a.lock_ids?.length ?? 0) > 0, {
+      message: 'pass `lock_id` or `lock_ids`',
+    }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
@@ -38,26 +44,27 @@ export default defineTool({
     // not. SuLocksCoordinator.heartbeat reads only claim.claimId +
     // claim.owner, so a minimal claim suffices.
     const coordinator = new SuLocksCoordinator({ coordinationDomain });
-    const result = await coordinator.heartbeat(
-      { claimId: args.lock_id, owner: ownerId, paths: [], expiresAt: null },
-      ttlSec * 1000,
+    const lockIds = mergeIds(args.lock_id, args.lock_ids);
+    const env = await runBulk(
+      lockIds,
+      async (lockId) => {
+        const result = await coordinator.heartbeat(
+          { claimId: lockId, owner: ownerId, paths: [], expiresAt: null },
+          ttlSec * 1000,
+        );
+        return {
+          ok: result.ok,
+          lock_id: lockId,
+          extended: result.ok,
+          expires_ts: result.ok ? (result.claim.expiresAt?.toISOString() ?? null) : null,
+          owner: ownerId,
+          owner_label: ownerLabel,
+          ...(result.ok ? {} : { error: 'not_found_or_not_yours_or_expired' }),
+        };
+      },
+      { keyOf: (lockId) => ({ lock_id: lockId }) },
     );
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            extended: result.ok,
-            expires_ts: result.ok
-              ? (result.claim.expiresAt?.toISOString() ?? null)
-              : null,
-            owner: ownerId,
-            owner_label: ownerLabel,
-          }),
-        },
-      ],
-    };
+    return bulkContent(env);
   },
 });

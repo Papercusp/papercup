@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
   listRecipes: vi.fn(),
+  countRecipes: vi.fn(),
   recipeCandidates: vi.fn(),
   hiveHomeSlugForHarness: vi.fn(),
   activeWorkspaceId: vi.fn(() => 'ws-1'),
@@ -22,7 +23,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   getOrgPg: () => ({ sql: {} }),
 }));
-vi.mock('../code-recipes-store', () => ({ listRecipes: H.listRecipes }));
+vi.mock('../code-recipes-store', () => ({ listRecipes: H.listRecipes, countRecipes: H.countRecipes }));
 vi.mock('../code-recipes-candidates', () => ({ recipeCandidates: H.recipeCandidates }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: H.activeWorkspaceId }));
 vi.mock('../hive-federation', () => ({ hiveHomeSlugForHarness: H.hiveHomeSlugForHarness }));
@@ -59,6 +60,7 @@ describe('codeRecipes resolver', () => {
     H.activeWorkspaceId.mockReturnValue('ws-1');
     H.hiveHomeSlugForHarness.mockResolvedValue('papercusp');
     H.listRecipes.mockResolvedValue([RECIPE]);
+    H.countRecipes.mockResolvedValue(1);
   });
 
   it('is registered alongside recipeCandidates in the v2 resolver', () => {
@@ -67,23 +69,35 @@ describe('codeRecipes resolver', () => {
     expect(names).toContain('recipeCandidates');
   });
 
-  it('returns the hive-scoped recipe rows from listRecipes()', async () => {
-    const rows = await resolveNamedQueryV2('codeRecipes', {});
-    expect(rows).toEqual([RECIPE]);
-    // workspace from activeWorkspaceId, hive resolved to the home hive.
-    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: 'papercusp' });
+  it('returns the hive-scoped recipe rows from listRecipes() with the true total on row[0]._meta', async () => {
+    H.countRecipes.mockResolvedValue(42);
+    const rows = (await resolveNamedQueryV2('codeRecipes', {})) as Array<typeof RECIPE & { _meta?: { total?: number } }>;
+    // The row data is preserved; row[0] carries the capped-aware total via attachListMeta.
+    expect(rows[0]).toMatchObject(RECIPE);
+    expect(rows[0]._meta).toEqual({ total: 42 });
+    // workspace from activeWorkspaceId, hive resolved to the home hive; default LIMIT applied.
+    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: 'papercusp', limit: 1000 });
+    // COUNT uses the SAME hive filter (no limit), so it's the true total.
+    expect(H.countRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: 'papercusp' });
   });
 
   it('allHives:true lists the whole workspace (no hive narrowing)', async () => {
     await resolveNamedQueryV2('codeRecipes', { allHives: true });
-    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1');
+    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { limit: 1000 });
+    expect(H.countRecipes).toHaveBeenCalledWith({}, 'ws-1', {});
     expect(H.hiveHomeSlugForHarness).not.toHaveBeenCalled();
+  });
+
+  it('honors an explicit limit arg', async () => {
+    await resolveNamedQueryV2('codeRecipes', { limit: 25 });
+    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: 'papercusp', limit: 25 });
   });
 
   it('a failed hive resolution degrades to the workspace-global bucket (hiveSlug null)', async () => {
     H.hiveHomeSlugForHarness.mockRejectedValue(new Error('no hive'));
     await resolveNamedQueryV2('codeRecipes', {});
-    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: null });
+    expect(H.listRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: null, limit: 1000 });
+    expect(H.countRecipes).toHaveBeenCalledWith({}, 'ws-1', { hiveSlug: null });
   });
 });
 

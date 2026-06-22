@@ -32,9 +32,9 @@ const getRow = vi.mocked(getPlanRow);
 const armM = vi.mocked(armPlanSchedule);
 const tool = (await import('./arm-schedule')).default;
 
-type Out = { content: { text: string }[]; isError?: boolean };
+type Out = { data?: any; content?: { text: string }[]; isError?: boolean };
 const call = (slug = 'p1') => tool.handler({ harness: 'web', slug } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => o.data ?? JSON.parse(o.content![0]!.text);
 
 const scheduledPlan = { workspaceId: 'default', harnessSlug: 'web', schedule: { rrule: 'FREQ=DAILY' }, scheduledAt: null };
 
@@ -48,32 +48,39 @@ beforeEach(() => {
 describe('plans:arm-schedule guard chain', () => {
   it('refuses when the scheduled-plans flag is off', async () => {
     flagM.mockResolvedValue(false);
-    const out = await call();
-    expect(out.isError).toBe(true);
-    expect(body(out).error).toBe('feature_disabled');
+    const b = body(await call());
+    expect(b.results[0].error).toBe('feature_disabled');
     expect(armM).not.toHaveBeenCalled();
   });
 
   it('not_found for an unknown plan', async () => {
     getRow.mockResolvedValue(null as never);
-    expect(body(await call()).error).toBe('not_found');
+    expect(body(await call()).results[0].error).toBe('not_found');
     expect(armM).not.toHaveBeenCalled();
   });
 
   it('not_scheduled when the plan has neither schedule nor scheduledAt', async () => {
     getRow.mockResolvedValue({ workspaceId: 'default', harnessSlug: 'web', schedule: null, scheduledAt: null } as never);
-    expect(body(await call()).error).toBe('not_scheduled');
+    expect(body(await call()).results[0].error).toBe('not_scheduled');
     expect(armM).not.toHaveBeenCalled();
   });
 
   it('surfaces an armPlanSchedule failure reason', async () => {
     armM.mockResolvedValue({ ok: false, reason: 'already_armed' } as never);
-    expect(body(await call()).error).toBe('already_armed');
+    expect(body(await call()).results[0].error).toBe('already_armed');
   });
 
   it('arms and returns routineId + nextFireAt', async () => {
     const b = body(await call());
-    expect(b).toMatchObject({ ok: true, slug: 'p1', routineId: 'r1', nextFireAt: 't1' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, slug: 'p1', routineId: 'r1', nextFireAt: 't1' }] });
     expect(armM.mock.calls[0]![0]).toMatchObject({ workspaceId: 'default', harnessSlug: 'web', templateSlug: 'p1' });
+  });
+
+  it('arms selected slugs as a keyed batch', async () => {
+    const r = (await tool.handler({ harness: 'web', slugs: ['p1', 'p2'] } as never, {} as never)) as Out;
+    const b = body(r);
+    expect(b.counts).toEqual({ ok: 2, failed: 0 });
+    expect(b.results.map((x: any) => x.slug)).toEqual(['p1', 'p2']);
+    expect(armM).toHaveBeenCalledTimes(2);
   });
 });

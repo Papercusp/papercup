@@ -17,13 +17,18 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { bulkContent, runBulk } from '../_bulk';
 
-const argsSchema = z.object({
+const setPriorityItemSchema = z.object({
   slug: z.string().min(1).describe('Plan slug to prioritize.'),
   priority: z.number().int().nullable().describe(
     'Dispatch rank — lower = dispatched first. Pass null to clear (no explicit priority; uses started_at order).',
   ),
+});
+
+const argsSchema = setPriorityItemSchema.extend({
   harness: harnessArg,
+  items: z.array(setPriorityItemSchema).min(1).max(200).optional().describe('plan priorities to set in one call'),
 });
 
 export default defineTool({
@@ -43,24 +48,25 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
-    const now = new Date().toISOString();
-
-    await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-      return tx`
-        UPDATE harness_shared.harness_plans
-           SET op_priority  = ${args.priority},
-               op_updated_at = ${now}
-         WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
-           AND harness_slug = ${harnessSlug}
-           AND plan_slug    = ${args.slug}
-      `;
-    });
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({ ok: true, slug: args.slug, harnessSlug, priority: args.priority }),
-      }],
-    };
+    const items = args.items ?? [{ slug: args.slug, priority: args.priority }];
+    const env = await runBulk(
+      items,
+      async (item) => {
+        const now = new Date().toISOString();
+        await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+          return tx`
+            UPDATE harness_shared.harness_plans
+               SET op_priority  = ${item.priority},
+                   op_updated_at = ${now}
+             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+               AND harness_slug = ${harnessSlug}
+               AND plan_slug    = ${item.slug}
+          `;
+        });
+        return { ok: true as const, slug: item.slug, harnessSlug, priority: item.priority };
+      },
+      { keyOf: (item) => ({ slug: item.slug }) },
+    );
+    return bulkContent(env);
   },
 });

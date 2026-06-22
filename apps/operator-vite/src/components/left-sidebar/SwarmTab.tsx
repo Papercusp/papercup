@@ -264,7 +264,15 @@ export default function SwarmTab({ active }: { active: boolean }) {
             )}
           </div>
           <div className="pclsb-sec">
-            <div className="pclsb-sec__head">fleet conversations ({(convs.data ?? []).length})</div>
+            {/* Honest count: only the first 15 conversations render, so when more
+                exist show "15 of N" rather than letting N read as the shown count. */}
+            <div className="pclsb-sec__head">
+              fleet conversations (
+              {(convs.data ?? []).length > 15
+                ? `15 of ${(convs.data ?? []).length}`
+                : (convs.data ?? []).length}
+              )
+            </div>
             {(convs.data ?? []).slice(0, 15).map((c) => (
               <div className="pclsb-mail" key={c.id}>
                 <div className="pclsb-mail__meta">

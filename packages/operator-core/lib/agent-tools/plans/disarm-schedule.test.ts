@@ -24,9 +24,9 @@ const getRow = vi.mocked(getPlanRow);
 const disarmM = vi.mocked(disarmPlanSchedule);
 const tool = (await import('./disarm-schedule')).default;
 
-type Out = { content: { text: string }[]; isError?: boolean };
+type Out = { data?: any; content?: { text: string }[]; isError?: boolean };
 const call = (slug = 'p1') => tool.handler({ harness: 'web', slug } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => o.data ?? JSON.parse(o.content![0]!.text);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -36,17 +36,24 @@ beforeEach(() => {
 describe('plans:disarm-schedule handler', () => {
   it('not_found for an unknown plan, and does not disarm', async () => {
     getRow.mockResolvedValue(null as never);
-    const out = await call();
-    expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ error: 'not_found', slug: 'p1' });
+    const b = body(await call());
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, error: 'not_found', slug: 'p1' }] });
     expect(disarmM).not.toHaveBeenCalled();
   });
 
   it('disarms with the resolved scope and returns ok', async () => {
     getRow.mockResolvedValue({ workspaceId: 'default', harnessSlug: 'web' } as never);
-    const out = await call();
-    expect(out.isError).toBeUndefined();
-    expect(body(out)).toMatchObject({ ok: true, slug: 'p1' });
+    const b = body(await call());
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, slug: 'p1' }] });
     expect(disarmM).toHaveBeenCalledWith({ workspaceId: 'default', harnessSlug: 'web', templateSlug: 'p1' });
+  });
+
+  it('disarms selected slugs as a keyed batch', async () => {
+    getRow.mockResolvedValue({ workspaceId: 'default', harnessSlug: 'web' } as never);
+    const out = (await tool.handler({ harness: 'web', slugs: ['p1', 'p2'] } as never, {} as never)) as Out;
+    const b = body(out);
+    expect(b.counts).toEqual({ ok: 2, failed: 0 });
+    expect(b.results.map((r: any) => r.slug)).toEqual(['p1', 'p2']);
+    expect(disarmM).toHaveBeenCalledTimes(2);
   });
 });

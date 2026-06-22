@@ -11,6 +11,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryHeartbeatResource } from './su-lock-store';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
@@ -26,27 +27,35 @@ export default defineTool({
   capability: 'locks:write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'bee'],
-  args: z.object({
-    lock_id: z.string().uuid(),
-    ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
-  }),
+  args: z
+    .object({
+      lock_id: z.string().uuid().optional().describe('single named-resource lock id to heartbeat'),
+      lock_ids: z.array(z.string().uuid()).min(1).max(200).optional().describe('named-resource lock ids to heartbeat in one call'),
+      ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
+    })
+    .refine((a) => Boolean(a.lock_id) || (a.lock_ids?.length ?? 0) > 0, {
+      message: 'pass `lock_id` or `lock_ids`',
+    }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readIdentity(ctx);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
-    const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-      tryHeartbeatResource(tx, coordinationDomain, ownerId, args.lock_id, ttlSec),
+    const lockIds = mergeIds(args.lock_id, args.lock_ids);
+    const env = await runBulk(
+      lockIds,
+      async (lockId) => {
+        const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+          tryHeartbeatResource(tx, coordinationDomain, ownerId, lockId, ttlSec),
+        );
+        return {
+          ok: r.extended,
+          lock_id: lockId,
+          extended: r.extended,
+          expires_ts: r.expires_ts ? r.expires_ts.toISOString() : null,
+          ...(r.extended ? {} : { error: 'not_found_or_not_yours_or_expired' }),
+        };
+      },
+      { keyOf: (lockId) => ({ lock_id: lockId }) },
     );
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: r.extended,
-            extended: r.extended,
-            expires_ts: r.expires_ts ? r.expires_ts.toISOString() : null,
-          }),
-        },
-      ],
-    };
+    return bulkContent(env);
   },
 });

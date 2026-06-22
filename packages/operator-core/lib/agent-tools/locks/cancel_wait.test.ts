@@ -20,20 +20,44 @@ import { tryCancelWait } from './su-lock-store';
 const cancelM = vi.mocked(tryCancelWait);
 const tool = (await import('./cancel_wait')).default;
 
-type Out = { content: { text: string }[] };
-const call = () => tool.handler({ ticket_id: '22222222-2222-2222-2222-222222222222' } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+type Out = { data?: any; content?: { text: string }[] };
+const call = (args: Record<string, unknown> = { ticket_id: '22222222-2222-2222-2222-222222222222' }) =>
+  tool.handler(args as never, {} as never) as Promise<Out>;
+const body = (o: Out) => o.data ?? JSON.parse(o.content![0]!.text);
 
 beforeEach(() => vi.clearAllMocks());
 
 describe('locks:cancel_wait handler', () => {
   it('surfaces cancelled=true for a clean cancel', async () => {
     cancelM.mockResolvedValue({ cancelled: true } as never);
-    expect(body(await call())).toMatchObject({ ok: true, cancelled: true });
+    expect(body(await call())).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [{ ok: true, ticket_id: '22222222-2222-2222-2222-222222222222', cancelled: true }],
+    });
   });
 
   it('surfaces cancelled=false when a grant raced the cancel', async () => {
     cancelM.mockResolvedValue({ cancelled: false } as never);
-    expect(body(await call())).toMatchObject({ ok: true, cancelled: false });
+    expect(body(await call())).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [{ ok: true, ticket_id: '22222222-2222-2222-2222-222222222222', cancelled: false }],
+    });
+  });
+
+  it('cancels selected ticket_ids as one keyed batch', async () => {
+    cancelM.mockResolvedValue({ cancelled: true } as never);
+    const b = body(await call({
+      ticket_ids: [
+        '22222222-2222-2222-2222-222222222222',
+        '33333333-3333-3333-3333-333333333333',
+      ],
+    }));
+    expect(b.counts).toEqual({ ok: 2, failed: 0 });
+    expect(b.results.map((r: any) => r.ticket_id)).toEqual([
+      '22222222-2222-2222-2222-222222222222',
+      '33333333-3333-3333-3333-333333333333',
+    ]);
   });
 });

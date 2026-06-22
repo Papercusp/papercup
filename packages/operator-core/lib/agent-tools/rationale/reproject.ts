@@ -18,6 +18,17 @@ import {
   reprojectInsights,
   backfillAll,
 } from '../../rationale/service';
+import { bulkContent, runBulk } from '../_bulk';
+
+const reprojectItemSchema = z.object({
+  kind: z
+    .enum(['plan', 'work_item', 'insight', 'tagged', 'all'])
+    .describe('What to reproject. "all" = full backfill; "insight" = all insights.'),
+  id: z.string().optional().describe('Plan slug or work-item id (for kind plan/work_item).'),
+  harness: z.string().optional().describe('Harness slug, when disambiguating a plan/work-item.'),
+  objectKind: z.string().optional().describe('For kind="tagged": the tagged object kind.'),
+  objectRef: z.string().optional().describe('For kind="tagged": the tagged object ref.'),
+});
 
 export default defineTool({
   name: 'rationale:reproject',
@@ -30,52 +41,57 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({
-    kind: z
-      .enum(['plan', 'work_item', 'insight', 'tagged', 'all'])
-      .describe('What to reproject. "all" = full backfill; "insight" = all insights.'),
-    id: z.string().optional().describe('Plan slug or work-item id (for kind plan/work_item).'),
-    harness: z.string().optional().describe('Harness slug, when disambiguating a plan/work-item.'),
-    objectKind: z.string().optional().describe('For kind="tagged": the tagged object kind.'),
-    objectRef: z.string().optional().describe('For kind="tagged": the tagged object ref.'),
-  }),
+  args: z
+    .object({
+      kind: z
+        .enum(['plan', 'work_item', 'insight', 'tagged', 'all'])
+        .optional()
+        .describe('What to reproject. "all" = full backfill; "insight" = all insights.'),
+      id: z.string().optional().describe('Plan slug or work-item id (for kind plan/work_item).'),
+      harness: z.string().optional().describe('Harness slug, when disambiguating a plan/work-item.'),
+      objectKind: z.string().optional().describe('For kind="tagged": the tagged object kind.'),
+      objectRef: z.string().optional().describe('For kind="tagged": the tagged object ref.'),
+      items: z.array(reprojectItemSchema).min(1).max(200).optional().describe('sources to reproject in one call'),
+    })
+    .refine((a) => Boolean(a.kind) || (a.items?.length ?? 0) > 0, {
+      message: 'pass a single source or items[]',
+    }),
   async handler(args) {
-    let summary: Record<string, unknown>;
-    switch (args.kind) {
-      case 'plan':
-        if (!args.id) return errResult('id (plan slug) required for kind="plan"');
-        await reprojectPlan(args.id, args.harness);
-        summary = { reprojected: 'plan', id: args.id };
-        break;
-      case 'work_item':
-        if (!args.id) return errResult('id (work-item id) required for kind="work_item"');
-        await reprojectWorkItem(args.id, args.harness);
-        summary = { reprojected: 'work_item', id: args.id };
-        break;
-      case 'tagged':
-        if (!args.objectKind || !args.objectRef)
-          return errResult('objectKind + objectRef required for kind="tagged"');
-        await reprojectTagged(args.objectKind, args.objectRef);
-        summary = { reprojected: 'tagged', objectKind: args.objectKind, objectRef: args.objectRef };
-        break;
-      case 'insight': {
-        const n = await reprojectInsights();
-        summary = { reprojected: 'insight', count: n };
-        break;
-      }
-      case 'all': {
-        const r = await backfillAll();
-        summary = { reprojected: 'all', ...r };
-        break;
-      }
-    }
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...summary }) }] };
+    const items = args.items ?? [args as z.infer<typeof reprojectItemSchema>];
+    const env = await runBulk(
+      items,
+      async (item) => {
+        const summary = await reprojectOne(item);
+        return { ok: true as const, ...summary };
+      },
+      { keyOf: (item) => ({ kind: item.kind, ...(item.id ? { id: item.id } : {}), ...(item.objectRef ? { objectRef: item.objectRef } : {}) }) },
+    );
+    return bulkContent(env);
   },
 });
 
-function errResult(message: string) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: message }) }],
-    isError: true,
-  };
+async function reprojectOne(args: z.infer<typeof reprojectItemSchema>): Promise<Record<string, unknown>> {
+  switch (args.kind) {
+      case 'plan':
+        if (!args.id) throw new Error('id (plan slug) required for kind="plan"');
+        await reprojectPlan(args.id, args.harness);
+        return { reprojected: 'plan', id: args.id };
+      case 'work_item':
+        if (!args.id) throw new Error('id (work-item id) required for kind="work_item"');
+        await reprojectWorkItem(args.id, args.harness);
+        return { reprojected: 'work_item', id: args.id };
+      case 'tagged':
+        if (!args.objectKind || !args.objectRef)
+          throw new Error('objectKind + objectRef required for kind="tagged"');
+        await reprojectTagged(args.objectKind, args.objectRef);
+        return { reprojected: 'tagged', objectKind: args.objectKind, objectRef: args.objectRef };
+      case 'insight': {
+        const n = await reprojectInsights();
+        return { reprojected: 'insight', count: n };
+      }
+      case 'all': {
+        const r = await backfillAll();
+        return { reprojected: 'all', ...r };
+      }
+  }
 }

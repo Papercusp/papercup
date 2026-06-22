@@ -20,10 +20,14 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
-  slug: z.string().min(1).describe('Plan slug to pause.'),
+  slug: z.string().min(1).optional().describe('Plan slug to pause.'),
+  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to pause in one call.'),
   harness: harnessArg,
+}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+  message: 'pass `slug` or `slugs`',
 });
 
 export default defineTool({
@@ -45,53 +49,39 @@ export default defineTool({
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
-    const now = new Date().toISOString();
-
-    // op_status is null until a plan has been started — so a pause that matches
-    // no started/paused/done op_status means "never started" (the row exists as
-    // the plan itself, but it was never operationally started).
-    const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-      return tx<{ op_status: string; op_updated_at: string }[]>`
-        UPDATE harness_shared.harness_plans
-           SET op_status = 'paused', op_updated_at = ${now}
-         WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
-           AND harness_slug  = ${harnessSlug}
-           AND plan_slug     = ${args.slug}
-           AND op_status IS NOT NULL
-        RETURNING op_status, op_updated_at
-      `;
-    });
-
-    ctxAny.metadata?.({ slug: args.slug, harnessSlug });
-
-    if (rows.length === 0) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              slug: args.slug,
-              harnessSlug,
-              notStarted: true,
-              message: 'plan has no started/paused row — call plans:start first',
-            }),
-          },
-        ],
-      };
-    }
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            slug: args.slug,
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const now = new Date().toISOString();
+        // op_status is null until a plan has been started — so a pause that matches
+        // no started/paused/done op_status means "never started" (the row exists as
+        // the plan itself, but it was never operationally started).
+        const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+          return tx<{ op_status: string; op_updated_at: string }[]>`
+            UPDATE harness_shared.harness_plans
+               SET op_status = 'paused', op_updated_at = ${now}
+             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+               AND harness_slug  = ${harnessSlug}
+               AND plan_slug     = ${slug}
+               AND op_status IS NOT NULL
+            RETURNING op_status, op_updated_at
+          `;
+        });
+        ctxAny.metadata?.({ slug, harnessSlug });
+        if (rows.length === 0) {
+          return {
+            ok: true as const,
+            slug,
             harnessSlug,
-            status: 'paused',
-            updatedAt: rows[0].op_updated_at,
-          }),
-        },
-      ],
-    };
+            notStarted: true,
+            message: 'plan has no started/paused row — call plans:start first',
+          };
+        }
+        return { ok: true as const, slug, harnessSlug, status: 'paused', updatedAt: rows[0].op_updated_at };
+      },
+      { keyOf: (slug) => ({ slug }) },
+    );
+    return bulkContent(env);
   },
 });

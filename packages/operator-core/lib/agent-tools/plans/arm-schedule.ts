@@ -18,18 +18,15 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getPlanRow } from './source';
 import { armPlanSchedule } from '../../harness/routines/arm-plan-schedule';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
   harness: harnessArg,
-  slug: z.string().min(1).describe('Plan slug (the scheduled template) to arm.'),
+  slug: z.string().min(1).optional().describe('Plan slug (the scheduled template) to arm.'),
+  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Scheduled plan slugs to arm in one call.'),
+}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+  message: 'pass `slug` or `slugs`',
 });
-
-function errOut(code: string, slug: string, detail?: string) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: code, slug, ...(detail ? { detail } : {}) }) }],
-    isError: true,
-  };
-}
 
 export default defineTool({
   name: 'plans:arm-schedule',
@@ -47,30 +44,40 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     if (!(await getFlag(FLAGS.SCHEDULED_PLANS, 'system'))) {
-      return errOut('feature_disabled', args.slug, 'the papercusp-scheduled-plans flag is off');
+      return bulkContent({
+        ok: true,
+        results: mergeIds(args.slug, args.slugs).map((slug) => ({
+          ok: false,
+          slug,
+          error: 'feature_disabled',
+          detail: 'the papercusp-scheduled-plans flag is off',
+        })),
+        counts: { ok: 0, failed: mergeIds(args.slug, args.slugs).length },
+      });
     }
     const opts = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
-    const plan = await getPlanRow(args.slug, opts);
-    if (!plan) return errOut('not_found', args.slug);
-    if (!plan.schedule && !plan.scheduledAt) {
-      return errOut('not_scheduled', args.slug, 'author a schedule with plans:set-schedule first');
-    }
-    const res = await armPlanSchedule({
-      workspaceId: plan.workspaceId,
-      harnessSlug: plan.harnessSlug,
-      templateSlug: args.slug,
-      schedule: plan.schedule,
-      scheduledAt: plan.scheduledAt,
-      concurrency: plan.schedule?.concurrency,
-    });
-    if (!res.ok) return errOut(res.reason, args.slug);
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ ok: true, slug: args.slug, routineId: res.routineId, nextFireAt: res.nextFireAt }),
-        },
-      ],
-    };
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const plan = await getPlanRow(slug, opts);
+        if (!plan) return { ok: false as const, slug, error: 'not_found' };
+        if (!plan.schedule && !plan.scheduledAt) {
+          return { ok: false as const, slug, error: 'not_scheduled', detail: 'author a schedule with plans:set-schedule first' };
+        }
+        const res = await armPlanSchedule({
+          workspaceId: plan.workspaceId,
+          harnessSlug: plan.harnessSlug,
+          templateSlug: slug,
+          schedule: plan.schedule,
+          scheduledAt: plan.scheduledAt,
+          concurrency: plan.schedule?.concurrency,
+        });
+        if (!res.ok) return { ok: false as const, slug, error: res.reason };
+        return { ok: true as const, slug, routineId: res.routineId, nextFireAt: res.nextFireAt };
+      },
+      { keyOf: (slug) => ({ slug }) },
+    );
+    return bulkContent(env);
   },
 });

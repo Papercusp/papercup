@@ -78,6 +78,33 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'sentinel'],
   modality: ['text'],
   args: argsSchema,
+  // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, P-013 — the first
+  // exemplar). plans:attention is the strongest ROI target: ~9.6k tokens, ~19k
+  // calls/6h, no `compact` escape. The diffable unit is the FLAT AttentionItem set,
+  // extracted from the grouped response via `rows` (the response shape is untouched,
+  // so the UI's `plans.attention` sync read is unaffected). No explicit `revision`
+  // → the framework derives it from the item-set checksum (changed iff any item's
+  // content changes / an item is added or removed); no `rowRevision` → per-item
+  // content hash. An unchanged feed returns `not_modified` (no replay); a changed
+  // feed returns added/updated/removed items, checksum-verified by the harness with
+  // force-full-on-mismatch; first/stale/scope-change/over-age → a full snapshot.
+  delta: {
+    rows: (data) => {
+      const groups = (data as { groups?: Array<{ items?: unknown[] }> } | null | undefined)?.groups;
+      return Array.isArray(groups) ? groups.flatMap((g) => (Array.isArray(g.items) ? g.items : [])) : null;
+    },
+    itemKey: (row) => (row as AttentionItem).id,
+    rowType: (row) => (row as AttentionItem).kind,
+    orderKey: 'importance',
+    scope: (_args, ctx) => {
+      const c = ctx as { workspaceId?: string; harnessSlug?: string | null; role?: string | null };
+      return `${c.workspaceId ?? ''}:${c.harnessSlug ?? '*'}:${c.role ?? ''}`;
+    },
+    schemaVersion: 'attn-v1',
+    // Periodic forced-full reconciliation: a cursor older than 5 min reconciles to a
+    // full snapshot, bounding any drift the harness's incremental merge accumulates.
+    maxDeltaAge: 5 * 60_000,
+  },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);

@@ -892,3 +892,38 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
     expect(k()).toContain('featuresConsolidated.byHive');
   });
 });
+
+describe('resolveNamedQueryV2 — plans.byHive (WI-259 P-006 cross-member plan rollup, D-010)', () => {
+  it('lists plans across the resolved hive member-slugs via callPlansRead({ harness_slugs })', async () => {
+    const actualRegistry = await vi.importActual<typeof import('../harness-registry')>('../harness-registry');
+    const callPlansRead = vi.fn(async () => ({ plans: [{ slug: 'p1', harnessSlug: 'member-a' }] }));
+    vi.doMock('../harness-registry', () => ({
+      hiveMemberHarnessScopes: actualRegistry.hiveMemberHarnessScopes,
+      loadHarnessRegistry: vi.fn(async () => ({
+        projects: [
+          { slug: 'hive-home', harness_kind: 'hive' },
+          { slug: 'member-a', hive_slug: 'hive-home' },
+        ],
+      })),
+    }));
+    vi.doMock('../agent-tools/plans/read-dispatch', () => ({ callPlansRead }));
+    // Skip attribution enrichment (flag off) so the rows pass through unchanged.
+    vi.doMock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
+
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('plans.byHive', { hiveHomeSlug: 'hive-home' })) as unknown[];
+
+    expect(out).toEqual([{ slug: 'p1', harnessSlug: 'member-a' }]);
+    expect(callPlansRead).toHaveBeenCalledTimes(1);
+    expect(callPlansRead).toHaveBeenCalledWith('list', { harness_slugs: ['hive-home', 'member-a'] });
+
+    vi.doUnmock('../harness-registry');
+    vi.doUnmock('../agent-tools/plans/read-dispatch');
+    vi.doUnmock('@papercusp/flags/server');
+  });
+
+  it('is a registered query name', async () => {
+    const { knownQueryNamesV2: k } = await import('./index');
+    expect(k()).toContain('plans.byHive');
+  });
+});
