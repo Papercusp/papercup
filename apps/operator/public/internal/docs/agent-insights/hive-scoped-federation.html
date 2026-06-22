@@ -123,7 +123,12 @@ revoked-pubkey set the harness boots with is the <strong>UNION</strong> of</p>
 The read-admission decider itself is unchanged. The hive lookup is <strong>best-effort /
 fail-open</strong>: a failure leaves the harness-scope set intact (you stay no-worse-than
 the pre-Hive behavior). Backing store: <code dir="auto">hive_members</code> (mig 185) + the
-<code dir="auto">hive_members</code> federation projection (mig 189).</p>
+<code dir="auto">hive_members</code> federation projection (mig 189). Membership is also <strong>torn down on
+departure</strong>: <code dir="auto">hive:leave</code> (a member removing its own row, G27 — <code dir="auto">removeHiveMember</code>)
+and <code dir="auto">hive:dissolve</code> (the owner removing <em>all</em> members, G24 — <code dir="auto">removeAllHiveMembers</code>)
+DELETE the relevant <code dir="auto">hive_members</code> rows, which fire the <strong>same mig-189 capture
+trigger</strong> → a federated <code dir="auto">del</code> membership tombstone, so peers’ read-merge drops the
+departed member (see <code dir="auto">shared-hive-join-leave-lifecycle</code>).</p>
 <p>Membership <strong>producers</strong> (set <code dir="auto">ProjectEntry.hive_slug</code>): <code dir="auto">addHarnessToHive</code> /
 <code dir="auto">removeHarnessFromHive</code> (<code dir="auto">agent-tools/hive/_add-member.ts</code>) for an existing
 harness, and the <code dir="auto">harness:create { hive }</code> create-time path

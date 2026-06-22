@@ -15,6 +15,11 @@ WorkingDirectory=/home/marsh-office/papercupai-workspace/papercup
 Environment="PATH=/home/linuxbrew/.linuxbrew/bin:/home/marsh-office/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PAPERCUSP_INTEGRATION_ROOT=/home/marsh-office/papercupai-workspace/papercup"
 Environment="PAPERCUSP_GATEWAY_PORT=8788"
+# EXTENDED POST-ADMISSION ABSORPTION: on a slot-hold-deadline shed, release the admission slot (no slot held
+# during the wait → cannot wedge) + re-acquire, holding the caller through a TRANSIENT throttle up to this many
+# ms instead of 429ing. 0 = OFF (code default). 120000 (2 min) keeps worst-case hold (pre-admission 4 min + this)
+# under the bee CLI's ~10-min SDK timeout. (On the dev box this is set via the .service.d/absorb.conf drop-in.)
+Environment="PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS=120000"
 # Optional: pin a pool account; else the sole pool account or the box's ~/.claude login is used.
 # Environment="PAPERCUSP_ACCOUNT_ID=acct-main"
 # Optional: PAPERCUSP_GATEWAY_CONCURRENCY=24

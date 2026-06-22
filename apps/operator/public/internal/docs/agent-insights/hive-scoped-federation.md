@@ -63,7 +63,12 @@ so a contributor revoked at the **Hive grain is refused on EVERY member harness*
 The read-admission decider itself is unchanged. The hive lookup is **best-effort /
 fail-open**: a failure leaves the harness-scope set intact (you stay no-worse-than
 the pre-Hive behavior). Backing store: `hive_members` (mig 185) + the
-`hive_members` federation projection (mig 189).
+`hive_members` federation projection (mig 189). Membership is also **torn down on
+departure**: `hive:leave` (a member removing its own row, G27 — `removeHiveMember`)
+and `hive:dissolve` (the owner removing *all* members, G24 — `removeAllHiveMembers`)
+DELETE the relevant `hive_members` rows, which fire the **same mig-189 capture
+trigger** → a federated `del` membership tombstone, so peers' read-merge drops the
+departed member (see `shared-hive-join-leave-lifecycle`).
 
 Membership **producers** (set `ProjectEntry.hive_slug`): `addHarnessToHive` /
 `removeHarnessFromHive` (`agent-tools/hive/_add-member.ts`) for an existing

@@ -93,16 +93,16 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
   });
 });
 
-describe('buildOperatorPrompt — role re-home seam (Sentinel-as-Herald)', () => {
+describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
   it("role:'operator' (default) loads the operator persona — backward-compatible", async () => {
     // No role passed → defaults to 'operator'; the operator persona's signature
-    // line is present and the Herald's is not.
+    // line is present and the sentinel's is not.
     const { systemPromptText } = await buildOperatorPrompt(
       { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message' },
       null,
     );
     expect(systemPromptText).toContain('# Operator persona');
-    expect(systemPromptText).not.toContain('# Sentinel persona — the Herald');
+    expect(systemPromptText).not.toContain('# Sentinel persona');
 
     // Explicit role:'operator' is identical to the default.
     const explicit = await buildOperatorPrompt(
@@ -112,17 +112,17 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel-as-Herald)', () =>
     expect(explicit.systemPromptText).toBe(systemPromptText);
   });
 
-  it("role:'sentinel' loads the Herald persona set (persona + converse + tools.md)", async () => {
+  it("role:'sentinel' loads the Sentinel persona set (persona + converse + tools.md)", async () => {
     const { systemPromptText } = await buildOperatorPrompt(
       { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', role: 'sentinel' },
       null,
     );
     // The sentinel persona (sentinel.persona.md), NOT the operator one.
-    expect(systemPromptText).toContain('# Sentinel persona — the Herald');
+    expect(systemPromptText).toContain('# Sentinel persona');
     expect(systemPromptText).not.toContain('# Operator persona');
     // The sentinel converse rules (sentinel.converse.md) — the file-and-nudge,
     // never-place charter is the load-bearing difference from the operator.
-    expect(systemPromptText).toContain('You are the Sentinel — the Herald.');
+    expect(systemPromptText).toContain('You are the Sentinel, not the placer.');
     // The sentinel tools playbook (sentinel.tools.md).
     expect(systemPromptText).toContain('# Sentinel tool playbook');
   });
