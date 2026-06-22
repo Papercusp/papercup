@@ -33,6 +33,7 @@ import {
  */
 interface AccountRow {
   id: string;
+  provider?: 'claude' | 'codex';
   label?: string;
   credentialRef: string;
   boundTo: string[];
@@ -66,6 +67,7 @@ export default function DeployAccountsPage() {
   // the client handshake a hand-built URL can't — accounts-pool-tab D-016). The setup-token paste
   // tab stays as the manual fallback.
   const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('oauth');
+  const [provider, setProvider] = useState<'claude' | 'codex'>('claude');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [linkId, setLinkId] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -107,6 +109,7 @@ export default function DeployAccountsPage() {
     setAuthorizeUrl(null);
     setLinkId(null);
     setCode('');
+    setProvider('claude');
   }, [setAddOpen, setAccountId, setLabel]);
 
   const register = useCallback(async () => {
@@ -116,7 +119,7 @@ export default function DeployAccountsPage() {
       return;
     }
     if (!value.trim()) {
-      setAddError('Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
+      setAddError(provider === 'codex' ? 'Paste a Codex/OpenAI bearer token or env:NAME reference.' : 'Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
       return;
     }
     setBusy(true);
@@ -124,21 +127,21 @@ export default function DeployAccountsPage() {
       const r = await fetch('/api/admin/deploy-accounts/register', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountId, label: label || undefined, value: value.trim() }),
+        body: JSON.stringify({ accountId, label: label || undefined, provider, value: value.trim() }),
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'register failed');
       resetForm();
       // Explicit success signal — the form reset alone is ambiguous if the
       // follow-up list refresh fails (refresh surfaces its own listError).
-      toast.success(`Max account "${accountId}" linked`);
+      toast.success(`${provider === 'codex' ? 'Codex' : 'Max'} account "${accountId}" linked`);
       await refresh();
     } catch (e) {
       setAddError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [accountId, label, value, resetForm, refresh]);
+  }, [accountId, label, provider, value, resetForm, refresh]);
 
   // OAuth mode step A: generate the claude.ai authorize URL (verifier kept server-side under linkId).
   const startOAuth = useCallback(async () => {
@@ -216,6 +219,7 @@ export default function DeployAccountsPage() {
   );
 
   const command = setupTokenCommand(accountId);
+  const activeLinkMode = provider === 'codex' ? 'token' : linkMode;
   const copyCommand = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(command);
@@ -227,13 +231,13 @@ export default function DeployAccountsPage() {
   }, [command]);
 
   const primaryAction =
-    linkMode === 'oauth'
+    activeLinkMode === 'oauth'
       ? authorizeUrl
         ? completeOAuth
         : startOAuth
       : register;
   const primaryLabel =
-    linkMode === 'oauth'
+    activeLinkMode === 'oauth'
       ? authorizeUrl
         ? busy ? 'Linking...' : 'Complete link'
         : busy ? 'Generating...' : 'Get authorize link'
@@ -241,7 +245,7 @@ export default function DeployAccountsPage() {
   const primaryDisabled =
     busy ||
     !accountId ||
-    (linkMode === 'oauth'
+    (activeLinkMode === 'oauth'
       ? authorizeUrl
         ? !code.trim()
         : false
@@ -250,7 +254,7 @@ export default function DeployAccountsPage() {
     ? 'Resolve the error before continuing.'
     : busy
       ? 'Saving changes...'
-      : linkMode === 'oauth'
+      : activeLinkMode === 'oauth'
         ? authorizeUrl
           ? code.trim()
             ? 'Ready to complete the link.'
@@ -260,20 +264,19 @@ export default function DeployAccountsPage() {
             : 'Enter an account ID to continue.'
         : value.trim()
           ? 'Ready to link this account.'
-          : 'Paste a setup-token or credentials bundle to continue.';
+          : provider === 'codex' ? 'Paste a bearer token or env reference to continue.' : 'Paste a setup-token or credentials bundle to continue.';
 
   return (
     <div className="pc-da">
       {confirmEl}
       <div className="pc-da__bar">
         <p className="pc-da__lede">
-          The pool of Claude <strong>Max accounts</strong> the fleet runs on — each subscription's own 5h/7d
-          budget, pooled for egress + remote-frame deploys (more accounts = more aggregate capacity). Link one by
-          minting a token with claude-code's own login; this never touches this box's own login.
+          Account pool used by the inference gateway. Claude Max accounts power pooled fleet egress and deploys;
+          Codex accounts route Codex sessions through the same account-pinning system.
         </p>
         {!addOpen && (
           <button className="pc-da__btn pc-da__btn--primary" onClick={() => setAddOpen(true)}>
-            + Link Max account
+            + Link account
           </button>
         )}
       </div>
@@ -281,13 +284,42 @@ export default function DeployAccountsPage() {
       {addOpen && (
         <div className="pc-da__wizard">
           <div className="pc-da__wizard-head">
-            <strong>Link a Max account</strong>
+            <strong>Link an account</strong>
             <button className="pc-da__btn pc-da__btn--ghost" onClick={resetForm}>
               Cancel
             </button>
           </div>
 
           <div className="pc-da__modes" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={provider === 'claude'}
+              className={`pc-da__mode${provider === 'claude' ? ' is-active' : ''}`}
+              onClick={() => {
+                setProvider('claude');
+                setAddError(null);
+              }}
+            >
+              Claude
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={provider === 'codex'}
+              className={`pc-da__mode${provider === 'codex' ? ' is-active' : ''}`}
+              onClick={() => {
+                setProvider('codex');
+                setLinkMode('token');
+                setAuthorizeUrl(null);
+                setAddError(null);
+              }}
+            >
+              Codex
+            </button>
+          </div>
+
+          {provider === 'claude' && <div className="pc-da__modes" role="tablist">
             <button
               type="button"
               role="tab"
@@ -312,7 +344,7 @@ export default function DeployAccountsPage() {
             >
               Paste a setup-token
             </button>
-          </div>
+          </div>}
 
           <label className="pc-da__field">
             <span>1 · Account ID</span>
@@ -323,7 +355,7 @@ export default function DeployAccountsPage() {
             <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Hetzner NYC" />
           </label>
 
-          {linkMode === 'oauth' ? (
+          {activeLinkMode === 'oauth' ? (
             !authorizeUrl ? (
               <div className="pc-da__step">
                 <p className="pc-da__step-hint">
@@ -359,24 +391,35 @@ export default function DeployAccountsPage() {
           ) : (
             <>
               <div className="pc-da__step">
-                <span className="pc-da__step-label">2 · Mint a token for it</span>
-                <p className="pc-da__step-hint">
-                  On a machine where you can sign in as that account, run this — the isolated config dir keeps the mint
-                  off this box's own login:
-                </p>
-                <div className="pc-da__cmd">
-                  <code>{command}</code>
-                  <button type="button" className="pc-da__btn pc-da__btn--ghost pc-da__copy" onClick={() => void copyCommand()}>
-                    {copied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <p className="pc-da__step-hint">
-                  Sign in as the target account in the browser it opens; it prints a token (<code>sk-ant-oat…</code>).
-                </p>
+                {provider === 'claude' ? (
+                  <>
+                    <span className="pc-da__step-label">2 · Mint a token for it</span>
+                    <p className="pc-da__step-hint">
+                      On a machine where you can sign in as that account, run this — the isolated config dir keeps the mint
+                      off this box's own login:
+                    </p>
+                    <div className="pc-da__cmd">
+                      <code>{command}</code>
+                      <button type="button" className="pc-da__btn pc-da__btn--ghost pc-da__copy" onClick={() => void copyCommand()}>
+                        {copied ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    <p className="pc-da__step-hint">
+                      Sign in as the target account in the browser it opens; it prints a token (<code>sk-ant-oat…</code>).
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <span className="pc-da__step-label">2 · Add bearer credential</span>
+                    <p className="pc-da__step-hint">
+                      Paste a Codex/OpenAI bearer token, or enter <code>env:NAME</code> to reference a server environment variable.
+                    </p>
+                  </>
+                )}
               </div>
               <label className="pc-da__field">
-                <span>3 · Paste the token (or a .credentials.json bundle)</span>
-                <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={3} placeholder="sk-ant-oat01-…   or   {&quot;claudeAiOauth&quot;:{…}}" />
+                <span>{provider === 'codex' ? '3 · Paste the bearer token or env reference' : '3 · Paste the token (or a .credentials.json bundle)'}</span>
+                <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={3} placeholder={provider === 'codex' ? 'sk-…   or   env:OPENAI_API_KEY' : 'sk-ant-oat01-…   or   {&quot;claudeAiOauth&quot;:{…}}'} />
               </label>
             </>
           )}
@@ -448,6 +491,7 @@ export default function DeployAccountsPage() {
         .pc-da__cred { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--accent-soft), transparent 38%); }
         .pc-da__pill { display: inline-flex; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; }
         .pc-da__pill--active { margin-left: 8px; background: color-mix(in srgb, var(--accent-strong), transparent 80%); color: var(--accent-cool); }
+        .pc-da__pill--neutral { background: color-mix(in srgb, var(--fg), transparent 88%); color: var(--fg-dim); }
         .pc-da__pill--ok { background: color-mix(in srgb, var(--good), transparent 84%); color: var(--good); }
         .pc-da__pill--warn { background: color-mix(in srgb, var(--warn), transparent 84%); color: var(--warn); }
         .pc-da__pill--bad { background: color-mix(in srgb, var(--bad), transparent 84%); color: var(--bad); }
@@ -481,6 +525,13 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
       },
     },
     { key: 'label', header: 'Label', width: 1, toCopyText: (a) => a.label || '—', render: ({ row }) => row.label || '—' },
+    {
+      key: 'provider',
+      header: 'Provider',
+      width: 0.8,
+      toCopyText: (a) => a.provider || 'claude',
+      render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{row.provider === 'codex' ? 'Codex' : 'Claude'}</span>,
+    },
     {
       key: 'status',
       header: 'Status',

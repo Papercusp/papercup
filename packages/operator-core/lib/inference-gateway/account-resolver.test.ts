@@ -95,6 +95,17 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a', 'b']);
   });
 
+  it('filters provider-specific pools and does not mix Codex accounts into the Claude pool', async () => {
+    mockedLoad.mockResolvedValue({
+      accounts: [
+        acct('claude-a', 'ref:claude-a'),
+        { id: 'codex-a', provider: 'codex', credentialRef: 'ref:codex-a' },
+      ],
+    } as never);
+    expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['claude-a']);
+    expect((await resolveAccountPool('ws', 'codex')).map((p) => p.accountId)).toEqual(['codex-a']);
+  });
+
   it('puts the env-pinned account FIRST (primary) with the rest as failover targets', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'b';
     mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] } as never);

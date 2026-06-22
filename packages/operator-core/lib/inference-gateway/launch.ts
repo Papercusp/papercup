@@ -224,7 +224,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     }
     const built = buildResolved(next);
     pool.reload(built.entries);
-    if (codexPool && nextCodex.length > 0) {
+    if (codexPool?.reload && nextCodex.length > 0) {
       codexPool.reload(buildBearerEntries(nextCodex));
     }
     accounts = next;

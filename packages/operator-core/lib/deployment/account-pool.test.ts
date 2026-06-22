@@ -64,6 +64,13 @@ describe('registerAccount', () => {
     expect(getAccount(p, 'acct-1')!.egress).toEqual({ localAddress: '203.0.113.7' });
   });
 
+  it('defaults legacy registrations to claude and preserves explicit codex provider', () => {
+    let p = registerAccount(emptyPool(), { id: 'claude-a', credentialRef: 'token:~/claude' }, T0);
+    p = registerAccount(p, { id: 'codex-a', provider: 'codex', credentialRef: 'env:OPENAI_API_KEY' }, T0 + 1);
+    expect(getAccount(p, 'claude-a')!.provider).toBe('claude');
+    expect(getAccount(p, 'codex-a')!.provider).toBe('codex');
+  });
+
   it('rejects ids containing the bucket-key delimiters or empty credentialRef', () => {
     expect(() => registerAccount(emptyPool(), { id: 'a:b', credentialRef: 'x' }, T0)).toThrow(AccountPoolError);
     expect(() => registerAccount(emptyPool(), { id: 'a@b', credentialRef: 'x' }, T0)).toThrow(AccountPoolError);

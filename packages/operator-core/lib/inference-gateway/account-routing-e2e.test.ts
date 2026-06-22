@@ -145,4 +145,23 @@ describe('multi-account routing — end-to-end (selection → spawn header → g
     expect((await callPinned('acctB')).headers.get(ROUTED_ACCOUNT_HEADER)).toBe('acctB');
     expect((await callPinned('acctA')).headers.get(ROUTED_ACCOUNT_HEADER)).toBe('acctA');
   });
+
+  it('routes OpenAI-compatible Codex requests through the codex account pool and strips the internal header', async () => {
+    upstream = await startUpstream();
+    gw = createInferenceGateway({
+      pool: createFailoverPool([gwAcct('acctA', 'tokA')]),
+      codexPool: createFailoverPool([gwAcct('codexA', 'openaiTok')]),
+      openaiUpstreamBase: upstream.base,
+      maxQueueWaitMs: 200,
+    });
+    const port = await gw.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'codexA' },
+      body: JSON.stringify({ model: 'gpt-5.5', input: 'hi' }),
+    });
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('codexA');
+    expect(upstream!.last.headers.authorization).toBe('Bearer openaiTok');
+    expect(upstream!.last.headers[ACCOUNT_HEADER]).toBeUndefined();
+  });
 });

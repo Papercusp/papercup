@@ -12,6 +12,7 @@ import {
   resumeAccountPlan,
   buildResumeEnv,
   gatewayPinEnv,
+  codexGatewayConfigPatch,
   accountPinnable,
   GATEWAY_ACCOUNT_HEADER,
   addDirArgs,
@@ -381,6 +382,31 @@ describe('psu-launcher arg parsing', () => {
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw`);
     expect(env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw');
+  });
+
+  it('gatewayPinEnv: codex pins are config-file based and only carry the account id in env', () => {
+    expect(gatewayPinEnv('codex-main', 'codex')).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+  });
+
+  it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {
+    const current = [
+      '# existing config',
+      'project_doc_max_bytes = 0',
+      '',
+      '[features]',
+      'memory_tool = false',
+      '',
+      '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      '[model_providers.papercusp-codex-gateway]',
+      'http_headers = { "x-papercusp-account" = "old" }',
+      '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      '',
+    ].join('\n');
+    const next = codexGatewayConfigPatch(current, 'codex-main');
+    expect(next.indexOf('model_provider = "papercusp-codex-gateway"')).toBeLessThan(next.indexOf('[features]'));
+    expect(next).toContain('base_url = "http://127.0.0.1:8788/v1"');
+    expect(next).toContain('http_headers = { "x-papercusp-account" = "codex-main" }');
+    expect(next).not.toContain('"old"');
   });
 
   it('accountPinnable: gates on gatewayOn + pool membership + session-override (mirrors resolveAccountPin)', () => {

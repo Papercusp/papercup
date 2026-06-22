@@ -456,12 +456,12 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
     getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
   });
-  const pin = async (requested: string | null) =>
-    (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountPin('default', requested);
+  const pin = async (requested: string | null, agent: 'claude' | 'omp' | 'codex' = 'claude') =>
+    (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountPin('default', requested, agent);
 
   it('no account → no env patch, no notice', async () => {
-    expect(await pin(null)).toEqual({ env: {}, notice: null });
-    expect(await pin('   ')).toEqual({ env: {}, notice: null });
+    expect(await pin(null)).toMatchObject({ env: {}, notice: null, accountId: null, provider: null });
+    expect(await pin('   ')).toMatchObject({ env: {}, notice: null, accountId: null, provider: null });
   });
 
   it('gateway off → fail-soft notice, no env patch (the current live default)', async () => {
@@ -503,6 +503,24 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/pinned to account aviynw6/i);
   });
 
+  it('Codex account + codex agent → no Anthropic env, but carries account id for CODEX_HOME config', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'codex-main', provider: 'codex' }] });
+    const r = await pin('codex-main', 'codex');
+    expect(r.provider).toBe('codex');
+    expect(r.accountId).toBe('codex-main');
+    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(r.notice).toMatch(/pinned to Codex account codex-main/i);
+  });
+
+  it('Codex account + claude agent → fail-soft provider mismatch notice', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+    const r = await pin('codex-main', 'claude');
+    expect(r.env).toEqual({});
+    expect(r.notice).toMatch(/codex account.*claude sessions require claude/i);
+  });
+
   // P-006 (end-to-end through the POST handler): the launcher's `account` body field
   // flows → resolveAccountPin → the response's envelopeEnv + accountNotice.
   it('POST { account } → response carries the fail-soft notice when the gateway is off', async () => {
@@ -533,11 +551,11 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
     getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
   });
-  const choices = async () => (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountChoices('default');
+  const choices = async (agent: 'claude' | 'omp' | 'codex' = 'claude') => (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountChoices('default', agent);
 
   it('gateway off → hidden (empty pool) — the current default', async () => {
     getFlagMock.mockResolvedValue(false);
-    expect(await choices()).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [] });
+    expect(await choices()).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [], provider: 'claude' });
   });
 
   it('gateway on → pool ids + the active session-override', async () => {
@@ -550,9 +568,17 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     expect(r.excludeAccounts).toEqual(['aviynw2']);
   });
 
+  it('Codex choices include only codex provider accounts', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'codex-main', provider: 'codex' }] });
+    const r = await choices('codex');
+    expect(r.provider).toBe('codex');
+    expect(r.pool).toEqual(['codex-main']);
+  });
+
   it('GET /options surfaces the accounts field (empty when gateway off)', async () => {
     getFlagMock.mockResolvedValue(false);
     const json = await (await callGet()).json();
-    expect(json.accounts).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [] });
+    expect(json.accounts).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [], provider: 'claude' });
   });
 });

@@ -210,7 +210,7 @@ export async function resolveAccountChoices(
   workspaceId: string,
   agent: SuAgent = 'claude',
 ): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[]; provider: 'claude' | 'codex' }> {
-  const provider = agent === 'codex' ? 'codex' : 'claude';
+  const provider: 'claude' | 'codex' = agent === 'codex' ? 'codex' : 'claude';
   const empty = { gatewayOn: false, pool: [] as string[], forcedAccounts: [] as string[], excludeAccounts: [] as string[], provider };
   try {
     const { getFlag } = await import('@papercusp/flags/server');
