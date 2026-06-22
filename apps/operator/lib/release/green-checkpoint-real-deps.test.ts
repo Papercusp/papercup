@@ -133,7 +133,9 @@ describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', (
     expect(calls[0].cmd).toBe('bash');
     expect(calls[0].args[0].endsWith('apps/operator/bin/release/setup-release-checkout.sh')).toBe(true);
     expect(calls[0].args).toEqual(
-      expect.arrayContaining(['--ref', 'cand123', '--integration', '/int', '--release', '/cp', '--node-modules', 'auto']),
+      // `force` (not `auto`): the checkpoint tree must always re-copy node_modules — the
+      // `auto` heuristic is blind to nested-dep drift and spuriously red the gate (EI-2699).
+      expect.arrayContaining(['--ref', 'cand123', '--integration', '/int', '--release', '/cp', '--node-modules', 'force']),
     );
   });
 

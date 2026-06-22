@@ -330,7 +330,16 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
   return {
     async setupTree(ref) {
       const script = path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
-      await exec('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'auto']);
+      // `force` (not `auto`) for the CHECKPOINT tree: the `auto` lockfile/entry-set
+      // heuristic is structurally blind to NESTED dependency drift (e.g. astro's nested
+      // get-tsconfig@5.0.0-beta.4 vs the hoisted root 4.14.0), so it intermittently left
+      // the throwaway checkpoint tree's node_modules stale → spurious DETERMINISTIC reds
+      // (astro check "no export readTsconfig"; native-addon-preflight better-sqlite3) that
+      // red the gate for the WHOLE fleet while PASSING on the real integration tree
+      // (EI-2699). A throwaway, correctness-critical tree must always re-copy from
+      // integration; the hardlink (cp -al) copy is cheap. The DEPLOY keeps `auto` + the
+      // verify-before-cutover preflight (mcp-host-availability-resilience-2026-06-22).
+      await exec('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'force']);
     },
     async runGreen(treeDir, base) {
       const [cmd, ...args] = cfg.greenCmd.split(' ');

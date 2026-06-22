@@ -21,6 +21,21 @@ Then drive the **Tauri window** it opens (agent-driven UI checks:
 operator sidecar, migrations, and the webview. There is no "just the webapp"
 mode.
 
+> **You CAN — and therefore MUST — verify UI yourself; "I can't check UI
+> headless" is a mistake, not a constraint.** Launching this shell is within
+> YOUR reach (run the command above — it's just `npm run dev`; first cargo build
+> ~2 min), and you then drive its webview **head-lessly, no focus-steal**, with the
+> **`tauri-agent-tools`** CLI: `probe` · `eval` · `dom` · `click` · `type` ·
+> `screenshot` · `check` (CI-style assert, exits 0/1) · `capture` (screenshot +
+> DOM + console + logs). Full playbook: `/internal/docs/testing/agent-e2e` §0–§2
+> (attach to a running shell, or start your OWN second instance). Therefore a UI
+> task is **NEVER** "blocked on a Tauri/desktop session," and UI is **NEVER**
+> "unverifiable headless." If you catch yourself deferring, punting, or shipping
+> UI work as un-testable-without-a-human, STOP — that *is* this mistake: start the
+> shell and drive it. (For non-Papercusp/arbitrary web pages, `verdict`; the
+> operator UI only renders correctly inside Tauri, so never point `verdict` or a
+> browser at `:3055`/`:3070`.)
+
 - **Never open `:3055` or `:3070` in a browser** (verdict / playwright / chrome /
   `xdg-open`). They are the desktop's *internal content source* — a browser view
   is the **retired** webapp and gives a broken/misleading result. A `PreToolUse`

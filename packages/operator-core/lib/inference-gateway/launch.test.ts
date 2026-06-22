@@ -5,7 +5,7 @@ import http from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startGatewayService, type RunningGatewayService } from './launch';
+import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
 
 let upstream: http.Server | undefined;
 let svc: RunningGatewayService | undefined;
@@ -305,4 +305,39 @@ test('proactive refresh timer invalidates only file-kind resolvers, never token-
   await new Promise<void>((r) => setTimeout(r, 250));
   assert.ok(fileInvalidates >= 1, `file-kind resolver is proactively refreshed (got ${fileInvalidates})`);
   assert.equal(tokenInvalidates, 0, 'token-kind (no-expiry) resolver is never invalidated');
+});
+
+// ── resolvePriorityTiers (gateway-priority-tiers-2026-06-22): flag + env → tier config ──
+
+test('resolvePriorityTiers — flag OFF → null (gateway runs the flat queue)', async () => {
+  assert.equal(await resolvePriorityTiers(24, { flagOverride: false }), null);
+});
+
+test('resolvePriorityTiers — flag ON → default map + reserve = max(1, ceil(slots*0.15)), tier>1 capped to slots-reserve', async () => {
+  const r = await resolvePriorityTiers(24, { flagOverride: true, env: {} });
+  assert.ok(r, 'config returned when ON');
+  assert.equal(r!.config.tier1Reserve, 4, 'ceil(24*0.15)=4');
+  assert.equal(r!.config.caps![1], 24, 'tier 1 may use the whole pool');
+  assert.equal(r!.config.caps![3], 20, 'tier>1 capped to slots - reserve');
+  assert.equal(r!.map.queen, 1);
+  assert.equal(r!.map.bee, 3);
+  assert.equal(r!.map.su, 2);
+});
+
+test('resolvePriorityTiers — GATEWAY_PRIORITY_MAP + GATEWAY_T1_RESERVE_FRAC env overrides apply', async () => {
+  const r = await resolvePriorityTiers(20, {
+    flagOverride: true,
+    env: { GATEWAY_PRIORITY_MAP: '{"bee":4,"newrole":2}', GATEWAY_T1_RESERVE_FRAC: '0.25' },
+  });
+  assert.equal(r!.config.tier1Reserve, 5, 'ceil(20*0.25)=5');
+  // bee remapped to tier 4; newrole added at 2 → tiers now {1,2,3,4} still (3 still from scout? no — bee left 3)
+  assert.equal(r!.map.bee, 4, 'bee override applied');
+  assert.equal(r!.map.newrole, 2, 'new role added');
+  // the shared (tier>1) cap is slots - reserve = 15
+  assert.equal(r!.config.caps![4], 15);
+});
+
+test('resolvePriorityTiers — reserve floored at 1 for a tiny pool / zero frac', async () => {
+  const r = await resolvePriorityTiers(3, { flagOverride: true, env: { GATEWAY_T1_RESERVE_FRAC: '0' } });
+  assert.equal(r!.config.tier1Reserve, 1, 'reserve never below 1');
 });

@@ -13,6 +13,7 @@ vi.mock('@papercusp/flags', () => ({
   FLAGS: {
     INFERENCE_GATEWAY: 'inference-gateway',
     INFERENCE_GATEWAY_MULTI_ACCOUNT: 'inference-gateway-multi-account',
+    GATEWAY_PRIORITY_TIERS: 'gateway-priority-tiers',
   },
 }));
 vi.mock('../deployment/account-pool-store', () => ({ selectSpawnAccount: h.selectSpawnAccount }));
@@ -98,5 +99,28 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', backend: 'codex' });
     expect(env).toEqual({});
     expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'h', undefined, 'codex');
+  });
+
+  // ── gateway-priority-tiers-2026-06-22: the role → x-papercusp-priority header (flag-gated) ──
+  test('tier flag ON + role → stamps the x-papercusp-priority header from the role', async () => {
+    h.getFlag.mockResolvedValue(true); // all flags ON incl. GATEWAY_PRIORITY_TIERS
+    h.selectSpawnAccount.mockResolvedValue('acct-7');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', role: 'queen' });
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('x-papercusp-priority: queen');
+  });
+
+  test('tier flag OFF → NO priority header even with a role (flag-OFF byte-identical)', async () => {
+    // gateway + multi-account ON, but the tier flag OFF → the role must NOT be stamped.
+    h.getFlag.mockImplementation(async (flag: string) => flag !== 'gateway-priority-tiers');
+    h.selectSpawnAccount.mockResolvedValue('acct-7');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', role: 'queen' });
+    expect(env.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('x-papercusp-priority');
+  });
+
+  test('tier flag ON but no role → no priority header (nothing to map)', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.selectSpawnAccount.mockResolvedValue('acct-7');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1' });
+    expect(env.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('x-papercusp-priority');
   });
 });

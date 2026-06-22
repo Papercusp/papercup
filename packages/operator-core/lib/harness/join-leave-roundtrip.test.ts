@@ -63,6 +63,13 @@ function world(initial: HarnessRegistry['projects'] = []) {
       state.presenceDropped.push(slug);
       return 1;
     },
+    // G27 leave PASS-1.5 (hive_members membership-drop) was added to leaveHive AFTER
+    // this hermetic test was written. Stub its deps so the round-trip doesn't run the
+    // real `pg(sql).unsafe(...)` DELETE against the empty `sql: {}` mock (which threw →
+    // `[leaveHive] … teardown failed` console.warn → vitest-fail-on-console). Production
+    // passes a real postgres-js Sql with `.unsafe`; this is a test-only dep gap.
+    resolveLeaverGithubUserId: async () => 1,
+    dropMembers: async () => 1,
     rmDir: async () => {},
   };
 

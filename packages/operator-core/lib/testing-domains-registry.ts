@@ -910,11 +910,12 @@ defineTestDomain({
       id: 'proxy',
       label: 'Proxy & routing',
       description:
-        'The transparent proxy: OAuth + anthropic-beta injection, request/response header discipline, method/query forwarding, admission + load-shed, the upstream/token/downstream stall guards, bare-429 + usage-cap + org-disallow failover, AIMD admission concurrency, prompt-cache instrumentation, and the chaos battery — plus the pure budget parsers (estimateTokens / parseRateReset / parseUnifiedWindow / parseUnified7dWindow) and the admin/observability endpoints (/healthz, /stats, /admin/config, /admin/reload, /admin/stalls).',
+        'The transparent proxy: OAuth + anthropic-beta injection, request/response header discipline, method/query forwarding, admission + load-shed, the upstream/token/downstream stall guards, bare-429 + usage-cap + org-disallow failover, AIMD admission concurrency, the priority-TIER admission layer (per-tier caps + reserved tier-1 floor + tier-aware shedding + per-tier /stats), prompt-cache instrumentation, and the chaos battery — plus the pure budget parsers (estimateTokens / parseRateReset / parseUnifiedWindow / parseUnified7dWindow) and the admin/observability endpoints (/healthz, /stats, /admin/config, /admin/reload, /admin/stalls).',
       globs: [
         'packages/operator-core/lib/inference-gateway/gateway.test.ts',
         'packages/operator-core/lib/inference-gateway/gateway-thorough.test.ts',
         'packages/operator-core/lib/inference-gateway/gateway-openai-proxy.test.ts',
+        'packages/operator-core/lib/inference-gateway/gateway-priority-tiers.test.ts',
         'packages/operator-core/lib/inference-gateway/unified-7d-window.test.ts',
       ],
     },
@@ -968,7 +969,7 @@ defineTestDomain({
     {
       id: 'spawn-env',
       label: 'Spawn env wiring',
-      description: 'gatewaySpawnEnv / gatewayLlmEnv: ANTHROPIC_BASE_URL patching + x-papercusp-account / x-papercusp-owner header emission for spawned agents.',
+      description: 'gatewaySpawnEnv / gatewayLlmEnv: ANTHROPIC_BASE_URL patching + x-papercusp-account / x-papercusp-owner / x-papercusp-priority (role → admission tier, flag-gated) header emission for spawned agents.',
       globs: [
         'packages/operator-core/lib/inference-gateway/spawn-env.test.ts',
         'packages/operator-core/lib/inference-gateway/resolve-spawn-gateway-env.test.ts',
