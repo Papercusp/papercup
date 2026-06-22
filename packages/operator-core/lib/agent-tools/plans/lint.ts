@@ -32,9 +32,16 @@ import { resolveEffectiveStatus } from './effective-status';
 import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
 import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
+  slugs: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(100)
+    .optional()
+    .describe('Plan slugs to lint in one call. When set, output uses the standard bulk envelope.'),
   includeArchived: z.boolean().optional().describe('Lint plans under archive/. Default false.'),
   full: z
     .boolean()
@@ -602,7 +609,7 @@ export function summarizeLintReports(reports: PlanLintReport[]): LintSummary {
 export default defineTool({
   name: 'plans:lint',
   description:
-    "Validate plan files. Legacy plans are exempt. CI should fail on any error; warnings are informational. With a `slug`: the full single report (errors + warnings). Without a slug: a BOUNDED summary across all plans (totals + per-code rollups + per-plan finding counts, with errors inlined) — warnings are collapsed to counts so the result never blows the agent size cap. Pass `full: true` for the complete per-plan dump (HTTP-safe; may overflow an agent caller on a large workspace).",
+    "Validate plan files. Legacy plans are exempt. CI should fail on any error; warnings are informational. With `slug` or `slugs`: full per-plan reports in the standard bulk envelope. Without a slug: a BOUNDED summary across all plans (totals + per-code rollups + per-plan finding counts, with errors inlined) — warnings are collapsed to counts so the result never blows the agent size cap. Pass `full: true` for the complete per-plan dump (HTTP-safe; may overflow an agent caller on a large workspace).",
   guidance: {
     when: 'You\'re editing a plan and want to verify it parses cleanly, or you\'re running the doc-tree health check.',
     notWhen:
@@ -619,25 +626,42 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const opts = await ctxToPlanSourceOpts(sctx);
 
+    const slugs = mergeIds(args.slug, args.slugs);
+    if (slugs.length > 0) {
+      const env = await runBulk(
+        slugs,
+        async (slug) => {
+          const r = await lintPlan(slug, opts);
+          if (!r) return { ok: false as const, slug, error: 'not_found' };
+          return {
+            ok: true as const,
+            slug,
+            report: r,
+            totalErrors: r.errors.length,
+            totalWarnings: r.warnings.length,
+            exempt: r.exempt ? 1 : 0,
+          };
+        },
+        { keyOf: (slug) => ({ slug }) },
+      );
+      const reports = env.results.flatMap((r) => (r.ok && 'report' in r ? [r.report as PlanLintReport] : []));
+      ctxAny.metadata?.({
+        planCount: reports.length,
+        errors: reports.reduce((n, r) => n + r.errors.length, 0),
+        warnings: reports.reduce((n, r) => n + r.warnings.length, 0),
+        exempt: reports.filter((r) => r.exempt).length,
+      });
+      return bulkContent(env);
+    }
+
     let reports: PlanLintReport[];
-    if (args.slug) {
-      const r = await lintPlan(args.slug, opts);
-      if (!r) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
-          isError: true,
-        };
-      }
-      reports = [r];
-    } else {
-      const includeArchived = args.includeArchived === true;
-      const entries = await listPlanFiles(opts);
-      const filtered = includeArchived ? entries : entries.filter((e) => !e.archived);
-      reports = [];
-      for (const e of filtered) {
-        const r = await lintPlan(e.slug, opts);
-        if (r) reports.push(r);
-      }
+    const includeArchived = args.includeArchived === true;
+    const entries = await listPlanFiles(opts);
+    const filtered = includeArchived ? entries : entries.filter((e) => !e.archived);
+    reports = [];
+    for (const e of filtered) {
+      const r = await lintPlan(e.slug, opts);
+      if (r) reports.push(r);
     }
 
     const totalErrors = reports.reduce((n, r) => n + r.errors.length, 0);
@@ -657,7 +681,7 @@ export default defineTool({
     // counts so a real workspace (484 plans × ~380 warnings → 170KB+) no longer
     // blows the agent result-size cap and returns an unusable blob (F-FIX-034).
     const payload =
-      args.slug || args.full === true
+      args.full === true
         ? { ok: totalErrors === 0, totalErrors, totalWarnings, exempt, reports }
         : summarizeLintReports(reports);
 

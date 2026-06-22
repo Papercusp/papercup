@@ -65,7 +65,11 @@ const MAKE_CTX = () =>
 
 const run = async (args: Record<string, unknown>) =>
   (await tool.handler({ harness: 'papercup', ...args } as never, MAKE_CTX())) as {
-    content: { text: string }[];
+    data: {
+      ok: true;
+      results: Array<Record<string, unknown>>;
+      counts: { ok: number; failed: number };
+    };
     isError?: boolean;
   };
 
@@ -79,9 +83,9 @@ describe('plans:start terminal guard', () => {
     H.state.frontmatterStatus = status;
     const res = await run({ slug: 'done-plan-2026-06-02' });
 
-    expect(res.isError).toBe(true);
-    const data = JSON.parse(res.content[0].text);
-    expect(data).toMatchObject({ error: 'plan_terminal', status });
+    expect(res.isError).toBeUndefined();
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'plan_terminal', status });
     // The guard returns BEFORE the INSERT — no started row is created.
     expect(H.state.txCalls).toHaveLength(0);
   });
@@ -91,8 +95,8 @@ describe('plans:start terminal guard', () => {
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
     expect(res.isError).toBeUndefined();
-    const data = JSON.parse(res.content[0].text);
-    expect(data).toMatchObject({ status: 'started' });
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).toMatchObject({ ok: true, status: 'started' });
     expect(H.state.txCalls).toHaveLength(1);
     // PG-canonical: op_status is folded onto the plan's own harness_plans row.
     const sql = H.state.txCalls[0].strings.join('§');

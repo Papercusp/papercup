@@ -20,7 +20,8 @@
 import { useEffect, useState, useMemo } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 
-import type { OpenCardSnapshot } from '@papercusp/agent-mcp';
+import type { OpenCardSnapshot, SnapshotDelta } from '@papercusp/agent-mcp';
+import { reduceSnapshotEvent } from './snapshot-reducer';
 
 export interface SnapshotEnvelope {
   runId: string;
@@ -44,6 +45,21 @@ function isValidSnapshotEnvelope(data: unknown): data is SnapshotEnvelope {
   if (!d.snapshot || typeof d.snapshot !== 'object') return false;
   if (!Array.isArray(d.snapshot.openCards)) return false;
   return true;
+}
+
+/** Minimal shape guard for a P-009 data-carrying delta (drops malformed deltas
+ *  rather than letting a bad apply throw in the React render). */
+function isValidSnapshotDelta(data: unknown): data is SnapshotDelta {
+  if (!data || typeof data !== 'object') return false;
+  const d = data as Partial<SnapshotDelta>;
+  return (
+    typeof d.runId === 'string' &&
+    d.runId.length > 0 &&
+    typeof d.baseVersion === 'number' &&
+    typeof d.version === 'number' &&
+    Array.isArray(d.cards) &&
+    Array.isArray(d.order)
+  );
 }
 
 /**
@@ -86,15 +102,26 @@ export function useStateSnapshots(): {
             console.warn('[useStateSnapshots] dropping malformed snapshot', parsed);
             return;
           }
-          const env = parsed;
-          setByRun((prev) => {
-            const existing = prev.get(env.runId);
-            // Versions are monotonic per run; later wins.
-            if (existing && existing.version >= env.version) return prev;
-            const next = new Map(prev);
-            next.set(env.runId, env);
-            return next;
-          });
+          setByRun((prev) => reduceSnapshotEvent(prev, { kind: 'snapshot', env: parsed }));
+        },
+        // P-009 data-carrying delta (received only when the stream is opened with
+        // ?delta=1). reduceSnapshotEvent applies it on top of the run's current
+        // envelope and keeps the stale entry on any version gap, so a bad/late delta
+        // can never corrupt or crash the card map.
+        delta: (raw) => {
+          let parsed: unknown;
+          try { parsed = JSON.parse(raw); }
+          catch {
+            // eslint-disable-next-line no-console
+            console.warn('[useStateSnapshots] non-JSON delta payload', raw);
+            return;
+          }
+          if (!isValidSnapshotDelta(parsed)) {
+            // eslint-disable-next-line no-console
+            console.warn('[useStateSnapshots] dropping malformed delta', parsed);
+            return;
+          }
+          setByRun((prev) => reduceSnapshotEvent(prev, { kind: 'delta', delta: parsed }));
         },
       },
     });

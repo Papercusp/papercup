@@ -63,6 +63,7 @@ import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import { recordBootEvent } from './boot-history';
 import type Corestore from 'corestore';
 import {
+  bindingResolvesHiveHomeProjection,
   deriveSwarmTopic,
   type SwarmBinding,
 } from './derive-swarm-topic';
@@ -554,7 +555,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const resolveHiveHomeProjectionSlug = async (
     binding: SwarmBinding | null | undefined,
   ): Promise<string | undefined> => {
-    if (binding?.kind !== 'hive') return undefined;
+    // WI-498 GAP 2: resolve the joiner hive-home projection for BOTH 'hive' and
+    // 'topic' bindings — a DIRECT invite/link join boots on a 'topic' binding (the
+    // link carries the topic hash, not the hive pubkey), and without this its member
+    // never resolves a hive-home slug, so the OWNER's hive-home announce is out-of-
+    // scope → buffered → grace-expired → rejected → no federation, even though the
+    // peer is connected on the right topic (live-witnessed on the 2-machine rig). See
+    // bindingResolvesHiveHomeProjection for the full rationale. Slug resolution stays
+    // SELF-GATED by joinerHiveHomeSlug (remote_hive view only → else null → fail-open),
+    // so a non-hive 'topic' harness is unaffected, and the joiner rebind no longer
+    // depends on prior DHT directory discovery.
+    if (!bindingResolvesHiveHomeProjection(binding)) return undefined;
     try {
       // A-003 test seam: a test may inject `joinerHiveHomeSlugOverride` to control
       // home resolution (null at boot, then the hive-home slug on rekey) without the

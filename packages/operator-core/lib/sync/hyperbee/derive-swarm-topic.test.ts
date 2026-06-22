@@ -12,6 +12,7 @@ import {
   deriveSwarmTopic,
   deriveHiveFederationTopic,
   topicAsHex,
+  bindingResolvesHiveHomeProjection,
   type SwarmBinding,
 } from './derive-swarm-topic';
 
@@ -119,6 +120,29 @@ describe('derive-swarm-topic', () => {
       for (const ws of ['default', 'papercusp-workspace', 'generic-test', 'lane7', '*']) {
         expect(serializeBinding({ kind: 'local', workspace_id: ws, harness_slug: 's' })).toBe(`local:${ws}/s`);
       }
+    });
+  });
+
+  describe('bindingResolvesHiveHomeProjection (WI-498 GAP 2 — joiner hive-home rebind kinds)', () => {
+    it("resolves the hive-home projection for BOTH 'hive' AND 'topic' bindings", () => {
+      // 'topic' is the DIRECT invite/link binding: the member link carries the topic
+      // hash but NOT the hive pubkey, so a direct join (no prior DHT directory
+      // discovery) boots on a 'topic' binding. It MUST resolve the hive-home projection
+      // so the OWNER's hive-home announce is in-scope on the joiner — the GAP-2 fix that
+      // unblocks mid-session-join federation. TEETH: reverting the 'topic' arm flips
+      // this RED (the exact live bug witnessed on the 2-machine rig: scope_unresolved →
+      // pending_grace_expired → no federation).
+      expect(bindingResolvesHiveHomeProjection({ kind: 'hive', hive_pubkey: 'p' })).toBe(true);
+      expect(bindingResolvesHiveHomeProjection({ kind: 'topic', topic_hex: 'a'.repeat(64) })).toBe(true);
+    });
+
+    it("does NOT resolve for 'gh' / 'local' / null / undefined (fail-open to the member-slug binding)", () => {
+      expect(bindingResolvesHiveHomeProjection({ kind: 'gh', github_repository_id: 42 })).toBe(false);
+      expect(
+        bindingResolvesHiveHomeProjection({ kind: 'local', workspace_id: 'ws', harness_slug: 's' }),
+      ).toBe(false);
+      expect(bindingResolvesHiveHomeProjection(null)).toBe(false);
+      expect(bindingResolvesHiveHomeProjection(undefined)).toBe(false);
     });
   });
 });

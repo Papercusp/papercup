@@ -28,6 +28,7 @@ import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harnes
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { boundRowField } from '../_bound-output';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
@@ -38,7 +39,14 @@ const argsSchema = z.object({
   slug: z
     .string()
     .min(1)
+    .optional()
     .describe('Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.'),
+  slugs: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(100)
+    .optional()
+    .describe('Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.'),
   mode: z
     .enum(['meta', 'sections', 'full'])
     .optional()
@@ -51,6 +59,8 @@ const argsSchema = z.object({
     .describe(
       "Return only the body of the section whose heading matches (case-insensitive), plus meta — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Overrides mode.",
     ),
+}).refine((v) => !!v.slug || !!v.slugs?.length, {
+  message: 'Provide slug or slugs.',
 });
 
 interface PlanSection {
@@ -141,186 +151,183 @@ export default defineTool({
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
     const opts = await ctxToPlanSourceOpts(sctx);
-    const result = await readPlanBySlug(args.slug, opts);
-    if (!result) {
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
-        isError: true,
-      };
-    }
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const result = await readPlanBySlug(slug, opts);
+        if (!result) return { ok: false as const, slug, error: 'not_found' };
 
-    const { parsed, archived, row } = result;
-    ctxAny.metadata?.({ slug: args.slug, archived, legacy: parsed.isLegacy });
+        const { parsed, archived, row } = result;
+        ctxAny.metadata?.({ slug, archived, legacy: parsed.isLegacy });
 
-    if (parsed.isLegacy) {
-      const sections = splitSections(parsed.prose);
-      const legacyBase = {
-        slug: parsed.slug,
-        archived,
-        legacy: true as const,
-        contentHash: hashPlanContent(parsed.raw),
-        // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
-        // contentHash kept for callers that still pass expectedHash.
-        version: row.version,
-        filename: parsed.filename,
-        sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
-        counts: { sections: sections.length },
-      };
-      let payload: Record<string, unknown> = legacyBase;
-      if (args.heading) {
-        const sec = findSection(sections, args.heading);
-        payload = {
-          ...legacyBase,
-          heading: args.heading,
-          section: sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null,
-        };
-      } else if ((args.mode ?? 'sections') === 'full') {
-        // Legacy plans are prose-only — full includes the body; meta/sections omit it.
-        // (No `raw` — for a legacy plan it's byte-identical to prose; plans:export has it.)
-        payload = { ...legacyBase, prose: parsed.prose };
-      }
-      return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
-    }
-
-    const resolved = resolveEffectiveStatus(parsed);
-
-    // engineer-issues D-005: overlay OPEN issue blocks (coord_links rel='blocks',
-    // dst=plan_item) onto effectiveStatus AFTER the pure resolver — an item blocked
-    // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
-    // (the closing of the issue unblocks every target atomically). The pure
-    // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
-    const { items: resolvedItems, blockingIssues } = await overlayIssueBlocksForPlan(
-      args.slug,
-      resolved.items,
-    );
-
-    // P-006: Build a map of plan-item-id → { featureId, status } so the UI
-    // can show live feature status badges next to each P-NNN item.
-    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
-    let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
-    try {
-      const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-        return tx<{ feature_id: string; status: string; source_plan_item_ids: string[] | null; harness_slug: string }[]>`
-          SELECT feature_id, status, source_plan_item_ids, harness_slug
-            FROM harness_shared.harness_features_consolidated
-           WHERE workspace_id   = ${DEFAULT_WORKSPACE_ID}
-             AND source_plan_slug = ${args.slug}
-             AND source_plan_item_ids IS NOT NULL
-        `;
-      });
-      for (const row of rows) {
-        for (const itemId of row.source_plan_item_ids ?? []) {
-          linkedFeatures[itemId] = { featureId: row.feature_id, status: row.status, harnessSlug: row.harness_slug };
-        }
-      }
-    } catch {
-      // Non-fatal — UI degrades to no badges.
-    }
-
-    // P-083: per-plan-item test coverage (the plan↔test rollup, through the
-    // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
-    // side by decoratePlanItemTestBadges. Skips the tests query when the plan
-    // has no inline-VAL assertions. Non-fatal.
-    let planItemTests: Record<string, PlanItemTestStatus> = {};
-    try {
-      planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-        const assertions = await tx<{ val_id: string; item_id: string; requires_test: boolean }[]>`
-          SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
-           WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${args.slug}
-        `;
-        if (assertions.length === 0) return {};
-        const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
-          SELECT status, payload FROM harness_shared.harness_tests
-           WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
-        `;
-        return computePlanItemTestStatus(
-          assertions,
-          testRows.map((r) => ({
-            status: r.status,
-            coversVALs: Array.isArray(r.payload?.coversVALs)
-              ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-              : [],
-          })),
-        );
-      });
-    } catch {
-      // Non-fatal — UI degrades to no coverage badges.
-    }
-
-    const sections = splitSections(parsed.prose);
-    // `meta`: frontmatter + ## Now + counts + section index. Never the body.
-    const base = {
-      slug: parsed.frontmatter.slug ?? parsed.slug,
-      archived,
-      legacy: false as const,
-      frontmatter: parsed.frontmatter,
-      now: parsed.now,
-      contentHash: hashPlanContent(parsed.raw),
-      version: row.version,
-      // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
-      // agents read it here instead of parsing the `## Promote` markdown. null until mig-331 repopulate.
-      promotePolicy: row.promotePolicy,
-      sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
-      counts: {
-        items: resolved.items.length,
-        decisions: parsed.decisions.length,
-        sections: sections.length,
-      },
-    };
-
-    // `heading`: meta + just the requested section's body (overrides mode).
-    if (args.heading) {
-      const sec = findSection(sections, args.heading);
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ...base,
+        if (parsed.isLegacy) {
+          const sections = splitSections(parsed.prose);
+          const legacyBase = {
+            slug: parsed.slug,
+            archived,
+            legacy: true as const,
+            contentHash: hashPlanContent(parsed.raw),
+            // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
+            // contentHash kept for callers that still pass expectedHash.
+            version: row.version,
+            filename: parsed.filename,
+            sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
+            counts: { sections: sections.length },
+          };
+          let payload: Record<string, unknown> = legacyBase;
+          if (args.heading) {
+            const sec = findSection(sections, args.heading);
+            payload = {
+              ...legacyBase,
               heading: args.heading,
               section: sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null,
-            }),
-          },
-        ],
-      };
-    }
-
-    const mode = args.mode ?? 'sections';
-    if (mode === 'meta') {
-      return { content: [{ type: 'text' as const, text: JSON.stringify(base) }] };
-    }
-
-    // `sections` (default): structured items/decisions + links — still WITHOUT
-    // the prose blob (the 90KB overflow) and WITHOUT per-item rawLine (it
-    // duplicates text/status/phase — P-008 payload diet). `full` adds both back.
-    // WI-274: in `sections` (the default) excerpt long decision bodies so a
-    // decision-heavy plan can't overflow the agent tool-output cap. `full` keeps
-    // complete bodies (alongside the prose blob).
-    const boundedDecisions =
-      mode === 'full' ? parsed.decisions : boundDecisionBodies(parsed.decisions);
-    const decisionBodiesTruncated =
-      mode !== 'full' && boundedDecisions.some((d) => 'body_truncated' in d);
-    const structured = {
-      ...base,
-      items:
-        mode === 'full'
-          ? resolvedItems
-          : resolvedItems.map(({ rawLine: _rawLine, ...rest }) => rest),
-      decisions: boundedDecisions,
-      ...(decisionBodiesTruncated
-        ? {
-            decisionBodiesTruncated: true as const,
-            decisionBodiesHint:
-              'Some decision bodies are excerpted (see each decision\'s body_truncated/body_full_chars). Use mode:"full" for complete bodies.',
+            };
+          } else if ((args.mode ?? 'sections') === 'full') {
+            // Legacy plans are prose-only — full includes the body; meta/sections omit it.
+            // (No `raw` — for a legacy plan it's byte-identical to prose; plans:export has it.)
+            payload = { ...legacyBase, prose: parsed.prose };
           }
-        : {}),
-      missingRefs: resolved.missingRefs,
-      cycleMembers: resolved.cycleMembers,
-      linkedFeatures,
-      planItemTests,
-      blockingIssues,
-    };
-    const payload = mode === 'full' ? { ...structured, prose: parsed.prose } : structured;
-    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+          return { ok: true as const, ...payload };
+        }
+
+        const resolved = resolveEffectiveStatus(parsed);
+
+        // engineer-issues D-005: overlay OPEN issue blocks (coord_links rel='blocks',
+        // dst=plan_item) onto effectiveStatus AFTER the pure resolver — an item blocked
+        // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
+        // (the closing of the issue unblocks every target atomically). The pure
+        // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
+        const { items: resolvedItems, blockingIssues } = await overlayIssueBlocksForPlan(
+          slug,
+          resolved.items,
+        );
+
+        // P-006: Build a map of plan-item-id → { featureId, status } so the UI
+        // can show live feature status badges next to each P-NNN item.
+        const harnessSlug = resolveCtxHarnessSlug(sctx) ?? operatorHomeHarnessSlug();
+        let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
+        try {
+          const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+            return tx<{ feature_id: string; status: string; source_plan_item_ids: string[] | null; harness_slug: string }[]>`
+              SELECT feature_id, status, source_plan_item_ids, harness_slug
+                FROM harness_shared.harness_features_consolidated
+               WHERE workspace_id   = ${DEFAULT_WORKSPACE_ID}
+                 AND source_plan_slug = ${slug}
+                 AND source_plan_item_ids IS NOT NULL
+            `;
+          });
+          for (const row of rows) {
+            for (const itemId of row.source_plan_item_ids ?? []) {
+              linkedFeatures[itemId] = { featureId: row.feature_id, status: row.status, harnessSlug: row.harness_slug };
+            }
+          }
+        } catch {
+          // Non-fatal — UI degrades to no badges.
+        }
+
+        // P-083: per-plan-item test coverage (the plan↔test rollup, through the
+        // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
+        // side by decoratePlanItemTestBadges. Skips the tests query when the plan
+        // has no inline-VAL assertions. Non-fatal.
+        let planItemTests: Record<string, PlanItemTestStatus> = {};
+        try {
+          planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+            const assertions = await tx<{ val_id: string; item_id: string; requires_test: boolean }[]>`
+              SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
+               WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
+            `;
+            if (assertions.length === 0) return {};
+            const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
+              SELECT status, payload FROM harness_shared.harness_tests
+               WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
+            `;
+            return computePlanItemTestStatus(
+              assertions,
+              testRows.map((r) => ({
+                status: r.status,
+                coversVALs: Array.isArray(r.payload?.coversVALs)
+                  ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+                  : [],
+              })),
+            );
+          });
+        } catch {
+          // Non-fatal — UI degrades to no coverage badges.
+        }
+
+        const sections = splitSections(parsed.prose);
+        // `meta`: frontmatter + ## Now + counts + section index. Never the body.
+        const base = {
+          slug: parsed.frontmatter.slug ?? parsed.slug,
+          archived,
+          legacy: false as const,
+          frontmatter: parsed.frontmatter,
+          now: parsed.now,
+          contentHash: hashPlanContent(parsed.raw),
+          version: row.version,
+          // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
+          // agents read it here instead of parsing the `## Promote` markdown. null until mig-331 repopulate.
+          promotePolicy: row.promotePolicy,
+          sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
+          counts: {
+            items: resolved.items.length,
+            decisions: parsed.decisions.length,
+            sections: sections.length,
+          },
+        };
+
+        // `heading`: meta + just the requested section's body (overrides mode).
+        if (args.heading) {
+          const sec = findSection(sections, args.heading);
+          return {
+            ok: true as const,
+            ...base,
+            heading: args.heading,
+            section: sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null,
+          };
+        }
+
+        const mode = args.mode ?? 'sections';
+        if (mode === 'meta') {
+          return { ok: true as const, ...base };
+        }
+
+        // `sections` (default): structured items/decisions + links — still WITHOUT
+        // the prose blob (the 90KB overflow) and WITHOUT per-item rawLine (it
+        // duplicates text/status/phase — P-008 payload diet). `full` adds both back.
+        // WI-274: in `sections` (the default) excerpt long decision bodies so a
+        // decision-heavy plan can't overflow the agent tool-output cap. `full` keeps
+        // complete bodies (alongside the prose blob).
+        const boundedDecisions =
+          mode === 'full' ? parsed.decisions : boundDecisionBodies(parsed.decisions);
+        const decisionBodiesTruncated =
+          mode !== 'full' && boundedDecisions.some((d) => 'body_truncated' in d);
+        const structured = {
+          ...base,
+          items:
+            mode === 'full'
+              ? resolvedItems
+              : resolvedItems.map(({ rawLine: _rawLine, ...rest }) => rest),
+          decisions: boundedDecisions,
+          ...(decisionBodiesTruncated
+            ? {
+                decisionBodiesTruncated: true as const,
+                decisionBodiesHint:
+                  'Some decision bodies are excerpted (see each decision\'s body_truncated/body_full_chars). Use mode:"full" for complete bodies.',
+              }
+            : {}),
+          missingRefs: resolved.missingRefs,
+          cycleMembers: resolved.cycleMembers,
+          linkedFeatures,
+          planItemTests,
+          blockingIssues,
+        };
+        const payload = mode === 'full' ? { ...structured, prose: parsed.prose } : structured;
+        return { ok: true as const, ...payload };
+      },
+      { keyOf: (slug) => ({ slug }) },
+    );
+    return bulkContent(env);
   },
 });

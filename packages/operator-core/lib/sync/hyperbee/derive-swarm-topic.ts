@@ -52,6 +52,29 @@ export type SwarmBinding =
   // topic — the same one the owner is on.
   | { kind: 'topic'; topic_hex: string };
 
+/**
+ * WI-498 GAP 2 — which swarm-binding kinds carry a JOINER hive-home rebind, so the
+ * receive-side admission resolves a hive-home projection slug for them. BOTH:
+ *   - 'hive'  — the owner-discovered binding (carries the hive pubkey), AND
+ *   - 'topic' — the DIRECT invite/link binding. The member link carries only the
+ *               topic HASH, not the hive pubkey, so a direct join (no prior DHT
+ *               directory discovery) cannot form a 'hive' binding (see the union
+ *               above) and boots on a 'topic' binding instead.
+ * A 'topic'-bound joiner that is a remote_hive member must STILL resolve its hive-home
+ * projection (via joinerHiveHomeSlug) so the OWNER's hive-home log announce (origin =
+ * the owner's hive-home slug) is in-scope; otherwise onAnnounce buffers it as
+ * scope_unresolved → grace-expires → rejects → federation never starts, even though
+ * the peer is connected on the right topic (live-witnessed on the 2-machine rig). The
+ * actual slug resolution stays self-gated by joinerHiveHomeSlug (remote_hive view
+ * only → else null → fail-open to today's member-slug binding), so a non-hive
+ * 'topic'/'gh'/'local' harness is unaffected.
+ */
+export function bindingResolvesHiveHomeProjection(
+  binding: SwarmBinding | null | undefined,
+): boolean {
+  return binding?.kind === 'hive' || binding?.kind === 'topic';
+}
+
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/i;
 
 export function serializeBinding(b: SwarmBinding): string {

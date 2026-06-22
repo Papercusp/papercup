@@ -108,6 +108,39 @@ async function persistSingleRun(
   }
 }
 
+/**
+ * Latest recorded verdict per scenario id — the read side the delta safety gate
+ * (agent-tool-delta-protocol P-016, apps/operator/lib/release/delta-gate.ts)
+ * consumes instead of running the live model synchronously. Returns, for each
+ * requested scenario, the status + finished_at of its MOST-RECENT completed run
+ * (finished_at IS NOT NULL), or status:null when it has never run. The gate
+ * classifies these against a freshness window.
+ */
+export async function latestScenarioVerdicts(
+  scenarioIds: readonly string[],
+): Promise<Array<{ scenarioId: string; status: 'passed' | 'failed' | 'errored' | null; finishedAtMs: number | null }>> {
+  const ids = [...scenarioIds];
+  if (ids.length === 0) return [];
+  const sql = db();
+  // DISTINCT ON (scenario_id) → the newest completed run per scenario.
+  const rows = (await sql`
+    SELECT DISTINCT ON (scenario_id)
+      scenario_id, status, finished_at
+    FROM harness_shared.llm_test_runs
+    WHERE scenario_id = ANY(${ids}) AND finished_at IS NOT NULL
+    ORDER BY scenario_id, finished_at DESC
+  `) as unknown as Array<{ scenario_id: string; status: string; finished_at: Date | string | null }>;
+  const byId = new Map(rows.map((r) => [r.scenario_id, r]));
+  return ids.map((scenarioId) => {
+    const r = byId.get(scenarioId);
+    if (!r) return { scenarioId, status: null, finishedAtMs: null };
+    const status =
+      r.status === 'passed' || r.status === 'failed' || r.status === 'errored' ? r.status : null;
+    const finishedAtMs = r.finished_at ? new Date(r.finished_at).getTime() : null;
+    return { scenarioId, status, finishedAtMs };
+  });
+}
+
 /** Decompress a transcript_raw_zstd bytea cell back to the raw SSE JSON array. */
 export function decompressTranscript(bytes: Buffer | Uint8Array): unknown[] {
   const decompressed = zstdDecompressSync(Buffer.from(bytes));

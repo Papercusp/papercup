@@ -30,6 +30,7 @@ import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
 const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
@@ -58,7 +59,8 @@ export function normalizePlanStatus(status: string): { status: string; mappedFro
 
 const argsSchema = z.object({
   harness: harnessArg,
-  slug: z.string().min(1),
+  slug: z.string().min(1).optional(),
+  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to move to the same lifecycle status in one call.'),
   status: z
     .enum(ACCEPTED)
     .describe(
@@ -100,6 +102,8 @@ const argsSchema = z.object({
     .max(12)
     .optional()
     .describe('deprecate-learnings only: refs grounding the learnings (the deprecated plan ref is always included).'),
+}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+  message: 'pass `slug` or `slugs`',
 });
 
 type SetPlanStatusValue =
@@ -165,156 +169,137 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     // Caller-DX (P-006): map a friendly alias (active→ready, done→shipped) to canonical.
     const { status, mappedFrom } = normalizePlanStatus(args.status);
-    const rev = planRevisionCapture(
-      ctx as PlanRevisionCtx,
-      args.slug,
-      args.rationale,
-      harnessSlug ? { harnessSlug } : {},
-    );
-    const result = await withPlanLock<SetPlanStatusValue>(
-      ctx as never,
-      {
-        slug: args.slug,
-        intent: `plans:set-plan-status → ${status}`,
-        ...(harnessSlug ? { harnessSlug } : {}),
-        afterWrite: rev.afterWrite,
-      },
-      async (current): Promise<{ newBody: string | null; value: SetPlanStatusValue }> => {
-        if (current === null) {
-          return { newBody: null, value: { ok: false, code: 'not_found' } };
-        }
-        const flip = flipPlanFrontmatterStatus(current, status, args.expectedCurrent);
-        if (flip.code === 'no_status_line') {
-          return { newBody: null, value: { ok: false, code: 'no_status_line' } };
-        }
-        if (flip.code === 'unexpected_status') {
-          return {
-            newBody: null,
-            value: { ok: false, code: 'unexpected_status', current: flip.oldStatus },
-          };
-        }
-        if (flip.code === 'noop' || flip.newBody === null) {
-          // Already at the target — success, nothing written.
-          return {
-            newBody: null,
-            value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: false },
-          };
-        }
-        return {
-          newBody: bumpUpdatedDate(flip.newBody),
-          value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: true },
-        };
-      },
-    );
-
-    if (result.kind === 'busy') {
-      return {
-        content: [
+    const slugs = mergeIds(args.slug, args.slugs);
+    const env = await runBulk(
+      slugs,
+      async (slug) => {
+        const rev = planRevisionCapture(
+          ctx as PlanRevisionCtx,
+          slug,
+          args.rationale,
+          harnessSlug ? { harnessSlug } : {},
+        );
+        const result = await withPlanLock<SetPlanStatusValue>(
+          ctx as never,
           {
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'busy',
-              busy: result.busy.map((b) => ({
-                path: b.path,
-                owner_label: b.owner_label,
-                intent: b.intent,
-                expires_ts: b.expires_ts,
-              })),
-            }),
+            slug,
+            intent: `plans:set-plan-status → ${status}`,
+            ...(harnessSlug ? { harnessSlug } : {}),
+            afterWrite: rev.afterWrite,
           },
-        ],
-        isError: true,
-      };
-    }
+          async (current): Promise<{ newBody: string | null; value: SetPlanStatusValue }> => {
+            if (current === null) {
+              return { newBody: null, value: { ok: false, code: 'not_found' } };
+            }
+            const flip = flipPlanFrontmatterStatus(current, status, args.expectedCurrent);
+            if (flip.code === 'no_status_line') {
+              return { newBody: null, value: { ok: false, code: 'no_status_line' } };
+            }
+            if (flip.code === 'unexpected_status') {
+              return {
+                newBody: null,
+                value: { ok: false, code: 'unexpected_status', current: flip.oldStatus },
+              };
+            }
+            if (flip.code === 'noop' || flip.newBody === null) {
+              // Already at the target — success, nothing written.
+              return {
+                newBody: null,
+                value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: false },
+              };
+            }
+            return {
+              newBody: bumpUpdatedDate(flip.newBody),
+              value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: true },
+            };
+          },
+        );
 
-    // Domain failures return ok:false as a normal 200 result (like
-    // plans:set-content) so HTTP/UI callers read `ok` rather than catch.
-    if (result.value.ok && result.value.changed) {
-      await emitPlanEventForCaller(ctx, {
-        planSlug: args.slug,
-        event: 'status_changed',
-        before: result.value.oldStatus,
-        after: status,
-      });
-    }
+        if (result.kind === 'busy') {
+          return {
+            ok: false as const,
+            slug,
+            error: 'busy',
+            busy: result.busy.map((b) => ({
+              path: b.path,
+              owner_label: b.owner_label,
+              intent: b.intent,
+              expires_ts: b.expires_ts,
+            })),
+          };
+        }
 
-    // Cross-store invariant (P1-2): a plan AT a terminal status (shipped /
-    // superseded) can never be operationally started/paused. Reset its
-    // op_status (on the harness_plans row) so the "N waiting" badge + Running
-    // bucket stop counting it. This runs on EVERY successful terminal set —
-    // including the terminal-NOOP (changed:false), where the frontmatter is
-    // already terminal but a started+terminal op-row could still persist (e.g.
-    // a raw .md edit set the status, or an earlier clear was missed). Scoping
-    // it to `changed` left that violating row uncleared. Idempotent + best-
-    // effort: clearStartedForTerminalPlan only touches an active (started/
-    // paused) row, and plans:list self-heals on read if this misses.
-    if (result.value.ok && isTerminalPlanStatus(status)) {
-      try {
-        await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), args.slug);
-      } catch {
-        /* recovered by reconcileStartStatus on the next plans:list read */
-      }
-    }
+        // Domain failures return ok:false as a normal result so callers read
+        // per-item status instead of catching.
+        if (!result.value.ok) {
+          return { ok: false as const, slug, error: result.value.code, current: result.value.current ?? null };
+        }
 
-    // queen-scout-feedback-loop-2026-06-20 P-006 / B10 — the DEPRECATE path closes
-    // the loop: a supersede that carries `learnings` ALSO emits a structured,
-    // source-tagged learnings observation, so a dead draft still feeds Scout's
-    // corpus-digest (no dead ends, D-002). Atomic with the supersede — ONE call
-    // deprecates AND records the salvage, so the observation can't be forgotten.
-    let learningsObservation:
-      | { emitted: true; created: boolean; issueId?: string }
-      | { emitted: false; error: string }
-      | undefined;
-    if (result.value.ok && status === 'superseded' && args.learnings) {
-      const id = resolveAgentIdentity(ctx);
-      // Attribution is DERIVED from the caller (never spoofable), mirroring
-      // scout:grade-idea: the Queen deprecates as 'Queen', every other surface
-      // (su / operator) as 'owner'. A Scout self-deprecate calls
-      // emitDeprecateLearnings directly with deprecatedBy:'Scout' from its cycle.
-      const deprecatedBy = (ctx as { role?: string } | undefined)?.role === 'queen' ? 'Queen' : 'owner';
-      try {
-        const obs = await emitDeprecateLearnings({
-          planSlug: args.slug,
-          deprecatedBy,
-          learnings: args.learnings as DeprecateLearnings,
-          sourceHive: args.sourceHive ?? harnessSlug ?? operatorHomeHarnessSlug(),
-          ...(args.evidence ? { evidence: args.evidence } : {}),
-          createdBy: id.ownerId,
-        });
-        learningsObservation = {
-          emitted: true,
-          created: obs.created,
-          ...(obs.issue ? { issueId: obs.issue.id } : {}),
+        if (result.value.changed) {
+          await emitPlanEventForCaller(ctx, {
+            planSlug: slug,
+            event: 'status_changed',
+            before: result.value.oldStatus,
+            after: status,
+          });
+        }
+
+        if (isTerminalPlanStatus(status)) {
+          try {
+            await clearStartedForTerminalPlan(harnessSlug ?? operatorHomeHarnessSlug(), slug);
+          } catch {
+            /* recovered by reconcileStartStatus on the next plans:list read */
+          }
+        }
+
+        let learningsObservation:
+          | { emitted: true; created: boolean; issueId?: string }
+          | { emitted: false; error: string }
+          | undefined;
+        if (status === 'superseded' && args.learnings) {
+          const id = resolveAgentIdentity(ctx);
+          const deprecatedBy = (ctx as { role?: string } | undefined)?.role === 'queen' ? 'Queen' : 'owner';
+          try {
+            const obs = await emitDeprecateLearnings({
+              planSlug: slug,
+              deprecatedBy,
+              learnings: args.learnings as DeprecateLearnings,
+              sourceHive: args.sourceHive ?? harnessSlug ?? operatorHomeHarnessSlug(),
+              ...(args.evidence ? { evidence: args.evidence } : {}),
+              createdBy: id.ownerId,
+            });
+            learningsObservation = {
+              emitted: true,
+              created: obs.created,
+              ...(obs.issue ? { issueId: obs.issue.id } : {}),
+            };
+          } catch (err) {
+            const error =
+              err instanceof ObservationEvidenceError
+                ? err.message
+                : err instanceof Error
+                  ? err.message
+                  : String(err);
+            learningsObservation = { emitted: false, error };
+          }
+        }
+
+        return {
+          ...result.value,
+          ok: true as const,
+          slug,
+          filePath: result.filePath,
+          ...(mappedFrom ? { mappedFrom } : {}),
+          ...(learningsObservation ? { learningsObservation } : {}),
+          revision:
+            result.value.changed && rev.recorded.current
+              ? { seq: rev.recorded.current.seq }
+              : null,
         };
-      } catch (err) {
-        // The supersede already committed; a failed emit is REPORTED (not fatal)
-        // so the caller can re-file rather than losing the salvage silently.
-        const error =
-          err instanceof ObservationEvidenceError
-            ? err.message
-            : err instanceof Error
-              ? err.message
-              : String(err);
-        learningsObservation = { emitted: false, error };
-      }
-    }
+      },
+      { keyOf: (slug) => ({ slug }) },
+    );
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ...result.value,
-            filePath: result.filePath,
-            ...(mappedFrom ? { mappedFrom } : {}),
-            ...(learningsObservation ? { learningsObservation } : {}),
-            revision:
-              result.value.ok && result.value.changed && rev.recorded.current
-                ? { seq: rev.recorded.current.seq }
-                : null,
-          }),
-        },
-      ],
-    };
+    return bulkContent(env);
   },
 });
