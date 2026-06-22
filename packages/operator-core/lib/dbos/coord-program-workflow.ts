@@ -20,6 +20,7 @@
  * plumbing and the workflow stays directly testable.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { queueConcurrency } from './queue-concurrency';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import '../coord-ops/index.js'; // register every coord op
 import '../blueprint-steps/index.js'; // register every deterministic step-op (P-010)
@@ -95,7 +96,7 @@ export const coordProgramWorkflow = DBOS.registerWorkflow(coordProgramImpl, {
   maxRecoveryAttempts: 10,
 });
 
-export const coordProgramQueue = new WorkflowQueue('coord-program', { concurrency: 4 });
+export const coordProgramQueue = new WorkflowQueue('coord-program', { concurrency: queueConcurrency(4) });
 
 /**
  * Start (or resume) a durable coord-op program. The workflow id is deterministic

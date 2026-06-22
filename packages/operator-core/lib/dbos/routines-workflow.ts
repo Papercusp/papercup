@@ -25,6 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { queueConcurrency } from './queue-concurrency';
 import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
@@ -42,7 +43,7 @@ import { operatorApiBase } from '../operator-api-base';
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
 const operatorBase = operatorApiBase;
 
-const routinesQueue = new WorkflowQueue('routines', { concurrency: 4 });
+const routinesQueue = new WorkflowQueue('routines', { concurrency: queueConcurrency(4) });
 
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
 export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;

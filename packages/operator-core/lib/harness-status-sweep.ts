@@ -30,13 +30,16 @@
  * release the timer.
  */
 import { existsSync } from 'node:fs';
+import { getResourceProfile } from './resource-profile';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq } from 'drizzle-orm';
 
 const hl = generated.harnessLanesInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
 import { backgroundWorkersEnabled } from './background-workers';
-const SWEEP_INTERVAL_MS = 30_000;
+// F-E5 (app-wide-load-traps § E): widen the background cadence on a quiet/
+// battery host so periodic work runs proportionally less often (multiplier 1 on AC).
+const SWEEP_INTERVAL_MS = 30_000 * getResourceProfile().backgroundCadenceMultiplier;
 // Lane rows are PID-tagged by run.sh's pg_write_lane. As long as the PID is
 // alive, the lane is legitimately running — agent invocations can take an
 // hour+ on hard features. Only fall back to age-based sweeping when the PID

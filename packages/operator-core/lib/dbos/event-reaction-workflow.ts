@@ -18,6 +18,7 @@
  */
 
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { queueConcurrency } from './queue-concurrency';
 import { executeDurableReaction, type DurableReactionPayload } from '../events/durable-exec';
 import { setDurableReactionRunner, type DurableReactionInput } from '../events/durable';
 import { serializeParent, computeDedupId } from '../events/reaction-id';
@@ -39,7 +40,7 @@ export const eventReactionWorkflow = DBOS.registerWorkflow(reactionImpl, {
   maxRecoveryAttempts: 5,
 });
 
-export const reactionsQueue = new WorkflowQueue('event-reactions', { concurrency: 4 });
+export const reactionsQueue = new WorkflowQueue('event-reactions', { concurrency: queueConcurrency(4) });
 
 /**
  * Enqueue a reaction as a durable workflow. Fire-and-forget — does NOT await the

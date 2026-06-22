@@ -37,6 +37,7 @@
  * `DBOS.launch()`, like the feature-pipeline + coord-program workflows.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { queueConcurrency } from './queue-concurrency';
 import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
 
@@ -274,7 +275,7 @@ export const durableSpawnFireWorkflow = DBOS.registerWorkflow(durableSpawnFireIm
   maxRecoveryAttempts: 5,
 });
 
-export const durableSpawnQueue = new WorkflowQueue('durable-spawn-fire', { concurrency: 8 });
+export const durableSpawnQueue = new WorkflowQueue('durable-spawn-fire', { concurrency: queueConcurrency(8) });
 
 /**
  * Durably fire an autonomous agent launch. Returns `true` when the durable workflow

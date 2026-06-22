@@ -19,11 +19,14 @@
 
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { getResourceProfile } from '../resource-profile';
 
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
-const BATCH_SIZE = 32;
+// F-E5 (app-wide-load-traps § E): hardware-adaptive embed batch — a big host
+// pushes bigger batches for throughput, a laptop keeps latency/memory down.
+const BATCH_SIZE = getResourceProfile().embedBatchSize;
 
 type ResolvedMode = 'openai' | 'local' | 'disabled';
 

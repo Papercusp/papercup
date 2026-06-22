@@ -149,7 +149,18 @@ async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Pro
   html = html.includes('<head>') ? html.replace('<head>', `<head>${inject}`) : inject + html;
   return new Response(html, {
     status: 200,
-    headers: { 'content-type': 'text/html; charset=utf-8' },
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      // EI-2425 fix C: this shell injects per-request state (window.__PAPERCUSP_FLAGS__,
+      // __PAPERCUSP_WS__, __PAPERCUSP_PREFS__) and references content-hashed bundles, so
+      // it must NEVER be cached. A cached shell serves STALE baked flags + an outdated
+      // bundle — which is why a flag flip or a fresh deploy required a HARD reload to
+      // surface (a normal reload / reopen reused WebKitGTK's cached shell). Mirrors the
+      // /api/flags/bootstrap `no-store`. The hashed assets stay cacheable (served
+      // elsewhere); only this dynamic shell opts out, so any normal reload now gets the
+      // latest flags + bundle.
+      'cache-control': 'no-store, max-age=0',
+    },
   });
 }
 

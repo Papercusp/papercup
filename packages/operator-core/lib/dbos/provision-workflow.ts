@@ -30,6 +30,7 @@
  * stub so the DBOS dedup/resume mechanics are proven without spawning sandboxes.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { queueConcurrency } from './queue-concurrency';
 import type { ProvisionPhase, ProvisionRunInputs, ProvisionRunResult } from '../provision/runner';
 
 /** The DBOS `dbosErrorCode` for "a workflow with this deduplicationID is already
@@ -125,7 +126,7 @@ export const provisionWorkflow = DBOS.registerWorkflow(provisionWorkflowImpl, {
 
 // Provisions are interactive + infrequent; a small global concurrency cap is
 // plenty. The per-target mutex is the deduplicationID, not the queue width.
-export const provisionQueue = new WorkflowQueue('provision', { concurrency: 4 });
+export const provisionQueue = new WorkflowQueue('provision', { concurrency: queueConcurrency(4) });
 
 /**
  * Start (or, on a concurrent duplicate, decline) a provision as a durable

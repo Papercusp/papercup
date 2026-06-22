@@ -54,6 +54,7 @@
  *     the staleness window is proportionally wider during a switch.
  */
 import { promises as fs, existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
+import { getResourceProfile } from './resource-profile';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -75,7 +76,9 @@ import { notifySyncInvalidate } from './sync-sse';
 // the watcher is event-driven (chokidar); this 60s tick is only a reconcile
 // BACKSTOP for dropped inotify events + in-process watcher state. A detached DBOS
 // cron would lose the watcher's in-memory view — it stays in-process.
-const RECONCILE_INTERVAL_MS = 60_000;
+// F-E5 (app-wide-load-traps § E): widen the background cadence on a quiet/
+// battery host so periodic work runs proportionally less often (multiplier 1 on AC).
+const RECONCILE_INTERVAL_MS = 60_000 * getResourceProfile().backgroundCadenceMultiplier;
 const DEBOUNCE_MS = 200;
 
 /**

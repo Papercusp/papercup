@@ -21,6 +21,7 @@
  * ctx-building and directly testable.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { queueConcurrency } from './queue-concurrency';
 import { parseDecisionFor } from '@papercusp/orchestrator';
 import { deriveNext, loadBuiltinBlueprint, type BlueprintSpine } from '@papercusp/orchestrator/blueprint';
 import { runWithRateLimitTolerance } from './decide-rate-limit';
@@ -452,7 +453,7 @@ export const featurePipelineWorkflow = DBOS.registerWorkflow(featurePipelineImpl
   maxRecoveryAttempts: 10,
 });
 
-export const pipelineQueue = new WorkflowQueue('feature-pipeline', { concurrency: 4 });
+export const pipelineQueue = new WorkflowQueue('feature-pipeline', { concurrency: queueConcurrency(4) });
 
 /**
  * Start (or resume) a feature's durable pipeline. The workflow ID is deterministic
