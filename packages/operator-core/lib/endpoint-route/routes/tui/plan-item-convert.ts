@@ -108,7 +108,17 @@ export default defineTool({
     const text = Array.isArray(content) ? content[0]?.text : undefined;
     if (typeof text === 'string') {
       try {
-        return Response.json(JSON.parse(text));
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        // plan_items:convert is dual-arity (bulk-endpoint-standardization-2026-06-21
+        // P-004): a single-item dispatch returns the keyed-array envelope
+        // { ok, results:[one], counts }. Flatten the single result back so the TUI
+        // keeps reading the flat { ok, status, workItem?, planItem? } convert shape.
+        const results = parsed.results;
+        const single =
+          Array.isArray(results) && results.length === 1 && parsed.counts && typeof parsed.counts === 'object'
+            ? (results[0] as Record<string, unknown>)
+            : parsed;
+        return Response.json(single);
       } catch {
         return Response.json({ ok: false, error: text });
       }

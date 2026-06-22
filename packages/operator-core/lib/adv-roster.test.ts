@@ -312,9 +312,45 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
       new Map([['s-bee-1', 'claude-uuid-xyz']]),
     );
     expect(e.sessionId).toBe('claude-uuid-xyz');
+    expect(e.nativeSession).toMatchObject({
+      backend: 'claude',
+      source: 'spawned_agents',
+      ownerId: 's-bee-1',
+      sessionId: 'claude-uuid-xyz',
+      exactResumeSupported: true,
+    });
     // No session recorded (omp bee / pre-flag) → null.
     const [none] = mergeRosterEntries([presence({ ownerId: 's-2' })], new Map(), NOW);
     expect(none.sessionId).toBeNull();
+    expect(none.nativeSession).toBeNull();
+  });
+
+  it('surfaces backend-neutral Codex and OMP handles from adv_sessions rows', () => {
+    const [codex] = mergeRosterEntries(
+      [presence({ ownerId: 'codex-owner' })],
+      new Map([['codex-owner', adv({ id: 9, agent: 'codex', coordOwnerId: 'codex-owner' })]]),
+      NOW,
+    );
+    expect(codex.nativeSession).toMatchObject({
+      backend: 'codex',
+      source: 'adv_sessions',
+      ownerId: 'codex-owner',
+      exactResumeSupported: false,
+    });
+    expect(codex.nativeSession && 'codexHome' in codex.nativeSession ? codex.nativeSession.codexHome : '').toContain('session-9');
+
+    const [omp] = mergeRosterEntries(
+      [presence({ ownerId: 'omp-owner' })],
+      new Map([['omp-owner', adv({ agent: 'omp', coordOwnerId: 'omp-owner', ompThreadId: 'omp-thread' })]]),
+      NOW,
+    );
+    expect(omp.nativeSession).toMatchObject({
+      backend: 'omp',
+      source: 'adv_sessions',
+      ownerId: 'omp-owner',
+      ompThreadId: 'omp-thread',
+      exactResumeSupported: true,
+    });
   });
 
   it('resolves each agent wake mode (override ?? default ?? auto) for the P-008 badge', () => {

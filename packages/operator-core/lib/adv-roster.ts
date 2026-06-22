@@ -33,6 +33,11 @@ import {
 import { classifyAgentPane, type AgentPaneKind, type DriveMode } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import {
+  nativeSessionHandleForAdvSession,
+  nativeSessionHandleForSpawnedAgent,
+  type NativeSessionHandle,
+} from './native-session-handles';
+import {
   getAllWakeModeOverrides,
   getDefaultWakeMode,
   resolveWakeModeFrom,
@@ -135,6 +140,10 @@ export interface RosterEntry {
    *  when it's a claude bee — the `claude --resume <id>` handle for the bee pane
    *  (P-004). null for non-bee / omp / pre-flag / pending entries. */
   sessionId: string | null;
+  /** Backend-neutral native session handle for attach/resume surfaces. The
+   * legacy `sessionId` remains for Claude callers; this exposes Codex CODEX_HOME
+   * and OMP thread semantics through the same contract. */
+  nativeSession: NativeSessionHandle | null;
   /** The agent's effective wake mode (override ?? default ?? auto) — the P-008
    *  badge. null for pending (not-yet-spawned) entries. */
   wakeMode: WakeMode | null;
@@ -297,6 +306,18 @@ export function mergeRosterEntries(
             : 'stale';
       if (LIVENESS_RANK[nurseryLiveness] > LIVENESS_RANK[liveness]) liveness = nurseryLiveness;
     }
+    const spawnedSessionId = sessionsByOwner.get(p.ownerId) ?? null;
+    const sessionId = spawnedSessionId ?? adv?.sessionId ?? null;
+    const nativeSession = spawnedSessionId
+      ? nativeSessionHandleForSpawnedAgent({
+        spawnId: nursery?.spawnId ?? p.ownerId,
+        sessionOwner: p.ownerId,
+        backend: 'claude-code',
+        sessionId: spawnedSessionId,
+      })
+      : adv
+        ? nativeSessionHandleForAdvSession(adv)
+        : null;
     return {
       ownerId: p.ownerId,
       label: p.ownerLabel,
@@ -343,7 +364,8 @@ export function mergeRosterEntries(
       // (mig 115). Both are the same native uuid — fall back to the adv row so
       // the autonomous Queen/Overwatch carry a resolvable session id (the dock's
       // read-only `pui brain-view` pane locates the transcript by this uuid).
-      sessionId: sessionsByOwner.get(p.ownerId) ?? adv?.sessionId ?? null,
+      sessionId,
+      nativeSession,
       wakeMode: resolveWakeModeFrom(wakeModesByOwner.get(p.ownerId) ?? null, defaultWakeMode),
       pendingWakes: pendingWakesByOwner.get(p.ownerId) ?? 0,
     };
@@ -400,6 +422,7 @@ export function pendingLaunchesToRosterEntries(
       agentPaneKind: pane.kind,
       driveMode: pane.driveMode,
       sessionId: null,
+      nativeSession: null,
       wakeMode: null,
       pendingWakes: 0,
     };

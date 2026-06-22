@@ -1,5 +1,5 @@
 /**
- * plans:add-item — append a new P-NNN item to a phase.
+ * plans:add-item — append one OR many new P-NNN items to a phase.
  *
  * Per agent-plan-tracking-2026-05-20.md §4.2 + §4.4.
  *
@@ -10,45 +10,95 @@
  * Appends to a phase by its heading text (tolerant match — leading
  * `N. ` numbering stripped). Creates the phase section if it doesn't
  * exist, inserted before `## Decisions` (or at file end).
+ *
+ * Bulk by default (the house keyed-array contract, bulk-endpoint-standardization-
+ * 2026-06-21): single { slug, phase, text, importance }, several to one phase of one
+ * plan { slug, phase, importance, items:[{ text, blockedBy? }] }, or fully
+ * heterogeneous items:[{ slug, phase, text, importance, … }] → { ok, results:[{ ok,
+ * slug, itemId, createdPhase | error }], counts }. Each result embeds the NEWLY
+ * ALLOCATED itemId; correlate by { slug, itemId } not array position; one failure
+ * never fails the rest. Each item is appended inside its own plan lock so ids never
+ * collide.
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan, maskFences, IMPORTANCE_LEVELS, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 
-export const argsSchema = z.object({
-  slug: z.string().min(1),
-  harness: harnessArg,
-  phase: z
-    .string()
-    .min(1)
-    .regex(
-      /^Phase\b/i,
-      'Phase heading must start with "Phase" (e.g. "Phase 1 — Tooling") — the plan parser only recognizes /^Phase\\b/i headings as phase sections, so anything else lint-warns as unphased.',
-    )
-    .describe('Phase heading text without the ## prefix and without numbering, e.g. "Phase 1 — Tooling".'),
+const PHASE = z
+  .string()
+  .min(1)
+  .regex(
+    /^Phase\b/i,
+    'Phase heading must start with "Phase" (e.g. "Phase 1 — Tooling") — the plan parser only recognizes /^Phase\\b/i headings as phase sections, so anything else lint-warns as unphased.',
+  )
+  .describe('Phase heading text without the ## prefix and without numbering, e.g. "Phase 1 — Tooling".');
+
+const IMPORTANCE = z
+  .enum([...IMPORTANCE_LEVELS] as [string, ...string[]])
+  .describe(
+    'REQUIRED. Item importance — urgent|high|normal|low. urgent = interrupt the human now / pick up first; high = should be seen today; normal = usual cadence; low = safe to defer. No silent default: choose it deliberately from the importance rubric (decide from consequences — "what breaks, and how fast, if this is never seen / picked up last?"). Most routine items are `normal`.',
+  );
+
+const BLOCKED_BY = z
+  .array(z.string().regex(/^P-\d{3,}$/))
+  .describe('Item IDs that must complete before this one can effectively start.');
+
+const itemSpec = z.object({
+  slug: z.string().min(1).optional().describe('per-item plan slug (else the batch `slug`)'),
+  phase: PHASE.optional().describe('per-item phase (else the batch `phase`)'),
   text: z.string().min(1).max(800),
-  blockedBy: z
-    .array(z.string().regex(/^P-\d{3,}$/))
-    .optional()
-    .describe('Item IDs that must complete before this one can effectively start.'),
-  importance: z
-    .enum([...IMPORTANCE_LEVELS] as [string, ...string[]])
-    .describe(
-      'REQUIRED. Item importance — urgent|high|normal|low. urgent = interrupt the human now / pick up first; high = should be seen today; normal = usual cadence; low = safe to defer. No silent default: choose it deliberately from the importance rubric (decide from consequences — "what breaks, and how fast, if this is never seen / picked up last?"). Most routine items are `normal`.',
-    ),
-  rationale: z
-    .string()
-    .optional()
-    .describe(
-      'Optional — a short why for adding this item, if non-obvious. Stored on the plan revision (D-009); routine additions can omit it.',
-    ),
+  blockedBy: BLOCKED_BY.optional(),
+  importance: IMPORTANCE.optional().describe('per-item importance (else the batch `importance`)'),
+  harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
+  rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
 });
+
+// Exported (back-compat name) — the SINGLE-item arg shape, now folded into a
+// dual-arity schema that also accepts items:[…].
+export const argsSchema = z
+  .object({
+    slug: z.string().min(1).optional(),
+    harness: harnessArg,
+    phase: PHASE.optional(),
+    text: z.string().min(1).max(800).optional(),
+    blockedBy: BLOCKED_BY.optional(),
+    importance: IMPORTANCE.optional(),
+    items: z
+      .array(itemSpec)
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('add many items at once — each { text, importance, phase?, slug?, blockedBy?, harness? }; phase/slug/importance fall back to the batch values'),
+    rationale: z
+      .string()
+      .optional()
+      .describe(
+        'Optional — a short why for adding this item, if non-obvious. Stored on the plan revision (D-009); routine additions can omit it.',
+      ),
+  })
+  .refine(
+    (a) =>
+      (a.items?.length ?? 0) > 0 ||
+      (Boolean(a.slug) && Boolean(a.phase) && Boolean(a.text) && Boolean(a.importance)),
+    { message: 'pass { slug, phase, text, importance } for one, or items:[{ text, importance }] (with batch slug/phase) / items:[{ slug, phase, text, importance }] for many' },
+  );
+
+interface NewItem {
+  slug: string;
+  phase: string;
+  text: string;
+  importance: Importance;
+  blockedBy?: string[];
+  harness?: string;
+  rationale?: string;
+}
 
 function formatPadded(n: number): string {
   return n.toString().padStart(3, '0');
@@ -169,14 +219,88 @@ type AddItemValue =
   | { ok: true; itemId: string; createdPhase: boolean; slug: string }
   | { ok: false; code: 'not_found' | 'legacy_plan' };
 
+/** Append ONE item, returning the self-describing bulk result. PRESERVES the
+ *  in-lock allocate → build → append → bump, the revision capture, the plan-event
+ *  emit, and the not_found / legacy_plan / busy error mapping per item. The newly
+ *  allocated itemId rides the result (CREATE → result embeds what the single call
+ *  returned). */
+async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+  const sctx = harnessScopedCtx(it.harness, ctx);
+  const harnessSlug = resolveCtxHarnessSlug(sctx);
+  const rev = planRevisionCapture(
+    ctx as PlanRevisionCtx,
+    it.slug,
+    it.rationale,
+    harnessSlug ? { harnessSlug } : {},
+  );
+  const result = await withPlanLock<AddItemValue>(
+    ctx as never,
+    {
+      slug: it.slug,
+      intent: `plans:add-item to "${it.phase.slice(0, 40)}"`,
+      ...(harnessSlug ? { harnessSlug } : {}),
+      afterWrite: rev.afterWrite,
+    },
+    async (current): Promise<{ newBody: string | null; value: AddItemValue }> => {
+      if (current === null) {
+        return { newBody: null, value: { ok: false, code: 'not_found' } };
+      }
+      const parsed = parsePlan(current, { filePath: it.slug + '.md' });
+      if (parsed.isLegacy) {
+        return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+      }
+      const itemId = allocateNextItemId(current);
+      const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance);
+      const { newBody, createdPhase } = appendItemToBody(current, it.phase, itemLine);
+      const final = bumpUpdatedDate(newBody);
+      return {
+        newBody: final,
+        value: { ok: true, itemId, createdPhase, slug: it.slug },
+      };
+    },
+  );
+
+  if (result.kind === 'busy') {
+    return {
+      ok: false,
+      slug: it.slug,
+      error: 'busy',
+      busy: result.busy.map((b) => ({
+        path: b.path,
+        owner_label: b.owner_label,
+        intent: b.intent,
+        expires_ts: b.expires_ts,
+      })),
+    };
+  }
+
+  if (!result.value.ok) {
+    return { ok: false, slug: it.slug, error: result.value.code };
+  }
+
+  // `result.value` is narrowed to the ok-variant by the guard above.
+  await emitPlanEventForCaller(ctx, {
+    planSlug: it.slug,
+    event: 'item_added',
+    detail: result.value.itemId,
+    after: it.text.slice(0, 200),
+  });
+
+  return {
+    ...result.value,
+    filePath: result.filePath,
+    revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+  };
+}
+
 export default defineTool({
   name: 'plans:add-item',
   description:
-    'Append a new item to a phase. Allocates the next P-NNN id inside a lock. Creates the phase section if it doesn\'t exist. Auto-bumps frontmatter updated:.',
+    "Append one OR many new items to a phase. Allocates the next P-NNN id inside a lock. Creates the phase section if it doesn't exist. Auto-bumps frontmatter updated:. Single: { slug, phase, text, importance }. Many to one phase: { slug, phase, importance, items:[{ text, blockedBy? }] }. Heterogeneous: items:[{ slug, phase, text, importance }]. Returns { ok, results:[{ ok, slug, itemId, createdPhase | error }], counts } — each result embeds the NEW itemId; correlate by { slug, itemId }, not position; one failure never fails the rest.",
   guidance: {
-    when: 'New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one).',
+    when: 'New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).',
     notWhen:
-      'Updating an existing item — that\'s a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.',
+      "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:
       'plans:add-item → plans:set-status to flip newly added items off `todo` when work starts.',
   },
@@ -186,94 +310,30 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveCtxHarnessSlug(sctx);
-    const rev = planRevisionCapture(
-      ctx as PlanRevisionCtx,
-      args.slug,
-      args.rationale,
-      harnessSlug ? { harnessSlug } : {},
-    );
-    const result = await withPlanLock<AddItemValue>(
-      ctx as never,
-      {
-        slug: args.slug,
-        intent: `plans:add-item to "${args.phase.slice(0, 40)}"`,
-        ...(harnessSlug ? { harnessSlug } : {}),
-        afterWrite: rev.afterWrite,
-      },
-      async (current): Promise<{ newBody: string | null; value: AddItemValue }> => {
-        if (current === null) {
-          return { newBody: null, value: { ok: false, code: 'not_found' } };
-        }
-        const parsed = parsePlan(current, { filePath: args.slug + '.md' });
-        if (parsed.isLegacy) {
-          return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
-        }
-        const itemId = allocateNextItemId(current);
-        const itemLine = buildItemLine(
-          itemId,
-          args.text,
-          args.blockedBy ?? [],
-          args.importance as Importance,
-        );
-        const { newBody, createdPhase } = appendItemToBody(current, args.phase, itemLine);
-        const final = bumpUpdatedDate(newBody);
-        return {
-          newBody: final,
-          value: { ok: true, itemId, createdPhase, slug: args.slug },
-        };
-      },
-    );
-
-    if (result.kind === 'busy') {
-      return {
-        content: [
+    const list: NewItem[] = args.items?.length
+      ? args.items.map((it) => ({
+          slug: (it.slug ?? args.slug) as string,
+          phase: (it.phase ?? args.phase) as string,
+          text: it.text,
+          importance: (it.importance ?? args.importance) as Importance,
+          blockedBy: it.blockedBy ?? args.blockedBy,
+          harness: it.harness ?? args.harness,
+          rationale: it.rationale ?? args.rationale,
+        }))
+      : [
           {
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'busy',
-              busy: result.busy.map((b) => ({
-                path: b.path,
-                owner_label: b.owner_label,
-                intent: b.intent,
-                expires_ts: b.expires_ts,
-              })),
-            }),
+            slug: args.slug as string,
+            phase: args.phase as string,
+            text: args.text as string,
+            importance: args.importance as Importance,
+            blockedBy: args.blockedBy,
+            harness: args.harness,
+            rationale: args.rationale,
           },
-        ],
-        isError: true,
-      };
-    }
-
-    if (!result.value.ok) {
-      return {
-        content: [
-          { type: 'text' as const, text: JSON.stringify({ error: result.value.code, slug: args.slug }) },
-        ],
-        isError: true,
-      };
-    }
-
-    // `result.value` is narrowed to the ok-variant by the guard above.
-    await emitPlanEventForCaller(ctx, {
-      planSlug: args.slug,
-      event: 'item_added',
-      detail: result.value.itemId,
-      after: args.text.slice(0, 200),
+        ];
+    const env = await runBulk(list, (it) => addItemOne(it, ctx), {
+      keyOf: (it) => ({ slug: it.slug }),
     });
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ...result.value,
-            filePath: result.filePath,
-            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
-          }),
-        },
-      ],
-    };
+    return bulkContent(env);
   },
 });

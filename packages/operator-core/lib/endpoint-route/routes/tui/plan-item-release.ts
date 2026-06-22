@@ -143,11 +143,11 @@ export default defineTool({
     if (typeof text === 'string') {
       try {
         const parsed = JSON.parse(text) as Record<string, unknown>;
-        // work_items:release is dual-arity (bulk-endpoint-standardization-2026-06-21
-        // P-002): a single-item dispatch returns the keyed-array envelope
-        // { ok, results:[one], counts }. Flatten the single result back so this
-        // route's response (and the TUI toast it feeds) keeps its { via, ok,
-        // workItem?, error? } shape. plan_items:release is not bulk → spread as-is.
+        // BOTH dispatch targets are now dual-arity (bulk-endpoint-standardization-
+        // 2026-06-21: work_items:release P-002, plan_items:release P-004): a
+        // single-item dispatch returns the keyed-array envelope { ok, results:[one],
+        // counts }. Flatten the single result back so this route's response (and the
+        // TUI toast it feeds) keeps its { via, ok, workItem?/released?, error? } shape.
         const results = parsed.results;
         const single =
           Array.isArray(results) && results.length === 1 && parsed.counts && typeof parsed.counts === 'object'

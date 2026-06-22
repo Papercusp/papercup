@@ -57,15 +57,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
   FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
-  // unified-work-item-ledger-2026-06-21 P-003: plan→work-item promotion mints work-items on the
-  // live plans:start path; ships dark, owner flips after an attended integration-verify. Safe
-  // dark: OFF ⇒ no promotion (today's behavior, byte-identical).
-  FLAGS.PLAN_WORKITEM_PROMOTION,
-  // work-queue-completeness-2026-06-21 Phase A (unified-work-item-ledger): every plan-item claim
-  // auto-mints a tracked work-item (routes plan_items:claim / declare-intent / set-status→wip
-  // through convertPlanItem). Ships dark, reversible; owner flips ON after verifying. Safe dark:
-  // OFF ⇒ today's bare claimPlanItem on all claim paths (byte-identical).
-  FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT,
+  // (PLAN_WORKITEM_PROMOTION + PLAN_ITEM_CLAIM_AUTO_CONVERT graduated to default-ON 2026-06-22,
+  // owner-directed — the work-items-everywhere ledger's two halves were built+tested but left dark
+  // (promotion dogfood-verified D-007; claim-auto-convert 48 green tests). Finished work ships ON,
+  // not dark — removed from the allowlist per the rule.)
   // infra-perf-reliability-audit-round4 P-005 (D-005): gates the listEscalations read cutover
   // onto the coord_open_escalations projection (mig 355). DARK until the migration+backfill is
   // verified applied in prod; the table+trigger are additive + harmless while OFF, so OFF ⇒ the

@@ -256,11 +256,23 @@ registration) — **a feature toggle is a `FLAGS` entry, never an ad-hoc
 `process.env.PAPERCUSP_*` boolean** (an env gate ships dark, dodges the default-on
 guard + the dark-flag expiry, and can't be flipped at runtime; `lint:env-feature-gates`
 enforces this in CI — env stays for launch-time/test/dev config only). **New flags
-DEFAULT TO ENABLED — finished work never ships dark; flipping a finished feature ON is
-the LAST STEP of the task, not a someday. A capability built then left gated OFF — by a
-flag OR an env boolean — is INCOMPLETE, not done: "built + proven in isolation + left
-off" is the #1 way good work silently dies (the PgBouncer-stayed-dark class).** Default-OFF
-only for genuinely incomplete/unsafe work or an explicit owner ask — and then (a) add it to
+DEFAULT TO ENABLED — finished work never ships dark.** A flag left OFF means the code does
+NOTHING in production, so a feature you built, tested, and left gated OFF is DEAD CODE and the
+task is NOT done — however green the tests. **Flipping it ON is the FINAL STEP OF THE SAME TASK,
+never a "someday" and never a hand-off** (and a flag flipped on only via a runtime override while
+its DEFAULT in `types.ts` stays `false` is the same half-finish — change the default). ⛔ The #1
+way good work silently dies is "ship it dark, verify/flip later" — PgBouncer AND claim-auto-convert
+BOTH sat built+tested+OFF for weeks. KILL the two excuses that cause it: (i) **"the owner flips it
+after verifying."** NO — if YOU built it and it's tested, YOU verify it: flip it ON, watch it work
+live, flip it OFF only if it breaks. Verify-then-flip is ONE atomic step YOU own in THIS task, not
+a punt to the owner or to "later"; the owner asked for a working feature, not dead code awaiting a
+ceremony. (ii) **"it's reversible / safe to ship dark."** Reversibility is the reason to flip it ON
+*confidently*, not a license to leave it OFF. Default-OFF is allowed ONLY for: genuinely
+INCOMPLETE/unsafe code (it doesn't fully work yet), an OWNER-AUTHORITY/security surface the owner
+must personally ratify (privilege-escalation, destructive reapers, public signup, full-autonomy),
+or a reversible CUTOVER kill-switch needing an attended live verify the OWNER runs — and "finished
+but I'd like it verified first" is NONE of these (that verify is YOUR job, in-task). When one of
+those three genuinely applies — and then (a) add it to
 `KNOWN_DARK_FLAGS` in `libs/flags/src/production-defaults.test.ts` with a
 justification (CI fails otherwise), and (b) surface the pending flip loudly in the
 plan's `## Now` + your completion report. The dark allowlist carries a

@@ -162,10 +162,17 @@ describe('plan_items:claim ENFORCEMENT (work-queue-completeness Phase A)', () =>
   it('flag ON: a claim auto-mints a tracked work_item linked back to the plan item', async () => {
     setFlagOverridesForTest({ [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: true });
 
-    const res = await call(claim, { plan: PLAN, item: 'P-001' }, ctxA);
+    // Bulk keyed-array envelope (bulk-endpoint-standardization-2026-06-21 P-004):
+    // a single inline claim is n=1 → { ok, results:[one], counts }; the per-item
+    // result carries the same claim/convert payload the single call always returned.
+    const env = await call(claim, { plan: PLAN, item: 'P-001' }, ctxA);
+    expect(env.ok).toBe(true);
+    expect(env.counts).toEqual({ ok: 1, failed: 0 });
+    const res = env.results[0];
     expect(res.ok).toBe(true);
+    expect(res).toMatchObject({ plan: PLAN, item: 'P-001' });
     expect(res.result.status).toBe('claimed');
-    // The minted work_item rides the response.
+    // The minted work_item rides the per-item result.
     expect(res.convertStatus).toBe('converted');
     expect(res.workItem).toBeTruthy();
     expect(res.workItem.id).toBe('WI-1');
@@ -185,11 +192,11 @@ describe('plan_items:claim ENFORCEMENT (work-queue-completeness Phase A)', () =>
   it('flag ON: a SECOND claim RESUMES the same work_item — no duplicate row', async () => {
     setFlagOverridesForTest({ [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: true });
 
-    const first = await call(claim, { plan: PLAN, item: 'P-001' }, ctxA);
+    const first = (await call(claim, { plan: PLAN, item: 'P-001' }, ctxA)).results[0];
     expect(first.convertStatus).toBe('converted');
     const firstId = first.workItem.id;
 
-    const again = await call(claim, { plan: PLAN, item: 'P-001' }, ctxA);
+    const again = (await call(claim, { plan: PLAN, item: 'P-001' }, ctxA)).results[0];
     expect(again.ok).toBe(true);
     expect(again.convertStatus).toBe('resumed'); // idempotent — NOT a fresh mint
     expect(again.workItem.id).toBe(firstId); // the SAME execution record
@@ -202,7 +209,9 @@ describe('plan_items:claim ENFORCEMENT (work-queue-completeness Phase A)', () =>
   it('flag OFF (default): a claim is a BARE lease — no work_item, no implements edge', async () => {
     setFlagOverridesForTest({ [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: false });
 
-    const res = await call(claim, { plan: PLAN, item: 'P-001' }, ctxA);
+    const env = await call(claim, { plan: PLAN, item: 'P-001' }, ctxA);
+    expect(env.ok).toBe(true);
+    const res = env.results[0];
     expect(res.ok).toBe(true);
     expect(res.result.status).toBe('claimed');
     // No convert envelope fields when OFF.

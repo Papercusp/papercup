@@ -832,6 +832,81 @@ test('close() tears down every cached egress dispatcher (no leaked connection po
   assert.equal(captured!.closed, true, 'gateway.close() closed the cached egress dispatcher (no leaked connection pool)');
 });
 
+// 529 = SERVER overload (Anthropic is momentarily over capacity), NOT account-budget exhaustion. It must be
+// handled DISTINCTLY from a 429: back off + retry the SAME account (the overload is transient + global, so a
+// different account won't help and rotating would burn the rotation budget), WITHOUT penalizing/pausing the
+// account or shrinking AIMD concurrency — and still bounded so a persistent 529 can't retry forever.
+test('[529 overload] a 529 backs off + retries the SAME account (no rotation) → the bee gets the recovered 200, not the 529', async () => {
+  let calls = 0;
+  const bearers: string[] = [];
+  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok' };
+  const B: ActiveAccount = { accountId: 'B', token: async () => 'B-tok' };
+  await boot(
+    (req, res) => {
+      bearers.push(String(req.headers['authorization'] ?? ''));
+      calls++;
+      if (calls === 1) {
+        res.writeHead(529, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    },
+    { pool: createFailoverPool([A, B]) },
+  );
+  const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 200, 'the 529 was retried into a 200, not forwarded to the bee');
+  assert.equal((await res.json() as { ok: boolean }).ok, true);
+  assert.equal(calls, 2, 'exactly one backoff-retry (529 then 200)');
+  // CRITICAL distinction from a 429: a 529 retries the SAME account, never rotating to the other one.
+  // (Which account the round-robin started on is irrelevant — both attempts must hit the SAME bearer.)
+  assert.equal(bearers.length, 2, 'two upstream attempts');
+  assert.equal(bearers[0], bearers[1], 'the 529 retried the SAME account (no rotation, unlike a 429)');
+  assert.ok(bearers[0] === 'Bearer A-tok' || bearers[0] === 'Bearer B-tok', 'egressed on a pool account');
+}, 15_000);
+
+test('[529 overload] a 529 does NOT penalize/pause the account governor (server overload ≠ account budget) — /healthz stays ready', async () => {
+  let calls = 0;
+  await boot((_req, res) => {
+    calls++;
+    if (calls === 1) {
+      res.writeHead(529, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }));
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    }
+  });
+  const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 200);
+  // A 429 budget-exhaustion would pause the governor (→ /healthz 503, the gateway-thorough backpressure case);
+  // a 529 must leave it READY.
+  const health = await ask('/healthz');
+  assert.equal(health.status, 200, 'a 529 did not pause the account governor (healthz ready)');
+  assert.ok(gw.stats().pausedUntil <= Date.now(), 'governor not paused after a 529');
+}, 15_000);
+
+test('[529 overload] a PERSISTENT 529 is BOUNDED — the request settles with a server error fast (slot freed), never an infinite backoff loop', async () => {
+  // Under the production 60s internal-retry deadline a persistent 529 forwards a clean 529 after the
+  // 6-attempt cap (~5s of 1s backoffs). Here we use a tiny deadline to assert the wedge-prevention BOUND
+  // cheaply: the request must terminate FAST with a 5xx and free its slot, not retry forever. (The tiny
+  // deadline clamps the attempt's headers wait, so the shed surfaces as a 502 abort rather than a forwarded
+  // 529 — both are "bounded + slot freed", which is the property under test.)
+  await boot(
+    (_req, res) => {
+      res.writeHead(529, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }));
+    },
+    { internalRetryDeadlineMs: 1 },
+  );
+  const start = Date.now();
+  const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  const elapsed = Date.now() - start;
+  assert.ok(res.status >= 500 && res.status < 600, `a persistent 529 settles with a bounded 5xx (got ${res.status}), not an infinite retry`);
+  assert.ok(elapsed < 3_000, `terminated fast (${elapsed}ms), slot freed — no unbounded backoff loop`);
+}, 15_000);
+
 test('a non-http(s) (socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3 / WI-284)', async () => {
   // undici's ProxyAgent is HTTP-CONNECT only; a socks:// URL would 502 EVERY request for this account.
   // The gateway must IGNORE it and fall back to default egress (no dispatcher), not hand fetch a broken one.

@@ -27,13 +27,13 @@ export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness AND progress joined in). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued` (items in rank order), `load` (work-item count) — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict judgment; the ordered plan → affinity). The single LIVE source for "is X really being worked": surfaces `orphaned` claims (live lease, DEAD holder) AND `stalled` claims (live holder, NO item-scoped progress in the window) — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast (agent-activity-liveness-truth).',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued`, `load` — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict; ordered plan → affinity). The single LIVE source for "is X really being worked": surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast (agent-activity-liveness-truth).',
   guidance: {
-    when: 'Answering "who\'s running / what is agent X doing / what is X\'s ordered work-list / how loaded is X / is anyone on plan P". This is the state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
+    when: 'Answering "who\'s running / what is agent X doing / X\'s ordered work-list / how loaded is X / is anyone on plan P". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
-      'You want to be notified of future changes (subscribe the fleet_assignment change-feed / your coord subscriptions) or you need full message history (coord:inbox).',
+      'You want to be notified of future changes (subscribe the fleet_assignment change-feed) or you need full message history (coord:inbox).',
     chaining:
-      'fleet:assignments { plan } → see an orphaned OR stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release to free it, or pick it up yourself; never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging an agent about its work.',
+      'fleet:assignments { plan } → an orphaned/stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release, or pick it up yourself; never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging an agent about its work.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,

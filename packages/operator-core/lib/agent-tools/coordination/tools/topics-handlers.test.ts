@@ -110,8 +110,8 @@ describe('topics:list handler projection', () => {
   });
 });
 
-describe('topics:subscribe handler projection', () => {
-  it('projects topic/mode/expires from the returned subscription row', async () => {
+describe('topics:subscribe handler projection (bulk envelope)', () => {
+  it('projects topic/mode/expires from the returned subscription row into an n=1 result', async () => {
     subscribeTopic.mockResolvedValue(
       sub('coord-dx', { delivery_mode: 'digest', expires_ts: '2027-06-04T00:00:00.000Z' }),
     );
@@ -119,12 +119,15 @@ describe('topics:subscribe handler projection', () => {
       await subTool.handler(parse(subTool, { topic: 'coord-dx', mode: 'digest', ttl_sec: 3600 }), ctx),
     );
     expect(res.ok).toBe(true);
-    expect(res.subscription).toEqual({
-      topic: 'coord-dx',
-      mode: 'digest',
-      expires_ts: '2027-06-04T00:00:00.000Z',
-    });
-    // mode + ttl_sec are forwarded as the opts arg.
+    expect(res.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.results).toEqual([
+      {
+        ok: true,
+        topic: 'coord-dx',
+        subscription: { topic: 'coord-dx', mode: 'digest', expires_ts: '2027-06-04T00:00:00.000Z' },
+      },
+    ]);
+    // mode + ttl_sec are forwarded as the per-item opts arg.
     expect(subscribeTopic).toHaveBeenCalledWith(
       { ownerId: 'su-test', ownerLabel: 'su · test' },
       'coord-dx',

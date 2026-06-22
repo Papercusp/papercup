@@ -1,5 +1,5 @@
 export type InteractiveBackend = 'claude' | 'codex' | 'omp';
-export type SpawnBackendLike = InteractiveBackend | 'claude-code';
+export type SpawnBackendLike = InteractiveBackend | 'claude-code' | 'anthropic-direct';
 export type BackendAccountProvider = 'claude' | 'codex';
 
 export type BackendFeature =
@@ -132,7 +132,7 @@ export function backendFeatureUnsupportedReason(backend: InteractiveBackend, fea
 }
 
 export function interactiveBackendFromSpawnBackend(backend: SpawnBackendLike): InteractiveBackend {
-  return backend === 'claude-code' ? 'claude' : backend;
+  return backend === 'claude-code' || backend === 'anthropic-direct' ? 'claude' : backend;
 }
 
 export function accountProviderForInteractiveBackend(backend: InteractiveBackend): BackendAccountProvider | null {

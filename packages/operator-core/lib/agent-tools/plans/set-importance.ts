@@ -22,7 +22,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -129,7 +129,7 @@ export function setImportanceInBody(
  *  the full single-call payload on success ({ slug, itemId, oldImportance,
  *  newImportance, filePath, revision }) and the prior error codes (busy / not_found /
  *  item_not_found) on failure — PRESERVING the lock + revision logic per item. */
-async function setImportanceOne(it: ImportanceItem, ctx: unknown): Promise<BulkItemResult> {
+async function setImportanceOne(it: ImportanceItem, ctx: UnifiedToolContext): Promise<BulkItemResult> {
   const sctx = harnessScopedCtx(it.harness, ctx);
   const harnessSlug = resolveCtxHarnessSlug(sctx);
   const rev = planRevisionCapture(
@@ -180,7 +180,6 @@ async function setImportanceOne(it: ImportanceItem, ctx: unknown): Promise<BulkI
     return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code };
   }
   return {
-    ok: true,
     slug: it.slug,
     ...result.value,
     filePath: result.filePath,

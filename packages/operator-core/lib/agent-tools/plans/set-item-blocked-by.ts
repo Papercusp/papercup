@@ -20,7 +20,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -135,7 +135,7 @@ type SetBlockedByValue =
 
 /** Apply one blocked-by change, returning the self-describing bulk result. PRESERVES
  *  the dedupe + self-block reject, lock, revision, and sync-invalidate per item. */
-async function setBlockedByOne(it: BlockedByItem, ctx: unknown): Promise<BulkItemResult> {
+async function setBlockedByOne(it: BlockedByItem, ctx: UnifiedToolContext): Promise<BulkItemResult> {
   // Dedupe + reject a self-block (an item can't depend on itself).
   const blockedBy = [...new Set(it.blockedBy)];
   if (blockedBy.includes(it.itemId)) {
@@ -198,7 +198,6 @@ async function setBlockedByOne(it: BlockedByItem, ctx: unknown): Promise<BulkIte
   }
 
   return {
-    ok: true,
     slug: it.slug,
     ...result.value,
     filePath: result.filePath,

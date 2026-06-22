@@ -1395,13 +1395,15 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // unverified; owner flips ON after the B-LOOP-1..5 chain is green + the manual e2e
   // passes. KNOWN_DARK_FLAGS.
   [FLAGS.LOOPS]: false,
-  // DEFAULT OFF (dark): mints work-items on the live plans:start path; flip ON after an
-  // attended integration-verify (unified-work-item-ledger P-003 / D-002).
-  [FLAGS.PLAN_WORKITEM_PROMOTION]: false,
-  // DEFAULT OFF (dark, work-queue-completeness Phase A): routes every plan-item claim through
-  // convertPlanItem so the claim auto-mints a tracked work-item; flip ON after verifying. OFF ⇒
-  // today's bare claimPlanItem on all three claim paths, byte-identical. KNOWN_DARK_FLAGS.
-  [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: false,
+  // DEFAULT ON: mints work-items on the live plans:start path (unified-work-item-ledger P-003 /
+  // D-002). Dogfood-verified (D-007 backfilled 14 work-items); flipped default-ON 2026-06-22
+  // (owner-directed — finished work ships ON, not dark).
+  [FLAGS.PLAN_WORKITEM_PROMOTION]: true,
+  // DEFAULT ON (work-queue-completeness Phase A): routes every plan-item claim through
+  // convertPlanItem so the claim auto-mints + assigns a tracked work-item — closes the gap where
+  // plan-item claims orphaned their work-items from the Queen frontier (double-placement). 48 tests
+  // green; flipped default-ON 2026-06-22 (owner-directed — finished work ships ON, not dark).
+  [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: true,
   // DEFAULT OFF (infra-perf-round4 P-005): gates the listEscalations read cutover onto the
   // coord_open_escalations projection. The projection table+trigger (mig 355) are additive +
   // harmless while OFF; flip ON only after the migration+backfill is verified in prod.

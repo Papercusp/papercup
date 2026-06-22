@@ -80,9 +80,12 @@ describe('plan_items:* tool handlers (real PG, through dispatch glue)', () => {
     expect(adopted.ok).toBe(true);
     expect(adopted.adopted.agentName).toBe('builder-1');
 
+    // The write verbs are dual-arity (bulk-endpoint-standardization-2026-06-21 P-004):
+    // a single inline call is n=1 → { ok, results:[one], counts }; correlate by { plan, item }.
     const assigned = await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-1' }, ctxA);
     expect(assigned.ok).toBe(true);
-    expect(assigned.assignment.assigneeName).toBe('builder-1');
+    expect(assigned.results[0]).toMatchObject({ ok: true, plan: 'demo-plan', item: 'P-001' });
+    expect(assigned.results[0].assignment.assigneeName).toBe('builder-1');
 
     const mine = await call(myItems, {}, ctxA);
     expect(mine.ok).toBe(true);
@@ -91,30 +94,38 @@ describe('plan_items:* tool handlers (real PG, through dispatch glue)', () => {
 
     const claimed = await call(claim, { plan: 'demo-plan', item: 'P-001' }, ctxA);
     expect(claimed.ok).toBe(true);
-    expect(claimed.result.status).toBe('claimed');
+    expect(claimed.results[0].ok).toBe(true);
+    expect(claimed.results[0].result.status).toBe('claimed');
 
     const hb = await call(heartbeat, { plan: 'demo-plan', item: 'P-001', kind: 'activity' }, ctxA);
-    expect(hb.held).toBe(true);
+    expect(hb.results[0].held).toBe(true);
 
     const st = await call(status, { plan: 'demo-plan' }, ctxA);
     const p1 = st.items.find((i: { itemId: string }) => i.itemId === 'P-001');
     expect(p1.disposition).toBe('active');
 
     const rel = await call(release, { plan: 'demo-plan', item: 'P-001' }, ctxA);
-    expect(rel.released).toBe(true);
+    expect(rel.results[0].released).toBe(true);
   });
 
-  it('assign validates the item exists in the plan', async () => {
-    await expect(call(assign, { plan: 'demo-plan', item: 'P-999', assignee: 'builder-1' }, ctxA)).rejects.toThrow(/not found/);
+  it('assign validates the item exists in the plan (per-item error under the envelope)', async () => {
+    // A throw from the store becomes that item's { ok:false, error } — the batch
+    // never throws (runBulk), top-level ok stays true, counts.failed is the truth.
+    const env = await call(assign, { plan: 'demo-plan', item: 'P-999', assignee: 'builder-1' }, ctxA);
+    expect(env.ok).toBe(true);
+    expect(env.counts).toEqual({ ok: 0, failed: 1 });
+    expect(env.results[0]).toMatchObject({ ok: false, plan: 'demo-plan', item: 'P-999' });
+    expect(String(env.results[0].error)).toMatch(/not found/);
   });
 
   it('a different session cannot claim another name’s assigned item (policy via dispatch)', async () => {
     await call(adoptName, { name: 'builder-1' }, ctxA);
     await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-1' }, ctxA);
-    // ctxB has not adopted builder-1 → refused.
-    const refused = await call(claim, { plan: 'demo-plan', item: 'P-001' }, ctxB);
-    expect(refused.ok).toBe(false);
-    expect(refused.result.status).toBe('refused');
+    // ctxB has not adopted builder-1 → refused (per item, top-level ok stays true).
+    const env = await call(claim, { plan: 'demo-plan', item: 'P-001' }, ctxB);
+    expect(env.ok).toBe(true);
+    expect(env.results[0].ok).toBe(false);
+    expect(env.results[0].result.status).toBe('refused');
   });
 
   it('my_items without an adopted name (and no explicit) errors clearly', async () => {
@@ -125,9 +136,10 @@ describe('plan_items:* tool handlers (real PG, through dispatch glue)', () => {
     // ctxA registers builder-1 under user sess-A by adopting+assigning.
     await call(adoptName, { name: 'builder-1' }, ctxA);
     await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-1' }, ctxA);
-    // ctxB (a different user) tries to assign to builder-1 → refused.
-    const refused = await call(assign, { plan: 'demo-plan', item: 'P-002', assignee: 'builder-1' }, ctxB);
-    expect(refused.ok).toBe(false);
-    expect(String(refused.refused)).toMatch(/another user/);
+    // ctxB (a different user) tries to assign to builder-1 → refused per item.
+    const env = await call(assign, { plan: 'demo-plan', item: 'P-002', assignee: 'builder-1' }, ctxB);
+    expect(env.ok).toBe(true);
+    expect(env.results[0].ok).toBe(false);
+    expect(String(env.results[0].refused)).toMatch(/another user/);
   });
 });
