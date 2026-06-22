@@ -52,13 +52,6 @@ const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 // ~10-min SDK request timeout. Env-tunable. (The POST-admission 60s slot-hold deadline is a SEPARATE,
 // wedge-bounded budget and is NOT changed here.)
 const DEFAULT_MAX_QUEUE_WAIT_MS = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUE_WAIT_MS) || 4 * 60 * 1000;
-// EXTENDED IN-REQUEST ABSORPTION (env-gated, 2026-06-22). When > 0, on hitting the POST-admission slot-hold
-// deadline (the wedge-bounded 60s) the gateway, instead of sheding a retryable 429, RELEASES its admission slot
-// and re-acquires — the re-acquire's wait holds NO slot, so it CANNOT wedge — looping until an account serves or
-// this TOTAL post-admission budget runs out. So the caller WAITS LONGER and succeeds instead of getting a 429.
-// 0 = OFF (current behavior: shed at 60s). Kept under the bee CLI's ~10-min SDK timeout. Ramp on after live
-// verification; injectable per-gateway via deps.requestAbsorbMs for tests.
-const DEFAULT_REQUEST_ABSORB_MS = Number(process.env.PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS) || 0;
 /** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
  *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
  *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the
