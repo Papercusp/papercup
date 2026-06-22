@@ -1,5 +1,6 @@
 export type InteractiveBackend = 'claude' | 'codex' | 'omp';
 export type SpawnBackendLike = InteractiveBackend | 'claude-code';
+export type BackendAccountProvider = 'claude' | 'codex';
 
 export type BackendFeature =
   | 'fresh-su'
@@ -132,4 +133,10 @@ export function backendFeatureUnsupportedReason(backend: InteractiveBackend, fea
 
 export function interactiveBackendFromSpawnBackend(backend: SpawnBackendLike): InteractiveBackend {
   return backend === 'claude-code' ? 'claude' : backend;
+}
+
+export function accountProviderForInteractiveBackend(backend: InteractiveBackend): BackendAccountProvider | null {
+  if (!backendFeatureGuard(backend, 'account-pinning').supported) return null;
+  if (!backendFeatureGuard(backend, 'gateway-routing').supported) return null;
+  return backend === 'codex' ? 'codex' : 'claude';
 }

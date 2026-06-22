@@ -14,6 +14,7 @@ import {
   gatewayPinEnv,
   codexGatewayConfigPatch,
   accountPinnable,
+  accountProviderFromChoices,
   GATEWAY_ACCOUNT_HEADER,
   addDirArgs,
   forkBootstrapBody,
@@ -452,6 +453,13 @@ describe('psu-launcher arg parsing', () => {
     expect(accountPinnable({ ...base, forcedAccounts: ['aviynw'] }, 'aviynw')).toBe(true);
     expect(accountPinnable(base, null)).toBe(false);
     expect(accountPinnable(null, 'aviynw')).toBe(false);
+  });
+
+  it('accountProviderFromChoices: explicit null provider fails closed instead of falling back from the agent', () => {
+    expect(accountProviderFromChoices({ provider: 'claude' }, 'codex')).toBe('claude');
+    expect(accountProviderFromChoices({ provider: 'codex' }, 'claude')).toBe('codex');
+    expect(accountProviderFromChoices({ provider: null }, 'codex')).toBeNull();
+    expect(accountProviderFromChoices({}, 'codex')).toBe('codex');
   });
 
   it('planValue maps the NO_PLAN sentinel + empties to null', () => {

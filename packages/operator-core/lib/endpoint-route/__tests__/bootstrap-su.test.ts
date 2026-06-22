@@ -140,7 +140,8 @@ vi.mock('../../agent-tools/plans/source', () => ({
 // psu-account-chooser P-002: resolveAccountPin reads the pool + the session-override,
 // but ONLY when the gateway flag is on. Mock both so the gateway-ON branches are
 // DB-free + deterministic (the gateway-OFF + no-account branches return before them).
-const loadAccountPoolMock = vi.fn(async (_ws?: string) => ({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] }));
+type MockPoolAccount = { id: string; provider?: 'claude' | 'codex' };
+const loadAccountPoolMock = vi.fn(async (_ws?: string): Promise<{ accounts: MockPoolAccount[] }> => ({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] }));
 vi.mock('../../deployment/account-pool-store', () => ({
   loadAccountPool: (...a: unknown[]) => loadAccountPoolMock(...(a as [string])),
 }));
@@ -616,6 +617,7 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     const r = await choices('omp');
     expect(r.gatewayOn).toBe(false);
     expect(r.pool).toEqual([]);
+    expect(r.provider).toBeNull();
     expect(r.unsupportedReason).toMatch(/not implemented/i);
     expect(loadAccountPoolMock).not.toHaveBeenCalled();
   });

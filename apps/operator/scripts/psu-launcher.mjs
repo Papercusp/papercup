@@ -1018,6 +1018,12 @@ export function accountPinnable(accounts, id) {
   return true;
 }
 
+export function accountProviderFromChoices(accounts, agent = 'claude') {
+  if (accounts?.provider === 'claude' || accounts?.provider === 'codex') return accounts.provider;
+  if (accounts && Object.prototype.hasOwnProperty.call(accounts, 'provider')) return null;
+  return agent === 'codex' ? 'codex' : 'claude';
+}
+
 /**
  * Choose (prompt) / honor (`--account`) the account for a RESUME, then build the inference-gateway
  * pin env CLIENT-SIDE (gatewayPinEnv) — the resume mints no session, so it can't ride the
@@ -1044,7 +1050,10 @@ async function chooseResumeAccount(session, args) {
   if (!accountPinnable(accounts, id)) {
     return { id: null, env: {}, notice: `--account ${id} ignored: not an allowed pool account — using the default credential.` };
   }
-  const provider = accounts.provider || (session.agent === 'codex' ? 'codex' : 'claude');
+  const provider = accountProviderFromChoices(accounts, session.agent);
+  if (!provider) {
+    return { id: null, env: {}, notice: `--account ${id} ignored: account routing is unsupported for ${session.agent} — using the default credential.` };
+  }
   return { id, provider, env: gatewayPinEnv(id, provider), notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).` };
 }
 

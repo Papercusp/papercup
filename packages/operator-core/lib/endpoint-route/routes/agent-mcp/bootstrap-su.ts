@@ -41,7 +41,7 @@ import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
-import { backendFeatureGuard } from '../../../backend-feature-capabilities';
+import { accountProviderForInteractiveBackend, backendFeatureGuard, type BackendAccountProvider } from '../../../backend-feature-capabilities';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -150,14 +150,14 @@ export async function resolveAccountPin(
   workspaceId: string,
   requested: string | null | undefined,
   agent: SuAgent = 'claude',
-): Promise<{ env: Record<string, string>; notice: string | null; accountId: string | null; provider: 'claude' | 'codex' | null }> {
+): Promise<{ env: Record<string, string>; notice: string | null; accountId: string | null; provider: BackendAccountProvider | null }> {
   const id = requested?.trim();
   if (!id) return { env: {}, notice: null, accountId: null, provider: null };
   const fail = (why: string) => ({
     env: {} as Record<string, string>,
     notice: `--account ${id} ignored: ${why} — using the default credential.`,
     accountId: null,
-    provider: null as 'claude' | 'codex' | null,
+    provider: null as BackendAccountProvider | null,
   });
   const accountGuard = backendFeatureGuard(agent, 'account-pinning');
   if (!accountGuard.supported) return fail(`account pinning is unsupported for ${agent}: ${accountGuard.reason}`);
@@ -175,7 +175,8 @@ export async function resolveAccountPin(
     const acct = (pool.accounts ?? []).find((a: { id: string }) => a.id === id);
     if (!acct) return fail(`'${id}' is not in the account pool (see accounts:list)`);
     const provider = accountProvider(acct as never);
-    const expected = agent === 'codex' ? 'codex' : 'claude';
+    const expected = accountProviderForInteractiveBackend(agent);
+    if (!expected) return fail(`account routing is unsupported for ${agent}`);
     if (provider !== expected) return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
     const { getAccountOverride } = await import('../../../deployment/account-session-override');
     const ov = await getAccountOverride(workspaceId);
@@ -214,13 +215,14 @@ export async function resolveAccountPin(
 export async function resolveAccountChoices(
   workspaceId: string,
   agent: SuAgent = 'claude',
-): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[]; provider: 'claude' | 'codex'; unsupportedReason?: string }> {
-  const provider: 'claude' | 'codex' = agent === 'codex' ? 'codex' : 'claude';
+): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[]; provider: BackendAccountProvider | null; unsupportedReason?: string }> {
+  const provider = accountProviderForInteractiveBackend(agent);
   const empty = { gatewayOn: false, pool: [] as string[], forcedAccounts: [] as string[], excludeAccounts: [] as string[], provider };
   const accountGuard = backendFeatureGuard(agent, 'account-pinning');
   if (!accountGuard.supported) return { ...empty, unsupportedReason: accountGuard.reason ?? 'account pinning unsupported' };
   const gatewayGuard = backendFeatureGuard(agent, 'gateway-routing');
   if (!gatewayGuard.supported) return { ...empty, unsupportedReason: gatewayGuard.reason ?? 'gateway routing unsupported' };
+  if (!provider) return { ...empty, unsupportedReason: `account routing is unsupported for ${agent}` };
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');

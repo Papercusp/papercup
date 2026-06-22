@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BACKEND_FEATURE_CAPABILITIES,
+  accountProviderForInteractiveBackend,
   backendFeatureCapability,
   backendFeatureGuard,
   backendSupportsFeature,
@@ -64,5 +65,11 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
     expect(interactiveBackendFromSpawnBackend('claude-code')).toBe('claude');
     expect(interactiveBackendFromSpawnBackend('codex')).toBe('codex');
     expect(interactiveBackendFromSpawnBackend('omp')).toBe('omp');
+  });
+
+  it('derives account providers only for backends with supported pinning + routing', () => {
+    expect(accountProviderForInteractiveBackend('claude')).toBe('claude');
+    expect(accountProviderForInteractiveBackend('codex')).toBe('codex');
+    expect(accountProviderForInteractiveBackend('omp')).toBeNull();
   });
 });
