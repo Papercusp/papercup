@@ -1,34 +1,37 @@
 'use client';
 
 /**
- * Voice → Oracle bridge for app-level voice mode.
+ * Voice → operator:converse bridge for app-level voice mode.
  *
- * When voice mode is enabled and the Operator panel is closed, user
- * utterances should drive the rest of the app (per spec: "If voice mode
- * is enabled at the app level the user should be able to direct the
- * whole app via voice"). The Oracle is the existing reactive concierge
- * with UI-routing tools (navigate, listHarnesses, dispatchToAgent, etc.).
+ * When voice mode is enabled, a final spoken utterance is routed into the
+ * SAME operator:converse conversation the Sentinel TUI text chat drives,
+ * via the provider's `sendUserMessage` (published to the voice→converse
+ * bridge singleton). The provider generates the assistant turn AND speaks
+ * the reply — restoring "voice ≡ text on one brain"
+ * (sentinel-tui-shared-backend-and-cards Phase 1, Decision A).
  *
  * This bridge:
  *   - Subscribes to voice utterances when voice mode is on.
- *   - Routes them to Oracle (POST /api/oracle/chat) when no other voice
- *     consumer (Operator panel) is in focus.
- *   - Speaks Oracle's text deltas via TTS using the `system:oracle` voice.
+ *   - Runs the legacy wake-word INTENT fast-path first (scan / approve),
+ *     which short-circuits before any conversation routing.
+ *   - Yields to a higher-priority registered voice consumer (e.g. a
+ *     background-toast "say cancel" handler) when one is active.
+ *   - Otherwise hands the transcript to operator:converse via
+ *     routeVoiceUtteranceToConverse().
  *
- * The Operator panel pre-empts this bridge when it's open — utterances
- * go to Operator's scan loop instead. Coordination is via the
- * `voiceConsumers` set: the bridge only routes when no Operator-style
- * consumer is registered.
+ * The previous Oracle fallback (POST /api/oracle/chat) was removed
+ * 2026-06-22: Oracle is a separate concierge brain (not the conversation)
+ * and the endpoint 404s on the desktop host.
  */
 
 import { useEffect, useRef } from 'react';
 import {
   onFinalUtterance,
-  speak,
   subscribeVoiceState,
   cancelAllSpeech,
   type VoiceState,
 } from './voice-mode';
+import { routeVoiceUtteranceToConverse } from './voice-converse-bridge';
 
 /**
  * Voice consumer priority registry (v4 §2b).
@@ -118,20 +121,23 @@ export function VoiceAppBridge(): null {
       if (voiceStateRef.current.mode === 'off') return;
       if (!text || text.trim().length < 2) return;
 
-      // Skip intent parsing when a full-agent engine is in charge — EL
-      // Conv AI / OpenAI Realtime already process intents via their own
-      // LLM + tool calls. Firing parseOperatorIntent here would double-
-      // dispatch (e.g. open the panel twice on "open the operator").
-      // Test wake-word + other onFinalUtterance listeners still receive
-      // the transcript; only the legacy intent path is bypassed.
+      // Read voice prefs once: gates the intent fast-path AND the
+      // converse routing below. When a full-agent engine (EL Conv AI /
+      // OpenAI Realtime) is in charge, that engine owns the brain + voice
+      // (it processes intents and replies itself), so we must NOT also
+      // route the transcript into operator:converse — that would double-
+      // dispatch into two brains. Phase 1 of sentinel-tui-shared-backend
+      // assumes fullAgentEngine:'off', where converse IS the brain.
+      let fullAgentActive = false;
       try {
         const { loadVoicePrefsClient } = await import('./voice-prefs-client');
         const prefs = loadVoicePrefsClient();
-        if (prefs.fullAgentEngine && prefs.fullAgentEngine !== 'off') {
+        fullAgentActive = !!prefs.fullAgentEngine && prefs.fullAgentEngine !== 'off';
+        if (fullAgentActive) {
           throw new Error('full-agent in charge');
         }
         if (!prefs.wakeWordIntents) {
-          // Skip intent parsing; fall through to consumer/Oracle routing.
+          // Skip intent parsing; fall through to consumer/converse routing.
           throw new Error('wake-word disabled');
         }
         const { parseOperatorIntent, resolveApprove } = await import('@papercusp/operator-core/lib/voice-intents');
@@ -239,67 +245,26 @@ export function VoiceAppBridge(): null {
       }
       if (hasHigherPriorityConsumer()) return;
 
-      // POST to Oracle's chat endpoint, stream the response, speak deltas.
-      // oracle:chat's ArgsSchema requires a `messages` array (min 1); the
-      // voice bridge sends a single user turn per spoken utterance.
-      try {
-        const r = await fetch('/api/oracle/chat', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            messages: [{ role: 'user', content: text }],
-          }),
-        });
-        if (!r.ok || !r.body) return;
-        const reader = r.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let speakBuffer = '';
-        const SPEAK_FLUSH_THRESHOLD = 80; // chars
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() ?? '';
-          for (const evt of events) {
-            const lines = evt.split('\n');
-            const eventLine = lines.find((l) => l.startsWith('event:'));
-            const dataLine = lines.find((l) => l.startsWith('data:'));
-            if (!eventLine || !dataLine) continue;
-            const eventName = eventLine.slice(6).trim();
-            const dataStr = dataLine.slice(5).trim();
-            if (eventName === 'delta') {
-              try {
-                const { text: chunk } = JSON.parse(dataStr) as { text: string };
-                speakBuffer += chunk;
-                // Flush at sentence boundaries or threshold.
-                const flushIdx = Math.max(
-                  speakBuffer.lastIndexOf('. '),
-                  speakBuffer.lastIndexOf('! '),
-                  speakBuffer.lastIndexOf('? '),
-                );
-                if (flushIdx > 0 || speakBuffer.length > SPEAK_FLUSH_THRESHOLD) {
-                  const cut = flushIdx > 0 ? flushIdx + 2 : speakBuffer.length;
-                  const toSpeak = speakBuffer.slice(0, cut).trim();
-                  speakBuffer = speakBuffer.slice(cut);
-                  if (toSpeak) speak(toSpeak, 'system:oracle');
-                }
-              } catch {
-                /* ignore */
-              }
-            } else if (eventName === 'done') {
-              if (speakBuffer.trim()) {
-                speak(speakBuffer.trim(), 'system:oracle');
-                speakBuffer = '';
-              }
-            }
-          }
-        }
-      } catch {
-        /* network error; user can retry by speaking again */
-      }
+      // Route the spoken utterance into the operator:converse brain — the
+      // SAME backend the Sentinel TUI text chat drives — via the provider's
+      // sendUserMessage (published to the voice→converse bridge singleton).
+      // The provider generates the assistant turn AND speaks the reply
+      // (it owns the spokenReply→speak() path), so the bridge just hands
+      // off the transcript and stops. This restores "voice ≡ text on one
+      // brain" (sentinel-tui-shared-backend-and-cards Phase 1, Decision A).
+      //
+      // The legacy Oracle fallback (POST /api/oracle/chat) was removed
+      // here 2026-06-22: it was the WRONG backend (a separate concierge
+      // brain, not the conversation), and /api/oracle/chat 404s on the
+      // desktop host. If no provider is mounted, routeVoiceUtteranceToConverse
+      // returns false and we drop the turn silently rather than reviving
+      // the dead Oracle leg.
+      //
+      // Guard: when a full-agent engine owns the session it is the brain
+      // (and the EL/Realtime paths in voice-mode already feed their own
+      // turn handlers), so don't double-dispatch into converse.
+      if (fullAgentActive) return;
+      routeVoiceUtteranceToConverse(text);
     });
 
     return () => {

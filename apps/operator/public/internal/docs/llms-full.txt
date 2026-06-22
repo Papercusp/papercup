@@ -1477,6 +1477,63 @@ Everyone (including the in-code docstring) assumed the `int` cast would round. *
 * Console (often only visible under fail-on-console): `[scout/routed-ledger] lens-weight upsert failed (non-fatal): invalid input syntax for type integer: "0.5"`.
 * State signature: a `*_weights` / analytics table whose `updated_at` stops advancing after a feature that introduced fractional tallies shipped.
 
+# A 'freeze' watchdog that reads journald silence false-restarts a healthy host when journald itself wedges
+
+> Bees/spawns kept dying at boot (exit-143, 0 invocations, EI-2186 reclaim). It looked like capacity or the gateway — it was neither. The bg-host watchdog judged 'frozen' by journalctl silence, but journald's capture had wedged host-wide, so it restarted a perfectly healthy durable-spawn host every ~5-11 min, and each unclean restart reclaim-killed every in-flight spawn. The fix + the generalizable detector-design lesson.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Fleet-wide, freshly-placed bees (and any durable spawn) died **at boot**: `status=failed`, **zero tool invocations**, and a reclaim message like:
+
+> reclaimed at operator boot: launched by a prior incarnation … (host/process restarted before its admission-release ran) — stale spawn-ceiling debit freed by the boot reconcile (EI-2186)
+
+Placements went `cursed` with `failCount: 0` (the infra-victim signature — killed before doing any real work, which still counts toward the cursed breaker). For hours, “thousands of agents” was capped not by capacity but by spawns that never survived their first turn.
+
+## The two misdiagnosis traps
+
+[Section titled “The two misdiagnosis traps”](#the-two-misdiagnosis-traps)
+
+1. **“We’re capacity-gated.”** The inference gateway logged `all accounts transiently throttled on claude-opus-4-8 → no-fresh-account, pausing as before`, which reads as “out of quota.” It was not — the account pool had headroom (one account at 2% of its 7-day window). See the multi-account routing insights: a “limit” is almost always routing/health, not real exhaustion.
+2. **“It’s the gateway.”** There *was* a separate gateway crash-loop (EI-2421), and fixing it was necessary — but **not sufficient**. A canary bee still died with 0 invocations *after* the gateway was stabilized, because a **different** restart source was killing it.
+
+## Root cause (the chain)
+
+[Section titled “Root cause (the chain)”](#root-cause-the-chain)
+
+1. `papercup-bg-host` — the **durable-spawn primary** (it hosts bee spawns) — was being restarted roughly **every 5-11 minutes**.
+2. It was **not** systemd auto-restart: `systemctl --user show papercup-bg-host.service -p NRestarts` read `0`, yet `ExecMainStartTimestamp` was minutes-old. A recent main-start with `NRestarts=0` means **something other than systemd restarted it** — a watchdog or a script, not a crash.
+3. That something was `papercup-bg-host-watchdog.service`, whose job is *“auto-restart on journal-silence freeze”* — it infers the host is **frozen** when its journal goes silent for N seconds.
+4. **But journald’s capture was wedged host-wide.** `journalctl --user -u papercup-bg-host.service` (and `-u papercup-bg-host-watchdog.service`) returned **“No entries”** for services that were demonstrably *active and ticking* — the logs weren’t flowing because **journald** was broken, not because the services were frozen.
+5. So the watchdog saw silence → **false-detected a freeze** → restarted a perfectly healthy host.
+6. Each restart was **unclean**: `State 'final-sigterm' timed out. Killing` + `Found left-over process … in control group` → SIGKILL + cgroup orphan leak. Because the bg-host hosts durable-spawn, every in-flight bee was orphaned, and the next operator boot-reconcile (`reconcileSpawnAdmissionOnBoot`) marked them `failed` (EI-2186). Net: a restart storm that manufactured the exact spawn-death outage the watchdog existed to prevent.
+
+## How to diagnose it (the method that cracked it)
+
+[Section titled “How to diagnose it (the method that cracked it)”](#how-to-diagnose-it-the-method-that-cracked-it)
+
+* **`systemctl --user show <svc> -p ExecMainStartTimestamp -p NRestarts`** — a *recent* main-start with `NRestarts=0` ⇒ restarted by a watchdog/script, not a crash. Walk the watchdog units.
+* **`journalctl --user -u <a-clearly-active-svc>` returning “No entries”** ⇒ **journald capture is wedged**, not the service. This is the load-bearing tell: don’t trust log-absence as liveness.
+* **`dev:session_detail` on a dead spawn** — `"host/process restarted before its admission-release ran (EI-2186)"` names a *host restart* (not the gateway) as the killer.
+* **`ps -o etimes,wchan -p <pid>`** on a wedged bee — `ep_poll` with 0 invocations ⇒ blocked on first inference (a *different* failure: the gateway egress circuit; see the egress-probe insight). Distinguish “wedged on I/O” (gateway) from “reclaimed at boot” (host restart) — they need different fixes.
+
+## The fix (two layers, two owners)
+
+[Section titled “The fix (two layers, two owners)”](#the-fix-two-layers-two-owners)
+
+* **Cadence half** (stop the false restarts): make the watchdog’s freeze-detection **journald-independent** — never judge a process’s liveness by `journalctl` silence, because journald can fail on its own and take the signal down with it. Probe liveness **directly** (the ticker writes a heartbeat to a channel — a DB row / a routine tick — that does not share journald’s blind spot).
+* **Durable, source-agnostic half** (EI-2186): the boot-reconcile (`reconcileSpawnAdmissionOnBoot`) should **RE-LAUNCH** an in-flight spawn whose durable work-item is **non-terminal**, not reclaim-**kill** it — so a spawn survives **any** restart (gateway / operator / bg-host / deploy / legit crash), not only the false ones. Reclaim-only when the work-item is already terminal. Complemented by a deterministic **spawn-admission readiness gate** (don’t boot a bee into a gateway that can’t serve it) so a fresh spawn never wedges in the first place.
+
+## The lesson (generalizable)
+
+[Section titled “The lesson (generalizable)”](#the-lesson-generalizable)
+
+**A watchdog’s health signal must be independent of the failure mode it monitors.** A “freeze detector” that infers freeze from *journald silence* shares a failure mode with journald: when journald wedges, the detector fires on **every** healthy host and triggers a restart storm. **A detector that can be fooled by the failure of its own observability is worse than no detector** — it manufactures the outage it was meant to prevent. Two corollaries:
+
+* Probe liveness by a **positive heartbeat the monitored thing actively writes**, never by the **absence of logs** (absence is indistinguishable between “frozen” and “the log pipe broke”).
+* An automated remediation (restart) on a noisy/shared-failure signal is **self-amplifying** — pair it with a confirm-by-second-independent-signal gate before it’s allowed to act destructively. See also `auto-fix-lane-watchdog-self-amplifying-noise`.
+
 # Blueprint op/role liveness is only validated if the operator passes the registries
 
 > validateBlueprint's `unknown-op` check is gated behind `opts.knownOps` and was DEAD — no caller passed it, so a program blueprint naming a typo'd/unregistered op validated clean then threw `requireCoordOp` deep in the durable pipeline. The fix is to pass `blueprintRegistrySets()` at the three blueprint admission chokepoints (authoring / install / PG-projection).
@@ -2544,11 +2601,11 @@ Mid-turn delivery closes that: after **each tool call**, the agent’s own tool 
 
 [Section titled “Per client — three mechanisms, one behavior”](#per-client--three-mechanisms-one-behavior)
 
-| Client     | Where                                                                                 | Mechanism                                                                                                                                                                                                                                                                    |
-| ---------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Claude** | `~/.claude/settings.json` PostToolUse, matcher `*`                                    | `apps/operator/scripts/hooks/cc/posttooluse-coord-inbox.sh` → `hookSpecificOutput.additionalContext` (exit 0, **no** `decision`).                                                                                                                                            |
-| **Codex**  | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` (**SU sessions only**) | same script, written by `role-codex-home.ts` `writeSuCodexHome` with a **baked `PAPERCUSP_SID`**. Codex fires PostToolUse for **Bash / apply\_patch / MCP** (not WebSearch) — independent of the PreToolUse-on-edits gap (#20204) that keeps the *lock* hook inert on codex. |
-| **OMP**    | `coord-hook.ts` `tool_result` handler                                                 | `pollInboxDelta()` → `pi.sendMessage(…, { deliverAs: 'steer' })`. `ToolResultEvent` carries no content, so steer-append is the vector (not content-replacement).                                                                                                             |
+| Client     | Where                                                                                 | Mechanism                                                                                                                                                                                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude** | `~/.claude/settings.json` PostToolUse, matcher `*`                                    | `apps/operator/scripts/hooks/cc/posttooluse-coord-inbox.sh` → `hookSpecificOutput.additionalContext` (exit 0, **no** `decision`).                                                                                                                                                 |
+| **Codex**  | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` (**SU sessions only**) | same script, written by `role-codex-home.ts` `writeSuCodexHome` with a **baked `PAPERCUSP_SID`**. Current Codex fires PostToolUse for **Bash / apply\_patch / MCP** (not WebSearch), and the same hooks file also carries PreToolUse lock/resource gates for `apply_patch`/shell. |
+| **OMP**    | `coord-hook.ts` `tool_result` handler                                                 | `pollInboxDelta()` → `pi.sendMessage(…, { deliverAs: 'steer' })`. `ToolResultEvent` carries no content, so steer-append is the vector (not content-replacement).                                                                                                                  |
 
 The shell hook **gates on `PAPERCUSP_SID`** (psu sessions only) + the su-token, so a plain `claude`/`codex` on the box no-ops. `owner == PAPERCUSP_SID`, which is the same id baked into the agent’s MCP `&client=`, so the hook reads the *right* inbox/watermark.
 
@@ -7611,13 +7668,27 @@ Per-account egress adds a new failure mode: **the proxy itself can die.** On 202
 **The fix** (`gateway.ts`, the upstream-fetch `catch`): a transport failure on a **proxy-egress** account now feeds the **same `gov.pausedUntil` lever the 429 hard-cap uses**, so the existing pin-yield + cross-account selector route around it automatically. A **consecutive-failure streak** (`EGRESS_FAIL_CIRCUIT_THRESHOLD`, default 3) opens a longer **circuit** (`EGRESS_CIRCUIT_OPEN_MS`, default 60s); the request then **rotates + retries** on a healthy account instead of returning a terminal 502. The streak resets on any upstream response (so the half-open is natural: the pause expires → the next request re-probes the account → success closes the circuit, a failure re-opens it), plus an **active half-open probe** (`egress-probe.ts`) re-tests the proxy and logs/clears the streak on recovery.
 
 * **Scoping matters.** The circuit is **only** armed for accounts that egress through an `http(s)` proxy — only those can have a *dead proxy*. A transport failure on a **no-proxy** account is an Anthropic/network-side stall (the proxy can’t be the fault), so it keeps the existing **fast-502** (the bee’s CLI retries; AIMD shrinks concurrency) and its healthy account is **not** penalized.
-* **`pausedUntil` is take-MAX** (the shared governor’s `recordPenalty` only ever *extends* a pause, never shortens it — a per-account 429 streak is the real exhaustion signal). So the circuit-open pause can’t be *lifted* early by a probe; readmit is via pause-expiry. Keep `EGRESS_CIRCUIT_OPEN_MS` modest so a *recovered* (flapping) proxy rejoins quickly.
+* **`pausedUntil` is take-MAX** (the shared governor’s `recordPenalty` only ever *extends* a pause, never shortens a real 429/usage-cap pause). The half-open probe tracks the **transport** pause separately (`egressPauseUntil` / `gov.liftTransportPause`), so on recovery it **lifts that pause immediately** and readmits the account — a flapping proxy that recovers in seconds rejoins in seconds, not at the full circuit-window expiry (a 2026-06-21 change; before it, a recovered account waited the whole window, which kept the only token-healthy accounts out together).
 * **Observability:** `GET /stats` → `egressCircuitOpens` counts how many times a proxy hit the threshold. A climbing value = a flapping/dead proxy IP (distinct from `upstreamErrors`, which also counts Anthropic-side stalls).
 * **Diagnose a suspect proxy directly** (bypasses Anthropic + the gateway): `curl -sS -x http://<ip>:3128 -m 8 https://api.ipify.org` — a healthy dedicated proxy echoes **its own IP**; a dead one times out. (Sweep all N to find the bad one fast.)
 
 Regression coverage: `inference-gateway/gateway-egress-circuit.test.ts` (dead-proxy account fails over → 200 not 502; N consecutive failures open the circuit + return retryable 503, never a wedge; a success resets the streak).
 
 > **Don’t just `accounts:remove` a dead-proxy account and call it fixed** — that only takes effect on the next gateway restart (the pool is resolved at boot), and it’s a one-off that leaves the trap armed for the next dead IP. The circuit breaker is the durable fix; removal is emergency mitigation. To restore the account, either swap in a fresh proxy IP (re-register its `egress`) or rely on the circuit breaker to safely auto-handle the flapping one.
+
+### Failure mode: a too-tight recovery-probe timeout false-keeps healthy accounts paused (2026-06-22, WI-389)
+
+[Section titled “Failure mode: a too-tight recovery-probe timeout false-keeps healthy accounts paused (2026-06-22, WI-389)”](#failure-mode-a-too-tight-recovery-probe-timeout-false-keeps-healthy-accounts-paused-2026-06-22-wi-389)
+
+The breaker has a second-order failure that presents as **“all accounts throttled, no-fresh-account”** with **bees hanging at boot (0 invocations)** — and it is NOT capacity:
+
+* The active half-open probe (`egress-probe.ts` → `api.ipify.org`) had a **hardcoded 8s timeout** (`EGRESS_PROBE_HTTP_TIMEOUT_MS`). The dedicated proxies, when perfectly healthy, take **1.3-6.1s** under box load (one measured at 6.1s — within \~2s of the ceiling). Under load the 8s probe **aborts** on a healthy-but-slow proxy → logs `egress probe for '<acct>' STILL DOWN (operation aborted)` → the **recovered** account stays circuit-paused instead of being readmitted.
+* When several proxies are slow at once (or a restart re-probes them together), the probe false-aborts across the pool → the gateway reads **“all accounts throttled / no-fresh-account (pausing as before)”** → every inference request parks → a freshly-spawned bee blocks in `ep_poll` on its **first** inference and wedges with **0 invocations** (looks like a “corpse”). Routing was never broken — a `gw-route` to a serviceable account still succeeds in <1s; the pool was *spuriously emptied* by false-negative probes.
+* **Confirm it’s a false negative, not a dead proxy:** `curl -x http://<ip>:3128 -m 12 https://api.ipify.org` returns 200 in 1-6s for the “STILL DOWN” account (the probe lied). A genuinely dead proxy (real 9s+ timeout) is a *different*, correct circuit-open — don’t conflate.
+
+**The fix** (WI-389, `gateway.ts`): make `EGRESS_PROBE_HTTP_TIMEOUT_MS` env-tunable (`PAPERCUSP_GATEWAY_EGRESS_PROBE_HTTP_MS`) and raise the default **8s → 12s** — kept under `EGRESS_CIRCUIT_OPEN_MS − EGRESS_PROBE_DELAY_MS` so the probe still fits inside the open window. A recovered-but-slow proxy now readmits via the probe instead of waiting out (or never clearing) the circuit.
+
+**Lesson:** a circuit-breaker’s **recovery probe must tolerate the real, under-load latency of what it probes.** A probe timeout tighter than the resource’s slow-but-healthy case turns the breaker from a safety device into a **stuck-open latch** — it false-keeps healthy capacity offline and starves the pool exactly when load is highest. Size recovery-probe timeouts off the *slow-healthy* p99, not the fast path.
 
 ## Rollback
 
@@ -7637,6 +7708,7 @@ systemctl --user restart papercup-inference-gateway.service
 * `inference-gateway-wedge-admission-slot-squat` — the admission wedge runbook (a capacity-pressure symptom this fix relieves).
 * `rate-limit-is-usually-account-routing-not-capacity` — a 429 is usually routing, not a real cap; per-account egress removes the per-IP confound.
 * `llm-429-check-the-transport-not-the-account` — the missing-Claude-Code-framing instant 429 (don’t mistake it for exhaustion when testing egress directly).
+* `bg-host-watchdog-false-restart-on-wedged-journald` — the *other* reason a bee dies at boot: not an egress-pause wedge (this doc) but a host restart reclaim-killing the in-flight spawn. Both present as “bees won’t run”; `dev:session_detail` (0 invocations + `ep_poll` ⇒ egress wedge; “reclaimed at operator boot” ⇒ host restart) tells them apart.
 
 # Account pins silently route to `local`: the stale gateway pool
 
@@ -20440,15 +20512,15 @@ psu --no-picker --agent=codex --no-plan           # active workspace root, no ha
 
 The launcher implements several other first-class flags on top of agent/workspace/harness/plan:
 
-| Flag                                 | Effect                                                                                                                                                                                                            |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--profile=engineer\|power\|generic` | Which su playbook + dispatch tier (default `engineer`). Changes **both** the rendered playbook **and** the MCP dispatch gating, via `PAPERCUSP_PROFILE` — see [Profiles](#profiles).                              |
-| `--account=<id>`                     | Pin the session to a specific inference-gateway pool account; fail-soft to the default credential if the gateway is off or the id is unknown.                                                                     |
-| `--brain`                            | Retired: fails closed with a tombstone message. Use the live operator/sentinel converse surface or a normal `psu` session.                                                                                        |
-| `--fork` / `--fork-session`          | claude-only, resume-only: branch the resumed conversation into a **new** session id (seeded with the original’s history) with a fresh coord identity, so the fork runs concurrently with the still-live original. |
-| `--add-dir=<dir>`                    | Repeatable; maps to claude’s + codex’s native `--add-dir` (omp has none → warned + skipped). Both space and `=` forms.                                                                                            |
-| `--model=<m>`                        | Backend model fuzzy-match passthrough.                                                                                                                                                                            |
-| `--yes` / `-y`                       | Skip the “proceed anyway?” confirm when resuming an untracked (non-psu) session in scripts.                                                                                                                       |
+| Flag                                 | Effect                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--profile=engineer\|power\|generic` | Which su playbook + dispatch tier (default `engineer`). Changes **both** the rendered playbook **and** the MCP dispatch gating, via `PAPERCUSP_PROFILE` — see [Profiles](#profiles).                                                                                                                                                          |
+| `--account=<id>`                     | Pin the session to a specific inference-gateway pool account; fail-soft to the default credential if the gateway is off or the id is unknown.                                                                                                                                                                                                 |
+| `--brain`                            | Retired: fails closed with a tombstone message. Use the live operator/sentinel converse surface or a normal `psu` session.                                                                                                                                                                                                                    |
+| `--fork` / `--fork-session`          | claude + codex, resume-only: branch the resumed conversation into a **new** native session id (seeded with the original’s history) with a fresh coord identity, so the fork runs concurrently with the still-live original. Claude tracked forks can pre-mint the fork id; Codex uses `codex fork` and discovers the resulting rollout later. |
+| `--add-dir=<dir>`                    | Repeatable; maps to claude’s + codex’s native `--add-dir` (omp has none → warned + skipped). Both space and `=` forms.                                                                                                                                                                                                                        |
+| `--model=<m>`                        | Backend model fuzzy-match passthrough.                                                                                                                                                                                                                                                                                                        |
+| `--yes` / `-y`                       | Skip the “proceed anyway?” confirm when resuming an untracked (non-psu) session in scripts.                                                                                                                                                                                                                                                   |
 
 ## How a launch is assembled
 

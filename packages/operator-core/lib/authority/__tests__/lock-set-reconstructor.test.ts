@@ -190,4 +190,38 @@ describe('LockSetReconstructor — instant handover via the lock-event stream (P
     r.assert('apps/a.ts', 'peer-1', 60_000, T0 + 4_000);
     expect(r.current(T0 + 10_000).find((l) => l.path === 'apps/a.ts')?.expiresAtMs).toBe(T0 + 4_000 + 60_000);
   });
+
+  it('hydrateFromEvents seeds only the TTL-live locks from a MIXED stream (expired events filtered)', () => {
+    const r = make();
+    const seeded = r.hydrateFromEvents(
+      [
+        { path: 'live.ts', owner: 'p1', expiresAtMs: T0 + 60_000 },
+        { path: 'stale.ts', owner: 'p2', expiresAtMs: T0 - 1 }, // already expired at takeover
+      ],
+      T0,
+    );
+    expect(seeded).toBe(true); // at least one live lock → hydrated/authoritative now
+    expect(r.isRebuilt(T0)).toBe(true);
+    expect(r.current(T0).map((l) => l.path)).toEqual(['live.ts']); // the stale event was not seeded
+  });
+});
+
+// ── Input guards + eager-prune edges (depth pass, su-7f3e0376) ───────────────
+describe('LockSetReconstructor — input guard + prune edges', () => {
+  it('assert rejects an empty path or empty owner — a malformed heartbeat never pollutes the set', () => {
+    const r = make();
+    expect(r.assert('', 'peer-1', 5_000, T0)).toBe(false);
+    expect(r.assert('apps/a.ts', '', 5_000, T0)).toBe(false);
+    expect(r.current(T0 + 1)).toHaveLength(0); // nothing was recorded
+  });
+
+  it('prune drops only the aged-out assertions, keeping the live ones (eager map cleanup)', () => {
+    const r = make();
+    r.assert('live.ts', 'p1', 60_000, T0); // expires T0+60000
+    r.assert('stale.ts', 'p2', 5_000, T0); // expires T0+5000
+    r.prune(T0 + 6_000); // stale.ts aged out; live.ts still valid
+    expect(r.current(T0 + 6_000).map((l) => l.path)).toEqual(['live.ts']);
+    // stale.ts was removed from the map (not merely filtered) → not held by anyone.
+    expect(r.isHeldByOther('stale.ts', 'whoever', T0 + 6_000)).toBe(false);
+  });
 });

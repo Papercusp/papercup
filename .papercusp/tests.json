@@ -87,7 +87,7 @@
   },
   {
    "id": "ep-bootstrap-role",
-   "summary": "Endpoint auth principal grant \u2192 request context binding",
+   "summary": "Endpoint auth principal grant → request context binding",
    "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -172,7 +172,7 @@
   },
   {
    "id": "sync-roundtrip-acceptance",
-   "summary": "Golden path: resolver read \u2192 write \u2192 pg_notify \u2192 bus subscriber, incl. emit_change_notify trigger leg",
+   "summary": "Golden path: resolver read → write → pg_notify → bus subscriber, incl. emit_change_notify trigger leg",
    "file": "packages/operator-core/lib/sync-resolver/__tests__/acceptance-sync-roundtrip.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -186,7 +186,7 @@
   },
   {
    "id": "plans-e2e",
-   "summary": "Plan lifecycle end-to-end: new \u2192 edit \u2192 revision \u2192 launch",
+   "summary": "Plan lifecycle end-to-end: new → edit → revision → launch",
    "file": "packages/operator-core/lib/agent-tools/plans/__tests__/e2e.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -214,7 +214,7 @@
   },
   {
    "id": "wi-core",
-   "summary": "Work items create \u2192 claim \u2192 complete",
+   "summary": "Work items create → claim → complete",
    "file": "packages/operator-core/lib/work-items.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -410,7 +410,7 @@
   },
   {
    "id": "hive-start-e2e",
-   "summary": "Hive boot \u2192 Queen launch \u2192 bee placement",
+   "summary": "Hive boot → Queen launch → bee placement",
    "file": "packages/operator-core/lib/hive/start-hive-e2e.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -438,7 +438,7 @@
   },
   {
    "id": "harness-blueprint-pg",
-   "summary": "Blueprint \u2192 PG projection",
+   "summary": "Blueprint → PG projection",
    "file": "apps/operator/test/blueprint-project-pg.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -635,7 +635,7 @@
   },
   {
    "id": "sub-outbox-trigger",
-   "summary": "Outbox trigger \u2192 replication chain",
+   "summary": "Outbox trigger → replication chain",
    "file": "packages/operator-core/lib/sync/hyperbee/__tests__/substrate-outbox-trigger.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -663,7 +663,7 @@
   },
   {
    "id": "shl-happy-path",
-   "summary": "Shared-hive composition rig: steer \u2192 contend \u2192 execute \u2192 converge",
+   "summary": "Shared-hive composition rig: steer → contend → execute → converge",
    "file": "packages/operator-core/lib/shared-hive-loop/composition-happy-path.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -719,7 +719,7 @@
   },
   {
    "id": "backup-e2e",
-   "summary": "UI backup flow: settings \u2192 snapshot",
+   "summary": "UI backup flow: settings → snapshot",
    "file": "apps/operator/e2e/backups.spec.ts",
    "framework": "playwright",
    "coversVALs": [
@@ -761,7 +761,7 @@
   },
   {
    "id": "dbos-crash-replay",
-   "summary": "Durable workflow crash \u2192 deterministic replay",
+   "summary": "Durable workflow crash → deterministic replay",
    "file": "apps/operator/test/dbos-crash-replay.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -803,7 +803,7 @@
   },
   {
    "id": "desktop-pty-stack",
-   "summary": "Native PTY stack driven end-to-end from TS (cargo test in papercusp-desktop/src-tauri is the Rust half \u2014 runner must execute it separately)",
+   "summary": "Native PTY stack driven end-to-end from TS (cargo test in papercusp-desktop/src-tauri is the Rust half — runner must execute it separately)",
    "file": "apps/operator/test/pty-stack.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -929,7 +929,7 @@
   },
   {
    "id": "plug-loader",
-   "summary": "Plugin load \u2192 grant \u2192 unload lifecycle",
+   "summary": "Plugin load → grant → unload lifecycle",
    "file": "packages/plugin-loader/src/loader.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -943,7 +943,7 @@
   },
   {
    "id": "plug-grants",
-   "summary": "Plugin grant enforcement \u2192 tool availability",
+   "summary": "Plugin grant enforcement → tool availability",
    "file": "apps/operator/test/plugin-grants.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -1167,7 +1167,7 @@
   },
   {
    "id": "scout-routed-ledger",
-   "summary": "Routed-idea ledger (scout_routed_ideas) persists provenance vs real PG \u2014 the lens-outcome meta-learning substrate",
+   "summary": "Routed-idea ledger (scout_routed_ideas) persists provenance vs real PG — the lens-outcome meta-learning substrate",
    "file": "packages/operator-core/lib/scout/routed-ledger.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -1223,7 +1223,7 @@
   },
   {
    "id": "scout-cadence-matrix",
-   "summary": "shouldRunScoutCycle decision matrix + runScoutTick composition (real fireGate half-open, budget boundaries) \u2014 35 table-driven tests",
+   "summary": "shouldRunScoutCycle decision matrix + runScoutTick composition (real fireGate half-open, budget boundaries) — 35 table-driven tests",
    "file": "packages/operator-core/lib/scout/cadence-matrix.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -1279,7 +1279,7 @@
   },
   {
    "id": "scout-cycle-live",
-   "summary": "LIVE-LLM quality lane (cred-gated: skips without SCOUT_LIVE_CYCLE=1 + credential; spends <=$0.50/cycle when armed \u2014 runner: leave skipped unless a live capture is explicitly wanted)",
+   "summary": "LIVE-LLM quality lane (cred-gated: skips without SCOUT_LIVE_CYCLE=1 + credential; spends <=$0.50/cycle when armed — runner: leave skipped unless a live capture is explicitly wanted)",
    "file": "packages/operator-core/lib/scout/cycle-live.integration.test.ts",
    "framework": "vitest",
    "coversVALs": [
@@ -1450,6 +1450,54 @@
    ],
    "status": "not_run",
    "lastRunTs": 0
+  },
+  {
+   "id": "sched-bee-runs-projection",
+   "summary": "scheduler:running bee-runs projection: idleReason/toBeeRun/summarizeBeeRuns derive activity + spec head off the live fleet_assignment row (pure)",
+   "file": "packages/operator-core/lib/scheduler/bee-runs.test.ts",
+   "framework": "vitest",
+   "coversVALs": [],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "sched-claim-spec-store",
+   "summary": "Per-bee claim-spec store (mig 372): setClaimSpec validate+upsert+revision-bump, getClaimSpec default fallback, getClaimSpecHeadsForBees spec-join for the bee-runs view",
+   "file": "packages/operator-core/lib/scheduler/claim-spec-store.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "sched-get-next",
+   "summary": "get_next resolver: claims the next ready work-item per the bee claim-spec, honoring the global floors + readiness",
+   "file": "packages/operator-core/lib/scheduler/get-next.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "sched-claim-spec-schema",
+   "summary": "Claim-spec schema: validateClaimSpec accepts valid specs + DEFAULT_CLAIM_SPEC, rejects malformed (the Queen-authored steering contract)",
+   "file": "packages/operator-core/lib/scheduler/claim-spec.test.ts",
+   "framework": "vitest",
+   "coversVALs": [],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
   }
  ]
 }

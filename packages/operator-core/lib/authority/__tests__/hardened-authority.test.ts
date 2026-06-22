@@ -135,3 +135,65 @@ describe('resolveHardenedAuthority', () => {
     expect(r.liveCount).toBe(0);
   });
 });
+
+// ── Guards + epoch monotonicity (depth pass, su-7f3e0376) ────────────────────
+describe('resolveHardenedAuthority — guards + epoch monotonicity', () => {
+  it('rejects an empty harnessSlug', async () => {
+    const { deps } = harness({ self: null, rows: () => [], now: () => 1000 });
+    await expect(resolveHardenedAuthority('', deps)).rejects.toThrow(/harnessSlug required/);
+  });
+
+  it('a row with an empty device_pubkey is filtered from the candidate set (a junk row cannot win argmin)', async () => {
+    const now = 1000;
+    const { deps } = harness({
+      self: { githubUserId: 2, devicePubkey: 'mmm' },
+      // '' sorts lexicographically FIRST — it would win argmin and hijack authority if not filtered.
+      rows: () => [
+        { device_pubkey: '', github_user_id: 9, machine_label: 'junk', last_seen_ms: now },
+        { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: now },
+      ],
+      now: () => now,
+    });
+    const r = await resolveHardenedAuthority('h', deps);
+    expect(r.isSelf).toBe(false);
+    expect(r.peer?.devicePubkey).toBe('aaa'); // junk '' dropped → aaa wins, not ''
+  });
+
+  it('omits peer when isSelf (the caller is the authority)', async () => {
+    const { deps } = harness({
+      self: { githubUserId: 1, devicePubkey: 'aaa' },
+      rows: () => [{ device_pubkey: 'mmm', github_user_id: 2, machine_label: 'm2', last_seen_ms: 1000 }],
+      now: () => 1000,
+    });
+    const r = await resolveHardenedAuthority('h', deps);
+    expect(r.isSelf).toBe(true);
+    expect(r.peer).toBeUndefined();
+  });
+
+  it('the alone branch CARRIES the prior fencing epoch — never resets it (epoch monotonicity)', async () => {
+    let now = 1000;
+    let rows: Row[] = [{ device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: 1000 }];
+    const { deps } = harness({ self: null, rows: () => rows, now: () => now });
+
+    const r1 = await resolveHardenedAuthority('h', deps); // aaa elected, epoch 1
+    expect(r1.epoch).toBe(1);
+
+    // aaa goes stale and bbb appears → genuine handover, epoch bumps to 2.
+    now = 9000;
+    rows = [{ device_pubkey: 'bbb', github_user_id: 2, machine_label: 'm2', last_seen_ms: 9000 }];
+    const r2 = await resolveHardenedAuthority('h', deps);
+    expect(r2.epoch).toBe(2);
+    expect(r2.changed).toBe(true);
+
+    // The whole swarm now goes silent — no self identity, no live rows → the ALONE branch.
+    now = 20000;
+    rows = [];
+    const alone = await resolveHardenedAuthority('h', deps);
+    expect(alone.isSelf).toBe(true);
+    expect(alone.liveCount).toBe(0);
+    // The fencing epoch must be CARRIED from the record, not reset to 1 — a reset would let a
+    // stale-epoch-1 holder re-assert over the next authority (the split-brain the fence prevents).
+    expect(alone.epoch).toBe(2);
+    expect(alone.changed).toBe(false);
+  });
+});

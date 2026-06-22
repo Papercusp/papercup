@@ -234,9 +234,11 @@ probe** (`egress-probe.ts`) re-tests the proxy and logs/clears the streak on rec
   existing **fast-502** (the bee's CLI retries; AIMD shrinks concurrency) and its healthy
   account is **not** penalized.
 * **`pausedUntil` is take-MAX** (the shared governor's `recordPenalty` only ever *extends* a
-  pause, never shortens it — a per-account 429 streak is the real exhaustion signal). So the
-  circuit-open pause can't be *lifted* early by a probe; readmit is via pause-expiry. Keep
-  `EGRESS_CIRCUIT_OPEN_MS` modest so a *recovered* (flapping) proxy rejoins quickly.
+  pause, never shortens a real 429/usage-cap pause). The half-open probe tracks the **transport**
+  pause separately (`egressPauseUntil` / `gov.liftTransportPause`), so on recovery it **lifts that
+  pause immediately** and readmits the account — a flapping proxy that recovers in seconds rejoins
+  in seconds, not at the full circuit-window expiry (a 2026-06-21 change; before it, a recovered
+  account waited the whole window, which kept the only token-healthy accounts out together).
 * **Observability:** `GET /stats` → `egressCircuitOpens` counts how many times a proxy hit
   the threshold. A climbing value = a flapping/dead proxy IP (distinct from `upstreamErrors`,
   which also counts Anthropic-side stalls).
@@ -253,6 +255,38 @@ never a wedge; a success resets the streak).
 > leaves the trap armed for the next dead IP. The circuit breaker is the durable fix; removal
 > is emergency mitigation. To restore the account, either swap in a fresh proxy IP (re-register
 > its `egress`) or rely on the circuit breaker to safely auto-handle the flapping one.
+
+### Failure mode: a too-tight recovery-probe timeout false-keeps healthy accounts paused (2026-06-22, WI-389)
+
+The breaker has a second-order failure that presents as **"all accounts throttled,
+no-fresh-account"** with **bees hanging at boot (0 invocations)** — and it is NOT capacity:
+
+* The active half-open probe (`egress-probe.ts` → `api.ipify.org`) had a **hardcoded 8s timeout**
+  (`EGRESS_PROBE_HTTP_TIMEOUT_MS`). The dedicated proxies, when perfectly healthy, take **1.3-6.1s**
+  under box load (one measured at 6.1s — within \~2s of the ceiling). Under load the 8s probe
+  **aborts** on a healthy-but-slow proxy → logs `egress probe for '<acct>' STILL DOWN (operation
+  aborted)` → the **recovered** account stays circuit-paused instead of being readmitted.
+* When several proxies are slow at once (or a restart re-probes them together), the probe
+  false-aborts across the pool → the gateway reads **"all accounts throttled / no-fresh-account
+  (pausing as before)"** → every inference request parks → a freshly-spawned bee blocks in
+  `ep_poll` on its **first** inference and wedges with **0 invocations** (looks like a "corpse").
+  Routing was never broken — a `gw-route` to a serviceable account still succeeds in \<1s; the pool
+  was *spuriously emptied* by false-negative probes.
+* **Confirm it's a false negative, not a dead proxy:** `curl -x http://<ip>:3128 -m 12
+  https://api.ipify.org` returns 200 in 1-6s for the "STILL DOWN" account (the probe lied). A
+  genuinely dead proxy (real 9s+ timeout) is a *different*, correct circuit-open — don't conflate.
+
+**The fix** (WI-389, `gateway.ts`): make `EGRESS_PROBE_HTTP_TIMEOUT_MS` env-tunable
+(`PAPERCUSP_GATEWAY_EGRESS_PROBE_HTTP_MS`) and raise the default **8s → 12s** — kept under
+`EGRESS_CIRCUIT_OPEN_MS − EGRESS_PROBE_DELAY_MS` so the probe still fits inside the open window. A
+recovered-but-slow proxy now readmits via the probe instead of waiting out (or never clearing) the
+circuit.
+
+**Lesson:** a circuit-breaker's **recovery probe must tolerate the real, under-load latency of what
+it probes.** A probe timeout tighter than the resource's slow-but-healthy case turns the breaker
+from a safety device into a **stuck-open latch** — it false-keeps healthy capacity offline and
+starves the pool exactly when load is highest. Size recovery-probe timeouts off the *slow-healthy*
+p99, not the fast path.
 
 ## Rollback
 
@@ -272,3 +306,7 @@ systemctl --user restart papercup-inference-gateway.service
   real cap; per-account egress removes the per-IP confound.
 * `llm-429-check-the-transport-not-the-account` — the missing-Claude-Code-framing instant
   429 (don't mistake it for exhaustion when testing egress directly).
+* `bg-host-watchdog-false-restart-on-wedged-journald` — the *other* reason a bee dies at boot:
+  not an egress-pause wedge (this doc) but a host restart reclaim-killing the in-flight spawn.
+  Both present as "bees won't run"; `dev:session_detail` (0 invocations + `ep_poll` ⇒ egress wedge;
+  "reclaimed at operator boot" ⇒ host restart) tells them apart.
