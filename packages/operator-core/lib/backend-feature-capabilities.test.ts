@@ -45,7 +45,19 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
 
     expect(backendFeatureCapability('codex', 'file-lock-enforcement').state).toBe('soft');
     expect(backendFeatureCapability('codex', 'native-fork').state).toBe('unsupported');
+    expect(backendFeatureCapability('codex', 'native-fork').unsupportedReason).toMatch(/launch_context/i);
     expect(backendFeatureCapability('codex', 'forced-native-session-id').unsupportedReason).toMatch(/cannot/i);
+  });
+
+  it('documents non-native fork fallbacks instead of pretending Codex/OMP can fork', () => {
+    expect(backendFeatureCapability('codex', 'native-fork')).toMatchObject({
+      state: 'unsupported',
+      unsupportedReason: expect.stringMatching(/launch_context/i),
+    });
+    expect(backendFeatureCapability('omp', 'native-fork')).toMatchObject({
+      state: 'unsupported',
+      unsupportedReason: expect.stringMatching(/launch_context/i),
+    });
   });
 
   it('keeps OMP gateway/account work capability-gated until its provider adapter exists', () => {

@@ -148,16 +148,19 @@ describe('memory tools return memory_timeout on a wedged backend (no infinite ha
 
   it('memory:update → { ok:false, reason:"memory_timeout" }', async () => {
     useBackend(wedgedBackend());
-    const res = await update.handler({
-      id: '00000000-0000-4000-8000-000000000000',
-      content: 'fixed',
-    });
+    const res = await update.handler(
+      {
+        id: '00000000-0000-4000-8000-000000000000',
+        content: 'fixed',
+      },
+      ctx,
+    );
     expect(parse(res)).toEqual({ ok: false, reason: 'memory_timeout' });
   });
 
   it('memory:forget → { ok:false, reason:"memory_timeout" }', async () => {
     useBackend(wedgedBackend());
-    expect(parse(await forget.handler({ id: 'm1' }))).toEqual({
+    expect(parse(await forget.handler({ id: 'm1' }, ctx))).toEqual({
       ok: false,
       reason: 'memory_timeout',
     });

@@ -17,6 +17,7 @@ import {
   accountProviderFromChoices,
   GATEWAY_ACCOUNT_HEADER,
   addDirArgs,
+  forkUnsupportedMessage,
   forkBootstrapBody,
   freshSuBootstrapBody,
   roleBootstrapBody,
@@ -230,8 +231,14 @@ describe('psu-launcher arg parsing', () => {
   });
 
   it('resumeArgsFor refuses --fork for non-claude agents (omp/codex have no fork-session)', () => {
-    expect(() => resumeArgsFor({ agent: 'omp', ompThreadId: 't' }, { fork: true })).toThrow(/fork/i);
-    expect(() => resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { fork: true })).toThrow(/fork/i);
+    expect(() => resumeArgsFor({ agent: 'omp', ompThreadId: 't' }, { fork: true })).toThrow(/launch-context/);
+    expect(() => resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { fork: true })).toThrow(/launch-context/);
+  });
+
+  it('forkUnsupportedMessage documents the safe non-native fallback for Codex and OMP', () => {
+    expect(forkUnsupportedMessage('codex')).toContain('psu --agent=codex --launch-context=<brief.md>');
+    expect(forkUnsupportedMessage('omp')).toContain('psu --agent=omp --launch-context=<brief.md>');
+    expect(forkUnsupportedMessage('codex')).toContain('will not silently append');
   });
 
   it('resumeArgsFor forces the fork id via --session-id ONLY alongside --fork-session (tracked fork)', () => {

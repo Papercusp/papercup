@@ -20,7 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
 import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
-import { runBulk } from '../_bulk';
+import { runBulk, bulkContent } from '../_bulk';
 
 const ACTION = z.enum(['adopt', 'dismiss']);
 
@@ -95,15 +95,16 @@ export default defineTool({
         if (!result.ok) {
           return { ok: false as const, id: it.id, reason: result.reason, ...(result.error ? { error: result.error } : {}) };
         }
+        // Spread the core result FIRST, then pin the bulk key fields so they win.
         return {
-          ok: true as const,
-          id: it.id,
           ...result,
           ...(result.action === 'adopt' ? { hint: ADOPT_HINT } : {}),
+          ok: true as const,
+          id: it.id,
         };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );
-    return text(env);
+    return bulkContent(env);
   },
 });

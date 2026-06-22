@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
-import { runBulk } from '../_bulk';
+import { runBulk, bulkContent } from '../_bulk';
 
 const itemSpec = z.object({
   hive: z.string().min(1).max(120),
@@ -83,6 +83,6 @@ export default defineTool({
       },
       { keyOf: (it) => ({ hive: it.hive, pack: it.pack }) },
     );
-    return text(env);
+    return bulkContent(env);
   },
 });

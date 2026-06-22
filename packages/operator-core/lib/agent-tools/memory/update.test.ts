@@ -1,3 +1,14 @@
+/**
+ * update.test.ts — the memory:update HANDLER, bulk keyed-array contract
+ * (bulk-endpoint-standardization-2026-06-21). The backend is mocked; this pins
+ * the inline { id, … } single form, the ids:[…] / items:[…] many forms, the
+ * per-item UUID + at-least-one-field validation (a bad item fails only itself),
+ * the not-found graceful envelope (EI-486), and the metadata-patch mapping
+ * (EI-2032). A wedged backend → top-level { ok:false, reason } (covered in
+ * b1-timeout.test.ts).
+ *
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/memory/update.test.ts
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../memory/backend', () => ({
@@ -23,189 +34,90 @@ const useBackend = (b: FakeBackend): void => {
   vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
 };
 
-describe('memory:update — UUID validation', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+type Out = { content: { text: string }[] };
+const body = async (args: unknown): Promise<Record<string, never> & { ok: boolean; reason?: string; results: { ok: boolean; id: string; error?: string; reason?: string }[]; counts: { ok: number; failed: number } }> =>
+  JSON.parse(((await update.handler(args as never, {} as never)) as Out).content[0].text);
 
-  it('rejects non-UUID id strings with validation error', async () => {
+const VID = '550e8400-e29b-41d4-a716-446655440000';
+const VID2 = '550e8400-e29b-41d4-a716-446655440001';
+
+describe('memory:update handler (bulk keyed-array)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('inline { id, content } → one ok result; backend.update called with the text patch', async () => {
     const b = fakeBackend();
     useBackend(b);
-
-    const res = await update.handler(
-      { id: 'reference_queen_auto_revert_tripwire_graduation_engine_queen_2', content: 'new content' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-
-    // Zod validation errors are caught by the defineTool handler and returned as structured errors
-    const content = (res as { content?: { text?: string }[] }).content?.[0]?.text;
-    expect(content).toBeDefined();
-    // The error will indicate validation failure for the UUID format
+    const r = await body({ id: VID, content: 'updated memory content' });
+    expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(r.results[0]).toMatchObject({ ok: true, id: VID });
+    expect(b.update).toHaveBeenCalledWith(VID, { text: 'updated memory content' });
   });
 
-  it('accepts valid UUID id and calls backend.update', async () => {
+  it('ids:[…] applies the SAME metadata patch to many; per-item results keyed by id', async () => {
     const b = fakeBackend();
     useBackend(b);
-
-    const validId = '550e8400-e29b-41d4-a716-446655440000';
-    const res = await update.handler(
-      { id: validId, content: 'updated memory content' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-
-    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(parsed.ok).toBe(true);
-    expect(b.update).toHaveBeenCalledWith(validId, { text: 'updated memory content' });
+    const r = await body({ ids: [VID, VID2], kind: 'reference' });
+    expect(r.counts).toEqual({ ok: 2, failed: 0 });
+    expect(r.results.map((x) => x.id)).toEqual([VID, VID2]);
+    expect(b.update).toHaveBeenCalledWith(VID, { metadata: { kind: 'reference' } });
+    expect(b.update).toHaveBeenCalledWith(VID2, { metadata: { kind: 'reference' } });
   });
 
-  it('handles backend unavailability gracefully', async () => {
+  it('items:[…] heterogeneous: each its own patch', async () => {
     const b = fakeBackend();
-    b.available.mockResolvedValue({ ok: false, reason: 'memory_backend_disabled' });
     useBackend(b);
-
-    const validId = '550e8400-e29b-41d4-a716-446655440000';
-    const res = await update.handler(
-      { id: validId, content: 'content' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-
-    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.reason).toBe('memory_backend_disabled');
-    expect(b.update).not.toHaveBeenCalled();
+    await body({ items: [{ id: VID, content: 'fix' }, { id: VID2, scope: 'harness:papercup' }] });
+    expect(b.update).toHaveBeenCalledWith(VID, { text: 'fix' });
+    expect(b.update).toHaveBeenCalledWith(VID2, { metadata: { user_id: 'harness:papercup' } });
   });
 
-  it('rejects various invalid UUID formats', async () => {
+  it('a not-found item fails only itself (EI-486) — top-level ok stays true', async () => {
     const b = fakeBackend();
+    b.update.mockImplementation(async (id: string) => {
+      if (id === VID2) throw new Error(`Memory with ID ${id} not found`);
+    });
     useBackend(b);
-
-    const invalidIds = [
-      'not-a-uuid',
-      'reference_id',
-      '550e8400-e29b-41d4-a716-44665544000',  // too short
-      '550e8400-e29b-41d4-a716-4466554400000', // too long
-      '550e8400e29b41d4a716446655440000',      // missing hyphens
-      '550e8400-e29b-41d4-a716-44665544000g',  // invalid hex character
-      '',                                         // empty (caught by min(1) + uuid validation)
-    ];
-
-    for (const id of invalidIds) {
-      const res = await update.handler(
-        { id, content: 'test' },
-        {} as unknown as Parameters<typeof update.handler>[1],
-      );
-
-      // All invalid UUIDs should fail validation before reaching backend
-      const content = (res as { content?: { text?: string }[] }).content?.[0]?.text;
-      expect(content, 'Should return error for invalid UUID: ' + id).toBeDefined();
-      expect(b.update).not.toHaveBeenCalled();
-    }
+    const r = await body({ ids: [VID, VID2], content: 'x' });
+    expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(r.results[0]).toMatchObject({ ok: true, id: VID });
+    expect(r.results[1]).toMatchObject({ ok: false, id: VID2 });
+    expect(r.results[1].error).toContain('not found');
+    expect(r.results[1].error).toContain(VID2);
   });
 
-  it('returns a graceful {ok:false} when the backend throws not-found (EI-486)', async () => {
-    // mem0's update THROWS "Memory with ID … not found" for a well-formed but
-    // non-existent id. The handler must catch it and return a clean envelope —
-    // not let it escape as a handler_error (which trips the
-    // repeated-tool-error:memory:update:structural watchdog).
+  it('a non-UUID id fails only that item (per-item validation, no backend call)', async () => {
     const b = fakeBackend();
-    const validId = '550e8400-e29b-41d4-a716-446655440000';
-    b.update.mockRejectedValue(new Error(`Memory with ID ${validId} not found`));
     useBackend(b);
-
-    let res: Awaited<ReturnType<typeof update.handler>>;
-    await expect(
-      (async () => {
-        res = await update.handler(
-          { id: validId, content: 'new content' },
-          {} as unknown as Parameters<typeof update.handler>[1],
-        );
-      })(),
-    ).resolves.toBeUndefined(); // must NOT throw
-
-    const parsed = JSON.parse((res! as { content: { text: string }[] }).content[0].text);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain('not found');
-    expect(parsed.error).toContain(validId);
+    const r = await body({ items: [{ id: VID, content: 'ok' }, { id: 'not-a-uuid', content: 'x' }] });
+    expect(r.counts).toEqual({ ok: 1, failed: 1 });
+    expect(r.results[1]).toMatchObject({ ok: false, id: 'not-a-uuid', error: 'Memory ID must be a valid UUID' });
+    expect(b.update).toHaveBeenCalledTimes(1); // only the valid one
+    expect(b.update).toHaveBeenCalledWith(VID, { text: 'ok' });
   });
 
-  it('surfaces other backend errors gracefully without throwing', async () => {
-    const b = fakeBackend();
-    const validId = '550e8400-e29b-41d4-a716-446655440000';
-    b.update.mockRejectedValue(new Error('connection terminated unexpectedly'));
-    useBackend(b);
-
-    const res = await update.handler(
-      { id: validId, content: 'new content' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-
-    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain('connection terminated');
-  });
-
-  it('triggers sync invalidation on successful update', async () => {
+  it('a metadata-only patch (kind + workspaceId) maps to backend.update metadata', async () => {
     const b = fakeBackend();
     useBackend(b);
-
-    const validId = '550e8400-e29b-41d4-a716-446655440000';
-    await update.handler(
-      { id: validId, content: 'new content' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-
-    // Verify the update was called (sync invalidation is fire-and-forget)
-    expect(b.update).toHaveBeenCalledWith(validId, { text: 'new content' });
-  });
-
-  // ── metadata-hygiene patches (EI-2032: was unfixable through any tool) ──────
-  const VID = '550e8400-e29b-41d4-a716-446655440000';
-
-  it('a metadata-only patch (kind + workspaceId, no content) maps to backend.update metadata', async () => {
-    const b = fakeBackend();
-    useBackend(b);
-    const res = await update.handler(
-      { id: VID, kind: 'reference', workspaceId: 'papercusp-workspace' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(parsed.ok).toBe(true);
+    const r = await body({ id: VID, kind: 'reference', workspaceId: 'papercusp-workspace' });
+    expect(r.results[0].ok).toBe(true);
     expect(b.update).toHaveBeenCalledWith(VID, {
       metadata: { kind: 'reference', workspace_id: 'papercusp-workspace' },
     });
   });
 
-  it('scope re-pool maps to metadata.user_id (the recall-pool key)', async () => {
-    const b = fakeBackend();
-    useBackend(b);
-    await update.handler(
-      { id: VID, scope: 'harness:papercup' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-    expect(b.update).toHaveBeenCalledWith(VID, { metadata: { user_id: 'harness:papercup' } });
-  });
-
   it('content + metadata flow through together in one patch', async () => {
     const b = fakeBackend();
     useBackend(b);
-    await update.handler(
-      { id: VID, content: 'fixed text', kind: 'project' },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
+    await body({ id: VID, content: 'fixed text', kind: 'project' });
     expect(b.update).toHaveBeenCalledWith(VID, { text: 'fixed text', metadata: { kind: 'project' } });
   });
 
-  it('rejects a patch with neither content nor any metadata field', async () => {
+  it('handles backend unavailability gracefully (top-level gate, no per-item run)', async () => {
     const b = fakeBackend();
+    b.available.mockResolvedValue({ ok: false, reason: 'memory_backend_disabled' });
     useBackend(b);
-    const res = await update.handler(
-      { id: VID },
-      {} as unknown as Parameters<typeof update.handler>[1],
-    );
-    const text = (res as { content?: { text?: string }[] }).content?.[0]?.text;
-    expect(text).toBeDefined();
-    const parsed = JSON.parse(text!);
-    expect(parsed.ok).toBe(false);
+    const r = await body({ id: VID, content: 'content' });
+    expect(r).toMatchObject({ ok: false, reason: 'memory_backend_disabled' });
     expect(b.update).not.toHaveBeenCalled();
   });
 });

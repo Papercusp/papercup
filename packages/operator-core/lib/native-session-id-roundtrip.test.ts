@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from './endpoint-route/define-route';
 // The REAL launcher helpers (the forcing + resuming halves of the contract).
+// @ts-expect-error psu-launcher.mjs is a standalone Node launcher without declarations.
 import { suLaunchArgs, resumeArgsFor, resolveTrackedResumeSession } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

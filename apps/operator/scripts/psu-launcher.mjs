@@ -176,6 +176,15 @@ export function addDirArgs(agent, dirs = []) {
   return [];
 }
 
+export function forkUnsupportedMessage(agent) {
+  return (
+    `psu: --fork is only supported for claude sessions; ${agent} has no native fork-session. ` +
+    `To branch safely, write a brief/transcript excerpt and launch a new ${agent} session with ` +
+    `\`psu --agent=${agent} --launch-context=<brief.md>\` plus the same workspace/harness/plan flags as needed, ` +
+    `or re-run without --fork to resume in place. psu will not silently append to the original when a fork was requested.`
+  );
+}
+
 /**
  * Native-scheduler lockout (native-scheduler-lockout-2026-06-09 D-001/D-002):
  * AGENT sessions (role panes + the brain/Queen) lose claude-code's own
@@ -353,7 +362,7 @@ export function resumeArgsFor(session, { coordExtPath, fork = false, forkSession
   // and silently appending to the original would be the very clobber the user asked
   // to avoid. Refuse loudly instead.
   if (fork && session.agent !== 'claude') {
-    throw new Error(`--fork is only supported for claude sessions (${session.agent} has no fork-session)`);
+    throw new Error(forkUnsupportedMessage(session.agent));
   }
   // `session.sessionId` is the agent's NATIVE session id (a UUID) when known —
   // set for store-found (untracked) sessions, so we resume that EXACT session.
@@ -1325,7 +1334,7 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
   if (fork && session.agent !== 'claude') {
-    console.error(`psu: --fork is only supported for claude sessions — ${session.agent} has no fork-session. Re-run without --fork to resume in place.`);
+    console.error(forkUnsupportedMessage(session.agent));
     process.exit(2);
   }
   if (addDir.length && session.agent === 'omp') {

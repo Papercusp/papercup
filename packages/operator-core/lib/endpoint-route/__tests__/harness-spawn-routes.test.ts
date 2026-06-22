@@ -38,18 +38,20 @@ const buildInvokeOnce = vi.fn((..._args: unknown[]) => ({
 }));
 const resolveSpawnBackendModel = vi.fn(() => ({ backend: 'omp', model: '' }));
 vi.mock('../../harness-invoke-once', () => ({
-  buildInvokeOnce: (...a: unknown[]) => buildInvokeOnce(...a),
+  buildInvokeOnce: (...a: unknown[]) => (buildInvokeOnce as (...args: unknown[]) => unknown)(...a),
   // The invoke route's spawn path (orchestrator-runner) also imports
   // resolveSpawnBackendModel from this module; the mock must mirror the full
   // named-export surface or Vitest 4's evaluator fails the link under
   // full-suite load (the route then 500s). See orchestrator-runner-spawn.test.
-  resolveSpawnBackendModel: (...a: unknown[]) => resolveSpawnBackendModel(...a),
+  resolveSpawnBackendModel: (...a: unknown[]) =>
+    (resolveSpawnBackendModel as (...args: unknown[]) => unknown)(...a),
 }));
 const recordAdvSession = vi.fn(async () => 77);
 const markAdvSessionEnded = vi.fn(async () => {});
 vi.mock('../../adv-sessions', () => ({
-  recordAdvSession: (...a: unknown[]) => recordAdvSession(...a),
-  markAdvSessionEnded: (...a: unknown[]) => markAdvSessionEnded(...a),
+  recordAdvSession: (...a: unknown[]) => (recordAdvSession as (...args: unknown[]) => unknown)(...a),
+  markAdvSessionEnded: (...a: unknown[]) =>
+    (markAdvSessionEnded as (...args: unknown[]) => unknown)(...a),
 }));
 
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));

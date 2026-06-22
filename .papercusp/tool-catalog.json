@@ -6245,7 +6245,7 @@
           "POST"
         ]
       },
-      "description": "Anchor a manual doc to the code it documents (its subject_ref) so drift is tracked; optionally verify it against HEAD. Unanchored manual docs remain allowed but flagged \"not drift-tracked\".",
+      "description": "Anchor one OR many manual docs to the code they document (their subject_ref) so drift is tracked; optionally verify against HEAD. Single: { docId, documents? }. Many: items:[{ docId, documents?, verify?, title?, harness? }]. Returns { ok, results:[{ ok, docId, source?, status?, anchored?, subjectRef? | error }], counts } — correlate by docId not position; one failure never fails the rest. Unanchored manual docs remain allowed but flagged \"not drift-tracked\".",
       "capabilities": [
         "docs:write"
       ],
@@ -6257,7 +6257,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "A human-authored doc should be drift-tracked: declare what code it covers. Run after writing/editing the doc, or to fix a wrong anchor.",
+        "when": "A human-authored doc should be drift-tracked: declare what code it covers. Run after writing/editing the doc, or to fix a wrong anchor. Anchor several at once via items:[…].",
         "notWhen": "For a generated doc use harness_docs:record (it sets a generated baseline). To only re-confirm currency use harness_docs:verify.",
         "chaining": "harness_docs:anchor { documents } → (later, on a drift nudge) harness_docs:verify."
       }
@@ -6322,7 +6322,7 @@
           "POST"
         ]
       },
-      "description": "Record a generated doc's provenance + drift anchor (subject_ref) and stamp it generated-from the harness repo's current HEAD. Call this once per generated doc immediately after writing the file, passing what you read.",
+      "description": "Record one OR many generated docs' provenance + drift anchor (subject_ref) and stamp each generated-from the harness repo's current HEAD. Single: { docId, documents? }. Many: items:[{ docId, documents?, title?, harness? }]. Call immediately after writing the file(s), passing what you read. Returns { ok, results:[{ ok, docId, source?, status?, generatedFromSha?, subjectRef?, anchorPaths? | error }], counts } — correlate by docId not position; one failure never fails the rest.",
       "capabilities": [
         "docs:write"
       ],
@@ -6332,9 +6332,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "You (the documenter) just wrote or refreshed a generated doc file (docs/features/F-<id>.md, a guide). Call once per doc with the feature + the exact files/symbols you read.",
+        "when": "You (the documenter) just wrote or refreshed generated doc file(s) (docs/features/F-<id>.md, a guide). Call once per doc with the feature + the exact files/symbols you read; record several at once via items:[…].",
         "notWhen": "For a human-authored manual doc, use harness_docs:anchor instead (it sets a verify baseline, not a generated baseline). Do not call for docs you only read.",
-        "chaining": "Write the .md file → harness_docs:record { docId, documents }. The freshness sweep then tracks it against future commits."
+        "chaining": "Write the .md file(s) → harness_docs:record { docId, documents } (or items:[…]). The freshness sweep then tracks them against future commits."
       }
     },
     {
@@ -6345,7 +6345,7 @@
           "POST"
         ]
       },
-      "description": "Request a documenter regeneration of a stale generated/augmented doc. Enqueues it (preserving any human overlay); the doc refreshes when the documenter re-records it.",
+      "description": "Request a documenter regeneration of one OR many stale generated/augmented docs (preserving any human overlay). Single: { docId }. Many same harness: { docIds:[…] }. Many heterogeneous: items:[{ docId, harness? }]. Each enqueues; the doc refreshes when the documenter re-records it. Returns { ok, results:[{ ok, docId, enqueued? | error }], counts } — correlate by docId not position; one failure never fails the rest.",
       "capabilities": [
         "docs:write"
       ],
@@ -6356,9 +6356,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "A generated doc is stale (its subject code changed) and you want it refreshed.",
+        "when": "A generated doc is stale (its subject code changed) and you want it refreshed. Regenerate several at once via docIds:[…] or items:[…].",
         "notWhen": "For a manual doc use harness_docs:verify. To preserve human nuance across the regen, add it via harness_docs:set_overlay first.",
-        "chaining": "harness_docs:list (find stale generated) → harness_docs:regenerate."
+        "chaining": "harness_docs:list (find stale generated) → harness_docs:regenerate { docIds:[…] }."
       }
     },
     {
@@ -6369,7 +6369,7 @@
           "POST"
         ]
       },
-      "description": "Attach a human \"augmented\" overlay to a doc — nuance that rides on top of the generated body and survives regeneration. Empty string clears it.",
+      "description": "Attach a human \"augmented\" overlay to one OR many docs — nuance that rides on top of the generated body and survives regeneration; empty string clears it. Single: { docId, overlay }. Many: items:[{ docId, overlay, harness? }]. Returns { ok, results:[{ ok, docId, source?, hasOverlay? | error }], counts } — correlate by docId not position; one failure never fails the rest.",
       "capabilities": [
         "docs:write"
       ],
@@ -6381,9 +6381,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "A generated doc is accurate but missing the human \"why\"/caveats you want preserved across regenerations. Add it as an overlay rather than hand-editing the generated body (which a regen would lose).",
+        "when": "A generated doc is accurate but missing the human \"why\"/caveats you want preserved across regenerations. Add it as an overlay rather than hand-editing the generated body (which a regen would lose). Set several at once via items:[…].",
         "notWhen": "To change the generated body itself, fix the code/feature and regenerate. For a fully human doc, author it as a manual doc.",
-        "chaining": "harness_docs:list → harness_docs:set_overlay { overlay }."
+        "chaining": "harness_docs:list → harness_docs:set_overlay { overlay } (or items:[…])."
       }
     },
     {
@@ -6394,7 +6394,7 @@
           "POST"
         ]
       },
-      "description": "Re-verify a manual doc: stamp its drift baseline to the current HEAD and mark it fresh. Use after reviewing a doc the freshness sweep flagged for re-verify.",
+      "description": "Re-verify one OR many manual docs: stamp the drift baseline to the current HEAD and mark fresh. Single: { docId }. Many same harness: { docIds:[…] }. Many heterogeneous: items:[{ docId, harness? }]. Returns { ok, results:[{ ok, docId, verifiedSha? | error }], counts } — correlate by docId not position; one failure never fails the rest. Use after reviewing a doc the freshness sweep flagged for re-verify.",
       "capabilities": [
         "docs:write"
       ],
@@ -6407,9 +6407,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "A manual doc was flagged for re-verify (its subject code changed) and you confirmed it's still accurate — or you just edited it to match.",
+        "when": "A manual doc was flagged for re-verify (its subject code changed) and you confirmed it's still accurate — or you just edited it to match. Verify several at once via docIds:[…] or items:[…].",
         "notWhen": "For a generated doc use harness_docs:regenerate. To set the anchor in the first place use harness_docs:anchor.",
-        "chaining": "harness_docs:list (find review docs) → read → harness_docs:verify."
+        "chaining": "harness_docs:list (find review docs) → read → harness_docs:verify { docIds:[…] }."
       }
     },
     {
@@ -8350,14 +8350,14 @@
           "POST"
         ]
       },
-      "description": "Decide one pending learning-pack candidate: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published.",
+      "description": "Decide one OR many pending learning-pack candidates: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published. Single: { id, action, note?, title?, text? }. Many same action: { ids:[…], action }. Many heterogeneous: items:[{ id, action, note?, title?, text? }]. Returns { ok, results:[{ ok, id, action?, … | error }], counts } — correlate by id, not by position; one bad candidate never fails the rest.",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "The owner has reviewed a pending candidate (learning_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting.",
+        "when": "The owner has reviewed pending candidate(s) (learning_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting. Decide several at once via ids:[…]+action or items:[…].",
         "notWhen": "To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via learning_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.",
-        "chaining": "learning_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → learning_packs:upgrade { hive, pack: \"fleet-lessons\" }; others via learning_packs:install."
+        "chaining": "learning_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → learning_packs:upgrade { hive, pack: \"fleet-lessons\" }; others via learning_packs:install. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
     {
@@ -8440,14 +8440,14 @@
           "POST"
         ]
       },
-      "description": "Enable or disable a learning pack's injection for a hive WITHOUT uninstalling it — the rows stay stored; agents just stop recalling them. Cheap to flip, fully reversible.",
+      "description": "Enable or disable one OR many learning packs' injection for a hive WITHOUT uninstalling them — the rows stay stored; agents just stop recalling them. Cheap to flip, fully reversible. Single: { hive, pack, enabled }. Many packs same hive: { hive, packs:[…], enabled }. Many heterogeneous: items:[{ hive, pack, enabled }]. Returns { ok, results:[{ ok, hive, pack, enabled? | error }], counts } — correlate by hive+pack, not by position; one failure never fails the rest.",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "Trying out whether a pack helps, or quarantining one that seems to misdirect agents — before reaching for uninstall.",
+        "when": "Trying out whether a pack helps, or quarantining one that seems to misdirect agents — before reaching for uninstall. Flip several at once via packs:[…] or items:[…].",
         "notWhen": "Permanently removing a pack — learning_packs:uninstall.",
-        "chaining": "learning_packs:list { hive } shows enabled state per installed pack."
+        "chaining": "learning_packs:list { hive } shows enabled state per installed pack. Bulk: single | items[] (or packs) → { ok, results, counts }; correlate by hive+pack not position; one failure never fails the rest."
       }
     },
     {
@@ -9017,13 +9017,14 @@
           "POST"
         ]
       },
-      "description": "Delete a specific memory entry by id.",
+      "description": "Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position; a not-found / timed-out id comes back as that item's { ok:false } without failing the rest.",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "When the user explicitly says \"forget X\" / \"don't remember that anymore\" / \"that's wrong, drop it\". Always inform the user out loud (\"Removed that from memory\").",
-        "notWhen": "To CORRECT a memory (replace its content), use memory:update — preserves history. Only use forget for outright removal."
+        "when": "When the user explicitly says \"forget X\" / \"don't remember that anymore\" / \"that's wrong, drop it\". Pass every id to drop at once via `ids`. Always inform the user out loud (\"Removed that from memory\").",
+        "notWhen": "To CORRECT a memory (replace its content), use memory:update — preserves history. Only use forget for outright removal.",
+        "chaining": "memory:search / memory:list → memory:forget { ids:[…] } to drop several found memories in one call. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
     {
@@ -9087,13 +9088,14 @@
           "POST"
         ]
       },
-      "description": "Edit a memory entry: replace its content and/or patch its metadata (kind, workspaceId, scope/recall-pool) — preserving its id. Metadata patches are vec-safe (no re-embed).",
+      "description": "Edit one OR many memory entries: replace content and/or patch metadata (kind, workspaceId, scope/recall-pool) — preserving each id. Metadata patches are vec-safe (no re-embed). Single: { id, content?, kind?, … }. Many same patch: { ids:[…], kind?/scope?/… }. Many heterogeneous: items:[{ id, content?, kind?, … }]. Returns { ok, results:[{ ok, id, error? }], counts } — correlate by id, not by position; a not-found / timed-out id never fails the rest.",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "CONTENT: when the user corrects something you stored (\"actually it's Daniel, not Dan\") — pass `content`. METADATA HYGIENE: to re-tag a memory's `kind`, fix its `workspaceId`, or move it to the right recall `scope`/pool, pass those fields (no content needed). Find the id via memory:search / memory:list first. For a content edit, tell the user (\"Updating my memory: …\").",
-        "notWhen": "To REMOVE a memory entirely, use memory:forget. To ADD a new memory, use memory:remember. Do not change `scope` casually — it moves which queries can recall the memory."
+        "when": "CONTENT: when the user corrects something you stored (\"actually it's Daniel, not Dan\") — pass `content`. METADATA HYGIENE: to re-tag a memory's `kind`, fix its `workspaceId`, or move it to the right recall `scope`/pool, pass those fields (no content needed); re-tag MANY at once via { ids:[…], kind } or items:[…]. Find the id via memory:search / memory:list first. For a content edit, tell the user (\"Updating my memory: …\").",
+        "notWhen": "To REMOVE a memory entirely, use memory:forget. To ADD a new memory, use memory:remember. Do not change `scope` casually — it moves which queries can recall the memory.",
+        "chaining": "memory:search → memory:update { ids:[…], kind } (bulk metadata hygiene). Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
     {
@@ -12408,7 +12410,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one reusable code:run RECIPE by id — including its full script — so you can inspect what it does before recipes:run-ning it. Read-only.",
+      "description": "Fetch one OR many reusable code:run RECIPEs by id — including the full script — so you can inspect what they do before recipes:run-ning them. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -12426,9 +12428,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "When you have a recipe id (from recipes:list / recipes:search / a code:run result's similarRecipes) and want to read its script + metadata before reusing it.",
+        "when": "When you have one or more recipe ids (from recipes:list / recipes:search / a code:run result's similarRecipes) and want to read their script + metadata before reusing. Pass every id at once via `ids`.",
         "notWhen": "To EXECUTE the recipe — use recipes:run (it runs the script under YOUR role-scoped envelope). To discover recipes by intent — recipes:search.",
-        "chaining": "recipes:search / recipes:list → recipes:get { id } (inspect) → recipes:run { id } (reuse)."
+        "chaining": "recipes:search / recipes:list → recipes:get { ids:[…] } (inspect) → recipes:run { id } (reuse). Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
     {
@@ -12500,7 +12502,7 @@
           "POST"
         ]
       },
-      "description": "Run a saved code:run RECIPE by id — the reuse path. The recipe's script executes under YOUR role-scoped tool envelope (NOT the author's — no privilege travels with a recipe); returns only the script's summary. Use dryRun:true to preview write-effect mutations.",
+      "description": "Run one OR many saved code:run RECIPEs by id — the reuse path. Each recipe's script executes under YOUR role-scoped tool envelope (NOT the author's — no privilege travels with a recipe); returns only each script's summary. Use dryRun:true to preview write-effect mutations. Single: { id, dryRun?, timeoutSec? }. Many same options: { ids:[…], dryRun? }. Many heterogeneous: items:[{ id, dryRun?, timeoutSec? }]. Returns { ok, results:[{ ok, id, result? | error }], counts } — correlate by id, not by position; one recipe failing never fails the rest.",
       "capabilities": [
         "capability:bash"
       ],
@@ -12518,9 +12520,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "When a recipe already does what you need (found via recipes:search / recipes:list, or a code:run result's similarRecipes) — run it by id instead of re-authoring the same script. It runs under YOUR envelope, so you can only reuse recipes whose tools you may call.",
-        "notWhen": "When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). Preview the recipe's mutations with dryRun before a committing run.",
-        "chaining": "recipes:search { query } → recipes:get { id } (inspect) → recipes:run { id, dryRun:true } → recipes:run { id }."
+        "when": "When a recipe already does what you need (found via recipes:search / recipes:list, or a code:run result's similarRecipes) — run it by id instead of re-authoring the same script. Run several at once via ids:[…] or items:[…]. Each runs under YOUR envelope, so you can only reuse recipes whose tools you may call.",
+        "notWhen": "When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). Preview a recipe's mutations with dryRun before a committing run.",
+        "chaining": "recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, dryRun:true } → recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
     {
@@ -12840,7 +12842,7 @@
           "POST"
         ]
       },
-      "description": "Read one rubric in full — its criteria (each with key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }).",
+      "description": "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass `rubricId` for one or `rubricIds` for several. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing id never fails the rest.",
       "capabilities": [
         "coord:read"
       ],
@@ -12861,9 +12863,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have a rubric_id (from rubrics:list/search) and need its full criteria to grade against — e.g. Overwatch emitting the hive-coordination-health scorecard, or filing a structured observation.",
+        "when": "You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Overwatch emitting the hive-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.",
         "notWhen": "Scanning many — rubrics:list (summary rows).",
-        "chaining": "rubrics:list → rubrics:get → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation."
+        "chaining": "rubrics:list → rubrics:get { rubricIds:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest."
       }
     },
     {
@@ -12942,7 +12944,7 @@
           "POST"
         ]
       },
-      "description": "Ratify a proposed rubric → status \"active\" (D-001: the Queen/owner gate — an active rubric becomes the shared definition every agent grades against). Returns the activated rubric.",
+      "description": "Ratify one OR many proposed rubrics → status \"active\" (D-001: the Queen/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -12963,9 +12965,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the Queen/owner reviewing a proposed rubric and judge it a sound shared standard. Activating it makes every agent grade structured observations against it.",
+        "when": "You are the Queen/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricIds:[…].",
         "notWhen": "Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Queen.",
-        "chaining": "rubrics:list { status: \"proposed\" } → rubrics:get → rubrics:ratify."
+        "chaining": "rubrics:list { status: \"proposed\" } → rubrics:get → rubrics:ratify { rubricIds:[…] }. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest."
       }
     },
     {
@@ -14090,7 +14092,7 @@
           "POST"
         ]
       },
-      "description": "Find markdown files that reference [[target]] across the workspace. Returns { target, harness, hits[] }.",
+      "description": "Find markdown files that reference [[target]] across the workspace, for one OR many pages in ONE call — pass `target` for one or `targets:[…]` for several (1–100), with an optional shared `harness` filter. Returns { ok, results:[{ ok, target, harness, hits[] | error }], counts } — correlate each result by its target, not by position; one failed scan never fails the rest.",
       "capabilities": [
         "wiki:read"
       ],
@@ -14108,8 +14110,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "User asks \"what links to X?\", \"where is `[[name]]` referenced?\". Wiki-style backlink lookup across markdown files.",
-        "notWhen": "For cross-resource full-text search, use `search:query`. For markdown TOC, use `harness:markdown_index`."
+        "when": "User asks \"what links to X?\", \"where is `[[name]]` referenced?\". Wiki-style backlink lookup across markdown files. Look up several pages at once via `targets:[…]`.",
+        "notWhen": "For cross-resource full-text search, use `search:query`. For markdown TOC, use `harness:markdown_index`.",
+        "chaining": "single `target` | `targets:[…]` → { ok, results:[{ ok, target, harness, hits[] | error }], counts } — correlate by target not position; one failure never fails the rest."
       }
     },
     {

@@ -78,7 +78,7 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     ),
     'native-fork': unsupported(
       'capability-gated in the launcher',
-      'Codex CLI has no Claude-style native fork-session flag; parity requires an equivalent platform fallback, not a fake native fork',
+      'Codex CLI has no Claude-style native fork-session flag; branch by launching a new Codex session with explicit launch_context instead of pretending to native-fork',
     ),
     'forced-native-session-id': unsupported(
       'tracked via CODEX_HOME and rollout id discovery',
@@ -98,7 +98,10 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'account-pinning': unsupported('capability-gated', 'OMP provider account routing is not implemented yet'),
     'gateway-routing': unsupported('capability-gated', 'OMP provider gateway adapter is not implemented yet'),
     'file-lock-enforcement': supported('OMP coordination extension'),
-    'native-fork': unsupported('capability-gated in the launcher', 'OMP has no Claude-style native fork-session flag'),
+    'native-fork': unsupported(
+      'capability-gated in the launcher',
+      'OMP has no Claude-style native fork-session flag; branch by launching a new OMP session with explicit launch_context instead of pretending to native-fork',
+    ),
     'forced-native-session-id': unsupported('thread id tracking', 'OMP resumes by thread id and does not accept a forced Claude-style session UUID'),
     'runtime-home-inheritance': supported('per-spawn OMP agent dir copies auth/config/tool cache'),
     'mcp-http-auth': supported('OMP mcp.json carries HTTP MCP headers'),

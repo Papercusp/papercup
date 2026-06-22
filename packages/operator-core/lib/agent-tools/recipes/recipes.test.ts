@@ -197,12 +197,72 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(recordRecipeRunMock).not.toHaveBeenCalled();
   });
 
-  it('returns not_found for a missing recipe (no orchestration)', async () => {
+  it('returns not_found for a missing recipe per item (no orchestration) — bulk envelope', async () => {
     getRecipeMock.mockResolvedValue(null);
     const res = await findTool('recipes:run').fn({ id: 'nope' }, mkCtx('worker'));
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(payload.ok).toBe(false);
-    expect(payload.error).toBe('not_found');
+    // The BATCH ran (top-level ok:true); the missing recipe is that item's failure.
+    expect(payload.ok).toBe(true);
+    expect(payload.counts).toEqual({ ok: 0, failed: 1 });
+    expect(payload.results[0]).toMatchObject({ ok: false, id: 'nope', error: 'not_found' });
     expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+
+  it('ids:[…] runs MANY recipes; a missing one fails only itself (keyed by id)', async () => {
+    getRecipeMock.mockImplementation(async (_sql: unknown, _ws: string, id: string) =>
+      id === 'gone'
+        ? null
+        : {
+            id, workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
+            script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0, status: 'active', tags: [],
+          },
+    );
+    const res = await findTool('recipes:run').fn({ ids: ['r1', 'gone', 'r2'] }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.counts).toEqual({ ok: 2, failed: 1 });
+    expect(payload.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
+      ['r1', true],
+      ['gone', false],
+      ['r2', true],
+    ]);
+    // The two present recipes were each orchestrated; the missing one was not.
+    expect(runOrchestrationMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('recipes:get HANDLER (bulk keyed-array)', () => {
+  beforeEach(() => {
+    getRecipeMock.mockReset();
+  });
+
+  const ctx = { workspaceId: 'ws-test' } as never;
+  const getBody = async (args: unknown) => {
+    const res = await findTool('recipes:get').fn(args as never, ctx);
+    return JSON.parse((res as { content: { text: string }[] }).content[0].text);
+  };
+
+  it('inline { id } → one result with the recipe (script included)', async () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'r1', workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
+      script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,
+      lastRunAt: null, status: 'active', tags: [],
+    });
+    const b = await getBody({ id: 'r1' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'r1', recipe: { id: 'r1', script: 'return 1;' } });
+  });
+
+  it('ids:[…] → many; a not-found id fails only itself', async () => {
+    getRecipeMock.mockImplementation(async (_sql: unknown, _ws: string, id: string) =>
+      id === 'x' ? null : {
+        id, workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
+        script: 's', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,
+        lastRunAt: null, status: 'active', tags: [],
+      },
+    );
+    const b = await getBody({ ids: ['r1', 'x', 'r2'] });
+    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.results[1]).toMatchObject({ ok: false, id: 'x', error: 'not_found' });
   });
 });
