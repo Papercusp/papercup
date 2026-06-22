@@ -11,7 +11,8 @@ sync (the operator sidecar pushes invalidate/update over Postgres
 `LISTEN/NOTIFY`), and `libs/zero-harness` has 0 live ZQL importers. So this
 rule is still correct *if you touch a Zero schema*, but that surface is being
 retired; for current sync work see the Zero-free resolver path, not this. The
-schema file at `libs/zero-harness/src/schema.ts` still exists for reference.
+`libs/zero-harness` submodule (and its `src/schema.ts`) has since been **removed
+from the tree entirely** — this page is retained only as a historical record.
 
 ## What
 

@@ -291,3 +291,61 @@ export const FILL_WORKSPACE_ID_DDL = `
   CREATE TRIGGER fill_ws_work_items_trg
     BEFORE INSERT ON harness_shared.work_items
     FOR EACH ROW EXECUTE FUNCTION harness_shared.fill_workspace_id_from_projects();`;
+
+/**
+ * harness_issues_consolidated — the SEPARATE legacy issues-consolidated federated table
+ * (distinct from engineer_issues; NOT part of the P-010 work_items unification). Some
+ * federation round-trip tests federate it alongside features, so they need the table + the
+ * generic substrate_outbox capture (archive/102) + the workspace_id fill on it. Apply AFTER
+ * SUBSTRATE_OUTBOX_DDL + FILL_WORKSPACE_ID_DDL (which defines fill_workspace_id_from_projects)
+ * + a harness_shared.projects row. The generic capture fn mirrors archive/102 verbatim.
+ */
+export const HARNESS_ISSUES_CONSOLIDATED_FED_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.harness_issues_consolidated (
+    harness_slug      TEXT NOT NULL,
+    issue_id          TEXT NOT NULL,
+    workspace_id      TEXT NOT NULL DEFAULT '',
+    title             TEXT NOT NULL,
+    severity          TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    found_at          TIMESTAMPTZ NOT NULL,
+    found_during      TEXT,
+    repro             TEXT,
+    evidence          TEXT,
+    suggested_fix     TEXT,
+    code_pointer      TEXT,
+    linked_feature_id TEXT,
+    attempts          INT NOT NULL DEFAULT 0,
+    notes             JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_ts        BIGINT NOT NULL,
+    updated_ts        BIGINT NOT NULL,
+    author_pubkey     TEXT,
+    origin            TEXT NOT NULL DEFAULT 'local',
+    fed_ts            BIGINT,
+    fed_hlc           TEXT,
+    PRIMARY KEY (harness_slug, issue_id)
+  );
+  CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
+    LANGUAGE plpgsql AS $cso$
+    DECLARE v_op TEXT; v_rec RECORD; v_origin TEXT; v_key TEXT; v_row JSONB; v_ws TEXT; v_slug TEXT; v_keycol TEXT := TG_ARGV[0];
+    BEGIN
+      IF (TG_OP = 'DELETE') THEN v_op := 'del'; v_rec := OLD; ELSE v_op := 'put'; v_rec := NEW; END IF;
+      v_row := to_jsonb(v_rec); v_origin := v_row ->> 'origin';
+      IF COALESCE(v_origin, 'local') <> 'local' THEN RETURN v_rec; END IF;
+      v_key := v_row ->> v_keycol; v_ws := COALESCE(v_row ->> 'workspace_id', ''); v_slug := v_row ->> 'harness_slug';
+      INSERT INTO harness_shared.substrate_outbox (workspace_id, harness_slug, table_name, op, key, row, ts)
+        VALUES (v_ws, v_slug, TG_TABLE_NAME, v_op, v_key, v_row, (extract(epoch from now()) * 1000)::bigint);
+      PERFORM pg_notify('substrate_outbox', v_ws || '::' || v_slug);
+      RETURN v_rec;
+    END; $cso$;
+  DROP TRIGGER IF EXISTS fill_ws_hic_trg ON harness_shared.harness_issues_consolidated;
+  CREATE TRIGGER fill_ws_hic_trg BEFORE INSERT ON harness_shared.harness_issues_consolidated
+    FOR EACH ROW EXECUTE FUNCTION harness_shared.fill_workspace_id_from_projects();
+  DROP TRIGGER IF EXISTS capture_hic_insdel_trg ON harness_shared.harness_issues_consolidated;
+  CREATE TRIGGER capture_hic_insdel_trg AFTER INSERT OR DELETE ON harness_shared.harness_issues_consolidated
+    FOR EACH ROW EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');
+  DROP TRIGGER IF EXISTS capture_hic_upd_trg ON harness_shared.harness_issues_consolidated;
+  CREATE TRIGGER capture_hic_upd_trg AFTER UPDATE ON harness_shared.harness_issues_consolidated
+    FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
+    EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');`;

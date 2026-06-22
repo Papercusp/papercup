@@ -71,6 +71,7 @@ import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   SUBSTRATE_OUTBOX_DDL,
   FILL_WORKSPACE_ID_DDL,
+  HARNESS_ISSUES_CONSOLIDATED_FED_DDL,
 } from '../../../../test/_work-items-schema';
 // WI-259 STEP 1 (P-001) membership-aware admission case (below) — these route the
 // PROCESS-GLOBAL getOrgPg() at a migrated throwaway DB so boot.ts's STEP 1 reads
@@ -248,6 +249,9 @@ async function setupPeerSchema(sql: postgres.Sql, memberSlug: string = HARNESS_S
   // so the read-side projections demux exactly as before the unification.
   await sql.unsafe(SUBSTRATE_OUTBOX_DDL);
   await sql.unsafe(FILL_WORKSPACE_ID_DDL);
+  // The legacy harness_issues_consolidated federated table (separate from the unification)
+  // + its generic capture/fill — some of these tests federate it alongside features.
+  await sql.unsafe(HARNESS_ISSUES_CONSOLIDATED_FED_DDL);
   const stripMig = (s: string) =>
     s
       .split('\n')

@@ -38,7 +38,7 @@ The corestore path (`joinHarnessSwarm` + `corestore.replicate`) still connects i
 \~525ms with `void discovery.flushed()` — only **standalone** transports are
 affected. Both standalone transports now run the refresh loop:
 `directory-swarm.ts` (`DEFAULT_REFRESH_MS = 2500`) and
-`cross-hive-swarm-transport.ts` (`refreshAll()` — its live test went from a 180s
+`cross-hive-transport.ts` (`refreshAll()` — its live test went from a 180s
 timeout to passing in \~700ms). An earlier memory/comment claimed `swarm.flush()`
 was the proven standalone driver and `discovery.flushed()` "poisons" it — that
 account is **superseded**; don't resurrect either driver.

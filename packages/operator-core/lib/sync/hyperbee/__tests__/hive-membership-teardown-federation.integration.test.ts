@@ -17,13 +17,12 @@
  *      not" have, and the persistent-membership path G27 says leave-hive doesn't
  *      clean. So the SUBSTRATE supports a federated membership teardown.
  *
- * ── What this DOCUMENTS (the real lifecycle gaps) ──
- *   `lifecycle-membership-teardown.gap.test.ts` (the sibling unit test) then proves
- *   that neither `leaveHive` nor `hive:dissolve` actually DELETES a hive_members
- *   row — so the federated teardown proven here is never TRIGGERED by either
- *   lifecycle op today. G24 (dissolve has no federated membership tombstone) and
- *   G27 (leave cleans presence but NOT membership) are both confirmed REAL gaps:
- *   the transport exists; the lifecycle ops don't call it.
+ * ── What the lifecycle sibling PROVES (the gaps are CLOSED) ──
+ *   `lifecycle-membership-teardown.integration.test.ts` (the sibling) proves that
+ *   `leaveHive` (G27) and the `removeAllHiveMembers` leg `hive:dissolve` invokes
+ *   (G24) now DELETE the hive_members row(s) and capture the `del` op proven here —
+ *   so the federated teardown is actually TRIGGERED by both lifecycle ops. The
+ *   transport (this test) + the lifecycle triggers (the sibling) close G24 + G27.
  */
 import { afterEach, describe, it, expect } from 'vitest';
 import {

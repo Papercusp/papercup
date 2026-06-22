@@ -1,0 +1,345 @@
+---
+title: Shared hives — a user's guide
+description: Walk through the whole peer-to-peer shared-hive lifecycle as a user — create a hive (incl. from a GitHub URL), share it (public / invite / private), discover + join someone else's, what content federates between members and how cross-member browse works, collaborating on shared work, moderation (report / takedown / ban), and leaving or being removed (including how a re-key cuts read access).
+sidebar:
+  order: 9
+plans:
+  - comb-hive-native-sharing-2026-06-11
+  - shared-hive-federation-2026-06-08
+  - shared-hive-member-content-federation-2026-06-20
+  - hive-from-github-url-2026-06-11
+  - shared-hive-public-release-2026-06-22
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A **hive** is a project several people can work on together. Each person runs
+their own Papercusp; the hive's shared state — work items, plans, conversations,
+contributor list, file claims, presence — **syncs peer-to-peer** between
+everyone's machines and shows up in each person's local app. There is no central
+server: the hive is identified by a cryptographic keypair, and every machine
+running it is an equal peer.
+
+This page walks a user through the full lifecycle: **create → share → discover →
+join → collaborate → moderate → leave**. For the security/trust reasoning behind
+it (why GitHub is the authority of record, what's advisory, the threat model) see
+[Shared harnesses — trust model](/security/shared-harnesses/). For how code
+itself round-trips through git, see [Hive git-sync](/system/hive-git-sync/).
+
+<Aside type="note" title="Vocabulary">
+**Hive** = the project (keypair-identified). **Swarm** = one machine running the
+hive (yours is a Swarm; each collaborator's is another). **Member** = a harness
+inside the hive. A hive federates across its Swarms — each Swarm is a peer.
+Identity is anchored to your **GitHub account**.
+</Aside>
+
+<Aside type="caution" title="Who can do what — the owner vs a joiner">
+The **owner** is whoever holds the hive's private key (the Swarm that created
+it). Owner-only actions — approving joiners, banning, takedowns, editing the
+listing — only work from the owning Swarm. A person who **joined** a hive holds a
+*viewer* of it: they federate its content and collaborate, but can't make owner
+decisions. Where an action is owner-only, it's called out below.
+</Aside>
+
+## 1. Create a hive
+
+There are two ways to start a hive.
+
+### From scratch (a fresh project)
+
+Creating a hive provisions a **home harness** that runs the hive blueprint and
+stamps it as a hive. The default blueprint is the **coding** hive; pass a
+different one for non-coding work (e.g. a research/`work` hive).
+
+- **Tool:** `hive:create` — args: `slug` (required), `blueprintId` (default the
+  coding hive; `work` for a non-coding hive), `kickoff`, `learningPack`,
+  `wakeInSeconds`, `deployment` (default `local`).
+- It's **root-only** — a hive is a top-level peer, never created from inside
+  another agent. Running it in the cloud is a separate step
+  (`deploy:hive`); by default the hive runs locally on your machine.
+
+A brand-new hive is **local-only** until you publish it (step 2) — it doesn't
+announce itself or federate to anyone yet.
+
+### From a GitHub repository
+
+If your project already lives on GitHub, create the hive straight from the repo
+URL. This is the fastest path and the one most public releases use.
+
+- **Tool:** `hive:create_from_repo` — args: `githubUrl` (required), `slug`,
+  `runTests` (default **false** — opt in to execute the repo's test command),
+  `shallow`, `intoHive` (add the repo to an *existing* hive instead of starting a
+  new one).
+- What it does, in order: **repo → hive lookup first** (if a hive already exists
+  for that repo you get a **join offer** back, with zero side effects — so two
+  people can't accidentally fork the same project into two hives), then clone,
+  detect the blueprint, stand up the hive home + the first member harness, stamp
+  the upstream GitHub coordinates, and **auto-publish** a directory listing.
+- **Visibility is derived from the repo:** a **public** GitHub repo → a
+  discoverable (`public`) hive listing; a **private** repo → a **Private**
+  (invite-only, hidden) hive. You can change this afterward (step 2).
+
+<Aside type="caution" title="Running a repo's tests executes its code">
+`hive:create_from_repo` defaults `runTests: false` on purpose — running a
+pasted repo's test command executes that repo's code on your machine. Leave it
+off unless you trust the source, and verify on a clone if you need to.
+</Aside>
+
+### Adding more members later
+
+A hive starts with just its home (and, from a repo, one member harness). To bring
+another existing harness into the hive, use `hive:add-member` (sets the harness's
+`hive_slug` so its work federates within the hive). Until something sets that
+pointer, a hive has only its home and no members.
+
+## 2. Share it — public, invite, or private
+
+Sharing happens at the **hive** level (per-harness sharing was retired). You
+publish a hive to the peer-to-peer **directory** so others can find and join it.
+
+- **Tool:** `discovery:set_hive` — args: `hiveId`, `title`, `description`,
+  `visibility` (default `public`), `inviteSecret` (required for `invite`),
+  `memberLinks` (one-click join links — see step 4). It's an idempotent
+  create-or-edit: call it again with the same `hiveId` to edit the title /
+  description / visibility.
+
+The three visibilities mean exactly:
+
+| Visibility | What it does | Who can find it |
+|---|---|---|
+| **public** | Announced to the **global directory topic**. | Anyone browsing the directory ([step 3](#3-discover-a-hive)). |
+| **invite** | Announced only on an **invite-scoped topic** derived from a secret you share. **Requires `inviteSecret`.** | Only people you give the invite secret to. |
+| **private** | **Never announced.** Stays local-only. | No one — it doesn't federate on the network at all. |
+
+<Aside type="note" title="Private means dormant, not just hidden">
+A `private` (or never-published) hive doesn't announce on the DHT and **doesn't
+federate** — the peer-to-peer machinery is a dormant, zero-risk path until you
+publish it `public` or `invite`. Setting a published hive back to `private`
+**withdraws** it: it stops being re-announced, and other peers age the listing out
+on a TTL. Only a *shared* (public/invite) hive actually syncs to other machines.
+</Aside>
+
+## 3. Discover a hive
+
+To find hives other people have shared:
+
+- **Tool:** `discovery:hives` — browse the directory of hives this peer has seen
+  announced (title · description · owner · member harnesses). In the desktop app
+  this is the **Hives / Network** board.
+- The directory is **best-effort gossip** — it's how you *find* a hive, not how
+  you're admitted to it. Joining still runs the full admission/attestation flow
+  (step 4), so a listing you can see isn't a hive you're automatically in.
+- An **invite** hive won't appear in the global directory; you reach it through
+  the invite secret / link the owner shared with you.
+
+## 4. Join a hive
+
+Joining a hive makes you a peer: you start federating its content, get a
+local view of it, and can collaborate.
+
+**How you join** (this is a desktop / link action, not an agent command):
+
+- **One-click join link** — `papercusp://harness?topic=…&github=…&repo_id=…`.
+  The owner's listing carries these (`memberLinks`); pasting one into the app (or
+  clicking it) joins you to that exact hive. The link pins the swarm **topic** so
+  you land on the owner's hive, the GitHub `owner/repo`, and the immutable numeric
+  `repo_id`.
+- **From the directory** — pick a hive in the Hives / Network board and join it.
+
+Under the hood, joining wires up four things per member: a swarm federation
+handle, a git-sync routine, presence rows, and registry entries (a `remote_hive`
+view + the member harnesses). If no peer is reachable the moment you join, the
+join lands in a `phase_0_pending` state — that's **not stuck**: it re-federates on
+your next boot (or as soon as a peer comes online), so you don't need to redo it.
+
+### Open vs approval — what happens when you join
+
+Whether you're admitted immediately depends on the owner's **membership mode**
+(an owner-signed policy on the hive). The default, and a hive with no policy, is
+**open**.
+
+| Mode | What happens to a joiner |
+|---|---|
+| **open** (default) | Admitted immediately. |
+| **approval** | Lands **pending** — held until the owner approves. You federate once approved. |
+| **allowlist** | Admitted only if your GitHub **login** is on the owner's pre-approved list; otherwise refused. |
+
+A **banned** GitHub account is refused in **every** mode (the ban is keyed to your
+stable numeric GitHub id, so renaming your login can't slip you back in). If a
+peer ever sees a membership mode it doesn't recognize, it fails **safe** to
+*pending* (owner decides) rather than auto-admitting.
+
+### The approval queue (owner-side)
+
+When the hive is in **approval** mode, the owner manages the queue:
+
+- **`hive:membership_pending`** — list the pending join requests (the review
+  queue). Read-only.
+- **`hive:membership_decide`** — `approve` (trust-admits the joiner and their
+  captured devices, and federates the decision back) or `deny` (never admitted).
+  You can clear several at once. **Owner-only** — it requires the owning Swarm
+  (the one holding the hive key); a viewer on another Swarm can't decide.
+
+## 5. What syncs between members
+
+Once you're a member, the hive's shared state federates over **one topic derived
+from the hive's keypair** — all the hive's harnesses ride that one topic.
+
+**Federates (advisory peer-synced state, projected into each member's local DB):**
+
+- Work items / features (the queue + per-item status + claims)
+- Plans and plan decisions
+- Conversations, threads, and coordination messages
+- Hive settings, the contributor list, presence (who's online), and the member
+  list
+
+**Does *not* federate:**
+
+- **Pull-request / merge state.** PR status is read live from GitHub per machine,
+  not synced — GitHub is the authority for "did it merge."
+- Secrets, `.env`, credentials — never leave your machine.
+
+<Aside type="note" title="Synced rows are advisory — GitHub is the authority">
+Peer-synced rows are a fast, shared *cache* for coordination and display. Anything
+that actually matters — whether code merged, who has write access, whether
+something shipped — is **re-derived from GitHub at the point of action**, never
+trusted from a peer. That's the core of the
+[trust model](/security/shared-harnesses/); it's why the synced state can be
+freely shared without it being a security authority.
+</Aside>
+
+### Cross-member browse
+
+Each member harness keeps its own content keyed under its own slug, so **your own
+views are unchanged** — you see your harness's work exactly as before. What
+membership adds is **cross-member browse**: a member can see the *other* members'
+federated content within the hive (their work items, plans, conversations), not
+just their own. This is the collaboration payoff — one shared project surface
+across everyone's harnesses.
+
+## 6. Collaborate
+
+Working together in a hive uses the same surfaces as solo work — they're just now
+shared across Swarms:
+
+- **Shared work items + plans.** Create, claim, and complete work items; they
+  show up for every member. Plan items and decisions federate too.
+- **File claims.** When agents on different machines might touch the same files,
+  the hive serializes contended claims through a single **lock authority** (a
+  deterministic function of who's online), so two machines don't stomp each
+  other. Git-sync + merge resolution is the data-safety backstop underneath.
+- **Coordination.** Messages, conversations, and presence federate, so you can
+  see who's active and talk in-thread across machines.
+
+### Asking another hive for help (cross-hive)
+
+Hives are sovereign, but one hive can send a question or a work request to
+**another** hive:
+
+- **`hive:ask`** — a question the other hive owns the answer to.
+- **`hive:request_work`** — ask another hive to do something in its domain (it
+  becomes a work item their side prioritizes).
+- Both are **gated by an owner grant** (`hive:cross_grant`, directed `in`/`out` —
+  default-deny, quota-capped). The answer arrives asynchronously; track it with
+  `hive:asks`.
+
+## 7. Moderate
+
+Moderation is **owner-gated** and rides the owner-signed hive policy. The flow:
+
+1. **Report** — a member files a report against a piece of content or another
+   member with **`hive:report`**. (This only works if the owner enabled member
+   reporting in the hive policy.)
+2. **Review** — the owner reads the queue with **`hive:moderation_queue`**.
+3. **Act** — the owner can:
+   - **`hive:takedown`** — hide a piece of content across the hive (adds it to the
+     owner-signed takedown list; honest peers honor it as a tombstone). Pass
+     `restore: true` to un-hide.
+   - **`hive:ban_member`** — ban a repeat abuser by their numeric GitHub id. This
+     **denies re-join in every mode** and revokes their devices. (Pass
+     `revoke: false` to record the ban without revoking; `unban: true` to lift
+     it.) See the read-access note in step 8.
+4. **Resolve** — the owner closes the report with **`hive:moderation_resolve`**
+   (`actioned` or `dismissed`).
+
+All of these require the owning Swarm.
+
+## 8. Leave — or be removed
+
+### Leaving a hive you joined
+
+- **Tool:** `hive:leave` (requires `confirm: true`). It's the inverse of joining:
+  it stops federating, deletes the git-sync routine, drops your presence, and
+  deregisters the hive view + its member clones. Your cloned files are **kept by
+  default** (so you can re-join later); pass `deleteClones: true` to also remove
+  them from disk.
+- On leave, your app publishes a presence **tombstone** so connected peers drop
+  your "online" row promptly instead of waiting it out.
+
+<Aside type="caution" title="Leave is hive:leave — not hive:dissolve">
+`hive:leave` is for a hive you **joined**. **`hive:dissolve`** is the owner
+tearing down a **local hive they own** (destructive, `confirm: true`) — it does
+nothing useful for a joiner. Don't reach for dissolve to leave.
+</Aside>
+
+### Being removed (ban / revocation)
+
+When an owner bans or revokes you:
+
+- The **write block and re-join denial are immediate** — your devices are dropped
+  from federation and you can't re-join.
+- **Read access is cut off at the next re-key.** Because the substrate is an
+  append-only log, a revoked member's *read* access to already-shared content
+  isn't severed the instant they're banned — it's cut at the next **re-key
+  epoch** (the hive rotates its key, and the removed devices don't get the new
+  one). So removal is "no more writes / no re-join now; reading stops at the next
+  re-key."
+
+Related device-level tools: **`substrate:revoke_self_device`** (revoke one of
+*your own* lost/rotated devices) and **`substrate:revoke_contributor`** (owner
+revokes another contributor, per-harness or per-hive).
+
+### Trusting a collaborator's work to run automatically
+
+Separately from membership, you keep a **local** trust list: a verified work item
+authored by a GitHub user you trust may run on your machine without per-item
+screening.
+
+- **`trust:add`** / **`trust:list`** / **`trust:remove`** — owner-scoped, local
+  to your install, never federated. Adding someone is a security grant (their
+  *verified* remote work auto-runs); remove it to put their work back behind
+  per-item review.
+
+## At a glance — the tool map
+
+| Step | What you want | Tool(s) |
+|---|---|---|
+| Create | New hive | `hive:create` |
+| Create | From a GitHub repo | `hive:create_from_repo` |
+| Create | Add an existing harness | `hive:add-member` |
+| Share | Publish / set visibility | `discovery:set_hive` |
+| Discover | Browse shared hives | `discovery:hives` |
+| Join | Find a hive's status | `hive:get` / `hive:list` |
+| Join (owner) | Review join queue | `hive:membership_pending` |
+| Join (owner) | Approve / deny | `hive:membership_decide` |
+| Collaborate | Ask another hive | `hive:ask` / `hive:request_work` / `hive:asks` |
+| Collaborate (owner) | Cross-hive grant | `hive:cross_grant` |
+| Moderate | Report content / member | `hive:report` |
+| Moderate (owner) | Review reports | `hive:moderation_queue` |
+| Moderate (owner) | Hide content | `hive:takedown` |
+| Moderate (owner) | Ban a member | `hive:ban_member` |
+| Moderate (owner) | Close a report | `hive:moderation_resolve` |
+| Leave | Leave a joined hive | `hive:leave` |
+| Leave (owner) | Tear down your hive | `hive:dissolve` |
+| Removal | Revoke a device | `substrate:revoke_self_device` / `substrate:revoke_contributor` |
+| Trust | Auto-run a peer's work | `trust:add` / `trust:list` / `trust:remove` |
+
+## See also
+
+- [Shared harnesses — trust model](/security/shared-harnesses/) — why GitHub is
+  the authority of record, what's advisory vs decision-bearing, the threat model.
+- [Hive git-sync](/system/hive-git-sync/) — how code commits/pushes round-trip.
+- [Hive-scoped federation](/agent-insights/hive-scoped-federation/) — the
+  engineering detail of how content federates at hive scope.
+- [Shared-hive join/leave lifecycle](/agent-insights/shared-hive-join-leave-lifecycle/)
+  — what self-heals, what to call, what ages out.

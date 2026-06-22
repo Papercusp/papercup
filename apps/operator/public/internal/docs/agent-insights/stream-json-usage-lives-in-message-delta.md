@@ -39,6 +39,6 @@ self-learning-frontier P-021).
 
 **Scope.** This is about **per-turn** attribution. For a run's **total**
 usage, keep using the terminal `result` event (`total_cost_usd`, `usage`) —
-that is what `cost-cap.ts extractRunUsage` already does, and it is correct.
+that is what `harness-agent-runs.ts extractRunUsage` already does, and it is correct.
 The gap only bites code that needs the burn **timeline** (fleet EKG
 embeddings, regret-mining inflection turns, any per-turn pacing feature).

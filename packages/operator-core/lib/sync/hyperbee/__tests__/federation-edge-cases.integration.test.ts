@@ -48,6 +48,12 @@ import { buildHarnessFeaturesProjection } from '../projections/harness-features'
 import { buildIssuesProjection } from '../projections/issues';
 import { buildUsageProjection } from '../projections/usage';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  SUBSTRATE_OUTBOX_DDL,
+  FILL_WORKSPACE_ID_DDL,
+  HARNESS_ISSUES_CONSOLIDATED_FED_DDL,
+} from '../../../../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -159,67 +165,9 @@ const FRAMEWORK_ROLES_DDL = `
 async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(FRAMEWORK_ROLES_DDL);
 
+  // P-010 unification: work_items base + hfc/ei compat views (instead of hand-rolled hfc/issues).
+  await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await sql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      workspace_id        TEXT NOT NULL DEFAULT '',
-      harness_slug        TEXT NOT NULL,
-      feature_id          TEXT NOT NULL,
-      title               TEXT,
-      summary             TEXT,
-      status              TEXT,
-      attempts            INT,
-      claims              TEXT,
-      notes               TEXT,
-      metadata            JSONB,
-      kind                TEXT,
-      project_id          TEXT,
-      expected_cost_cents INT,
-      tags                JSONB,
-      needs_human_review  BOOLEAN,
-      ts                  BIGINT,
-      created_ts          BIGINT,
-      updated_ts          BIGINT,
-      parent_id           TEXT,
-      goal_id             TEXT,
-      taken_by            TEXT,
-      taken_at            TIMESTAMPTZ,
-      expires_at          TIMESTAMPTZ,
-      item_kind           TEXT NOT NULL DEFAULT 'feature',
-      feature_order       INTEGER,
-      swarm_affinity      TEXT,
-      redundancy          INTEGER,
-      payload             JSONB,
-      author_pubkey       TEXT,
-      origin              TEXT NOT NULL DEFAULT 'local',
-      fed_ts              BIGINT,
-      fed_hlc             TEXT,
-      verified_author_github_user_id BIGINT,
-      PRIMARY KEY (harness_slug, feature_id)
-    );
-    CREATE TABLE harness_shared.harness_issues_consolidated (
-      harness_slug      TEXT NOT NULL,
-      issue_id          TEXT NOT NULL,
-      title             TEXT NOT NULL,
-      severity          TEXT NOT NULL,
-      source            TEXT NOT NULL,
-      status            TEXT NOT NULL,
-      found_at          TIMESTAMPTZ NOT NULL,
-      found_during      TEXT,
-      repro             TEXT,
-      evidence          TEXT,
-      suggested_fix     TEXT,
-      code_pointer      TEXT,
-      linked_feature_id TEXT,
-      attempts          INT NOT NULL DEFAULT 0,
-      notes             JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_ts        BIGINT NOT NULL,
-      updated_ts        BIGINT NOT NULL,
-      author_pubkey     TEXT,
-      origin            TEXT NOT NULL DEFAULT 'local',
-      fed_ts            BIGINT,
-      fed_hlc           TEXT,
-      PRIMARY KEY (harness_slug, issue_id)
-    );
     CREATE TABLE harness_shared.projects (
       id           TEXT PRIMARY KEY,
       name         TEXT NOT NULL,
@@ -251,40 +199,27 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
     VALUES ('p-fed', 'Fed', 'active', ${HARNESS_SLUG}, ${WORKSPACE_ID}, 0, 0)
   `;
 
-  for (const file of [
-    'archive/102-substrate-outbox.sql',
-    'archive/103-issues-workspace-id-fill-trigger.sql',
-    // WI-192: the usage-events workspace_id column + BEFORE-INSERT fill trigger
-    // (resolves workspace_id from harness_shared.projects by slug). Without it,
-    // usage outbox rows are stamped workspace_id='' and the real-workspace drain
-    // drops them → usage events never federate. This migration is the fix.
-    '301-usage-events-workspace-id-fill-trigger.sql',
-  ]) {
-    const sqlText = readFileSync(join(SQL_DIR, file), 'utf8');
-    await sql.unsafe(sqlText);
-  }
-
-  // EI-79 fed_ts LWW-guard columns + the fed_ts-masked UPDATE capture trigger
-  // (identical to the template — the broad OLD.* <> NEW.* compare must mask
-  // fed_ts or every own-log merge-back re-enqueues forever).
+  // P-010 unification send-side: the outbox (+ the D-001 op_hlc column), the workspace_id
+  // fill on work_items, the legacy harness_issues_consolidated federated table, and the
+  // work_items CDC capture (mig 375) — which stamps table_name harness_features_consolidated
+  // / engineer_issues per family so the read-side projections demux unchanged.
+  await sql.unsafe(SUBSTRATE_OUTBOX_DDL);
+  await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS op_hlc TEXT;`);
+  await sql.unsafe(FILL_WORKSPACE_ID_DDL);
+  await sql.unsafe(HARNESS_ISSUES_CONSOLIDATED_FED_DDL);
+  const stripMig = (s: string) =>
+    s
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return !t.startsWith('\\') && !/^(begin|commit);$/i.test(t);
+      })
+      .join('\n');
+  // usage-events workspace_id fill (mig 301, attaches to contributor_usage_events).
+  await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '301-usage-events-workspace-id-fill-trigger.sql'), 'utf8')));
+  await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '375-work-items-cdc-capture.sql'), 'utf8')));
+  // G2: usage-events capture trigger (mirrors migration 108 — key column 'event_id').
   await sql.unsafe(`
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
-    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
-    -- D-001 (mig 314): the outbox carries the op's HLC; G1b forces it to make a
-    -- del HLC-stale (the new ordering key — fed_ts is now only the fallback).
-    ALTER TABLE harness_shared.substrate_outbox             ADD COLUMN IF NOT EXISTS op_hlc TEXT;
-    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
-      AFTER UPDATE ON harness_shared.harness_features_consolidated
-      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
-      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('feature_id');
-    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
-      AFTER UPDATE ON harness_shared.harness_issues_consolidated
-      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
-      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');
-    -- G2: usage-events capture trigger (mirrors migration 108 —
-    -- AFTER INSERT/UPDATE/DELETE, key column 'event_id').
     CREATE OR REPLACE TRIGGER capture_substrate_outbox_trg
       AFTER INSERT OR UPDATE OR DELETE ON harness_shared.contributor_usage_events
       FOR EACH ROW EXECUTE FUNCTION harness_shared.capture_substrate_outbox('event_id');

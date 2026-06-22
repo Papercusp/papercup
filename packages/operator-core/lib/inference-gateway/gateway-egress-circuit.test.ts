@@ -130,13 +130,18 @@ test('N consecutive transport failures OPEN the egress circuit (account paused +
 
 test('EXTENDED ABSORB (requestAbsorbMs) — keeps retrying past the slot-hold deadline and SUCCEEDS instead of 429ing the caller (2026-06-22)', async () => {
   let calls = 0;
-  // A transient 429 (x-should-retry:true) on the first attempts, then a 200 — i.e. the account recovers.
+  // A SHORT transient rate-429 (retry-after:1 ⇒ a ~1s account pause) on the first attempts, then a 200 — i.e.
+  // the account recovers. retry-after:1 matters: the absorb only HOLDS the caller when the throttle pause fits
+  // inside the remaining absorb budget (the re-acquire returns null otherwise). A header-less bare 429 paces the
+  // account BARE_429_FAILOVER_BACKOFF_MS (15s) — which would NOT fit the 5s budget below, so it would (correctly)
+  // shed. So the test sizes the throttle (1s) < the absorb budget (5s) to exercise the absorb-WAITS-then-succeeds
+  // path; production sizes requestAbsorbMs (~minutes) ≫ the throttle for the same reason.
   const fetchImpl = (async () => {
     calls++;
     if (calls <= 2) {
       return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }), {
         status: 429,
-        headers: { 'content-type': 'application/json', 'x-should-retry': 'true' },
+        headers: { 'content-type': 'application/json', 'x-should-retry': 'true', 'retry-after': '1' },
       });
     }
     return new Response(JSON.stringify({ ok: true, servedBy: 'OK' }), { status: 200, headers: { 'content-type': 'application/json' } });

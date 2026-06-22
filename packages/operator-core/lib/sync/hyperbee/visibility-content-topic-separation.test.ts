@@ -73,8 +73,8 @@ describe('E-001: a hive content topic is independent of, and distinct from, ever
 });
 
 describe('E-001 (static): the public→private flip NOW wires the re-key cutoff (gap CLOSED)', () => {
-  // Same proven pattern as the G24 dissolve static finding
-  // (lifecycle-membership-teardown.gap.integration.test.ts): a source assertion that
+  // Same proven pattern as the G24 dissolve static guard
+  // (lifecycle-membership-teardown.integration.test.ts): a source assertion that
   // a lifecycle op does NOT reach for the substrate. setHiveListing's private branch
   // calls ONLY directory + Cupboard withdrawal; it never revokes a peer, re-keys the
   // hive, evicts a connection, or touches the content swarm.

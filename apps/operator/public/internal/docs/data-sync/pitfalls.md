@@ -237,3 +237,27 @@ SELECT pg_terminate_backend(<pid>);
 ```
 
 If `postgres_app` is the holder, restart it.
+
+## 12. A fetch cap papering over a non-virtualized grid (and a lying count)
+
+**Symptom**: a panel "only shows N rows" when more exist (e.g. the work-items
+table capped at 300 of 404); a state/search filter mysteriously misses matches;
+the header count reads like a total but is really the downloaded length.
+
+**Why**: two coupled mistakes. (a) `<RichGrid rows={array}>` (legacy mode) mounts
+**every** row as DOM, so a large set janks — and the usual "fix" is to cap the
+fetch (`limit: 300`). On a local desktop app the data is already local, so the
+cap is pure downside, and any client-side filter/search then runs over only the
+truncated window. (b) The resolver returns a **bare array**, so the panel shows
+`items.length` (the capped length) as the count.
+
+**Fix**: virtualize instead of capping, and carry the true total.
+
+* Render with [`VirtualGrid`](/internal/docs/data-sync/richgrid#virtualgrid-the-drop-in-for-large-grids)
+  (owns the virtualizer + scroll element), then lift the cap and load the full
+  local set.
+* Carry the true total on `rows[0]._meta` via
+  [`attachListMeta` / `readListTotal` / `listCountLabel`](/internal/docs/data-sync/richgrid#honest-counts-the-true-total-via-_meta)
+  so the header shows `"N of TOTAL"`, never the downloaded length.
+
+Reference: `WorkItemsPanel.tsx` + the `workItems.byHarness` resolver.

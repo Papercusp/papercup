@@ -178,6 +178,19 @@ export async function leaveHive(
   const removeRoutine = deps.removeRoutine ?? removeGitSyncRoutine;
   const dropPresence = deps.dropPresence ?? defaultDropPresence;
   const rmDir = deps.rmDir ?? ((p: string) => rm(p, { recursive: true, force: true }));
+  // G27 membership-teardown seams: resolve the leaver's own github id (default: the
+  // local gh identity, null when gh-unauthed) and delete their hive_members admission
+  // row (default: removeHiveMember, which fires the mig-189 capture trigger → a
+  // federated `del` tombstone).
+  const resolveLeaverId =
+    deps.resolveLeaverGithubUserId ??
+    (async () => {
+      const ident = await resolveLocalGithubIdentity();
+      return ident.kind === 'ok' ? ident.githubUserId : null;
+    });
+  const dropMembers =
+    deps.dropMembers ??
+    ((s: Sql, ws: string, home: string, uid: number) => removeHiveMember(ws, home, uid, s));
 
   let reg: HarnessRegistry;
   try {
@@ -248,6 +261,27 @@ export async function leaveHive(
     } catch {
       /* best-effort — not booted / no swarm / gh-unauthed; TTL is the backstop */
     }
+  }
+
+  // PASS 1.5 (G27) — delete the LEAVER's persistent hive_members admission row so a
+  // departure cleans MEMBERSHIP, not just presence. The DELETE fires the mig-189
+  // capture trigger → a `del` op into substrate_outbox, enqueued NOW (before the
+  // drain) so the SAME EI-469 window below flushes the membership tombstone alongside
+  // the presence ones. Identity-gated + best-effort: gh-unauthed → skip (the owner's
+  // revoke / TTL is the backstop); 0 rows when not a member / already gone (idempotent).
+  let leaverGithubUserId: number | null = null;
+  let membershipRowsDropped = 0;
+  try {
+    leaverGithubUserId = await resolveLeaverId();
+    if (leaverGithubUserId != null) {
+      membershipRowsDropped = await dropMembers(sql, opts.workspaceId, viewSlug, leaverGithubUserId);
+    }
+  } catch (e) {
+    console.warn(
+      `[leaveHive] hive_members teardown for ${viewSlug} failed (leave unaffected): ${
+        e instanceof Error ? e.message : e
+      }`,
+    );
   }
 
   // DRAIN (EI-469) — a single bounded window keeping the swarms live so connected
@@ -332,5 +366,5 @@ export async function leaveHive(
     }
   }
 
-  return { ok: true, viewSlug, members, viewRemoved };
+  return { ok: true, viewSlug, members, viewRemoved, leaverGithubUserId, membershipRowsDropped };
 }
