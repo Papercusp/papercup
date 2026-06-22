@@ -1542,9 +1542,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     const bodyBuf = await readBody(req);
+    // Stream detection — PARITY with the Claude proxy (backlog #1 / 2026-06-22 audit follow-up): a stream:true
+    // request gets the SHORT TTFB headers deadline + a per-chunk body-idle guard; non-streaming keeps the
+    // generous headers deadline. Without this a stalled codex STREAM squatted its admission slot for the full
+    // GENEROUS upstreamHeadersTimeoutMs (no stream TTFB) and, once headers arrived, had NO body-idle guard —
+    // the same slot-squat / connection-leak class the Claude path was hardened against.
+    let isStream = false;
+    if (bodyBuf.length) {
+      try {
+        if ((JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean }).stream === true) isStream = true;
+      } catch {
+        /* non-JSON body — keep the generous (non-stream) deadline */
+      }
+    }
+    const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
     totalRequests++;
     codexRequests++;
     res.setTimeout(downstreamIdleMs, () => res.destroy());
+
+    // Single stall timer — the headers TTFB, then re-armed per body chunk as the body-idle deadline (mirrors
+    // the Claude proxy). unref'd so it never keeps the loop alive; cleared on every exit path.
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearStall = () => {
+      if (stallTimer) {
+        clearTimeout(stallTimer);
+        stallTimer = undefined;
+      }
+    };
 
     // RESILIENCE PARITY with the Claude path (2026-06-22 audit): rotate to another Codex account + retry on
     // a 429, a transport failure, or a token-read failure — instead of FORWARDING the error to the bee (the
@@ -1590,18 +1614,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
       headers['accept-encoding'] = 'identity';
 
       const ac = new AbortController();
-      const stallTimer = setTimeout(() => ac.abort(new Error(`openai upstream stall: no headers for ${upstreamHeadersTimeoutMs}ms`)), upstreamHeadersTimeoutMs);
-      stallTimer.unref?.();
+      // armStall(ms): abort THIS attempt's upstream call if it makes no progress for ms — first as the headers
+      // TTFB (short for streams), then re-armed per body chunk below as the body-idle deadline.
+      const armStall = (ms: number) => {
+        clearStall();
+        stallTimer = setTimeout(() => ac.abort(new Error(`openai upstream stall: no activity for ${ms}ms`)), ms);
+        stallTimer.unref?.();
+      };
       let up: Response;
       try {
         const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
         if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
         const dispatcher = await dispatcherFor(active);
         if (dispatcher) init.dispatcher = dispatcher;
+        armStall(headersStallMs); // SHORT TTFB for streams; generous otherwise
         up = await doFetch(`${openaiUpstreamBase}${url}`, init as RequestInit);
-        clearTimeout(stallTimer);
+        armStall(upstreamBodyIdleTimeoutMs); // headers arrived → switch to the per-chunk body-idle deadline
       } catch (e) {
-        clearTimeout(stallTimer);
+        clearStall();
         codexUpstreamErrors++;
         active.invalidateToken?.();
         // Transport failure (dead/hanging proxy or network) → route around to another Codex account + retry.
@@ -1625,6 +1655,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (canRetry) {
           const reset = parseRateReset(headersToObject(up.headers));
           if (rotateCodex(reset.resetAt ?? Date.now() + BARE_429_FAILOVER_BACKOFF_MS)) {
+            clearStall();
             try { await up.body?.cancel(); } catch { /* drain the throttle body before retrying */ }
             continue;
           }
@@ -1640,12 +1671,36 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       res.writeHead(up.status, outHeaders);
       if (!up.body) {
+        clearStall();
         res.end();
         return;
       }
-      Readable.fromWeb(up.body as any)
-        .on('error', () => res.destroy())
-        .pipe(res);
+      // Stream the body with a per-chunk body-idle guard (parity with the Claude proxy): reset the deadline on
+      // every chunk so a long stream is never clipped, but a genuine mid-stream stall (no bytes for
+      // upstreamBodyIdleTimeoutMs) aborts → the stream errors → we tear down both ends. Await completion so the
+      // admission slot is held for the stream's life (forwarded-concurrency parity) and released cleanly.
+      const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+      nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
+      nodeStream.pipe(res);
+      await new Promise<void>((resolve) => {
+        res.on('finish', () => resolve());
+        res.on('close', () => resolve());
+        res.on('error', () => resolve());
+        nodeStream.on('error', () => {
+          res.destroy();
+          resolve();
+        });
+        // A body-idle (or ceiling) abort must force-tear-down both ends + resolve so the slot is actually freed
+        // — mirrors the Claude path's wedge-prevention onAbort (the 2026-06-21 stuck-stream slot leak).
+        const onAbort = () => {
+          try { nodeStream.destroy(); } catch { /* already torn down */ }
+          try { res.destroy(); } catch { /* already torn down */ }
+          resolve();
+        };
+        if (ac.signal.aborted) onAbort();
+        else ac.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      clearStall();
       return;
     }
   }
