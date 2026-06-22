@@ -1491,9 +1491,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // hybrid-bee-scheduler-work-stealing-2026-06-22: spec-driven claim ON (default); OFF degrades
   // scheduler:get_next to the default ordering (no breakage). Resolver + spec store complete + tested.
   [FLAGS.SCHEDULER_SPEC_CLAIM]: true,
-  // DEFAULT OFF (gateway-priority-tiers-2026-06-22): the gateway priority-tier path is
-  // being implemented. OFF ⇒ inert; flips ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
-  [FLAGS.GATEWAY_PRIORITY_TIERS]: false,
+  // DEFAULT ON (gateway-priority-tiers-2026-06-22): per-tier admission caps + a reserved tier-1 floor
+  // (queen/scout/interactive never crowded out by batch bees). Complete + tested (19 module tests +
+  // gateway suite green, flag-OFF byte-identical); flipped ON per owner directive 2026-06-22.
+  [FLAGS.GATEWAY_PRIORITY_TIERS]: true,
   // DEFAULT OFF (queen-capacity-aware-dispatch-2026-06-22): capacity-aware dispatch is
   // being implemented. OFF ⇒ inert; flips ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
   [FLAGS.QUEEN_CAPACITY_DISPATCH]: false,
