@@ -886,6 +886,92 @@ defineTestDomain({
   ],
 });
 
+// inference-gateway: the multi-account LLM inference gateway (the egress chokepoint
+// every model call routes through). It grew a large test tree under
+// lib/inference-gateway/ that was only ever globbed by the operator-core catch-all —
+// this surfaces it as its own first-class subsystem view, grouped by concern. Files
+// also match the operator-core catch-all (overlap intentional, like the other
+// subsystem domains). The `lib` catch-the-rest section means a new gateway test
+// appears here with no registry edit.
+defineTestDomain({
+  id: 'inference-gateway',
+  label: 'Inference Gateway',
+  description:
+    'The multi-account LLM inference gateway: the transparent proxy/routing surface + pure budget parsers, account failover + cache-affinity routing, credential store, per-account egress circuit, self-heal/wedge resilience, rate-limit stall-autowake, launch composition + observability, and the spawn-env wiring.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'proxy',
+      label: 'Proxy & routing',
+      description:
+        'The transparent proxy: OAuth + anthropic-beta injection, request/response header discipline, method/query forwarding, admission + load-shed, the upstream/token/downstream stall guards, bare-429 + usage-cap + org-disallow failover, AIMD admission concurrency, prompt-cache instrumentation, and the chaos battery — plus the pure budget parsers (estimateTokens / parseRateReset / parseUnifiedWindow / parseUnified7dWindow) and the admin/observability endpoints (/healthz, /stats, /admin/config, /admin/reload, /admin/stalls).',
+      globs: [
+        'packages/operator-core/lib/inference-gateway/gateway.test.ts',
+        'packages/operator-core/lib/inference-gateway/gateway-thorough.test.ts',
+        'packages/operator-core/lib/inference-gateway/unified-7d-window.test.ts',
+      ],
+    },
+    {
+      id: 'failover',
+      label: 'Account failover & routing',
+      description:
+        'The multi-account failover pool: round-robin-to-capacity, 5h-exhaustion rotation, cache-affinity select, atomic hot-reload, and the end-to-end account-resolution + routing path.',
+      globs: [
+        'packages/operator-core/lib/inference-gateway/account-failover.test.ts',
+        'packages/operator-core/lib/inference-gateway/account-resolver.test.ts',
+        'packages/operator-core/lib/inference-gateway/account-routing-e2e.test.ts',
+      ],
+    },
+    {
+      id: 'credentials',
+      label: 'Credential store',
+      description: 'Credential-ref parsing, OAuth beta merge, token-file/env channels, and resolver caching + refresh.',
+      globs: ['packages/operator-core/lib/inference-gateway/credential-store.test.ts'],
+    },
+    {
+      id: 'egress',
+      label: 'Egress circuit',
+      description: 'The per-account egress dispatcher + the transport-failure circuit (open → pause → half-open probe → readmit).',
+      globs: ['packages/operator-core/lib/inference-gateway/gateway-egress-circuit.test.ts'],
+    },
+    {
+      id: 'resilience',
+      label: 'Self-heal & wedge',
+      description: 'The in-process self-heal release valve + the external wedge detector (summarizeGatewayMetrics / detectGatewayWedge / sampleGateway).',
+      globs: [
+        'packages/operator-core/lib/inference-gateway/gateway-self-heal.test.ts',
+        'packages/operator-core/lib/inference-gateway/gateway-wedge.test.ts',
+      ],
+    },
+    {
+      id: 'stall-autowake',
+      label: 'Stall autowake',
+      description: 'The rate-limit stall recorder → stall-waker auto-wake of a confirmed-idle bee (false-positive guard, capacity wait, de-dup, wake cap).',
+      globs: ['packages/operator-core/lib/inference-gateway/stall-waker.test.ts'],
+    },
+    {
+      id: 'launch-observability',
+      label: 'Launch & observability',
+      description: 'Service composition (resolver + pool → proxy), the hot-reload endpoints, and the headroom read-model projection.',
+      globs: [
+        'packages/operator-core/lib/inference-gateway/launch.test.ts',
+        'packages/operator-core/lib/inference-gateway/observability.test.ts',
+      ],
+    },
+    {
+      id: 'spawn-env',
+      label: 'Spawn env wiring',
+      description: 'gatewaySpawnEnv / gatewayLlmEnv: ANTHROPIC_BASE_URL patching + x-papercusp-account / x-papercusp-owner header emission for spawned agents.',
+      globs: [
+        'packages/operator-core/lib/inference-gateway/spawn-env.test.ts',
+        'packages/operator-core/lib/inference-gateway/resolve-spawn-gateway-env.test.ts',
+      ],
+    },
+    // Catch-the-rest so a new inference-gateway test appears here with no registry edit.
+    { id: 'lib', label: 'Lib', globs: ['packages/operator-core/lib/inference-gateway/**/*.test.ts'] },
+  ],
+});
+
 defineTestDomain({
   id: 'dbos',
   label: 'DBOS',
@@ -1403,7 +1489,7 @@ const PAPERCUSP_IDS = [
   'plans', 'operator', 'design', 'plugins', 'transport', 'instance-spec', 'mobile',
   'provisioning', 'docs', 'dogfood',
   // Subsystems + catch-alls added by the test-framework coverage audit.
-  'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
+  'gym', 'inference-gateway', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
   // First-party Rust crates (Cargo) surfaced via per-crate shell runners — the repo has no root Cargo workspace.
   'rust',
   // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.

@@ -41,6 +41,7 @@ import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
+import { backendFeatureGuard } from '../../../backend-feature-capabilities';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -158,6 +159,10 @@ export async function resolveAccountPin(
     accountId: null,
     provider: null as 'claude' | 'codex' | null,
   });
+  const accountGuard = backendFeatureGuard(agent, 'account-pinning');
+  if (!accountGuard.supported) return fail(`account pinning is unsupported for ${agent}: ${accountGuard.reason}`);
+  const gatewayGuard = backendFeatureGuard(agent, 'gateway-routing');
+  if (!gatewayGuard.supported) return fail(`gateway routing is unsupported for ${agent}: ${gatewayGuard.reason}`);
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
@@ -209,9 +214,13 @@ export async function resolveAccountPin(
 export async function resolveAccountChoices(
   workspaceId: string,
   agent: SuAgent = 'claude',
-): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[]; provider: 'claude' | 'codex' }> {
+): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[]; provider: 'claude' | 'codex'; unsupportedReason?: string }> {
   const provider: 'claude' | 'codex' = agent === 'codex' ? 'codex' : 'claude';
   const empty = { gatewayOn: false, pool: [] as string[], forcedAccounts: [] as string[], excludeAccounts: [] as string[], provider };
+  const accountGuard = backendFeatureGuard(agent, 'account-pinning');
+  if (!accountGuard.supported) return { ...empty, unsupportedReason: accountGuard.reason ?? 'account pinning unsupported' };
+  const gatewayGuard = backendFeatureGuard(agent, 'gateway-routing');
+  if (!gatewayGuard.supported) return { ...empty, unsupportedReason: gatewayGuard.reason ?? 'gateway routing unsupported' };
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');

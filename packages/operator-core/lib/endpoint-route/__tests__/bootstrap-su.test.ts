@@ -496,6 +496,16 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/gateway is off/i);
   });
 
+  it('OMP account pinning fails closed from the backend capability matrix before launch', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('aviynw6', 'omp');
+    expect(r.env).toEqual({});
+    expect(r.accountId).toBeNull();
+    expect(r.notice).toMatch(/account pinning is unsupported for omp/i);
+    expect(r.notice).toMatch(/not implemented/i);
+    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+  });
+
   it('unknown account (not in pool) → fail-soft notice', async () => {
     getFlagMock.mockResolvedValue(true);
     const r = await pin('not-a-real-acct');
@@ -599,6 +609,15 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     const r = await choices('codex');
     expect(r.provider).toBe('codex');
     expect(r.pool).toEqual(['codex-main']);
+  });
+
+  it('OMP choices are hidden with the matrix unsupported reason', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await choices('omp');
+    expect(r.gatewayOn).toBe(false);
+    expect(r.pool).toEqual([]);
+    expect(r.unsupportedReason).toMatch(/not implemented/i);
+    expect(loadAccountPoolMock).not.toHaveBeenCalled();
   });
 
   it('GET /options surfaces the accounts field (empty when gateway off)', async () => {

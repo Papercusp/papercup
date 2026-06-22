@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKEND_FEATURE_CAPABILITIES,
   backendFeatureCapability,
+  backendFeatureGuard,
   backendSupportsFeature,
   type BackendFeature,
   type InteractiveBackend,
@@ -49,5 +50,12 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
     expect(backendFeatureCapability('omp', 'account-pinning').state).toBe('unsupported');
     expect(backendFeatureCapability('omp', 'gateway-routing').unsupportedReason).toMatch(/not implemented/i);
   });
-});
 
+  it('provides a reusable fail-closed guard reason for live launcher paths', () => {
+    expect(backendFeatureGuard('claude', 'account-pinning')).toMatchObject({ supported: true, reason: null });
+    expect(backendFeatureGuard('omp', 'account-pinning')).toMatchObject({
+      supported: false,
+      reason: expect.stringMatching(/not implemented/i),
+    });
+  });
+});

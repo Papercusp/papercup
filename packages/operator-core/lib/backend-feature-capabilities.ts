@@ -24,6 +24,12 @@ export interface BackendFeatureCapability {
   unsupportedReason?: string;
 }
 
+export interface BackendFeatureGuard {
+  supported: boolean;
+  capability: BackendFeatureCapability;
+  reason: string | null;
+}
+
 export type BackendFeatureMatrix = Record<InteractiveBackend, Record<BackendFeature, BackendFeatureCapability>>;
 
 const supported = (mechanism: string): BackendFeatureCapability => ({ state: 'supported', mechanism });
@@ -109,3 +115,16 @@ export function backendSupportsFeature(backend: InteractiveBackend, feature: Bac
   return backendFeatureCapability(backend, feature).state === 'supported';
 }
 
+export function backendFeatureGuard(backend: InteractiveBackend, feature: BackendFeature): BackendFeatureGuard {
+  const capability = backendFeatureCapability(backend, feature);
+  if (capability.state === 'supported') return { supported: true, capability, reason: null };
+  return {
+    supported: false,
+    capability,
+    reason: capability.unsupportedReason ?? `${backend} ${feature} is ${capability.state}`,
+  };
+}
+
+export function backendFeatureUnsupportedReason(backend: InteractiveBackend, feature: BackendFeature): string | null {
+  return backendFeatureGuard(backend, feature).reason;
+}
