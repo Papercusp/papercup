@@ -1449,10 +1449,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // by recordResponse — do NOT penalize to the full multi-hour reset (the stale-pause bug).
             let exhaustResetAt: number;
             if (!unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
-              gov.penalize(reset);
+              // rateLimited:true — this is a per-minute/burst RATE 429 → AIMD-decrease this account's learned rpm
+              // (predict→wait→learn→retry, 2026-06-22) so decideRate paces future requests under its real rate.
+              gov.penalize({ ...reset, rateLimited: true });
               exhaustResetAt = reset.resetAt ?? Date.now() + Math.min(reset.retryAfterMs ?? BARE_429_FAILOVER_BACKOFF_MS, 5 * 60 * 1000);
             } else if (bare429) {
-              gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
+              gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS, rateLimited: true });
               exhaustResetAt = Date.now() + BARE_429_FAILOVER_BACKOFF_MS;
             } else {
               exhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000; // unifiedRejected: bounded pause already set
