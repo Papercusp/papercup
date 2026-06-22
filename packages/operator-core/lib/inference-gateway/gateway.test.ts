@@ -1327,6 +1327,37 @@ test('[serviceable fallback] a near-cap-but-ALLOWED account is SERVED (residual 
   assert.equal(s.shedAllThrottled, 0, 'no shed — the account was serviceable');
 });
 
+test('[codex parity] a 429 on one Codex account ROTATES to another + retries — routed around, not forwarded (2026-06-22 audit)', async () => {
+  // The Codex path (/v1/responses) must have the same per-account-429 failover the Claude path got — surface
+  // a throttle to the bee only when there is genuinely nowhere to route.
+  const A: ActiveAccount = { accountId: 'cdxA', token: async () => 'tokA' };
+  const B: ActiveAccount = { accountId: 'cdxB', token: async () => 'tokB' };
+  const calls: string[] = [];
+  const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const id = ((init?.headers as Record<string, string> | undefined)?.authorization ?? '').replace(/^Bearer\s+/i, '');
+    calls.push(id);
+    if (id === 'tokA') return new Response('{"error":"rate_limit"}', { status: 429, headers: { 'content-type': 'application/json' } });
+    return new Response('{"ok":true,"servedBy":"cdxB"}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([{ accountId: 'claude1', token: async () => 'c1' }]),
+    codexPool: createFailoverPool([A, B]),
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+  });
+  port = await gw.listen(0);
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5' }),
+  });
+  assert.equal(res.status, 200, 'Codex 429 on cdxA failed over to cdxB → 200 (NOT a forwarded 429)');
+  const body = (await res.json()) as { servedBy: string };
+  assert.equal(body.servedBy, 'cdxB', 'the second Codex account actually served it');
+  assert.ok(calls.includes('tokA') && calls.includes('tokB'), 'attempted cdxA first, then rotated to cdxB');
+});
+
 test('[#0 cache] the passive observer tallies prompt-cache READ/WRITE per account from message_start (a HIT)', async () => {
   resetGovernorRegistry();
   await boot((_req, res) => {
