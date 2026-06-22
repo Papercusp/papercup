@@ -14,6 +14,7 @@
  * satisfied when resolved (the shared predicate previously only knew the feature set).
  */
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
+import { getWorkItemDepBlockers } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
 
 /** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed). */
@@ -51,6 +52,21 @@ export interface BlockingStore {
 export const coordLinksBlockingStore: BlockingStore = {
   blockersFor: (harnessSlug: string) => getFeatureBlockers(harnessSlug),
 };
+
+/**
+ * NEW backend: the dedicated `work_item_deps` table (P-002). The seam flips its DEFAULT to this once
+ * the backfill + dual-write land (the P-003 cutover); `coordLinksBlockingStore` remains the default
+ * until then so reads stay correct during the transition. Exposed now so the cutover is a one-line swap.
+ */
+export const workItemDepsBlockingStore: BlockingStore = {
+  blockersFor: (harnessSlug: string) => getWorkItemDepBlockers(harnessSlug),
+};
+
+/**
+ * The seam's CURRENT default backend. P-003 flips this to `workItemDepsBlockingStore`. Consumers that
+ * don't inject a store use this — the single switch point for the coord_links → work_item_deps cutover.
+ */
+export const defaultBlockingStore: BlockingStore = coordLinksBlockingStore;
 
 /** Build readiness nodes from items + a blocker map (pure). */
 export function toReadinessNodes(
