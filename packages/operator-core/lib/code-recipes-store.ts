@@ -378,31 +378,76 @@ export async function getRecipe(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** Default cap on a recipe list read — generous, so a normal hive's whole
+ *  corpus comes back, but bounded so a runaway store can't ship 50k rows to the
+ *  desktop. Clamped to MAX_LIST_LIMIT. */
+export const DEFAULT_LIST_LIMIT = 1000;
+const MAX_LIST_LIMIT = 2000;
+
+function clampLimit(limit: number | undefined): number {
+  if (limit == null || !Number.isFinite(limit)) return DEFAULT_LIST_LIMIT;
+  return Math.max(1, Math.min(MAX_LIST_LIMIT, Math.floor(limit)));
+}
+
 /**
  * List recipes for a workspace, optionally narrowed to one hive (the sharing
  * boundary). Omitting `hiveSlug` returns the whole workspace; passing it
  * (incl. an explicit null for the workspace-global bucket) filters. Newest-run
  * first, then most-run, so the hot recipes surface (matches the run_count idx).
+ *
+ * Capped at `limit` (default {@link DEFAULT_LIST_LIMIT}, clamped to
+ * {@link MAX_LIST_LIMIT}) so a large corpus can't flood the sync transport;
+ * pair with {@link countRecipes} for the true total (attachListMeta).
  */
 export async function listRecipes(
   sql: postgres.Sql,
   workspaceId: string,
-  opts: { hiveSlug?: string | null } = {},
+  opts: { hiveSlug?: string | null; limit?: number } = {},
 ): Promise<CodeRecipeRow[]> {
+  const lim = clampLimit(opts.limit);
   const hasHiveFilter = 'hiveSlug' in opts;
   const rows = hasHiveFilter
     ? opts.hiveSlug == null
       ? await sql<DbRow[]>`
           SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
            WHERE workspace_id = ${workspaceId} AND hive_slug IS NULL
-           ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id`
+           ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
+           LIMIT ${lim}`
       : await sql<DbRow[]>`
           SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
            WHERE workspace_id = ${workspaceId} AND hive_slug = ${opts.hiveSlug}
-           ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id`
+           ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
+           LIMIT ${lim}`
     : await sql<DbRow[]>`
         SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
          WHERE workspace_id = ${workspaceId}
-         ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id`;
+         ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
+         LIMIT ${lim}`;
   return rows.map(mapRow);
+}
+
+/**
+ * Count recipes for a workspace under the SAME hive filter as {@link listRecipes}
+ * (the true total, independent of any list LIMIT). Cheap `COUNT(*)` over the
+ * run_count index — pair with listRecipes + attachListMeta so the UI shows
+ * "N of TOTAL".
+ */
+export async function countRecipes(
+  sql: postgres.Sql,
+  workspaceId: string,
+  opts: { hiveSlug?: string | null } = {},
+): Promise<number> {
+  const hasHiveFilter = 'hiveSlug' in opts;
+  const rows = hasHiveFilter
+    ? opts.hiveSlug == null
+      ? await sql<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM harness_shared.code_recipes
+           WHERE workspace_id = ${workspaceId} AND hive_slug IS NULL`
+      : await sql<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM harness_shared.code_recipes
+           WHERE workspace_id = ${workspaceId} AND hive_slug = ${opts.hiveSlug}`
+    : await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.code_recipes
+         WHERE workspace_id = ${workspaceId}`;
+  return rows[0]?.n ?? 0;
 }

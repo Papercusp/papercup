@@ -285,4 +285,18 @@ export {
   type OpenApiDocumentOptions,
 } from '@papercusp/tooldef';
 
+export {
+  tokens,
+  checksumRows,
+  computeListDelta,
+  applyListDelta,
+  evalSnapshotTransition,
+  type Row as DeltaEvalRow,
+  type ListDelta,
+  type FullReason as DeltaFullEvalReason,
+  type DeltaEvalOpts,
+  type SnapshotEval,
+  type ModeTokens,
+} from './delta-eval-harness';
+
 import './bootstrap';

@@ -4,8 +4,49 @@
 // (impartial-benchmark-suite P-021 / BRIEF 10). Δ = treatment − baseline;
 // the comparable set is the rows where BOTH scores are present.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
+import type { HTMLAttributes, ReactNode } from 'react';
+
+// Compare renders through VirtualGrid (RichGrid + an owned virtualizer). The
+// virtualizer derives its render window from the scroll element's measured
+// height, which is 0 in jsdom — so the REAL grid mounts zero rows here. Stub it
+// to a faithful, layout-free table: headers from `columns[].header`, one row per
+// `rows` entry with each column's `render({ row })` and the caller's `rowProps`
+// (so the `compare-row` testid + delta-arrow assertions still exercise Compare's
+// own cell output). Mirrors the WorkItemsPanel.test grid stub.
+interface StubCol<TRow> {
+  key: string;
+  header: ReactNode;
+  render?: (ctx: { row: TRow; rowIndex: number }) => ReactNode;
+}
+vi.mock('@papercusp/grid-core', () => ({
+  VirtualGrid: <TRow,>({
+    columns,
+    rows,
+    getRowId,
+    rowProps,
+  }: {
+    columns: StubCol<TRow>[];
+    rows: TRow[];
+    getRowId: (r: TRow) => string;
+    rowProps?: (ctx: { row: TRow; rowIndex: number }) => HTMLAttributes<HTMLDivElement>;
+  }) => (
+    <table>
+      <thead>
+        <tr>{columns.map((c) => <th key={c.key}>{c.header}</th>)}</tr>
+      </thead>
+      <tbody>
+        {rows.map((row, rowIndex) => (
+          <tr key={getRowId(row)} {...(rowProps?.({ row, rowIndex }) as Record<string, unknown>)}>
+            {columns.map((c) => <td key={c.key}>{c.render?.({ row, rowIndex })}</td>)}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  ),
+}));
+
 import { Compare, summarizeDeltas, type ComparePerTaskRow } from './Compare';
 
 afterEach(cleanup);

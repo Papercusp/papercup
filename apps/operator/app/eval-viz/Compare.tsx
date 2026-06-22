@@ -18,8 +18,8 @@
  * Idiom mirrors BenchmarkTrend / Frontier: an exported pure core
  * (`summarizeDeltas`) for tests + self-carried `pc-compare__*` styles.
  */
-import { useMemo } from 'react';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useMemo, type HTMLAttributes } from 'react';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 import { armLabel } from './arms';
 
 export interface ComparePerTaskRow {
@@ -180,13 +180,16 @@ export function Compare({
       ) : (
         <>
           <div style={{ height: Math.min(620, 32 + perTask.length * 30 + 4) }}>
-            <RichGrid<ComparePerTaskRow>
+            <VirtualGrid<ComparePerTaskRow>
               columns={columns}
               rows={perTask}
               getRowId={(r) => r.label}
               rowMinHeight={30}
               headerHeight={32}
-              rowProps={() => ({ 'data-testid': 'compare-row' })}
+              estimateRowHeight={30}
+              // `data-*` is a valid row attribute (RichGrid spreads it onto the row
+              // root) but isn't a typed member of HTMLAttributes — cast so tsc accepts it.
+              rowProps={() => ({ 'data-testid': 'compare-row' }) as HTMLAttributes<HTMLDivElement>}
             />
           </div>
           {summary && (

@@ -45,9 +45,14 @@ import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
+import { listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import ChatPanel from '@/app/harness/ChatPanel';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import '@/app/admin/coordination/coordination.css';
+
+// The comms `list` reads cap at this many rows; the server returns the true
+// `total` alongside `items`, so the rails can show "N of TOTAL" honestly.
+const COMMS_LIST_LIMIT = 500;
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
   const res = await fetch(`/api/admin/coordination/${verb}`, {
@@ -1211,6 +1216,7 @@ interface ThreadPost { id: number; author_id: string | null; body: string | null
 function DeliberationsView() {
   const [sel, setSel] = useQueryState('thread', parseAsString);
   const [list, setList] = useState<ThreadRow[]>([]);
+  const [total, setTotal] = useState<number | undefined>(undefined);
   const [posts, setPosts] = useState<ThreadPost[]>([]);
   const [head, setHead] = useState<ThreadRow | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1219,8 +1225,9 @@ function DeliberationsView() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await comms<{ items?: ThreadRow[] }>('threads', 'list', { limit: 500 });
+      const r = await comms<{ items?: ThreadRow[]; total?: number }>('threads', 'list', { limit: COMMS_LIST_LIMIT });
       setList(r.items ?? []);
+      setTotal(r.total);
       setError(null);
     } catch (e) {
       setError(errText(e));
@@ -1297,7 +1304,7 @@ function DeliberationsView() {
       <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
           <span>Deliberation threads</span>
-          <strong>{loading ? '…' : list.length}</strong>
+          <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
           <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload deliberations" disabled={loading} onClick={() => void reload()}>
             <RefreshCw size={11} aria-hidden />
           </button>

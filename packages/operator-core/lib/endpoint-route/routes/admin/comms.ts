@@ -47,7 +47,10 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
     if (kind === 'agent-chats' && verb === 'list') {
       const harness = body.harness ? String(body.harness) : null;
       const role = body.role ? String(body.role) : null;
-      const rows = await sql`
+      // Capped list + a cheap COUNT over the SAME filter, so the rail can show
+      // the TRUE total ("N of TOTAL") instead of the downloaded length.
+      const [rows, totalRows] = await Promise.all([
+        sql`
         SELECT id, harness_slug, role, feature_id, title,
                created_at, updated_at, archived_at,
                total_input_tokens, total_output_tokens, total_cost_usd_cents,
@@ -56,8 +59,14 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
          WHERE (${harness}::text IS NULL OR harness_slug = ${harness})
            AND (${role}::text IS NULL OR role = ${role})
          ORDER BY created_at DESC NULLS LAST
-         LIMIT ${limit}`;
-      return Response.json({ items: rows });
+         LIMIT ${limit}`,
+        sql<{ n: number }[]>`
+        SELECT count(*)::int AS n
+          FROM harness_shared.agent_chats_consolidated
+         WHERE (${harness}::text IS NULL OR harness_slug = ${harness})
+           AND (${role}::text IS NULL OR role = ${role})`,
+      ]);
+      return Response.json({ items: rows, total: totalRows[0]?.n ?? rows.length });
     }
     if (kind === 'agent-chats' && verb === 'get') {
       const id = String(body.id ?? '');
@@ -73,13 +82,16 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
     // ── deliberation threads — coord:thread / deliberate / vote posts, attached
     //    to an issue or a conversation (coord_threads + coord_thread_posts) ──
     if (kind === 'threads' && verb === 'list') {
-      const rows = await sql`
+      const [rows, totalRows] = await Promise.all([
+        sql`
         SELECT thread_id, parent_kind, parent_ref, title, created_by, harness_slug,
                created_at, last_post_at, post_count
           FROM harness_shared.coord_threads
          ORDER BY last_post_at DESC NULLS LAST, created_at DESC NULLS LAST
-         LIMIT ${limit}`;
-      return Response.json({ items: rows });
+         LIMIT ${limit}`,
+        sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads`,
+      ]);
+      return Response.json({ items: rows, total: totalRows[0]?.n ?? rows.length });
     }
     if (kind === 'threads' && verb === 'get') {
       const threadId = String(body.thread_id ?? body.id ?? '');
@@ -99,13 +111,16 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
 
     // ── work-item-scoped agent messages (messages:send / messages:inbox) ──
     if (kind === 'messages' && verb === 'list') {
-      const rows = await sql`
+      const [rows, totalRows] = await Promise.all([
+        sql`
         SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject, body,
                status, created_at, acknowledged_at, from_feature_id, to_feature_id
           FROM harness_shared.messages_consolidated
          ORDER BY created_at DESC NULLS LAST
-         LIMIT ${limit}`;
-      return Response.json({ items: rows });
+         LIMIT ${limit}`,
+        sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.messages_consolidated`,
+      ]);
+      return Response.json({ items: rows, total: totalRows[0]?.n ?? rows.length });
     }
   } catch (e) {
     // Fail-soft: a missing table / cold DB returns an empty set, never a 500 that

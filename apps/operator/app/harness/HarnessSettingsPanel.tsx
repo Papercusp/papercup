@@ -12,7 +12,7 @@ import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import SavedPromptsSection from './SavedPromptsSection';
 import HarnessPluginsSection from './HarnessPluginsSection';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
  * Per-harness Settings panel — one tab inside the harness UI.
@@ -1162,12 +1162,13 @@ export default function HarnessSettingsPanel({
             </div>
           ) : (
             <div style={{ height: 360, border: '1px solid var(--border)', borderRadius: 4 }}>
-              <RichGrid<TelemetryRow>
+              <VirtualGrid<TelemetryRow>
                 columns={telemetryColumns}
                 rows={telemetry}
                 getRowId={(r) => String(r.id)}
                 rowMinHeight={32}
                 headerHeight={32}
+                estimateRowHeight={32}
               />
             </div>
           )}

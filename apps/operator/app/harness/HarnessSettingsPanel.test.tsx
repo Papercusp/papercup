@@ -10,7 +10,7 @@
  * shared/not-shared branch, and a successful Save (toast.success).
  *
  * Mocked: useFlag (controls the testing flag), @papercusp/flags (FLAGS),
- * useSyncQuery, sonner, RichGrid (stub list), and the two heavy children
+ * useSyncQuery, sonner, VirtualGrid (stub list), and the two heavy children
  * (SavedPromptsSection / HarnessPluginsSection). fetch is stubbed for the spec
  * REST back-stop, /discord, /adaptive-telemetry, and the /spec PUT.
  */
@@ -30,9 +30,10 @@ vi.mock('@papercusp/flags', () => ({ FLAGS: { TESTING: 'papercusp-testing' } }))
 let testingFlagValue = false;
 vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => testingFlagValue }));
 
-// RichGrid is a heavy virtualized grid — stub to a simple row list.
+// VirtualGrid (RichGrid + an owned virtualizer) is a heavy grid — stub it to a
+// simple row list so the panel smoke renders without measuring layout.
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows, getRowId }: { rows: { feature_id: string }[]; getRowId: (r: unknown) => string }) => (
+  VirtualGrid: ({ rows, getRowId }: { rows: { feature_id: string }[]; getRowId: (r: unknown) => string }) => (
     <div data-testid="telemetry-grid">{rows.map((r) => <div key={getRowId(r)}>{r.feature_id}</div>)}</div>
   ),
 }));

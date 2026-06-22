@@ -19,9 +19,11 @@
  * agent-driveable (ui:get_state / ui:dispatch). Render-only derivations stay in
  * useMemo.
  */
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSyncQuery } from '@papercusp/sync';
+import { readListTotal, listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Beaker, GitMerge, TrendingUp } from 'lucide-react';
 import type { CodeRecipeRow } from '@papercusp/operator-core/lib/code-recipes-store';
 import type {
@@ -106,7 +108,12 @@ export default function RecipesClient() {
   );
   const [sort, setSort] = useQueryState('rsort', parseAsStringEnum<SortKey>([...SORT_VALUES]).withDefault('lastRun'));
 
-  const allRecipes = recipesQ.data ?? [];
+  // Read the RAW synced rows (row[0] carries `_meta.total` from the resolver's
+  // attachListMeta) BEFORE any .map/.filter that would drop _meta. allRecipes is
+  // the same array, just typed for the table; readListTotal reads off row[0].
+  const rawRecipeRows = recipesQ.data ?? [];
+  const allRecipes = rawRecipeRows;
+  const totalRecipes = readListTotal(rawRecipeRows);
   const candidates = candidatesQ.data?.[0] ?? { promoteCandidates: [], mergeClusters: [] };
 
   const rows = useMemo(() => {
@@ -147,6 +154,23 @@ export default function RecipesClient() {
 
   const loading = recipesQ.loading && allRecipes.length === 0;
 
+  // Virtualize the recipe table: its rows are variable-height (multi-line
+  // description + wrapping tool badges), so we keep the existing row markup and
+  // mount only the visible window via TanStack useVirtualizer with measureElement
+  // (exact offsets as rows wrap). The scroll container is pc-recipes__tablescroll.
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => tableScrollRef.current,
+    estimateSize: () => 56,
+    overscan: 12,
+    measureElement:
+      typeof window !== 'undefined' && navigator.userAgent.indexOf('Firefox') === -1
+        ? (el) => el?.getBoundingClientRect().height
+        : undefined,
+  });
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
   return (
     <div className="pc-recipes">
       <header className="pc-recipes__head">
@@ -162,7 +186,7 @@ export default function RecipesClient() {
         </div>
         <div className="pc-recipes__stats" aria-label="Recipe corpus summary">
           <span>
-            <b>{counts.all}</b> total
+            <b>{listCountLabel(allRecipes.length, totalRecipes)}</b> total
           </span>
           <span>
             <b>{counts.active}</b> active
@@ -306,33 +330,47 @@ export default function RecipesClient() {
                 <span role="columnheader">Tools</span>
               </div>
             </div>
-            <div role="rowgroup">
-              {rows.map((r) => {
-                const distinct = (r as CodeRecipeRow & { distinctAgents?: number }).distinctAgents;
-                return (
-                  <div key={r.id} className="pc-recipes__tr" role="row">
-                    <div role="cell">
-                      <div className="pc-recipes__name">
-                        <strong>{r.title}</strong>
-                        <span className="pc-recipes__rid">{r.id}</span>
+            {/* Virtualized body: only the visible window mounts (variable-height
+                rows measured via measureElement), so a 1000-recipe corpus stays
+                cheap. Rows are absolutely positioned inside a getTotalSize()
+                spacer; the scroll container owns the overflow. */}
+            <div className="pc-recipes__tablescroll" ref={tableScrollRef} role="rowgroup">
+              <div className="pc-recipes__vspacer" style={{ height: rowVirtualizer.getTotalSize() }}>
+                {virtualItems.map((vi) => {
+                  const r = rows[vi.index];
+                  const distinct = (r as CodeRecipeRow & { distinctAgents?: number }).distinctAgents;
+                  return (
+                    <div
+                      key={r.id}
+                      data-index={vi.index}
+                      ref={rowVirtualizer.measureElement}
+                      className="pc-recipes__tr pc-recipes__tr--virtual"
+                      role="row"
+                      style={{ transform: `translateY(${vi.start}px)` }}
+                    >
+                      <div role="cell">
+                        <div className="pc-recipes__name">
+                          <strong>{r.title}</strong>
+                          <span className="pc-recipes__rid">{r.id}</span>
+                        </div>
+                        {r.description ? <p className="pc-recipes__desc">{r.description}</p> : null}
+                        {r.authorRole ? <span className="pc-recipes__author">by {r.authorRole}</span> : null}
                       </div>
-                      {r.description ? <p className="pc-recipes__desc">{r.description}</p> : null}
-                      {r.authorRole ? <span className="pc-recipes__author">by {r.authorRole}</span> : null}
+                      <div role="cell" className="pc-recipes__num">{r.runCount}</div>
+                      <div role="cell" className="pc-recipes__num">{typeof distinct === 'number' ? distinct : '—'}</div>
+                      <div role="cell" className="pc-recipes__num">{pct(successRate(r.runCount, r.successCount))}</div>
+                      <div role="cell">{fmtAgo(r.lastRunAt)}</div>
+                      <div role="cell">
+                        <span className={`pc-recipes__status pc-recipes__status--${statusTone(r.status)}`}>{r.status}</span>
+                        {r.promotedTool ? <span className="pc-recipes__promoted">→ {r.promotedTool}</span> : null}
+                      </div>
+                      <div role="cell">
+                        <ToolBadges tools={r.toolsUsed} />
+                      </div>
                     </div>
-                    <div role="cell" className="pc-recipes__num">{r.runCount}</div>
-                    <div role="cell" className="pc-recipes__num">{typeof distinct === 'number' ? distinct : '—'}</div>
-                    <div role="cell" className="pc-recipes__num">{pct(successRate(r.runCount, r.successCount))}</div>
-                    <div role="cell">{fmtAgo(r.lastRunAt)}</div>
-                    <div role="cell">
-                      <span className={`pc-recipes__status pc-recipes__status--${statusTone(r.status)}`}>{r.status}</span>
-                      {r.promotedTool ? <span className="pc-recipes__promoted">→ {r.promotedTool}</span> : null}
-                    </div>
-                    <div role="cell">
-                      <ToolBadges tools={r.toolsUsed} />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}
@@ -379,6 +417,11 @@ export default function RecipesClient() {
 
         .pc-recipes__tablewrap { overflow-x: auto; }
         .pc-recipes__table { width: 100%; min-width: 780px; font-size: 12px; }
+        /* Virtualized body: a fixed-height scroll viewport; rows are absolutely
+           positioned inside the getTotalSize() spacer (translateY per row). */
+        .pc-recipes__tablescroll { position: relative; max-height: min(70vh, 720px); overflow-y: auto; }
+        .pc-recipes__vspacer { position: relative; width: 100%; }
+        .pc-recipes__tr--virtual { position: absolute; top: 0; left: 0; width: 100%; }
         .pc-recipes__tr { display: grid; grid-template-columns: minmax(260px, 2fr) 64px 72px 78px 90px minmax(120px, 0.8fr) minmax(180px, 1.1fr); }
         .pc-recipes__tr--head { border-bottom: 1px solid var(--border, rgba(125,211,252,0.16)); }
         .pc-recipes__tr--head > span { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #8aa6bd); padding: 6px 8px; font-weight: 660; }

@@ -208,13 +208,20 @@ describe('evalSnapshotTransition — token ROI on plans:list-shaped payloads', (
     expect(e.correct).toBe(true);
     expect(e.winner).toBe('delta');
     // one changed body + 60 ids of order << 60 full bodies
-    expect(e.tokens.delta!).toBeLessThan(e.tokens.fullToon / 5);
-    expect(e.savedVsToonPct).toBeGreaterThan(75);
+    const fullBaseline = Math.min(e.tokens.fullJson, e.tokens.fullToon);
+    expect(e.tokens.delta!).toBeLessThan(fullBaseline / 5);
+    expect(e.savedVsFullPct).toBeGreaterThan(75);
   });
 
-  it('full-TOON already beats full-JSON on this row shape (TOON adoption is the floor)', () => {
+  it('FINDING: TOON-compact does NOT universally beat JSON — on the nested plans:list row shape it is WORSE, so the delta path is the only real win', () => {
+    // plans:list rows carry a nested `itemCounts` object + long `nextAction`
+    // strings → TOON cannot tabularize them and its nested form exceeds compact
+    // JSON. The harness reports both so the negotiator picks min(json,toon); the
+    // delta/not_modified saving is shape-INDEPENDENT and dominates either way.
     const e = evalSnapshotTransition(workspaceView(60), workspaceView(60), KEY);
-    expect(e.tokens.fullToon).toBeLessThan(e.tokens.fullJson);
+    expect(e.tokens.fullToon).toBeGreaterThan(e.tokens.fullJson); // TOON loses here
+    expect(e.winner).toBe('not_modified'); // ...but the delta path still wins big
+    expect(e.savedVsFullPct).toBeGreaterThan(99);
   });
 
   it('base absent → full re-send, no merge claimed', () => {
