@@ -10,7 +10,8 @@
     "./server": "./src/server.ts",
     "./provisioning": "./src/provisioning.ts",
     "./auth": "./src/auth.ts",
-    "./plugin-events": "./src/plugin-events.ts"
+    "./plugin-events": "./src/plugin-events.ts",
+    "./_bulk": "./src/_bulk.ts"
   },
   "scripts": {
     "test": "vitest",

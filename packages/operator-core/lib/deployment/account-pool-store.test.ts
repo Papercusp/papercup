@@ -168,6 +168,35 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
     expect(getAccount(pool, 'acct-1')!.rate.penaltyCount).toBe(3);
   });
 
+  it('a TRANSPORT pause (egress-proxy circuit) is NOT counted toward exhaustion — no penalty, no emit, no scale-out (2026-06-22)', async () => {
+    let pool = bindAccount(poolOf('acct-1', 'acct-2'), 'acct-1', 'h1');
+    const scaleCalls: string[] = [];
+    const emitCalls: string[] = [];
+    initAccountScaleObserver({
+      workspaceId: () => 'ws',
+      updatePool: async (m) => (pool = m(pool)),
+      scaleOut: async (id) => {
+        scaleCalls.push(id);
+        return { scaledOut: true, account: 'acct-2', members: [] };
+      },
+      emitExhausted: (id) => emitCalls.push(id),
+      autoScaleOutAllowed: async () => true,
+      log: () => {},
+      readScalePolicy: async () => DEFAULT_SCALE_POLICY,
+    });
+    // THREE transport pauses (a flaky egress proxy) — WAY past the sustained threshold of 3 — must NOT mark a
+    // quota-healthy account exhausted. Before the fix these counted exactly like 429s (aviynw: penaltyCount 32
+    // from proxy flaps → "sustainedly limited" while only 6% of its 5h budget was used).
+    const g = getGovernor('anthropic', 'opus', undefined, 'acct-1');
+    g.penalize({ retryAfterMs: 5 * MIN, transport: true });
+    g.penalize({ retryAfterMs: 10 * MIN, transport: true });
+    g.penalize({ retryAfterMs: 15 * MIN, transport: true });
+    await flush();
+    expect(emitCalls).toEqual([]); // never marked exhausted
+    expect(scaleCalls).toEqual([]); // never triggers a PAID scale-out
+    expect(getAccount(pool, 'acct-1')!.rate.penaltyCount).toBe(0); // transport pauses don't accrue rate penalties
+  });
+
   it('owner auto-scale-out toggle OFF (P-006): exhaustion still emits, but does NOT scale out', async () => {
     let pool = bindAccount(poolOf('acct-1', 'acct-2'), 'acct-1', 'h1');
     const scaleCalls: string[] = [];

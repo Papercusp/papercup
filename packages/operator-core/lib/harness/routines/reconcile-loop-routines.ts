@@ -63,18 +63,25 @@
  * infinity comparison is done in SQL — so the invalid-Date trap cannot bite here.
  */
 import type { Sql } from 'postgres';
-import { appendFileSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 
-/** TEMP diagnostic (EI-2549) — fleet-wide loop re-arm is silently a no-op; this records the
- *  runtime path to a file (test-safe: no console, so vitest-fail-on-console is unaffected). REMOVE
- *  once the root cause is found. */
-function dbg(line: string): void {
-  try {
-    appendFileSync('/tmp/loop-reconcile-dbg.log', `${new Date().toISOString()} ${line}\n`);
-  } catch {
-    /* never let diagnostics affect the routine */
-  }
+/**
+ * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
+ * a `Date` (a type-parsing connection — what the testcontainer integration tests use) OR a
+ * STRING. The operator's pooled `getOrgPg()` connection runs `prepare: false`, which skips
+ * postgres-js's per-column type-OID resolution, so a `timestamptz` comes back as the raw PG
+ * string (`"2026-06-21 16:30:03.587133-04"`) — NOT a Date. Calling `.getTime()` on that threw
+ * `getTime is not a function` on the FIRST row of every pass, which propagated out and
+ * SILENTLY ABORTED the whole reconcile (caught by reconcileAndGovern's best-effort try) — so
+ * every loop fleet-wide parked at infinity and was never re-armed after one fire (EI-2549).
+ * The integration tests used a direct, type-parsing connection, so they never hit this — a
+ * real test gap, now closed by `…string-typed timestamptz columns…`. `new Date(pgString)`
+ * round-trips the PG format correctly. Returns null for null/undefined or an unparseable value.
+ */
+function tsMs(v: Date | string | null | undefined): number | null {
+  if (v == null) return null;
+  const ms = (v instanceof Date ? v : new Date(v)).getTime();
+  return Number.isNaN(ms) ? null : ms;
 }
 
 /** A dropped lifecycle report is inferred only once the session's last GENUINE activity
@@ -117,11 +124,13 @@ interface LoopRow {
   target_owner_id: string;
   interval_sec: number;
   parked: boolean;
-  last_fired_at: Date | null;
+  // timestamptz columns: a `Date` on a type-parsing connection, a STRING on the operator's
+  // pooled `prepare:false` connection — always read through `tsMs()`, never `.getTime()` (EI-2549).
+  last_fired_at: Date | string | null;
   /** max(agent_activity.created_at) for a kind='lifecycle' 'ended' marker after the fire. */
-  lifecycle_completed_at: Date | null;
+  lifecycle_completed_at: Date | string | null;
   /** The session's most-recent genuine-activity timestamp (presence-v2, mig 277). */
-  presence_last_active_at: Date | null;
+  presence_last_active_at: Date | string | null;
 }
 
 /**
@@ -136,16 +145,15 @@ function completionSignal(
 ): { completedAt: number; via: Exclude<RebaseVia, 'stuck-backstop'> } | null {
   // 1. PRIMARY: the Stop-hook lifecycle 'ended' marker (already filtered > last_fired by
   //    the SQL window, so any value here is a genuine post-fire turn completion).
-  if (row.lifecycle_completed_at) {
-    return { completedAt: row.lifecycle_completed_at.getTime(), via: 'lifecycle' };
+  const lc = tsMs(row.lifecycle_completed_at);
+  if (lc != null) {
+    return { completedAt: lc, via: 'lifecycle' };
   }
   // 2. FALLBACK: a dropped lifecycle report — the session did genuine work after the fire
   //    then went quiet. last_active_at is the genuine-activity ts (NOT keepalive).
-  if (row.presence_last_active_at) {
-    const la = row.presence_last_active_at.getTime();
-    if (la > lastFiredMs && nowMs - la >= FALLBACK_QUIET_MS) {
-      return { completedAt: la, via: 'presence-quiescence' };
-    }
+  const la = tsMs(row.presence_last_active_at);
+  if (la != null && la > lastFiredMs && nowMs - la >= FALLBACK_QUIET_MS) {
+    return { completedAt: la, via: 'presence-quiescence' };
   }
   return null;
 }
@@ -189,16 +197,6 @@ export async function reconcileLoopRoutines(
        AND (r.next_fire_at = 'infinity'::timestamptz OR jsonb_exists(r.trigger_config, 'cron'))
   `;
 
-  dbg(
-    `ENTER nowMs=${nowMs} rows=${rows.length} :: ` +
-      rows
-        .map(
-          (r) =>
-            `${r.target_owner_id?.slice(0, 12)}{parked=${r.parked},lastFired=${r.last_fired_at ? r.last_fired_at.getTime() : 'null'},lc=${r.lifecycle_completed_at ? r.lifecycle_completed_at.getTime() : 'null'},pres=${r.presence_last_active_at ? r.presence_last_active_at.getTime() : 'null'}}`,
-        )
-        .join(' '),
-  );
-
   const result: LoopRebaseResult = { rearmed: 0, loops: [] };
 
   for (const row of rows) {
@@ -207,9 +205,10 @@ export async function reconcileLoopRoutines(
     // wedging the whole fleet's loops is exactly the failure class this guards). Log + continue.
     try {
       // A fired loop always has last_fired_at (claim sets it on park/advance); defensively
-      // skip a malformed row rather than rebasing off an unbounded window.
-      if (!row.last_fired_at) continue;
-      const lastFiredMs = row.last_fired_at.getTime();
+      // skip a malformed/missing row rather than rebasing off an unbounded window. tsMs()
+      // tolerates the string form the pooled connection returns (EI-2549).
+      const lastFiredMs = tsMs(row.last_fired_at);
+      if (lastFiredMs == null) continue;
       const intervalMs = row.interval_sec * 1000;
 
       // Resolve the re-arm time + provenance.
@@ -224,15 +223,12 @@ export async function reconcileLoopRoutines(
         // activity (a legitimately long turn keeps producing activity, so its
         // last_active_at would be > last_fired), and parked far past the fire.
         row.parked &&
-        (row.presence_last_active_at?.getTime() ?? 0) <= lastFiredMs &&
+        (tsMs(row.presence_last_active_at) ?? 0) <= lastFiredMs &&
         nowMs - lastFiredMs >= stuckParkMs(intervalMs)
       ) {
         completedAt = lastFiredMs;
         via = 'stuck-backstop';
       } else {
-        dbg(
-          `SKIP ${row.target_owner_id?.slice(0, 12)} parked=${row.parked} sigNull lcNull=${!row.lifecycle_completed_at} presGtFired=${(row.presence_last_active_at?.getTime() ?? 0) > lastFiredMs} ageMs=${nowMs - lastFiredMs} stuckMs=${stuckParkMs(intervalMs)}`,
-        );
         continue; // still in flight / nothing to fold — leave it
       }
 
@@ -254,7 +250,6 @@ export async function reconcileLoopRoutines(
                  OR next_fire_at > ${reArmDate} )
         RETURNING id
       `;
-      dbg(`UPDATE ${row.target_owner_id?.slice(0, 12)} via=${via} reArm=${reArmDate.getTime()} matched=${updated.length}`);
       if (updated.length > 0) {
         result.rearmed++;
         result.loops.push({
@@ -279,6 +274,5 @@ export async function reconcileLoopRoutines(
     }
   }
 
-  dbg(`EXIT rearmed=${result.rearmed}`);
   return result;
 }

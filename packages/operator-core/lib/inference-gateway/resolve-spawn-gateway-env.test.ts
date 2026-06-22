@@ -82,4 +82,21 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'omp' })).toEqual({});
     expect(h.selectSpawnAccount).not.toHaveBeenCalled();
   });
+
+  test('Codex backend + multi-account OFF → {} — codex needs an account pin; no Anthropic base URL leaks', async () => {
+    // gateway ON, multi-account OFF: no account is selected, and codex emits ONLY PAPERCUSP_ACCOUNT_ID,
+    // so with no account there is nothing to emit → {} (never an ANTHROPIC_BASE_URL, which is claude-only).
+    h.getFlag.mockImplementation(async (flag: string) => flag === 'inference-gateway');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'codex' });
+    expect(env).toEqual({});
+    expect(h.selectSpawnAccount).not.toHaveBeenCalled();
+  });
+
+  test('Codex backend + multi-account ON but empty pool (select → undefined) → {} (no pin, no leakage)', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.selectSpawnAccount.mockResolvedValue(undefined);
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', backend: 'codex' });
+    expect(env).toEqual({});
+    expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'h', undefined, 'codex');
+  });
 });

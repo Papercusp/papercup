@@ -592,6 +592,11 @@ import './work_items/promote';
 // is the associative `in` (self-select / work-steal via SKIP LOCKED); observe is `rd`.
 import './work_items/claim_next';
 import './work_items/observe';
+// hybrid-bee-scheduler-work-stealing-2026-06-22 — the per-bee SPEC-DRIVEN claim path: the bee's
+// scheduler:get_next pulls deterministically per its Queen-issued claim spec within the global
+// floors (the richer sibling of claim_next); the Queen steers via scheduler:set_claim_spec.
+import './scheduler/get_next';
+import './scheduler/set_claim_spec';
 // The Queen's co-location lever (hive-coordination-model P-002): stamp a work-item's
 // swarm_affinity so tightly-coupled work co-locates on one Swarm; honored by claim_next
 // under the per-Hive claim lease.

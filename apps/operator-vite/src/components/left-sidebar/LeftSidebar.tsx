@@ -28,6 +28,9 @@ import { Users, AudioLines, Network, Crown, Eye, Radio, KeyRound, ChevronLeft, C
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
+// Always-on operator-voice controls, pinned to the TOP of the rail (above the
+// tabs) so they show on every tab, not just Sentinel (owner request 2026-06-22).
+import SentinelVoiceBar from '../voice-bar/SentinelVoiceBar';
 
 const SwarmTab = lazy(() => import('./SwarmTab'));
 const VoiceTab = lazy(() => import('./VoiceTab'));
@@ -249,6 +252,9 @@ export default function LeftSidebar() {
         <div className="pclsb__expanded-shell" aria-hidden={!open}>
           {open && (
             <>
+              {/* Voice controls pinned to the top of the rail — always shown,
+                  on every tab (not just Sentinel). */}
+              <SentinelVoiceBar />
               <div className="pclsb__header">
                 <span className="pclsb__title">
                   <active.icon size={14} aria-hidden="true" />

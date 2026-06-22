@@ -74,3 +74,22 @@ test('gatewaySpawnEnv — accountId + ownerId emit BOTH custom headers, newline-
   // disabled still ignores everything
   assert.deepEqual(gatewaySpawnEnv(false, { accountId: 'acct-x', ownerId: 'spawn-7' }), {});
 });
+
+test('gatewayPort — rejects empty / zero / negative / unset PAPERCUSP_GATEWAY_PORT and falls back to 8788', () => {
+  process.env.PAPERCUSP_GATEWAY_PORT = '';
+  assert.equal(gatewayPort(), 8788, 'empty string (Number("")===0) → default');
+  process.env.PAPERCUSP_GATEWAY_PORT = '0';
+  assert.equal(gatewayPort(), 8788, 'zero is not a valid port → default');
+  process.env.PAPERCUSP_GATEWAY_PORT = '-5';
+  assert.equal(gatewayPort(), 8788, 'negative → default');
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  assert.equal(gatewayPort(), 8788, 'unset → default');
+});
+
+test('gatewayLlmEnv — honors PAPERCUSP_GATEWAY_PORT for BOTH the CLI and SDK base URLs', () => {
+  process.env.PAPERCUSP_GATEWAY_PORT = '9100';
+  assert.deepEqual(gatewayLlmEnv(true), {
+    [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:9100',
+    [GATEWAY_SDK_URL_ENV]: 'http://127.0.0.1:9100',
+  });
+});

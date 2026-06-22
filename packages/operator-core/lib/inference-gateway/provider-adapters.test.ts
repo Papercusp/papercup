@@ -66,4 +66,33 @@ describe('gateway provider adapters', () => {
       expect.objectContaining({ id: 'omp', configured: false, protocol: 'unsupported', unavailableMessage: expect.stringMatching(/not implemented/i) }),
     ]);
   });
+
+  it('reports codex configured:true (with its openai upstreamBase) once a Codex pool is present', () => {
+    // The existing diagnostics test only covers codex WITHOUT a pool (configured:false); pin the
+    // true-branch so a working codex provider is reported routeable.
+    const adapters = makeGatewayProviderAdapters({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+    const codex = gatewayProviderStatuses(adapters).find((s) => s.id === 'codex')!;
+    expect(codex.configured).toBe(true);
+    expect(codex.upstreamBase).toBe('https://openai.test');
+  });
+
+  it('providerForGatewayPath returns the actual adapter object and matches by PREFIX, not substring', () => {
+    const adapters = makeGatewayProviderAdapters({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+    // Exact adapter identity (not just id) so the caller gets the right pool + upstreamBase.
+    expect(providerForGatewayPath('/v1/responses', adapters)).toBe(adapters.codex);
+    expect(providerForGatewayPath('/v1/messages', adapters)).toBe(adapters.claude);
+    // A path that only CONTAINS 'responses' but does not START with /v1/responses stays on Claude.
+    expect(providerForGatewayPath('/v1/messages/responses', adapters).id).toBe('claude');
+    expect(providerForGatewayPath('/responses', adapters).id).toBe('claude');
+  });
 });

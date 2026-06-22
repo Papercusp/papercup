@@ -927,6 +927,11 @@ export const FLAGS = {
   // panic switch if a cache consumer ever serves wrong/stale data in prod. Read
   // SYNC-cached (the getOrSet hot path can't await), refreshed on boot + flag change.
   CACHE_LAYER: "papercusp-cache-layer",
+  // hybrid-bee-scheduler-work-stealing-2026-06-22 — gate the SPEC-driven claim path: ON ⇒
+  // scheduler:get_next pulls per the bee's Queen-issued claim spec; OFF ⇒ get_next ignores stored
+  // specs and falls back to the DEFAULT ordering (== work_items:claim_next) — a no-breakage
+  // kill-switch. DEFAULT ON (alpha flags-default-on; the resolver + spec store are complete + tested).
+  SCHEDULER_SPEC_CLAIM: "papercusp-scheduler-spec-claim",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1438,6 +1443,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (byte-identical to no cache). Default-on per alpha policy — the bypass is the panic
   // switch, not a dark gate.
   [FLAGS.CACHE_LAYER]: true,
+  // hybrid-bee-scheduler-work-stealing-2026-06-22: spec-driven claim ON (default); OFF degrades
+  // scheduler:get_next to the default ordering (no breakage). Resolver + spec store complete + tested.
+  [FLAGS.SCHEDULER_SPEC_CLAIM]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -125,11 +125,9 @@ const DevAdminRail =
 // rail, the desktop twin of the pui dock's retired main pane. First-class app
 // chrome (NOT dev-gated); lazy so the shell paint doesn't pay for its panels.
 const LeftSidebar = lazy(() => import('../components/left-sidebar/LeftSidebar'));
-// Top voice bar — restores the retired Papercup-chat `op-chat-controls` strip
-// (AudienceModeSelector + OperatorActiveToggle + VoiceButton). It is the only
-// surface that mounts <VoiceButton/>, so without it the operator-voice session
-// never starts and push-to-talk is dead. Lazy (pulls the voice-mode runtime).
-const SentinelVoiceBar = lazy(() => import('../components/voice-bar/SentinelVoiceBar'));
+// NOTE: the operator-voice controls (SentinelVoiceBar) used to mount here as a
+// top strip; they now live at the TOP of the left rail (LeftSidebar), always
+// visible on every tab (owner request 2026-06-22).
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -193,9 +191,6 @@ function RootComponent() {
                           (Deferred in A3 because it imports next/navigation;
                           the alias shim now resolves that.) */}
                       <ChromeShell />
-                      <Suspense fallback={null}>
-                        <SentinelVoiceBar />
-                      </Suspense>
                       <main data-route-transition-page="true">
                         {/* Route-content error boundary: keeps ChromeShell
                             mounted on a route crash (so the user can navigate
