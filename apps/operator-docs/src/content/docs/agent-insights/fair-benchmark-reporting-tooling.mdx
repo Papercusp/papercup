@@ -1,6 +1,15 @@
 ---
 title: Fair cross-arm benchmark reporting — use the bench-metrics tooling, mind the same-denominator trap
 description: Before reporting any benchmark arm comparison, use buildCapabilityAttribution + buildFairnessAudit (@papercusp/bench-metrics) — they encode the binding fairness criteria so you don't hand-roll them and hit the C1 denominator trap.
+discovered: 2026-06-17
+status: active
+documents:
+  - libs/generic/bench-metrics/src/capability-attribution.ts
+  - libs/generic/bench-metrics/src/fairness-audit.ts
+  - packages/operator-core/lib/external-bench/report/capability-attribution-report.ts
+  - packages/operator-core/lib/external-bench/run-topology.ts
+plans:
+  - benchmark-capability-injection-redesign-2026-06-17
 ---
 
 import { Aside } from '@astrojs/starlight/components';

@@ -24,7 +24,7 @@ import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
-import { Users, AudioLines, Network, Crown, Eye, Radio, KeyRound, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, AudioLines, Network, Crown, Eye, Radio, KeyRound, PanelLeftOpen } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -243,32 +243,22 @@ export default function LeftSidebar() {
             type="button"
             className="pclsb__rail-btn pclsb__rail-btn--expand"
             onClick={() => setOpen(true)}
-            aria-label="Open sidebar"
+            aria-label="Expand sidebar"
+            title="Expand sidebar"
           >
-            <ChevronRight size={16} aria-hidden="true" />
+            <PanelLeftOpen size={17} aria-hidden="true" />
           </button>
         </div>
 
         <div className="pclsb__expanded-shell" aria-hidden={!open}>
           {open && (
             <>
-              {/* Voice controls pinned to the top of the rail — always shown,
-                  on every tab (not just Sentinel). */}
-              <SentinelVoiceBar />
-              {/* Active-tab title heading removed (owner 2026-06-22): the
-                  highlighted tab already shows which view you're on, so the
-                  label was redundant. The collapse control stays. */}
-              <div className="pclsb__header">
-                <span className="pclsb__spacer" />
-                <button
-                  type="button"
-                  className="pclsb__iconbtn"
-                  onClick={() => setOpen(false)}
-                  aria-label="Collapse sidebar"
-                >
-                  <ChevronLeft size={16} aria-hidden="true" />
-                </button>
-              </div>
+              {/* Voice controls pinned to the top of the rail — always shown, on
+                  every tab (not just Sentinel). The collapse control lives in this
+                  bar's header now; the old empty header row was removed (owner
+                  2026-06-22) and the active-tab title heading before it (the
+                  highlighted tab already shows which view you're on). */}
+              <SentinelVoiceBar onCollapse={() => setOpen(false)} />
 
               <div className="pclsb__tabs" role="tablist">
                 {visibleTabs.map((x) => {

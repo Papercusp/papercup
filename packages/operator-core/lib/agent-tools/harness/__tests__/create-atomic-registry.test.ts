@@ -103,11 +103,19 @@ beforeEach(() => {
   vi.doMock('../../../blueprint/materialize-triggers', () => ({
     materializeBlueprintTriggers: async () => [],
   }));
+  // create.ts's 5b doc-tracking step (added 2026-06-22) is a PG-touching best-effort
+  // call for any requiresRepo blueprint (coding extends). Left un-mocked, a PG-free
+  // unit-test create hangs on a DB connection that never comes. Mock it, like the
+  // other PG steps above.
+  vi.doMock('../../../harness/docs/seed-doc-tracking', () => ({
+    seedHarnessDocTracking: async () => ({ seeded: true, registered: 0, total: 0, reason: 'no_docs' }),
+  }));
 });
 afterEach(() => {
   vi.doUnmock('../../../harness-registry');
   vi.doUnmock('../../../scaffold-harness-schema');
   vi.doUnmock('../../../blueprint/materialize-triggers');
+  vi.doUnmock('../../../harness/docs/seed-doc-tracking');
 });
 
 async function loadTool(): Promise<{

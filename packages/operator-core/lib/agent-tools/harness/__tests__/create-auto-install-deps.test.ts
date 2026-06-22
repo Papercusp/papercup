@@ -68,11 +68,19 @@ beforeEach(() => {
     mutateHarnessRegistry: async (m: (r: { projects: unknown[] }) => { projects: unknown[] }) =>
       m({ projects: [] }),
   }));
+  // create.ts's 5b doc-tracking step (added 2026-06-22) is a PG-touching best-effort
+  // call for any requiresRepo blueprint (coding extends). Left un-mocked, a PG-free
+  // unit-test create hangs on a DB connection that never comes. Mock it, like the
+  // other PG steps above.
+  vi.doMock('../../../harness/docs/seed-doc-tracking', () => ({
+    seedHarnessDocTracking: async () => ({ seeded: true, registered: 0, total: 0, reason: 'no_docs' }),
+  }));
 });
 afterEach(() => {
   vi.doUnmock('../../../harness-registry');
   vi.doUnmock('../../../cupboard/pack-catalog');
   vi.doUnmock('../../../cupboard/install-io');
+  vi.doUnmock('../../../harness/docs/seed-doc-tracking');
 });
 
 describe('harness:create — autoInstallDeps', () => {

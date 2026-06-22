@@ -75,6 +75,14 @@ beforeEach(() => {
       return seedImpl(o);
     },
   }));
+  // create.ts's 5b "doc-integrity twin" (added 2026-06-22) calls seedHarnessDocTracking
+  // for any requiresRepo blueprint (coding extends → requiresRepo). It's PG-touching
+  // (resolveHarnessDocPaths/listDocBodies/anchorManualDoc), so leave it un-mocked and a
+  // unit-test create hangs on a DB connection that never comes. Mock it PG-free, same as
+  // the git-sync seeder above. This test asserts only on gitSync, not docTracking.
+  vi.doMock('../../../harness/docs/seed-doc-tracking', () => ({
+    seedHarnessDocTracking: async () => ({ seeded: true, registered: 0, total: 0, reason: 'no_docs' }),
+  }));
 });
 afterEach(() => {
   vi.doUnmock('../../../harness-registry');
@@ -82,6 +90,7 @@ afterEach(() => {
   vi.doUnmock('../../../blueprint/materialize-triggers');
   vi.doUnmock('../../../workspace-registry');
   vi.doUnmock('../../../harness/git-sync/git-sync-routine');
+  vi.doUnmock('../../../harness/docs/seed-doc-tracking');
 });
 
 async function runCreate(args: Record<string, unknown>): Promise<Record<string, any>> {

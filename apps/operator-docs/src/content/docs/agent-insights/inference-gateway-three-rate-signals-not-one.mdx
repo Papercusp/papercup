@@ -1,0 +1,94 @@
+---
+title: "Inference-gateway: a stalled/429'd account is ONE OF THREE signals — never conflate them"
+description: "When an account fails in the gateway it is one of three DISTINCT things, each handled differently: (1) a TRANSPORT stall — a flaky Rayobyte egress proxy 60s-hangs (route around it, do NOT count it as account exhaustion); (2) a per-minute RATE 429 — a transient burst throttle (AIMD-decrease the account's LEARNED rpm and pace, don't just re-walk into it); (3) a token-budget USAGE CAP — 5h/7d window (switch accounts). Two 2026-06-22 bugs came from conflating these: the egress circuit's transport penalty was counted toward the account's sustained/exhaustion verdict (a flaky proxy falsely marked quota-healthy accounts exhausted + triggered paid scale-out), and subscription accounts had a STATIC rpm floor that could never learn down (a soft-throttled account re-429'd forever). Diagnose proxy-vs-account with curl -x <proxy>: a fast 401 = healthy proxy ⇒ the hang is account-side."
+discovered: 2026-06-22
+tags: [inference-gateway, rate-limit, 429, governor, aimd, rpm, egress, transport, proxy, account-pool, exhaustion, scale-out, runbook, debugging, adaptive]
+status: active
+documents:
+  - libs/papercusp-shared/src/resilience/governor.ts
+  - packages/operator-core/lib/inference-gateway/gateway.ts
+  - packages/operator-core/lib/deployment/account-pool-store.ts
+  - packages/operator-core/lib/deployment/account-pool.ts
+  - packages/operator-core/lib/agent-governor-observer.ts
+  - packages/operator-core/lib/inference-gateway/watchdog.mjs
+---
+
+## The core idea
+
+When an account "fails" at the gateway, it is **one of three different things**.
+They look similar (a paused account, a non-200, a hang) but have *opposite* correct
+responses. Conflating them is the bug class this doc prevents.
+
+| Signal | What it is | Correct response | The wrong response (the bug) |
+|---|---|---|---|
+| **Transport stall** | the account's egress PROXY hangs (a Rayobyte squid CONNECT-hangs ~60s) — the request never reaches Anthropic | route AROUND the proxy (egress circuit + half-open probe); the account's QUOTA is fine | counting it as a rate penalty → falsely marks a quota-healthy account "exhausted" + triggers paid scale-out |
+| **Rate 429** | a per-minute / burst throttle (`x-should-retry:true`, no window headers) — capacity exists, the account is just going too fast right now | AIMD-decrease the account's LEARNED rpm and PACE to it; retry at the paced rate | pace at a STATIC floor that can't learn down → re-walk into the same 429 forever |
+| **Usage cap** | a token-budget rolling window (5h / 7d, `x-should-retry:false` + window reset) — the account is genuinely out for hours | pause to the (bounded, re-probed) reset and SWITCH to another account | wait on the same account for hours, or treat it as transient |
+
+The tell that separates **transport** from **account**: `curl -x http://<proxy> https://api.anthropic.com/v1/messages -X POST -d '{}'`.
+A **fast 401** (~1–2s) = the proxy is healthy ⇒ any 60s "no activity" stall is **account-side**
+(Anthropic holding the request — a soft-throttle), NOT a dead proxy. (A genuinely dead proxy
+times out the curl.) Compare against a known-good account's proxy for a baseline.
+
+## How the gateway encodes the distinction (2026-06-22)
+
+The signal travels as a tag on the governor pause so every downstream consumer treats it right.
+
+- `GovernorPauseEvent.source: 'penalty' | 'headers' | 'transport'` (governor.ts). A transport
+  pause carries `source:'transport'`.
+- `RateLimitGovernor.penalize({ transport?, rateLimited? })`:
+  - `transport:true` (egress circuit, gateway.ts) — pauses the account so the pin yields + the
+    selector routes around the bad proxy, but **skips the fleet AIMD shrink** (one bad proxy is not
+    fleet-wide rate pressure) and tags `source:'transport'`.
+  - `rateLimited:true` (the transient/bare-429 path, gateway.ts) — AIMD-decreases the account's
+    learned `rpmFactor` (below). NOT set for a usage cap, NOT set for a transport stall.
+- The account-pool exhaustion observer (`onGovernorPause` in account-pool-store.ts) **early-returns
+  on `source:'transport'`** — so a proxy fault never feeds `penaltyCount`, never trips
+  `isSustainedlyLimited` (account-pool.ts: ≥`sustainedPenaltyThreshold` penalties in the window),
+  never emits `rate-limit:exhausted`, never triggers paid scale-out.
+- `agent-governor-observer.ts` also skips `source:'transport'` — no false "rate-limited — paused" toast.
+
+### Bug #1 it fixed (the false-exhaustion)
+"Sustainedly limited / exhausted" trips on penalty COUNT (≥3 in 15 min), and the egress circuit's
+transport penalty went through the SAME `gov.penalize → onGovernorPause → recordAccountPenalty`
+path as a real 429. A flaky proxy (aviynw: 6% of its 5h token budget, but its proxy 60s-stalling)
+racked `penaltyCount` to 32 → falsely "exhausted". Evidence the fix worked: the two flakiest-proxy
+accounts dropped 60→2 and 32→5 penalties on deploy and the quota-healthy ones rejoined rotation.
+
+## Adaptive per-account RPM (the per-account analog of the global AIMD)
+
+The global concurrency AIMD (governor-registry `globalGate`, halve-on-penalty / +1-per-5-clean)
+adapts HOW MANY agents run at once. It does NOT adapt each account's RATE. That was bug #2:
+
+Claude-Max **subscription** accounts expose no per-minute headroom headers (`recordHeaders` only
+tunes from API-key `anthropic-ratelimit-*`), so `limits.rpm` was a static **45 floor**. An account
+Anthropic soft-throttled below 45rpm kept getting paced at 45 → kept 429ing, with no way to learn down.
+
+The fix (governor.ts): a learned `rpmFactor ∈ [RPM_AIMD_MIN_FACTOR, 1]` per account (`GovernorState.rpmFactor`
+/ `rpmFactorAt`).
+- `decideRate` paces to `limits.rpm × effectiveRpmFactor(now)`.
+- A rate-429 (`penalize({rateLimited:true})`) **halves** the factor — the prediction was too high.
+- `effectiveRpmFactor` **recovers it linearly back to 1 over `RPM_AIMD_RECOVER_MS`** (default 5 min) —
+  a transient throttle doesn't permanently cap the account; it probes back up.
+- Env-tunable: `PAPERCUSP_GATEWAY_RPM_AIMD_{DECREASE,MIN,RECOVER_MS}`; set `MIN=1` to disable (no-op factor).
+
+This closes the predict → wait → learn → retry loop: the existing rpm wait-gate already *predicts*
+(holds a request until the window allows) and *retries at the safe time*; the missing piece was
+*learning the prediction down when wrong*, which the factor supplies.
+
+## Gotcha: the DEAD-PROXY watchdog alert can't tell proxy from account
+
+`watchdog.mjs` logs `DEAD-PROXY: '<acct>' egress failing N%` when `egressFailRateByAccount` (a
+volume-fair fails÷attempts rate in `/stats`) crosses ≥50% over ≥20 attempts. But a 60s account-side
+hang is recorded as an "egress failure" exactly like a dead proxy — the gateway can't distinguish
+them per-request. **So a DEAD-PROXY alert is NOT automatically a "pull the Rayobyte proxy" signal.**
+Verify with the `curl -x` test above first: healthy proxy ⇒ it's account-side throttling (the
+adaptive-RPM's job), not a proxy to escalate.
+
+## What's genuinely external (not a gateway bug)
+
+When most accounts are at their weekly cap and the one or two with headroom get Anthropic-side
+soft-throttled, the pool is simply short of clean capacity. The gateway now degrades gracefully
+(paces to learned rates, routes around bad proxies, fails fast instead of hanging) — but the durable
+lever is **more accounts / weekly-window resets**, which is an owner action, not a code fix. Don't
+manufacture hot-path changes on a healthy, converged gateway to chase a capacity shortfall.
