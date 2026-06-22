@@ -9,8 +9,10 @@
  * in the canonical read tool. Additive + best-effort: any failure leaves the base
  * payload untouched (the UI simply renders no badge).
  *
- * Reads (workspace_id='default' — DEFAULT_WORKSPACE_ID; that is where the plan
- * tables live on a single box, matching listPlanRevisions' default):
+ * Reads are scoped to the plan's REAL workspace — derived per-harness for a single
+ * plan (resolveWorkspaceForHarness, P-005), or the active workspace for the cross-plan
+ * list/items enrichers (the UI lists one workspace at a time). NEVER a silent 'default'
+ * (which mis-attributed badges across the WI-148 workspace split — D-003):
  *   - latest plan_revisions row per plan → the LAST EDITOR (author_id+author_kind).
  *   - harness_plan_parts.author per item → the PER-ITEM author. NOTE: on a single
  *     box the part author is the 'local'/'remote' origin sentinel (no device
@@ -22,7 +24,8 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
+import { activeWorkspaceId } from '../workspace-registry';
+import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 import {
   resolvePlanAuthorIdentities,
   planAuthorKey,
@@ -109,7 +112,9 @@ export async function enrichPlanListRows(
   const list = rows as PlanListRowLike[];
   if (!Array.isArray(list) || list.length === 0) return rows;
   const sql = pg(opts?.sql);
-  const workspaceId = opts?.workspaceId ?? DEFAULT_WORKSPACE_ID;
+  // The list is scoped to ONE workspace (the UI shows the active workspace's plans); use
+  // it for the attribution reads rather than a silent 'default' (P-005 / D-003).
+  const workspaceId = opts?.workspaceId ?? activeWorkspaceId();
 
   const slugs = list.map((r) => (typeof r.slug === 'string' ? r.slug : null)).filter((s): s is string => !!s);
   let latest: Map<string, { authorId: string; authorKind: 'human' | 'agent' }>;
@@ -161,7 +166,8 @@ export async function enrichPlanItemsRows(
   const list = rows as PlanItemRowLike[];
   if (!Array.isArray(list) || list.length === 0) return rows;
   const sql = pg(opts?.sql);
-  const workspaceId = opts?.workspaceId ?? DEFAULT_WORKSPACE_ID;
+  // Cross-plan, but within ONE workspace (the active one) — use it, not a silent 'default'.
+  const workspaceId = opts?.workspaceId ?? activeWorkspaceId();
 
   const planSlugs = [
     ...new Set(list.map((r) => (typeof r.plan === 'string' ? r.plan : '')).filter(Boolean)),
@@ -221,10 +227,18 @@ export async function enrichPlanDetail(
   const p = plan as PlanDetailLike;
   if (!p || typeof p !== 'object' || !p.frontmatter) return plan;
   const sql = pg(opts?.sql);
-  const workspaceId = opts?.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const slug = typeof p.frontmatter.slug === 'string' ? p.frontmatter.slug : '';
   const harnessSlug = opts?.harnessSlug ?? operatorHomeHarnessSlug();
   if (!slug) return plan;
+  // Derive the workspace from THIS plan's harness (P-005) — best-effort: if the harness
+  // can't be resolved to a workspace, leave the payload un-enriched (graceful no-badge),
+  // never a silent cross-workspace 'default' read (D-003).
+  let workspaceId: string;
+  try {
+    workspaceId = await resolveWorkspaceForHarness(harnessSlug, opts?.workspaceId);
+  } catch {
+    return plan;
+  }
 
   let latest = new Map<string, { authorId: string; authorKind: 'human' | 'agent' }>();
   let itemAuthors = new Map<string, string>();

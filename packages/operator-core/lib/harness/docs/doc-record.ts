@@ -19,7 +19,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
+import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 import type { SubjectRef } from './subject-ref';
 
 export type DocSource = 'generated' | 'manual' | 'augmented';
@@ -98,8 +98,11 @@ function rowToRecord(r: DocRow): HarnessDocRecord {
 export async function getDocRecord(
   harnessSlug: string,
   docId: string,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<HarnessDocRecord | null> {
+  // Derive the workspace from the harness (a harness's docs live in its workspace) —
+  // never a silent 'default' for an omitted scope (P-002 docs sub-part / D-003).
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   const rows = await sql<DocRow[]>`
     SELECT * FROM harness_shared.harness_docs
@@ -111,8 +114,9 @@ export async function getDocRecord(
 /** All doc records for a harness, keyed by doc_id. */
 export async function listDocRecords(
   harnessSlug: string,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<Map<string, HarnessDocRecord>> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   const rows = await sql<DocRow[]>`
     SELECT * FROM harness_shared.harness_docs
@@ -150,7 +154,7 @@ export interface UpsertDocInput {
  * overlay intact, and the stored source stays 'augmented' while the overlay lives.
  */
 export async function upsertDocRecord(input: UpsertDocInput): Promise<HarnessDocRecord> {
-  const ws = input.workspaceId ?? DEFAULT_WORKSPACE_ID;
+  const ws = await resolveWorkspaceForHarness(input.harnessSlug, input.workspaceId);
   const base: 'manual' | 'generated' = input.source === 'manual' ? 'manual' : 'generated';
   const insertOverlay = input.overlay ?? null;
   const { sql } = getOrgPg();
@@ -189,8 +193,9 @@ export async function setDocStatus(
   docId: string,
   status: DocStatus,
   statusDetail: string | null = null,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.harness_docs
@@ -203,8 +208,9 @@ export async function verifyDoc(
   harnessSlug: string,
   docId: string,
   verifiedSha: string,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.harness_docs
@@ -223,8 +229,9 @@ export async function setDocOverlay(
   harnessSlug: string,
   docId: string,
   overlay: string | null,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.harness_docs
@@ -240,8 +247,9 @@ export async function setDocOverlay(
 export async function markRegenEnqueued(
   harnessSlug: string,
   docId: string,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.harness_docs SET regen_enqueued_at = now()
@@ -252,8 +260,9 @@ export async function markRegenEnqueued(
 export async function markReverifyFlagged(
   harnessSlug: string,
   docId: string,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.harness_docs SET reverify_flagged_at = now()
@@ -263,8 +272,9 @@ export async function markReverifyFlagged(
 export async function deleteDocRecord(
   harnessSlug: string,
   docId: string,
-  workspaceId: string = DEFAULT_WORKSPACE_ID,
+  workspaceId?: string,
 ): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
     DELETE FROM harness_shared.harness_docs

@@ -94,6 +94,10 @@ export async function runClaimDispatch(opts: RunClaimDispatchOpts): Promise<Clai
   if (swarmCount < 3) throw new Error(`runClaimDispatch: need ≥3 Swarms, have ${swarmCount}`);
 
   const hiveSlug = opts.hiveSlug ?? 'claim-e2e-hive';
+  // Synthetic ≥3-Swarm E2E test-rig scope (siblings 'claim-e2e-hive' / 'claim-e2e-h1') — a
+  // self-contained decentralized-dispatch scenario over loopback / ephemeral Hetzner frames
+  // that never reads or writes real workspace data, an explicit documented local default.
+  // allow-scope-default: E2E test-rig local scope, never real workspace data (D-003).
   const workspaceId = opts.workspaceId ?? 'default';
   const harnessSlug = opts.harnessSlug ?? 'claim-e2e-h1';
   const backlogSize = opts.backlogSize ?? 12;

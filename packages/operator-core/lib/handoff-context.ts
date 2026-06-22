@@ -33,7 +33,7 @@ import { isAutoPickable, loadTrustedGithubUserIds } from './work-items-admission
 import { getPlanContextBySlug } from './plan-context-for-feature';
 import { drainSlotMessages } from './agent-tools/coordination/slot-parked-store';
 import type { SlotSelector } from './agent-tools/coordination/slot-selector';
-import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
+import { resolveWorkspaceForHarness } from './harness/workspace-for-harness';
 // Contract types are owned by the P-021 seam (su-7b271, D-004) — import them as
 // the single source of truth so producer + consumer never drift. Re-exported
 // here for convenience (callers may import from either module).
@@ -176,7 +176,13 @@ export async function getSpawnHandoffContext(opts: {
   nowMs?: number;
 }): Promise<SpawnHandoffContext> {
   const { harness, featureId } = opts;
-  const workspaceId = opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
+  // Derive the workspace from the harness when the spawn path didn't thread one — never a
+  // silent 'default' (which loads the wrong workspace's trusted-author set → mis-framed
+  // provenance). Best-effort: this gather never throws, so a derive failure degrades to an
+  // empty trusted set = everything over-wrapped as untrusted, the SAFE direction (P-002 / D-003).
+  const workspaceId = await resolveWorkspaceForHarness(harness, opts.workspaceId).catch(
+    () => opts.workspaceId ?? '',
+  );
   const trustedSet = await loadTrustedGithubUserIds(workspaceId).catch(() => new Set<number>());
 
   let truncated = false;
