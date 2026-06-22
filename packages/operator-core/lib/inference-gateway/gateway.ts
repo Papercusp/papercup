@@ -1584,30 +1584,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // it. This caps total slot-hold time, which is what stops the frozen-while-saturated wedge from
           // forming at the AIMD floor under a slow-upstream storm.
           if (proceed && Date.now() >= retryDeadlineAt) {
-            // EXTENDED ABSORPTION (env-gated, requestAbsorbMs). Rather than shed a retryable throttle 429 at the
-            // slot-hold deadline, if absorb budget remains, RELEASE the admission slot — the wedge ladder bounds
-            // SLOT-hold time, and we hold NO slot while parked, so this CANNOT wedge — then re-acquire (its wait
-            // admits nothing until an account is serviceable) and retry, so the caller WAITS and succeeds instead
-            // of erroring. Bounded by absorbDeadlineAt (kept under the CLI timeout). absorbDeadlineAt=0 (OFF) ⇒
-            // identical to before. The re-acquire's maxWait is clamped to the remaining absorb budget.
-            if (absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
-              clearStall();
-              peekedRest?.destroy();
-              release(); // free the slot NOW — nothing is admitted again until an account has serviceable budget
-              release = () => {}; // guard the `finally` against a double-release if the re-acquire below fails
-              const reacq = await gov.acquire(est, {
-                maxWaitMs: Math.min(maxQueueWaitMs, absorbDeadlineAt - Date.now()),
-                allowSoftPaused: serveSoft,
-              });
-              if (reacq) {
-                release = reacq;
-                retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry
-                attempt = 0;
-                log('warn', `inference-gateway: absorb-retry on '${active.accountId}' — holding the caller instead of 429ing (${Math.round((absorbDeadlineAt - Date.now()) / 1000)}s budget left)`);
-                continue;
-              }
-              // re-acquire timed out within the absorb budget → fall through to shed (release is the no-op → finally safe)
-            }
             proceed = false;
             shedAllThrottled++;
             log('warn', `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms hit on '${active.accountId}' (model ${model}) → shed 429, free slot (wedge-prevention ladder)`);
@@ -1628,6 +1604,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
             log('warn', `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${active.accountId}'`);
             continue;
+          }
+          // EXTENDED ABSORPTION (env-gated, requestAbsorbMs): we are about to FORWARD a retryable throttle to the
+          // caller — rotation + the transient wait-budget are exhausted (proceed=false). If the throttle is TRANSIENT
+          // (capacity returns soon, NOT a multi-hour usage cap — `transient` excludes those) and absorb budget
+          // remains, RELEASE the admission slot (the re-acquire's wait holds NO slot → it CANNOT wedge), wait the
+          // throttle out, re-acquire, and retry — so the caller WAITS and succeeds instead of erroring. Role-agnostic:
+          // any caller, not just an identified bee. absorbDeadlineAt=0 (OFF) ⇒ identical to before.
+          if (!proceed && transient && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
+            clearStall();
+            peekedRest?.destroy();
+            release(); // free the slot NOW — the wait below admits nothing until an account has serviceable budget
+            release = () => {}; // guard the `finally` against a double-release if the re-acquire below fails
+            const reacq = await gov.acquire(est, { maxWaitMs: absorbDeadlineAt - Date.now(), allowSoftPaused: serveSoft });
+            if (reacq) {
+              release = reacq;
+              retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry
+              attempt = 0;
+              transientWaitedMs = 0; // the absorb is a SEPARATE outer budget from the in-retry transient wait
+              log('warn', `inference-gateway: absorb-retry on '${active.accountId}' — holding the caller instead of forwarding a ${up.status} (${Math.round((absorbDeadlineAt - Date.now()) / 1000)}s budget left)`);
+              continue;
+            }
+            // re-acquire timed out within the absorb budget → fall through to forward (release is the no-op → finally safe)
           }
         }
 
