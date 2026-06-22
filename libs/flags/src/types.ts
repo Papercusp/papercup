@@ -304,6 +304,17 @@ export const FLAGS = {
   // spawn-death release, both safe). DARK because freeing a LIVE agent's claim
   // changes live placement on a fleet-critical hot path (D-003: land it attended).
   RECLAIM_STALLED: "papercusp-reclaim-stalled",
+  // operator-memory-and-psu-resilience-2026-06-14 P-008 (WI-147, D-004/D-005/D-006):
+  // lazy + bounded harness-substrate boot. ON: the operator boots a harness's heavy
+  // substrate ENGINE (corestore + merge-fold + projections + merge-poll) on demand and
+  // evicts idle ones via LRU (planSubstrateEviction), keeping only the N hottest resident
+  // — a lightweight swarm-presence + LISTEN-substrate_outbox keepalive stays resident so an
+  // evicted harness still drains its outbox + receives peer pushes (re-boot-on-NOTIFY/connection).
+  // Bounds operator RSS sub-linearly in harness count (~108 MB/harness today). OFF (default):
+  // boot is byte-identical to today (eager all-harness boot). DARK + STAGED-ON-:3170-FIRST
+  // because a wrong eviction silently stops a harness syncing → fleet data divergence (the
+  // EI-126 102 GB class) — D-005/D-006 binding execution constraint.
+  LAZY_SUBSTRATE_BOOT: "papercusp-lazy-substrate-boot",
   // self-learning-frontier-2026-06-12 (P-020 / FB-06): the replay harness —
   // re-run an agent from a historical transcript point (or synthetic context)
   // under a modified prompt/policy and judge the divergence; the substrate for
@@ -1127,6 +1138,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // confirmed-terminal-spawn (immediate spawn-death) reclaim legs only — both safe;
   // the pending flip is surfaced in the plan's ## Now + the lane report.
   [FLAGS.RECLAIM_STALLED]: false,
+  // OFF by default — DELIBERATE (operator-memory-and-psu-resilience P-008 / WI-147,
+  // D-005/D-006 BINDING constraint): lazy/bounded substrate boot is correctness-critical
+  // with fleet-sync blast radius (a wrong eviction → the EI-126 data-divergence class) and
+  // MUST stage on :3170 first. OFF = byte-identical eager boot (today's behavior). The
+  // pending staged enable is surfaced in WI-147 + the plan.
+  [FLAGS.LAZY_SUBSTRATE_BOOT]: false,
   [FLAGS.NEGATIVE_SPACE_MINER]: false,
   // OFF by default — same D-001 dark-ship rule as NEGATIVE_SPACE_MINER above:
   // frontier learning loops arm only when self-learning-frontier P-001 closes

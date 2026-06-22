@@ -34,7 +34,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(env.PAPERCUSP_ACCOUNT_ID).toBe('acct-7');
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('x-papercusp-account: acct-7');
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('x-papercusp-owner: s-1');
-    expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp');
+    expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'claude');
   });
 
   test('gateway OFF → {} (unchanged direct egress); never selects an account', async () => {
@@ -66,5 +66,20 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h' });
     expect(env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:8788');
     expect('PAPERCUSP_ACCOUNT_ID' in env).toBe(false);
+  });
+
+  test('Codex backend → selects a Codex account and emits no Anthropic env/header leakage', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.selectSpawnAccount.mockResolvedValue('codex-main');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'codex' });
+
+    expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'codex');
+  });
+
+  test('OMP backend → unsupported provider account routing; no gateway env and no account selection', async () => {
+    h.getFlag.mockResolvedValue(true);
+    expect(await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'omp' })).toEqual({});
+    expect(h.selectSpawnAccount).not.toHaveBeenCalled();
   });
 });

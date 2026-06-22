@@ -222,6 +222,7 @@ const invoke = defineTool({
       : [];
     const spawnModelPin =
       typeof (body as any)?.spawnModel === 'string' ? ((body as any).spawnModel as string).trim() : '';
+    const routeBackend = resolveSpawnBackendModel(role, spawnModelPin || undefined, undefined).backend;
     // Per-hive override (domain-generic-hive-architecture-2026-06-18 P-012/P-013/D-013):
     // the loopback invoke route is the single chokepoint for the HTTP-based autonomous
     // spawns (queen via bpkind=hive, overwatch, launch blueprints) — all of which carry a
@@ -270,8 +271,7 @@ const invoke = defineTool({
     let hiveSpawnId: string | null = null;
     let advSessionRowId: number | null = null;
     if (isHiveLaunch || isOverwatchLaunch) {
-      const trackedBackend = resolveSpawnBackendModel(role, spawnModelPin || undefined, undefined).backend;
-      const trackedInteractiveBackend = interactiveBackendFromSpawnBackend(trackedBackend);
+      const trackedInteractiveBackend = interactiveBackendFromSpawnBackend(routeBackend);
       const trackedGuard = backendFeatureGuard(trackedInteractiveBackend, 'forced-native-session-id');
       if (!trackedGuard.supported) {
         return Response.json({
@@ -410,6 +410,7 @@ const invoke = defineTool({
           workspaceId: activeWorkspaceId(),
           slug: project.slug,
           ownerId: hiveSpawnId ?? undefined,
+          backend: routeBackend,
         }),
       );
     }

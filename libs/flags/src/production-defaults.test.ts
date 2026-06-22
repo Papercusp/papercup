@@ -48,6 +48,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // dead-holder + confirmed-terminal-spawn legs run (byte-identical reclaim outcome + the new
   // immediate spawn-death release). Owner flips ON after an attended verify of the stalled leg.
   FLAGS.RECLAIM_STALLED,
+  // operator-memory-and-psu-resilience P-008 (WI-147, D-005/D-006): lazy/bounded substrate boot —
+  // correctness-critical with fleet-sync blast radius (a wrong eviction → the EI-126 data-divergence
+  // class). Binding constraint: stage on :3170 FIRST. OFF ⇒ byte-identical eager boot. Owner flips ON
+  // after the staged :3170 verify (peer sync intact + no outbox growth + RSS drop).
+  FLAGS.LAZY_SUBSTRATE_BOOT,
   // git-sync-dx-hardening-2026-06-17 P-004: derived per-agent commit attribution rewrites
   // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
   // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.

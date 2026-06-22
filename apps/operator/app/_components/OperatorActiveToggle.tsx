@@ -34,6 +34,7 @@ import {
   readSleepUntilMs,
   writeSleepUntilMs,
 } from '@papercusp/operator-core/lib/operator-converse-tags';
+import { useLexicon } from '@/lib/useLexicon';
 
 const MODE_CHANGE_EVENT = 'papercusp:operatorMode';
 const SLEEP_CHANGE_EVENT = 'papercusp:operatorSleep';
@@ -140,6 +141,11 @@ export function OperatorActiveToggle() {
   const [mode, setMode] = useOperatorMode();
   const sleepUntil = useOperatorSleepUntil();
   const sub = useOperatorSub();
+  // Persona name from the active brand pack — "Sentinel" in the-hive, "Operator"
+  // in classic. Never the hardcoded "Papercup" (owner rebrand 2026-06-22, scoped
+  // to the lexicon pack). Reactive via useLexicon → flag-hooks useFlag.
+  const t = useLexicon();
+  const persona = t('operator');
   const active = mode === 'active';
   const sleepingMs = sleepUntil > 0 ? sleepUntil - Date.now() : 0;
   const sleeping = active && sleepingMs > 0;
@@ -174,19 +180,19 @@ export function OperatorActiveToggle() {
       ? 'Quiet'
       : active ? 'Active' : 'Passive';
   const aria = sleeping
-    ? `Papercup sleeping for ${sleepLabel}. Click to wake.`
+    ? `${persona} sleeping for ${sleepLabel}. Click to wake.`
     : quiet
-      ? 'Papercup is quiet — type in the chat to pick up where you left off.'
+      ? `${persona} is quiet — type to pick up where you left off.`
       : active
-        ? 'Papercup interaction mode: active. Click to set passive.'
-        : 'Papercup interaction mode: passive. Click to set active.';
+        ? `${persona} interaction mode: active. Click to set passive.`
+        : `${persona} interaction mode: passive. Click to set active.`;
   const title = sleeping
-    ? `Papercup went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
+    ? `${persona} went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
     : quiet
-      ? 'Papercup went silent after the silence ladder ran out. Type in the chat to wake them.'
+      ? `${persona} went silent after the silence ladder ran out. Type to wake it.`
       : active
-        ? 'Papercup is active — speaks proactively. Click to make passive.'
-        : 'Papercup is passive — only responds when spoken to. Click to make active.';
+        ? `${persona} is active — speaks proactively. Click to make passive.`
+        : `${persona} is passive — only responds when spoken to. Click to make active.`;
   const dotKind = (sleeping || quiet) ? 'static' : active ? 'pulsing' : 'static';
 
   return (

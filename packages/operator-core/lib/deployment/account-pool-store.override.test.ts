@@ -21,8 +21,8 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
 import { selectSpawnAccount } from './account-pool-store';
 
-function acct(id: string) {
-  return { id, credentialRef: `token:/p/${id}`, addedAt: 0, boundTo: [] as string[], rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0 } };
+function acct(id: string, provider?: 'claude' | 'codex') {
+  return { id, provider, credentialRef: `token:/p/${id}`, addedAt: 0, boundTo: [] as string[], rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0 } };
 }
 
 beforeEach(() => {
@@ -59,5 +59,14 @@ describe('selectSpawnAccount — P-004 override', () => {
     readOperatorState.mockResolvedValue({ accounts: [acct('a')] });
     getAccountOverride.mockRejectedValue(new Error('pg down'));
     expect(await selectSpawnAccount('ws', 'h', undefined)).toBeUndefined();
+  });
+
+  it('provider-filtered Codex selection applies overrides only within Codex accounts', async () => {
+    readOperatorState.mockResolvedValue({ accounts: [acct('claude-a'), acct('codex-a', 'codex'), acct('codex-b', 'codex')] });
+    getAccountOverride.mockResolvedValue({ forcedAccounts: ['claude-a'], excludeAccounts: [] });
+    expect(await selectSpawnAccount('ws', 'h', undefined, 'codex')).toBeUndefined();
+
+    getAccountOverride.mockResolvedValue({ forcedAccounts: ['codex-b'], excludeAccounts: [] });
+    expect(await selectSpawnAccount('ws', 'h', undefined, 'codex')).toBe('codex-b');
   });
 });

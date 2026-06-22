@@ -141,10 +141,11 @@ export async function selectSpawnAccount(
   ws: string | undefined,
   harness: string | undefined,
   priorAccountId?: string,
+  provider: AccountProvider = 'claude',
 ): Promise<string | undefined> {
   const pool = await loadAccountPool(ws).catch(() => null);
   if (!pool) return undefined;
-  const claudePool = { accounts: accountsForProvider(pool, 'claude') };
+  const providerPool = { accounts: accountsForProvider(pool, provider) };
   const now = Date.now();
   // P-004: apply the owner's session-now override BEFORE selection (fail-soft, no-op when
   // unset). A `forced` allow-list restricts the candidates; `exclude` skips some. An
@@ -153,7 +154,7 @@ export async function selectSpawnAccount(
   const override = await readAccountOverride(ws);
   if (!isOverrideEmpty(override)) {
     const allowed = applyAccountOverride(
-      claudePool.accounts.map((a) => a.id),
+      providerPool.accounts.map((a) => a.id),
       override,
     );
     if (allowed.length === 0) return undefined;
@@ -161,15 +162,15 @@ export async function selectSpawnAccount(
     // pin it (the owner's explicit choice; pause/failover is handled downstream).
     if (allowed.length === 1) return allowed[0];
     const allow = new Set(allowed);
-    const sel = selectAccountForSpawn({ accounts: claudePool.accounts.filter((a) => allow.has(a.id)) }, now, {
+    const sel = selectAccountForSpawn({ accounts: providerPool.accounts.filter((a) => allow.has(a.id)) }, now, {
       harness,
       priorAccountId,
     });
     return resolveSelection(ws, sel, now);
   }
   // No override → today's exact path: no routing needed for ≤1 account.
-  if (claudePool.accounts.length <= 1) return undefined;
-  const sel = selectAccountForSpawn(claudePool, now, { harness, priorAccountId });
+  if (providerPool.accounts.length <= 1) return undefined;
+  const sel = selectAccountForSpawn(providerPool, now, { harness, priorAccountId });
   return resolveSelection(ws, sel, now);
 }
 

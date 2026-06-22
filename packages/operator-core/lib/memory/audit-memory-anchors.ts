@@ -35,7 +35,8 @@ import {
 } from './audit-anchors';
 import { pgClientFields } from './mem0-connection';
 import { detectPapercupRoot } from '../harness/register-papercusp';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '../util/cli-entry';
 
 interface CliOptions {
   dryRun: boolean;
@@ -255,13 +256,11 @@ export async function runMemoryAnchorAuditOnce(opts: {
 // CLI entry — ESM-safe (operator-core is "type":"module"). The old
 // `require.main === module` threw `require is not defined` under ESM, so the
 // module crashed the instant it was *imported* (e.g. by the DBOS periodic
-// registry) — which would have taken down every scheduled timer. import.meta.url
-// is the ESM equivalent: fires only on a direct `tsx …/audit-memory-anchors.ts`
-// invocation, never on import (scheduler / tests).
-const invokedDirectly =
-  process.argv[1] != null &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
-if (invokedDirectly) {
+// registry) — which would have taken down every scheduled timer. isCliEntry()
+// is the bundle-safe ESM equivalent: fires only on a direct
+// `tsx …/audit-memory-anchors.ts` invocation, never on import (scheduler /
+// tests) and never when inlined into the desktop sidecar bundle (EI-650).
+if (isCliEntry(import.meta.url)) {
   const opts = parseArgs(process.argv.slice(2));
   audit(opts).then(
     (r) => process.exit(r.skipped ? 0 : (r.ok ? 0 : 1)),

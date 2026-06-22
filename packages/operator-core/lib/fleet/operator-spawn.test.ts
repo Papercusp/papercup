@@ -29,6 +29,7 @@ vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
+vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
 // Per-hive override resolver (P-012/P-013) is a PG-backed spawn dep like its siblings —
 // mock it to a no-op so the unit tests don't touch PG. vi.mock intercepts the dynamic
 // import operator-spawn uses, so the BLUEPRINT_LOCAL_ROOT producer is a clean no-op here.
@@ -56,6 +57,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
+import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import { reclaimOrphanedSpawns } from './spawn-reclaim';
@@ -112,6 +114,7 @@ beforeEach(() => {
   vi.mocked(resolveProject).mockResolvedValue(PROJECT as never);
   vi.mocked(loadHarnessRegistry).mockResolvedValue({ projects: [PROJECT] } as never);
   vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: 'done!', exitCode: 0, stderr: '' });
+  vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({});
   vi.mocked(recordSpawn).mockResolvedValue(undefined);
   vi.mocked(finishSpawn).mockResolvedValue(undefined);
   // Default getFlag → each flag's real default (no PostHog), matching the prior
@@ -287,6 +290,30 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
       const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
       expect(opts?.forceSessionId).toBeUndefined();
       expect(findUpdate()).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('spawnAgentInHarness — backend-aware gateway account routing', () => {
+  it('passes the resolved Codex backend to the shared gateway env helper and carries only the returned Codex account id', async () => {
+    vi.stubEnv('AGENT_CMD', 'codex exec');
+    vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    try {
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      expect(res.ok).toBe(true);
+
+      expect(resolveSpawnGatewayEnv).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'ws-1',
+        slug: 'demo',
+        ownerId: res.spawnId,
+        backend: 'codex',
+      }));
+      const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+      expect(env.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();
     }

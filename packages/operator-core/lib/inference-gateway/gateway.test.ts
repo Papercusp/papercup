@@ -953,6 +953,62 @@ test('the HARD per-request ceiling force-terminates a stuck request → slot rel
   await new Promise<void>((r) => hanging.close(() => r()));
 });
 
+test('[self-heal integration] the sweeper reclaims the oldest stuck slot when saturated + nothing drains — frees the wedge, bumps selfHealReclaims, admits the queued waiter', async () => {
+  // The pure decider (evaluateSelfHeal/isSaturated/pickReclaimTarget) is unit-tested in gateway-self-heal.test;
+  // this drives the SWEEPER end-to-end: saturate ONE slot with a request the valve must reclaim, and prove the
+  // freed slot is handed to a queued waiter (the wedge actually drains) — not just that the counter moves.
+  //
+  // Upstream answers only AFTER a delay LONGER than the freeze window, so the slot-holder is still pending when
+  // the valve fires. on('close') cancels the pending response when the valve aborts the connection (a reclaimed
+  // request leaves nothing dangling → clean teardown).
+  await boot(
+    (_req, res) => {
+      const t = setTimeout(() => {
+        if (!res.destroyed && !res.writableEnded) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"ok":true}');
+        }
+      }, 800);
+      t.unref?.();
+      res.on('close', () => clearTimeout(t));
+    },
+    {
+      concurrency: 1, // ONE admission slot → trivially saturable
+      aimd: { floor: 1 }, // floor == cap → AIMD disabled, maxConcurrent stays 1
+      maxQueueWaitMs: 5_000, // the 2nd request STAYS queued (queueDepth=1 → saturated), never load-sheds
+      selfHeal: { enabled: true, freezeMs: 200, pollMs: 40 }, // tiny → the valve fires fast in-test
+      // Generous per-request guards so ONLY the self-heal valve can free the held slot in the test window.
+      upstreamHeadersTimeoutMs: 60_000,
+      upstreamStreamHeadersTimeoutMs: 60_000,
+      upstreamBodyIdleTimeoutMs: 60_000,
+      requestCeilingMs: 60_000,
+      downstreamIdleMs: 60_000,
+      tokenTimeoutMs: 60_000,
+    },
+  );
+  const fire = () =>
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    }).then((r) => ({ status: r.status }), () => ({ status: 0 })); // the valve destroys the socket → fetch may reject
+
+  const start = Date.now();
+  const p1 = fire(); // acquires the only slot; the upstream won't answer for 800ms
+  await new Promise((r) => setTimeout(r, 60)); // let request 1 take the slot before request 2 queues behind it
+  const p2 = fire(); // QUEUES behind the held slot → queueDepth=1 → saturated
+
+  const r1 = await p1; // the valve reclaims this at ~freezeMs (200ms), force-freeing its slot
+  const elapsed1 = Date.now() - start;
+  assert.ok(elapsed1 < 3_000, `request 1 force-freed by self-heal in ${elapsed1}ms (not held to the 60s guards)`);
+  assert.notEqual(r1.status, 200, 'the RECLAIMED request did not get a clean 200 (its slot was force-reclaimed)');
+
+  assert.ok(gw.stats().selfHealReclaims >= 1, `the self-heal valve recorded a reclaim (got ${gw.stats().selfHealReclaims})`);
+
+  const r2 = await p2; // the freed slot was handed to the queued waiter, which then completes for real
+  assert.equal(r2.status, 200, 'the queued waiter was admitted to the freed slot and completed (the wedge actually drained)');
+});
+
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 // B-GW-2 — chaos / failure load harness.
 //

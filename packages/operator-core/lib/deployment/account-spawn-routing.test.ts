@@ -90,6 +90,24 @@ describe('selectSpawnAccount — deterministic, Queen-independent egress-account
     h.pool = poolOf('a', 'b', 'c');
     expect(await selectSpawnAccount('ws', 'harness-x', 'c')).toBe('c');
   });
+
+  it('filters by provider for Codex spawn routing, leaving legacy Claude selection unchanged', async () => {
+    let p = poolOf('claude-a', 'claude-b');
+    p = registerAccount(p, {
+      id: 'codex-a',
+      provider: 'codex',
+      credentialRef: 'token:~/.papercusp/codex-a',
+    }, ADDED + 10);
+    p = registerAccount(p, {
+      id: 'codex-b',
+      provider: 'codex',
+      credentialRef: 'token:~/.papercusp/codex-b',
+    }, ADDED + 11);
+    h.pool = p;
+
+    expect(await selectSpawnAccount('ws', 'harness-x', undefined, 'codex')).toMatch(/^codex-/);
+    expect(await selectSpawnAccount('ws', 'harness-y')).toMatch(/^claude-/);
+  });
 });
 
 describe('selectSpawnAccount — accurate header-derived budget signal does not mis-route (P-004 / D-002, post-usage-accuracy-fix D-004)', () => {
