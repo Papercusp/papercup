@@ -23,8 +23,8 @@ import drainTool from './drain';
 const ctx = { workspaceId: 'ws-1', isSuperuser: true } as never;
 const env = async (x: unknown) => {
   const parsed = (drainTool.args as { parse: (v: unknown) => unknown }).parse(x);
-  const res = (await drainTool.handler(parsed as never, ctx)) as { content: { text: string }[] };
-  return (res.data);
+  const res = (await drainTool.handler(parsed as never, ctx)) as { data: unknown };
+  return res.data;
 };
 
 beforeEach(() => {

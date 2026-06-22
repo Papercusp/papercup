@@ -233,3 +233,27 @@ export const ENGINEER_ISSUES_MIN_DDL = `
     state        text NOT NULL DEFAULT 'open',
     PRIMARY KEY (workspace_id, issue_id)
   )`;
+
+/**
+ * `substrate_outbox` federation CDC outbox (archive/102) — the bare table + drain index,
+ * WITHOUT archive/102's per-table capture trigger attachments. Those attach to
+ * harness_features_consolidated / harness_issues_consolidated, which are now compat VIEWS
+ * after the P-010 unification, so 102's `CREATE TRIGGER ... ON <view>` would fail. Federation
+ * tests apply THIS for the outbox surface, then the real work_items capture via
+ * readMigration('375-work-items-cdc-capture.sql'); the projection-apply tests (echo-guarded,
+ * remote-origin writes) need only this empty table for their beforeEach reset.
+ */
+export const SUBSTRATE_OUTBOX_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.substrate_outbox (
+    id           BIGSERIAL PRIMARY KEY,
+    workspace_id TEXT   NOT NULL,
+    harness_slug TEXT   NOT NULL,
+    table_name   TEXT   NOT NULL,
+    op           TEXT   NOT NULL CHECK (op IN ('put', 'del')),
+    key          TEXT   NOT NULL,
+    row          JSONB,
+    ts           BIGINT NOT NULL,
+    drained_at   BIGINT
+  );
+  CREATE INDEX IF NOT EXISTS substrate_outbox_drain_idx
+    ON harness_shared.substrate_outbox (workspace_id, harness_slug, drained_at, id);`;

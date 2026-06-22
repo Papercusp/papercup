@@ -8,27 +8,12 @@
  * issues:* surface reads it.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, SUBSTRATE_OUTBOX_DDL } from '../../../../test/_work-items-schema';
 import { buildEngineerIssuesProjection, _testing, type EngineerIssueRow } from './engineer-issues';
 
-const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-ei-proj';
 const SLUG = 'papercup';
-
-function stripMeta(sql: string): string {
-  return sql
-    .split('\n')
-    .filter((l) => {
-      const t = l.trim();
-      if (t.startsWith('\\')) return false;
-      if (/^(begin|commit);$/i.test(t)) return false;
-      return true;
-    })
-    .join('\n');
-}
 
 function issueRow(over: Partial<EngineerIssueRow> = {}): EngineerIssueRow {
   return {
@@ -63,33 +48,10 @@ beforeAll(async () => {
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_zero') THEN CREATE ROLE harness_zero NOLOGIN; END IF;
     END $r$;
   `);
-  // The outbox + generic capture fn (so the table + capture_substrate_outbox the
-  // engineer_issues fed migration's neighbors reference exist), then engineer_issues
-  // + kind/payload + the fed column/trigger. Stubs for the consolidated tables mig 102
-  // attaches generic triggers to.
-  await db.sql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      workspace_id TEXT NOT NULL DEFAULT '', harness_slug TEXT NOT NULL,
-      feature_id TEXT NOT NULL, author_pubkey TEXT,
-      origin TEXT NOT NULL DEFAULT 'local', PRIMARY KEY (harness_slug, feature_id)
-    );
-    CREATE TABLE harness_shared.harness_issues_consolidated (
-      workspace_id TEXT NOT NULL DEFAULT '', harness_slug TEXT NOT NULL,
-      issue_id TEXT NOT NULL, author_pubkey TEXT,
-      origin TEXT NOT NULL DEFAULT 'local', PRIMARY KEY (harness_slug, issue_id)
-    );
-  `);
-  await db.sql.unsafe(readFileSync(resolve(SQL_DIR, 'archive/102-substrate-outbox.sql'), 'utf8'));
-  for (const m of [
-    '131-engineer-issues.sql',
-    '142-work-items-unify.sql',
-    '152-delegate-task-workitems.sql',
-    '197-engineer-issues-federation.sql',
-  ]) {
-    await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, m), 'utf8')));
-  }
-  // D-001 (mig 314): the fed_hlc ordering column the projection now writes.
-  await db.sql.unsafe(`ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  // P-010 unification: work_items base + hfc/ei compat views + the outbox table. The
+  // projection applies REMOTE-origin ops (echo-guarded), so no capture trigger is needed.
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL);
 });
 afterAll(async () => {
   await db?.cleanup();

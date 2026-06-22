@@ -121,7 +121,8 @@ describe('work_items:create tool threads urgent', () => {
 
   it('urgent:true reaches the brain-wake seam', async () => {
     const res = await createTool.handler(parse({ kind: 'bug', title: 'tool urgent', urgent: true }), ctx);
-    const body = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    // work_items:create is bulk (P-006): the handler returns { data: envelope }.
+    const body = (res as { data: any }).data;
     expect(body.ok).toBe(true);
     await vi.waitFor(() => expect(requestUrgentHiveWake).toHaveBeenCalledTimes(1));
   });

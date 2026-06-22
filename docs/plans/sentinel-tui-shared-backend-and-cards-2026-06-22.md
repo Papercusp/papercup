@@ -48,7 +48,7 @@ Three workstreams in flight (owner: "continue working on 1,2,3"):
 
 The sidebar was retired; the live app is `apps/operator-vite`, and chat moved to the **Claude TUI** (`apps/tui`, Rust/ratatui) in a zellij pane.
 
-- **Sentinel chat = `operator:converse` with `role:'sentinel'`, `surface:'tui'`** (`converse.ts:91-101`; alias `sentinel:converse`). Same operator brain, Herald persona. The TUI consumes the converse **text** stream over IPC/SSE (`apps/tui/src/{sse.rs,http.rs,chat_tags.rs}`); it parses only `<say>/<report>/<set_mode>/<sleep>/<spawn>/<continue>`.
+- **Sentinel chat = `operator:converse` with `role:'sentinel'`, `surface:'tui'`** (`converse.ts:91-101`; alias `sentinel:converse`). Same operator brain, Sentinel persona. The TUI consumes the converse **text** stream over IPC/SSE (`apps/tui/src/{sse.rs,http.rs,chat_tags.rs}`); it parses only `<say>/<report>/<set_mode>/<sleep>/<spawn>/<continue>`.
 - **Queen** is a *separate* role — the autonomous engineer/placement brain (`apps/tui/src/agent_pane_kind.rs`: Queen ♛ and Sentinel 🛡 are sibling auto-roles; lexicon maps `operator`→Queen, `brain`→Queen in the-hive pack).
 - **Voice is severed from the chat backend.** Live config: `fullAgentEngine: elevenlabs-conv` → voice routes to **ElevenLabs' hosted agent** (a separate brain), overriding STT/TTS. The fallback local-STT path goes only to **Oracle** (`VoiceAppBridge.tsx:246`), and that's doubly dead: `/api/oracle/chat` 404s on the desktop host, and `speak()` hard-mutes unless `sessionStorage['oracle-tutorial-complete']==='true'` — set **only by e2e tests** (`voice-mode.ts:2015`; confirmed `null` on the live session). The operator conversation's reply generator (`sendUserMessage`/`runGeneration`) is **never called by voice** — its only caller was the retired sidebar (now TESTING-gated, `ChromeShell.tsx:239`).
 - **Cards are dead in the live app.** `PendingCardsBar`/`LocalCardHost` were never ported to operator-vite (grep: zero hits). The **TUI deliberately disables** cards: `operator:converse` strips `chat:ask_choice` when `surface:'tui'` (`converse.ts:279-282`) and the prompt forbids it (`converse-prompt.ts:356-376`, "the terminal can't render choice cards"). The **server machinery is fully intact** (correlator, `/card-response`, `/run-cancel`).
@@ -69,7 +69,7 @@ The sidebar was retired; the live app is `apps/operator-vite`, and chat moved to
 
 **Who is the brain behind the Sentinel chat — the Sentinel persona, or the Queen?**
 
-In code today, the Sentinel chat is the *operator* brain wearing the Herald persona (`operator:converse role=sentinel`); the **Queen** is a distinct engineer brain. The owner says "the queen is the brain." Two coherent readings:
+In code today, the Sentinel chat is the *operator* brain wearing the Sentinel persona (`operator:converse role=sentinel`); the **Queen** is a distinct engineer brain. The owner says "the queen is the brain." Two coherent readings:
 
 - **(A) Sentinel = front-door persona; Queen = the engineer it dispatches to.** The user converses with the Sentinel (operator:converse); for real engineering work the Sentinel hands off to the Queen (placement/engineer). Minimal change to the converse brain; matches the current sibling-role model.
 - **(B) The Sentinel chat IS the Queen.** `operator:converse` (the chat the TUI/voice drive) is backed by the Queen brain/persona directly — one brain that both converses and engineers.

@@ -48,8 +48,8 @@ const scaleTool = mod.accountsScaleOutTool;
 const statusTool = mod.accountsStatusTool;
 const listTool = mod.accountsListTool;
 
-type Out = { data: any };
-const body = (o: Out) => (o.data);
+type Out = { data?: any; content?: Array<{ text: string }> };
+const body = (o: Out) => (o.data ?? JSON.parse(o.content![0].text));
 
 beforeEach(() => {
   vi.clearAllMocks();

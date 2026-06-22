@@ -26,7 +26,7 @@ const ACTIVE_WS = 'ws-active';
 // Bulk envelope: { ok, results:[…], counts }. Permissive type so per-item reads
 // (b.results[0], b.results.map(...)) type-check in this PG-free unit.
 type Body = { ok: boolean; results: any[]; counts: { ok: number; failed: number }; [k: string]: unknown };
-const body = (r: { data: any }): Body => (r.data);
+const body = (r: { data?: any; content?: Array<{ text: string }> }): Body => (r.data ?? JSON.parse(r.content![0].text));
 
 /** A ctx with the given principal fields; pass `null` to omit the principal entirely. */
 function ctxWith(principal: { workspaceId?: string; slug?: string } | null): unknown {
@@ -55,17 +55,17 @@ afterEach(() => {
 
 async function addTool() {
   return (await import('./add')).default as unknown as {
-    handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+    handler: (a: unknown, c: unknown) => Promise<{ data?: any; content?: Array<{ text: string }>; isError?: boolean }>;
   };
 }
 async function removeTool() {
   return (await import('./remove')).default as unknown as {
-    handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+    handler: (a: unknown, c: unknown) => Promise<{ data?: any; content?: Array<{ text: string }>; isError?: boolean }>;
   };
 }
 async function listTool() {
   return (await import('./list')).default as unknown as {
-    handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+    handler: (a: unknown, c: unknown) => Promise<{ data?: any; content?: Array<{ text: string }>; isError?: boolean }>;
   };
 }
 

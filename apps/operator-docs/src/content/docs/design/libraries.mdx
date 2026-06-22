@@ -235,9 +235,11 @@ A *global* `accent-color: var(--accent)` on native checkbox/radio/range is **not
 `@radix-ui/react-hover-card` (`^1.1.15`) is still in `package.json`, but its only reference (`FeatureLink.tsx`) is retired code under `libs/papercusp/_retired/apps-web/`. There is **no live usage** in the operator app today. (This also undercuts the older Tooltip rationale that hover-card is "already in the codebase" — it's installed, not actively used.)
 </Aside>
 
-## `@papercusp/grid-core` — `RichGrid`, `GridTable`, `DataGridShell`
+## `@papercusp/grid-core` — `RichGrid`, `VirtualGrid`, `GridTable`, `DataGridShell`
 
-**What:** Three grid components for tabular data. Pick by what cells need to do — see the [decision matrix](/internal/docs/design#grids--richgrid-vs-gridtable-vs-datagridshell).
+**What:** Grid components for tabular data. Pick by what cells need to do — see the [decision matrix](/internal/docs/design#grids--richgrid-vs-gridtable-vs-datagridshell).
+
+**`VirtualGrid` — the default for large/unbounded grids.** A thin wrapper over `RichGrid` that owns the TanStack virtualizer + scroll container, so only the visible window mounts as DOM. Pass an in-memory `rows` array; every other RichGrid prop passes through. Use it for any grid whose row count is unbounded or can exceed a few hundred — **don't cap the fetch to keep render cheap** (on a local desktop app the data is already local; load it all and window the render). Full API + the companion "honest count" (`_meta.total`) pattern: [data-sync/richgrid](/internal/docs/data-sync/richgrid#virtualgrid-the-drop-in-for-large-grids).
 
 **Built-in print + copy support** (RichGrid, default-on):
 

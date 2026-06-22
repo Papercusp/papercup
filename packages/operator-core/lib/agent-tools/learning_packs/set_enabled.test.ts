@@ -17,11 +17,11 @@ const mockSet = vi.mocked(setPackEnabled);
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (
     setEnabledTool as unknown as {
-      handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+      handler: (a: unknown, c: unknown) => Promise<{ data?: any; content?: Array<{ text: string }> }>;
     }
   ).handler(args, ctx);
 }
-const body = (r: { data: any }) => (r.data);
+const body = (r: { data?: any; content?: Array<{ text: string }> }) => (r.data ?? JSON.parse(r.content![0].text));
 
 describe('learning_packs:set_enabled tool (bulk keyed-array)', () => {
   beforeEach(() => {

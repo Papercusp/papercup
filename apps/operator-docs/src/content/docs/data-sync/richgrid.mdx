@@ -282,6 +282,14 @@ handler:
 
 ## Patterns: virtual rows
 
+:::tip[Reach for `VirtualGrid` first]
+For the common case — "I have an in-memory array, render it without mounting
+every row" — use [`VirtualGrid`](#virtualgrid-the-drop-in-for-large-grids)
+(next section), which owns the virtualizer + scroll element for you. The raw
+`virtualMode` seam documented here is for advanced cases (an external/shared
+scroll element, or lazy/paged `rowAt`).
+:::
+
 For grids that may show >500 rows (audit logs, agent runs across years),
 pass `virtualMode` (a `{ virtualizer, totalRows, rowAt }` object) **instead
 of** `rows`. You own the TanStack virtualizer + the windowed `rowAt(index)`
@@ -294,6 +302,83 @@ re-measures the expanded row (each measurement is a forced layout read in
 the scroll path). Pass `measureAll: true` on `virtualMode` only when rows
 are genuinely variable height (multi-line cards, day-grouped feeds) so the
 virtualizer measures each visible row and keeps offsets exact.
+
+## VirtualGrid: the drop-in for large grids
+
+`virtualMode` (above) is the low-level seam — you own the virtualizer, the
+scroll element, `rowAt`, and the re-`measure()` on data change. That boilerplate
+was being copy-pasted and, more often, **skipped**: `<RichGrid rows={bigArray}>`
+(legacy mode) mounts **every** row as DOM, so teams hid the resulting jank by
+capping the fetch (the classic `limit: 300`). On a local desktop app that cap is
+pure downside — the data is already local, so load it all and just window the
+render.
+
+`VirtualGrid` (also from `@papercusp/grid-core`) owns all of it. Pass an
+in-memory array; only the visible window mounts:
+
+```tsx
+import { VirtualGrid } from '@papercusp/grid-core';
+
+<VirtualGrid<Row>
+  columns={columns}
+  rows={filteredRows}        // the FULL array — VirtualGrid windows it
+  getRowId={(r) => r.id}
+  onRowClick={(r) => setSel(r.id)}
+  rowMinHeight={30}
+  estimateRowHeight={30}     // optional; defaults to rowMinHeight ?? 30
+/>
+```
+
+- Every other RichGrid prop passes straight through (selection, resizable
+  columns, sort, expansion, `getRowBg`, `empty`, …).
+- VirtualGrid renders its **own** scroll container, so do **not** wrap it in a
+  scrolling `<div>`. By default the container is `flex: 1; min-height: 0;
+  overflow: auto`, so give it a flex-column parent with a bounded height. To cap
+  height or own the container yourself, pass `scrollClassName` / `scrollStyle`.
+- Reach for raw `virtualMode` only when you need an **external/shared** scroll
+  element, or paged/infinite-scroll sync (`@papercusp/sync`'s
+  `useSyncVirtualizer`). For "I have an array, render it cheaply", use VirtualGrid.
+
+**Rule of thumb:** any grid whose row count is unbounded or can exceed a few
+hundred uses VirtualGrid. Capping the fetch to keep render cheap is the
+anti-pattern — virtualize, then load the full local set. Reference migration:
+`WorkItemsPanel.tsx`.
+
+## Honest counts: the true total via `_meta`
+
+`useSyncQuery` resolvers return a **bare array** — there is no `{rows, total}`
+envelope. So a capped read (`LIMIT n`) has no channel to report the true total,
+and panels end up showing the **downloaded length** as if it were the count (e.g.
+"(300)" when 404 exist) — and any client-side filter then runs over only the
+truncated window.
+
+The convention (pioneered by `coord.feed`, now a shared helper) stashes page
+metadata on the **first row's `_meta`**, preserving the flat-array contract.
+Helpers live in `@papercusp/operator-core/lib/sync-resolver/list-meta`:
+
+**Server — in the resolver:**
+
+```ts
+import { attachListMeta } from './list-meta';
+
+const [rows, total] = await Promise.all([listX({ limit }), countX()]);
+return attachListMeta(rows, { total }); // stashes { total } on rows[0]._meta
+```
+
+**Client — in the panel:**
+
+```ts
+import { readListTotal, listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+
+const total = readListTotal(items); // true total; falls back to items.length
+api.setTitle(`Work items · ${slug} (${listCountLabel(items.length, total)})`);
+// → "404" when nothing was truncated; "300 of 404" when the read was capped.
+```
+
+`listCountLabel(shown, total)` is the rule: show just the total when nothing was
+truncated, `"N of TOTAL"` when it was — **never** the downloaded length alone.
+Even a paginated view should surface the true total this way, not the page size.
+Reference: `workItems.byHarness` (resolver) + `WorkItemsPanel.tsx` (panel).
 
 ## Multi-expand
 

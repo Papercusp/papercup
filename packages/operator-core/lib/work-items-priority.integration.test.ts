@@ -53,15 +53,14 @@ const setPriorityTool = (await import('./agent-tools/work_items/set_priority')).
 // counts }. Every call below is single-item, so the n=1 result is results[0] — return it
 // directly so the per-mode assertions (mode/action/priority/ok) read naturally.
 const runSetPriority = async (args: Record<string, unknown>) => {
-  const env = JSON.parse(
-    (
-      await (
-        setPriorityTool as unknown as {
-          handler: (a: unknown, c: unknown) => Promise<{ content: { text: string }[] }>;
-        }
-      ).handler(args, { log() {}, workspaceId: 'default', role: 'operator' })
-    ).content[0].text,
-  );
+  // work_items:set_priority is bulk (P-006): the handler returns { data: envelope }.
+  const env = (
+    await (
+      setPriorityTool as unknown as {
+        handler: (a: unknown, c: unknown) => Promise<{ data: any }>;
+      }
+    ).handler(args, { log() {}, workspaceId: 'default', role: 'operator' })
+  ).data;
   return env.results[0];
 };
 const H = 'papercup';

@@ -40,7 +40,7 @@ and disconnected:**
 |---|---|
 | **No voice I/O** | Voice → `routeVoiceUtteranceToConverse` → `operator:converse` only (`VoiceAppBridge.tsx`~119, `voice-converse-bridge.ts:42`). Nothing writes STT into the Claude pane's stdin; nothing speaks its output. |
 | **Off the shared thread** | The Claude session keeps its own `.jsonl` (`CLAUDE_CONFIG_DIR`, role-launch-spec.ts:307). It never touches `operator_conversations` (`operator-conversations.ts`, `getOrCreateActiveConversation`, route `…/operator/conversations.ts:26`) — which the webview text+voice + the `apps/tui` ratatui all share. |
-| **Wrong role** | It runs the **operator** (placement/decider) kernel role (`role-registry.ts:139`; caps `role-principal-caps.ts:116-149` = harness/work_items/plans/curation/coord) — **not** the **sentinel** (Herald) conversational role (caps incl. `operator:converse`/voice at `role-principal-caps.ts:62-76`). |
+| **Wrong role** | It runs the **operator** (placement/decider) kernel role (`role-registry.ts:139`; caps `role-principal-caps.ts:116-149` = harness/work_items/plans/curation/coord) — **not** the **sentinel** (Sentinel) conversational role (caps incl. `operator:converse`/voice at `role-principal-caps.ts:62-76`). |
 | **No cards** | `chat:ask_choice` needs `ctx.askUser` (`ask_choice.ts:130-142`), bound only on a `runId`-carrying converse/oracle dispatch via the card-correlator. A raw Claude-Code MCP client → `{error:'no_chat_surface'}`. |
 | **Prior work missed it** | Phase-1 (voice→`operator:converse`) + Phase-2 (cards in the `apps/tui` **ratatui**) wired `operator:converse` + the webview + the ratatui — **not** this Claude pane. |
 
@@ -57,12 +57,12 @@ current state blocking `operator:converse`).
         │                                                                          │
   voice (STT) ─┐                                                          ┌─ webview chat UI (text)
                ├──► 🛡 Sentinel = psu --role=sentinel (Claude Code, Claude Max) ──┤
-  voice (TTS) ◄┘     · Herald persona · reads/appends the shared thread           └─ (optional) ratatui mirror
+  voice (TTS) ◄┘     · Sentinel persona · reads/appends the shared thread           └─ (optional) ratatui mirror
                      · dispatches engineering to the Queen
                      · asks structured choices via a card bridge
 ```
 
-- The **Sentinel brain = a full Claude-Code agent** (Herald persona), not
+- The **Sentinel brain = a full Claude-Code agent** (Sentinel persona), not
   `operator:converse`.
 - **Voice in:** STT final-utterances are written to the Sentinel pane's PTY stdin.
 - **Voice out:** the Sentinel's spoken replies are captured and TTS'd.
@@ -74,16 +74,16 @@ current state blocking `operator:converse`).
 
 ## 2. Phases
 
-### Phase A — Launch the pane as the Herald/sentinel role
+### Phase A — Launch the pane as the Sentinel role
 - Change the dock generator (`apps/tui/src/layout.rs:260-261`) + `pui-chat-dock.kdl`
   sentinel pane to `psu --no-picker --agent=claude --role=sentinel` (or a new
-  `herald` role if `sentinel`'s caps are wrong for a front door).
+  dedicated role if the existing `sentinel` role's caps are wrong for a front door).
 - Confirm `assembleWorkspaceRolePrompt` loads `sentinel.persona.md` +
   `sentinel.tools.md` for the harness-less role (it already prefers `<role>.*`).
 - Review/adjust the role's MCP cap set (`role-principal-caps.ts`) for a front-door
   agent: conversation read/append (new — Phase B), work_items/plans, dispatch-to-Queen,
   voice:* , and the card tool (Phase E). Drop placement-only caps it doesn't need.
-- **Verify:** dock pane starts a usable Herald Claude session (Claude Max), responds
+- **Verify:** dock pane starts a usable Sentinel Claude session (Claude Max), responds
   to typed input. Test via §16 of `testing/agent-e2e` (dump-screen / write-chars).
 - **Risk:** the `sentinel` role today carries `operator:converse` (a cap for the
   *lighter* brain) — as a full Claude agent it should NOT call converse; prune that
@@ -95,14 +95,14 @@ current state blocking `operator:converse`).
 - **Approach (recommended): an MCP tool, not a transcript projector.** Add a
   sentinel-role tool pair (e.g. `conversation:recent` read + `conversation:append`
   write) over `operator-conversations.ts`. At launch, inject the last N turns of the
-  active conversation into the Herald's system prompt (via `buildRoleLaunchSpec`),
-  and have the Herald `conversation:append` each user+assistant turn (with
+  active conversation into the Sentinel's system prompt (via `buildRoleLaunchSpec`),
+  and have the Sentinel `conversation:append` each user+assistant turn (with
   `source:'voice'|'text'`). The webview already live-syncs the thread (`useSyncQuery`),
   so its turns appear in the webview instantly.
 - **Alternative:** project the Claude `.jsonl` → `operator_conversations` (a watcher).
   More brittle (format mapping, dedup). Prefer the MCP-tool approach.
 - **Risk:** this is the hardest piece — Claude's transcript store ≠ the PG thread.
-  Keep the Herald the *writer of record* (append-on-turn) to avoid two sources of truth.
+  Keep the Sentinel the *writer of record* (append-on-turn) to avoid two sources of truth.
 
 ### Phase C — Voice IN (STT → Sentinel stdin)
 - The Sentinel pane is a PTY child managed by the dock/`psu-pty-host.mjs`.
@@ -117,8 +117,8 @@ current state blocking `operator:converse`).
   a deterministic submit (bracketed paste + Enter) and confirm via dump-screen.
 
 ### Phase D — Voice OUT (Sentinel reply → TTS)
-- Capture the Herald's reply text and pass it to `speak()` (the existing TTS path).
-- **Approach (recommended): a `<say>…</say>` convention.** The Herald persona wraps
+- Capture the Sentinel's reply text and pass it to `speak()` (the existing TTS path).
+- **Approach (recommended): a `<say>…</say>` convention.** The Sentinel persona wraps
   the spoken portion of each reply in `<say>` (or calls a `voice:speak` MCP tool);
   the voice host reads it and TTS's it. The `<say>`-tag parsing already exists
   (`apps/tui/src/chat_tags.rs`, `operator-converse-tags.ts`) — reuse it. This lets the
@@ -128,7 +128,7 @@ current state blocking `operator:converse`).
 - **Risk:** keeping spoken text concise; not TTS-ing tool noise.
 
 ### Phase E — Cards (structured choices)
-- **Near-term:** plain-text Q&A — the Herald asks "1) … 2) … — say or type a number,"
+- **Near-term:** plain-text Q&A — the Sentinel asks "1) … 2) … — say or type a number,"
   the user answers by voice/text. Zero new infra; works in a raw Claude pane.
 - **Later (rich cards):** a sentinel MCP tool that **blocks + round-trips through the
   reusable server machinery** (card-correlator → `openCards` state-channel →
@@ -157,7 +157,7 @@ current state blocking `operator:converse`).
    Owner intent ("full claude tui") ⇒ the Claude Sentinel is the front door; decide
    whether the webview chat UI is retired, repointed at the shared thread (read-only
    mirror), or kept as a degraded fallback.
-2. **New `herald` role vs reuse+prune `sentinel`** (Phase A caps).
+2. **A new dedicated role vs reuse+prune the existing `sentinel`** (Phase A caps).
 3. **Voice-out:** `<say>` tag (recommended) vs output capture.
 4. **Cards:** plain-text only for v1, or build the blocking-ask bridge + pick its
    render surface (webview vs pui pane).
@@ -170,7 +170,7 @@ current state blocking `operator:converse`).
   dump-screen` / `write-chars`; screenshot the dock window).
 - The Sentinel runs on **Claude Max**, so end-to-end voice+text is **testable now**,
   independent of the rate-starved account pool.
-- Per phase: A → typed turn gets a Herald reply; B → a webview turn appears in the
+- Per phase: A → typed turn gets a Sentinel reply; B → a webview turn appears in the
   Claude pane's context and vice-versa (one thread); C → a simulated/real STT
   utterance reaches the pane; D → the reply is TTS'd; E → a choice round-trips.
 
@@ -178,4 +178,4 @@ current state blocking `operator:converse`).
 - PTY stdin bridging into a live interactive Claude pane (C).
 - Thread unification / dual source-of-truth (B) — the hardest piece.
 - Voice-out reliability + keeping spoken text concise (D).
-- Role caps: giving the Herald the right (and not too many) tools (A).
+- Role caps: giving the Sentinel the right (and not too many) tools (A).

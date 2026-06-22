@@ -21,14 +21,14 @@ const mockUpsert = vi.mocked(upsertDocRecord);
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = { harnessSlug: 'demo' }) {
   return (
     setOverlayTool as unknown as {
-      handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+      handler: (a: unknown, c: unknown) => Promise<{ data?: any; content?: Array<{ text: string }>; isError?: boolean }>;
     }
   ).handler(args, ctx);
 }
-const envelope = (r: { data: any }) => (r.data);
+const envelope = (r: { data?: any; content?: Array<{ text: string }> }) => (r.data ?? JSON.parse(r.content![0].text));
 // Bulk envelope (bulk-endpoint-standardization-2026-06-21): the single-form tests
 // below assert on the lone per-item result — unwrap results[0].
-const body = (r: { data: any }) => envelope(r).results[0];
+const body = (r: { data?: any; content?: Array<{ text: string }> }) => envelope(r).results[0];
 
 function rec(over: Partial<HarnessDocRecord> & { source: DocSource }): HarnessDocRecord {
   return {

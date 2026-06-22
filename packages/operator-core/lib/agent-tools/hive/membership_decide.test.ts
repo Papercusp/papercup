@@ -25,9 +25,13 @@ vi.mock('../../hive-membership-admission', () => ({ approvePendingJoin: h.approv
 import tool from './membership_decide';
 
 const CTX = { workspaceId: 'default' } as never;
-type Out = { data: any };
-const env = async (args: unknown) =>
-  (((await tool.handler(args as never, CTX)) as Out).data);
+type Out = { data?: any; content?: Array<{ text: string }> };
+// The happy path returns the canonical { data: envelope }; the top-level owner
+// gate still returns a raw { content } ToolResult — read whichever is present.
+const env = async (args: unknown) => {
+  const r = (await tool.handler(args as never, CTX)) as Out;
+  return r.data ?? JSON.parse(r.content![0].text);
+};
 
 beforeEach(() => {
   vi.clearAllMocks();

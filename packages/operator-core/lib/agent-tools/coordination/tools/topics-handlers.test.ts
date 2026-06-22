@@ -37,15 +37,18 @@ import topicsMergeTool from './topics-merge';
 
 type Tool = {
   args: { parse: (x: unknown) => unknown };
-  handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+  handler: (a: unknown, c: unknown) => Promise<{ content?: Array<{ text: string }>; data?: unknown }>;
 };
 const listTool = topicsListTool as unknown as Tool;
 const subTool = topicsSubscribeTool as unknown as Tool;
 const mergeTool = topicsMergeTool as unknown as Tool;
 const ctx = {} as never;
 const parse = (t: Tool, x: unknown) => t.args.parse(x);
-const out = (r: { data: any }): Record<string, unknown> =>
-  (r.data);
+// topics:subscribe is BULK → the canonical { data: envelope }.
+const out = (r: { data: any }): Record<string, unknown> => r.data;
+// topics:list / topics:merge are NOT bulk — they still return a raw { content } ToolResult.
+const raw = (r: { content?: Array<{ text: string }> }): Record<string, unknown> =>
+  JSON.parse(r.content![0].text);
 
 const topic = (slug: string, over: Partial<TopicRow> = {}): TopicRow => ({
   slug,
@@ -84,7 +87,7 @@ describe('topics:list handler projection', () => {
       sub('coord-dx', { delivery_mode: 'digest', expires_ts: '2027-01-01T00:00:00.000Z' }),
     ]);
 
-    const res = out(await listTool.handler(parse(listTool, { includeMerged: true }), ctx));
+    const res = raw(await listTool.handler(parse(listTool, { includeMerged: true }), ctx));
     expect(res.ok).toBe(true);
     const topics = res.topics as Array<Record<string, unknown>>;
     const bySlug = Object.fromEntries(topics.map((t) => [t.slug, t]));
@@ -143,7 +146,7 @@ describe('topics:subscribe handler projection (bulk envelope)', () => {
 describe('topics:merge handler projection', () => {
   it('returns subscribers_moved from the core moved count + echoes from/into', async () => {
     mergeTopics.mockResolvedValue({ moved: 3 });
-    const res = out(await mergeTool.handler(parse(mergeTool, { from: 'fed', into: 'federation' }), ctx));
+    const res = raw(await mergeTool.handler(parse(mergeTool, { from: 'fed', into: 'federation' }), ctx));
     expect(res).toMatchObject({ ok: true, from: 'fed', into: 'federation', subscribers_moved: 3 });
     expect(mergeTopics).toHaveBeenCalledWith(
       { ownerId: 'su-test', ownerLabel: 'su · test' },

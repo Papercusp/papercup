@@ -80,10 +80,12 @@ describe('flags:set', () => {
       MAKE_CTX(),
     )) as any;
 
-    expect(result.isError).toBe(true);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.ok).toBe(false);
-    expect(data.reason).toBe('posthog_unconfigured');
+    // flags:set is bulk (P-006): a backend failure becomes THIS item's
+    // { ok:false, key, error } — the batch ran (envelope ok:true, counts.failed:1).
+    const data = result.data;
+    expect(data.ok).toBe(true);
+    expect(data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(data.results[0]).toMatchObject({ ok: false, key: 'papercusp-testing', error: 'posthog_unconfigured' });
     // publishFlagChange must NOT be called on failure.
     expect(publishFlagChange).not.toHaveBeenCalled();
   });

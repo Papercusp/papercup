@@ -7,7 +7,10 @@
  *           `spawn_id`/`spawn_ids`, `key`/`keys`, … or a compound `items:[{…}]`),
  *           so a single call is n=1 of the bulk call.
  *   OUTPUT  `{ ok:true, results:[{ ok, <key>, …|error }], counts:{ ok, failed } }`
- *           — produced ONCE, by `runBulk` in _bulk.ts, serialized by `bulkContent`.
+ *           — produced ONCE, by `runBulk` in _bulk.ts, wrapped by `bulkContent`
+ *           in the framework's canonical `{ data: envelope }` ToolResponse shape
+ *           (P-006) so the single `serializeToolResponse` path TOON-encodes it on
+ *           the agent-facing MCP transport (lossless, JSON elsewhere).
  *
  * Every bulk verb routes its output through `_bulk` rather than re-hand-rolling
  * the loop + envelope. This lint is the growth ratchet: it discovers the bulk
@@ -149,9 +152,10 @@ describe('bulk-contract-sync (P-007 guard)', () => {
     const offenders = BULK_TOOLS.filter((t) => !/\bbulkContent\s*\(/.test(t.src)).map((t) => `${t.name} (${t.source})`);
     expect(
       offenders,
-      `These tools call runBulk but do not return via bulkContent — the ToolResult must be ` +
-        `bulkContent(env) so the framework's mcp-only TOON re-encode (P-002/D-008) can see the ` +
-        `{ ok, results:[…], counts } envelope:\n  ${offenders.join('\n  ')}`,
+      `These tools call runBulk but do not return via bulkContent — the return must be ` +
+        `bulkContent(env), which wraps the { ok, results:[…], counts } envelope in the canonical ` +
+        `{ data } ToolResponse so the framework's mcp-only TOON encode (P-002/P-006/D-008) applies:` +
+        `\n  ${offenders.join('\n  ')}`,
     ).toEqual([]);
   });
 

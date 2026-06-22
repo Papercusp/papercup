@@ -57,7 +57,7 @@ const id = (ownerId: string): AgentIdentity => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const run = (tool: any, args: Record<string, unknown> = {}) => tool.handler(args as any, {} as any);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const parse = (res: any) => (res.data);
+const parse = (res: any) => (res.data ?? JSON.parse(res.content[0].text));
 
 beforeEach(() => {
   configureCoordLog(new InMemoryCoordLog());

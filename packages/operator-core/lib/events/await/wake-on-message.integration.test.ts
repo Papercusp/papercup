@@ -43,8 +43,8 @@ const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T =>
   tool.args.parse(x) as T;
-const out = (res: unknown) =>
-  JSON.parse((res as { content: { text: string }[] }).content[0].text);
+// coord:send is bulk (P-006): the handler returns the canonical { data: envelope }.
+const out = (res: unknown) => (res as { data: any }).data;
 
 describe('coord:send {wake:true} → real engine → real pump → real socket (P-009)', () => {
   let db: OrgTestDb;

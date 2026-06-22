@@ -69,8 +69,12 @@ const useBackend = (b: ReturnType<typeof wedgedBackend>): void => {
 };
 
 const ctx = { principal: { workspaceId: 'ws-test' } } as never;
-const parse = (res: unknown): { ok: boolean; reason?: string; results?: unknown[] } =>
-  ((res as { data: any }).data);
+const parse = (res: unknown): { ok: boolean; reason?: string; results?: unknown[] } => {
+  const r = res as { data?: any; content?: Array<{ text: string }> };
+  // Bulk tools return the canonical { data: envelope }; a top-level guard/error
+  // path still returns a raw { content } ToolResult — read whichever is present.
+  return r.data ?? JSON.parse(r.content![0].text);
+};
 
 // noteMemoryFailure() warns when it latches degraded, but that log line is
 // NODE_ENV!=='test' guarded in op-deadline.ts (the latch still flips), so under

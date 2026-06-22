@@ -128,8 +128,11 @@ import { COORD_INBOX_WAKE_PREFIX, inboxWakeKey, ownerFromInboxWakeKey } from '..
 const ctx = { uiClientId: 'su-self', isSuperuser: true, workspaceId: 'ws' } as never;
 const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T =>
   tool.args.parse(x) as T;
-const out = (res: unknown) =>
-  ((res as { data: any }).data);
+const out = (res: unknown) => {
+  const r = res as { data?: any; content?: Array<{ text: string }> };
+  // Bulk tools return { data: envelope }; non-bulk / guard paths return raw { content }.
+  return r.data ?? JSON.parse(r.content![0].text);
+};
 // coord:send is now bulk (bulk-endpoint-standardization-2026-06-21 P-004): the
 // SINGLE form returns the house envelope { ok, results:[…], counts }; the one
 // message's per-message fields (wake / notWoken / endTurn / msg_id) live in

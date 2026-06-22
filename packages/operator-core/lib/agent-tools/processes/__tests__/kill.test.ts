@@ -9,12 +9,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-function parseEnvelope(result: { content: Array<{ text: string }> }): {
+function parseEnvelope(result: { data?: any; content?: Array<{ text: string }> }): {
   ok: boolean;
   results: any[];
   counts: { ok: number; failed: number };
 } {
-  return (result.data);
+  return result.data ?? JSON.parse(result.content![0].text);
 }
 
 const MAKE_PRINCIPAL_CTX = (over: Record<string, unknown> = {}) =>
