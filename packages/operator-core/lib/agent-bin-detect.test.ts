@@ -1,6 +1,6 @@
 /**
  * Coverage for agent-bin-detect.detectBinaries — `which`-based absolute-path
- * resolution for claude/omp/pi. spawnSync is mocked; asserts found→trimmed-path,
+ * resolution for claude/codex/omp/pi. spawnSync is mocked; asserts found→trimmed-path,
  * non-zero-exit→null, and exit-0-but-empty-stdout→null.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,17 +26,22 @@ function routeWhich(found: Record<string, string>) {
 
 describe('detectBinaries', () => {
   it('returns trimmed absolute paths for found binaries', () => {
-    routeWhich({ claude: '/usr/local/bin/claude', omp: '/opt/omp' });
-    expect(detectBinaries()).toEqual({ claude: '/usr/local/bin/claude', omp: '/opt/omp', pi: null });
+    routeWhich({ claude: '/usr/local/bin/claude', codex: '/usr/bin/codex', omp: '/opt/omp' });
+    expect(detectBinaries()).toEqual({
+      claude: '/usr/local/bin/claude',
+      codex: '/usr/bin/codex',
+      omp: '/opt/omp',
+      pi: null,
+    });
   });
 
   it('returns all null when none are on PATH', () => {
     routeWhich({});
-    expect(detectBinaries()).toEqual({ claude: null, omp: null, pi: null });
+    expect(detectBinaries()).toEqual({ claude: null, codex: null, omp: null, pi: null });
   });
 
   it('treats exit 0 with empty stdout as not found', () => {
     spawnSync.mockReturnValue({ status: 0, stdout: '   ' });
-    expect(detectBinaries()).toEqual({ claude: null, omp: null, pi: null });
+    expect(detectBinaries()).toEqual({ claude: null, codex: null, omp: null, pi: null });
   });
 });

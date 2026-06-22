@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../test/_work-items-schema';
 import type { HarnessFeatureRow } from './sync/hyperbee/projections/harness-features';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -34,29 +35,15 @@ const { buildHarnessFeaturesProjection } = await import('./sync/hyperbee/project
 const WS = 'default';
 const HARNESS = 'h1';
 
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    workspace_id text NOT NULL DEFAULT 'default',
-    harness_slug text NOT NULL,
-    feature_id text NOT NULL,
-    title text, summary text, status text DEFAULT 'todo',
-    item_kind text DEFAULT 'feature',
-    attempts integer, claims integer,
-    notes text, metadata jsonb, kind text, project_id text,
-    expected_cost_cents integer, tags jsonb, needs_human_review boolean,
-    ts bigint, goal_id text, expires_at timestamptz,
-    taken_by text, taken_at timestamptz,
-    parent_id text, payload jsonb,
-    assignee_rank integer, rank_writer text, rank_updated_at timestamptz,
-    swarm_affinity text, feature_order integer,
-    redundancy integer,
-    author_pubkey text, fed_ts bigint,
-    fed_hlc text,
-    origin text NOT NULL DEFAULT 'local',
-    audit_verdict text,
-    verified_author_github_user_id bigint,
-    created_ts bigint, updated_ts bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
+
+// `fed_hlc` (migration 314, hlc-ordering-key) is a real prod column on
+// harness_features_consolidated that the projection's writeToPg INSERTs, but it is
+// NOT in the shared superset DDL yet. This test exercises that projection path, so
+// patch the one missing column here (prod added it the same way: ADD COLUMN IF NOT
+// EXISTS fed_hlc TEXT). FLAG: fold fed_hlc into _work-items-schema.ts's superset.
+const HFC_FED_HLC_PATCH = `
+  ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_hlc text`;
 
 // P-008: the admission records the verified-author resolver reads. Minimal shape
 // mirroring harness_shared.hive_members (migration 185): a member's bound devices
@@ -76,14 +63,8 @@ const HIVE_MEMBERS_DDL = `
     joined_at bigint,
     PRIMARY KEY (workspace_id, hive_home_slug, github_user_id))`;
 
-// Phase 3 / P-009: the owner-keyed LOCAL trust list the admission predicate consults.
-const USER_TRUST_LIST_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (
-    workspace_id text NOT NULL,
-    trusted_github_user_id bigint NOT NULL,
-    note text,
-    created_ts bigint NOT NULL,
-    PRIMARY KEY (workspace_id, trusted_github_user_id))`;
+// Phase 3 / P-009: the owner-keyed LOCAL trust list the admission predicate consults
+// (shared DDL — USER_TRUST_LIST_DDL imported from ../test/_work-items-schema).
 
 const REPLICAS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_replicas (
@@ -137,6 +118,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-items-admission');
   h.sql = db.sql;
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(HFC_FED_HLC_PATCH);
   await db.sql.unsafe(REPLICAS_DDL);
   await db.sql.unsafe(ISSUES_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);

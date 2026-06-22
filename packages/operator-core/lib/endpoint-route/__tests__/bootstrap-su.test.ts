@@ -325,6 +325,19 @@ describe('bootstrap-su', () => {
     );
   });
 
+  it('claude prompt-file delivery and codex AGENTS.md delivery start from the same assembled launch spec', async () => {
+    const claude = await (await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' })).json();
+    expect(readFileSync(claude.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
+
+    vi.clearAllMocks();
+    recordAdvSessionMock.mockResolvedValue(43);
+    const codex = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'my-plan' });
+    expect(codex.status).toBe(200);
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ promptText: 'PLAYBOOK + CTX BODY' }),
+    );
+  });
+
   it('claude: mints + records + returns a native session id (the launcher forces it via --session-id)', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     expect(json.nativeSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);

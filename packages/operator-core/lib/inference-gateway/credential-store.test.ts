@@ -44,12 +44,13 @@ function fakeClaude(): { provider: OAuthProvider; refreshes: () => number } {
   return { provider, refreshes: () => n };
 }
 
-test('parseCredentialRef — token / file / bare / ~ channels (no static API-key channel)', () => {
+test('parseCredentialRef — token / file / bare / ~ / env channels (no static key: literal)', () => {
   assert.deepEqual(parseCredentialRef('token:/a/b'), { kind: 'token', path: '/a/b' });
   assert.deepEqual(parseCredentialRef('file:/a/b'), { kind: 'file', path: '/a/b' });
   assert.deepEqual(parseCredentialRef('/a/b'), { kind: 'file', path: '/a/b' });
-  assert.throws(() => parseCredentialRef('env:NAME'));
-  // The billed-API key: channel is removed — this deployment is Claude Max OAuth only (D-003).
+  // env: reads the secret from an env VAR (the Codex/OpenAI API-key channel, 2026-06-21) — supported.
+  assert.deepEqual(parseCredentialRef('env:NAME'), { kind: 'env', path: 'NAME' });
+  // A STATIC key: literal is still rejected — secrets never live inline in a credentialRef.
   assert.throws(() => parseCredentialRef('key:/a/b'), /unsupported/);
 });
 

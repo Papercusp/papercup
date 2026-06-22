@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process';
 
 export interface DetectedBinaries {
   claude: string | null;
+  codex: string | null;
   omp: string | null;
   pi: string | null;
 }
@@ -20,5 +21,5 @@ function which(bin: string): string | null {
 }
 
 export function detectBinaries(): DetectedBinaries {
-  return { claude: which('claude'), omp: which('omp'), pi: which('pi') };
+  return { claude: which('claude'), codex: which('codex'), omp: which('omp'), pi: which('pi') };
 }
