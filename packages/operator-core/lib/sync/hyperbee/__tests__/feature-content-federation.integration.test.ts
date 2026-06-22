@@ -1411,7 +1411,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         issue_id: 'I-defer',
         title: 'A pre-membership issue',
         severity: 'major', // harness_issues_consolidated_severity_check: critical|major|minor|nit (mig 130)
-        source: 'test',
+        source: 'system', // harness_issues_consolidated_source_check: validator|worker|human|system (mig 130)
         status: 'open',
         found_at: 7000,
         found_during: null,
@@ -1470,12 +1470,6 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         fedHlc: 'hlc-member-8000',
       });
 
-      try {
-        await issuesProj.writeToPg(aIssue, aIssueProv);
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error('[P-004 DIAG2] re-writeToPg THREW:', e instanceof Error ? e.message : e);
-      }
       expect(buffer.size(), 'the deferred op should have drained on the member apply').toBe(0);
       const landed = await readIssueForSlug(orgDb.adminSql, A_SLUG, 'I-defer');
       expect(

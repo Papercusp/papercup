@@ -4,6 +4,10 @@ description: "A CREATE VIEW / DDL fix typed into an old sql/<NNN> file that's al
 discovered: 2026-06-13
 tags: [migrations, postgres, views, schema, live-db]
 status: active
+documents:
+  - libs/papercusp/libs/db/sql/225-fleet-assignment-nursery-alias-liveness.sql
+  - libs/papercusp/libs/db/scripts/pull-schema.mjs
+  - packages/operator-core/lib/embedded-pg-discovery.ts
 ---
 
 ## The trap (live, EI-395, 2026-06-13)

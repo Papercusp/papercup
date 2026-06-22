@@ -4,6 +4,16 @@ description: A DROP COLUMN migration alone fails the fresh-migrate STRICT gate. 
 discovered: 2026-06-04
 tags: [postgres, migrations, baseline, drizzle, views]
 status: active
+documents:
+  - libs/papercusp/libs/db/sql/000-baseline.sql
+  - libs/papercusp/libs/db/src/schema/generated.ts
+  - libs/papercusp/libs/db/src/schema/schema.ts
+  - packages/operator-core/lib/db-tools/verify-baseline.ts
+  - libs/papercusp/libs/db/sql/155-drop-feature-blocked-by-column.sql
+  - libs/papercusp/libs/db/sql/136-work-items-generalization.sql
+plans:
+  - harness-blueprint-orchestration-2026-06-03
+  - claude-memory-projection-integration-2026-06-05
 ---
 
 ## What

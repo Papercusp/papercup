@@ -55,6 +55,7 @@ import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 import { renderCodeRunNudge } from './code-run-policy';
 import { renderReuseFirstNudge } from './reuse-first-policy';
 import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
+import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
@@ -149,6 +150,7 @@ export interface AssembledSection {
     | 'reuse-first-nudge'
     | 'code-run-note'
     | 'finish-the-rollout-note'
+    | 'agent-activity-truth-note'
     | 'runtime';
   chars: number;
 }
@@ -549,6 +551,18 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (finishTheRolloutNote) {
     parts.push(finishTheRolloutNote);
     sections.push({ name: 'finish-the-rollout-note', chars: finishTheRolloutNote.length });
+  }
+
+  // Agent-activity-truth note (agent-activity-liveness-truth-2026-06-21 P-004/P-006) — the SHARED
+  // base every operator-launched role inherits, mirroring the spawned-bee base. "Who's doing what"
+  // is a LIVE derived truth (fleet:assignments: claim + holder-liveness + progress), never a stale
+  // coord broadcast that outlives the work — the incident class (a dead bee read as "covered" for ~1h).
+  // Sourced from the one AGENT_ACTIVITY_TRUTH_NOTE constant (orchestrator) so this base + the
+  // spawned-bee base can't desync.
+  const agentActivityTruthNote = renderAgentActivityTruthNote();
+  if (agentActivityTruthNote) {
+    parts.push(agentActivityTruthNote);
+    sections.push({ name: 'agent-activity-truth-note', chars: agentActivityTruthNote.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {
