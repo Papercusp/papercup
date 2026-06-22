@@ -120,6 +120,16 @@ async function call(tool: { handler: (a: never, c: never) => Promise<unknown> },
   return JSON.parse(res.content[0]!.text) as Record<string, unknown>;
 }
 
+/**
+ * work_items:promote is bulk-standardized (bulk-endpoint-standardization-2026-06-21):
+ * it returns the keyed-array envelope { ok, results:[{ ok, id, feature?, workItem? |
+ * error }], counts }. Every promote below is single-item, so unwrap the n=1 result.
+ */
+async function promoteOne(args: Record<string, unknown>) {
+  const env = await call(promoteTool, args);
+  return (env.results as Record<string, unknown>[])[0]!;
+}
+
 /** Invoke work_items:list (which returns the WorkItem array as `{ data }`, P-011). */
 async function listData(args: Record<string, unknown>): Promise<Array<{ id: string; kind: string }>> {
   const res = (await listTool.handler(args as never, CTX)) as { data: Array<{ id: string; kind: string }> };
@@ -341,14 +351,14 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   it('promote: a bug mints an F-FIX feature; a feature is a no-op', async () => {
     const bug = await call(createTool, { kind: 'bug', title: 'broken', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
-    const promoted = await call(promoteTool, { id: bugId, harness: 'papercup' });
+    const promoted = await promoteOne({ id: bugId, harness: 'papercup' });
     expect(promoted.ok).toBe(true);
     expect((promoted.feature as Record<string, unknown>).id).toBe('F-FIX-001');
     expect((promoted.workItem as Record<string, unknown>).id).toBe(bugId);
 
     const feat = await call(createTool, { kind: 'feature', title: 'f', harness: 'papercup' });
     const featId = (feat.workItem as Record<string, unknown>).id as string;
-    const noop = await call(promoteTool, { id: featId, harness: 'papercup' });
+    const noop = await promoteOne({ id: featId, harness: 'papercup' });
     expect(noop.ok).toBe(false);
     expect(noop.error).toMatch(/already a pipeline/);
   });
@@ -368,9 +378,9 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
   it('promote re-promote guard: the second promote returns "already promoted to <id>"', async () => {
     const bug = await call(createTool, { kind: 'bug', title: 'dup', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
-    const first = await call(promoteTool, { id, harness: 'papercup' });
+    const first = await promoteOne({ id, harness: 'papercup' });
     expect(first.ok).toBe(true);
-    const second = await call(promoteTool, { id, harness: 'papercup' });
+    const second = await promoteOne({ id, harness: 'papercup' });
     expect(second.ok).toBe(false);
     expect(second.error).toMatch(/already promoted to F-FIX-001/);
   });
@@ -378,7 +388,7 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
   it('promote to an unknown harness → "unknown harness"', async () => {
     const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
-    const res = await call(promoteTool, { id, harness: 'nope' });
+    const res = await promoteOne({ id, harness: 'nope' });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/unknown harness 'nope'/);
   });
@@ -387,7 +397,7 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
     // No harness on create → scope 'operator'.
     const bug = await call(createTool, { kind: 'bug', title: 'op-scope' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
-    const res = await call(promoteTool, { id });
+    const res = await promoteOne({ id });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/needs a target harness/);
   });
