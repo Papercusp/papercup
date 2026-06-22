@@ -30,7 +30,7 @@ vi.mock('../../fleet/supervision', () => ({ superviseCrash: h.superviseCrash }))
 import superviseTool from './supervise';
 
 const CTX = { workspaceId: 'default', role: 'operator' } as any;
-const env = (res: any) => JSON.parse(res.content[0].text);
+const env = (res: any) => (res.data);
 const one = (res: any) => env(res).results[0];
 
 beforeEach(() => {

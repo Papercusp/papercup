@@ -16,9 +16,9 @@ import { commentWorkItem } from '../../work-items';
 const cmtM = vi.mocked(commentWorkItem);
 const tool = (await import('./comment')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const run = (args: unknown) => tool.handler(args as never, {} as never) as Promise<Out>;
-const body = async (args: unknown) => JSON.parse((await run(args)).content[0]!.text);
+const body = async (args: unknown) => ((await run(args)).data);
 
 beforeEach(() => vi.clearAllMocks());
 

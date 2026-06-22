@@ -63,9 +63,9 @@ vi.mock('drizzle-orm/postgres-js', () => ({
 
 import tool from './get';
 
-type Out = { content: { text: string }[] };
+type Out = { data: unknown };
 const body = async (args: unknown) =>
-  JSON.parse(((await tool.handler(args as never, CTX())) as Out).content[0].text);
+  ((await tool.handler(args as never, CTX())) as Out).data;
 
 const CTX = () =>
   ({

@@ -45,6 +45,11 @@ function parsePayload(result: { content: Array<{ text: string }> }): Record<stri
   return JSON.parse(result.content[0].text);
 }
 
+/** Read a bulk keyed-array envelope (bulk tools return the canonical { data }). */
+function parseEnvelope(result: { data: unknown }): Record<string, unknown> {
+  return result.data as Record<string, unknown>;
+}
+
 describe('autoloop:status', () => {
   it('returns fire-state rows with the backoff gate verdict + the schedule routines (P-009/P-010)', async () => {
     const rows = [{ harness_slug: 's', role: 'r', consecutive_errors: 0, last_fired_at: null }];
@@ -150,7 +155,7 @@ describe('wiki:backlinks (bulk keyed-array)', () => {
     const { default: tool } = await import('../wiki/backlinks');
     const result = await tool.handler({ target: 'doc' }, MAKE_CTX());
     expect(findWikiBacklinks).toHaveBeenCalledWith('doc', null);
-    const payload = parsePayload(result as never);
+    const payload = parseEnvelope(result as never);
     expect(payload).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect((payload as { results: unknown[] }).results[0]).toEqual({ ok: true, target: 'doc', harness: null, hits: [] });
   });
@@ -167,7 +172,7 @@ describe('wiki:backlinks (bulk keyed-array)', () => {
     const findWikiBacklinks = vi.fn(async (target: string) => ({ target, harness: null, hits: [{ harness: 'h', filename: 'f.md', line: 1, snippet: target }] }));
     vi.doMock('../../wiki-backlinks', () => ({ findWikiBacklinks }));
     const { default: tool } = await import('../wiki/backlinks');
-    const payload = parsePayload((await tool.handler({ targets: ['a', 'b'] }, MAKE_CTX())) as never) as {
+    const payload = parseEnvelope((await tool.handler({ targets: ['a', 'b'] }, MAKE_CTX())) as never) as {
       counts: { ok: number; failed: number };
       results: Array<{ target: string }>;
     };
@@ -182,7 +187,7 @@ describe('wiki:backlinks (bulk keyed-array)', () => {
     });
     vi.doMock('../../wiki-backlinks', () => ({ findWikiBacklinks }));
     const { default: tool } = await import('../wiki/backlinks');
-    const payload = parsePayload((await tool.handler({ targets: ['ok', 'bad'] }, MAKE_CTX())) as never) as {
+    const payload = parseEnvelope((await tool.handler({ targets: ['ok', 'bad'] }, MAKE_CTX())) as never) as {
       ok: boolean;
       counts: { ok: number; failed: number };
       results: Array<{ ok: boolean; target: string; error?: string }>;

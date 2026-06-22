@@ -17,9 +17,9 @@ import { reorderWorkItem } from '../../work-items';
 const reorderM = vi.mocked(reorderWorkItem);
 const tool = (await import('./reorder')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = (args: Record<string, unknown>) => tool.handler({ id: 'WI-1', rank: 0, ...args } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 beforeEach(() => {
   vi.clearAllMocks();

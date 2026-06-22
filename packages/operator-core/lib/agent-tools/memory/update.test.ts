@@ -34,9 +34,9 @@ const useBackend = (b: FakeBackend): void => {
   vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
 };
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const body = async (args: unknown): Promise<Record<string, never> & { ok: boolean; reason?: string; results: { ok: boolean; id: string; error?: string; reason?: string }[]; counts: { ok: number; failed: number } }> =>
-  JSON.parse(((await update.handler(args as never, {} as never)) as Out).content[0].text);
+  (((await update.handler(args as never, {} as never)) as Out).data);
 
 const VID = '550e8400-e29b-41d4-a716-446655440000';
 const VID2 = '550e8400-e29b-41d4-a716-446655440001';

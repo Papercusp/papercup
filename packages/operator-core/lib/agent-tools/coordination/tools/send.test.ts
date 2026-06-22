@@ -30,8 +30,8 @@ const sendM = vi.mocked(sendMessage);
 const resolveM = vi.mocked(resolveRecipients);
 const tool = (await import('./send')).default;
 
-type Out = { content: { text: string }[] };
-const body = async (args: unknown) => JSON.parse(((await tool.handler(args as never, {} as never)) as Out).content[0]!.text);
+type Out = { data: any };
+const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
 
 let n = 0;
 beforeEach(() => {

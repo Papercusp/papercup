@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface Row {
   id: number;
@@ -166,8 +166,8 @@ export function PromptBudgetView({
           Refresh
         </button>
       </div>
-      <div style={{ height: 300, border: BORDER, borderRadius: 4 }}>
-        <RichGrid
+      <div style={{ display: 'flex', flexDirection: 'column', height: 300, border: BORDER, borderRadius: 4 }}>
+        <VirtualGrid
           columns={columns}
           rows={rows}
           getRowId={(r) => String(r.id)}

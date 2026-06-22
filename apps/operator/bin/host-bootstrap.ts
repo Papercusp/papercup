@@ -68,8 +68,17 @@ export function runBootstrap(): void {
       console.log('[home-harness] startup validation passed — home harness slug resolves');
     } catch (e) {
       console.error('[home-harness] STARTUP VALIDATION FAILED:', (e as Error)?.message ?? e);
-      // Re-throw: operator boot cannot continue if fire-paths will 404
-      throw e;
+      // [shared-hive-public-release-2026-06-22 BUG-1] Do NOT crash the operator by
+      // default. A fresh PACKAGED desktop install legitimately has no registered
+      // home-harness project yet (the baked default slug 'papercusp' doesn't resolve
+      // in the 'default' workspace until setup), and re-throwing here is an UNHANDLED
+      // promise rejection → Node process exit → embedded-PG down → the app is dead on
+      // first launch for every new user (caught by the 2-machine release rig). Mirror
+      // the sibling addon-preflight policy above: log LOUDLY (preserves the EI-2224
+      // "don't go dark silently" intent) and only hard-fail when explicitly opted in
+      // — the dev/server operator (and CI/green-gate) can set
+      // PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL=1 to restore fail-fast.
+      if (process.env.PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL === '1') throw e;
     }
   })();
 

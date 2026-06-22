@@ -25,9 +25,9 @@ vi.mock('../../hive-membership-admission', () => ({ approvePendingJoin: h.approv
 import tool from './membership_decide';
 
 const CTX = { workspaceId: 'default' } as never;
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const env = async (args: unknown) =>
-  JSON.parse(((await tool.handler(args as never, CTX)) as Out).content[0]!.text);
+  (((await tool.handler(args as never, CTX)) as Out).data);
 
 beforeEach(() => {
   vi.clearAllMocks();

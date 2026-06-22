@@ -19,9 +19,9 @@ import { unassignItem } from '../../plan-items/assignments';
 const unassignM = vi.mocked(unassignItem);
 const tool = (await import('./unassign')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
-  JSON.parse(((await tool.handler(args as never, {} as never)) as Out).content[0]!.text);
+  (((await tool.handler(args as never, {} as never)) as Out).data);
 
 beforeEach(() => vi.clearAllMocks());
 

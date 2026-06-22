@@ -24,6 +24,7 @@ import Link from '@/lib/router-compat/link';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../../theme';
 import { useSyncQuery } from '@papercusp/sync';
+import { readListTotal, listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 
 interface FeatureCounts {
   todo: number; in_progress: number; validating: number; failing: number;
@@ -74,6 +75,10 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
   const [project, setProject] = useState<ProjectRow | null>(null);
   const [features, setFeatures] = useState<FeatureRow[] | null>(null);
   const [revisions, setRevisions] = useState<RevisionRow[]>([]);
+  // True store count for the project's revisions (carried on row[0]._meta by the
+  // projectSpecRevisions.byProject resolver), independent of the fetch cap — so
+  // the "(N)" displays show the honest total, never just the downloaded length.
+  const [revisionsTotal, setRevisionsTotal] = useState<number | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tab, setTab] = useQueryState(
     'projectTab',
@@ -133,11 +138,12 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
     costUsdCents: number;
   }>({
     queryName: 'projectSpecRevisions.byProject',
-    args: { projectId, limit: 50 },
+    args: { projectId, limit: 500 },
     enabled: !!projectId,
   });
   useEffect(() => {
     if (!Array.isArray(zeroRevisions)) return;
+    setRevisionsTotal(readListTotal(zeroRevisions));
     setRevisions(zeroRevisions.map((r) => ({
       id: r.id,
       summary: r.summary ?? null,
@@ -152,10 +158,13 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
   }, [zeroRevisions]);
   const loadRevisions = useCallback(async () => {
     try {
-      const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/projects/${encodeURIComponent(projectId)}/spec/revisions?limit=50`);
+      const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/projects/${encodeURIComponent(projectId)}/spec/revisions?limit=500`);
       if (!r.ok) return;
       const data = await r.json();
-      setRevisions(data.revisions ?? []);
+      const next = (data.revisions ?? []) as RevisionRow[];
+      setRevisions(next);
+      // REST payload carries no _meta envelope → the fetched length is the total.
+      setRevisionsTotal(next.length);
     } catch { /* best-effort */ }
   }, [slug, projectId]);
 
@@ -294,7 +303,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
                   <Pencil size={12} /> Edit
                 </button>
                 <button onClick={() => setShowRevisions((v) => !v)} style={btnSecondary}>
-                  <Clock size={12} /> {showRevisions ? 'Hide revisions' : 'Show revisions'} ({revisions.length})
+                  <Clock size={12} /> {showRevisions ? 'Hide revisions' : 'Show revisions'} ({listCountLabel(revisions.length, revisionsTotal)})
                 </button>
               </>
             ) : (
@@ -323,7 +332,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
               maxHeight: 320, overflowY: 'auto',
             }}>
               <div style={{ fontSize: SIZES.xs, fontWeight: 600, color: COLORS.textDim, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0 }}>
-                Revisions ({revisions.length})
+                Revisions ({listCountLabel(revisions.length, revisionsTotal)})
               </div>
               {revisions.length === 0 ? (
                 <div style={{ fontSize: SIZES.xs, color: COLORS.textDim, fontStyle: 'italic' }}>No revisions yet — run PM to create the first one.</div>

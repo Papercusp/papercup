@@ -50,10 +50,10 @@ const ctxWith = (tx: unknown) =>
     principal: { slug: 'system:operator', workspaceId: 'ws-1', capabilities: new Set<string>() },
   }) as never;
 
-type Out = { content: { text: string }[] };
-/** Run the bulk handler and parse the keyed-array envelope. */
+type Out = { data: unknown };
+/** Run the bulk handler and read the keyed-array envelope (handler returns { data }). */
 const env = async (args: Record<string, unknown>, tx: unknown) =>
-  JSON.parse(((await tool.handler(args as never, ctxWith(tx))) as Out).content[0]!.text) as {
+  ((await tool.handler(args as never, ctxWith(tx))) as Out).data as {
     ok: boolean;
     results: any[];
     counts: { ok: number; failed: number };

@@ -8,9 +8,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-// RichGrid is heavy + irrelevant to the summary surfaces under test; stub it.
+// VirtualGrid is heavy + irrelevant to the summary surfaces under test; stub it
+// (just renders the row count so the populated-window assertion can key off it).
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows }: { rows: unknown[] }) => <div data-testid="budget-grid">{rows.length}</div>,
+  VirtualGrid: ({ rows }: { rows: unknown[] }) => <div data-testid="budget-grid">{rows.length}</div>,
 }));
 
 import { PromptBudgetView, aggregatePromptBudget } from './PromptBudgetView';

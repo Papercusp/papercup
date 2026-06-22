@@ -27,9 +27,9 @@ const routeM = vi.mocked(routeFileLockOp);
 const releaseResourcesM = vi.mocked(releaseAllResourcesForOwner);
 const tool = (await import('./release')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 beforeEach(() => {
   vi.clearAllMocks();

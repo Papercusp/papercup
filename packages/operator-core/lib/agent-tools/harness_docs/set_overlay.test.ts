@@ -25,10 +25,10 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
     }
   ).handler(args, ctx);
 }
-const envelope = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
+const envelope = (r: { data: any }) => (r.data);
 // Bulk envelope (bulk-endpoint-standardization-2026-06-21): the single-form tests
 // below assert on the lone per-item result — unwrap results[0].
-const body = (r: { content: Array<{ text: string }> }) => envelope(r).results[0];
+const body = (r: { data: any }) => envelope(r).results[0];
 
 function rec(over: Partial<HarnessDocRecord> & { source: DocSource }): HarnessDocRecord {
   return {

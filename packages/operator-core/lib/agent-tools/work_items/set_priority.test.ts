@@ -37,9 +37,9 @@ const commitArmM = vi.mocked(commitWorkItemArm);
 
 const tool = (await import('./set_priority')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const run = (args: unknown) => tool.handler(args as never, { uiClientId: 'opspawn-queen-1' } as never) as Promise<Out>;
-const env = async (args: unknown) => JSON.parse((await run(args)).content[0]!.text);
+const env = async (args: unknown) => ((await run(args)).data);
 const one = async (args: unknown) => (await env(args)).results[0];
 
 beforeEach(() => {

@@ -44,8 +44,8 @@ const subTool = topicsSubscribeTool as unknown as Tool;
 const mergeTool = topicsMergeTool as unknown as Tool;
 const ctx = {} as never;
 const parse = (t: Tool, x: unknown) => t.args.parse(x);
-const out = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
-  JSON.parse(r.content[0].text);
+const out = (r: { data: any }): Record<string, unknown> =>
+  (r.data);
 
 const topic = (slug: string, over: Partial<TopicRow> = {}): TopicRow => ({
   slug,

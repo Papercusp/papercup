@@ -25,6 +25,15 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 // Terminal states excluded from the picker — steering targets in-flight work.
 const TERMINAL_STATES = new Set(['done', 'closed', 'resolved', 'archived', 'deprecated']);
 
+// The picker filters to NON-terminal items client-side ("not done/closed/…"),
+// a multi-state predicate a single server-side `state` filter can't express. So
+// the fetch must see the harness's WHOLE set, not just the most-recent page —
+// else a busy harness with >N terminal items at the top hides every open one.
+// Matches the workItems.byHarness resolver ceiling (WORK_ITEMS_MAX_LIMIT / the
+// WorkItemsPanel WORK_ITEMS_FETCH_LIMIT); the read is bounded but generous
+// (local desktop app, all data is local).
+const WORK_ITEMS_PICKER_LIMIT = 2000;
+
 /** The free-slot empty state: pick a work item, start a worker chat on it.
  *  Same `openFeatureChat` defaults as the Detail-pane Chat button (EI-290):
  *  role worker, mode discuss. The drain then fills this (first free) slot. */
@@ -33,7 +42,7 @@ function StartChatPicker({ slug }: { slug: string }) {
   const [starting, setStarting] = useState(false);
   const query = useSyncQuery<{ id: string; title: string; state: string }>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug, limit: 300 },
+    args: { harnessSlug: slug, limit: WORK_ITEMS_PICKER_LIMIT },
     enabled: Boolean(slug),
   });
   const items = useMemo(

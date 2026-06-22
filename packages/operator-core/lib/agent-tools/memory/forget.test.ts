@@ -33,9 +33,9 @@ const useBackend = (b: FakeBackend): void => {
   vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
 };
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const body = async (args: unknown): Promise<{ ok: boolean; reason?: string; results: { ok: boolean; id: string; error?: string }[]; counts: { ok: number; failed: number } }> =>
-  JSON.parse(((await forget.handler(args as never, {} as never)) as Out).content[0].text);
+  (((await forget.handler(args as never, {} as never)) as Out).data);
 
 describe('memory:forget handler (bulk keyed-array)', () => {
   beforeEach(() => vi.clearAllMocks());

@@ -17,7 +17,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 vi.mock('@/lib/router-compat/dynamic', () => ({ default: () => () => null }));
 
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows }: { rows: unknown[] }) => (
+  VirtualGrid: ({ rows }: { rows: unknown[] }) => (
     <div data-testid="grid" data-rows={rows.length} />
   ),
 }));

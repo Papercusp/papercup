@@ -15,8 +15,8 @@ const classifyM = vi.mocked(classifyClaimFailure);
 const getM = vi.mocked(getWorkItem);
 const tool = (await import('./claim')).default;
 
-type Out = { content: { text: string }[] };
-const body = async (args: unknown) => JSON.parse(((await tool.handler(args as never, {} as never)) as Out).content[0]!.text);
+type Out = { data: any };
+const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
 
 beforeEach(() => {
   vi.clearAllMocks();

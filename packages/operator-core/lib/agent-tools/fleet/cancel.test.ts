@@ -39,7 +39,7 @@ vi.mock('../../fleet/operator-spawn', () => ({ abortLocalSpawn: h.abortLocalSpaw
 import cancelTool from './cancel';
 
 const CTX = { workspaceId: 'default', role: 'operator' } as any;
-const env = (res: any) => JSON.parse(res.content[0].text);
+const env = (res: any) => (res.data);
 
 const cancelled = (ids: string[]) => ids.map((spawnId) => ({ spawnId }));
 

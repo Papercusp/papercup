@@ -19,10 +19,10 @@ import { topicFeed } from '../../../topics-feed';
 const feedM = vi.mocked(topicFeed);
 const tool = (await import('./topics-feed')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = (args: Record<string, unknown>) =>
   tool.handler(tool.args.parse(args) as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 const item = (ref: string) => ({ kind: 'feature', ref, title: ref, state: 'open' });
 

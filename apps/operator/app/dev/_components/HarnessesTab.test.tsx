@@ -12,10 +12,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 
-// RichGrid mock surfaces the row count so we can assert the populated branch
+// VirtualGrid mock surfaces the row count so we can assert the populated branch
 // actually handed parsed rows through (not just that *some* grid rendered).
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows }: { rows: unknown[] }) => (
+  VirtualGrid: ({ rows }: { rows: unknown[] }) => (
     <div data-testid="grid" data-rows={rows.length} />
   ),
 }));

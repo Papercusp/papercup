@@ -35,9 +35,9 @@ import { convertPlanItem } from '../../plan-items/convert';
 const convM = vi.mocked(convertPlanItem);
 const tool = (await import('./convert')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
-  JSON.parse(((await tool.handler(args as never, {} as never)) as Out).content[0]!.text);
+  (((await tool.handler(args as never, {} as never)) as Out).data);
 
 const converted = (item: string, wiId: string) =>
   ({

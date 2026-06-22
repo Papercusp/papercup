@@ -53,9 +53,9 @@ const CTX = () =>
 const ARGS = (over: Record<string, unknown> = {}) =>
   tool.args.parse({ slug: 'sheets', feature_id: 'F-001', ...over }) as never;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const env = async (over: Record<string, unknown> = {}) =>
-  JSON.parse(((await tool.handler(ARGS(over), CTX())) as Out).content[0].text);
+  ((await tool.handler(ARGS(over), CTX())) as Out).data;
 // The single result (the n=1 path always has exactly one result).
 const one = async (over: Record<string, unknown> = {}) => (await env(over)).results[0];
 
@@ -106,8 +106,8 @@ describe('features:list_related — keyed-array envelope + failure items', () =>
   it('items:[…] runs many; an invalid-slug item fails only itself', async () => {
     srcRows = [{ tags: ['a'], see_also: ['F-009'] }];
     relatedRows = [{ feature_id: 'F-009', title: 'X', status: 'passed', tags: ['a'], updated_ts: 9, relation_kind: 'both' }];
-    const b = JSON.parse(
-      ((await tool.handler(
+    const b = (
+      (await tool.handler(
         tool.args.parse({
           items: [
             { slug: 'sheets', feature_id: 'F-001' },
@@ -115,8 +115,8 @@ describe('features:list_related — keyed-array envelope + failure items', () =>
           ],
         }) as never,
         CTX(),
-      )) as Out).content[0].text,
-    );
+      )) as Out
+    ).data;
     expect(b.ok).toBe(true);
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results.map((r: { feature_id: string; ok: boolean }) => [r.feature_id, r.ok])).toEqual([

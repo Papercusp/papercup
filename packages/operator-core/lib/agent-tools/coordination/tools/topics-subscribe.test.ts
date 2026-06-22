@@ -21,10 +21,10 @@ import { subscribeTopic } from '../topics';
 const subM = vi.mocked(subscribeTopic);
 const tool = (await import('./topics-subscribe')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = (args: Record<string, unknown>) =>
   tool.handler(tool.args.parse(args) as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 const sub = (target_ref: string, over: Partial<SubscriptionRow> = {}): SubscriptionRow => ({
   id: 1,

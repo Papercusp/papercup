@@ -115,22 +115,23 @@ export async function runBulk<I, R extends BulkItemResult>(
 }
 
 /**
- * Serialize a bulk envelope (or any JSON payload) as the MCP ToolResult shape.
+ * Wrap a bulk envelope (or any JSON payload) in the framework's NATIVE canonical
+ * `ToolResponse` shape `{ data }` — the SAME shape a `defineTool` handler returns
+ * to opt into format-aware serialization.
  *
- * Token optimization (definetool-token-optimization-adoption P-001/D-008): this
- * returns a raw `{ content:[{ text: JSON.stringify }] }` body, but it is NO LONGER
- * a token dead-end — the framework dispatch (`tooldef/define-tool.ts`
- * `reencodableJsonPayload`, P-002) detects that a raw single-text JSON ToolResult
- * whose payload is an object-with-an-array-field (every bulk envelope
- * `{ ok, results:[…], counts }` is) and, on the agent-facing MCP transport ONLY,
- * transparently re-encodes it to TOON (lossless, ~18-38% smaller — and the D-005
- * size-guard keeps a heterogeneous envelope on JSON when TOON would be larger).
- * In-process / HTTP / IPC callers (and `inProcessCall`'s `unwrap`) keep the
- * byte-identical JSON, so compound / code:run / TUI consumers are unchanged.
- * Migrating this to return `{ data }` (the canonical envelope shape) is a tracked
- * follow-up — functionally redundant for the token win given P-002, and gated on a
- * full bulk-tool test sweep done against a green gate.
+ * Token optimization (definetool-token-optimization-adoption P-006, completing
+ * P-001/D-008): the framework dispatch serializes `data` through the SINGLE
+ * `serializeToolResponse` path (`tooldef/serialize-result.ts`) — on the
+ * agent-facing MCP transport it auto-re-encodes an object-with-an-array-field
+ * (every bulk envelope `{ ok, results:[…], counts }` is) to TOON (lossless,
+ * ~18-38% smaller, with the D-005 size-guard keeping a heterogeneous envelope on
+ * JSON when TOON would be larger); every other transport (in-process / HTTP / IPC)
+ * stays lossless JSON. This is the EXACT same token behavior the old raw-`{content}`
+ * shape got via the `reencodableJsonPayload` re-encode shim (P-002) — but emitting
+ * `{ data }` directly means bulk results no longer ride the raw-ToolResult bypass,
+ * so a `{data}`/output-schema lint can see them (P-003) and there is one canonical
+ * return shape across all bulk tools.
  */
 export function bulkContent(payload: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+  return { data: payload };
 }

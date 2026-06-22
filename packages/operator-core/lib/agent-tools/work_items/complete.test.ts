@@ -20,11 +20,11 @@ import complete from './complete';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
 const parse = (x: unknown) => (complete.args as { parse: (x: unknown) => unknown }).parse(x);
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 /** Full envelope. */
 const env = async (x: unknown) => {
   const res = (await complete.handler(parse(x) as never, ctx)) as Out;
-  return JSON.parse(res.content[0]!.text);
+  return (res.data);
 };
 /** The single (n=1) result item — the dual-arity verb wraps it in the bulk envelope. */
 const one = async (x: unknown) => (await env(x)).results[0];

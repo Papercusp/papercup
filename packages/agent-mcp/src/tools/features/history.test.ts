@@ -63,9 +63,9 @@ const CTX = () =>
 const ARGS = (over: Record<string, unknown> = {}) =>
   tool.args.parse({ slug: 'sheets', feature_id: 'F-001', ...over }) as never;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const env = async (over: Record<string, unknown> = {}) =>
-  JSON.parse(((await tool.handler(ARGS(over), CTX())) as Out).content[0].text);
+  ((await tool.handler(ARGS(over), CTX())) as Out).data;
 // The single result's `history` string (the n=1 path always has one result).
 const md = async (over: Record<string, unknown> = {}) => (await env(over)).results[0].history as string;
 
@@ -114,8 +114,8 @@ describe('features:history — keyed-array envelope + failure items', () => {
     notesRows = [{ content: 'body' }];
     const b = await env({}); // baseline single, then re-run a real bulk below
     expect(b.counts.ok).toBe(1);
-    const bulk = JSON.parse(
-      ((await tool.handler(
+    const bulk = (
+      (await tool.handler(
         tool.args.parse({
           items: [
             { slug: 'sheets', feature_id: 'F-001' },
@@ -123,8 +123,8 @@ describe('features:history — keyed-array envelope + failure items', () => {
           ],
         }) as never,
         CTX(),
-      )) as Out).content[0].text,
-    );
+      )) as Out
+    ).data;
     expect(bulk.ok).toBe(true);
     expect(bulk.counts).toEqual({ ok: 1, failed: 1 });
     expect(bulk.results.map((r: { feature_id: string; ok: boolean }) => [r.feature_id, r.ok])).toEqual([

@@ -50,18 +50,11 @@ export interface WorkItemRow {
   origin: string | null;
   auditVerdict: string | null;
   verifiedAuthorGithubUserId: number | null;
-  /**
-   * Page metadata stashed on the FIRST row by the `workItems.byHarness` resolver
-   * (the flat-row sync contract carries no envelope — same pattern as coord.feed).
-   * `total` is the TRUE count in the store for this harness, independent of how
-   * many rows the capped read returned.
-   */
-  _meta?: { total: number };
 }
 
 /**
  * Fetch ceiling for the live work-items read. The grid is virtualized
- * (`virtualMode`), so render cost no longer scales with row count — this is a
+ * (`VirtualGrid`), so render cost no longer scales with row count — this is a
  * generous bound that loads a harness's full work-item set in practice (local
  * desktop app, all data is local). It exists only to bound the LIVE sync query's
  * per-invalidation re-assembly; when a harness exceeds it the header shows the
@@ -113,14 +106,12 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const isTrusted = (r: WorkItemRow): boolean =>
     r.verifiedAuthorGithubUserId != null && trustedSet.has(r.verifiedAuthorGithubUserId);
 
-  // True total in the store (stashed on the first row's `_meta` by the resolver),
-  // falling back to the downloaded length. The title shows "N of TOTAL" only when
-  // the read was actually capped, so the count is never a downloaded-length lie.
-  const total = items?.[0]?._meta?.total ?? items?.length ?? 0;
+  // True total in the store (carried on row[0]._meta by the resolver), falling
+  // back to the downloaded length. listCountLabel shows "N of TOTAL" only when the
+  // read was actually capped, so the count is never a downloaded-length lie.
+  const total = readListTotal(items);
   useEffect(() => {
-    if (!items) return;
-    const n = items.length;
-    api.setTitle(`Work items · ${slug} (${total > n ? `${n} of ${total}` : total})`);
+    if (items) api.setTitle(`Work items · ${slug} (${listCountLabel(items.length, total)})`);
   }, [items, total, slug, api]);
 
   const columns: ColumnDef<WorkItemRow>[] = [
@@ -286,20 +277,6 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     );
   }, [cf.rows, search]);
 
-  // Virtualized rows — only the visible window mounts as DOM, so the grid scales
-  // to the full work-item set without the per-row render cost that the old
-  // limit:300 cap was quietly papering over. (Same pattern as AdvAgentsPanel.)
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: filtered.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 30,
-    overscan: 12,
-  });
-  useEffect(() => {
-    rowVirtualizer.measure();
-  }, [filtered, rowVirtualizer]);
-
   if (!slug) return <div className="pc-advpanel__empty">Pick a harness to view its work items.</div>;
 
   return (
@@ -340,27 +317,20 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           {items.length === 0 ? 'No work items for this harness.' : 'No work items match the filter.'}
         </div>
       ) : (
-        <div ref={scrollRef} style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-          <RichGrid<WorkItemRow>
-            inline
-            columns={columns}
-            virtualMode={{
-              virtualizer: rowVirtualizer,
-              totalRows: filtered.length,
-              rowAt: (i) => filtered[i],
-            }}
-            resizableColumns
-            columnWidths={colWidths}
-            onColumnWidthsChange={setColWidths}
-            getRowId={(r) => r.id}
-            onRowClick={(r) => void setSelectedId(r.id)}
-            getRowBg={(r) =>
-              r.id === selectedId ? 'color-mix(in oklab, var(--accent), transparent 80%)' : undefined
-            }
-            rowMinHeight={30}
-            headerHeight={30}
-          />
-        </div>
+        <VirtualGrid<WorkItemRow>
+          columns={columns}
+          rows={filtered}
+          resizableColumns
+          columnWidths={colWidths}
+          onColumnWidthsChange={setColWidths}
+          getRowId={(r) => r.id}
+          onRowClick={(r) => void setSelectedId(r.id)}
+          getRowBg={(r) =>
+            r.id === selectedId ? 'color-mix(in oklab, var(--accent), transparent 80%)' : undefined
+          }
+          rowMinHeight={30}
+          headerHeight={30}
+        />
       )}
     </div>
   );

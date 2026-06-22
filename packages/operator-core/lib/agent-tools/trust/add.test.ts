@@ -26,7 +26,7 @@ const ACTIVE_WS = 'ws-active';
 // Bulk envelope: { ok, results:[…], counts }. Permissive type so per-item reads
 // (b.results[0], b.results.map(...)) type-check in this PG-free unit.
 type Body = { ok: boolean; results: any[]; counts: { ok: number; failed: number }; [k: string]: unknown };
-const body = (r: { content: Array<{ text: string }> }): Body => JSON.parse(r.content[0]!.text);
+const body = (r: { data: any }): Body => (r.data);
 
 /** A ctx with the given principal fields; pass `null` to omit the principal entirely. */
 function ctxWith(principal: { workspaceId?: string; slug?: string } | null): unknown {

@@ -70,7 +70,7 @@ const useBackend = (b: ReturnType<typeof wedgedBackend>): void => {
 
 const ctx = { principal: { workspaceId: 'ws-test' } } as never;
 const parse = (res: unknown): { ok: boolean; reason?: string; results?: unknown[] } =>
-  JSON.parse((res as { content: { text: string }[] }).content[0].text);
+  ((res as { data: any }).data);
 
 // noteMemoryFailure() warns when it latches degraded, but that log line is
 // NODE_ENV!=='test' guarded in op-deadline.ts (the latch still flips), so under

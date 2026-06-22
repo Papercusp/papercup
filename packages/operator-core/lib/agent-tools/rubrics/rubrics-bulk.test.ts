@@ -19,9 +19,9 @@ const ratifyM = vi.mocked(ratifyRubric);
 const getTool = (await import('./get')).default;
 const ratifyTool = (await import('./ratify')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const body = async (tool: typeof getTool, args: unknown) =>
-  JSON.parse(((await tool.handler(args as never, {} as never)) as Out).content[0].text);
+  (((await tool.handler(args as never, {} as never)) as Out).data);
 
 beforeEach(() => vi.clearAllMocks());
 

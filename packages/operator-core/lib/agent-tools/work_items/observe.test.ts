@@ -15,9 +15,9 @@ import { observeWorkItem } from '../../work-items';
 const obsM = vi.mocked(observeWorkItem);
 const tool = (await import('./observe')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = () => tool.handler({ id: 'WI-1', harness: 'web' } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 beforeEach(() => vi.clearAllMocks());
 

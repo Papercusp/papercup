@@ -36,8 +36,8 @@ const run = async (tool: { handler: (a: never, c: never) => Promise<unknown> }, 
 /** harness:status is now a bulk tool (keyed-array envelope); parse it and
  *  return the single result for the n=1 cases below. */
 const statusOne = async (args: Record<string, unknown>, tx: unknown) => {
-  const out = (await statusTool.handler(args as never, ctxWith(tx))) as { content: { text: string }[] };
-  const envBody = JSON.parse(out.content[0]!.text) as { ok: boolean; results: any[]; counts: { ok: number; failed: number } };
+  const out = (await statusTool.handler(args as never, ctxWith(tx))) as { data: unknown };
+  const envBody = out.data as { ok: boolean; results: any[]; counts: { ok: number; failed: number } };
   return envBody;
 };
 

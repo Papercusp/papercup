@@ -38,7 +38,7 @@ const HUMAN: AgentIdentity = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const run = (args: Record<string, unknown>) => resolveTool.handler(args as any, {} as any);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const parse = (res: any) => JSON.parse(res.content[0].text);
+const parse = (res: any) => (res.data);
 
 beforeEach(() => {
   configureCoordLog(new InMemoryCoordLog());

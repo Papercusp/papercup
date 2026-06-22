@@ -335,3 +335,47 @@ export async function addRevokedHivePubkeys(
   )) as unknown as HiveMemberPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
+
+/**
+ * Delete ONE Hive member's admission row (the membership-teardown leg for a
+ * JOINER leaving — G27, shared-hive-public-release-2026-06-22). Single-writer:
+ * a peer deletes its OWN row. The mig-189 capture trigger fires AFTER DELETE and
+ * enqueues a `del` op (scoped to the Hive home slug) into substrate_outbox, so the
+ * departure federates as a membership tombstone (peers' read-merge drops the row).
+ * Returns the number of rows deleted (0 = not a member / already gone — idempotent).
+ */
+export async function removeHiveMember(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  githubUserId: number,
+  sql?: Sql,
+): Promise<number> {
+  const res = await pg(sql).unsafe(
+    `DELETE FROM harness_shared.hive_members
+      WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3`,
+    [workspaceId, hiveHomeSlug, githubUserId],
+  );
+  return Number((res as unknown as { count?: number }).count ?? 0);
+}
+
+/**
+ * Delete ALL of a Hive's member admission rows (the membership-teardown leg for an
+ * OWNER dissolving a local hive — G24, shared-hive-public-release-2026-06-22).
+ * Without this, a dissolved hive's members lingered in harness_shared.hive_members
+ * and kept federating. The mig-189 capture trigger fires per-row AFTER DELETE, so
+ * each LOCAL-origin row federates a `del` tombstone (remote-origin rows are removed
+ * locally; their federation is owned by their source peer — the trigger's echo
+ * guard skips them, by design). Returns the number of rows deleted (idempotent).
+ */
+export async function removeAllHiveMembers(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  sql?: Sql,
+): Promise<number> {
+  const res = await pg(sql).unsafe(
+    `DELETE FROM harness_shared.hive_members
+      WHERE workspace_id = $1 AND hive_home_slug = $2`,
+    [workspaceId, hiveHomeSlug],
+  );
+  return Number((res as unknown as { count?: number }).count ?? 0);
+}

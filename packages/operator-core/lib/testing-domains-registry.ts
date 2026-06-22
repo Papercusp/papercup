@@ -979,6 +979,19 @@ defineTestDomain({
   ],
 });
 
+// scout: the autonomous idea-scout (corpus-grounded creative ideation). Surfaces its
+// growing pure test tree (grading invariants, LLM-JSON extraction, the run loop, critique
+// scoring) as a first-class subsystem view instead of being buried in the operator-core
+// catch-all. The `**` glob means a new scout test appears here with no registry edit.
+defineTestDomain({
+  id: 'scout',
+  label: 'Scout',
+  description:
+    'The autonomous idea-scout: corpus-grounded creative ideation invariants (grounded / forced-diversity / non-duplicate / bettable / no-human-prompt — D-003), the tolerant LLM-JSON extractor (fenced/prose-wrapped responses), critique + novelty scoring, and the run loop.',
+  tier: 'domain',
+  sections: [{ id: 'lib', label: 'Lib', globs: ['packages/operator-core/lib/scout/**/*.test.ts'] }],
+});
+
 defineTestDomain({
   id: 'dbos',
   label: 'DBOS',

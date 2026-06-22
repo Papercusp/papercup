@@ -18,9 +18,9 @@ vi.mock('../../attention/triage-store', () => ({ upsertTriage: h.upsertTriage })
 import triageTool from './triage';
 
 const CTX = {} as never;
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const env = async (args: unknown) =>
-  JSON.parse(((await triageTool.handler(args as never, CTX)) as Out).content[0]!.text) as {
+  (((await triageTool.handler(args as never, CTX)) as Out).data) as {
     ok: boolean;
     results: any[];
     counts: { ok: number; failed: number };

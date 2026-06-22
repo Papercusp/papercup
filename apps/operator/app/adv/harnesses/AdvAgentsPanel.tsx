@@ -19,12 +19,11 @@
 // `?sel` row highlight). Role colours come from the canonical getRoleStyle()
 // in app/harness/theme.ts so a role renders the same hue on every surface.
 
-import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useEffect, useMemo, type CSSProperties, type ReactNode } from 'react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
-import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import { LIVE_MS, STALE_MS } from '@papercusp/operator-core/lib/liveness';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { getRoleStyle } from '../../harness/theme';
@@ -382,20 +381,18 @@ function WorkingView({
             : 'No agents match the filter.'}
         </div>
       ) : (
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <RichGrid<WorkingAgent>
-            columns={columns}
-            rows={filtered}
-            resizableColumns
-            columnWidths={colWidths}
-            onColumnWidthsChange={setColWidths}
-            getRowId={(r) => r.agentId}
-            onRowClick={(r) => void setSelectedId(`agent:${r.agentId}`)}
-            getRowBg={(r) => (`agent:${r.agentId}` === selectedId ? SELECTED_ROW_BG : undefined)}
-            headerHeight={30}
-            rowMinHeight={30}
-          />
-        </div>
+        <VirtualGrid<WorkingAgent>
+          columns={columns}
+          rows={filtered}
+          resizableColumns
+          columnWidths={colWidths}
+          onColumnWidthsChange={setColWidths}
+          getRowId={(r) => r.agentId}
+          onRowClick={(r) => void setSelectedId(`agent:${r.agentId}`)}
+          getRowBg={(r) => (`agent:${r.agentId}` === selectedId ? SELECTED_ROW_BG : undefined)}
+          headerHeight={30}
+          rowMinHeight={30}
+        />
       )}
       <div className="pc-adv-agents__legendbar" aria-label="Agent kind and liveness legend">
         {KIND_LEGEND.map(({ kind: k, hint }) => (
@@ -436,7 +433,6 @@ function RunsView({
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-runs');
   // Clicking a row with a feature jumps the Detail pane to that feature.
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (agents) api.setTitle(`Agents · ${slug} (${agents.length} runs)`);
@@ -448,16 +444,6 @@ function RunsView({
     // Most recent first (running rows float up via lastEventTs/ts).
     return [...xs].sort((a, b) => (b.lastEventTs ?? b.ts ?? 0) - (a.lastEventTs ?? a.ts ?? 0));
   }, [agents, showAll]);
-
-  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: visible.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 30,
-    overscan: 12,
-  });
-  useEffect(() => {
-    rowVirtualizer.measure();
-  }, [visible, rowVirtualizer]);
 
   const columns = useMemo<ColumnDef<HarnessAgentRun>[]>(
     () => [
@@ -566,38 +552,36 @@ function RunsView({
         </Tooltip>
       </div>
 
-      <div ref={scrollRef} className="pc-adv-agents__list">
-        {error ? (
+      {error ? (
+        <div className="pc-adv-agents__list">
           <div className="pc-advpanel__empty pc-advpanel__empty--err">Failed: {error}</div>
-        ) : loading ? (
+        </div>
+      ) : loading ? (
+        <div className="pc-adv-agents__list">
           <div className="pc-advpanel__empty">Loading {slug}…</div>
-        ) : (
-          <RichGrid<HarnessAgentRun>
-            inline
-            resizableColumns
-            columnWidths={colWidths}
-            onColumnWidthsChange={setColWidths}
-            virtualMode={{
-              virtualizer: rowVirtualizer,
-              totalRows: visible.length,
-              rowAt: (i) => visible[i],
-            }}
-            columns={columns}
-            getRowId={(r) => r.runId}
-            onRowClick={(r) => {
-              if (r.featureId) void setSelectedId(r.featureId);
-            }}
-            getRowBg={(r) => (r.featureId && r.featureId === selectedId ? SELECTED_ROW_BG : undefined)}
-            headerHeight={30}
-            rowMinHeight={30}
-            empty={
-              <div className="pc-advpanel__empty">
-                {showAll ? 'No agent runs for this harness yet.' : 'No agents running.'}
-              </div>
-            }
-          />
-        )}
-      </div>
+        </div>
+      ) : (
+        <VirtualGrid<HarnessAgentRun>
+          scrollClassName="pc-adv-agents__list"
+          resizableColumns
+          columnWidths={colWidths}
+          onColumnWidthsChange={setColWidths}
+          rows={visible}
+          columns={columns}
+          getRowId={(r) => r.runId}
+          onRowClick={(r) => {
+            if (r.featureId) void setSelectedId(r.featureId);
+          }}
+          getRowBg={(r) => (r.featureId && r.featureId === selectedId ? SELECTED_ROW_BG : undefined)}
+          headerHeight={30}
+          rowMinHeight={30}
+          empty={
+            <div className="pc-advpanel__empty">
+              {showAll ? 'No agent runs for this harness yet.' : 'No agents running.'}
+            </div>
+          }
+        />
+      )}
     </>
   );
 }

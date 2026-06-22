@@ -10,7 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Select } from '@/app/harness/Select';
 
 interface Row {
@@ -101,15 +101,15 @@ export default function RoutesTab() {
         <div className="pc-dev-muted">no route invocations recorded yet.</div>
       )}
       {!loading && !error && rows.length > 0 && (
-        <div style={{ height: Math.min(640, 32 + rows.length * 28 + 4) }}>
-          <RichGrid<Row>
-            columns={ROUTES_COLUMNS}
-            rows={rows}
-            getRowId={(r, i) => `${r.invoked_at}:${r.method}:${r.path}:${i}`}
-            rowMinHeight={28}
-            headerHeight={32}
-          />
-        </div>
+        <VirtualGrid<Row>
+          columns={ROUTES_COLUMNS}
+          rows={rows}
+          getRowId={(r) => `${r.invoked_at}:${r.method}:${r.path}:${r.status}:${r.duration_ms ?? ''}`}
+          rowMinHeight={28}
+          estimateRowHeight={28}
+          headerHeight={32}
+          scrollStyle={{ maxHeight: 640, overflow: 'auto' }}
+        />
       )}
     </div>
   );

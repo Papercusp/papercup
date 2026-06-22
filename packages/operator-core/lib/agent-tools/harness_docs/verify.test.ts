@@ -18,11 +18,13 @@ import { verifyManualDoc } from '../../harness/docs/manual-anchor';
 const verifyM = vi.mocked(verifyManualDoc);
 const tool = (await import('./verify')).default;
 
-type Out = { content: { text: string }[]; isError?: boolean };
+type Out = { content?: { text: string }[]; data?: unknown; isError?: boolean };
 const call = (args: Record<string, unknown>, ctx: Record<string, unknown> = { harnessSlug: 'demo' }) =>
   tool.handler(args as never, ctx as never) as Promise<Out>;
+// The bulk path returns the canonical { data: envelope }; the harness_required
+// early-return is still a raw { content, isError } ToolResult (read directly below).
 const envelope = async (args: Record<string, unknown>, ctx?: Record<string, unknown>) =>
-  JSON.parse((await call(args, ctx)).content[0]!.text);
+  (await call(args, ctx)).data as any;
 
 beforeEach(() => {
   vi.clearAllMocks();

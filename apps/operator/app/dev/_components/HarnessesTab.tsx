@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
 
 interface HarnessRow {
@@ -82,15 +82,15 @@ export default function HarnessesTab({ workspaceIds }: Props) {
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
       {!loading && !error && (
-        <div style={{ height: Math.min(640, 32 + rows.length * 28 + 4) }}>
-          <RichGrid<HarnessRow>
-            columns={HARNESS_COLUMNS}
-            rows={rows}
-            getRowId={(r) => `${r.workspaceId}::${r.slug}`}
-            rowMinHeight={28}
-            headerHeight={32}
-          />
-        </div>
+        <VirtualGrid<HarnessRow>
+          columns={HARNESS_COLUMNS}
+          rows={rows}
+          getRowId={(r) => `${r.workspaceId}::${r.slug}`}
+          rowMinHeight={28}
+          estimateRowHeight={28}
+          headerHeight={32}
+          scrollStyle={{ maxHeight: 640, overflow: 'auto' }}
+        />
       )}
     </div>
   );

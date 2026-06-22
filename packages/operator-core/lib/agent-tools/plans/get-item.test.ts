@@ -32,9 +32,9 @@ import { getPlanRow } from './source';
 const getRowM = vi.mocked(getPlanRow);
 const tool = (await import('./get-item')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
-  JSON.parse(((await tool.handler(args as never, {} as never)) as Out).content[0]!.text);
+  (((await tool.handler(args as never, {} as never)) as Out).data);
 
 // A minimal PlanRow stub carrying the items the handler reads.
 const rowOf = (slug: string, ids: string[]) =>

@@ -25,9 +25,9 @@ const listM = vi.mocked(listReplicas);
 const activeM = vi.mocked(workItemRedundancyEnabled);
 const tool = (await import('./redundancy_status')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = () => tool.handler({ id: 'F-1', harness: 'web' } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 beforeEach(() => {
   vi.clearAllMocks();

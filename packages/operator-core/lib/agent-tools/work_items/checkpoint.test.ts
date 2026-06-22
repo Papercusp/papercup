@@ -29,11 +29,11 @@ import checkpoint from './checkpoint';
 const baseCtx = { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' } as never;
 const noHarnessCtx = { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default' };
 const parse = (x: unknown) => (checkpoint.args as { parse: (x: unknown) => unknown }).parse(x);
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 /** Parse the full bulk envelope. */
 const env = async (x: unknown, ctx: unknown = baseCtx) => {
   const res = (await checkpoint.handler(parse(x) as never, ctx as never)) as Out;
-  return JSON.parse(res.content[0]!.text);
+  return (res.data);
 };
 /** The single-call result is n=1 of the bulk envelope — read results[0]. */
 const one = async (x: unknown, ctx: unknown = baseCtx) => (await env(x, ctx)).results[0];

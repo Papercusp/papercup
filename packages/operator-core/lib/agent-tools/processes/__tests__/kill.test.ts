@@ -14,7 +14,7 @@ function parseEnvelope(result: { content: Array<{ text: string }> }): {
   results: any[];
   counts: { ok: number; failed: number };
 } {
-  return JSON.parse(result.content[0]!.text);
+  return (result.data);
 }
 
 const MAKE_PRINCIPAL_CTX = (over: Record<string, unknown> = {}) =>

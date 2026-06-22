@@ -25,27 +25,19 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 vi.mock('@papercusp/grid-core', () => ({
-  // The panel renders virtualized (`virtualMode`, no `rows`); the mock resolves
-  // rows from whichever prop is present so the assertions are unchanged.
-  RichGrid: ({ rows, virtualMode, onRowClick }: {
-    rows?: { id: string }[];
-    virtualMode?: { totalRows: number; rowAt: (i: number) => { id: string } };
-    onRowClick?: (r: { id: string }) => void;
-  }) => {
-    const data = rows ?? (virtualMode ? Array.from({ length: virtualMode.totalRows }, (_, i) => virtualMode.rowAt(i)) : []);
-    return (
-      <div data-testid="grid">
-        {data.map((r) => (
-          <button key={r.id} data-testid={`row-${r.id}`} onClick={() => onRowClick?.(r)}>{r.id}</button>
-        ))}
-      </div>
-    );
-  },
+  // The panel renders via VirtualGrid (RichGrid + an owned virtualizer); the mock
+  // just renders `rows` so the assertions key off the same row buttons.
+  VirtualGrid: ({ rows, onRowClick }: { rows: { id: string }[]; onRowClick?: (r: { id: string }) => void }) => (
+    <div data-testid="grid">
+      {rows.map((r) => (
+        <button key={r.id} data-testid={`row-${r.id}`} onClick={() => onRowClick?.(r)}>{r.id}</button>
+      ))}
+    </div>
+  ),
   usePersistedColumnWidths: () => [{}, vi.fn()],
 }));
-vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: () => ({ measure: vi.fn(), getVirtualItems: () => [], getTotalSize: () => 0 }),
-}));
+// list-meta (readListTotal/listCountLabel) is pure — used REAL, not mocked, so the
+// "N of TOTAL" assertion exercises the actual count logic.
 vi.mock('../../harness/filters', () => ({
   useColumnFilters: (_cols: unknown, rows: unknown[]) => ({
     rows, controller: {}, activeChips: [], hasActive: false, clearAll: vi.fn(),

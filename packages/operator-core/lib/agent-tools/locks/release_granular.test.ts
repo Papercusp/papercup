@@ -19,8 +19,8 @@ import { releaseGranular } from './su-lock-store';
 const relM = vi.mocked(releaseGranular);
 const tool = (await import('./release_granular')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+type Out = { data: any };
+const body = (o: Out) => (o.data);
 
 beforeEach(() => vi.clearAllMocks());
 

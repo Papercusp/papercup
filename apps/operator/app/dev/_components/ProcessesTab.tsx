@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
 
 export interface Process {
@@ -210,15 +210,15 @@ export default function ProcessesTab() {
           },
         ];
         return (
-          <div style={{ height: Math.min(640, 32 + sortedRows.length * 28 + 4) }}>
-            <RichGrid<Process>
-              columns={columns}
-              rows={sortedRows}
-              getRowId={(r) => String(r.pid)}
-              rowMinHeight={28}
-              headerHeight={32}
-            />
-          </div>
+          <VirtualGrid<Process>
+            columns={columns}
+            rows={sortedRows}
+            getRowId={(r) => String(r.pid)}
+            rowMinHeight={28}
+            estimateRowHeight={28}
+            headerHeight={32}
+            scrollStyle={{ maxHeight: 640, overflow: 'auto' }}
+          />
         );
       })()}
       {killModal && <KillModal state={killModal} setState={setKillModal} />}

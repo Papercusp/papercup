@@ -21,7 +21,7 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
     }
   ).handler(args, ctx);
 }
-const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
+const body = (r: { data: any }) => (r.data);
 
 describe('learning_packs:set_enabled tool (bulk keyed-array)', () => {
   beforeEach(() => {

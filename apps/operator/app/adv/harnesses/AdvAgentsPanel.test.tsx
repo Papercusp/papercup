@@ -24,11 +24,15 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ ...workingState, invalidate: invalidateMock }),
 }));
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows, virtualMode, onRowClick, getRowId }: {
-    rows?: unknown[]; virtualMode?: { totalRows: number; rowAt: (i: number) => unknown };
-    onRowClick?: (r: unknown) => void; getRowId?: (r: unknown) => string;
+  // Both sub-views render via VirtualGrid (RichGrid + an owned virtualizer); the
+  // mock renders `rows` (the empty `empty` slot when there are none) so the
+  // assertions key off the same row buttons.
+  VirtualGrid: ({ rows, onRowClick, getRowId, empty }: {
+    rows?: unknown[];
+    onRowClick?: (r: unknown) => void; getRowId?: (r: unknown) => string; empty?: ReactNode;
   }) => {
-    const data = rows ?? (virtualMode ? Array.from({ length: virtualMode.totalRows }, (_, i) => virtualMode.rowAt(i)) : []);
+    const data = rows ?? [];
+    if (data.length === 0 && empty) return <div data-testid="grid">{empty}</div>;
     return (
       <div data-testid="grid">
         {data.map((r, i) => {
@@ -39,9 +43,6 @@ vi.mock('@papercusp/grid-core', () => ({
     );
   },
   usePersistedColumnWidths: () => [{}, vi.fn()],
-}));
-vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: () => ({ measure: vi.fn(), getVirtualItems: () => [], getTotalSize: () => 0 }),
 }));
 vi.mock('@papercusp/operator-core/lib/liveness', () => ({ LIVE_MS: 60_000, STALE_MS: 300_000 }));
 vi.mock('../../harness/theme', () => ({ getRoleStyle: (role: string) => ({ solid: '#000', label: role || 'SU' }) }));

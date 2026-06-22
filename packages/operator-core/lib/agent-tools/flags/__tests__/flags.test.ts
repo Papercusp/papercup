@@ -39,13 +39,14 @@ function parseTextPayload(result: { content: Array<{ text: string }> }): Record<
   return JSON.parse(result.content[0].text);
 }
 
-/** Parse the bulk keyed-array envelope (flags:get / flags:set are bulk, P-006). */
-function parseEnvelope(result: { content: Array<{ text: string }> }): {
+/** Read the bulk keyed-array envelope (flags:get / flags:set are bulk, P-006 —
+ *  the handler returns the canonical { data: envelope } shape). */
+function parseEnvelope(result: { data: unknown }): {
   ok: boolean;
   results: any[];
   counts: { ok: number; failed: number };
 } {
-  return JSON.parse(result.content[0].text);
+  return result.data as { ok: boolean; results: any[]; counts: { ok: number; failed: number } };
 }
 
 beforeEach(() => {

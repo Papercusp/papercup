@@ -18,9 +18,9 @@ vi.mock('../../hive-reports-store', () => ({ setReportStatus: h.setReportStatus 
 import tool from './moderation_resolve';
 
 const CTX = { workspaceId: 'default' } as never;
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const env = async (args: unknown) =>
-  JSON.parse(((await tool.handler(args as never, CTX)) as Out).content[0]!.text);
+  (((await tool.handler(args as never, CTX)) as Out).data);
 
 beforeEach(() => {
   vi.clearAllMocks();

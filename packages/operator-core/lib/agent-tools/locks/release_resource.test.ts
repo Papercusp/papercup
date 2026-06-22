@@ -25,9 +25,9 @@ const releaseM = vi.mocked(tryReleaseResource);
 const backUpM = vi.mocked(broadcastResourceBackUp);
 const tool = (await import('./release_resource')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = (args: Record<string, unknown> = {}) => tool.handler(args as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 beforeEach(() => {
   vi.clearAllMocks();

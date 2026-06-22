@@ -62,7 +62,8 @@ describe('flags:set', () => {
 
     expect(setFlag).toHaveBeenCalledWith('papercusp-testing', true);
     expect(publishFlagChange).toHaveBeenCalledWith('papercusp-testing');
-    const data = JSON.parse(result.content[0].text);
+    // flags:set is bulk (P-006): the handler returns the canonical { data: envelope }.
+    const data = result.data;
     expect(data.ok).toBe(true);
   });
 

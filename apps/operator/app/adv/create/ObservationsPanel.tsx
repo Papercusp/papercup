@@ -36,12 +36,21 @@ const KIND_LABEL: Record<string, string> = {
   reinforce: 'Reinforce',
 };
 
+// Browse-feed fetch cap. The resolver counts a topic-filtered set by RE-listing
+// (countIssues({topic}) does a full second list), so carrying an exact total via
+// attachListMeta isn't cheap here — instead we show an honest "newest N" note
+// when the read fills the cap, rather than silently presenting the page as all.
+const OBSERVATIONS_LIMIT = 200;
+
 export default function ObservationsPanel(_props?: Partial<PanelComponentProps>) {
   const { data, loading } = useSyncQuery<ObservationRow>({
     queryName: 'learning.observations',
-    args: { limit: 200 },
+    args: { limit: OBSERVATIONS_LIMIT },
   });
   const rows = data ?? [];
+  // When the feed exactly fills the cap, there may be older observations not
+  // shown — say so instead of letting `rows.length` read as the true total.
+  const capped = rows.length >= OBSERVATIONS_LIMIT;
 
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: 16 }}>
@@ -49,6 +58,11 @@ export default function ObservationsPanel(_props?: Partial<PanelComponentProps>)
         <strong style={{ color: 'var(--fg)' }}>Observations</strong> — pre-idea sensor readings agents
         record at the end of a turn. They never enter the work queue; a recurring one is promoted to a
         real idea by Scout. Browse only.
+        {rows.length > 0 ? (
+          <span style={{ marginLeft: 6, color: 'var(--fg)' }}>
+            {capped ? `newest ${OBSERVATIONS_LIMIT}` : rows.length}
+          </span>
+        ) : null}
       </div>
       {loading && rows.length === 0 ? (
         <div style={{ color: 'var(--fg-mute)', padding: 12 }}>Loading observations…</div>

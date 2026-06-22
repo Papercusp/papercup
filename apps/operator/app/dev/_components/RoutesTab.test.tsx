@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows }: { rows: unknown[] }) => (
+  VirtualGrid: ({ rows }: { rows: unknown[] }) => (
     <div data-testid="grid" data-rows={rows.length} />
   ),
 }));

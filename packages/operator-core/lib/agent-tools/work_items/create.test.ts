@@ -17,8 +17,8 @@ const tool = (await import('./create')).default;
 
 const ctx = { workspaceId: 'default', harnessSlug: 'papercup' } as never;
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
-type Out = { content: { text: string }[] };
-const body = async (args: unknown) => JSON.parse(((await tool.handler(parse(args) as never, ctx)) as Out).content[0]!.text);
+type Out = { data: any };
+const body = async (args: unknown) => (((await tool.handler(parse(args) as never, ctx)) as Out).data);
 
 beforeEach(() => {
   vi.clearAllMocks();

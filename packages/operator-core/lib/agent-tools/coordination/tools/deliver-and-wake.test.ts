@@ -129,7 +129,7 @@ const ctx = { uiClientId: 'su-self', isSuperuser: true, workspaceId: 'ws' } as n
 const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T =>
   tool.args.parse(x) as T;
 const out = (res: unknown) =>
-  JSON.parse((res as { content: { text: string }[] }).content[0].text);
+  ((res as { data: any }).data);
 // coord:send is now bulk (bulk-endpoint-standardization-2026-06-21 P-004): the
 // SINGLE form returns the house envelope { ok, results:[…], counts }; the one
 // message's per-message fields (wake / notWoken / endTurn / msg_id) live in

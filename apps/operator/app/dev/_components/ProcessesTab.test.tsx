@@ -4,14 +4,14 @@
 // genuine logic surfaces are pinned: (1) the pure killability / kind-parse /
 // ordering helpers (protectedReasonFor, parseKinds, sortProcesses, fmtAge),
 // and (2) a render-smoke of the KillModal confirm-gate state machine — the
-// "type the PID to confirm" guard that arms the destructive button. RichGrid,
+// "type the PID to confirm" guard that arms the destructive button. VirtualGrid,
 // nuqs, Checkbox and Select are mocked so the kill button is reachable without
 // the real grid/primitives; fetch is stubbed so no signal escapes.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 
-vi.mock('@papercusp/grid-core', () => ({ RichGrid: () => null }));
+vi.mock('@papercusp/grid-core', () => ({ VirtualGrid: () => null }));
 vi.mock('nuqs', () => ({
   parseAsString: { withDefault: () => ({}) },
   useQueryState: () => [null, () => {}],

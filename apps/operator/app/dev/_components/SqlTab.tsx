@@ -6,7 +6,7 @@ import { useCallback, useState } from 'react';
 import dynamic from '@/lib/router-compat/dynamic';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
  * /dev SQL tab — Monaco-backed read-only SQL playground.
@@ -156,15 +156,15 @@ export default function SqlTab() {
                 render: ({ row }) => <>{renderCell(row[c])}</>,
               }));
               return (
-                <div style={{ height: Math.min(560, 32 + result.rows.length * 28 + 4) }}>
-                  <RichGrid<Record<string, unknown>>
-                    columns={cols}
-                    rows={result.rows}
-                    getRowId={(r) => JSON.stringify(r)}
-                    rowMinHeight={28}
-                    headerHeight={32}
-                  />
-                </div>
+                <VirtualGrid<Record<string, unknown>>
+                  columns={cols}
+                  rows={result.rows}
+                  getRowId={(r) => JSON.stringify(r)}
+                  rowMinHeight={28}
+                  estimateRowHeight={28}
+                  headerHeight={32}
+                  scrollStyle={{ maxHeight: 560, overflow: 'auto' }}
+                />
               );
             })()}
           </>

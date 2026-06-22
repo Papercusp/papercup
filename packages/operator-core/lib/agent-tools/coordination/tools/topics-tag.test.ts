@@ -23,10 +23,10 @@ const untagM = vi.mocked(untagObject);
 const listM = vi.mocked(listObjectTags);
 const tool = (await import('./topics-tag')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: any };
 const call = (args: Record<string, unknown> = {}) =>
   tool.handler(tool.args.parse({ object_kind: 'feature', object_ref: 'F-3', topic: 'arch', ...args }) as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => (o.data);
 
 beforeEach(() => {
   vi.clearAllMocks();
