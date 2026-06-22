@@ -67,6 +67,7 @@ const ALLOW = new Set([
   'PAPERCUSP_DISABLE_SANDBOX', 'PAPERCUSP_DBOS_INVOKE_DEBUG', 'PAPERCUSP_DEBUG_WORKSPACE',
   'PAPERCUSP_DESKTOP_SCREEN_TRACKS', 'PAPERCUSP_DEV_PLUGIN_WATCH', 'PAPERCUSP_FAKE_LLM',
   'PAPERCUSP_PROMPT_CACHE', 'PAPERCUSP_MEMORY_WATCHDOG', 'PAPERCUSP_PTY_FLOW_CONTROL',
+  'PAPERCUSP_SIGTERM_DRAIN', // ops kill-switch: graceful HTTP connection-drain on SIGTERM (default-ON, opt-out to restore Node's immediate-exit). infra-fail-fast P-017.
   'PAPERCUSP_ENABLE_RUST_REWRITES', // build-mode (Rust vs JS proxies), launcher-set
   // ── system-health / DBOS / gateway OPS kill-switches + dev traces. These gate
   //    INTERNAL infrastructure (watchdogs, alarms, reapers, self-heal, dev tracing),

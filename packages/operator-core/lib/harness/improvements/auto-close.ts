@@ -48,6 +48,10 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   'orphaned-spawn',
   'stuck-plan',
   'ship-link-stuck',
+  // agent-activity-liveness-truth P-007: a live-state collector — when the claim
+  // progresses (or is freed/reclaimed) the stalled signal simply stops, so its
+  // absence reliably means resolution.
+  'stalled-claim',
 ]);
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */

@@ -253,6 +253,81 @@ describe('reclaimStaleWorkItemClaims', () => {
        RETURNING feature_id`;
     expect(updated).toHaveLength(1);
   });
+
+  // ── agent-activity-liveness-truth P-003/P-007: spawn-death → IMMEDIATE release ──
+  // The incident: a gate-fix bee DIED but its claim sat owned ~1h. A confirmed-
+  // terminal spawn's claim must free NOW, not after the 10-min grace.
+  it('spawn-exit: a confirmed-terminal spawn frees its claim IMMEDIATELY, inside the grace window', async () => {
+    // Claimed only 2 min ago (well inside the 10-min grace) — the DEAD leg would NOT
+    // touch it — but its spawn is `failed`, so the spawn-exit leg frees it now.
+    await seedItem('F-SE1', 'opspawn-dead-bee', 2);
+    await seedSpawn('opspawn-dead-bee', {}, 'failed', 1);
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(1);
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE1', reason: 'spawn-exit', new_status: 'todo' });
+    expect((await statusOf('F-SE1')).taken_by).toBeNull();
+  });
+
+  it('spawn-exit: matches on ANY alias (taken_by = the run_id of the terminal spawn)', async () => {
+    await seedItem('F-SE2', 'opspawn-1900-run', 1, 'in_progress');
+    await seedSpawn('s-bee-x', { sessionOwner: 's-bee-x', runId: 'opspawn-1900-run' }, 'cancelled', 1);
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-SE2', reason: 'spawn-exit', new_status: 'todo' });
+  });
+
+  it('spawn-exit: bounded to recent — a spawn terminal >1h ago does NOT force-free a within-grace claim', async () => {
+    await seedItem('F-SE3', 'opspawn-old-dead', 2); // within grace → DEAD leg won't fire
+    await seedSpawn('opspawn-old-dead', {}, 'failed', 90); // finished 90 min ago → outside the 1h bound
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(0); // neither leg fires
+  });
+
+  // ── agent-activity-liveness-truth P-003/P-007: the STALLED leg (flag-gated) ──
+  it('stalled: flag OFF (default) — a LIVE holder with stale progress is NOT freed', async () => {
+    await seedItem('F-ST1', 'su-alive-stalled', 30, 'in_progress', 0, 30); // last progress 30 min ago
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-stalled', now())`; // alive
+    const r = await reclaimStaleWorkItemClaims(sql); // includeStalled defaults false
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-ST1')).taken_by).toBe('su-alive-stalled');
+  });
+
+  it('stalled: flag ON — a LIVE holder with stale progress IS freed + requeued (reason stalled)', async () => {
+    await seedItem('F-ST2', 'su-alive-stalled2', 30, 'in_progress', 0, 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-stalled2', now())`;
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST2', reason: 'stalled', new_status: 'todo', action: 'requeued' });
+    expect((await statusOf('F-ST2')).taken_by).toBeNull();
+  });
+
+  it('stalled: flag ON — a LIVE holder making RECENT progress is KEPT (not falsely stalled)', async () => {
+    await seedItem('F-ST3', 'su-progressing', 30, 'in_progress', 0, 1); // progressed 1 min ago
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-progressing', now())`;
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released).toHaveLength(0);
+  });
+
+  it('stalled: flag ON — a fresh claim with no progress yet gets the grace window (taken_at fallback)', async () => {
+    await seedItem('F-ST4', 'su-fresh', 2, 'in_progress', 0, null); // claimed 2 min ago, no progress yet
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-fresh', now())`;
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released).toHaveLength(0); // COALESCE(last_progress_at, taken_at) is recent → not stalled
+  });
+
+  it('stalled: flag ON — improvement-runner (parked routine lane) is EXEMPT', async () => {
+    await seedItem('F-ST5', 'improvement-runner', 30, 'in_progress', 0, 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('improvement-runner', now())`;
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released).toHaveLength(0);
+  });
+
+  it('stalled honors a custom stalledMs window', async () => {
+    await seedItem('F-ST6', 'su-alive-window', 30, 'in_progress', 0, 8); // progress 8 min ago
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-window', now())`;
+    // 8-min-old progress is INSIDE the default 10-min window (kept) but OUTSIDE a 5-min window (freed).
+    expect((await reclaimStaleWorkItemClaims(sql, { includeStalled: true })).released).toHaveLength(0);
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true, stalledMs: 5 * 60_000 });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST6', reason: 'stalled' });
+  });
 });
 
 describe('reclaimStaleIssueClaims (issue-family reaper, GAP 2 / P-005 / D-009)', () => {

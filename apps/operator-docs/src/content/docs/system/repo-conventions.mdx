@@ -24,7 +24,7 @@ plans:
 
 ## Deployment model — desktop is the product
 
-**Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 3–33**
+**Source of truth: `apps/operator/providers/HarnessSyncProvider.tsx` lines 3–33**
 (the doc-comment — "Transport: SSE for every runtime (desktop Tauri shell *and*
 plain browser)").
 
@@ -61,7 +61,7 @@ Internal ports (do not open in a browser; the desktop drives them):
 | Degraded fallback | POLLING (via `useTransportFallback` after sustained SSE failure) | Same — POLLING |
 | Runtime detection | **None** — transport is not runtime-selected | **None** |
 
-`HarnessZeroProvider` passes a literal `syncType="SSE"` unconditionally — there
+`HarnessSyncProvider` passes a literal `syncType="SSE"` unconditionally — there
 is **no** Tauri-vs-browser branch and **no** runtime detection driving transport
 selection. SSE is the transport in both the desktop Tauri shell and a plain
 browser; POLLING is the degraded fallback in both (dropped to only after
@@ -71,12 +71,12 @@ that fed it was removed 2026-06-03. There is **no** `localStorage` knob (no
 `harnessSyncTransport` override) to force a desktop-vs-browser path — the
 operator's transport is fixed. (The generic `@papercusp/sync` `SyncProvider`
 still *understands* a `'WEBSOCKETS'` `syncType` prop for other apps, but
-`HarnessZeroProvider` never passes it.)
+`HarnessSyncProvider` never passes it.)
 
 **Stale docs to mistrust** (cross-checked 2026-05-11):
 
 - `libs/generic/sync/PASS_2_1_DECISION.md` (2026-05-06) declared "stop SSE" —
-  **SUPERSEDED 2026-05-07** by the HarnessZeroProvider decision to make SSE
+  **SUPERSEDED 2026-05-07** by the HarnessSyncProvider decision to make SSE
   primary on desktop. The doc has a header banner now but is otherwise frozen.
 - `libs/generic/sync/src/transports/sse/SSEAdapter.tsx`'s header still says
   "Browser (test / dev) defaults to Zero WS; SSE acts as a fallback there" — that

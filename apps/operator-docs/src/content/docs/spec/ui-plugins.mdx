@@ -839,7 +839,7 @@ Astro Starlight): its tab declares
   <li><strong>Replicate provider context.</strong> The route inherits only the
       app's root layout. Components that "just work" inside
       <code>/harness/*</code> may rely on harness-scoped providers (for example
-      <code>Tooltip.Provider</code>, <code>HarnessZeroProvider</code>) that the
+      <code>Tooltip.Provider</code>, <code>HarnessSyncProvider</code>) that the
       root layout doesn't supply, throwing
       <code>"Tooltip must be used within TooltipProvider"</code> at render.
       Replicate just the providers the embedded component actually uses.</li>

@@ -66,6 +66,15 @@ export type WatchdogSource =
   | 'insight-staleness'
   // hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
   | 'stalled-feature' | 'orphaned-spawn' | 'escalation-spike'
+  // agent-activity-liveness-truth-2026-06-21 P-007 (D-001/D-004, folds EI-2311):
+  // a work-item CLAIM held by a LIVE holder that has made NO item-scoped progress
+  // for far past the window (fleet_assignment.stalled). The LOUD recurrence guard
+  // for the incident — a claim is not progress; this fires even while the
+  // RECLAIM_STALLED reconciler leg is dark, so stalled work is never silently
+  // "covered". Distinct from stalled-feature (an UNCLAIMED dispatchable feature
+  // sitting idle) and orphaned-spawn (a DEAD nursery row): this is a live holder
+  // not advancing its claim.
+  | 'stalled-claim'
   // the spawn-admission ceiling is consumed by rows that aren't actually
   // streaming — stale debits jamming `maxSimultaneousAgents` so NO bee can be
   // placed even though ~nothing is alive (EI-2186 — host-restart class). The
@@ -444,6 +453,11 @@ export interface CollectOptions extends LearningSloOptions {
   stalledFeatureHours?: number;
   /** orphaned-spawn: a running row this much past the reclaim threshold fires. Default 15min (3× RECLAIM_STALE_MS). */
   orphanedSpawnStaleMinutes?: number;
+  /** stalled-claim: a work-item claim held by a LIVE holder with no item-scoped progress
+   *  for this long fires (agent-activity-liveness-truth P-007). Default 30min — well past
+   *  the 10-min view `stalled` threshold, so only genuinely-stuck (not just-crossed) claims
+   *  raise the loud signal. */
+  stalledClaimMinutes?: number;
   /** spawn-ceiling-jam: a running row older than this with NO recent stream output counts as a
    *  suspected stale debit (EI-2186). Gives the "for > N minutes" semantics. Default 15min. */
   ceilingJamMinAgeMinutes?: number;
@@ -1399,6 +1413,73 @@ export async function collectOrphanedSpawnSignals(
   return orphanedSpawnSignalsFromRows(rows, { staleMinutes });
 }
 
+interface StalledClaimRow {
+  work_item_id: string | null;
+  agent_id: string | null;
+  harness_slug: string | null;
+  detail: string | null;
+  stalled_minutes: number | string | null;
+}
+/**
+ * Pure (agent-activity-liveness-truth P-007, D-001): live-holder-but-no-progress
+ * work-item claims → ONE aggregate signal. The recurrence guard for the incident
+ * (a claim is not progress; a dead/stalled holder must never read as "covered").
+ * Folds EI-2311 — re-dispatch-of-dead-holder: the durable cure is that the
+ * RECONCILER frees these (P-003) AND this fires loudly while that leg is dark.
+ */
+export function stalledClaimSignalsFromRows(
+  rows: StalledClaimRow[],
+  opts: { minMinutes?: number } = {},
+): WatchdogSignal[] {
+  if (rows.length === 0) return [];
+  const minMinutes = opts.minMinutes ?? 30;
+  const sample = rows
+    .slice(0, 5)
+    .map((r) => `${r.work_item_id ?? '?'}<-${r.agent_id ?? '?'} (${Math.round(Number(r.stalled_minutes ?? 0))}m)`)
+    .join(', ');
+  return [{
+    source: 'stalled-claim',
+    key: 'stalled-work-item-claims',
+    title: 'Work-item claims held by a live agent are not progressing (stalled)',
+    body:
+      `Watchdog signal (stalled-claim): ${rows.length} work-item claim(s) are held by a LIVE holder ` +
+      `that has recorded NO item-scoped progress (a state transition / checkpoint) for > ${minMinutes} min ` +
+      `— a claim is not progress (agent-activity-liveness-truth D-001). The holder is heartbeating but the ` +
+      `work is not advancing, so the item reads as "covered" while actually stuck. The RECLAIM_STALLED ` +
+      `reconciler leg auto-frees these when armed (default OFF — a live-placement change); until then this ` +
+      `is the loud signal so the work is re-picked, not silently blocked (folds EI-2311). ` +
+      `Sample: ${sample}${rows.length > 5 ? ', …' : ''}.`,
+    severity: 'major',
+    kind: 'bug',
+    findingClass: 'coordination:stalled-claim',
+  }];
+}
+/**
+ * stalled-claim: work-item claims whose holder is ALIVE (fresh presence/nursery
+ * heartbeat) but whose last_progress_at is far past the window — reads straight
+ * off the reconciled fleet_assignment view's `stalled` column (migration 358),
+ * the SAME truth the reconciler + every reader use, with a longer min-age so only
+ * genuinely-stuck claims raise the loud aggregate signal.
+ */
+export async function collectStalledClaimSignals(
+  sql: Sql,
+  workspaceId: string,
+  opts: CollectOptions = {},
+): Promise<WatchdogSignal[]> {
+  const minMinutes = opts.stalledClaimMinutes ?? 30;
+  const rows = await sql<StalledClaimRow[]>`
+    SELECT work_item_id, agent_id, harness_slug, detail,
+           EXTRACT(epoch FROM (now() - COALESCE(last_progress_at, claim_acquired_ts))) / 60 AS stalled_minutes
+      FROM harness_shared.fleet_assignment
+     WHERE source = 'work_item_claim'
+       AND stalled IS TRUE
+       AND workspace_id = ${workspaceId}
+       AND (now() - COALESCE(last_progress_at, claim_acquired_ts)) > make_interval(mins => ${minMinutes})
+     ORDER BY COALESCE(last_progress_at, claim_acquired_ts) ASC
+     LIMIT 50`;
+  return stalledClaimSignalsFromRows(rows, { minMinutes });
+}
+
 interface CeilingJamRow {
   spawn_id: string;
   harness_slug: string | null;
@@ -1627,6 +1708,10 @@ export async function defaultPapercuspCollectors(
     // safety (systematic ESCALATE volume).
     { name: 'papercusp-stalled-feature', collect: () => collectStalledFeatureSignals(getOrgPg().sql, workspaceId, opts) },
     { name: 'papercusp-orphaned-spawn', collect: () => collectOrphanedSpawnSignals(getOrgPg().sql, workspaceId, opts) },
+    // agent-activity-liveness-truth P-007: a LIVE holder sitting on a non-progressing
+    // work-item claim (fleet_assignment.stalled) — the loud recurrence guard so stalled
+    // work is re-picked even while the RECLAIM_STALLED reconciler leg is dark.
+    { name: 'papercusp-stalled-claim', collect: () => collectStalledClaimSignals(getOrgPg().sql, workspaceId, opts) },
     // EI-2186: the spawn-ceiling-jam recurrence guard — admission ceiling consumed by
     // non-streaming rows (stale debits from a host restart). Keys on stream activity,
     // not heartbeat, so it catches the jam orphaned-spawn misses (fresh false-alive heartbeat).

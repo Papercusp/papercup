@@ -82,3 +82,53 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
     void substrateDown.then(() => exitOnce(recycleExitCode));
   }
 }
+
+export interface GracefulShutdownOpts {
+  server: RecycleServerLike;
+  /** Signals that trigger the drain. Default ['SIGTERM', 'SIGINT']. */
+  signals?: readonly NodeJS.Signals[];
+  /** Test seam — defaults to `process.on`. */
+  on?: (sig: NodeJS.Signals, cb: () => void) => void;
+  /** Test seam — forwarded to gracefulHostRecycle (defaults to process.exit). */
+  exit?: (code: number) => void;
+  /** Test seam — forwarded to gracefulHostRecycle. */
+  closeSubstrate?: () => Promise<unknown>;
+  /** Forwarded to gracefulHostRecycle (hard-exit backstop). */
+  hardExitMs?: number;
+  /** Test seam — defaults to console.log. */
+  log?: (msg: string) => void;
+}
+
+/**
+ * Install the graceful-shutdown drain for the HTTP-serving process (the
+ * single-process host + each cluster worker). On the FIRST SIGTERM/SIGINT it
+ * stops accepting new connections, drains in-flight HTTP, tears down the
+ * substrate, then exits 0 — an INTENTIONAL stop (deploy / `systemctl restart`),
+ * distinct from the non-zero memory-watchdog recycle code.
+ *
+ * Without this, Node's default SIGTERM is an immediate exit that severs in-flight
+ * requests, so a deploy restart 502s anything mid-flight (infra-fail-fast P-017).
+ * Idempotent: a second signal while draining is ignored (the bounded
+ * gracefulHostRecycle owns the hard-exit backstop). Best-effort — never throws.
+ */
+export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
+  const on = opts.on ?? ((sig: NodeJS.Signals, cb: () => void) => void process.on(sig, cb));
+  const signals = opts.signals ?? (['SIGTERM', 'SIGINT'] as const);
+  const log = opts.log ?? ((m: string) => console.log(m));
+
+  let draining = false;
+  const drainAndExit = (sig: NodeJS.Signals): void => {
+    if (draining) return;
+    draining = true;
+    log(`[hono-host] ${sig} — draining in-flight HTTP + substrate, then exiting (pid=${process.pid})`);
+    gracefulHostRecycle({
+      server: opts.server,
+      recycleExitCode: 0, // intentional stop, not the non-zero recycle code
+      exit: opts.exit,
+      closeSubstrate: opts.closeSubstrate,
+      hardExitMs: opts.hardExitMs,
+    });
+  };
+
+  for (const sig of signals) on(sig, () => drainAndExit(sig));
+}

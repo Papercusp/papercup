@@ -8,7 +8,7 @@ Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
 path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
 host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
 **not run** on desktop. Treat this page as historical reference. Source of
-truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+truth: `apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection
 doc-comment) + the root `CLAUDE.md` deployment-model section.
 :::
 
@@ -38,7 +38,7 @@ codebase (the only remaining occurrences of that string are in these
 docs). zero-cache was retired in the Level 1 + Phase 1 SSE cutover
 (2026-05-07); the live transport is SSE served by the operator sidecar
 over PG `LISTEN/NOTIFY`. The diagram above is the historical WS pipeline
-— see `HarnessZeroProvider.tsx` for the SSE replacement.
+— see `HarnessSyncProvider.tsx` for the SSE replacement.
 :::
 
 ## Reading from Zero in a panel
@@ -69,8 +69,8 @@ Three things to know:
   `data`. (Raw `@rocicorp/zero`'s `useQuery` returns a `[results, info]`
   2-tuple — but in this stack you call the `@papercusp/sync` wrapper, not
   Zero directly.)
-* **The provider must be mounted upstream**. `HarnessZeroProvider`
-  (`apps/operator/providers/HarnessZeroProvider.tsx`) wraps every
+* **The provider must be mounted upstream**. `HarnessSyncProvider`
+  (`apps/operator/providers/HarnessSyncProvider.tsx`) wraps every
   `/harness/*` route in a `<SyncProvider>`. Used outside a provider,
   `useSyncQuery` does **not** throw — it returns
   `{ data: undefined, loading: false, error: null }` so app-chrome
@@ -115,7 +115,7 @@ Under the shipping SSE transport, freshness is **invalidate-driven**:
 pushes arrive over `LISTEN/NOTIFY` and trigger refetches. SSE is **not**
 polled for freshness — there is only a long drift-repair tick
 (`DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000`, i.e. 3 min, in
-`HarnessZeroProvider.tsx`) that re-syncs any push lost to an SSE blip or
+`HarnessSyncProvider.tsx`) that re-syncs any push lost to an SSE blip or
 a missing bridge entry. The `ttl`/WS-materialized-view knobs above apply
 only to the retired WebSocket path.
 

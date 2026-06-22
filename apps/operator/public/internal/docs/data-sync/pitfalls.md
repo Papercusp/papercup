@@ -169,7 +169,7 @@ chrome rendered at the root layout doesn't crash). The throwing variants are
 
 **Fix**: ensure your panel is mounted inside the provider tree. In the
 operator the provider is `RootSyncProvider` (which wraps
-`HarnessZeroProvider`), mounted near the root layout, so most components are
+`HarnessSyncProvider`), mounted near the root layout, so most components are
 already inside it — see `apps/operator/app/_components/RootSyncProvider.tsx`.
 In operator-vite it's mounted in `apps/operator-vite/src/routes/__root.tsx` as
 the **outermost** data-layer provider — only the Radix `Tooltip.Provider` sits

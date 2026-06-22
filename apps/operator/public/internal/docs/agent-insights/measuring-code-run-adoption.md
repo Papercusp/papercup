@@ -103,6 +103,46 @@ hand-loop) are different metrics — a weak model often does both, which inflate
   stated preference (adopt aggressively even at a small per-call cost). Re-run the A/B on sonnet to
   confirm the clean-adoption + token deltas on the real fleet model.
 
+## Sonnet results (2026-06-21, fleet model, N=1 per arm) — the clean win, confirmed
+
+Run on **sonnet** (SUT) with sim+judge on haiku to minimise sonnet-pool load, through the OAuth
+gateway pool in a clear window. The capability ceiling haiku hit is gone: sonnet realises the clean
+batch the whole tool exists for.
+
+| Scenario              | arm        | verdict  | tool calls | cost   | sequence                                                     |
+| --------------------- | ---------- | -------- | ---------- | ------ | ------------------------------------------------------------ |
+| S13 (N=12 loop)       | baseline   | **pass** | **2**      | $0.025 | `work_items:list` → **`code:run`**                           |
+| S13 (N=12 loop)       | no-coderun | fail\*   | 7          | $0.058 | tried `code:run`×3 (denied) → hand-looped `work_items:get`×3 |
+| S14 (single/non-loop) | baseline   | **pass** | 2          | $0.015 | `harness:status`, `issues:list` (NO code:run)                |
+| S15 (N=3 loop)        | baseline   | fail     | 3          | $0.012 | `work_items:get`×3 (hand-looped, no batch)                   |
+
+What it establishes:
+
+* **Clean adoption is real on the fleet model.** On the N=12 task sonnet collapsed the per-item loop
+  into ONE `code:run` (list + 1 call = 2 total) — the exact thing haiku couldn't do without also
+  hand-looping. The token win is realised, not just theoretical.
+* **The availability delta, measured:** with `code:run` = 2 calls / $0.025; without it sonnet *wanted*
+  the tool (emitted it 3× before the catalog rejected it) then fell back to 3 hand-loops = 7 calls /
+  $0.058 — **\~2.3× cost, \~3× the round-trips** (still understated by the in-process loop cap; *fail
+  is expected* — the scenario asserts a batch the no-coderun arm structurally can't make).
+* **No over-application.** S14 (two unrelated one-off calls) stayed direct — the stronger nudge did
+  not make sonnet wrap a non-loop task.
+* **The remaining gap: low-N — and it is NOT nudge-movable.** At **N=3** sonnet still hand-loops
+  (3 direct gets, no `code:run`); the win at N=12 is unambiguous, the N=3 threshold is where adoption
+  leaks. A loop-framing refinement was **tried and reverted** (2026-06-21): sharpening the nudge to
+  "even a 2–3 *iteration loop over items* → `code:run`, no minimum N" did **not** move S15 (the
+  deterministic `does-not-hand-loop-small-batch` assert still failed — model judgment, not wording),
+  and the S13 sample regressed to *reach `code:run` AND also hand-loop* — zero upside, possible
+  downside, so it was reverted to the known-good nudge. Conclusion: **N=3 adoption is
+  capability/judgment-gated** (sonnet decides three simple `get`s aren't worth a script), not a prompt
+  lever. Don't keep tinkering the nudge for it; the real win is already locked at higher N. (Method
+  caveat surfaced by this run: a haiku judge flagged S14 *fail* on a sequence identical to its prior
+  *pass* — the deterministic asserts, not the judge, are the verdict; single-run + cheap-judge is too
+  noisy for a marginal low-N delta. Use an N≥3 matrix + a same-class judge if ever re-measured.)
+
+\* "fail" on the no-coderun arm is the *intended* control — it proves the tool's absence forces the
+expensive path; it is not a regression.
+
 ## Code recipes — the reuse layer that makes the win compound
 
 Adoption (above) makes ONE agent's `code:run` cheap. **Code recipes** (plan
@@ -128,3 +168,29 @@ a recipe run many times by many agents is a tool candidate with the implementati
 a better signal than scout/observation guessing at a missing tool. Complements
 `tool-call-batching-wrappers-2026-06-21` (hand-curated fixed-ritual wrappers) — shared
 `dev:tool_cooccurrence` signal + shared catalog labeling.
+
+## Reuse: coord:orient wrapper adoption (tool-call-batching-wrappers P-013)
+
+The same seam measures **compound-WRAPPER** adoption, not just `code:run`. The wrapper
+`coord:orient` (folds the 6-call session-bootstrap into one) gets the identical A/B:
+
+* **Scenarios:** `su-S17-orient-bootstrap` (reach-for-the-bundle at wake) + its guard
+  `su-S18-orient-not-for-single` (don't wrap a lone inbox read). Same pair for `harness:overview`
+  (`su-S19` / `su-S20`).
+* **Arms:** baseline (orient available) vs `orient-no-bundle`
+  (`{configDelta:{excludeTools:['coord:orient']}}`, committed at
+  `lib/llm-testing/variants/orient-no-bundle.json`) — the without-bundle cost.
+* **Run:** `cd apps/operator && PAPERCUSP_ANTHROPIC_URL=http://127.0.0.1:8788 PAPERCUSP_LLM_TEST_SKIP_CLAIM=1 LLM_TEST_SUT_MODEL=claude-haiku-4-5 LLM_TEST_JUDGE_MODEL=claude-haiku-4-5 LLM_TEST_SIM_MODEL=claude-haiku-4-5 npm run llm-test -- --scenario su-S17-orient-bootstrap [--variant @<repo>/packages/operator-core/lib/llm-testing/variants/orient-no-bundle.json] --no-matrix`
+
+**⚠ Prerequisite the smoke surfaced:** the SUT only sees the curated **`SU_CATALOG`**
+(`lib/llm-testing/targets/su-catalog.ts`), NOT the live tool registry — so a NEW wrapper must be
+ADDED there or the SUT reports *"I don't have a `coord:orient` tool in my catalog"* and the
+reach-assert can never pass. (coord:orient + harness:overview added 2026-06-21 — the smoke caught it.)
+
+**Finding (haiku, N=1 — directional):** with `coord:orient` in the catalog the engineer **reached
+for it at Turn 0** (the `reaches-for-orient` assert passed); the `no-orient` arm fanned
+coord:presence + coord:inbox + plans:search and took **6 turns / $0.042 vs the bundle's 4 turns /
+$0.036** — the same turns/cost reduction availability buys `code:run`. Both arms flopped the
+*helpfulness* judge (haiku's capability ceiling — it orients, then stalls on empty payloads), so the
+CLEAN task-completion win is model-gated: **re-run on sonnet** (drop the `LLM_TEST_*_MODEL` overrides)
+for the definitive adoption + turns/cost deltas — same caveat as the code:run A/B above.

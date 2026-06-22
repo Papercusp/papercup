@@ -660,7 +660,7 @@ Two non-obvious requirements when adding such a route:
 Replicate provider context. The route inherits only the
 app's root layout. Components that "just work" inside
 /harness/\* may rely on harness-scoped providers (for example
-Tooltip.Provider, HarnessZeroProvider) that the
+Tooltip.Provider, HarnessSyncProvider) that the
 root layout doesn't supply, throwing
 "Tooltip must be used within TooltipProvider" at render.
 Replicate just the providers the embedded component actually uses.

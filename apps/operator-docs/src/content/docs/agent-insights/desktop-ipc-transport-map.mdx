@@ -4,6 +4,20 @@ description: The desktop routes webview /api traffic over Tauri IPC to dodge Web
 discovered: 2026-05-31
 tags: [desktop, ipc, transport, sse, webkitgtk, tauri, reconnect]
 status: active
+documents:
+  - libs/generic/desktop-ipc/src/desktop-bootstrap.ts
+  - libs/generic/desktop-ipc/src/index.ts
+  - libs/generic/desktop-ipc/src/ipc-inspector.ts
+  - libs/generic/tooldef/src/tool-projection.ts
+  - libs/generic/tooldef/src/replay-buffer.ts
+  - apps/operator/app/_components/RootSyncProvider.tsx
+  - apps/operator/bin/host-bootstrap.ts
+  - packages/operator-core/lib/endpoint-ipc/server.ts
+  - packages/operator-core/lib/dev/ipc-inspector-client.ts
+  - papercusp-desktop/src-tauri/src/main.rs
+plans:
+  - desktop-ipc-transport-completion-2026-05-20
+  - calltool-endpoint-seam-2026-06-01
 sidebar:
   order: 30
 ---

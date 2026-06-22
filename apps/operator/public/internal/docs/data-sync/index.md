@@ -8,7 +8,7 @@ Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
 path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
 host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
 **not run** on desktop. Treat this page as historical reference. Source of
-truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+truth: `apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection
 doc-comment) + the root `CLAUDE.md` deployment-model section.
 
 **How SSE sync works today.** The `:3070` Hono host serves
@@ -21,7 +21,7 @@ URL), fans each `pg_notify` out to subscribers, and bridges PG-trigger
 **Freshness, restated.** It is not the old \~50ms logical-replication push.
 Each write fires an invalidate that pushes near-instantly to subscribers; the
 worst-case staleness for an **unbridged** table is the 180s drift-repair tick
-(`DEFAULT_SSE_DRIFT_REPAIR_MS` in `HarnessZeroProvider.tsx`), which is a repair
+(`DEFAULT_SSE_DRIFT_REPAIR_MS` in `HarnessSyncProvider.tsx`), which is a repair
 sweep, **not** a freshness source.
 
 **Degraded fallback.** On sustained SSE failure, `SyncProvider`'s
@@ -141,7 +141,7 @@ replication push.
 | Zero schema definitions                | `@papercusp/zero-harness` | `libs/zero-harness/src/schema.ts`                   |
 | Named-query catalog                    | `@papercusp/zero-harness` | `libs/zero-harness/src/queries.ts`                  |
 | Sync hooks (`useSyncQuery`, …)         | `@papercusp/sync`         | `libs/generic/sync/src/SyncContext.ts`              |
-| Sync provider for harness app          | local                     | `apps/operator/providers/HarnessZeroProvider.tsx`   |
+| Sync provider for harness app          | local                     | `apps/operator/providers/HarnessSyncProvider.tsx`   |
 | `zero-cache` process (retired)         | systemd unit              | `zero-cache-harness.service`                        |
 | Postgres database                      | server                    | `papercusp` DB on `:5432`                           |
 

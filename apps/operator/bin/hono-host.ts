@@ -27,7 +27,7 @@ import {
   startMemoryWatchdog,
   resolveMemoryWatchdogLimitMb,
 } from '@papercusp/operator-core/lib/memory-watchdog';
-import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
+import { gracefulHostRecycle, installGracefulShutdown } from '@papercusp/operator-core/lib/host-recycle';
 // infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
 import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
@@ -206,6 +206,19 @@ function startRequestServers(): void {
     });
   }
 
+  // D4 (infra-fail-fast-build-integrity P-017): graceful HTTP connection-drain on
+  // SIGTERM/SIGINT for the HTTP-SERVING process — the single-process host AND each
+  // cluster worker. Node's default SIGTERM is an immediate exit that severs in-flight
+  // requests, so a deploy / `systemctl restart` 502s anything mid-flight. Reuse the
+  // memory-watchdog's bounded-drain idiom (stop accepting → drain in-flight HTTP →
+  // tear down substrate → exit, 8s hard-exit backstop) but exit 0 (an intentional
+  // stop, not the non-zero recycle code). The true-cluster PRIMARY serves no HTTP and
+  // keeps its own worker-draining handler (gated to cluster mode below). Kill-switch:
+  // PAPERCUSP_SIGTERM_DRAIN=0 restores Node's default immediate exit.
+  if (process.env.PAPERCUSP_SIGTERM_DRAIN !== '0') {
+    installGracefulShutdown({ server: server as { close?: (cb?: () => void) => void } });
+  }
+
   // infra-self-healing-supervision-2026-06-19 (R4-2/R4-3/R4-4/R4-8): request-path
   // supervision. These run on a REQUEST worker — independent of the background DBOS
   // primary they watch — so they keep working when that primary freezes (the exact
@@ -273,10 +286,14 @@ const clusterHandle = startCluster({
   },
 });
 
-// Graceful drain on shutdown — PRIMARY ONLY (single/worker keep Node's default
-// SIGTERM = exit, so a plain `systemctl restart` still works). The primary stops
-// respawning + signals workers to exit, then exits itself so systemd restarts clean.
-if (clusterHandle.role === 'primary') {
+// Graceful drain on shutdown.
+//  • The HTTP-serving processes — the single-process host AND each cluster WORKER —
+//    drain in-flight HTTP on SIGTERM inside startRequestServers (D4/P-017), exiting 0.
+//  • The TRUE-CLUSTER PRIMARY serves no HTTP; it stops respawning + signals workers to
+//    drain, then exits so systemd restarts clean. Single-process is ALSO role 'primary'
+//    but serves HTTP, so it must NOT take this 2s-exit path (it would preempt the HTTP
+//    drain) — hence the `clusterWorkers > 1` guard.
+if (clusterHandle.role === 'primary' && clusterWorkers > 1) {
   const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
     console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
     clusterHandle.drain?.(sig);

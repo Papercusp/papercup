@@ -32,6 +32,7 @@ import {
   failedSpawnSignalsFromRows,
   stalledFeatureSignalsFromRows,
   orphanedSpawnSignalsFromRows,
+  stalledClaimSignalsFromRows,
   ceilingJamSignalsFromRows,
   escalationSpikeSignalsFromRows,
   classifySpawnError,
@@ -478,6 +479,23 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     // rows from many harnesses into one signal) → no harness scope; defaults to operator.
     expect(signals[0].scope).toBeUndefined();
     expect(orphanedSpawnSignalsFromRows([])).toEqual([]);
+  });
+
+  it('stalled-claim: live-holder-no-progress claims collapse to ONE signal (P-007, folds EI-2311)', () => {
+    const signals = stalledClaimSignalsFromRows(
+      [
+        { work_item_id: 'WI-1', agent_id: 'bee-stuck', harness_slug: 'alpha', detail: 'a feature', stalled_minutes: 42 },
+        { work_item_id: 'F-9', agent_id: 'bee-2', harness_slug: null, detail: 'another', stalled_minutes: 33 },
+      ],
+      { minMinutes: 30 },
+    );
+    expect(signals).toHaveLength(1);
+    expect(signals[0].source).toBe('stalled-claim');
+    expect(signals[0].key).toBe('stalled-work-item-claims');
+    expect(signals[0].findingClass).toBe('coordination:stalled-claim');
+    expect(signals[0].body).toContain('2 work-item claim(s)');
+    expect(signals[0].body).toContain('WI-1<-bee-stuck');
+    expect(stalledClaimSignalsFromRows([])).toEqual([]);
   });
 
   describe('spawn-ceiling-jam (EI-2186): admission consumed by non-streaming rows', () => {

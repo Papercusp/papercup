@@ -4,6 +4,17 @@ description: "main/:3070 frozen on old code for hours while green-checkpoint 'fi
 discovered: 2026-06-13
 tags: [operator, release-pipeline, green-checkpoint, dbos, deploy, debugging]
 status: active
+documents:
+  - packages/operator-core/lib/dbos/dbos-executor-reaper.ts
+  - packages/operator-core/lib/release/green-stall-watchdog.ts
+  - packages/operator-core/lib/dbos/bootstrap.ts
+  - packages/operator-core/lib/harness/routines/release-actions.ts
+  - apps/operator/lib/release/health-probe.ts
+  - packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts
+plans:
+  - release-pipeline-resilience-2026-06-09
+  - work-queue-stuck-item-recovery-2026-06-17
+  - deploy-pipeline-legibility-2026-06-18
 sidebar:
   order: 30
 ---

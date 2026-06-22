@@ -18,7 +18,7 @@ return restFallback(args);              // REST — every other transport
 Two facts make that optimistic path **dead on the shipping target**:
 
 1. **Zero is retired** (`CLAUDE.md`, `libs/zero-harness`). No new Zero mutators are registered, so `resolveMutator` returns `null`.
-2. **The desktop ships on SSE**, not WebSocket — browser WS is a dev fallback (`apps/operator/providers/HarnessZeroProvider.tsx`). With no Zero client, `useSyncMutate` deterministically takes `restFallback`.
+2. **The desktop ships on SSE**, not WebSocket — browser WS is a dev fallback (`apps/operator/providers/HarnessSyncProvider.tsx`). With no Zero client, `useSyncMutate` deterministically takes `restFallback`.
 
 So on the desktop, `useSyncMutate` is **behaviour-identical to a bare `fetch`** — the write round-trips and the UI only updates when the server's `notifySyncInvalidate` pushes the new rows back over SSE. There is no free optimistic apply.
 

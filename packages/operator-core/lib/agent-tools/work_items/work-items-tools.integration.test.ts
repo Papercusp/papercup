@@ -130,6 +130,21 @@ async function promoteOne(args: Record<string, unknown>) {
   return (env.results as Record<string, unknown>[])[0]!;
 }
 
+/**
+ * The entangled work_items WRITE verbs are now dual-arity keyed-array
+ * (bulk-endpoint-standardization-2026-06-21 P-002): create/claim/set_state/release/tag
+ * return { ok, results:[…], counts }. Every call below is single-item, so unwrap the n=1
+ * result — each self-describes its id and carries the same workItem/topic payload the
+ * pre-bulk single shape did. (This also RETIRED work_items:create_batch + work_items:batch.)
+ */
+const firstResult = async (tool: { handler: (a: never, c: never) => Promise<unknown> }, args: Record<string, unknown>) =>
+  ((await call(tool, args)).results as Record<string, unknown>[])[0]!;
+const createOne = (args: Record<string, unknown>) => firstResult(createTool, args);
+const claimOne = (args: Record<string, unknown>) => firstResult(claimTool, args);
+const setStateOne = (args: Record<string, unknown>) => firstResult(setStateTool, args);
+const releaseOne = (args: Record<string, unknown>) => firstResult(releaseTool, args);
+const tagOne = (args: Record<string, unknown>) => firstResult(tagTool, args);
+
 /** Invoke work_items:list (which returns the WorkItem array as `{ data }`, P-011). */
 async function listData(args: Record<string, unknown>): Promise<Array<{ id: string; kind: string }>> {
   const res = (await listTool.handler(args as never, CTX)) as { data: Array<{ id: string; kind: string }> };
@@ -183,7 +198,7 @@ beforeEach(async () => {
 
 describe('work_items:* tool surface — lifecycle (real PG)', () => {
   it('create dispatches by kind + returns a kind-independent WI id envelope', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'shop freezes', summary: 'in firefox', severity: 'major', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'shop freezes', summary: 'in firefox', severity: 'major', harness: 'papercup' });
     expect(bug.ok).toBe(true);
     const bugWi = bug.workItem as Record<string, unknown>;
     expect(bugWi.id).toBe('WI-1');
@@ -192,31 +207,31 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(bugWi.severity).toBe('major');
 
     // ONE id space across kind-tables: the next create is WI-2 regardless of kind.
-    const feat = await call(createTool, { kind: 'feature', title: 'add export', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'add export', harness: 'papercup' });
     expect((feat.workItem as Record<string, unknown>).id).toBe('WI-2');
     expect((feat.workItem as Record<string, unknown>).family).toBe('feature');
 
-    const change = await call(createTool, { kind: 'change', title: 'make it bigger', harness: 'papercup' });
+    const change = await createOne({ kind: 'change', title: 'make it bigger', harness: 'papercup' });
     expect((change.workItem as Record<string, unknown>).id).toBe('WI-3');
     expect((change.workItem as Record<string, unknown>).kind).toBe('change');
   });
 
   it('mirror-guard (EI-316): refuses a title embedding an OPEN WI id; force:true overrides; terminal id is fine', async () => {
-    const feat = await call(createTool, { kind: 'feature', title: 'API server', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'API server', harness: 'papercup' });
     const openId = (feat.workItem as Record<string, unknown>).id as string; // WI-1, state todo (open)
 
     // The exact EI-316 shape: a mirror titled "<openId>: …" is refused.
-    const mirror = await call(createTool, { kind: 'feature', title: `${openId}: Single-module REST API server`, harness: 'papercup' });
+    const mirror = await createOne({ kind: 'feature', title: `${openId}: Single-module REST API server`, harness: 'papercup' });
     expect(mirror.ok).toBe(false);
     expect(mirror.error).toBe('duplicate_mirror');
     expect((mirror.existing as Record<string, unknown>).id).toBe(openId);
 
     // force:true is the deliberate-reference escape hatch.
-    const forced = await call(createTool, { kind: 'feature', title: `${openId}: deliberate follow-up`, harness: 'papercup', force: true });
+    const forced = await createOne({ kind: 'feature', title: `${openId}: deliberate follow-up`, harness: 'papercup', force: true });
     expect(forced.ok).toBe(true);
 
     // A title referencing a non-existent id is never blocked.
-    const free = await call(createTool, { kind: 'feature', title: 'WI-9999 mentioned but gone', harness: 'papercup' });
+    const free = await createOne({ kind: 'feature', title: 'WI-9999 mentioned but gone', harness: 'papercup' });
     expect(free.ok).toBe(true);
   });
 
@@ -225,11 +240,11 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
       import('@papercusp/flags/test'),
       import('@papercusp/flags'),
     ]);
-    const feat = await call(createTool, { kind: 'feature', title: 'API server', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'API server', harness: 'papercup' });
     const openId = (feat.workItem as Record<string, unknown>).id as string; // open WI
     setFlagOverridesForTest({ [FLAGS.WORK_ITEM_MIRROR_GUARD]: false });
     try {
-      const mirror = await call(createTool, { kind: 'feature', title: `${openId}: would-be mirror`, harness: 'papercup' });
+      const mirror = await createOne({ kind: 'feature', title: `${openId}: would-be mirror`, harness: 'papercup' });
       expect(mirror.ok).toBe(true); // guard disabled ⇒ the create proceeds (no duplicate_mirror)
     } finally {
       setFlagOverridesForTest(null);
@@ -237,7 +252,7 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   });
 
   it('get resolves a created work-item across kind-tables; missing → not-found envelope', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const got = await call(getTool, { id });
     expect(got.ok).toBe(true);
@@ -251,10 +266,10 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   });
 
   it('list merges across kinds, hides chunks, and a parent filter lists the chunk', async () => {
-    const feat = await call(createTool, { kind: 'feature', title: 'parent', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'parent', harness: 'papercup' });
     const parentId = (feat.workItem as Record<string, unknown>).id as string;
-    await call(createTool, { kind: 'bug', title: 'a bug', harness: 'papercup' });
-    const chunk = await call(createTool, { kind: 'chunk', title: 'sub-unit', harness: 'papercup', parent: parentId });
+    await createOne({ kind: 'bug', title: 'a bug', harness: 'papercup' });
+    const chunk = await createOne({ kind: 'chunk', title: 'sub-unit', harness: 'papercup', parent: parentId });
     const chunkId = (chunk.workItem as Record<string, unknown>).id as string;
 
     // work_items:list now returns the WorkItem array directly as `{ data }`
@@ -274,30 +289,30 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   });
 
   it('claim → set_state(close) → release walks the lifecycle envelopes (issue + feature)', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
-    const feat = await call(createTool, { kind: 'feature', title: 'f', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'f', harness: 'papercup' });
     const featId = (feat.workItem as Record<string, unknown>).id as string;
 
-    const claimed = await call(claimTool, { id: bugId, assignee: 'agent-b' });
+    const claimed = await claimOne({ id: bugId, assignee: 'agent-b' });
     expect((claimed.workItem as Record<string, unknown>).assignee).toBe('agent-b');
     // default assignee = the caller's ownerId
-    const claimedFeat = await call(claimTool, { id: featId, harness: 'papercup' });
+    const claimedFeat = await claimOne({ id: featId, harness: 'papercup' });
     expect((claimedFeat.workItem as Record<string, unknown>).assignee).toBe('su-tester');
 
-    const closed = await call(setStateTool, { id: bugId, state: 'closed' });
+    const closed = await setStateOne({ id: bugId, state: 'closed' });
     expect((closed.workItem as Record<string, unknown>).state).toBe('closed');
-    const progressed = await call(setStateTool, { id: featId, state: 'in_progress', harness: 'papercup' });
+    const progressed = await setStateOne({ id: featId, state: 'in_progress', harness: 'papercup' });
     expect((progressed.workItem as Record<string, unknown>).state).toBe('in_progress');
 
-    const released = await call(releaseTool, { id: bugId });
+    const released = await releaseOne({ id: bugId });
     expect((released.workItem as Record<string, unknown>).assignee).toBeNull();
   });
 
   it('link: a bug blocks a feature (cross-kind), and a non-blocks rel (relates) is accepted', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'blocker', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'blocker', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
-    const feat = await call(createTool, { kind: 'feature', title: 'blocked', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'blocked', harness: 'papercup' });
     const featId = (feat.workItem as Record<string, unknown>).id as string;
 
     const blocks = await call(linkTool, { id: bugId, rel: 'blocks', target_id: featId, target_harness: 'papercup' });
@@ -319,17 +334,17 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   });
 
   it('tag + subscribe return success envelopes', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
-    const tagged = await call(tagTool, { id, topic: 'shop' });
-    expect(tagged).toEqual({ ok: true, topic: 'shop' });
+    const tagged = await tagOne({ id, topic: 'shop' });
+    expect(tagged).toEqual({ ok: true, id, topic: 'shop' });
     const subscribed = await call(subscribeTool, { id, mode: 'digest' });
     expect(subscribed.ok).toBe(true);
     expect((subscribed.results as { ok: boolean }[])[0]!.ok).toBe(true);
   });
 
   it('comment: appends a thread post to a work-item; a missing id → not-found envelope', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'commentable', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'commentable', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
 
     const commented = await call(commentTool, { id, body: 'repro: open the page twice' });
@@ -349,14 +364,14 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   });
 
   it('promote: a bug mints an F-FIX feature; a feature is a no-op', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'broken', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'broken', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
     const promoted = await promoteOne({ id: bugId, harness: 'papercup' });
     expect(promoted.ok).toBe(true);
     expect((promoted.feature as Record<string, unknown>).id).toBe('F-FIX-001');
     expect((promoted.workItem as Record<string, unknown>).id).toBe(bugId);
 
-    const feat = await call(createTool, { kind: 'feature', title: 'f', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'f', harness: 'papercup' });
     const featId = (feat.workItem as Record<string, unknown>).id as string;
     const noop = await promoteOne({ id: featId, harness: 'papercup' });
     expect(noop.ok).toBe(false);
@@ -370,13 +385,13 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
     // D-020 hive-scope gate (create.ts) rejects it up front with `hive_required` —
     // for a feature, "no harness" ≡ "no hive" (1:1 hive==home harness). The engine's
     // own `requires a harness` throw (work-items.ts) is the defense-in-depth behind it.
-    const res = await call(createTool, { kind: 'feature', title: 'x' });
+    const res = await createOne({ kind: 'feature', title: 'x' });
     expect(res.ok).toBe(false);
     expect(res.error).toBe('hive_required');
   });
 
   it('promote re-promote guard: the second promote returns "already promoted to <id>"', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'dup', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'dup', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const first = await promoteOne({ id, harness: 'papercup' });
     expect(first.ok).toBe(true);
@@ -386,7 +401,7 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
   });
 
   it('promote to an unknown harness → "unknown harness"', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const res = await promoteOne({ id, harness: 'nope' });
     expect(res.ok).toBe(false);
@@ -395,7 +410,7 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
 
   it('promote an operator-scope item with no harness → needs a target harness', async () => {
     // No harness on create → scope 'operator'.
-    const bug = await call(createTool, { kind: 'bug', title: 'op-scope' });
+    const bug = await createOne({ kind: 'bug', title: 'op-scope' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const res = await promoteOne({ id });
     expect(res.ok).toBe(false);
@@ -403,7 +418,7 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
   });
 
   it('link with neither target_id nor target_kind+target_ref → guidance error', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const res = await call(linkTool, { id, rel: 'blocks' });
     const r0 = (res.results as { ok: boolean; error?: string }[])[0]!;
@@ -412,7 +427,7 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
   });
 
   it('link to a missing target work-item → not-found envelope', async () => {
-    const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const res = await call(linkTool, { id, rel: 'blocks', target_id: 'WI-404' });
     const r0 = (res.results as { ok: boolean; error?: string }[])[0]!;
@@ -449,7 +464,7 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
 
   it('children INHERIT the parent harness when `harness` is omitted; carry payload.expanded_from', async () => {
     // A feature parent on `papercup`. Expand WITHOUT passing harness → children inherit `papercup`.
-    const parent = await call(createTool, { kind: 'feature', title: 'expand-here', harness: 'papercup' });
+    const parent = await createOne({ kind: 'feature', title: 'expand-here', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'child A' }, { title: 'child B', brief: 'do B' }] });
@@ -471,9 +486,9 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
     // BRIEF premise was "expand a passed parent → error OR child inherits". expand.ts has NO
     // settled-parent guard: it expands ANY node regardless of state. We assert the ACTUAL
     // behavior — a settled (passed) parent is expandable, and its children still inherit harness.
-    const parent = await call(createTool, { kind: 'feature', title: 'settled parent', harness: 'papercup' });
+    const parent = await createOne({ kind: 'feature', title: 'settled parent', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
-    const settled = await call(setStateTool, { id: parentId, state: 'passed', harness: 'papercup' });
+    const settled = await setStateOne({ id: parentId, state: 'passed', harness: 'papercup' });
     expect((settled.workItem as Record<string, unknown>).state).toBe('passed');
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }] });
@@ -490,7 +505,7 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
     // same titles emits a SECOND set of children, each still stamped expanded_from=parent. We
     // assert that documented behavior (the brief floated "idempotent" as a possibility; the
     // engine is not — and that is the contract this test pins so a future change is deliberate).
-    const parent = await call(createTool, { kind: 'feature', title: 'twice-expanded', harness: 'papercup' });
+    const parent = await createOne({ kind: 'feature', title: 'twice-expanded', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
 
     const first = await call(expandTool, { id: parentId, children: [{ title: 'dup-child' }] });
@@ -505,7 +520,7 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
   });
 
   it('WITHIN one call, duplicate + empty child titles are dropped (plan-expansion dedup)', async () => {
-    const parent = await call(createTool, { kind: 'feature', title: 'dedup parent', harness: 'papercup' });
+    const parent = await createOne({ kind: 'feature', title: 'dedup parent', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
     const res = await call(expandTool, { id: parentId, children: [{ title: 'Keep' }, { title: 'keep' }, { title: 'Other' }] });
     expect(res.ok).toBe(true);
@@ -527,7 +542,7 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
 // (assigned_by, issue-family). Proves the mapping + that the row lands already-owned.
 describe('work_items:create {assign_to} — atomic create+claim envelope (real PG)', () => {
   it('feature-family: assign_to lands the item already claimed by the target (taken_by)', async () => {
-    const res = await call(createTool, { kind: 'feature', title: 'placed onto a bee', harness: 'papercup', assign_to: 'bee-7' });
+    const res = await createOne({ kind: 'feature', title: 'placed onto a bee', harness: 'papercup', assign_to: 'bee-7' });
     expect(res.ok).toBe(true);
     const item = res.workItem as Record<string, unknown>;
     expect(item.assignee).toBe('bee-7');
@@ -535,12 +550,12 @@ describe('work_items:create {assign_to} — atomic create+claim envelope (real P
   });
 
   it('self-assign: assign_to = own ownerId claims it for the caller', async () => {
-    const res = await call(createTool, { kind: 'feature', title: 'loop self-work', harness: 'papercup', assign_to: 'su-tester' });
+    const res = await createOne({ kind: 'feature', title: 'loop self-work', harness: 'papercup', assign_to: 'su-tester' });
     expect((res.workItem as Record<string, unknown>).assignee).toBe('su-tester');
   });
 
   it('issue-family: assign_to sets assignee + records the creator as assigned_by (delegator)', async () => {
-    const res = await call(createTool, { kind: 'task', title: 'delegate task', harness: 'papercup', assign_to: 'bee-3' });
+    const res = await createOne({ kind: 'task', title: 'delegate task', harness: 'papercup', assign_to: 'bee-3' });
     expect(res.ok).toBe(true);
     const item = res.workItem as Record<string, unknown>;
     expect(item.assignee).toBe('bee-3');
@@ -552,7 +567,7 @@ describe('work_items:create {assign_to} — atomic create+claim envelope (real P
   });
 
   it('omitting assign_to leaves the item unclaimed (the default is unchanged)', async () => {
-    const res = await call(createTool, { kind: 'feature', title: 'no assign', harness: 'papercup' });
+    const res = await createOne({ kind: 'feature', title: 'no assign', harness: 'papercup' });
     expect((res.workItem as Record<string, unknown>).assignee).toBeNull();
   });
 });

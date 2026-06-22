@@ -74,7 +74,7 @@ operator-mobile's polled path) and the full recipe:
 Shipping target = the Tauri desktop app; **desktop SSE is the sync path that
 matters** (browser WS is a dev fallback — a feature that only works under WS is
 incomplete). Source of truth:
-`apps/operator/providers/HarnessZeroProvider.tsx` lines 6–19. Transport table +
+`apps/operator/providers/HarnessSyncProvider.tsx`. Transport table +
 stale-docs-to-mistrust list:
 [repo-conventions § deployment model](/internal/docs/system/repo-conventions).
 

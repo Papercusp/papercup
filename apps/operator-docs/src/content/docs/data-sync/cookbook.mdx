@@ -18,7 +18,7 @@ invalidate/update over Postgres `LISTEN/NOTIFY`; zero-cache is **not run** at
 all. `POLLING` exists only as a degraded last-resort fallback, and the WebSocket
 transport still lives in `@papercusp/sync` but Papercusp no longer selects it.
 Treat this page as historical reference. Source of truth:
-`apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+`apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection
 doc-comment, hardcoded `syncType="SSE"`) + the root `CLAUDE.md` deployment-model
 section.
 :::

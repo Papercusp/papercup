@@ -1063,10 +1063,16 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       const prevAppUrl = process.env.HARNESS_DATABASE_URL;
       const prevWs = process.env.PAPERCUSP_WORKSPACE_ID;
       const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
       process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
       process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
       process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
       process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      // backend-connection-scaling-2026-06-17: pgbouncerEnabled() is DEFAULT-ON on a SERVER-class host
+      // (the dev box), so maybePgbouncer() rewrites the getOrgPg URL's host to 127.0.0.1:6432 (fronting
+      // NATIVE PG) — bypassing this throwaway testcontainer DB and yielding "no such database: org_…".
+      // Force the documented kill-switch OFF so STEP-1's getOrgPg reads honour the env DSN's port.
+      process.env.PAPERCUSP_PGBOUNCER = '0';
       _resetUrlCacheForTests();
       _resetHarnessAdminUrlCacheForTests();
       await resetDbOrgPools();
@@ -1082,6 +1088,8 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         else process.env.PAPERCUSP_WORKSPACE_ID = prevWs;
         if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
         else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+        if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+        else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
         _resetUrlCacheForTests();
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
@@ -1330,25 +1338,21 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       // ── Env-route the PROCESS-GLOBAL getOrgPg() at a migrated workspace DB so the guard's
       //    resolveHiveMemberDeviceSet read AND the projections' writes hit ONE DB (prod shape). ──
       const orgDb: OrgTestDb = await createOrgTestDb();
-      // eslint-disable-next-line no-console
-      console.error('[P-004 DIAG] dbName=%s adminDsn=%s', orgDb.dbName, orgDb.adminDsn);
-      try {
-        const r = await orgDb.adminSql`SELECT current_database() d`;
-        // eslint-disable-next-line no-console
-        console.error('[P-004 DIAG] adminSql SELECT ok, current_database=%s', r[0]?.d);
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error('[P-004 DIAG] adminSql SELECT FAILED:', e instanceof Error ? e.message : e);
-        throw e;
-      }
       const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
       const prevAppUrl = process.env.HARNESS_DATABASE_URL;
       const prevWs = process.env.PAPERCUSP_WORKSPACE_ID;
       const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
       process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
       process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
       process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
       process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      // backend-connection-scaling-2026-06-17: on a SERVER-class host (the dev box) pgbouncerEnabled()
+      // is DEFAULT-ON, so maybePgbouncer() rewrites EVERY org-pool URL's host to 127.0.0.1:6432 — which
+      // fronts the NATIVE PG, NOT this throwaway testcontainer DB the env routes getOrgPg at. That makes
+      // the getOrgPg-backed membership read (resolveHiveMemberDeviceSet) hit :6432 → "no such database:
+      // org_…". Force the documented kill-switch OFF so getOrgPg honours the env DSN's testcontainer port.
+      process.env.PAPERCUSP_PGBOUNCER = '0';
       _resetUrlCacheForTests();
       _resetHarnessAdminUrlCacheForTests();
       await resetDbOrgPools();
@@ -1362,6 +1366,8 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         else process.env.PAPERCUSP_WORKSPACE_ID = prevWs;
         if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
         else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+        if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+        else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
         _resetUrlCacheForTests();
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
@@ -1404,7 +1410,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         harness_slug: A_SLUG, // cross-member: ≠ B_SLUG → membership-gated
         issue_id: 'I-defer',
         title: 'A pre-membership issue',
-        severity: 'high',
+        severity: 'major', // harness_issues_consolidated_severity_check: critical|major|minor|nit (mig 130)
         source: 'test',
         status: 'open',
         found_at: 7000,
@@ -1464,6 +1470,12 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         fedHlc: 'hlc-member-8000',
       });
 
+      try {
+        await issuesProj.writeToPg(aIssue, aIssueProv);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[P-004 DIAG2] re-writeToPg THREW:', e instanceof Error ? e.message : e);
+      }
       expect(buffer.size(), 'the deferred op should have drained on the member apply').toBe(0);
       const landed = await readIssueForSlug(orgDb.adminSql, A_SLUG, 'I-defer');
       expect(
@@ -1474,7 +1486,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       expect(landed).toMatchObject({
         issue_id: 'I-defer',
         title: 'A pre-membership issue',
-        severity: 'high',
+        severity: 'major',
         status: 'open',
         origin: 'remote',
       });

@@ -77,7 +77,8 @@ tauri-agent-tools console-monitor --port <port> --token <tok> --duration 30000 -
 **⚠ `"Fetch API cannot load X due to access control checks"` is misleading — on WebKitGTK
 it almost always means the fetch TIMED OUT (Next dev lazy-compile slowness), not real
 CORS.** Check `curl -w "%{time_total}"` against the same URL before chasing ACAO headers;
-the fix is pre-warming routes via the `instrumentation-node.ts` register hook.
+the fix is to pre-warm the slow route before the webview fetches it (first-hit dev
+compile latency), not to chase ACAO headers.
 
 ## Trichotomy summary
 

@@ -6,7 +6,7 @@
  * teardown failure, and hard-exits when either side hangs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { gracefulHostRecycle, type RecycleServerLike } from './host-recycle';
+import { gracefulHostRecycle, installGracefulShutdown, type RecycleServerLike } from './host-recycle';
 
 describe('gracefulHostRecycle', () => {
   beforeEach(() => {
@@ -112,5 +112,70 @@ describe('gracefulHostRecycle', () => {
     drain();
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).toHaveBeenCalledExactlyOnceWith(42);
+  });
+});
+
+describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function makeServer(): { server: RecycleServerLike; drain: () => void } {
+    let cb: (() => void) | undefined;
+    return { server: { close: (c?: () => void) => { cb = c; } }, drain: () => cb?.() };
+  }
+  /** A fake `process.on` that captures signal handlers so the test can fire them. */
+  function fakeSignals() {
+    const handlers = new Map<string, Array<() => void>>();
+    const on = (sig: NodeJS.Signals, cb: () => void) => {
+      const list = handlers.get(sig) ?? [];
+      list.push(cb);
+      handlers.set(sig, list);
+    };
+    const fire = (sig: NodeJS.Signals) => (handlers.get(sig) ?? []).forEach((h) => h());
+    return { on, fire, handlers };
+  }
+
+  it('registers a handler for SIGTERM and SIGINT by default', () => {
+    const { on, handlers } = fakeSignals();
+    installGracefulShutdown({ server: makeServer().server, on, exit: vi.fn(), closeSubstrate: () => Promise.resolve() });
+    expect([...handlers.keys()].sort()).toEqual(['SIGINT', 'SIGTERM']);
+  });
+
+  it('on SIGTERM: drains HTTP + substrate, then exits 0 (intentional stop, NOT the non-zero recycle code)', async () => {
+    const exit = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    const { server, drain } = makeServer();
+    const { on, fire } = fakeSignals();
+
+    installGracefulShutdown({ server, on, exit, closeSubstrate });
+    expect(exit).not.toHaveBeenCalled(); // nothing happens until a signal arrives
+
+    fire('SIGTERM');
+    expect(closeSubstrate).toHaveBeenCalledTimes(1); // teardown started
+    drain(); // in-flight HTTP finished
+    await vi.advanceTimersByTimeAsync(0);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('is idempotent: a second signal while draining does not start a second drain', async () => {
+    const exit = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    const { server, drain } = makeServer();
+    const { on, fire } = fakeSignals();
+
+    installGracefulShutdown({ server, on, exit, closeSubstrate });
+    fire('SIGTERM');
+    fire('SIGINT'); // second signal mid-drain → ignored
+    fire('SIGTERM');
+    expect(closeSubstrate).toHaveBeenCalledTimes(1); // only the first drain ran
+    drain();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('honors a custom signal list', () => {
+    const { on, handlers } = fakeSignals();
+    installGracefulShutdown({ server: makeServer().server, on, signals: ['SIGTERM'], exit: vi.fn(), closeSubstrate: () => Promise.resolve() });
+    expect([...handlers.keys()]).toEqual(['SIGTERM']);
   });
 });
