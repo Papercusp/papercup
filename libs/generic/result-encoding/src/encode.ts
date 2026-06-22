@@ -110,6 +110,23 @@ export function encodeToonChecked(value: unknown): { text: string; lossless: boo
   }
 }
 
+/**
+ * True when `value` is a non-null plain object (NOT an array) with at least one
+ * own enumerable ARRAY-valued field — the shape where TOON's nested-list encoding
+ * beats JSON: a bulk envelope `{ ok, results:[…], counts }`, a list wrapper
+ * `{ items:[…], nextCursor }`, etc. Used by the compact-path auto-format picker so
+ * object-rooted-but-array-bearing results get TOON, not just bare arrays
+ * (definetool-token-optimization-adoption P-001 / D-008 — the bulk envelope
+ * TOON-encodes ~38% smaller, lossless).
+ */
+export function isObjectWithArrayField(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    if (Array.isArray(v)) return true;
+  }
+  return false;
+}
+
 /** True when `value` is a non-empty array of plain objects whose every leaf is a scalar (runtime CSV-safe). */
 export function isFlatObjectArray(value: unknown): boolean {
   if (!Array.isArray(value) || value.length === 0) return false;

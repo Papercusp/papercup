@@ -108,7 +108,22 @@ export async function runBulk<I, R extends BulkItemResult>(
   return { ok: true, results, counts: { ok, failed } };
 }
 
-/** Serialize a bulk envelope (or any JSON payload) as the MCP ToolResult shape. */
+/**
+ * Serialize a bulk envelope (or any JSON payload) as the MCP ToolResult shape.
+ *
+ * Token optimization (definetool-token-optimization-adoption P-001/D-008): this
+ * returns a raw `{ content:[{ text: JSON.stringify }] }` body, but it is NO LONGER
+ * a token dead-end — the framework dispatch (`tooldef/define-tool.ts`
+ * `reencodableJsonPayload`, P-002) detects that a raw single-text JSON ToolResult
+ * whose payload is an object-with-an-array-field (every bulk envelope
+ * `{ ok, results:[…], counts }` is) and, on the agent-facing MCP transport ONLY,
+ * transparently re-encodes it to TOON (~38% smaller, lossless). In-process /
+ * HTTP / IPC callers (and `inProcessCall`'s `unwrap`) keep the byte-identical JSON,
+ * so compound / code:run / TUI consumers are unchanged. Migrating this to return
+ * `{ data }` (the canonical envelope shape) is a tracked follow-up — functionally
+ * redundant for the token win given P-002, and gated on a full bulk-tool test
+ * sweep done against a green gate.
+ */
 export function bulkContent(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
