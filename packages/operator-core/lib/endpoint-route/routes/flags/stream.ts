@@ -31,6 +31,15 @@ export default defineTool({
     return sseResponse<FlagStreamVocabulary>({
       signal: req.signal,
       lastEventId,
+      // P-008 (agent-tool-delta-protocol): if a reconnecting client's Last-Event-ID
+      // fell below the bus ring floor (>64 flag changes evicted) or is past the max
+      // (process restart → id reset), it can't resume from replay — emit the
+      // standardized `resync` so it refetches the full flag set. Flags have a
+      // full-refetch sync path, so the fallback is safe.
+      resumeBounds: () => {
+        const r = bus.recent;
+        return r.length ? { floorId: r[0].id, maxId: r[r.length - 1].id } : null;
+      },
       replay: () =>
         bus.recentSince(lastEventId ?? null).map(({ id, event }) => ({
           name: 'flag_changed',

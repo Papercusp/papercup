@@ -1607,18 +1607,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
             log('warn', `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${active.accountId}'`);
             continue;
           }
-          // EXTENDED ABSORPTION (env-gated, requestAbsorbMs): we are about to FORWARD a retryable throttle to the
-          // caller — rotation + the transient wait-budget are exhausted (proceed=false). If the throttle is TRANSIENT
-          // (capacity returns soon, NOT a multi-hour usage cap — `transient` excludes those) and absorb budget
-          // remains, RELEASE the admission slot (the re-acquire's wait holds NO slot → it CANNOT wedge), wait the
-          // throttle out, re-acquire, and retry — so the caller WAITS and succeeds instead of erroring. Role-agnostic:
-          // any caller, not just an identified bee. absorbDeadlineAt=0 (OFF) ⇒ identical to before.
-          if (!proceed && transient && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
+          // EXTENDED ABSORPTION (env-gated, requestAbsorbMs): we are about to FORWARD a retryable failure to the
+          // caller — rotation + the transient wait-budget are exhausted (proceed=false). If it is a TRANSIENT
+          // rate-429 (capacity returns soon — `transient` excludes a multi-hour usage cap) OR a 529 SERVER-OVERLOAD
+          // (Anthropic-side, retryable), and absorb budget remains, RELEASE the admission slot (the wait below holds
+          // NO slot → it CANNOT wedge), wait the throttle/overload out, re-acquire, and retry — so the caller WAITS
+          // and succeeds instead of erroring. Role-agnostic: any caller, not just a bee. absorbDeadlineAt=0 ⇒ off.
+          if (!proceed && (transient || up.status === 529) && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
             clearStall();
             peekedRest?.destroy();
             release(); // free the slot NOW — the wait below admits nothing until an account has serviceable budget
             release = () => {}; // guard the `finally` against a double-release if the re-acquire below fails
-            const reacq = await gov.acquire(est, { maxWaitMs: absorbDeadlineAt - Date.now(), allowSoftPaused: serveSoft });
+            // A 529 does NOT rate-pause the account (server overload, not per-account budget), so the re-acquire
+            // below would return IMMEDIATELY → back off first (the 529's retry-after) to avoid hammering the
+            // overload. A rate-429's re-acquire instead WAITS out the account's penalty pause, so it needs no extra
+            // backoff here — keeping the validated 429 path byte-identical.
+            if (up.status === 529 && backoff > 0) {
+              await new Promise<void>((r) => {
+                const t = setTimeout(r, Math.min(backoff, Math.max(0, absorbDeadlineAt - Date.now())));
+                t.unref?.();
+              });
+            }
+            const reacq = await gov.acquire(est, { maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()), allowSoftPaused: serveSoft });
             if (reacq) {
               release = reacq;
               retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry

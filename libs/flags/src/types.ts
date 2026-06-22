@@ -938,6 +938,15 @@ export const FLAGS = {
   // specs and falls back to the DEFAULT ordering (== work_items:claim_next) — a no-breakage
   // kill-switch. DEFAULT ON (alpha flags-default-on; the resolver + spec store are complete + tested).
   SCHEDULER_SPEC_CLAIM: "papercusp-scheduler-spec-claim",
+  // gateway-priority-tiers-2026-06-22: gates the inference-gateway priority-tier
+  // queueing/admission path. DEFAULT OFF — the implementation is in-flight; flips
+  // ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
+  GATEWAY_PRIORITY_TIERS: "papercusp-gateway-priority-tiers",
+  // queen-capacity-aware-dispatch-2026-06-22: gates the Queen's capacity-aware
+  // dispatch (placement keyed on live fleet capacity). DEFAULT OFF — the
+  // implementation is in-flight; flips ON at rollout after the :3170 verify.
+  // KNOWN_DARK_FLAGS.
+  QUEEN_CAPACITY_DISPATCH: "papercusp-queen-capacity-dispatch",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1457,6 +1466,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // hybrid-bee-scheduler-work-stealing-2026-06-22: spec-driven claim ON (default); OFF degrades
   // scheduler:get_next to the default ordering (no breakage). Resolver + spec store complete + tested.
   [FLAGS.SCHEDULER_SPEC_CLAIM]: true,
+  // DEFAULT OFF (gateway-priority-tiers-2026-06-22): the gateway priority-tier path is
+  // being implemented. OFF ⇒ inert; flips ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
+  [FLAGS.GATEWAY_PRIORITY_TIERS]: false,
+  // DEFAULT OFF (queen-capacity-aware-dispatch-2026-06-22): capacity-aware dispatch is
+  // being implemented. OFF ⇒ inert; flips ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
+  [FLAGS.QUEEN_CAPACITY_DISPATCH]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

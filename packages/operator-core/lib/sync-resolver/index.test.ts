@@ -797,3 +797,98 @@ describe('resolveNamedQueryV2 — fleetAssignments.byHarness (workspace scoping)
     vi.doUnmock('../workspace-registry');
   });
 });
+
+describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cross-member browse, D-010)', () => {
+  // A small chainable drizzle-`db` stub: select().from().where(clause).orderBy() → rows.
+  // It ignores the clauses; the assertion target is the slug SET passed to inArray,
+  // captured via a drizzle-orm passthrough mock below.
+  function fakeDb(rows: unknown[]) {
+    return {
+      select: () => ({ from: () => ({ where: () => ({ orderBy: () => rows }) }) }),
+    };
+  }
+  const FAKE_COLS = { harnessSlug: 'c_slug', workspaceId: 'c_ws', updatedTs: 'c_ts' };
+
+  it('enumerates the hive member-slugs (home + hive_slug members), strips the harness: prefix, and excludes a non-member', async () => {
+    const captured: { values: string[] } = { values: [] };
+    const actualRegistry = await vi.importActual<typeof import('../harness-registry')>('../harness-registry');
+    vi.doMock('../harness-registry', () => ({
+      // REAL enumeration (so the strip + home-always-included + hive_slug match are
+      // genuinely exercised), fed a synthetic registry.
+      hiveMemberHarnessScopes: actualRegistry.hiveMemberHarnessScopes,
+      loadHarnessRegistry: vi.fn(async () => ({
+        projects: [
+          { slug: 'hive-home', harness_kind: 'hive' },
+          { slug: 'member-a', hive_slug: 'hive-home' },
+          { slug: 'member-b', hive_slug: 'hive-home' },
+          { slug: 'stranger', hive_slug: 'other-hive' },
+        ],
+      })),
+    }));
+    const rows = [{ featureId: 'F-1', harnessSlug: 'member-a' }];
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({ db: fakeDb(rows) }),
+      generated: { harnessFeaturesConsolidatedInHarnessShared: FAKE_COLS },
+    }));
+    vi.doMock('drizzle-orm', async () => ({
+      ...(await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')),
+      inArray: (_col: unknown, values: string[]) => {
+        captured.values = values;
+        return { __inArray: values };
+      },
+    }));
+
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('featuresConsolidated.byHive', { hiveHomeSlug: 'hive-home' })) as unknown[];
+
+    expect(out).toEqual(rows);
+    expect(new Set(captured.values)).toEqual(new Set(['hive-home', 'member-a', 'member-b']));
+    expect(captured.values).not.toContain('stranger');
+
+    vi.doUnmock('../harness-registry');
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('drizzle-orm');
+  });
+
+  it('degrades to [hiveHomeSlug] (never 500s the rollup) when the registry read fails', async () => {
+    // The degrade path intentionally warns; swallow it so vitest-fail-on-console
+    // doesn't flag the deliberate diagnostic.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const captured: { values: string[] } = { values: [] };
+    vi.doMock('../harness-registry', () => ({
+      hiveMemberHarnessScopes: vi.fn(() => {
+        throw new Error('should not be reached — loadHarnessRegistry already threw');
+      }),
+      loadHarnessRegistry: vi.fn(async () => {
+        throw new Error('registry boom');
+      }),
+    }));
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({ db: fakeDb([]) }),
+      generated: { harnessFeaturesConsolidatedInHarnessShared: FAKE_COLS },
+    }));
+    vi.doMock('drizzle-orm', async () => ({
+      ...(await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')),
+      inArray: (_col: unknown, values: string[]) => {
+        captured.values = values;
+        return { __inArray: values };
+      },
+    }));
+
+    const { resolveNamedQueryV2: r } = await import('./index');
+    await r('featuresConsolidated.byHive', { hiveHomeSlug: 'lonely-home' });
+
+    expect(captured.values).toEqual(['lonely-home']);
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+    vi.doUnmock('../harness-registry');
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('drizzle-orm');
+  });
+
+  it('is a registered query name', async () => {
+    const { knownQueryNamesV2: k } = await import('./index');
+    expect(k()).toContain('featuresConsolidated.byHive');
+  });
+});

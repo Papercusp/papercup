@@ -161,6 +161,36 @@ test('EXTENDED ABSORB (requestAbsorbMs) — keeps retrying past the slot-hold de
   assert.ok(calls >= 3, `it kept re-acquiring + retrying through the 429s until the 200 (calls=${calls})`);
 });
 
+test('EXTENDED ABSORB — also holds the caller through a 529 SERVER-OVERLOAD (not just rate-429s) until it clears (2026-06-22)', async () => {
+  let calls = 0;
+  // A 529 overloaded_error (Anthropic server-side) on the first attempts, then a 200. A 529 is NOT a per-account
+  // rate penalty (the account isn't paused), so the absorb backs off OVERLOAD_529_BACKOFF (1s) before each
+  // re-acquire rather than hammering the overload. A single account suffices (the 529 path retries in place).
+  const fetchImpl = (async () => {
+    calls++;
+    if (calls <= 2) {
+      return new Response(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'overloaded' } }), {
+        status: 529,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A')]),
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 50,
+    internalRetryDeadlineMs: 0, // hit the deadline immediately → each 529 reaches the forward-absorb
+    requestAbsorbMs: 8000, // > 2 × OVERLOAD_529_BACKOFF (1s) so the absorb out-waits the overload
+  });
+  port = await gw.listen(0);
+  const res = await post();
+  assert.equal(res.status, 200, 'absorb held the caller through the 529 overload + returned the eventual 200');
+  assert.ok(calls >= 3, `it backed off + re-acquired through the 529s until the 200 (calls=${calls})`);
+});
+
 test('GET /admin/route?owner — reports the account that served an identified owner\'s most-recent turn (routed-account visibility, 2026-06-22)', async () => {
   gw = createInferenceGateway({
     pool: createFailoverPool([acct('OK')]),

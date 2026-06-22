@@ -338,6 +338,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes. Pending flip
   // surfaced in the plan's ## Now + the lane completion report.
   FLAGS.LOOPS,
+  // gateway-priority-tiers-2026-06-22: the inference-gateway priority-tier path is
+  // in-flight implementation; gating in-flight implementation; flips ON at rollout
+  // after :3170 verify. OFF ⇒ inert (byte-identical to today).
+  FLAGS.GATEWAY_PRIORITY_TIERS,
+  // queen-capacity-aware-dispatch-2026-06-22: the Queen's capacity-aware dispatch is
+  // in-flight implementation; gating in-flight implementation; flips ON at rollout
+  // after :3170 verify. OFF ⇒ inert (byte-identical to today).
+  FLAGS.QUEEN_CAPACITY_DISPATCH,
 ]);
 
 /**
@@ -379,6 +387,8 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.WORKITEM_CLAIM_LEASE, 'incomplete'],
   [FLAGS.WORKSPACE_COORDINATION, 'incomplete'],
   [FLAGS.LOOPS, 'incomplete'],
+  [FLAGS.GATEWAY_PRIORITY_TIERS, 'incomplete'],
+  [FLAGS.QUEEN_CAPACITY_DISPATCH, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.WATCHDOG_AUTO_CLOSE, 'owner-authority'],
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, 'owner-authority'],
