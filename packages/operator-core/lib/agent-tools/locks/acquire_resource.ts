@@ -41,7 +41,7 @@ export default defineTool({
     'Acquire a NAMED resource (must be registered; see locks:list). mode:"shared" = "I am using it" (many coexist); mode:"exclusive" = "I need to restart/mutate it" (granted only once shared holders drain to zero). For exclusive, set wait:{max_drain_sec:N} (≤300) to block while existing shared holders finish — new shared acquisitions are refused meanwhile. Release with locks:release_resource.',
   guidance: {
     when: 'Before relying on a shared resource (mode shared), or before a destructive action on it like restarting the dev server (mode exclusive). Registered resources only — check locks:list.',
-    notWhen: 'File edits — use locks:acquire (the per-edit hook already covers those). An unregistered ad-hoc name — register it first (locks are useless if names diverge).',
+    notWhen: 'File edits — use locks:acquire. Codex agents must call it explicitly before writes because native hooks are not reliable there; Claude/OMP may receive the same protection from active hooks. An unregistered ad-hoc name — register it first (locks are useless if names diverge).',
     chaining: 'shared: acquire_resource{mode:shared} → use it → release_resource. exclusive restart: acquire_resource{mode:exclusive,wait:{max_drain_sec}} → on ok+held do the restart → release_resource (signals it is back up).',
   },
   capability: 'locks:write',

@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   lockAuthorityFor,
+  selectAuthorityFromRows,
   routeToAuthority,
   DEFAULT_AUTHORITY_STALE_MS,
   type LockAuthorityDeps,
@@ -41,6 +42,37 @@ afterEach(() => {
   __resetPeerRpcTransportForTests();
   __resetRemotePeersCacheForTests();
   vi.restoreAllMocks();
+});
+
+// ── Direct selection branches (depth pass, su-7f3e0376) ──────────────────────
+describe('selectAuthorityFromRows — direct selection branches', () => {
+  const r = (pk: string, lastSeen: number) => ({ device_pubkey: pk, github_user_id: 1, machine_label: pk, last_seen_ms: lastSeen });
+
+  it('a row with an empty device_pubkey is never a candidate (a junk row must not win argmin)', () => {
+    // '' sorts lexicographically FIRST — it would win argmin and hijack authority if not filtered.
+    const res = selectAuthorityFromRows([r('', NOW), r('peer-b', NOW)], null, NOW, 90_000);
+    expect(res.isSelf).toBe(false);
+    expect(res.peer?.devicePubkey).toBe('peer-b');
+    expect(res.liveCount).toBe(1);
+  });
+
+  it('the staleness cutoff is STRICT — a row exactly at the cutoff is stale; one ms newer is live', () => {
+    const staleMs = 90_000;
+    const cutoff = NOW - staleMs;
+    // peer-a is the LOWER pubkey but sits exactly at the cutoff → dropped; peer-b (1ms newer) wins.
+    const res = selectAuthorityFromRows([r('peer-a', cutoff), r('peer-b', cutoff + 1)], null, NOW, staleMs);
+    expect(res.peer?.devicePubkey).toBe('peer-b');
+    expect(res.liveCount).toBe(1);
+  });
+
+  it('liveCount counts every live candidate (self + remotes); an excluded peer is not counted', () => {
+    const self = { githubUserId: 9, devicePubkey: 'zzz-self' };
+    const res = selectAuthorityFromRows([r('aaa', NOW), r('mmm', NOW)], self, NOW, 90_000, new Set(['aaa']));
+    // aaa excluded → candidates = {mmm, zzz-self}; argmin = mmm → a remote authority, not self.
+    expect(res.isSelf).toBe(false);
+    expect(res.peer?.devicePubkey).toBe('mmm');
+    expect(res.liveCount).toBe(2);
+  });
 });
 
 describe('lockAuthorityFor — selection', () => {

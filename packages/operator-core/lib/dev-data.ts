@@ -106,6 +106,16 @@ export interface TelemetryRollupEntry {
   error_count: number;
   p50_ms: number | null;
   p95_ms: number | null;
+  /** Total bytes this tool's results returned over the window (sum of output_size).
+   *  The token-cost signal that ranks token-optimization targets
+   *  (definetool-usage-insights-tab-2026-06-22 P-001). */
+  total_bytes: number;
+  /** Mean result size in bytes (null when no row carried output_size). */
+  avg_bytes: number | null;
+  /** Same-tool calls BEYOND the first within one spawn (count(*) − distinct spawn_id):
+   *  the batching-waste signal — calls that a single bulk `items[]` call would have saved.
+   *  High values flag a tool the agent over-calls one-at-a-time (P-001). */
+  repeat_within_spawn: number;
   workspaces: string[];
 }
 
@@ -139,6 +149,9 @@ export async function telemetryRollup(
     error_count: number;
     p50: number | null;
     p95: number | null;
+    total_bytes: number;
+    avg_bytes: number | null;
+    repeat_within_spawn: number;
     workspaces: string[];
   };
   const rows = wsFilter
@@ -149,6 +162,9 @@ export async function telemetryRollup(
           count(*) FILTER (WHERE status != 'ok')::int AS error_count,
           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50,
           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95,
+          coalesce(sum(output_size), 0)::float8 AS total_bytes,
+          avg(output_size)::float8 AS avg_bytes,
+          (count(*) - count(DISTINCT spawn_id))::int AS repeat_within_spawn,
           array_agg(DISTINCT workspace_id) AS workspaces
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
@@ -165,6 +181,9 @@ export async function telemetryRollup(
           count(*) FILTER (WHERE status != 'ok')::int AS error_count,
           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50,
           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95,
+          coalesce(sum(output_size), 0)::float8 AS total_bytes,
+          avg(output_size)::float8 AS avg_bytes,
+          (count(*) - count(DISTINCT spawn_id))::int AS repeat_within_spawn,
           array_agg(DISTINCT workspace_id) AS workspaces
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
@@ -181,6 +200,9 @@ export async function telemetryRollup(
       error_count: r.error_count,
       p50_ms: r.p50 == null ? null : Math.round(r.p50),
       p95_ms: r.p95 == null ? null : Math.round(r.p95),
+      total_bytes: Math.round(r.total_bytes ?? 0),
+      avg_bytes: r.avg_bytes == null ? null : Math.round(r.avg_bytes),
+      repeat_within_spawn: r.repeat_within_spawn ?? 0,
       workspaces: r.workspaces ?? [],
     })),
   };

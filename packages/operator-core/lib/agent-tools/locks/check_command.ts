@@ -20,7 +20,7 @@ export default defineTool({
     'Check a raw shell command against the named-lock registry: does it touch a resource with an exclusive (restart/migration) in flight? Returns decision (allow | warn | block) + the matched resources. The verdict a raw-Bash gate consumes.',
   guidance: {
     when: 'A hook (or you) wants to know if a destructive command would collide with an in-flight exclusive hold before running it.',
-    notWhen: 'Acquiring a lock — use locks:acquire_resource. File edits — locks:queue.',
+    notWhen: 'Acquiring a named-resource lock — use locks:acquire_resource. File edits — use locks:acquire.',
     chaining: 'block → wait / coordinate; warn → proceed with care; allow → run.',
   },
   capability: 'locks:read',

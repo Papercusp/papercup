@@ -683,6 +683,56 @@ This actually happened: P-048 Contributors and P-073 Insights were registered in
 
 If you add an `/adv` panel and “it doesn’t show up in Add panel,” you skipped step 2. Verify with the e2e spec above (it asserts both Contributors and Insights appear in the catalog) or by opening the catalog in the prebuilt bundle — **not** the HMR dev server on `:3055`, which currently has a `'/@vite/client' … createHotContext` mismatch that renders `/adv` blank in a fresh browser (the desktop is unaffected — it loads the prebuilt bundle).
 
+# Agent-activity truth: a claim is not progress — who's-doing-what is a LIVE derived signal
+
+> The durable fix for 'agents are wrong about what other agents are doing'. A claim is a RESERVATION and a heartbeat proves the PROCESS is alive — NEITHER proves the WORK is advancing, and a coord broadcast outlives the work. The incident: a gate-fix bee DIED but its 'spawned for X' broadcast was read as 'actively worked' by the Queen + idle agents + the coordinator for ~1h, so the reds sat owned-but-unworked and blocked every deploy. The fix: a third signal (last_progress_at) + a reconciled fleet_assignment view (orphaned = dead holder, stalled = live-but-not-progressing) + the whoIsDoingWhat resolver + a flag-gated reconciler that auto-frees dead/stalled claims + immediate spawn-death release + the stalled-claim watchdog. Read the live signal, never the announcement.
+
+## The incident (2026-06-21)
+
+[Section titled “The incident (2026-06-21)”](#the-incident-2026-06-21)
+
+The Queen spawned a bee to fix two green-gate reds. The bee **died** seconds after spawn (`fleet:assignments` for it → 0 agents / 0 claims). But every reader — the Queen’s placement, idle su agents, and the coordinator itself — kept reading the Queen’s “**bee spawned for these reds**” coord broadcast as “being actively worked.” So the gate sat **RED and unowned for \~1 hour**, blocking ALL deploys. No one picked up the reds because everyone believed they were covered.
+
+Same class as the orphaned **WI-291** (live lease, dead holder), **EI-2311** (re-dispatch-of-dead-holder doesn’t check already-resolved), and the loop that re-assigned items to dead holders.
+
+## Root cause: a claim is not progress, and an announcement outlives the work
+
+[Section titled “Root cause: a claim is not progress, and an announcement outlives the work”](#root-cause-a-claim-is-not-progress-and-an-announcement-outlives-the-work)
+
+“What others are doing” was answered from **stale announcements + claims that are never reconciled against (a) the holder’s liveness and (b) actual PROGRESS**.
+
+* A **claim** (`taken_by`) is a RESERVATION.
+* A **presence/nursery heartbeat** proves the PROCESS is alive.
+* A **coord broadcast** (“spawned for X”) has **no expiry** — it outlives the claim, the work, even the agent.
+
+None of these proves the WORK is advancing. The missing third signal was **last\_progress\_at** — a timestamp bumped only on REAL item-scoped work.
+
+## The fix — one reconciled truth every reader derives from
+
+[Section titled “The fix — one reconciled truth every reader derives from”](#the-fix--one-reconciled-truth-every-reader-derives-from)
+
+1. **The progress signal** (`last_progress_at` on `harness_features_consolidated`, migration 357). Bumped ONLY on genuine item-scoped work — a `setWorkItemState` transition (the bump is folded into its UPDATE) or a `checkpoint` write (`markFeatureProgress`). NEVER on a bare presence heartbeat or a lease keepalive (`work_item_claims.last_activity_ts` already conflates those — this column stays clean).
+
+2. **The classifier** (`item-activity.ts` `classifyItemActivity`) — a pure leaf deriving `free | reserved | alive | progressing | stalled | dead` from `(taken_by, taken_at, last_progress_at, holderAlive)`. **“Actively worked” ≡ `progressing` only** (a live holder making real progress in the window).
+
+3. **The reconciled read** (migration 358) — the `work_items` view projects `last_progress_at`, and `fleet_assignment` gains a **`stalled`** column (live lease, ALIVE holder, no progress in the 10-min window) ALONGSIDE the existing **`orphaned`** (live lease, DEAD holder). Both mean **NOT covered** and **reclaimable**; they’re mutually exclusive. The SQL window mirrors `STALE_MS` so the view and the classifier can’t drift.
+
+4. **The single resolver** (`fleet/assignments.ts` `whoIsDoingWhat(workItemId)`) — the one per-item truth: is it actively worked, by whom, and is it reclaimable? `fleet:assignments` surfaces both `orphaned` and `stalled` lists + per-claim `activity`; `deriveActivity` projects the label from the view’s booleans.
+
+5. **The reconciler** (`reclaimStaleWorkItemClaims`) — frees + requeues a claim whose holder is **DEAD** (past grace), **a CONFIRMED-terminal spawn** (immediate, NO grace — spawn-death → release, the direct cure for the incident’s lag), or **STALLED** (alive but not progressing — **flag-gated** behind `RECLAIM_STALLED`, default OFF, because it frees a live agent’s claim).
+
+6. **The recurrence guard** — the `stalled-claim` watchdog collector fires a loud aggregate signal when a live holder sits on a non-progressing claim, so stalled work is visible even while the reconciler’s stalled leg is dark. Plus the `item-activity` + reconciler integration tests.
+
+## What this means for you (the behavioural half)
+
+[Section titled “What this means for you (the behavioural half)”](#what-this-means-for-you-the-behavioural-half)
+
+* To answer “**is X being worked / who’s on plan P / what is agent Y doing**”, READ THE LIVE RECONCILED STATE via **`fleet:assignments`** (or `whoIsDoingWhat`). Do NOT re-derive coverage from a `coord:inbox` message or something you remember.
+* `orphaned` (dead holder) and `stalled` (live holder, no progress) both mean **pickable**. A claim by a dead-or-stalled holder is yours to take — the reconciler frees it, and you should treat it as free even before it does.
+* Keep YOUR work legible the same way: set work-item state / checkpoint as you go so your `last_progress_at` advances and peers reading the live signal see the truth. Don’t rely on a one-time broadcast to keep a lane “owned.”
+
+The durable fix makes the QUERY truthful so you needn’t hand-verify; the prompt clause (`AGENT_ACTIVITY_TRUTH_NOTE`, shared across every role) reinforces “trust the live signal, not the announcement.”
+
 # Agent-mcp routes slow but /health fast = main-event-loop saturation (not a leak/pool/DB issue)
 
 > When :3070 agent-mcp routes degrade to many seconds and MCP clients time out while /api/health stays fast, the cause is sustained main-thread CPU saturating the event loop — every await hop pays the loop delay, so hop-heavy routes degrade ~Nx while health (~2 hops) barely moves. Read the event-loop-lag gauge first, not the PG pool.
@@ -3443,12 +3493,15 @@ Together: Papercusp dogfoods itself. The user finds `papercup` in their harness 
 Files (current boot location):
 
 * `packages/operator-core/lib/harness/papercusp-workspace.ts`
-* `packages/operator-core/lib/harness/register-papercup.ts`
+* `packages/operator-core/lib/harness/register-papercusp.ts` (renamed from `register-papercup.ts`; still exports `registerPapercupHarness` + `detectPapercupRoot` — the fn names deliberately keep the legacy `Papercup` spelling)
+* `packages/operator-core/lib/harness/ensure-papercusp-hive.ts` — the **third** helper (see the B-merge note above)
 * `apps/operator/scripts/run-dogfood-bootstrap.ts` (one-shot manual driver)
 
 Caution
 
 **Update (2026-06):** The original boot wiring was the Next.js instrumentation hook (apps/operator/instrumentation-node.ts), which is **retired** along with the Next standalone operator. The two helper modules moved from apps/operator/lib/harness/ to `packages/operator-core/lib/harness/`. As of this audit there is **no live boot-time caller** of `ensurePapercuspWorkspace()` / `registerPapercupHarness()` in the operator source — they are exercised only by the one-shot driver `apps/operator/scripts/run-dogfood-bootstrap.ts` (npm `verify:dogfood-bootstrap`) and their unit tests. Run the driver manually to flip dogfooding on; the rest of this page (sentinel name, the scoped-write trick, `detectPapercupRoot`) is still accurate.
+
+**Update (2026-06, papercup→papercusp B-merge):** `register-papercup.ts` is now **`register-papercusp.ts`** (the exported fns `registerPapercupHarness` / `detectPapercupRoot` keep the legacy `Papercup` spelling on purpose). The driver now runs a **third** helper, `ensurePapercuspHive()` (`packages/operator-core/lib/harness/ensure-papercusp-hive.ts`), shipping Papercusp as a shared **hive** (slug `papercusp`). Because `papercusp` is that MERGED operator-home hive, `registerPapercupHarness` keeps `LEGACY_STANDALONE_HARNESS_SLUG = 'papercup'` (the pre-merge standalone slug, deliberately distinct from the hive) but **skips re-creating a separate `papercup` harness** once the merged `papercusp` hive exists — so a post-merge boot no longer dumps a duplicate `papercup` into the dropdown. The “two helpers” framing below is therefore now **three**.
 
 ## Why two helpers, not one
 
@@ -3477,7 +3530,7 @@ A symmetric `wsOverride?` was already on `readOperatorState`; this just closes t
 
 [Section titled “How the papercup-root auto-detector works”](#how-the-papercup-root-auto-detector-works)
 
-`detectPapercupRoot(start)` in `register-papercup.ts` walks UP from the given directory looking for both markers:
+`detectPapercupRoot(start)` in `register-papercusp.ts` walks UP from the given directory looking for both markers:
 
 ```ts
 existsSync(join(dir, 'apps', 'operator', 'package.json'))
@@ -6290,9 +6343,9 @@ Working example with all the trimmings (dispatch queue, parked responses, script
 
 For per-slug subsystems (git-sync’s routine rows, `(slug, phase)` escalation rows, `git-sync:<slug>` lock resources), N “peer machines” can be simulated as N member slugs in ONE process + ONE test PG, each slug owning its own checkout of one shared bare origin: peers share *nothing* but the origin — exactly the real multi-stack topology — while every race interleaving becomes deterministic and scriptable. That is how the P-010 two-peer convergence verification (plan `git-sync-any-hive-2026-06-12` D-007) replaced a “stand up a second isolated operator stack” manual run with a permanent regression suite. Check which state is actually per-slug before reusing this: anything keyed on a process-global singleton (one workspace pin, one registry) is shared and would diverge from the multi-stack reality.
 
-# Rubric method: hive-coordination-health (the 13-criteria scorecard)
+# Rubric method: hive-coordination-health (the 14-criteria scorecard)
 
-> The investigation method behind the `hive-coordination-health` rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 13 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's `method_ref`; the structured part (criteria keys, rating scale, drift markers) lives in the `rubrics` store.
+> The investigation method behind the `hive-coordination-health` rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 14 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's `method_ref`; the structured part (criteria keys, rating scale, drift markers) lives in the `rubrics` store.
 
 ## What this is
 
@@ -6300,9 +6353,9 @@ For per-slug subsystems (git-sync’s routine rows, `(slug, phase)` escalation r
 
 `hive-coordination-health` is the first ratified **rubric** in the rubric-driven-observations system (`rubric-driven-observations-2026-06-20`). A rubric is the reusable STANDARD for a system characteristic; the agent’s output against it is a **structured observation** (rubric ratings + mandatory evidence), with free-text observations still first-class.
 
-This rubric generalizes the owner’s one-off 13-question hive-coordination scorecard (`hive-coordination-test-loop-2026-06-20` D-001) into a standing capability. The **Overwatch** role MUST emit a structured scorecard against it **every turn** (owner requirement #1): rate each of the 13 criteria + cite evidence, in addition to its free-form observations.
+This rubric generalizes the owner’s one-off 13-question hive-coordination scorecard (`hive-coordination-test-loop-2026-06-20` D-001) into a standing capability, since extended to **14 criteria** (the founding 13 + `scheduler-usage`, added by `hybrid-bee-scheduler-work-stealing-2026-06-22` P-004). The **Overwatch** role MUST emit a structured scorecard against it **every turn** (owner requirement #1): rate each of the 14 criteria + cite evidence, in addition to its free-form observations.
 
-This page is the rubric’s **`method_ref`** — the long-form METHOD. The structured part (the 13 criteria `key`s, per-criterion `model`/`method`/`driftMarkers`, the default rating scale) lives in the `rubrics` store (`rubrics:get { rubric_id: 'hive-coordination-health' }`). Author this prose; grade against the store.
+This page is the rubric’s **`method_ref`** — the long-form METHOD. The structured part (the 14 criteria `key`s, per-criterion `model`/`method`/`driftMarkers`, the default rating scale) lives in the `rubrics` store (`rubrics:get { rubric_id: 'hive-coordination-health' }`). Author this prose; grade against the store.
 
 ## The shared rating scale
 
@@ -6338,9 +6391,9 @@ These trip every first-time hive auditor. Apply them to EVERY criterion below.
 
 3. **Silence is not health (the cursed-latch).** A cursed item stops escalating by design, and a stale alarm can keep firing on a premise live state already contradicts. “No alarms” is not evidence of health. Report stage-by-stage numbers + WHICH workspace/hive, never “no alarms / looks fine”.
 
-## The 13 criteria
+## The 14 criteria
 
-[Section titled “The 13 criteria”](#the-13-criteria)
+[Section titled “The 14 criteria”](#the-14-criteria)
 
 Each criterion lists its `key` (the stable id graded against), its MODEL (how it is supposed to work), the METHOD (live signals to investigate — source of truth is code + DB, never docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 
@@ -6405,7 +6458,7 @@ Each criterion lists its `key` (the stable id graded against), its MODEL (how it
 [Section titled “8. overwatch-observation-quality — overwatch observations + the mandatory scorecard”](#8-overwatch-observation-quality--overwatch-observations--the-mandatory-scorecard)
 
 * **Model.** Overwatch is the system’s self-monitor: it emits specific, self-aware observations AND (owner requirement #1) ALWAYS emits a STRUCTURED scorecard against THIS rubric every turn (rate each criterion + cite evidence), in addition to free-form.
-* **Method.** Read recent overwatch observations/escalations — specific + self-aware (catching stale panels, conflations, over-fires)? Verify the structured scorecard is emitted EVERY turn against `hive-coordination-health` (`rubricRef` set, all 13 criteria rated, evidence non-empty on each). A missing scorecard is an owner-#1 violation even if the free-form is good.
+* **Method.** Read recent overwatch observations/escalations — specific + self-aware (catching stale panels, conflations, over-fires)? Verify the structured scorecard is emitted EVERY turn against `hive-coordination-health` (`rubricRef` set, all 14 criteria rated, evidence non-empty on each). A missing scorecard is an owner-#1 violation even if the free-form is good.
 * **Drift markers.** Free-form only, no structured scorecard (owner #1 violation); a scorecard with missing criteria or empty evidence; stale/echoed observations that contradict live state.
 
 ### 9. `watchdog-determinism` — deterministic fires that self-clear
@@ -6447,6 +6500,16 @@ Each criterion lists its `key` (the stable id graded against), its MODEL (how it
 * **Model.** Tools that exist are reached for when apt: `scout:grade-idea` used regularly, the queen-scout coord+wake channel used, the `mcp-call.mjs` fallback wired into the bee path.
 * **Method.** Check usage counts + recency for key tools (`scout:grade-idea` grade count + last use; the queen-scout channel; the bee curl-fallback). A tool with near-zero lifetime use that SHOULD be hot is a gap.
 * **Drift markers.** A capability built but barely invoked (8 grades ever, none recent; an unused coord+wake channel); a fallback not wired into the path that needs it.
+
+### 14. `scheduler-usage` — the within-hive scheduler used as designed
+
+[Section titled “14. scheduler-usage — the within-hive scheduler used as designed”](#14-scheduler-usage--the-within-hive-scheduler-used-as-designed)
+
+Added by `hybrid-bee-scheduler-work-stealing-2026-06-22` (P-004) once the deterministic within-hive scheduler (per-bee claim SPECS + the `get_next` pull path) shipped. The point is to continuously verify the scheduler is USED, not merely built.
+
+* **Model.** The Queen authors + VERSIONS a per-bee claim SPEC (a scoped `view.filter` + `rank` over the live work-item DAG, composed from the primitive vocabulary) and re-steers a running bee by bumping the spec `revision` — she does NOT micro-dispatch each item. Bees PULL their next item through `get_next` (global hard floors AND the spec filter, `ORDER BY` the spec rank, `FOR UPDATE SKIP LOCKED`) rather than self-scanning the raw frontier or hand-claiming. Resolution is deterministic, the plan-item dedup floor holds (ZERO duplicate-plan-item claims), and completions flow from pulled work. Model-routing (`model_fit` / per-model capability) is DESCOPED behind its own flag (plan D-010) — its absence is NOT a drift.
+* **Method.** Walk the live claim path: are bee claims stamped with a spec `specId@revision` (`get_next` records provenance), and do revisions bump when the Queen re-steers? Are there claims that did NOT go through `get_next` (a self-scanned / hand-claimed item — the bypass)? Query for duplicate-plan-item claims (two non-terminal claims sharing a `source_plan_item_id` — the dedup floor failing). Check pulled items reach completion (claim → working → done) rather than zombie-holding. Signal is limited when no spec-driven hive is running (rate `unknown`). `model_fit` is neutral until its lane ships — do NOT flag its absence.
+* **Drift markers.** Queen micro-dispatching item-by-item instead of issuing/versioning specs; bees bypassing the scheduler (self-prioritizing the raw frontier, hand-claiming) instead of pulling via `get_next`; non-deterministic or floor-violating resolution; duplicate-plan-item claims (dedup floor breached); pulled claims that never make progress (zombie holds). NOT a drift: `model_fit` being neutral (descoped). Low evidence (no spec-driven hive running) is `unknown`, not `broken`.
 
 ## How to grade (the observation shape)
 
@@ -11740,6 +11803,70 @@ The bug also caught us a fourth time on a later migration that used `$$ ... $$` 
 
 The migration apply script lives in `libs/papercusp/libs/db/scripts/` — check there before adding a new heredoc-based applier.
 
+# "no such database: org_…" — PgBouncer default-on breaks getOrgPg env-routed integration tests
+
+> On a server-class host (the dev box), pgbouncerEnabled() is default-on, so getOrgPg reroutes to :6432 and ignores a testcontainer DSN — failing any integration test that env-routes getOrgPg at a throwaway DB. Fix - set PAPERCUSP_PGBOUNCER=0.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+An integration test that env-routes the process-global `getOrgPg()` at a fresh throwaway database (`createOrgTestDb` / `createFreshPgDb` → `HARNESS_DATABASE_URL` / `HARNESS_ADMIN_DATABASE_URL`) fails on the **dev box** with:
+
+```plaintext
+PostgresError: no such database: org_<10-hex>
+```
+
+…even though that exact `org_<rand>` database **exists and is reachable** via the test’s own `orgDb.adminSql` client (a direct `SELECT current_database()` succeeds). The same test passes in CI. The confusing part: the error names the *correct* DB, so it looks like the DB vanished — it didn’t.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`backend-connection-scaling-2026-06-17` shipped **`pgbouncerEnabled()` DEFAULT-ON for `hostClass === 'server'`** (the 128-core dev box qualifies; laptops/desktops don’t). When enabled, `maybePgbouncer(url)` (`libs/papercusp/libs/db/src/connection.ts`) **rewrites every org-pool URL’s host to `127.0.0.1:6432`** (the local PgBouncer).
+
+So `getOrgPg()` honours your env DSN’s *db name* but **not its host:port** — it connects through PgBouncer, which fronts the **native PG (:5432)**, not the testcontainer (e.g. `:33019`) your test created the DB on. The `org_<rand>` DB doesn’t exist on native PG → `3D000 no such database`.
+
+CI passes because CI runners aren’t `server` hostClass, so `pgbouncerEnabled()` is false and `maybePgbouncer()` is a passthrough. **This is a dev-box-only break**, but it hits the *whole class* of `getOrgPg`-env-routed integration tests (`feature-content-federation`, the `two-peer-convergence` pattern, anything seeding `hive_members` / org-scoped tables read back through `getOrgPg`).
+
+## Fix (per-test)
+
+[Section titled “Fix (per-test)”](#fix-per-test)
+
+Add the documented kill-switch to the env-routing block (and restore it in cleanup):
+
+```ts
+const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
+process.env.PAPERCUSP_PGBOUNCER = '0'; // honour the env DSN's testcontainer port
+// …set HARNESS_*_DATABASE_URL, PAPERCUSP_WORKSPACE_ID, PAPERCUSP_SKIP_PG_DISCOVERY…
+_resetUrlCacheForTests();
+await resetDbOrgPools();
+cleanups.push(async () => {
+  if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+  else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
+  // …restore the rest, reset pools…
+});
+```
+
+`pgbouncerEnabled()` reads `process.env.PAPERCUSP_PGBOUNCER` per call, so setting it to `'0'` before the first `getOrgPg()` use makes `maybePgbouncer()` a passthrough.
+
+## How to recognise it fast
+
+[Section titled “How to recognise it fast”](#how-to-recognise-it-fast)
+
+* The “missing” DB name in the error == your `orgDb.dbName`.
+* `orgDb.adminSql\`SELECT 1\``works, but a`getOrgPg()\`-backed read fails.
+* `docker ps` shows the testcontainer healthy on its mapped port (e.g. `:33019`), but the failing connection went to `127.0.0.1:6432`.
+* `getResourceProfile().hostClass === 'server'` on the box.
+
+## Durable / class-level fix (TODO, connection-scaling owner)
+
+[Section titled “Durable / class-level fix (TODO, connection-scaling owner)”](#durable--class-level-fix-todo-connection-scaling-owner)
+
+A shared test-env helper that forces `PAPERCUSP_PGBOUNCER=0` whenever a test env-routes `getOrgPg` at a testcontainer, OR `maybePgbouncer()` declining to reroute an explicitly-env-set non-local URL. Until then, each such test opts out manually.
+
+Discovered 2026-06-22 while landing `shared-hive-member-content-federation-2026-06-20` P-005 (it was failing the *landed* P-001+P-002 case too). Refs that plan’s D-009.
+
 # Phase-1b federation — known limitations and the verified-commit requirement
 
 > Three Phase-1b federation gaps (D-008): multi-device collision, login-rename fragility, and why the contributor file MUST be published via the GitHub Contents API (R-1). Symptoms, root causes, fix shapes.
@@ -12126,6 +12253,48 @@ Verified live on `:3170`: cold `gitnexus.list_repos` straight after a restart re
 * **EI-38 (“plugin tools surface only on workspace-scoped sessions”) was this same bug.** Verified 2026-06-11 on a warmed host: an unscoped `?superuser=1` session lists and dispatches every plugin tool. If a session is missing them, suspect a partial registration sweep (gitnexus’s cold child-spawn probe finishes late; tools registered so far are live, the rest arrive in the background), not workspace scoping.
 
 Plan: `plugin-system-hive-port-2026-06-11` (P-011/P-012).
+
+# getOrgPg()'s prepare:false connection returns timestamptz as STRINGS (and rejects Date bind params)
+
+> Why a query that works in tests + dev:pg_query silently no-ops in the operator — the pooled prepare:false connection doesn't parse timestamptz to Date or accept Date params. Root cause of the fleet-wide engine-loop re-arm death (EI-2549).
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+The operator’s **pooled admin connection** (`getOrgPg().sql`, defined in `libs/papercusp/libs/db/src/connection.ts` with **`prepare: false`** + PgBouncer) does **not** behave like a default postgres-js connection for `timestamptz`:
+
+* **Reads:** a `timestamptz` column comes back as a **string** (`"2026-06-21 16:30:03.587133-04"`), **not** a `Date`. So `row.some_ts.getTime()` throws `getTime is not a function`.
+* **Writes:** binding a **`Date`** object as a query parameter throws `The "string" argument must be of type string … Received an instance of Date`.
+
+A direct, type-parsing connection (what testcontainer integration tests + `dev:pg_query` use) returns `Date`s and accepts `Date` params — so **code that touches `Date` methods/params passes every test and works in `dev:pg_query`, then silently fails only in the live operator.** That test-vs-live gap is the trap.
+
+## The incident (EI-2549)
+
+[Section titled “The incident (EI-2549)”](#the-incident-ei-2549)
+
+For \~16h, **every** engine loop (`loop:arm`) fleet-wide parked at `next_fire_at = infinity` and never re-armed — loops fired **once per arm, then died**. `reconcileLoopRoutines` (the re-arm) crashed on the **first row of every pass** with `row.last_fired_at.getTime is not a function`, which propagated out and was swallowed by `reconcileAndGovern`’s best-effort `try/catch` → **0 re-arms, no surfaced error.** Fixing the read then exposed the **mirror** bug: the re-arm `UPDATE` bound a `Date` param and threw `Received an instance of Date`.
+
+Red herrings that cost hours: the jsonb `?` operator (works fine — `prepare:false`), a stale `dist` (operator-core runs from `src`), the DBOS tick being wedged (it ran 283× SUCCESS — the step just swallowed the throw). **The error was only visible in the `papercup-bg-host.service` journal** (the routines host), not `papercup-dev-api` — check the *right* unit.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+When you write code that runs on `getOrgPg()` (or any pooled `prepare:false` connection):
+
+* **Reads:** never call `Date` methods on a timestamptz column directly. Coerce: `const ms = (v instanceof Date ? v : new Date(v)).getTime();` (handles Date **and** the PG string). Or return epoch ms from SQL (`extract(epoch from ts)*1000`).
+* **Writes:** never bind a `Date` for a timestamptz param. Bind an **ISO string + explicit cast**: `` sql`… LEAST(next_fire_at, ${d.toISOString()}::timestamptz)` ``.
+* **Tests:** a testcontainer/direct connection won’t reproduce this. Add a unit test that drives the function with **string-typed** rows (see `packages/operator-core/lib/harness/routines/reconcile-loop-routines.test.ts`).
+* **Defense:** wrap per-item loops in `try/catch` so one bad row can’t abort a whole sweep — a single throwing row silently wedging the whole fleet is the failure class here.
+
+## Pointers
+
+[Section titled “Pointers”](#pointers)
+
+* Fix: `packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts` (`tsMs()` + ISO-string UPDATE bind + per-row isolation).
+* Connection config: `libs/papercusp/libs/db/src/connection.ts` (`getOrgPg`, `prepare: false`).
+* The routines host is `papercup-bg-host.service` (runs from the shared `papercup` tree, caches transpiles in `node_modules/.cache/jiti` — clear it if a code change isn’t picked up after a restart). `WI`/issue: EI-2549.
 
 # Writing JSONB columns with postgres-js — use JSON.stringify::jsonb, not sql.json
 
@@ -20275,7 +20444,7 @@ The launcher implements several other first-class flags on top of agent/workspac
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--profile=engineer\|power\|generic` | Which su playbook + dispatch tier (default `engineer`). Changes **both** the rendered playbook **and** the MCP dispatch gating, via `PAPERCUSP_PROFILE` — see [Profiles](#profiles).                              |
 | `--account=<id>`                     | Pin the session to a specific inference-gateway pool account; fail-soft to the default credential if the gateway is off or the id is unknown.                                                                     |
-| `--brain`                            | Resume/pin **the** canonical Queen brain session.                                                                                                                                                                 |
+| `--brain`                            | Retired: fails closed with a tombstone message. Use the live operator/sentinel converse surface or a normal `psu` session.                                                                                        |
 | `--fork` / `--fork-session`          | claude-only, resume-only: branch the resumed conversation into a **new** session id (seeded with the original’s history) with a fresh coord identity, so the fork runs concurrently with the still-live original. |
 | `--add-dir=<dir>`                    | Repeatable; maps to claude’s + codex’s native `--add-dir` (omp has none → warned + skipped). Both space and `=` forms.                                                                                            |
 | `--model=<m>`                        | Backend model fuzzy-match passthrough.                                                                                                                                                                            |
@@ -21908,7 +22077,7 @@ If the docs are wrong or missing, surface the gap via a supervisor note or by li
 
 > How a UI button can launch an agent session pre-loaded with a task-specific brief.
 
-A **kickoff** is a curated, task-specific system-prompt brief layered on top of the engineer-collaborator playbook when the operator UI spawns a power-user agent session. The button that launches the session names a *kind*; the server writes the matching brief into a temp file and hands its path to the `psu` launcher via `--launch-context=<path>` (P-032). `psu` parses `--launch-context` itself and appends the file directly to the **raw** agent CLI — `--append-system-prompt-file` for claude, `--append-system-prompt` for omp (codex deferred). The engineer playbook and superuser MCP are assembled by `bootstrap-su` / `buildLaunchSpec` per launch; the `*-su` wrappers (`claude-su` / `omp-su` / `codex-su`) are retired. The launched session opens already framed for the task.
+A **kickoff** is a curated, task-specific system-prompt brief layered on top of the engineer-collaborator playbook when the operator UI spawns a power-user agent session. The button that launches the session names a *kind*; the server writes the matching brief into a temp file and hands its path to the `psu` launcher via `--launch-context=<path>` (P-032). `psu` parses `--launch-context` itself and appends the brief to the **raw** agent CLI — `--append-system-prompt-file` for claude, `--append-system-prompt` for omp, and per-session `CODEX_HOME/AGENTS.md` materialization for codex. The engineer playbook and superuser MCP are assembled by `bootstrap-su` / `buildLaunchSpec` per launch; the `*-su` wrappers (`claude-su` / `omp-su` / `codex-su`) are retired. The launched session opens already framed for the task.
 
 Per [`plans-newbutton-and-subharness-scope-2026-05-25`](/internal/docs/plans/plans-newbutton-and-subharness-scope-2026-05-25), kickoffs ride the launch-context / system-prompt channel — they are not first-user messages. This keeps them in scope for the whole conversation and matches the existing engineer-collaborator brief and PTY feature-pi brief.
 

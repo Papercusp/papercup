@@ -76,23 +76,19 @@ describe('bee_claim_specs store (mig 372)', () => {
   });
 });
 
-describe('listRunningClaims (live-execution view, P-001)', () => {
-  it('lists in-flight claims with the running spec revision; excludes untaken + terminal', async () => {
-    const H = 'sched-live';
-    await setClaimSpec({ beeId: 'su-runner', spec: DEFAULT_CLAIM_SPEC }, db.sql);
-    const seed = (fid: string, takenBy: string | null, status: string) =>
-      db.sql`INSERT INTO harness_shared.harness_features_consolidated
-        (harness_slug, feature_id, status, taken_by, taken_at)
-        VALUES (${H}, ${fid}, ${status}, ${takenBy}, ${takenBy ? new Date() : null})`;
-    await seed('F-RUN', 'su-runner', 'wip'); // in-flight + has a spec
-    await seed('F-NOSPEC', 'su-other', 'building'); // in-flight, no spec
-    await seed('F-FREE', null, 'todo'); // untaken → excluded
-    await seed('F-DONE', 'su-runner', 'passed'); // terminal → excluded
+describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
+  it('returns specId@revision per bee with a stored spec (highest revision), absent otherwise', async () => {
+    await setClaimSpec({ beeId: 'su-h1', spec: DEFAULT_CLAIM_SPEC }, db.sql); // revision 0
+    await setClaimSpec({ beeId: 'su-h2', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    await setClaimSpec({ beeId: 'su-h2', spec: DEFAULT_CLAIM_SPEC }, db.sql); // re-steer → revision 1
 
-    const running = await listRunningClaims(H, db.sql);
-    expect(running.map((r) => r.itemId).sort()).toEqual(['F-NOSPEC', 'F-RUN']);
-    expect(running.find((r) => r.itemId === 'F-RUN')!.owner).toBe('su-runner');
-    expect(running.find((r) => r.itemId === 'F-RUN')!.specRevision).toBe(0); // running under its stored spec
-    expect(running.find((r) => r.itemId === 'F-NOSPEC')!.specRevision).toBeNull(); // no spec → default
+    const heads = await getClaimSpecHeadsForBees(['su-h1', 'su-h2', 'su-no-spec'], undefined, db.sql);
+    expect(heads.get('su-h1')).toEqual({ specId: DEFAULT_CLAIM_SPEC.specId, revision: 0 });
+    expect(heads.get('su-h2')).toEqual({ specId: DEFAULT_CLAIM_SPEC.specId, revision: 1 }); // highest revision wins
+    expect(heads.has('su-no-spec')).toBe(false); // no stored spec ⇒ absent (⇒ DEFAULT ordering)
+  });
+
+  it('returns an empty map for no bees', async () => {
+    expect(await getClaimSpecHeadsForBees([], undefined, db.sql)).toEqual(new Map());
   });
 });

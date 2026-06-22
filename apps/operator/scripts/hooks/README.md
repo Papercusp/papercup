@@ -1,8 +1,10 @@
 # SU-agent hooks — cross-CLI (Claude / Codex / OMP)
 
 The cooperative `locks:*` + `coord:*` + `activity:*` MCP surfaces are
-**universal** across the host CLIs; the host's tool-call hooks make them
-**enforced / automatic**. There are two hook families, attached three ways:
+**universal** across the host CLIs; where the host emits tool-call hooks, those
+hooks make the surfaces **enforced / automatic**. Codex currently has the
+lock-hook caveat called out below. There are two hook families, attached three
+ways:
 
 | Family       | Lives in | Claude | Codex | OMP |
 |--------------|----------|--------|-------|-----|

@@ -24,7 +24,11 @@ switch to `papercusp-workspace` — no manual `harness create` step.
 Files (current boot location):
 
 * `packages/operator-core/lib/harness/papercusp-workspace.ts`
-* `packages/operator-core/lib/harness/register-papercup.ts`
+* `packages/operator-core/lib/harness/register-papercusp.ts` (renamed from
+  `register-papercup.ts`; still exports `registerPapercupHarness` + `detectPapercupRoot`
+  — the fn names deliberately keep the legacy `Papercup` spelling)
+* `packages/operator-core/lib/harness/ensure-papercusp-hive.ts` — the **third** helper
+  (see the B-merge note above)
 * `apps/operator/scripts/run-dogfood-bootstrap.ts` (one-shot manual driver)
 
 **Update (2026-06):** The original boot wiring was the Next.js instrumentation hook
@@ -37,6 +41,18 @@ in the operator source — they are exercised only by the one-shot driver
 and their unit tests. Run the driver manually to flip dogfooding on; the rest of
 this page (sentinel name, the scoped-write trick, `detectPapercupRoot`) is still
 accurate.
+
+**Update (2026-06, papercup→papercusp B-merge):** `register-papercup.ts` is now
+**`register-papercusp.ts`** (the exported fns `registerPapercupHarness` /
+`detectPapercupRoot` keep the legacy `Papercup` spelling on purpose). The driver now
+runs a **third** helper, `ensurePapercuspHive()`
+(`packages/operator-core/lib/harness/ensure-papercusp-hive.ts`), shipping Papercusp as a
+shared **hive** (slug `papercusp`). Because `papercusp` is that MERGED operator-home
+hive, `registerPapercupHarness` keeps `LEGACY_STANDALONE_HARNESS_SLUG = 'papercup'`
+(the pre-merge standalone slug, deliberately distinct from the hive) but **skips
+re-creating a separate `papercup` harness** once the merged `papercusp` hive exists — so
+a post-merge boot no longer dumps a duplicate `papercup` into the dropdown. The
+"two helpers" framing below is therefore now **three**.
 
 ## Why two helpers, not one
 
@@ -76,7 +92,7 @@ helper.
 
 ## How the papercup-root auto-detector works
 
-`detectPapercupRoot(start)` in `register-papercup.ts` walks UP from
+`detectPapercupRoot(start)` in `register-papercusp.ts` walks UP from
 the given directory looking for both markers:
 
 ```ts

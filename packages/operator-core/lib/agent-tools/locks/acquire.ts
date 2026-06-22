@@ -81,9 +81,9 @@ export default defineTool({
   description:
     'Claim a set of files for exclusive editing. Returns ok+lock_id on success, or busy+contention details on failure. On contention prefer wake_on_grant:true — queue a waiter ticket + a one-shot wake subscription and return immediately; you END YOUR TURN and are re-invoked when the cascade grants you the locks (no polling, no held turn). wait={max_sec:N} (≤300) is the legacy blocking wait for short same-turn needs. Paths MUST be repo-relative POSIX (no leading ./, no //, no trailing /, no .., no backslashes, no absolute paths) — the server canonicalizes equivalent spellings to one lock key but rejects malformed ones; resolve symlinks caller-side before claiming.',
   guidance: {
-    when: 'For a DELIBERATE multi-file claim you hold across several edits AND the commit — acquire once for the whole set, release after committing. Per-edit locking is already automatic on every client (the PreToolUse/tool_call hook acquires + releases around each individual Edit/Write/apply_patch), so the gap this fills is the edit→commit window the hook cannot cover.',
+    when: 'For Codex file edits, acquire explicitly before editing because current Codex builds do not reliably fire the PreToolUse hook for apply_patch/shell. For Claude/OMP, use this for a DELIBERATE multi-file claim you hold across several edits AND the commit — acquire once for the whole set, release after committing; their active hooks already cover the individual edit calls.',
     notWhen:
-      'Read-only inspection needs no claim. A single incidental edit needs no manual call — the hook covers it. Do NOT wrap every edit in acquire/release; that duplicates the hook and churns the lock.',
+      'Read-only inspection needs no claim. On Claude/OMP, a single incidental edit usually needs no manual call because the active hook covers it. On Codex, do not rely on hooks for writes; take an explicit lock or use a server-side capability write/edit surface that locks for you.',
     chaining:
       'On ok: make your edits → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake turn carries your lock_id + TTL (already running) — edit, then release. Only block (wait) when you need the lock within THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait to retract a queued wake.',
   },

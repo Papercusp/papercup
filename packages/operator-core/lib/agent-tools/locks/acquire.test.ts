@@ -66,6 +66,13 @@ beforeEach(() => {
 });
 
 describe('locks:acquire — outcome branches', () => {
+  it('guidance tells Codex agents to lock explicitly instead of relying on hooks', () => {
+    const guidance = `${tool.guidance?.when ?? ''}\n${tool.guidance?.notWhen ?? ''}`;
+    expect(guidance).toMatch(/Codex file edits, acquire explicitly/);
+    expect(guidance).not.toMatch(/automatic on every client/);
+    expect(guidance).not.toMatch(/single incidental edit needs no manual call/);
+  });
+
   it('rejects malformed paths before attempting acquire', async () => {
     normM.mockImplementation(() => { throw new Error('absolute path not allowed'); });
     const b = body(await call({ paths: ['/etc/x'] }));
