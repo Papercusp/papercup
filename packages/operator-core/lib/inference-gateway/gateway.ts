@@ -129,9 +129,15 @@ const EGRESS_CIRCUIT_OPEN_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_CIRCU
  *  still applies). Env-tunable. */
 const EGRESS_PROBE_DELAY_MS =
   process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS !== undefined ? Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_MS) : 4_000;
-/** Per-probe network timeout for the half-open egress probe — shorter than the probe default so it never
- *  lingers on a still-dead proxy. */
-const EGRESS_PROBE_HTTP_TIMEOUT_MS = 8_000;
+/** Per-probe network timeout for the half-open egress probe — bounded so it never lingers on a still-dead
+ *  proxy, yet generous enough to CONFIRM a recovered-but-slow proxy. The per-account egress squids
+ *  legitimately take 1.3–6.1s under box load; the old 8s cap false-aborted healthy proxies ("egress probe
+ *  STILL DOWN (operation aborted)") → the recovered account stayed circuit-paused the full window → the
+ *  pool read "all throttled / no-fresh-account" → bees hung on their first inference with 0 invocations
+ *  (WI-389). Kept under EGRESS_CIRCUIT_OPEN_MS − EGRESS_PROBE_DELAY_MS so the probe still fits inside the
+ *  open window. Env-tunable. */
+const EGRESS_PROBE_HTTP_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_HTTP_MS) || 12_000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
 /** AIMD admission-concurrency defaults (inference-gateway-robustness-audit-2026-06-20 P1 / B-GW-1). The
  *  gateway shrinks the admission queue's EFFECTIVE maxConcurrent under sustained upstream 429s (fewer
