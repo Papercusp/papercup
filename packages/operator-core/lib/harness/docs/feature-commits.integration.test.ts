@@ -52,7 +52,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.harness_features_consolidated`;
+  await rootSql`TRUNCATE harness_shared.work_items `;
 });
 
 async function insert(featureId: string, completionRef: unknown, opts: { ws?: string; harness?: string } = {}) {

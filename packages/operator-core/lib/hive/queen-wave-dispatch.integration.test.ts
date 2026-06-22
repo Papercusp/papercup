@@ -138,9 +138,7 @@ describe('queen wave dispatch — wave ordering through bee placement (real PG, 
   beforeEach(async () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents,
-                       harness_shared.harness_features_consolidated, harness_shared.coord_links,
-                       harness_shared.adv_sessions`;
+    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.coord_links, harness_shared.adv_sessions `;
     await seedQueenSession();
   });
 

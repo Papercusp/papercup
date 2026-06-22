@@ -141,7 +141,7 @@ same explicit `locks:acquire` discipline a human shell would use. Plain
 An interactive claude su session doesn't run under the shared `~/.claude`:
 it gets a per-session, transcript-isolated `CLAUDE_CONFIG_DIR` (keyed by the
 session's `PAPERCUSP_SID`) — a symlink mirror of `~/.claude` with **two** things
-isolated, the transcript store `projects/` (EI-153) and the user's
+  isolated, the transcript store `projects/` (EI-153) and the user's
 personal-memory files (`CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md`,
 psu-isolation P-002/D-001), so transcripts don't collide on the shared tree and
 the user's personal memory never leaks into the psu prompt, while
@@ -168,7 +168,7 @@ recorded cwd, and execs the **raw** CLI's resume command there — no wrapper:
   re-attaches that **exact** conversation. `claude --continue` (most-recent
   in the cwd) is only the **fallback** for pre-native-id rows with no
   recorded id. Resume also re-points `CLAUDE_CONFIG_DIR` to the session's
-  isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-and-soft-locks)).
+  isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-hooks-and-diagnostics)).
 - `omp -r <thread>` / `-c`, re-adding `-e <coord>` (loaded per-invocation)
 - `codex … resume --last` with `CODEX_HOME` set to that session's home
   (derived from its id — the home still holds the session history)

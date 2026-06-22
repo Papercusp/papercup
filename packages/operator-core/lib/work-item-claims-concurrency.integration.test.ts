@@ -106,10 +106,10 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   await db.sql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
-    ALTER TABLE harness_shared.engineer_issues
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;`).simple();
 }, 90_000);
@@ -118,7 +118,7 @@ afterAll(async () => { await db?.cleanup(); });
 
 afterEach(async () => {
   await db.sql`DELETE FROM harness_shared.work_item_claims`;
-  await db.sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.engineer_issues`;
+  await db.sql`TRUNCATE harness_shared.work_items `;
 });
 
 describe('C3 — N-way no-double-claim on ONE item (real PG)', () => {

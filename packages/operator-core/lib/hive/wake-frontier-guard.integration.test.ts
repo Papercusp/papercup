@@ -45,7 +45,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
+  await db.sql`TRUNCATE harness_shared.work_items `;
 });
 
 const HIVE = 'sb-devboard';

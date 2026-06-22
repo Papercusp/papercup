@@ -3,6 +3,14 @@ URL: /internal/docs/agent-insights/generic-hive-non-coding
 
 How a Hive runs non-coding work. `generic-hive` is a built-in `kind:'hive'` blueprint that judges deliverables against a rubric (no tests), lands output as artifacts (no commits), and co-locates by topic (not files). The new domain-profile schema fields (acceptance/output/affinity/lexicon/fleet/wake/learning/placement) and where the engine reads each.
 
+> **⚠️ Renamed since this was written.** The blueprint this page calls **`generic-hive`** (and its
+> coding sibling **`hive`**) are now **legacy ids aliased to `work` and `coding`** —
+> `libs/papercusp/packages/orchestrator/src/blueprint/loader.ts` maps `hive→coding` /
+> `generic-hive→work`. `blueprintId: 'generic-hive'` still resolves via the alias, but the canonical
+> blueprint dirs are `blueprints/work/` + `blueprints/coding/`. The domain-profile **mechanism** below
+> (judge acceptance, artifacts output, topic affinity, the schema fields) is unchanged — only the
+> blueprint *names* moved; substitute `work`/`coding` for the current ids.
+
 ## What
 
 The Hive/Queen/bee work-queue is no longer coding-only. The blueprint engine already

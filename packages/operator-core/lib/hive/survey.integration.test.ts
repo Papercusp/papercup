@@ -84,7 +84,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.hive_placements`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.hive_placements `;
 });
 
 const HOME = 'papercup-hive';

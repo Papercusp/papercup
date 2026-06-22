@@ -55,8 +55,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.harness_features_consolidated,
-                       harness_shared.harness_plans RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.work_items, harness_shared.harness_plans  RESTART IDENTITY`;
 });
 
 // Seed features (no blocked_by column post-155) + their blocker edges via the real

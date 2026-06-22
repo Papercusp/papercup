@@ -84,7 +84,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.harness_features_consolidated`;
+  await rootSql`TRUNCATE harness_shared.work_items `;
   h.readPlanBySlug.mockReset();
 });
 

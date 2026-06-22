@@ -1,6 +1,14 @@
 ---
 title: path.join normalizes `..` away — string-based traversal checks run too late
 description: A `..`/traversal guard that inspects a string fails silently if path.join ran first; validate the raw input segment, not the joined result.
+discovered: 2026-05-21
+status: active
+documents:
+  - libs/papercusp/packages/locks/src/path-normalize.ts
+  - packages/operator-core/lib/agent-tools/locks/path-normalize.ts
+  - packages/operator-core/lib/agent-tools/plans/source.ts
+plans:
+  - plans-pg-canonical-migration-2026-06-03
 ---
 
 ## The trap

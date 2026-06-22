@@ -107,7 +107,7 @@ beforeAll(async () => {
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — ISSUE_COLS now
   // selects them, so the engineer_issues table needs them.
   await db.sql.unsafe(`
-    ALTER TABLE harness_shared.engineer_issues
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer,
       ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz`);
@@ -127,14 +127,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.engineer_issues,
-                       harness_shared.coord_entity_subscriptions,
-                       harness_shared.coord_threads,
-                       harness_shared.coord_thread_posts,
-                       harness_shared.coord_links,
-                       harness_shared.coord_topics,
-                       harness_shared.harness_features_consolidated,
-                       harness_shared.coord_event_log RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log  RESTART IDENTITY`;
 });
 
 describe('engineer issues surface (real PG)', () => {

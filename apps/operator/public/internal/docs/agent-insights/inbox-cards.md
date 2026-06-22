@@ -6,7 +6,7 @@ The Planning inbox renders every human-facing AttentionItem through the same Ask
 ## The trap
 
 The operator has a nice "card system" — `AskChoiceCard` / `InputCard`
-(`app/_components/chat/`) — that agents drive via `chat:ask_choice` →
+(`apps/operator/lib/chat-cards/`) — that agents drive via `chat:ask_choice` →
 `ctx.askUser`. It's tempting to route the whole Planning **inbox** (escalations,
 coord messages, needs-human plan items, smoke-fails, plan reviews) through the
 same `ctx.askUser` so everything that reaches the human is "a card".

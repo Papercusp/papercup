@@ -124,9 +124,7 @@ afterAll(async () => {
 beforeEach(async () => {
   lockCalls = [];
   notices = [];
-  await db.sql`TRUNCATE harness_shared.spawned_agents,
-                       harness_shared.harness_features_consolidated,
-                       harness_shared.plan_item_claims`;
+  await db.sql`TRUNCATE harness_shared.spawned_agents, harness_shared.work_items, harness_shared.plan_item_claims `;
 });
 
 describe('nursery — transitive cancellation (D-003, real PG)', () => {

@@ -76,7 +76,7 @@ beforeAll(async () => {
 afterAll(async () => { await db.cleanup(); });
 beforeEach(async () => {
   escalations = []; lockCalls = [];
-  await db.sql`TRUNCATE harness_shared.spawned_agents, harness_shared.harness_features_consolidated, harness_shared.plan_item_claims`;
+  await db.sql`TRUNCATE harness_shared.spawned_agents, harness_shared.work_items, harness_shared.plan_item_claims `;
 });
 
 describe('supervision — restart-intensity governor (D-002, real PG)', () => {

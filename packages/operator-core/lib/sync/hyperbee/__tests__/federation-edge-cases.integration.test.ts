@@ -268,8 +268,8 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   // (identical to the template — the broad OLD.* <> NEW.* compare must mask
   // fed_ts or every own-log merge-back re-enqueues forever).
   await sql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
+    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
     ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     -- D-001 (mig 314): the outbox carries the op's HLC; G1b forces it to make a

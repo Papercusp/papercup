@@ -256,8 +256,8 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * leg of the cross-CLI ACTIVITY BRIDGE (papercusp-worker-integration-2026-06-04,
  * D-002/D-003): every PostToolUse mirrors the worker's native tool call into
  * harness_shared.agent_activity → the pui fleet view + curator. codex's
- * PostToolUse fires for edits + Bash + MCP (only PreToolUse is broken — D-006),
- * so this is reliable on codex. We BAKE PAPERCUSP_SID=<activitySid> + PAPERCUSP_
+ * PostToolUse fires for edits + Bash + MCP, so this is reliable on codex. We
+ * BAKE PAPERCUSP_SID=<activitySid> + PAPERCUSP_
  * AGENT=codex because codex hands hooks a minimal env (the same reason coord +
  * the lock hooks bake their values). Unlike the coord hook this fires for BOTH
  * su AND role sessions — role sessions ARE workers, so their activity belongs in

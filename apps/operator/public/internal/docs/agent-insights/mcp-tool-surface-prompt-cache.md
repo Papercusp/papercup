@@ -3,6 +3,12 @@ URL: /internal/docs/agent-insights/mcp-tool-surface-prompt-cache
 
 Every Anthropic call through Meridian inlines all connected MCP tool schemas (~62k tokens, mostly papercusp-su). That base is re-created on any cache miss — the dominant token cost. Defer tools and pin the tools/list manifest.
 
+> **Note — transport retired.** The `OMP → Meridian (:3456)` path this page describes is RETIRED (renamed
+> to `anthropic-direct`, EI-399 / 2026-06-12; OMP is unpublished), so the per-request token figures are
+> historical for that path. The load-bearing lessons below — **keep the MCP tool surface lean + pin the
+> `tools/list` manifest** (`tool-manifest.ts`), and the **EI-302 stale-schema boolean-coercion** gotcha —
+> are transport-agnostic and current.
+
 ## What
 
 Agents reach Anthropic as `OMP → Meridian (:3456) → @anthropic-ai/claude-agent-sdk → api.anthropic.com`. Meridian holds the conversation as an SDK session and, **per turn, expands the request \~5×**: the client sends \~17k tokens, but the SDK inlines Claude Code's \~30k-char system prompt **plus every connected MCP tool schema** — measured at **288 tools ≈ 62k tokens, of which 246 are `papercusp-su`** (its full endpoint catalog, projected via `?superuser=1`). This \~62k base rides on **every** request, even a one-line follow-up.

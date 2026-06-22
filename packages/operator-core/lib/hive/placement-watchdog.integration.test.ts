@@ -122,10 +122,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
     mocks.resolveEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents,
-                       harness_shared.harness_features_consolidated, harness_shared.coord_links,
-                       harness_shared.adv_sessions, harness_shared.agent_usage_samples,
-                       harness_shared.agent_activity`;
+    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
     await seedQueenSession();
   });
 
@@ -590,7 +587,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
   });
 
   it('returns no placements + no side effects when the hive has no resolvable Queen session', async () => {
-    await sql`TRUNCATE harness_shared.adv_sessions`; // no queen owner to attribute bees / wake
+    await sql`TRUNCATE harness_shared.adv_sessions `; // no queen owner to attribute bees / wake
     await seedBee({ owner: 'bee-x', featureId: 'F-400', status: 'failed' });
     await seedUnit({ id: 'F-400', status: 'in_progress', takenBy: 'bee-x' });
 

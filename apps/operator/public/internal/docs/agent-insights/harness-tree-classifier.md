@@ -99,8 +99,8 @@ it('matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regr
 ## Related
 
 * `packages/operator-core/lib/harness/classify-tree.ts` — the classifier
-* `packages/operator-core/lib/harness/register-papercup.ts` — uses
+* `packages/operator-core/lib/agent-tools/plans/source.ts` — uses
   `detectPapercupRoot` (same shape) to find the papercup repo for
-  Phase 4 dogfood self-registration
+  Phase 4 dogfood self-registration (formerly `harness/register-papercup.ts`)
 * v5 plan §2 — the architectural treatment of harness hierarchy
   reflecting submodule hierarchy

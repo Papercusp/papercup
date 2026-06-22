@@ -119,10 +119,10 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
   await db.sql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
-    ALTER TABLE harness_shared.engineer_issues
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
   `).simple();
@@ -138,18 +138,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.engineer_issues,
-                       harness_shared.coord_entity_subscriptions,
-                       harness_shared.coord_threads, harness_shared.coord_thread_posts,
-                       harness_shared.coord_links, harness_shared.coord_topics,
-                       harness_shared.harness_features_consolidated,
-                       harness_shared.coord_event_log,
-                       harness_shared.plan_item_assignments,
-                       harness_shared.agent_names,
-                       harness_shared.agent_name_sessions,
-                       harness_shared.plan_work_group_members,
-                       harness_shared.plan_item_claims,
-                       harness_shared.contributors RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log, harness_shared.plan_item_assignments, harness_shared.agent_names, harness_shared.agent_name_sessions, harness_shared.plan_work_group_members, harness_shared.plan_item_claims, harness_shared.contributors  RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   liveness.resetHarnessSharedResolver();
 });

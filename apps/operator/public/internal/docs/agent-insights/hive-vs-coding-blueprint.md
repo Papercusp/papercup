@@ -3,6 +3,15 @@ URL: /internal/docs/agent-insights/hive-vs-coding-blueprint
 
 The hive blueprint (Queen + generalist bees, no spine) is the orchestration layer; the coding blueprint (scoper→…→curator spine) is one execution pipeline it runs. Agents repeatedly describe hive bees with coding-spine roles — they are different blueprints at different layers with opposite execution models.
 
+> **⚠️ Blueprints RENAMED 2026-06-18 — the two names below have shifted (and the two "coding"s differ).**
+> Per `orchestrator/src/blueprint/loader.ts`: the orchestration blueprint this page calls **`hive`** is now
+> the **`coding`** dir (`kind: hive`, `decider: queen`); the former `generic-hive` is **`work`**; and the
+> EXECUTION pipeline this page calls **`coding`** (scoper→…→curator spine) is now **`coding-factory`**
+> (single-agent variant `coding-solo`). Legacy ids (`hive`, `generic-hive`) still resolve via the loader
+> aliases. So read the table's **"hive" column as today's `coding`** and its **"coding" column as today's
+> `coding-factory`**. The orchestration-layer-vs-execution-pipeline DISTINCTION below is unchanged — only
+> the names moved.
+
 Agents (and humans — and this insight's author, twice in one session) repeatedly
 describe **hive** `bee`s as moving through the **coding** spine
 (scoper → architect → worker → …). They are **different blueprints at different

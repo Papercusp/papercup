@@ -84,11 +84,11 @@ scope/plan addendum — records the `adv_sessions` row, mints a per-session
 `PAPERCUSP_SID`, and returns the prompt file + raw backend. `psu` then execs
 the raw CLI. What each agent needs differs:
 
-| Agent    | Prompt                                                                                                              | MCP (`papercusp-su`)                                                                               | Lock enforcement                                                                |
-| -------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `claude` | `--append-system-prompt-file <playbook+ctx>` `--dangerously-skip-permissions` `--permission-mode bypassPermissions` | **user-level** in `~/.claude.json` (survives a raw launch; its url env-expands `${PAPERCUSP_SID}`) | **user-level** `Pre/PostToolUse` hooks in `~/.claude/settings.json` — automatic |
-| `omp`    | `--approval-mode yolo --append-system-prompt <playbook+ctx>` `-e ~/.papercusp/papercusp-coord.ts`                   | **user-level** in `~/.omp/agent/mcp.json`                                                          | `coord-hook.ts` loaded per-launch via `-e`                                      |
-| `codex`  | per-session `CODEX_HOME` (`AGENTS.md` = playbook, `config.toml` = superuser MCP)                                    | in that `CODEX_HOME`'s `config.toml` (`http_headers` bearer)                                       | **soft** — see below                                                            |
+| Agent    | Prompt                                                                                                              | MCP (`papercusp-su`)                                                                               | Lock enforcement                                                                                         |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `claude` | `--append-system-prompt-file <playbook+ctx>` `--dangerously-skip-permissions` `--permission-mode bypassPermissions` | **user-level** in `~/.claude.json` (survives a raw launch; its url env-expands `${PAPERCUSP_SID}`) | **user-level** `Pre/PostToolUse` hooks in `~/.claude/settings.json` — automatic                          |
+| `omp`    | `--approval-mode yolo --append-system-prompt <playbook+ctx>` `-e ~/.papercusp/papercusp-coord.ts`                   | **user-level** in `~/.omp/agent/mcp.json`                                                          | `coord-hook.ts` loaded per-launch via `-e`                                                               |
+| `codex`  | per-session `CODEX_HOME` (`AGENTS.md` = playbook, `config.toml` = superuser MCP)                                    | in that `CODEX_HOME`'s `config.toml` (`http_headers` bearer)                                       | per-session `hooks.json` `Pre/PostToolUse` gates for `apply_patch`/`Edit`/`Write` + Bash resource checks |
 
 `PAPERCUSP_SID` is minted per launch and exported, so each session is a
 distinct coord/lock owner (two concurrent `psu` sessions don't collide).
@@ -104,7 +104,7 @@ user-level MCP url; omp carries it via the `x-papercusp-profile` header).
 Without that export, `--profile` would change only the playbook text while
 dispatch kept gating as `engineer`.
 
-### codex: a per-session CODEX\_HOME, and soft locks
+### codex: a per-session CODEX\_HOME, hooks, and diagnostics
 
 Codex has no `--append-system-prompt`/`--mcp-config` flags, so each `psu`
 codex launch mints a fresh `CODEX_HOME` under
@@ -116,17 +116,19 @@ codex launch mints a fresh `CODEX_HOME` under
   `bearer_token_env_var` does **not** deliver a valid bearer for a
   streamable-http server — verified — so the token is baked into the 0600
   ephemeral home, like claude's `~/.claude.json` header.)
-* `hooks.json` — the SU-locks Pre/PostToolUse hooks. **Currently inert:**
-  codex does not fire `PreToolUse` on `apply_patch`/`Bash` edits in 0.135
-  / 0.136-alpha (upstream [openai/codex#20204](https://github.com/openai/codex/issues/20204)).
-  The config is correct + activates the day codex fixes hook emission.
+* `hooks.json` — the SU-locks `PreToolUse`/`PostToolUse` hooks for
+  `apply_patch` (plus the documented `Edit`/`Write` matcher aliases), Bash
+  resource gates, MCP calls, activity, and mid-turn coord delivery. Current
+  Codex exposes `hooks` as a stable feature and discovers this file next to the
+  active `CODEX_HOME/config.toml`; `psu` passes
+  `--dangerously-bypass-hook-trust` because the per-session home contains only
+  Papercusp-managed hooks.
 * `auth.json` — a **symlink** to `~/.codex/auth.json` (shared ChatGPT login).
 
-Because the hook is inert, **codex coordination is soft**: its playbook
-instructs it to call `locks:acquire` itself before every edit. claude and
-omp get **hard** enforcement (their hooks fire); codex relies on playbook
-discipline until the upstream fix lands. Plain `codex` (`CODEX_HOME=~/.codex`)
-is fully vanilla.
+When local hook scripts are missing, the generated
+`papercusp-diagnostics.json` says `hooks-missing` and Codex falls back to the
+same explicit `locks:acquire` discipline a human shell would use. Plain
+`codex` (`CODEX_HOME=~/.codex`) is fully vanilla.
 
 :::note\[claude su sessions get an isolated `CLAUDE_CONFIG_DIR` (EI-155)]
 An interactive claude su session doesn't run under the shared `~/.claude`:
@@ -159,7 +161,7 @@ recorded cwd, and execs the **raw** CLI's resume command there — no wrapper:
   re-attaches that **exact** conversation. `claude --continue` (most-recent
   in the cwd) is only the **fallback** for pre-native-id rows with no
   recorded id. Resume also re-points `CLAUDE_CONFIG_DIR` to the session's
-  isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-and-soft-locks)).
+  isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-hooks-and-diagnostics)).
 * `omp -r <thread>` / `-c`, re-adding `-e <coord>` (loaded per-invocation)
 * `codex … resume --last` with `CODEX_HOME` set to that session's home
   (derived from its id — the home still holds the session history)

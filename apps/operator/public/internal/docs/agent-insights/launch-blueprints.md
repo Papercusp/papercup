@@ -57,9 +57,10 @@ Program-mode is only for genuine multi-step orchestration (`vote` / `deliberate`
 owned by `coord-ops/trigger.ts` + `startCoordProgramForEvent`).
 
 The built-in launch blueprints today: `deploy`, `scan`, `implement`,
-`merge-resolution`, `audit`, `pot`, `bee` (enumerated in
-`BUILTIN_LAUNCH_BLUEPRINTS`; `pot` + `bee` were added after this page's
-discovery date). They are the
+`merge-resolution`, `doc-steward`, `release-fix`, `content-fix`, `audit`,
+`coding`, `bee`, `sentinel` (enumerated in `BUILTIN_LAUNCH_BLUEPRINTS`; the list
+has grown since this page's discovery date — and `pot` is now `coding` after the
+2026-06-18 blueprint rename). They are the
 sibling of the program blueprints — two trigger maps coexist:
 `launchBlueprintTriggerMap()` (event → launch blueprint) and `coordOpTriggerMap()`
 (event → program blueprint).

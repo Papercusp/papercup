@@ -228,15 +228,15 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
   });
 
   beforeEach(async () => {
-    await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
-    await db.sql`TRUNCATE harness_shared.harness_issues_consolidated`;
-    await db.sql`TRUNCATE harness_shared.harness_plans`;
-    await db.sql`TRUNCATE harness_shared.hive_settings`;
-    await db.sql`TRUNCATE harness_shared.hive_members`;
-    await db.sql`TRUNCATE harness_shared.engineer_issues`;
-    await db.sql`TRUNCATE harness_shared.hives`;
-    await db.sql`TRUNCATE harness_shared.substrate_outbox RESTART IDENTITY`;
-    await db.sql`TRUNCATE harness_shared.substrate_meta`;
+    await db.sql`TRUNCATE harness_shared.work_items `;
+    await db.sql`TRUNCATE harness_shared.harness_issues_consolidated `;
+    await db.sql`TRUNCATE harness_shared.harness_plans `;
+    await db.sql`TRUNCATE harness_shared.hive_settings `;
+    await db.sql`TRUNCATE harness_shared.hive_members `;
+    await db.sql`TRUNCATE harness_shared.work_items `;
+    await db.sql`TRUNCATE harness_shared.hives `;
+    await db.sql`TRUNCATE harness_shared.substrate_outbox  RESTART IDENTITY`;
+    await db.sql`TRUNCATE harness_shared.substrate_meta `;
   });
 
   it('enqueues exactly the local feature + issue + plan rows (not remote, not other harnesses), writes the marker', async () => {
@@ -387,7 +387,7 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     // Now make THIS harness the workspace's single Hive home + clear the marker so a
     // re-backfill picks up the operator-scope row too.
     await db.sql`INSERT INTO harness_shared.hives (workspace_id, home_slug) VALUES (${WS}, ${SLUG})`;
-    await db.sql`TRUNCATE harness_shared.substrate_outbox RESTART IDENTITY`;
+    await db.sql`TRUNCATE harness_shared.substrate_outbox  RESTART IDENTITY`;
     await db.sql`DELETE FROM harness_shared.substrate_meta WHERE key = 'backfill_done'`;
 
     const res2 = await backfillLocalState(fakeHandle(), db.sql);

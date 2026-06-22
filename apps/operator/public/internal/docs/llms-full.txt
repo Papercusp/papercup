@@ -1729,6 +1729,65 @@ When a synthetic interaction “does nothing”, DON’T file a bug. Instead: (1
 
 bridge-driving = nav · render · console · DOM-state · API/SQL mutations. Radix/ cmdk activation + form-autosave round-trips = real input (xdotool — but round-3 found coordinate-driving the dev-wrapper webview UNRELIABLE: openbox offset + DPR + layout perturbation) or, preferably, the committed Playwright specs (`apps/operator/e2e/*.spec.ts`, real Chromium events). Use the right tool per surface. Related: \[\[isolated-stack-for-mutation-e2e]], \[\[../testing/agent-e2e]].
 
+# Authoring a bulk agent tool — the keyed-array dual-arity contract (_bulk)
+
+> How to give a repeated-call agent tool an items[] bulk arity without breaking n=1, using the shared _bulk helpers. The house contract from bulk-endpoint-standardization-2026-06-21, plus the import + relocation gotchas (leaf subpath, not the barrel).
+
+## When
+
+[Section titled “When”](#when)
+
+A tool an agent calls many times in a row (per id, per file, per row) should accept a BULK arity so the agent pays one inference round-trip instead of N. The shared contract lives in `packages/agent-mcp/src/_bulk.ts`; every bulk verb routes through it so an agent learns the shape once. (Plan: `bulk-endpoint-standardization-2026-06-21`, D-001.)
+
+## The contract (D-001)
+
+[Section titled “The contract (D-001)”](#the-contract-d-001)
+
+* **Input — scalar OR array on the logical id field**, so the single call is just n=1: expose both `id` and `ids` and merge with `mergeIds(args.id, args.ids)`. Heterogeneous per-item fields (or a compound key like `{slug, feature_id}`) ride `items: [{ … }]`. `scalarOrArray(z.string())` is the Zod seam for the `id|ids` union.
+* **Output — the self-describing keyed-array envelope:** `{ ok: true, results: [{ ok, <keyfields>, …data | error }], counts: { ok, failed } }`. Each result EMBEDS its own correlation key — the agent reads the key, NEVER the array index (robust to reordering / partial failure / truncation; LLMs mis-count indices).
+* **Failure is per-item, never a throw:** wrap the per-item work in `runBulk(items, op)` — a thrown error (or a returned `{ ok:false }`) becomes that item’s `{ ok:false, <key>, error }`; top-level `ok:true` means “the batch ran”, `counts.failed` is the truth signal. Cap items at \~100–200 (D-005).
+* **Serialize with `bulkContent(envelope)`.** It returns a raw `{ content:[{ text }] }` body, but it is NOT a token dead-end: the framework dispatch re-encodes a single-text JSON object-with-an-array-field to TOON on the agent (MCP) transport — so every bulk envelope is \~18-38% smaller for free, with a lossless JSON fallback and a size-guard that keeps a HETEROGENEOUS envelope on JSON when TOON would be larger (`definetool-token-optimization-adoption-2026-06-22` P-002/D-005).
+
+## Skeleton
+
+[Section titled “Skeleton”](#skeleton)
+
+```ts
+import { scalarOrArray, mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+// …
+args: z.object({ id: z.string().optional(), ids: z.array(z.string()).optional() }),
+async handler(args, ctx) {
+  const ids = mergeIds(args.id, args.ids);
+  return bulkContent(await runBulk(ids, async (id) => {
+    const row = await load(id, ctx);
+    if (!row) return { ok: false as const, id, error: 'not found' };
+    return { ok: true as const, id, ...row };
+  }));
+}
+```
+
+## Import gotcha (learned the hard way, EI-2549-adjacent)
+
+[Section titled “Import gotcha (learned the hard way, EI-2549-adjacent)”](#import-gotcha-learned-the-hard-way-ei-2549-adjacent)
+
+`_bulk` lives in `@papercusp/agent-mcp` (the lowest package both operator-core’s tools AND agent-mcp’s read-side tools can reach — agent-mcp can’t import up into operator-core). Import it:
+
+* **agent-mcp tools (`packages/agent-mcp/src/tools/**`):** use the RELATIVE leaf `'../../_bulk'`. NOT the package self-reference `'@papercusp/agent-mcp/_bulk'` — that fails the production `node` moduleResolution self-ref.
+* **operator-core tools:** import from `'@papercusp/agent-mcp/_bulk'` (the leaf subpath, exported in agent-mcp’s package.json). `operator-core/lib/agent-tools/_bulk.ts` already re-exports it, so existing `'../_bulk'` importers are unchanged.
+* **NEVER import the bulk helpers from the agent-mcp BARREL (`'@papercusp/agent-mcp'`):** the barrel pulls the whole index, and through some import graphs (the memory tools) that forms an ESM circular init where the re-exports are still `undefined` when the consumer’s module body runs (`mergeIds is not a function`). The leaf imports only `zod` → cycle-free.
+
+## Carve-outs (do NOT collapse to bulk-of-single)
+
+[Section titled “Carve-outs (do NOT collapse to bulk-of-single)”](#carve-outs-do-not-collapse-to-bulk-of-single)
+
+`fleet:spawn`/`fleet:place_batch` (affinity ranking + warm-inject + overflow) and `deploy:harness`/`deploy:hive` (hive carries queen/swarm topology) are composites, not pure bulk-of-one — keep them distinct (D-002).
+
+## Pointers
+
+[Section titled “Pointers”](#pointers)
+
+* Contract + helpers: `packages/agent-mcp/src/_bulk.ts`. Exemplars: `work_items/get.ts`, `rubrics/get.ts`, `features/get.ts` (compound key). Plan: bulk-endpoint-standardization-2026-06-21.
+
 # The command palette and the agent MCP catalog are two registries unified at projection, not merged
 
 > Ctrl+P commands come from lib/commands (Action Registry, browser-reflexive); agent tools come from defineTool/tooldef (server, gated). The Capability contract (lib/capabilities) unifies them at the read/projection layer with a §3 safety filter — it does NOT merge the two definition systems. Key gotchas: persona-axis ≠ RBAC-axis, :3070 serves a static build, runsIn mirrors CommandDef.browser.
@@ -5588,6 +5647,8 @@ Built + unit-tested + correct, just unwired end-to-end: P-009 judge hard-gate (`
 
 > How a Hive runs non-coding work. `generic-hive` is a built-in `kind:'hive'` blueprint that judges deliverables against a rubric (no tests), lands output as artifacts (no commits), and co-locates by topic (not files). The new domain-profile schema fields (acceptance/output/affinity/lexicon/fleet/wake/learning/placement) and where the engine reads each.
 
+> **⚠️ Renamed since this was written.** The blueprint this page calls **`generic-hive`** (and its coding sibling **`hive`**) are now **legacy ids aliased to `work` and `coding`** — `libs/papercusp/packages/orchestrator/src/blueprint/loader.ts` maps `hive→coding` / `generic-hive→work`. `blueprintId: 'generic-hive'` still resolves via the alias, but the canonical blueprint dirs are `blueprints/work/` + `blueprints/coding/`. The domain-profile **mechanism** below (judge acceptance, artifacts output, topic affinity, the schema fields) is unchanged — only the blueprint *names* moved; substitute `work`/`coding` for the current ids.
+
 ## What
 
 [Section titled “What”](#what)
@@ -6163,6 +6224,19 @@ No-VAL tests stay harness-level
 
 Built-in/universal tests (lint, typecheck, smoke — the `universalDomains` tier from `@papercusp/testing-shell`, formerly “generalized”) have no `coversVALs`, so they match no assertion and contribute to no plan item. Only behavioral/Project tests link to plans.
 
+## Surfacing tests for a plan that was never promoted
+
+[Section titled “Surfacing tests for a plan that was never promoted”](#surfacing-tests-for-a-plan-that-was-never-promoted)
+
+The happy path above assumes the plan was promoted (`plans:promote`) so its features + VALs exist in PG. A plan implemented **directly via `plans:set-status`** (no promote — common for infra/refactor work an su drives outside the feature pipeline) has **zero features** in `harness_features_consolidated` and **zero VALs** in `harness_plan_assertions`, so its tests have nothing to link to. Two options:
+
+* **Register Built-in tier** — add the test files to `.papercusp/tests.json` with `coversVALs: []`. They show in the Tests tab’s **test list** (`harnessTests.byHarness`) but not the per-VAL Acceptance view (same tier as lint/typecheck). No side effects.
+* **Promote for the Acceptance link** — author `[VAL-…]` sub-bullets on the plan items, then `plans:promote`. This **mints harness features** from the plan items (a first-time promote on a done plan injects features into the pipeline) — deliberate, not free. Use when you want the per-VAL Acceptance view.
+
+harness\_tests is CI-posted — empty on the dev box
+
+The Tests tab reads `harness_tests`, written by the **CI / green-checkpoint runner** posting to `/api/internal/test-snapshot` (a replace-all-per- `(harness,phase)` upsert). On the **dev box `harness_tests` is empty** — a local `vitest` run does not populate the tab. Register the test (tests.json + a matching registry glob, enforced by `npm --prefix apps/operator run lint:tests`, else it’s an invisible orphan); the tab fills through CI, not a dev run.
+
 ## Where things live
 
 [Section titled “Where things live”](#where-things-live)
@@ -6298,7 +6372,7 @@ it('matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regr
 [Section titled “Related”](#related)
 
 * `packages/operator-core/lib/harness/classify-tree.ts` — the classifier
-* `packages/operator-core/lib/harness/register-papercup.ts` — uses `detectPapercupRoot` (same shape) to find the papercup repo for Phase 4 dogfood self-registration
+* `packages/operator-core/lib/agent-tools/plans/source.ts` — uses `detectPapercupRoot` (same shape) to find the papercup repo for Phase 4 dogfood self-registration (formerly `harness/register-papercup.ts`)
 * v5 plan §2 — the architectural treatment of harness hierarchy reflecting submodule hierarchy
 
 # Headless desktop testing needs real GL — bare Xvfb gives blank screenshots
@@ -6889,6 +6963,8 @@ It **composes** existing primitives (`pot:*`, `fleet:*`, `harness:create` intern
 
 > The hive blueprint (Queen + generalist bees, no spine) is the orchestration layer; the coding blueprint (scoper→…→curator spine) is one execution pipeline it runs. Agents repeatedly describe hive bees with coding-spine roles — they are different blueprints at different layers with opposite execution models.
 
+> **⚠️ Blueprints RENAMED 2026-06-18 — the two names below have shifted (and the two “coding”s differ).** Per `orchestrator/src/blueprint/loader.ts`: the orchestration blueprint this page calls **`hive`** is now the **`coding`** dir (`kind: hive`, `decider: queen`); the former `generic-hive` is **`work`**; and the EXECUTION pipeline this page calls **`coding`** (scoper→…→curator spine) is now **`coding-factory`** (single-agent variant `coding-solo`). Legacy ids (`hive`, `generic-hive`) still resolve via the loader aliases. So read the table’s **“hive” column as today’s `coding`** and its **“coding” column as today’s `coding-factory`**. The orchestration-layer-vs-execution-pipeline DISTINCTION below is unchanged — only the names moved.
+
 Agents (and humans — and this insight’s author, twice in one session) repeatedly describe **hive** `bee`s as moving through the **coding** spine (scoper → architect → worker → …). They are **different blueprints at different layers with opposite execution models.** Both `extends: base` and both are “blueprints,” which is exactly why they look like siblings — but one *orchestrates* and one *executes*.
 
 ## The one-liner
@@ -7438,7 +7514,7 @@ Caveat: if a lib pins its **own** vitest at a *different major* than the v4 `@pa
 
 [Section titled “The trap”](#the-trap)
 
-The operator has a nice “card system” — `AskChoiceCard` / `InputCard` (`app/_components/chat/`) — that agents drive via `chat:ask_choice` → `ctx.askUser`. It’s tempting to route the whole Planning **inbox** (escalations, coord messages, needs-human plan items, smoke-fails, plan reviews) through the same `ctx.askUser` so everything that reaches the human is “a card”.
+The operator has a nice “card system” — `AskChoiceCard` / `InputCard` (`apps/operator/lib/chat-cards/`) — that agents drive via `chat:ask_choice` → `ctx.askUser`. It’s tempting to route the whole Planning **inbox** (escalations, coord messages, needs-human plan items, smoke-fails, plan reviews) through the same `ctx.askUser` so everything that reaches the human is “a card”.
 
 **Don’t.** `ctx.askUser` is a *live, synchronous, ephemeral* handshake: the card exists only while an agent is **blocked inside the tool call**, and the human’s click is the tool’s return value. The inbox is the opposite — *durable, asynchronous* records that are resolved later and read by the agent on its **next** run. Nothing is blocked waiting. Forcing the inbox through `ctx.askUser` would mean pinning agents alive blocking on a human.
 
@@ -7792,6 +7868,84 @@ Even with a healthy pool, the gateway **yields a pin to liveness** (`gateway.ts`
 * [llm-429-check-the-transport-not-the-account](/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account)
 * [fleet-inference-auth](/internal/docs/agent-insights/fleet-inference-auth)
 * [gym-cycle-inprocess-llm-bypasses-gateway](/internal/docs/agent-insights/gym-cycle-inprocess-llm-bypasses-gateway)
+
+# Inference-gateway: a stalled/429'd account is ONE OF THREE signals — never conflate them
+
+> When an account fails in the gateway it is one of three DISTINCT things, each handled differently: (1) a TRANSPORT stall — a flaky Rayobyte egress proxy 60s-hangs (route around it, do NOT count it as account exhaustion); (2) a per-minute RATE 429 — a transient burst throttle (AIMD-decrease the account's LEARNED rpm and pace, don't just re-walk into it); (3) a token-budget USAGE CAP — 5h/7d window (switch accounts). Two 2026-06-22 bugs came from conflating these: the egress circuit's transport penalty was counted toward the account's sustained/exhaustion verdict (a flaky proxy falsely marked quota-healthy accounts exhausted + triggered paid scale-out), and subscription accounts had a STATIC rpm floor that could never learn down (a soft-throttled account re-429'd forever). Diagnose proxy-vs-account with curl -x <proxy>: a fast 401 = healthy proxy ⇒ the hang is account-side.
+
+## The core idea
+
+[Section titled “The core idea”](#the-core-idea)
+
+When an account “fails” at the gateway, it is **one of three different things**. They look similar (a paused account, a non-200, a hang) but have *opposite* correct responses. Conflating them is the bug class this doc prevents.
+
+| Signal              | What it is                                                                                                                               | Correct response                                                                       | The wrong response (the bug)                                                                                |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Transport stall** | the account’s egress PROXY hangs (a Rayobyte squid CONNECT-hangs \~60s) — the request never reaches Anthropic                            | route AROUND the proxy (egress circuit + half-open probe); the account’s QUOTA is fine | counting it as a rate penalty → falsely marks a quota-healthy account “exhausted” + triggers paid scale-out |
+| **Rate 429**        | a per-minute / burst throttle (`x-should-retry:true`, no window headers) — capacity exists, the account is just going too fast right now | AIMD-decrease the account’s LEARNED rpm and PACE to it; retry at the paced rate        | pace at a STATIC floor that can’t learn down → re-walk into the same 429 forever                            |
+| **Usage cap**       | a token-budget rolling window (5h / 7d, `x-should-retry:false` + window reset) — the account is genuinely out for hours                  | pause to the (bounded, re-probed) reset and SWITCH to another account                  | wait on the same account for hours, or treat it as transient                                                |
+
+The tell that separates **transport** from **account**: `curl -x http://<proxy> https://api.anthropic.com/v1/messages -X POST -d '{}'`. A **fast 401** (\~1–2s) = the proxy is healthy ⇒ any 60s “no activity” stall is **account-side** (Anthropic holding the request — a soft-throttle), NOT a dead proxy. (A genuinely dead proxy times out the curl.) Compare against a known-good account’s proxy for a baseline.
+
+## How the gateway encodes the distinction (2026-06-22)
+
+[Section titled “How the gateway encodes the distinction (2026-06-22)”](#how-the-gateway-encodes-the-distinction-2026-06-22)
+
+The signal travels as a tag on the governor pause so every downstream consumer treats it right.
+
+* `GovernorPauseEvent.source: 'penalty' | 'headers' | 'transport'` (governor.ts). A transport pause carries `source:'transport'`.
+
+* `RateLimitGovernor.penalize({ transport?, rateLimited? })`:
+
+  * `transport:true` (egress circuit, gateway.ts) — pauses the account so the pin yields + the selector routes around the bad proxy, but **skips the fleet AIMD shrink** (one bad proxy is not fleet-wide rate pressure) and tags `source:'transport'`.
+  * `rateLimited:true` (the transient/bare-429 path, gateway.ts) — AIMD-decreases the account’s learned `rpmFactor` (below). NOT set for a usage cap, NOT set for a transport stall.
+
+* The account-pool exhaustion observer (`onGovernorPause` in account-pool-store.ts) **early-returns on `source:'transport'`** — so a proxy fault never feeds `penaltyCount`, never trips `isSustainedlyLimited` (account-pool.ts: ≥`sustainedPenaltyThreshold` penalties in the window), never emits `rate-limit:exhausted`, never triggers paid scale-out.
+
+* `agent-governor-observer.ts` also skips `source:'transport'` — no false “rate-limited — paused” toast.
+
+### Bug #1 it fixed (the false-exhaustion)
+
+[Section titled “Bug #1 it fixed (the false-exhaustion)”](#bug-1-it-fixed-the-false-exhaustion)
+
+“Sustainedly limited / exhausted” trips on penalty COUNT (≥3 in 15 min), and the egress circuit’s transport penalty went through the SAME `gov.penalize → onGovernorPause → recordAccountPenalty` path as a real 429. A flaky proxy (aviynw: 6% of its 5h token budget, but its proxy 60s-stalling) racked `penaltyCount` to 32 → falsely “exhausted”. Evidence the fix worked: the two flakiest-proxy accounts dropped 60→2 and 32→5 penalties on deploy and the quota-healthy ones rejoined rotation.
+
+## Adaptive per-account RPM (the per-account analog of the global AIMD)
+
+[Section titled “Adaptive per-account RPM (the per-account analog of the global AIMD)”](#adaptive-per-account-rpm-the-per-account-analog-of-the-global-aimd)
+
+The global concurrency AIMD (governor-registry `globalGate`, halve-on-penalty / +1-per-5-clean) adapts HOW MANY agents run at once. It does NOT adapt each account’s RATE. That was bug #2:
+
+Claude-Max **subscription** accounts expose no per-minute headroom headers (`recordHeaders` only tunes from API-key `anthropic-ratelimit-*`), so `limits.rpm` was a static **45 floor**. An account Anthropic soft-throttled below 45rpm kept getting paced at 45 → kept 429ing, with no way to learn down.
+
+The fix (governor.ts): a learned `rpmFactor ∈ [RPM_AIMD_MIN_FACTOR, 1]` per account (`GovernorState.rpmFactor` / `rpmFactorAt`).
+
+* `decideRate` paces to `limits.rpm × effectiveRpmFactor(now)`.
+* A rate-429 (`penalize({rateLimited:true})`) **halves** the factor — the prediction was too high.
+* `effectiveRpmFactor` **recovers it linearly back to 1 over `RPM_AIMD_RECOVER_MS`** (default 5 min) — a transient throttle doesn’t permanently cap the account; it probes back up.
+* Env-tunable: `PAPERCUSP_GATEWAY_RPM_AIMD_{DECREASE,MIN,RECOVER_MS}`; set `MIN=1` to disable (no-op factor).
+
+This closes the predict → wait → learn → retry loop: the existing rpm wait-gate already *predicts* (holds a request until the window allows) and *retries at the safe time*; the missing piece was *learning the prediction down when wrong*, which the factor supplies.
+
+## Gotcha: the DEAD-PROXY watchdog alert can’t tell proxy from account
+
+[Section titled “Gotcha: the DEAD-PROXY watchdog alert can’t tell proxy from account”](#gotcha-the-dead-proxy-watchdog-alert-cant-tell-proxy-from-account)
+
+`watchdog.mjs` logs `DEAD-PROXY: '<acct>' egress failing N%` when `egressFailRateByAccount` (a volume-fair fails÷attempts rate in `/stats`) crosses ≥50% over ≥20 attempts. But a 60s account-side hang is recorded as an “egress failure” exactly like a dead proxy — the gateway can’t distinguish them per-request. **So a DEAD-PROXY alert is NOT automatically a “pull the Rayobyte proxy” signal.** Verify with the `curl -x` test above first: healthy proxy ⇒ it’s account-side throttling (the adaptive-RPM’s job), not a proxy to escalate.
+
+## When the pool IS exhausted — two more fixes (2026-06-22)
+
+[Section titled “When the pool IS exhausted — two more fixes (2026-06-22)”](#when-the-pool-is-exhausted--two-more-fixes-2026-06-22)
+
+**Over-park.** An account-keyed bucket left a 429’s pause UNCAPPED, so a TRANSIENT 429 (`x-should-retry:true`) that carried a far-future rolling-window reset parked the account for HOURS (aviynw: live 429 was x-should-retry:true, yet `pausedUntil` was \~7h). Fix (governor.ts `penalize`): a transient rate-429 (`opts.rateLimited`) caps the pause to `ROLLING_WINDOW_REPROBE_MS` even on an account-keyed bucket — re-probe in \~2 min instead of parking for hours. A genuine usage cap (no `rateLimited`) still parks uncapped — the sustained/scale-out signal keys off penalty COUNT, not pause length, so it’s unaffected.
+
+**Auto-wake coverage.** The stall-waker (`stall-waker.ts` + `ensureStallWakerLoop`) re-wakes an IDENTIFIED bee’s turn when its account recovers — *let them wait, then go through when capacity returns*. BUT `recordStall` only fired on the rare fast-shed exit, so the dominant failures (egress-exhausted 503, forwarded upstream-429) recorded nothing → `/admin/stalls` sat EMPTY while the whole pool was throttled → no bee was ever re-woken. Fix (gateway.ts): `recordStall` now fires on every bee-facing retryable exit (egress-exhausted 503, token-stall 503, forwarded 429/529) for a bee carrying `x-papercusp-owner`. **Caveat:** the waker only re-wakes a RESUMABLE session (a watching coord wake-key); a one-shot turn whose process exited can’t be woken (re-spawn-on-stall is future scope). Verify it’s working: `curl :8788/admin/stalls` should be non-empty when the pool is throttled.
+
+## What’s genuinely external (not a gateway bug)
+
+[Section titled “What’s genuinely external (not a gateway bug)”](#whats-genuinely-external-not-a-gateway-bug)
+
+When most accounts are at their weekly cap and the one or two with headroom get Anthropic-side soft-throttled, the pool is simply short of clean capacity. The gateway now degrades gracefully (paces to learned rates, routes around bad proxies, fails fast instead of hanging) — but the durable lever is **more accounts / weekly-window resets**, which is an owner action, not a code fix. Don’t manufacture hot-path changes on a healthy, converged gateway to chase a capacity shortfall.
 
 # Inference-gateway :8788 wedges under a sustained 429 storm — admission slots squat the throttle-wait
 
@@ -8486,7 +8640,7 @@ Decider-mode, not program-mode
 
 A launch blueprint is **decider-mode** (`spine.decider` + the three terminal edges). `validate.ts` rejects a spine with neither `edges` nor `steps` (`empty-spine`), so a bare `decider:` fails — give it the DONE/ESCALATE/IDLE edges (mirrors `review`). Do **NOT** model it as a coord-op `steps`+`gate` program — that’s the “fake pipeline” over-formalization D-007 warns against. Program-mode is only for genuine multi-step orchestration (`vote` / `deliberate`, owned by `coord-ops/trigger.ts` + `startCoordProgramForEvent`).
 
-The built-in launch blueprints today: `deploy`, `scan`, `implement`, `merge-resolution`, `audit`, `pot`, `bee` (enumerated in `BUILTIN_LAUNCH_BLUEPRINTS`; `pot` + `bee` were added after this page’s discovery date). They are the sibling of the program blueprints — two trigger maps coexist: `launchBlueprintTriggerMap()` (event → launch blueprint) and `coordOpTriggerMap()` (event → program blueprint).
+The built-in launch blueprints today: `deploy`, `scan`, `implement`, `merge-resolution`, `doc-steward`, `release-fix`, `content-fix`, `audit`, `coding`, `bee`, `sentinel` (enumerated in `BUILTIN_LAUNCH_BLUEPRINTS`; the list has grown since this page’s discovery date — and `pot` is now `coding` after the 2026-06-18 blueprint rename). They are the sibling of the program blueprints — two trigger maps coexist: `launchBlueprintTriggerMap()` (event → launch blueprint) and `coordOpTriggerMap()` (event → program blueprint).
 
 ## The load-bearing principle: triggers stay, only the launch becomes declarative
 
@@ -9320,6 +9474,8 @@ Disconnect still reaches blocking tools via `request.signal` (unchanged). The pr
 # The MCP tool surface dominates prompt-cache cost via Meridian
 
 > Every Anthropic call through Meridian inlines all connected MCP tool schemas (~62k tokens, mostly papercusp-su). That base is re-created on any cache miss — the dominant token cost. Defer tools and pin the tools/list manifest.
+
+> **Note — transport retired.** The `OMP → Meridian (:3456)` path this page describes is RETIRED (renamed to `anthropic-direct`, EI-399 / 2026-06-12; OMP is unpublished), so the per-request token figures are historical for that path. The load-bearing lessons below — **keep the MCP tool surface lean + pin the `tools/list` manifest** (`tool-manifest.ts`), and the **EI-302 stale-schema boolean-coercion** gotcha — are transport-agnostic and current.
 
 ## What
 
@@ -10158,7 +10314,7 @@ The hive’s liveness contract is **“a wake is always armed in `harness_shared
 | claude T1 (its scheduler tools + skills)          | `--disallowedTools=…` at launch                                                                                                                         | `invoke.ts` extraFlags (every headless spawn) · `wake-executor.ts` resume leg · `psu-launcher.mjs` `roleLaunchArgs` + brain legs          |
 | claude T2 (OS schedulers via Bash)                | `Bash(crontab:*)`-style deny patterns in the same flag (works hook-less, i.e. for headless bees) + the bash-resource-gate hook (catches compound forms) | canonical list: `@papercusp/orchestrator/native-scheduler-deny` · hook: `apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh` |
 | omp (no T1 surface — toolset audited 2026-06-09)  | coord-hook `tool_call` block on OS-scheduler commands                                                                                                   | `apps/operator/scripts/hooks/omp/coord-hook.ts` (`OS_SCHEDULER_CMD_RE`)                                                                   |
-| codex (no T1 surface — toolset probed 2026-06-09) | gate hook wired into the role home’s `hooks.json` — **inert upstream** (codex PreToolUse doesn’t fire, same as the lock hooks) but correct + ready      | `role-codex-home.ts` `writeCodexLockHooks({ agentSession: true })`                                                                        |
+| codex (no T1 surface — toolset probed 2026-06-09) | gate hook wired into the role home’s `hooks.json`; current Codex supports `PreToolUse` matchers for Bash and `apply_patch`/`Edit`/`Write`               | `role-codex-home.ts` `writeCodexLockHooks({ agentSession: true })`                                                                        |
 | All backends, intent layer                        | explicit prohibition in the prompts                                                                                                                     | `queen.md` wake section · `bee.md` Don’ts                                                                                                 |
 
 The hook layers key off **`PAPERCUSP_AGENT_SESSION=1`**, set by every agent launch path (orchestrator spawn env, wake-executor resumes, psu role panes, the brain) and never by human sessions — the guard fails open for the owner.
@@ -10179,7 +10335,7 @@ The hook layers key off **`PAPERCUSP_AGENT_SESSION=1`**, set by every agent laun
 [Section titled “Residual gaps (accepted, documented)”](#residual-gaps-accepted-documented)
 
 * Headless **omp** bees load no `-e` extension (auto-discovery dir is empty on this box), so their shell is prompt-governed only. Default bees are claude, which is fully covered.
-* **codex** PreToolUse emission is broken upstream (openai/codex #20204 / #16732) — the gate entry in `hooks.json` enforces nothing until that fixes, exactly like the lock hooks (D-011 in `role-codex-home.ts`).
+* **codex** relies on the managed per-session `hooks.json` actually being installed. If `papercusp-diagnostics.json` reports `hooks-missing`, the scheduler gate falls back to prompt discipline until the local hook install is repaired.
 * Anything remote (`ssh host 'crontab …'`) is out of scope for local hooks.
 * `psu --resume` of a role session by the OWNER doesn’t re-apply the flag (owner-supervised; OQ-2 of the plan).
 
@@ -11096,6 +11252,64 @@ Resolution order reads **left → right; the LAST present layer wins.**
 2. **Frontend:** the UI uses `<OverridableSetting>` — do **not** hand-roll a “modified” badge or a bespoke reset button.
 
 A new override that skips either contract reintroduces exactly the sprawl this backbone exists to kill: an override invisible to the audit surface, or yet another inconsistent badge/reset the user has to learn. If a mechanism genuinely doesn’t fit (no baked default, accumulated state, foreign store — see budget / backup above), say so explicitly in this table rather than silently omitting it.
+
+# Overwatch (and Queen/hive) flag ON ≠ running — the 'started' control-bit is a separate, persisted switch
+
+> Owner flips the papercusp-overwatch flag ON, but overwatch never runs: the routine fires yet produces zero runs. The flag is only the GATE; overwatch:start sets a SEPARATE persisted control-bit (operator_settings KV) that the launch handler also requires. Flag-on without start = gated-open-but-not-armed = a silent no-op. How to spot it, why dev:sessions hides it, and the durable fix.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The `papercusp-overwatch` flag is **ON**, an `overwatch-wake` routine is **active with a next fire** — yet overwatch never runs. `coord:presence` shows no overwatch agent, `dev:sessions` shows **zero** overwatch sessions, and the routine’s `lastFired` may even be advancing. Everything looks enabled; nothing happens. (Same shape for the Queen / `hive_started`.)
+
+## The gotcha: a flag and a “started” bit are TWO independent off-switches
+
+[Section titled “The gotcha: a flag and a “started” bit are TWO independent off-switches”](#the-gotcha-a-flag-and-a-started-bit-are-two-independent-off-switches)
+
+Overwatch has **two** gates, and *both* must be satisfied to run:
+
+1. **The flag** `papercusp-overwatch` — the *gate* (checked in `handleOverwatchLaunch` and at the spawn chokepoint). Flip it at `/admin/features`.
+2. **The persisted `overwatch_started` bit** — the *arm*, set **only** by `overwatch:start` (cleared by `overwatch:pause`). Stored in `harness_shared.operator_settings` KV, key `overwatch_started:<workspaceId>:<installSlug>` → `'true'|'false'` (`control-state.ts`).
+
+`handleOverwatchLaunch` (`overwatch/loop.ts`) self-gates on **both**:
+
+```ts
+if (!(await overwatchEnabled())) return;                        // flag off → skip
+if (!(await getOverwatchStarted(workspaceId, installSlug)))     // not started → skip
+  return;   // logs "launch skipped — overwatch not started"
+```
+
+So **flipping the flag ON does not start overwatch.** If `overwatch_started` was never set (or was paused, or was orphaned when the workspace got re-keyed), the wake fires, the handler runs, and it **skips** — a silent no-op. This is the dark-flag shape: enabled on paper, doing nothing.
+
+> The two are decoupled *by design* (`start.ts`: while the flag is OFF, start still persists the bit “pre-armed” for the eventual flip). The trap is that there’s **no warning** for the inverse — flag ON + bit false — so it fails silently.
+
+## Why `dev:sessions` hides it (the red herring that wastes an hour)
+
+[Section titled “Why dev:sessions hides it (the red herring that wastes an hour)”](#why-devsessions-hides-it-the-red-herring-that-wastes-an-hour)
+
+When overwatch *does* launch, it goes through the **loopback invoke route** (`defaultOverwatchFire` → `POST /api/harness/<slug>/invoke?role=overwatch&bpkind=overwatch`), which records a **tracked invoke session** — **not** a durable-spawn. `dev:sessions` lists spawn/bee sessions, so a *running* overwatch shows **0 sessions** there. Don’t conclude “not running” from `dev:sessions` for overwatch (or any invoke-route role).
+
+## How to diagnose (the authoritative signals)
+
+[Section titled “How to diagnose (the authoritative signals)”](#how-to-diagnose-the-authoritative-signals)
+
+* **Is it started?** Read the bit directly: `dev:pg_query "SELECT value FROM harness_shared.operator_settings WHERE key='overwatch_started:<ws>:<slug>'"`. Absent or `'false'` ⇒ not armed ⇒ every wake skips.
+* **Is the launch firing/succeeding?** The real signal is `recordFire`’s row, **not** `dev:sessions`: `dev:pg_query "SELECT role,last_status,consecutive_errors,last_fired_at FROM harness_shared.autoloop_state WHERE role='overwatch'"`. `last_status='ok'` ⇒ the invoke POST succeeded (overwatch launched). A climbing `consecutive_errors` ⇒ the POST is erroring (a real downstream bug). No row / stale ⇒ never fired or always-skipped.
+* **Is a wake armed?** `routines:list` → the active `overwatch-wake` row’s `nextFireAt`. Watch for **duplicate** active rows (stale registrations from prior days) — prune all but the live one.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+* **Immediate:** run **`overwatch:start`**. It sets `overwatch_started='true'` (PERSISTED — it survives restarts; the B-09 liveness watchdog re-arms the wake purely from this bit on every boot), sets the cadence, and fires a wake now. Confirm with the `autoloop_state` query above (`last_status` flips to `ok`). This is durable — you do **not** need a boot-reconcile to re-assert it.
+* **Durable (design choice, prevents the silent trap):** either **(a)** auto-start on the flag’s OFF→ON edge (flipping the flag expresses intent to run; a later `overwatch:pause` still sticks because boot does not re-start — and `overwatch_started` is tri-state: KEY-ABSENT = never-started vs `'false'` = deliberately-paused, so auto-start can fire only for the never-started case), and/or **(b)** a system-health warning “overwatch flag ON but not started” surfaced at `/admin/features`.
+
+## The lesson (generalizable)
+
+[Section titled “The lesson (generalizable)”](#the-lesson-generalizable)
+
+**A feature gated by BOTH a flag and a separate “started”/“armed” control-bit has two independent off-switches; “enabled” means the AND of them — and the AND is invisible unless you surface it.** When you add a second gate (a control-bit beside a flag), also add the cross-check: a flag ON with its arm OFF should *warn*, never *silently no-op*. Otherwise you get the dark-flag trap one level deeper — the flag audit says “ON ✅”, and the thing still does nothing. See also `overwatch-role-2026-06-15` and the flags discipline in `CLAUDE.md` (a feature that’s “enabled” but does nothing is dead code, however green the flag).
 
 # Add a P2P request/response RPC channel by riding the existing Hyperswarm connection
 
@@ -19144,7 +19358,7 @@ Multiple OMP / Claude Code / Codex / Gemini shells may be running at once, each 
 
 Prevention over reconciliation: cheaper to wait 30 seconds for a file to free than to discover at merge time that two agents wrote different fixes for the same bug.
 
-The cooperative tool surface is universal across host CLIs. **Claude Code** users additionally get enforcement via a `PreToolUse` hook that refuses contested `Edit`/`Write`/`MultiEdit` automatically. OMP / Codex / Gemini agents currently rely on the playbook discipline above — they will stomp if their host CLI lacks a hook. Treat their participation as best-effort coordination; the system is fully enforced only when every concurrent CLI has a hook.
+The cooperative tool surface is universal across host CLIs. **Claude Code** users get enforcement via a `PreToolUse` hook that refuses contested `Edit`/`Write`/`MultiEdit` automatically. Managed **Codex** sessions get the same class of enforcement from their per-session `CODEX_HOME/hooks.json` (`PreToolUse`/`PostToolUse` for `apply_patch` plus the documented `Edit`/`Write` matcher aliases and Bash resource gates). OMP gets its enforcement through the loaded `coord-hook.ts`. Only unmanaged or hookless CLIs fall back to playbook discipline; check the session diagnostics before assuming a shell is hard-enforced.
 
 When a contention surfaces to the user, **show both intents** (yours and the holder’s) so the user can decide. “Agent X has `lib/foo.ts` for ‘fix typo in comment’; I want to do ‘refactor entire auth module’; should I wait or pivot?” — both intents in one sentence.
 
@@ -20528,11 +20742,11 @@ The launcher implements several other first-class flags on top of agent/workspac
 
 `psu` calls `POST /api/agent-mcp/console/bootstrap-su`, which builds the launch spec via `buildLaunchSpec({ kind: 'su' })` — the playbook (rendered fresh from `prompts/papercusp-su-<profile>.tools.md` + the per-agent overlay, so it can’t drift from the installed copy) plus a per-launch scope/plan addendum — records the `adv_sessions` row, mints a per-session `PAPERCUSP_SID`, and returns the prompt file + raw backend. `psu` then execs the raw CLI. What each agent needs differs:
 
-| Agent    | Prompt                                                                                                              | MCP (`papercusp-su`)                                                                               | Lock enforcement                                                                |
-| -------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `claude` | `--append-system-prompt-file <playbook+ctx>` `--dangerously-skip-permissions` `--permission-mode bypassPermissions` | **user-level** in `~/.claude.json` (survives a raw launch; its url env-expands `${PAPERCUSP_SID}`) | **user-level** `Pre/PostToolUse` hooks in `~/.claude/settings.json` — automatic |
-| `omp`    | `--approval-mode yolo --append-system-prompt <playbook+ctx>` `-e ~/.papercusp/papercusp-coord.ts`                   | **user-level** in `~/.omp/agent/mcp.json`                                                          | `coord-hook.ts` loaded per-launch via `-e`                                      |
-| `codex`  | per-session `CODEX_HOME` (`AGENTS.md` = playbook, `config.toml` = superuser MCP)                                    | in that `CODEX_HOME`’s `config.toml` (`http_headers` bearer)                                       | **soft** — see below                                                            |
+| Agent    | Prompt                                                                                                              | MCP (`papercusp-su`)                                                                               | Lock enforcement                                                                                         |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `claude` | `--append-system-prompt-file <playbook+ctx>` `--dangerously-skip-permissions` `--permission-mode bypassPermissions` | **user-level** in `~/.claude.json` (survives a raw launch; its url env-expands `${PAPERCUSP_SID}`) | **user-level** `Pre/PostToolUse` hooks in `~/.claude/settings.json` — automatic                          |
+| `omp`    | `--approval-mode yolo --append-system-prompt <playbook+ctx>` `-e ~/.papercusp/papercusp-coord.ts`                   | **user-level** in `~/.omp/agent/mcp.json`                                                          | `coord-hook.ts` loaded per-launch via `-e`                                                               |
+| `codex`  | per-session `CODEX_HOME` (`AGENTS.md` = playbook, `config.toml` = superuser MCP)                                    | in that `CODEX_HOME`’s `config.toml` (`http_headers` bearer)                                       | per-session `hooks.json` `Pre/PostToolUse` gates for `apply_patch`/`Edit`/`Write` + Bash resource checks |
 
 `PAPERCUSP_SID` is minted per launch and exported, so each session is a distinct coord/lock owner (two concurrent `psu` sessions don’t collide).
 
@@ -20542,18 +20756,18 @@ The launcher implements several other first-class flags on top of agent/workspac
 
 The su playbook comes in three profiles — `engineer` (default), `power`, and `generic` — selected per launch with `--profile`. Profile is **not** just prompt text: the chosen `prompts/papercusp-su-<profile>.tools.md` renders the playbook **and** the launcher exports `PAPERCUSP_PROFILE`, which the MCP dispatcher reads to gate the tool tier (claude expands it into the user-level MCP url; omp carries it via the `x-papercusp-profile` header). Without that export, `--profile` would change only the playbook text while dispatch kept gating as `engineer`.
 
-### codex: a per-session CODEX\_HOME, and soft locks
+### codex: a per-session CODEX\_HOME, hooks, and diagnostics
 
-[Section titled “codex: a per-session CODEX\_HOME, and soft locks”](#codex-a-per-session-codex_home-and-soft-locks)
+[Section titled “codex: a per-session CODEX\_HOME, hooks, and diagnostics”](#codex-a-per-session-codex_home-hooks-and-diagnostics)
 
 Codex has no `--append-system-prompt`/`--mcp-config` flags, so each `psu` codex launch mints a fresh `CODEX_HOME` under `~/.papercusp/su-codex-homes/session-<id>/`:
 
 * `AGENTS.md` — the engineer playbook (codex’s instruction file)
 * `config.toml` — the superuser MCP, with the bearer baked as `http_headers = { Authorization = "Bearer …" }`. (Codex 0.135’s `bearer_token_env_var` does **not** deliver a valid bearer for a streamable-http server — verified — so the token is baked into the 0600 ephemeral home, like claude’s `~/.claude.json` header.)
-* `hooks.json` — the SU-locks Pre/PostToolUse hooks. **Currently inert:** codex does not fire `PreToolUse` on `apply_patch`/`Bash` edits in 0.135 / 0.136-alpha (upstream [openai/codex#20204](https://github.com/openai/codex/issues/20204)). The config is correct + activates the day codex fixes hook emission.
+* `hooks.json` — the SU-locks `PreToolUse`/`PostToolUse` hooks for `apply_patch` (plus the documented `Edit`/`Write` matcher aliases), Bash resource gates, MCP calls, activity, and mid-turn coord delivery. Current Codex exposes `hooks` as a stable feature and discovers this file next to the active `CODEX_HOME/config.toml`; `psu` passes `--dangerously-bypass-hook-trust` because the per-session home contains only Papercusp-managed hooks.
 * `auth.json` — a **symlink** to `~/.codex/auth.json` (shared ChatGPT login).
 
-Because the hook is inert, **codex coordination is soft**: its playbook instructs it to call `locks:acquire` itself before every edit. claude and omp get **hard** enforcement (their hooks fire); codex relies on playbook discipline until the upstream fix lands. Plain `codex` (`CODEX_HOME=~/.codex`) is fully vanilla.
+When local hook scripts are missing, the generated `papercusp-diagnostics.json` says `hooks-missing` and Codex falls back to the same explicit `locks:acquire` discipline a human shell would use. Plain `codex` (`CODEX_HOME=~/.codex`) is fully vanilla.
 
 claude su sessions get an isolated `CLAUDE_CONFIG_DIR` (EI-155)
 
@@ -20570,7 +20784,7 @@ psu --resume=<id>       # or: psu --resume <id>  (direct, skip the picker)
 
 `psu --resume` reads your recent tracked sessions, `cd`s to each one’s recorded cwd, and execs the **raw** CLI’s resume command there — no wrapper:
 
-* `claude --resume <native-uuid>` — every modern psu claude launch forces + records a native session id (`adv_sessions.session_id`), so resume re-attaches that **exact** conversation. `claude --continue` (most-recent in the cwd) is only the **fallback** for pre-native-id rows with no recorded id. Resume also re-points `CLAUDE_CONFIG_DIR` to the session’s isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-and-soft-locks)).
+* `claude --resume <native-uuid>` — every modern psu claude launch forces + records a native session id (`adv_sessions.session_id`), so resume re-attaches that **exact** conversation. `claude --continue` (most-recent in the cwd) is only the **fallback** for pre-native-id rows with no recorded id. Resume also re-points `CLAUDE_CONFIG_DIR` to the session’s isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-hooks-and-diagnostics)).
 * `omp -r <thread>` / `-c`, re-adding `-e <coord>` (loaded per-invocation)
 * `codex … resume --last` with `CODEX_HOME` set to that session’s home (derived from its id — the home still holds the session history)
 

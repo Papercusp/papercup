@@ -106,8 +106,8 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
     await sql.unsafe(readFileSync(join(SQL_DIR, file), 'utf8'));
   }
   await sql.unsafe(`
-    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
-    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
+    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
     CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
       AFTER UPDATE ON harness_shared.harness_features_consolidated
       FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))

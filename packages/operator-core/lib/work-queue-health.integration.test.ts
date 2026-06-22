@@ -52,8 +52,7 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.coord_presence,
-    harness_shared.spawned_agents, harness_shared.engineer_issues, harness_shared.periodic_sweep_runs`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.periodic_sweep_runs `;
 });
 
 async function seedFeature(id: string, status: string, takenBy: string | null, takenAgoMin: number, harness = H): Promise<void> {

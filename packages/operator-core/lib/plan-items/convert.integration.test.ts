@@ -85,7 +85,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.harness_features_consolidated, harness_shared.engineer_issues`;
+  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items `;
 });
 
 async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: string; rel?: string; dstKind?: string; ws?: string; createdAt?: string }) {

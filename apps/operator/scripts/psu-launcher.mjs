@@ -217,8 +217,9 @@ export const BRAIN_TOMBSTONE_MESSAGE =
  * so bootstrap-role mints a per-session CODEX_HOME (AGENTS.md = role
  * prompt, config.toml = role-scoped MCP) and exports it via
  * `envelopeEnv.CODEX_HOME`; the launcher just execs `codex` with the
- * approvals/sandbox bypass MCP tool calls need (mirrors the codex-su
- * wrapper).
+ * approvals/sandbox bypass Papercusp still uses for managed Codex launches
+ * until the MCP-under-sandbox path has a fresh live smoke on the current CLI
+ * (mirrors the codex-su wrapper).
  */
 export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, nativeSessionId, replaceClaudeBase } = {}) {
   if (backend === 'claude') {
@@ -267,9 +268,9 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
     // CODEX_HOME (with AGENTS.md + role-scoped config.toml + lock-hook
     // settings.json) is supplied via envelopeEnv.
     // --dangerously-bypass-hook-trust runs the home's SU-locks hooks (P-030;
-    // the only hooks there are ours); --dangerously-bypass-approvals-and-sandbox
-    // lets the session call MCP tools without per-call approval (codex CANCELS
-    // MCP tool calls under the default sandbox — see the orchestrator path).
+    // the only hooks there are ours). The approvals/sandbox bypass remains the
+    // managed-launch default until the current Codex MCP-under-sandbox path has
+    // a live Papercusp smoke; the orchestrator fleet path wraps Codex externally.
     return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox'] };
   }
   throw new Error(`roleLaunchArgs: backend '${backend}' has no interactive role launch`);
@@ -297,7 +298,8 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
  * playbook, config.toml = superuser MCP w/ bearer, settings.json = lock
  * hooks) and supplied via `envelopeEnv.CODEX_HOME`; the launcher execs
  * `codex` with `--dangerously-bypass-hook-trust` (the home's only hooks are
- * ours) + the approvals/sandbox bypass MCP tool calls need.
+ * ours) + the approvals/sandbox bypass Papercusp still uses for managed
+ * Codex launches pending a current MCP-under-sandbox live smoke.
  */
 export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionId, replaceClaudeBase } = {}) {
   if (backend === 'claude') {

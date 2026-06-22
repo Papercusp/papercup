@@ -108,14 +108,14 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(`
-    ALTER TABLE harness_shared.engineer_issues
+    ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
 }, 90_000);
 afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.engineer_issues, harness_shared.work_item_deps`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps `;
 });
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -334,7 +334,7 @@ describe('get_next — DEFAULT_CLAIM_SPEC reproduces current ordering (D-003)', 
     const viaDefault = await getNextWorkItemDefault({ assignee: 'bee-A' }, { harness: H });
     expect(viaDefault?.workItem.id).toBe('F-old');
     // Re-seed and cross-check the legacy path picks the SAME item.
-    await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
+    await db.sql`TRUNCATE harness_shared.work_items `;
     await seedFeature('F-old', { createdTs: 10 });
     await seedFeature('F-new', { createdTs: 99 });
     const viaLegacy = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-B' });

@@ -70,6 +70,31 @@ from `@papercusp/testing-shell`, formerly "generalized") have no `coversVALs`, s
 they match no assertion and contribute to no plan item. Only behavioral/Project
 tests link to plans.
 
+## Surfacing tests for a plan that was never promoted
+
+The happy path above assumes the plan was promoted (`plans:promote`) so its
+features + VALs exist in PG. A plan implemented **directly via
+`plans:set-status`** (no promote — common for infra/refactor work an su drives
+outside the feature pipeline) has **zero features** in
+`harness_features_consolidated` and **zero VALs** in `harness_plan_assertions`,
+so its tests have nothing to link to. Two options:
+
+* **Register Built-in tier** — add the test files to `.papercusp/tests.json`
+  with `coversVALs: []`. They show in the Tests tab's **test list**
+  (`harnessTests.byHarness`) but not the per-VAL Acceptance view (same tier as
+  lint/typecheck). No side effects.
+* **Promote for the Acceptance link** — author `[VAL-…]` sub-bullets on the plan
+  items, then `plans:promote`. This **mints harness features** from the plan
+  items (a first-time promote on a done plan injects features into the pipeline)
+  — deliberate, not free. Use when you want the per-VAL Acceptance view.
+
+The Tests tab reads `harness_tests`, written by the **CI / green-checkpoint
+runner** posting to `/api/internal/test-snapshot` (a replace-all-per-
+`(harness,phase)` upsert). On the **dev box `harness_tests` is empty** — a local
+`vitest` run does not populate the tab. Register the test (tests.json + a
+matching registry glob, enforced by `npm --prefix apps/operator run lint:tests`,
+else it's an invisible orphan); the tab fills through CI, not a dev run.
+
 ## Where things live
 
 * **`@papercusp/testing-shell`** — `TestingShell` (left-rail + panel host),
