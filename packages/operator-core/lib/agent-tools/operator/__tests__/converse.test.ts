@@ -205,15 +205,17 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(mcpUrlOf(call.mcpConfig)!).toContain('&workspace=ws-real');
   });
 
-  it('&tools= drops chat:ask_choice on surface="tui" (mirrors allowedTools)', async () => {
+  it('&tools= keeps chat:ask_choice on surface="tui" (inline cards, Phase 2a)', async () => {
+    // sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a: the pui renders
+    // inline terminal cards from the state-channel snapshot, so chat:ask_choice
+    // is no longer dropped on the TUI surface (it stays identical to desktop).
     await handler(
       { messages: [], trigger: 'user_message', surface: 'tui', sessionUser: null },
       makeCtx(),
     );
     const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig };
     const tools = new URL(mcpUrlOf(call.mcpConfig)!).searchParams.get('tools') ?? '';
-    expect(tools.split(',')).toEqual(['tasks:read']);
-    expect(tools).not.toContain('chat:ask_choice');
+    expect(tools.split(',')).toEqual(['tasks:read', 'chat:ask_choice']);
   });
 
   it('workspaceId is URL-encoded in the mcpUrl', async () => {
@@ -314,15 +316,17 @@ describe('operator:converse — loop behaviors (P-019)', () => {
 });
 
 describe('operator:converse — per-surface tool filtering (tui-operator-surface)', () => {
-  it('drops chat:ask_choice from allowedTools on surface="tui"', async () => {
+  it('keeps chat:ask_choice in allowedTools on surface="tui" (inline cards, Phase 2a)', async () => {
+    // The pui now renders inline terminal cards + answers via /card-response
+    // (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a), so the TUI
+    // surface keeps chat:ask_choice — identical to the desktop surface.
     await handler(
       { messages: [], trigger: 'user_message', surface: 'tui', sessionUser: null },
       makeCtx(),
     );
     const call = vi.mocked(runAgentChat).mock.calls[0][0] as { allowedTools?: string[] };
     expect(call.allowedTools).toContain('tasks:read');
-    // The terminal can't render choice cards — the brain would block on them.
-    expect(call.allowedTools).not.toContain('mcp__agentmcp__chat:ask_choice');
+    expect(call.allowedTools).toContain('mcp__agentmcp__chat:ask_choice');
   });
 
   it('keeps chat:ask_choice on the default (desktop) surface', async () => {

@@ -4,6 +4,14 @@ description: "Each Claude Max subscription can egress from its OWN outbound IP, 
 discovered: 2026-06-20
 tags: [inference-gateway, egress, per-account, capacity, rate-limit, opus, proxy, runbook, provisioning, undici]
 status: active
+documents:
+  - packages/operator-core/lib/inference-gateway/gateway.ts
+  - packages/operator-core/lib/inference-gateway/account-resolver.ts
+  - packages/operator-core/lib/inference-gateway/egress-probe.ts
+  - packages/operator-core/lib/inference-gateway/launch.ts
+  - packages/operator-core/lib/deployment/account-pool.ts
+plans:
+  - inference-gateway-multi-credential-routing-2026-06-14
 ---
 
 ## Why this is the highest-leverage capacity fix

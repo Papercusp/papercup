@@ -170,7 +170,7 @@ export async function runScheduledPlanFire(
       plan_item: { plan_slug: instanceSlug, item_id: it.id, harness_slug: installSlug },
     });
     await sql.unsafe(
-      `INSERT INTO harness_shared.harness_features_consolidated
+      `INSERT INTO harness_shared.work_items
          (harness_slug, feature_id, title, summary, status, attempts, item_kind, payload,
           needs_human_review, workspace_id, ts, created_ts, updated_ts, source_plan_slug)
        VALUES ($1,$2,$3,$4,'todo',0,$9,$5::text::jsonb,FALSE,$6,$7,$7,$7,$8)

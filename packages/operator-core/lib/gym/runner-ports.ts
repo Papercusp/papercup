@@ -83,7 +83,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
 
     async fileFeature({ slug, featureId, spec }) {
       await sql`
-        INSERT INTO harness_shared.harness_features_consolidated (harness_slug, feature_id, workspace_id, title, status, summary)
+        INSERT INTO harness_shared.work_items (harness_slug, feature_id, workspace_id, title, status, summary)
         VALUES (${slug}, ${featureId}, ${cfg.workspaceId}, ${featureId}, ${'todo'}, ${spec})
         ON CONFLICT (harness_slug, feature_id) DO NOTHING`;
     },

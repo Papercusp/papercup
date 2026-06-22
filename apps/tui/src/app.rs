@@ -1851,7 +1851,7 @@ impl App {
     ///   - text/date: type · Backspace · Enter submits · Esc declines/cancels
     ///   - slider:   ←/→ h/l (and j/k) nudge · Enter submits · Esc declines/cancels
     fn card_key(&mut self, code: KeyCode) -> Action {
-        use crate::card_view::{CardPresentation, CardResponse};
+        use crate::card_view::CardPresentation;
         // Snapshot the focused card's shape (clone the small bits we branch on)
         // so we don't hold an immutable borrow across the mutable card_state ops.
         let Some(card) = self.card_state.focused() else {
@@ -1934,8 +1934,6 @@ impl App {
                 "submit".to_string(),
                 Some(serde_json::json!({ "value": value })),
             ),
-            CardResponse::Decline => self.card_respond_action("decline".to_string(), None),
-            CardResponse::Cancel => self.card_respond_action("cancel".to_string(), None),
         }
     }
 

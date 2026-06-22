@@ -431,7 +431,7 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
       const sql = await sqlClient();
       const now = Date.now();
       await sql.unsafe(
-        `INSERT INTO harness_shared.harness_features_consolidated (
+        `INSERT INTO harness_shared.work_items (
            harness_slug, feature_id, title, summary, status, attempts,
            item_kind, needs_design, needs_human_review, workspace_id, ts, created_ts, updated_ts
          ) VALUES ($1, $2, $3, $4, 'todo', 0, 'feature', FALSE, FALSE, $5, $6, $7, $8)

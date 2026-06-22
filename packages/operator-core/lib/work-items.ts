@@ -694,7 +694,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   cols.push('workspace_id');
   vals.push(`$${params.length}::text`);
   await sql.unsafe(
-    `INSERT INTO harness_shared.harness_features_consolidated (${cols.join(', ')})
+    `INSERT INTO harness_shared.work_items (${cols.join(', ')})
      VALUES (${vals.join(', ')})
      ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
     params,

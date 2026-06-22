@@ -1797,6 +1797,163 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(cpara, composer_area);
 }
 
+/// The height (rows, incl. borders) to reserve for the inline card strip, or 0
+/// when no card is open. Scales with the rendered card line count, clamped to
+/// at most ~60% of the pane so the transcript stays visible.
+fn card_block_height(app: &App, area: Rect) -> u16 {
+    if !app.card_state.has_card() {
+        return 0;
+    }
+    let inner_w = area.width.saturating_sub(2).max(1) as usize;
+    let lines = card_lines(app, inner_w);
+    let content = lines.len() as u16;
+    let want = content.saturating_add(2); // borders
+    let cap = (area.height as f32 * 0.6) as u16;
+    want.min(cap.max(4)).max(4)
+}
+
+/// Build the rendered lines of the focused card (prompt · optional report ·
+/// the presentation-specific body: radio/checkbox rows, text/date/slider input).
+fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
+    use crate::card_view::CardPresentation;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let Some(card) = app.card_state.focused() else {
+        return lines;
+    };
+    // Prompt (wrapped).
+    for wl in wrap_text(&card.prompt, inner_w.saturating_sub(2).max(8)) {
+        lines.push(Line::from(Span::styled(wl, Theme::header())));
+    }
+    // Optional structured report block (the same two-tier render the inbox uses).
+    if let Some(rep) = &card.report {
+        lines.extend(report_block_lines(rep, inner_w));
+    }
+    lines.push(Line::from(""));
+    match &card.presentation {
+        CardPresentation::Radio { options } | CardPresentation::Checkbox { options } => {
+            let is_checkbox = matches!(card.presentation, CardPresentation::Checkbox { .. });
+            for (i, opt) in options.iter().enumerate() {
+                let selected = i == app.card_state.sel;
+                // marker: radio → ›/space; checkbox → [x]/[ ]
+                let marker = if is_checkbox {
+                    if app.card_state.is_checked(i) { "[x]" } else { "[ ]" }
+                } else if selected {
+                    "›"
+                } else {
+                    " "
+                };
+                let label = if let Some(hint) = &opt.hint {
+                    format!("{}. {} — {}", i + 1, opt.label, hint)
+                } else {
+                    format!("{}. {}", i + 1, opt.label)
+                };
+                let style = if selected {
+                    Theme::selected()
+                } else {
+                    Style::default()
+                };
+                let row = format!("  {marker} {label}");
+                for (li, wl) in wrap_text(&row, inner_w).into_iter().enumerate() {
+                    // Indent continuation lines under the label.
+                    let text = if li == 0 { wl } else { format!("      {wl}") };
+                    lines.push(Line::from(Span::styled(text, style)));
+                }
+            }
+        }
+        CardPresentation::Text { placeholder, .. } => {
+            let shown = if app.card_state.input.is_empty() {
+                placeholder
+                    .clone()
+                    .or_else(|| card.fallback_text.clone())
+                    .unwrap_or_else(|| "type your answer".to_string())
+            } else {
+                app.card_state.input.clone()
+            };
+            let style = if app.card_state.input.is_empty() {
+                Theme::dim()
+            } else {
+                Theme::selected()
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  > "),
+                Span::styled(shown, style),
+                Span::styled(" ▌", Theme::notify()),
+            ]));
+        }
+        CardPresentation::Date { .. } => {
+            let shown = if app.card_state.input.is_empty() {
+                "YYYY-MM-DD".to_string()
+            } else {
+                app.card_state.input.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  date: "),
+                Span::styled(shown, Theme::selected()),
+                Span::styled(" ▌", Theme::notify()),
+            ]));
+        }
+        CardPresentation::Slider { min, max, step } => {
+            // A simple text gauge: value plus a bar across [min,max].
+            let v = app.card_state.slider;
+            let frac = if (max - min).abs() < f64::EPSILON {
+                0.0
+            } else {
+                ((v - min) / (max - min)).clamp(0.0, 1.0)
+            };
+            let bar_w = inner_w.saturating_sub(20).clamp(8, 40);
+            let filled = (frac * bar_w as f64).round() as usize;
+            let bar: String = std::iter::repeat('█')
+                .take(filled)
+                .chain(std::iter::repeat('░').take(bar_w.saturating_sub(filled)))
+                .collect();
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(bar, Theme::notify()),
+                Span::styled(
+                    format!("  {v}  ({min}–{max}, ±{step})  ←/→ adjust"),
+                    Theme::dim(),
+                ),
+            ]));
+        }
+        CardPresentation::Unknown => {
+            let fb = card
+                .fallback_text
+                .clone()
+                .unwrap_or_else(|| "No renderer for this card type.".to_string());
+            for wl in wrap_text(&fb, inner_w) {
+                lines.push(Line::from(Span::styled(wl, Theme::dim())));
+            }
+        }
+    }
+    lines
+}
+
+/// Render the focused inline card into `area` (Phase 2a). A bordered block whose
+/// title carries the queue indicator (N more after this). The card is a blocking
+/// modal on the operator surface — the composer is suspended while it's open.
+fn draw_card(f: &mut Frame, app: &App, area: Rect) {
+    let inner_w = area.width.saturating_sub(2).max(1) as usize;
+    let lines = card_lines(app, inner_w);
+    let remaining = app.card_state.remaining();
+    let title = if remaining > 0 {
+        format!(
+            " {} Operator asks · {remaining} more ",
+            crate::glyph::nav::EXPANDED
+        )
+    } else {
+        format!(" {} Operator asks ", crate::glyph::nav::EXPANDED)
+    };
+    // Clear under the strip so the transcript doesn't bleed through.
+    f.render_widget(Clear, area);
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Theme::notify())
+            .title(Line::from(Span::styled(title, Theme::notify()))),
+    );
+    f.render_widget(para, area);
+}
+
 /// Render the operator chat into an arbitrary rectangle — the public, render-only
 /// entry point for the docked operator pane (operator-always-visible-2026-06-05,
 /// Brief 24). It carries NO layout-split logic: the caller owns the geometry (the
@@ -4923,6 +5080,42 @@ mod tests {
         assert!(
             text.contains("docked reply here"),
             "the dock shows the transcript"
+        );
+    }
+
+    #[test]
+    fn operator_card_renders_radio_options_inline() {
+        // sentinel-tui-shared-backend-and-cards Phase 2a: an open chat:ask_choice
+        // card renders inline over the operator pane with its prompt + numbered
+        // options + a queue/action hint in the composer.
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        let snap = serde_json::json!({
+            "runId": "run-1",
+            "workspaceId": "ws-1",
+            "version": 1,
+            "snapshot": { "openCards": [{
+                "correlationId": "corr-1",
+                "prompt": "Approve the deploy?",
+                "presentation": { "kind": "radio", "options": [
+                    { "id": "yes", "label": "Approve" },
+                    { "id": "no", "label": "Reject" }
+                ]},
+                "allowDecline": true,
+                "createdAt": 1.0
+            }]}
+        })
+        .to_string();
+        app.card_state
+            .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snap).unwrap());
+        let text = render(&app, 100, 24);
+        assert!(text.contains("Approve the deploy?"), "card prompt renders");
+        assert!(text.contains("1. Approve"), "option 1 renders numbered");
+        assert!(text.contains("2. Reject"), "option 2 renders numbered");
+        assert!(text.contains("Operator asks"), "card block title renders");
+        assert!(
+            text.contains("answer above") || text.contains("pick"),
+            "composer steers the user to the card"
         );
     }
 

@@ -234,6 +234,10 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
     expect(defaulted.VITEST_MAX_FORKS).toBe('8');
     expect(defaulted.VITEST_MAX_THREADS).toBe('8');
     expect(defaulted.AFFECTED_RETRY_FAILED).toBe('1');
+    // 2026-06-22: heavy `await import()` unit tests take 74-97s under the gate's
+    // 8-fork transform contention; the gate raises the unit timeout to 180s (dev
+    // keeps the 60s libs/test-config default) — see buildGreenCheckpointEnv.
+    expect(defaulted.VITEST_UNIT_TIMEOUT_MS).toBe('180000');
     const preset = buildGreenCheckpointEnv('b', { VITEST_MAX_FORKS: '2', AFFECTED_RETRY_FAILED: '0' });
     expect(preset.VITEST_MAX_FORKS).toBe('2'); // honored
     expect(preset.VITEST_MAX_THREADS).toBe('8'); // still defaulted

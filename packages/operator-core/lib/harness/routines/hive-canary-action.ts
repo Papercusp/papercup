@@ -205,7 +205,7 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
     : 'Canary: append today\'s date to CANARY.md';
   try {
     const inserted = await sql<{ feature_id: string }[]>`
-      INSERT INTO harness_shared.harness_features_consolidated
+      INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, title, summary, status, attempts, item_kind,
          payload, needs_human_review, workspace_id, ts, created_ts, updated_ts)
       VALUES

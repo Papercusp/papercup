@@ -1,6 +1,14 @@
 ---
 title: In-repo lib tests — JSX runtime + which vitest runs
 description: Why a component test in an in-repo lib throws "React is not defined" from root vitest, and how the affected-tests walker actually runs workspace tests.
+discovered: 2026-05-31
+status: active
+documents:
+  - libs/test-config/src/vitest-config.ts
+  - libs/flags/src/client.test.ts
+  - packages/plugin-sdk/src/iframe.test.ts
+plans:
+  - production-readiness-test-coverage-2026-05-30
 ---
 
 Adding a Vitest test to an **in-repo lib/package** (e.g. `libs/flags`,

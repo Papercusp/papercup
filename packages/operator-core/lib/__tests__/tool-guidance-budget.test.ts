@@ -34,9 +34,7 @@ const HARD_CAP = 1600;
  *  2026-06-14 raise to 1,500, only locks:acquire remains over — the other five
  *  (watch:create, plans:promote, substrate:revoke_contributor, improvements:capture,
  *  events:await) now fit and were removed. */
-const ALLOW_OVER_BUDGET = new Set<string>([
-  'locks:acquire', // multi-mode lock semantics (wake_on_grant/wait/ttl corners)
-]);
+const ALLOW_OVER_BUDGET = new Set<string>([]);
 
 interface GuidanceShape {
   when?: string;

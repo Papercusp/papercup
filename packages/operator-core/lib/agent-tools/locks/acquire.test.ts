@@ -68,8 +68,8 @@ beforeEach(() => {
 describe('locks:acquire — outcome branches', () => {
   it('guidance describes managed Codex hook support plus explicit-lock fallback', () => {
     const guidance = `${tool.guidance?.when ?? ''}\n${tool.guidance?.notWhen ?? ''}`;
-    expect(guidance).toMatch(/managed Codex homes install PreToolUse\/PostToolUse lock hooks/);
-    expect(guidance).toMatch(/hooks are missing\/offline/);
+    expect(guidance).toMatch(/managed Codex\/Claude\/OMP homes hook apply_patch\/Edit\/Write/);
+    expect(guidance).toMatch(/lacks lock hooks/);
     expect(guidance).not.toMatch(/automatic on every client/);
     expect(guidance).not.toMatch(/single incidental edit needs no manual call/);
   });

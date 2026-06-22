@@ -1995,6 +1995,25 @@ export function __simulateUtterance(text: string): void {
   onUtteranceFinal(text);
 }
 
+// Dev test seam (sentinel-tui-shared-backend §3): the most recent text routed to
+// speak(), captured before the support/leader/mode gates so the agent-e2e bridge
+// can read back a voice reply without a mic. Set in speak() below.
+let __lastSpokenForTest: { text: string; role: string; at: number } | null = null;
+
+// Expose an injection + read-back hook for the agent-e2e bridge — dev-shell ONLY
+// (gated on the desktop dev wrapper). There is otherwise no headless way to drive
+// a conversational voice turn: simulate(text) fires the full dispatch
+// (VoiceAppBridge → operator:converse), lastSpoken() returns the captured reply.
+if (
+  typeof window !== 'undefined' &&
+  (window as { __PAPERCUSP_DEV_WRAPPER__?: unknown }).__PAPERCUSP_DEV_WRAPPER__
+) {
+  (window as unknown as { __pcVoiceTest?: unknown }).__pcVoiceTest = {
+    simulate: (t: string) => __simulateUtterance(t),
+    lastSpoken: () => __lastSpokenForTest,
+  };
+}
+
 /**
  * Speak text in the voice assigned to `role`. Queues if another role is
  * already speaking. Only one utterance plays at a time.
@@ -2005,6 +2024,9 @@ export function speak(
   priority: 'polite' | 'assertive' = 'polite',
   options: { force?: boolean } = {},
 ): void {
+  // Dev test seam: record the reply text regardless of the gates below (we want
+  // the brain's reply even on a tab that won't emit TTS). See __lastSpokenForTest.
+  __lastSpokenForTest = { text, role, at: Date.now() };
   if (!state.supported) return;
   if (!options.force) {
     // Normal path: voice mode must be on AND we must be the leader tab.

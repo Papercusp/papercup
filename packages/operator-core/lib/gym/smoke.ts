@@ -146,7 +146,7 @@ async function main(): Promise<void> {
       const w = postgres(gymUri, { max: 1, onnotice: () => {}, prepare: false });
       try {
         await w`
-          INSERT INTO harness_shared.harness_features_consolidated (harness_slug, feature_id, workspace_id, title, status)
+          INSERT INTO harness_shared.work_items (harness_slug, feature_id, workspace_id, title, status)
           VALUES (${SLUG}, ${FEATURE}, ${WS}, ${'Smoke feature'}, ${'todo'})
           ON CONFLICT (harness_slug, feature_id) DO NOTHING`;
         report.fileFeature = 'inserted (direct PG)';

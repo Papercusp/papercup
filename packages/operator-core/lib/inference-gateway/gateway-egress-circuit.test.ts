@@ -148,6 +148,27 @@ test('GET /admin/route?owner — reports the account that served an identified o
   assert.equal(after.owner, 'su-xyz', 'the queried owner is echoed');
 });
 
+test('a bee-facing egress-exhausted 503 RECORDS a stall for an IDENTIFIED bee (autowake coverage, 2026-06-22)', async () => {
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('DEAD')]), // single dead account, no failover target → bee-facing 503
+    fetchImpl: egressFetch(new Set(['DEAD'])),
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 3000,
+  });
+  port = await gw.listen(0);
+  const before = gw.stats().stallsRecorded;
+  // An IDENTIFIED bee (x-papercusp-owner) that egress-exhausts must record a stall, so the stall-waker can
+  // re-wake it when the account recovers — instead of the bee just dying on the retryable 503 with no retry.
+  const res = await post({ 'x-papercusp-owner': 'bee-xyz' });
+  assert.equal(res.status, 503, 'egress-exhausted with no failover target → retryable 503');
+  assert.ok(gw.stats().stallsRecorded > before, 'a stall was recorded for the identified bee (the autowake gap fix)');
+  // An UNIDENTIFIED request (no owner header) records NO stall — there is nothing to wake.
+  const before2 = gw.stats().stallsRecorded;
+  await post();
+  assert.equal(gw.stats().stallsRecorded, before2, 'no x-papercusp-owner → no stall recorded (nothing to re-wake)');
+});
+
 test('a successful response RESETS the streak — a flapping proxy that recovers does not accumulate toward the circuit', async () => {
   const dead = new Set<string>(['FLAP']);
   gw = createInferenceGateway({

@@ -4,6 +4,14 @@ description: "The gateway restart-storms (watchdog WEDGE every ~6min — or a mu
 discovered: 2026-06-20
 tags: [inference-gateway, admission, wedge, reliability, runbook, slot-hold, stall, 429, watchdog, self-heal, capacity, hot-reload, streaming, slot-leak, stuck-stream]
 status: active
+documents:
+  - packages/operator-core/lib/inference-gateway/gateway.ts
+  - libs/papercusp-shared/src/resilience/priority-admission.ts
+  - packages/operator-core/lib/inference-gateway/account-failover.ts
+  - packages/operator-core/lib/inference-gateway/launch.ts
+  - packages/operator-core/lib/inference-gateway/watchdog.mjs
+plans:
+  - hive-inference-gateway-2026-06-09
 ---
 
 ## TL;DR

@@ -4,6 +4,12 @@ description: "Every repeatable agent launch (deploy / merge-resolver / auditor /
 discovered: 2026-06-04
 tags: [blueprint, agent-launch, routines, invoke-route, launch-blueprint, gotcha]
 status: active
+documents:
+  - packages/operator-core/lib/blueprint/launch-blueprint.ts
+  - packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts
+  - packages/operator-core/lib/harness/git-sync/git-sync-action.ts
+plans:
+  - unify-agent-launches-as-blueprints-2026-06-04
 sidebar:
   order: 75
 ---
@@ -64,9 +70,10 @@ owned by `coord-ops/trigger.ts` + `startCoordProgramForEvent`).
 </Aside>
 
 The built-in launch blueprints today: `deploy`, `scan`, `implement`,
-`merge-resolution`, `audit`, `pot`, `bee` (enumerated in
-`BUILTIN_LAUNCH_BLUEPRINTS`; `pot` + `bee` were added after this page's
-discovery date). They are the
+`merge-resolution`, `doc-steward`, `release-fix`, `content-fix`, `audit`,
+`coding`, `bee`, `sentinel` (enumerated in `BUILTIN_LAUNCH_BLUEPRINTS`; the list
+has grown since this page's discovery date — and `pot` is now `coding` after the
+2026-06-18 blueprint rename). They are the
 sibling of the program blueprints — two trigger maps coexist:
 `launchBlueprintTriggerMap()` (event → launch blueprint) and `coordOpTriggerMap()`
 (event → program blueprint).

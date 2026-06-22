@@ -138,6 +138,14 @@ export function buildGreenCheckpointEnv(
   env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? '8';
   env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? '8';
   env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
+  // VITEST_UNIT_TIMEOUT_MS=180000 (respecting a pre-set value): the gate runs
+  // operator-core's heaviest `await import()` unit tests (create-*, hive/guard,
+  // coord-program-workflow.smoke, endpoint routes) under 8 concurrent forks that
+  // serialize the shared SRC transform — a single cold heavy import measured 74-97s
+  // even on an idle box (2026-06-22). The 60s dev default flaked the gate red on
+  // ~9 such files (all passing in isolation); 180s gives headroom. Dev/CI keep 60s
+  // (libs/test-config reads this env; unset ⇒ 60s).
+  env.VITEST_UNIT_TIMEOUT_MS = env.VITEST_UNIT_TIMEOUT_MS ?? '180000';
   return env;
 }
 

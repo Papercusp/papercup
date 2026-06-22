@@ -865,7 +865,7 @@ export class CompositionRig {
       // redundancy — both go red if this column is dropped from the INSERT (it
       // was, once, on a "column doesn't exist" misdiagnosis — it does exist).
       await cell.sql`
-        INSERT INTO harness_shared.harness_features_consolidated
+        INSERT INTO harness_shared.work_items
           (workspace_id, harness_slug, feature_id, title, summary, status, attempts,
            item_kind, needs_human_review, ts, created_ts, updated_ts, redundancy)
         VALUES

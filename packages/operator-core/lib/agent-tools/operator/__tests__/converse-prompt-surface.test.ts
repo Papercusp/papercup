@@ -2,8 +2,9 @@
  * buildOperatorPrompt — per-surface affordance injection (tui-operator-surface
  * D-001/D-003). One role, one persona; only surface-appropriate AFFORDANCES are
  * injected per turn. A 'tui' turn must steer the brain to the pui control surface
- * (tui:dispatch) and away from the absent web UI + the card tool; a 'desktop'
- * (default) turn must NOT carry any of that. I/O collaborators are mocked so the
+ * (tui:dispatch) and away from the absent web UI — while STEERING it TO the card
+ * tool (chat_ask_choice now renders as an inline terminal card, Phase 2a); a
+ * 'desktop' (default) turn must NOT carry any of that. I/O collaborators are mocked so the
  * test is deterministic and only exercises the prompt assembly (mirrors the
  * sibling converse.test.ts mocking style).
  */
@@ -44,7 +45,10 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
     expect(tui.userPromptText).toContain('open_chat');
     expect(tui.userPromptText).toContain('focus_pane');
     expect(tui.userPromptText).toContain('alice@box'); // the client_id is named
-    expect(tui.userPromptText).toContain('Do NOT call'); // no chat_ask_choice here
+    // Phase 2a: the terminal now renders inline cards, so the surface STEERS the
+    // brain TO chat_ask_choice (no longer a prohibition).
+    expect(tui.userPromptText).toContain('chat_ask_choice');
+    expect(tui.userPromptText).toContain('inline card');
 
     // Desktop (default) carries none of the TUI affordance.
     const desktop = await buildOperatorPrompt(

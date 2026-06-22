@@ -4,6 +4,12 @@ description: The Planning inbox renders every human-facing AttentionItem through
 discovered: 2026-05-31
 tags: [plans, inbox, attention, chat-cards, ctx.askUser]
 status: active
+documents:
+  - apps/operator/app/admin/plans/attention-card.ts
+  - packages/operator-core/lib/attention/adapters.ts
+  - apps/operator/lib/chat-cards/AskChoiceCardEntry.tsx
+plans:
+  - inbox-cards-unification-2026-05-31
 sidebar:
   order: 30
 ---
@@ -11,7 +17,7 @@ sidebar:
 ## The trap
 
 The operator has a nice "card system" — `AskChoiceCard` / `InputCard`
-(`app/_components/chat/`) — that agents drive via `chat:ask_choice` →
+(`apps/operator/lib/chat-cards/`) — that agents drive via `chat:ask_choice` →
 `ctx.askUser`. It's tempting to route the whole Planning **inbox** (escalations,
 coord messages, needs-human plan items, smoke-fails, plan reviews) through the
 same `ctx.askUser` so everything that reaches the human is "a card".

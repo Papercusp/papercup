@@ -255,7 +255,7 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
   // form that stores a real jsonb object under BOTH the getOrgPg runtime pool AND a
   // fresh/testcontainer pool (agent-insights/postgres-js-jsonb-binding).
   await sql.unsafe(
-    `INSERT INTO harness_shared.harness_features_consolidated (
+    `INSERT INTO harness_shared.work_items (
        harness_slug, feature_id, title, summary, status, attempts,
        item_kind, payload, needs_human_review, workspace_id, ts, created_ts, updated_ts
      ) VALUES (

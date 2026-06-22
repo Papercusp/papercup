@@ -916,7 +916,7 @@ async function doCreateFeature(
         throw new Error(`duplicate:${featureId}`);
       }
       await tx`
-        INSERT INTO harness_shared.harness_features_consolidated (
+        INSERT INTO harness_shared.work_items (
           harness_slug, feature_id, title, summary, status, attempts,
           expected_cost_cents, goal_id, needs_human_review,
           ts, created_ts, updated_ts

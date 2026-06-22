@@ -270,16 +270,14 @@ export default defineTool({
         && /^(?:llm-testing\/)?[0-9a-fA-F-]{16,128}$/.test(input.uiClientId)
         ? input.uiClientId
         : null;
-    // The operator's curated working set (operator-mcp-tools.ts). On the TUI
-    // surface chat:ask_choice is dropped — the terminal can't render choice
-    // cards, so the brain would block until timeoutSec waiting for a click
-    // that never comes. This single set feeds BOTH the `?tools=` allowlist
-    // and `--allowed-tools`, so the listed surface and the callable surface
-    // stay identical by construction.
-    const operatorTools: readonly string[] =
-      input.surface === 'tui'
-        ? ALL_AGENT_MCP_TOOLS.filter((t) => t !== 'mcp__agentmcp__chat:ask_choice')
-        : ALL_AGENT_MCP_TOOLS;
+    // The operator's curated working set (operator-mcp-tools.ts). chat:ask_choice
+    // is available on the TUI surface too: the pui renders inline terminal cards
+    // from the state-channel `openCards` snapshot and answers them via
+    // /card-response (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a),
+    // so a card no longer blocks until timeoutSec on the terminal. One set feeds
+    // BOTH the `?tools=` allowlist and `--allowed-tools`, so the listed surface
+    // and the callable surface stay identical by construction.
+    const operatorTools: readonly string[] = ALL_AGENT_MCP_TOOLS;
     // `?tools=` shrinks the operator's /api/mcp surface from ~226 → ~50 tools,
     // loaded NON-deferred (each marked always-load server-side), so Claude
     // Code stops ToolSearch-flailing over a giant deferred catalog
@@ -323,8 +321,9 @@ export default defineTool({
           }
         : undefined;
     // The callable surface mirrors the listed (`?tools=`) surface exactly —
-    // operatorTools already dropped chat:ask_choice on the TUI surface above.
-    // (The converse-prompt also instructs the brain not to call it there.)
+    // operatorTools is now the full set on BOTH surfaces (chat:ask_choice
+    // INCLUDED on tui; the pui renders inline terminal cards — see the note
+    // above, Phase 2a). Listed == callable by construction.
     const allowedTools: readonly string[] =
       principalOk && superuserToken ? operatorTools : [];
 

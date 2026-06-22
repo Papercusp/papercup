@@ -86,10 +86,6 @@ impl CardPresentation {
             _ => &[],
         }
     }
-
-    fn is_input(&self) -> bool {
-        matches!(self, Self::Text { .. } | Self::Date { .. } | Self::Slider { .. })
-    }
 }
 
 fn parse_options(v: &serde_json::Value) -> Vec<CardOption> {
@@ -213,8 +209,6 @@ pub enum CardResponse {
     SubmitPicks(Vec<String>),
     /// Input card — a string value (text/date) or a number rendered as a string.
     SubmitValue(serde_json::Value),
-    Decline,
-    Cancel,
 }
 
 /// The live interaction state for the focused card: the highlighted option,
@@ -258,7 +252,7 @@ impl CardState {
     /// Apply a fresh per-run snapshot. Monotonic per run (later version wins);
     /// rebuilds the flattened focus order and re-binds the interaction state if
     /// the focused card changed.
-    pub fn apply_snapshot(&mut self, env: SnapshotEnvelope) {
+    pub fn apply_snapshot(&mut self, mut env: SnapshotEnvelope) {
         if let Some(&seen) = self.versions.get(&env.run_id) {
             if seen >= env.version {
                 return; // stale — a newer snapshot already landed
@@ -271,6 +265,15 @@ impl CardState {
         if env.cards.is_empty() {
             self.by_run.remove(&env.run_id);
         } else {
+            // Backfill any card missing a per-card workspace from the envelope's
+            // run-level workspaceId (defense in depth for the /card-response gate).
+            if let Some(ws) = &env.workspace_id {
+                for c in env.cards.iter_mut() {
+                    if c.workspace_id.is_none() {
+                        c.workspace_id = Some(ws.clone());
+                    }
+                }
+            }
             self.by_run.insert(env.run_id.clone(), env.cards);
         }
         self.rebuild();
@@ -427,14 +430,6 @@ impl CardState {
     /// Backspace the input buffer.
     pub fn backspace(&mut self) {
         self.input.pop();
-    }
-
-    /// Whether the focused card is an input card (text/date/slider).
-    pub fn is_input(&self) -> bool {
-        self.cards
-            .first()
-            .map(|c| c.presentation.is_input())
-            .unwrap_or(false)
     }
 
     /// Commit the current selection/input into a `CardResponse`. Returns `None`
@@ -632,7 +627,6 @@ mod tests {
         .to_string();
         let mut s = CardState::new();
         s.apply_snapshot(SnapshotEnvelope::from_json(&data).unwrap());
-        assert!(s.is_input());
         assert!(s.submit().is_none()); // empty → no-op
         for ch in "hi".chars() {
             s.type_char(ch);

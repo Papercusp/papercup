@@ -210,7 +210,7 @@ async function writeToPg(
       ? await resolveVerifiedAuthorGithubId(sql, { workspaceId: opts.workspaceId, authorPubkey })
       : null;
   await sql`
-    INSERT INTO harness_shared.harness_features_consolidated
+    INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, title, summary, status, attempts, claims, notes,
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
        ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,

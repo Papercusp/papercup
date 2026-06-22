@@ -21,12 +21,12 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List coordination agents + whether each can actually TAKE WORK. Each row carries `wakeable` (a live inbox-wake await exists → an events:emit / coord:dispatch will reach it) and `sessionState` (live = running a turn now · parked = idle-but-wakeable, the ideal dispatch target · ended = no live await, needs a relaunch, NOT a wake). `summary.wakeable` is the count to read instead of `active` (a fresh-heartbeat row can already be ended — heartbeat lags). Defaults to your HIVE; pass scope=workspace|all for the wider admin/Queen view. Stale sessions (heartbeat >10 min) are summarised unless you pass include_stale — but a stale row may still be `parked`/wakeable.",
+    "List coordination agents + whether each can actually TAKE WORK. Each row carries `wakeable` (a live inbox-wake await exists → events:emit/coord:dispatch reaches it) and `sessionState` (live = in a turn now · parked = idle-but-wakeable, the ideal dispatch target · ended = needs a relaunch, NOT a wake). Read `summary.wakeable`, not `active` (a fresh-heartbeat row can already be ended). Defaults to your HIVE; scope=workspace|all for the admin/Queen view. Stale (>10 min) sessions are summarised unless include_stale.",
   guidance: {
-    when: '"Who can take work right now, and on what?" — before dispatching/handing off. Read `sessionState`/`wakeable` per row + `summary.wakeable`, NOT the raw `active` count (it includes just-ended sessions). To hand a lane to a `parked` agent, coord:dispatch (assign+wake+confirm); an `ended` target needs a relaunch, not a wake.',
-    notWhen: 'Checking whether a specific file is free — use locks:queue for that. Re-reading the roster every turn to track peers — the [coord+N] lifecycle deltas already carry intent/claim/completion transitions; tail those instead (see chaining).',
+    when: '"Who can take work right now, and on what?" — before dispatching/handing off. Read `sessionState`/`wakeable` per row + `summary.wakeable`, NOT raw `active`. Hand a lane to a `parked` agent via coord:dispatch (assign+wake+confirm); an `ended` target needs a relaunch.',
+    notWhen: 'Checking whether a specific file is free — use locks:queue. Re-reading the roster every turn — the [coord+N] lifecycle deltas already carry intent/claim/completion; tail those (see chaining).',
     chaining:
-      'Read-once + tail (presence-v2 P-008/D-006): this snapshot is byte-stable (P-009 — identity+state carry no churning timestamps, one roster as_of). Read it ONCE when you need the roster, then rely on the [coord+N] lifecycle deltas (intent/claim/completion) for peer transitions rather than re-reading. The liveness scalar (lastActiveSecAgo) is point-in-time at as_of. After a context compaction the roster baseline is re-injected automatically (P-010), so you never coordinate off a stale baseline.',
+      'Read-once + tail (presence-v2 P-008): this snapshot is byte-stable, so read it ONCE, then rely on the [coord+N] lifecycle deltas for peer transitions rather than re-reading. lastActiveSecAgo is point-in-time at as_of. After a compaction the roster baseline is re-injected automatically (P-010).',
   },
   capability: 'coord:read',
   requirePrincipal: false,

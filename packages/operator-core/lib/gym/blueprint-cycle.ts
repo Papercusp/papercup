@@ -182,7 +182,7 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
       `On ACCEPT the committer applies the edit to ${targetDir}/.papercusp/prompts/researcher.md (create it), commits IN THE TARGET TREE (one commit, message names the role + rationale), and reports the new content hash.`,
     ].join('\n');
     await gymSql`
-      INSERT INTO harness_shared.harness_features_consolidated
+      INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, workspace_id, title, status, summary, kind, payload)
       VALUES (${GYM_SLUG}, ${FEATURE_ID}, ${WS}, ${'Gym cycle: optimize ' + TARGET_SLUG}, ${'todo'}, ${spec1}, ${'gym-task'},
               ${gymSql.json({ targetSlug: TARGET_SLUG, targetDir, matrix: { variants: 2, tasks: 1, repeats: 1 } })})

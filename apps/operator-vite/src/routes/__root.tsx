@@ -1,5 +1,5 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'sonner';
 // Custom nuqs adapter (NOT nuqs/adapters/tanstack-router): the stock adapter
 // rebuilds the URL from only nuqs-watched keys, dropping TanStack-native typed
@@ -135,6 +135,14 @@ export const Route = createRootRoute({
 });
 
 function RootComponent() {
+  // Dev shells only (same gate as DevAdminRail): force the lazy voice-mode chunk
+  // to evaluate at startup so its agent-e2e test seam (window.__pcVoiceTest) is
+  // available without a prior voice interaction (sentinel-tui-shared-backend §3).
+  // Real production (no wrapper, MODE==='production') leaves voice-mode lazy.
+  useEffect(() => {
+    if (!DevAdminRail) return;
+    void import('@/app/_components/voice/voice-mode');
+  }, []);
   return (
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>

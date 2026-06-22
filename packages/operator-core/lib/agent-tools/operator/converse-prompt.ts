@@ -371,7 +371,7 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
         `- \`focus_pane\` ({pane_id}) — focus a worker's zellij pane (pane ids come from \`get_state\`).\n` +
         `- \`get_state\` ({}) — read the workbench state (active tab, selections, counts, live panes).\n\n` +
         `Rules for this surface: (1) prefer \`tui_dispatch\` over \`ui_dispatch\` — the web UI isn't present here. ` +
-        `(2) Do NOT call \`chat_ask_choice\` — the terminal can't render choice cards; ask in plain \`<say>\` text and let the user type a reply. ` +
+        `(2) For a yes/no, accept/reject, or pick-one-of decision, CALL \`chat_ask_choice\` — the terminal renders it as an inline card the user answers with arrow/number keys, and the tool returns the pick (same as the desktop). Use plain \`<say>\` text only for open-ended questions. ` +
         `(3) Keep \`<say>\` concise — it renders in a terminal pane.`,
     );
   }

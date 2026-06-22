@@ -455,7 +455,7 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
     const now = Date.now();
     for (const fid of featureIds) {
       await gymSql`
-        INSERT INTO harness_shared.harness_features_consolidated
+        INSERT INTO harness_shared.work_items
           (harness_slug, feature_id, title, summary, status, attempts,
            item_kind, needs_human_review, workspace_id, ts, created_ts, updated_ts)
         VALUES (${SLUG}, ${fid}, ${'Toy feature ' + fid + ': add a marker file'},
