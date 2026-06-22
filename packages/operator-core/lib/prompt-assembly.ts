@@ -148,6 +148,7 @@ export interface AssembledSection {
     | 'deploy-pipeline-note'
     | 'reuse-first-nudge'
     | 'code-run-note'
+    | 'finish-the-rollout-note'
     | 'runtime';
   chars: number;
 }
