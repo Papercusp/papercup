@@ -425,6 +425,9 @@ export interface GatewayStats {
    *  consecutive-transport-failure threshold and was paused out of rotation. A climbing value = a
    *  flapping/dead proxy IP (distinct from `upstreamErrors`, which also counts Anthropic-side stalls). */
   egressCircuitOpens: number;
+  /** Per-account egress transport-failure tally (2026-06-22 audit) — which proxy is failing, for the Rayobyte
+   *  fix (log-independent, since the journald circuit-open logs are unreliable). Empty when no egress proxies. */
+  egressFailsByAccount: Record<string, number>;
   /** Count of in-process self-heal slot-reclaims (EI-2086) — how many times the release valve pre-empted
    *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
    *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
@@ -712,6 +715,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // reopening soon after readmit gets a progressively longer circuit-open (decays via EGRESS_FLAP_RESET_MS).
   const egressReopenCount = new Map<string, number>();
   const egressLastOpenAt = new Map<string, number>();
+  // Per-account egress transport-failure TALLY (2026-06-22 audit) — surfaced in /stats so an operator can see
+  // WHICH proxy is failing and fix the right one. The journald 'EGRESS CIRCUIT OPEN' logs are unreliable, so
+  // this is the durable, log-independent culprit signal for the Rayobyte fix.
+  const egressFailsByAccount = new Map<string, number>();
   /** Per-account TRANSPORT pause the egress circuit set (= the resetAt handed to gov.penalize), so the
    *  half-open probe can lift exactly THAT pause on recovery without ever shortening a real 429 pause. */
   const egressPauseUntil = new Map<string, number>();
@@ -919,6 +926,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       failovers,
       upstreamErrors,
       egressCircuitOpens,
+      egressFailsByAccount: Object.fromEntries(egressFailsByAccount),
       selfHealReclaims,
       stallsRecorded,
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
@@ -1251,6 +1259,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (hasEgressProxy) {
             const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;
             egressFailStreak.set(active.accountId, streak);
+            egressFailsByAccount.set(active.accountId, (egressFailsByAccount.get(active.accountId) ?? 0) + 1);
             const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
             // FLAPPING BACKOFF: a proxy that reopens within EGRESS_FLAP_RESET_MS of its last open is chronic —
             // double its open each time (capped) so we stop thrashing it; one stable for longer resets to base.
