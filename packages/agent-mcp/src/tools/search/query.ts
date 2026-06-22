@@ -22,6 +22,17 @@ interface SearchHit {
   score: number;
 }
 
+type TaskSearchRow = { harness_slug: string; feature_id: string; title: string; summary: string; rank: number };
+type TaskFallbackRow = { harness_slug: string; feature_id: string; title: string; summary: string };
+type GoalSearchRow = { id: string; title: string; rank: number };
+type GoalFallbackRow = { id: string; title: string; body: string };
+type ProjectSearchRow = { id: string; slug: string; name: string; rank: number };
+type ProjectFallbackRow = { id: string; slug: string; name: string };
+type AuditSearchRow = { id: string; subject: string; action: string; rank: number };
+type AuditFallbackRow = { id: string; subject: string; action: string };
+type MessageSearchRow = { harness_slug: string; id: string; subject: string | null; body: string | null; rank: number };
+type MessageFallbackRow = { harness_slug: string; id: string; subject: string | null; body: string | null };
+
 /**
  * Run one kind's search: FTS first, ILIKE fallback on failure — and if
  * the fallback ALSO fails, record `<kind>_unavailable` instead of
@@ -82,9 +93,7 @@ export default defineTool({
         hits,
         degradedReasons,
         async () => {
-          const rows = await ctx.tx<
-            Array<{ harness_slug: string; feature_id: string; title: string; summary: string; rank: number }>
-          >`
+          const rows = await ctx.tx<Array<TaskSearchRow>>`
             SELECT harness_slug, feature_id, title, summary,
                    ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
               FROM harness_shared.harness_features_consolidated
@@ -92,7 +101,7 @@ export default defineTool({
              ORDER BY rank DESC
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({
+          return rows.map((r: TaskSearchRow) => ({
             kind: 'tasks',
             id: `${r.harness_slug}/${r.feature_id}`,
             snippet: r.title || (r.summary ?? '').slice(0, 100),
@@ -100,15 +109,13 @@ export default defineTool({
           }));
         },
         async () => {
-          const rows = await ctx.tx<
-            Array<{ harness_slug: string; feature_id: string; title: string; summary: string }>
-          >`
+          const rows = await ctx.tx<Array<TaskFallbackRow>>`
             SELECT harness_slug, feature_id, title, summary
               FROM harness_shared.harness_features_consolidated
              WHERE title ILIKE ${q} OR summary ILIKE ${q}
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({
+          return rows.map((r: TaskFallbackRow) => ({
             kind: 'tasks',
             id: `${r.harness_slug}/${r.feature_id}`,
             snippet: r.title || (r.summary ?? '').slice(0, 100),
@@ -131,7 +138,7 @@ export default defineTool({
              ORDER BY rank DESC
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({ kind: 'goals', id: r.id, snippet: r.title, score: Number(r.rank) }));
+          return rows.map((r: GoalSearchRow) => ({ kind: 'goals', id: r.id, snippet: r.title, score: Number(r.rank) }));
         },
         async () => {
           const rows = await ctx.tx<Array<{ id: string; title: string; body: string }>>`
@@ -139,7 +146,7 @@ export default defineTool({
              WHERE title ILIKE ${q} OR body ILIKE ${q}
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({ kind: 'goals', id: r.id, snippet: r.title, score: 1 }));
+          return rows.map((r: GoalFallbackRow) => ({ kind: 'goals', id: r.id, snippet: r.title, score: 1 }));
         },
       );
     }
@@ -157,7 +164,7 @@ export default defineTool({
              ORDER BY rank DESC
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: Number(r.rank) }));
+          return rows.map((r: ProjectSearchRow) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: Number(r.rank) }));
         },
         async () => {
           const rows = await ctx.tx<Array<{ id: string; slug: string; name: string }>>`
@@ -165,7 +172,7 @@ export default defineTool({
              WHERE name ILIKE ${q} OR slug ILIKE ${q}
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: 1 }));
+          return rows.map((r: ProjectFallbackRow) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: 1 }));
         },
       );
     }
@@ -184,7 +191,7 @@ export default defineTool({
              ORDER BY rank DESC
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: Number(r.rank) }));
+          return rows.map((r: AuditSearchRow) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: Number(r.rank) }));
         },
         async () => {
           const rows = await ctx.tx<Array<{ id: string; subject: string; action: string }>>`
@@ -192,7 +199,7 @@ export default defineTool({
              WHERE subject ILIKE ${q} OR action ILIKE ${q}
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: 0.5 }));
+          return rows.map((r: AuditFallbackRow) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: 0.5 }));
         },
       );
     }
@@ -207,9 +214,7 @@ export default defineTool({
           // the other kinds) — an inline tsvector still ranks correctly and
           // the corpus is small (hundreds of rows); revisit with a generated
           // column + GIN if it ever grows hot (EI-282).
-          const rows = await ctx.tx<
-            Array<{ harness_slug: string; id: string; subject: string | null; body: string | null; rank: number }>
-          >`
+          const rows = await ctx.tx<Array<MessageSearchRow>>`
             SELECT harness_slug, id, subject, body,
                    ts_rank_cd(
                      to_tsvector('english', coalesce(subject, '') || ' ' || coalesce(body, '')),
@@ -221,7 +226,7 @@ export default defineTool({
              ORDER BY rank DESC
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({
+          return rows.map((r: MessageSearchRow) => ({
             kind: 'messages',
             id: `${r.harness_slug}/${r.id}`,
             snippet: r.subject || (r.body ?? '').slice(0, 100),
@@ -229,15 +234,13 @@ export default defineTool({
           }));
         },
         async () => {
-          const rows = await ctx.tx<
-            Array<{ harness_slug: string; id: string; subject: string | null; body: string | null }>
-          >`
+          const rows = await ctx.tx<Array<MessageFallbackRow>>`
             SELECT harness_slug, id, subject, body
               FROM harness_shared.messages_consolidated
              WHERE subject ILIKE ${q} OR body ILIKE ${q}
              LIMIT ${args.limit}
           `;
-          return rows.map((r) => ({
+          return rows.map((r: MessageFallbackRow) => ({
             kind: 'messages',
             id: `${r.harness_slug}/${r.id}`,
             snippet: r.subject || (r.body ?? '').slice(0, 100),

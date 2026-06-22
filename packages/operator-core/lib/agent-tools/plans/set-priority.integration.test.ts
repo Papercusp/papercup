@@ -65,9 +65,12 @@ beforeEach(async () => {
 
 describe('plans:set-priority handler (PG)', () => {
   it('sets the op_priority for the named plan and echoes it', async () => {
-    const res = (await call('p1', 5)) as { content: { text: string }[] };
+    const res = (await call('p1', 5)) as {
+      data: { counts: { ok: number; failed: number }; results: Array<Record<string, unknown>> };
+    };
     expect(await prioOf('p1')).toBe(5);
-    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ ok: true, slug: 'p1', harnessSlug: 'web', priority: 5 });
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).toMatchObject({ ok: true, slug: 'p1', harnessSlug: 'web', priority: 5 });
   });
 
   it('a null priority CLEARS the rank', async () => {

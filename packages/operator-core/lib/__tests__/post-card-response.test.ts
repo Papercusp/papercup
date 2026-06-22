@@ -40,7 +40,7 @@ describe('postCardResponse', () => {
       action: 'submit',
     });
 
-    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/operator/conversations/conv-1/card-response');
     expect(init.method).toBe('POST');
     expect(init.credentials).toBe('same-origin');
@@ -56,7 +56,7 @@ describe('postCardResponse', () => {
       action: 'decline',
     });
 
-    const [url] = fetch.mock.calls[0] as [string];
+    const [url] = fetch.mock.calls[0] as unknown as [string];
     expect(url).toContain('conv%20with%20spaces');
   });
 
@@ -71,7 +71,7 @@ describe('postCardResponse', () => {
       reason: 'user cancelled',
     });
 
-    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.action).toBe('cancel');
     expect(body.correlationId).toBe('corr-xyz');
@@ -111,7 +111,7 @@ describe('postRunCancel', () => {
 
     await postRunCancel('conv-2', { runId: 'run-1', workspaceId: 'ws-1' });
 
-    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/operator/conversations/conv-2/run-cancel');
     expect(init.method).toBe('POST');
   });
@@ -122,7 +122,7 @@ describe('postRunCancel', () => {
 
     await postRunCancel('conv-3', { runId: 'run-99', workspaceId: 'ws-xyz' });
 
-    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.runId).toBe('run-99');
     expect(body.workspaceId).toBe('ws-xyz');

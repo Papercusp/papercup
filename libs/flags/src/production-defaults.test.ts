@@ -346,6 +346,20 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // in-flight implementation; gating in-flight implementation; flips ON at rollout
   // after :3170 verify. OFF ⇒ inert (byte-identical to today).
   FLAGS.QUEEN_CAPACITY_DISPATCH,
+  // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): the LLM-facing semantic-delta
+  // opt-in. INCOMPLETE on the path that matters — the silent-wrong-merge behaviour is
+  // unverified on a LIVE model (the Lane-C scenarios su-S23/S24/S25 must run green in the
+  // matrix, and the delta safety gate must clear). OFF ⇒ tools serve only the safe Lane-B
+  // full | not_modified responses, never a semantic delta. Owner flips ON once the Lane-C
+  // gate is green; the delta-gate (apps/operator/lib/release/delta-gate.ts) blocks the deploy
+  // if the flag is flipped on before the scenarios are proven. Pending flip surfaced in the
+  // plan's ## Now + the lane completion report.
+  FLAGS.TOOL_DELTA_PROTOCOL,
+  // agent-tool-delta-protocol-2026-06-22 P-009 (Lane D): the SSE state-snapshot DATA delta
+  // cutover. COMPLETE + round-trip-proven (state-delta), but a reversible cutover that wants an
+  // attended desktop verify (cards render via deltas) before going live; OFF ⇒ full snapshots
+  // as today. Owner flips at cutover. Pending flip surfaced in the plan's ## Now + the report.
+  FLAGS.STATE_SNAPSHOT_DELTAS,
 ]);
 
 /**
@@ -389,6 +403,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.LOOPS, 'incomplete'],
   [FLAGS.GATEWAY_PRIORITY_TIERS, 'incomplete'],
   [FLAGS.QUEEN_CAPACITY_DISPATCH, 'incomplete'],
+  [FLAGS.TOOL_DELTA_PROTOCOL, 'incomplete'],
   // owner-authority — privilege / security / destructive / autonomy the owner ratifies
   [FLAGS.WATCHDOG_AUTO_CLOSE, 'owner-authority'],
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, 'owner-authority'],
@@ -420,6 +435,7 @@ const DARK_FLAG_CASE: ReadonlyMap<FlagKey, DarkCase> = new Map<FlagKey, DarkCase
   [FLAGS.ROUTINES_PER_WORKSPACE, 'cutover'],
   [FLAGS.UI_WORKSPACE_GUARD, 'cutover'],
   [FLAGS.SCOPED_SUPERUSER_CLAMP, 'cutover'],
+  [FLAGS.STATE_SNAPSHOT_DELTAS, 'cutover'],
 ]);
 
 /**

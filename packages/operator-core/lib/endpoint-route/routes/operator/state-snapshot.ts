@@ -18,6 +18,8 @@ import {
 import { getSessionUser } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 type StateSnapshotVocabulary = {
   /** Full per-run snapshot — the baseline on connect, and the fallback when a delta
@@ -44,9 +46,12 @@ export default defineTool({
       return new Response('unauthorized', { status: 401 });
     }
     const workspaceId = activeWorkspaceId();
-    // P-009 opt-in: a delta-aware client requests `?delta=1`. Others get full
-    // snapshots exactly as before — zero behaviour change until a client opts in.
-    const wantsDelta = new URL(req.url).searchParams.get('delta') === '1';
+    // P-009 opt-in: a delta-aware client requests `?delta=1`, but the flag (default
+    // OFF) is the cutover kill-switch — read once per connection. OFF ⇒ full snapshots
+    // exactly as before, regardless of the param. The client always advertises ?delta=1.
+    const wantsDelta =
+      new URL(req.url).searchParams.get('delta') === '1' &&
+      (await getFlag(FLAGS.STATE_SNAPSHOT_DELTAS, 'system'));
 
     return sseResponse<StateSnapshotVocabulary>({
       signal: req.signal,

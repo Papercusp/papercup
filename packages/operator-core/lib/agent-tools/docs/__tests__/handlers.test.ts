@@ -84,8 +84,10 @@ afterEach(() => {
 });
 
 /** Parse the single text content part a docs handler returns. */
-function payloadOf(res: { content: Array<{ type: string; text: string }> }) {
-  return JSON.parse(res.content[0].text);
+type TextToolResult = { content: Array<{ type?: string; text: string }>; isError?: boolean };
+const textResult = (result: unknown) => result as TextToolResult;
+function payloadOf(res: unknown) {
+  return JSON.parse(textResult(res).content[0].text);
 }
 
 describe('docs:outline handler — harness_required gate', () => {
@@ -93,9 +95,9 @@ describe('docs:outline handler — harness_required gate', () => {
     mockRegistry([]);
     const tool = (await import('../outline')).default;
     const res = await tool.handler({} as never, { harnessSlug: '*' } as never);
-    expect(res.isError).toBe(true);
-    expect(payloadOf(res as never).error).toBe('harness_required');
-    expect(payloadOf(res as never).detail).toContain('harness');
+    expect(textResult(res).isError).toBe(true);
+    expect(payloadOf(res).error).toBe('harness_required');
+    expect(payloadOf(res).detail).toContain('harness');
     expect(buildOutline).not.toHaveBeenCalled();
   });
 
@@ -103,8 +105,8 @@ describe('docs:outline handler — harness_required gate', () => {
     mockRegistry([]);
     const tool = (await import('../outline')).default;
     const res = await tool.handler({} as never, {} as never);
-    expect(res.isError).toBe(true);
-    expect(payloadOf(res as never).error).toBe('harness_required');
+    expect(textResult(res).isError).toBe(true);
+    expect(payloadOf(res).error).toBe('harness_required');
     expect(buildOutline).not.toHaveBeenCalled();
   });
 });
@@ -114,8 +116,8 @@ describe('docs:outline handler — resolved.error → error envelope', () => {
     mockRegistry([]); // empty registry → any concrete slug is unregistered
     const tool = (await import('../outline')).default;
     const res = await tool.handler({ harness: 'nope' } as never, { harnessSlug: '*' } as never);
-    expect(res.isError).toBe(true);
-    const p = payloadOf(res as never);
+    expect(textResult(res).isError).toBe(true);
+    const p = payloadOf(res);
     expect(p.error).toBe('harness_not_registered');
     expect(p.slug).toBe('nope');
     expect(buildOutline).not.toHaveBeenCalled();
@@ -126,8 +128,8 @@ describe('docs:outline handler — resolved.error → error envelope', () => {
     const tool = (await import('../outline')).default;
     // arg "all" → operator scope; isSuperuser unset, no env var → no_docs_source.
     const res = await tool.handler({ harness: 'all' } as never, { harnessSlug: '*' } as never);
-    expect(res.isError).toBe(true);
-    expect(payloadOf(res as never).error).toBe('no_docs_source');
+    expect(textResult(res).isError).toBe(true);
+    expect(payloadOf(res).error).toBe('no_docs_source');
     expect(buildOutline).not.toHaveBeenCalled();
   });
 });
@@ -139,14 +141,14 @@ describe('docs:outline handler — happy path + per-run cache', () => {
     const ctx = { harnessSlug: 'sheets', runId: 'run_A', metadata: vi.fn() } as never;
 
     const r1 = await tool.handler({} as never, ctx);
-    const p1 = payloadOf(r1 as never);
+    const p1 = payloadOf(r1);
     expect(p1.cached).toBe(false);
     expect(p1.surface).toBe('harness');
     expect(p1.pages[0].slug).toBe('p1'); // engine payload spread through
     expect(buildOutline).toHaveBeenCalledTimes(1);
 
     const r2 = await tool.handler({} as never, ctx);
-    const p2 = payloadOf(r2 as never);
+    const p2 = payloadOf(r2);
     expect(p2.cached).toBe(true);
     expect(p2.surface).toBe('harness');
     // Cache HIT: engine NOT invoked a second time for the same run+scope.
@@ -166,7 +168,7 @@ describe('docs:outline handler — happy path + per-run cache', () => {
     const tool = (await import('../outline')).default;
     await tool.handler({} as never, { harnessSlug: 'sheets', runId: 'run_C' } as never);
     const r2 = await tool.handler({} as never, { harnessSlug: 'sheets', runId: 'run_D' } as never);
-    expect(payloadOf(r2 as never).cached).toBe(false);
+    expect(payloadOf(r2).cached).toBe(false);
     expect(buildOutline).toHaveBeenCalledTimes(2);
   });
 });
@@ -176,8 +178,8 @@ describe('docs:get handler', () => {
     mockRegistry([]);
     const tool = (await import('../get')).default;
     const res = await tool.handler({ slugs: ['p1'] } as never, { harnessSlug: '*' } as never);
-    expect(res.isError).toBe(true);
-    expect(payloadOf(res as never).error).toBe('harness_required');
+    expect(textResult(res).isError).toBe(true);
+    expect(payloadOf(res).error).toBe('harness_required');
     expect(getDocs).not.toHaveBeenCalled();
   });
 
@@ -185,7 +187,7 @@ describe('docs:get handler', () => {
     mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
     const tool = (await import('../get')).default;
     const res = await tool.handler({ slugs: ['p1'] } as never, { harnessSlug: 'sheets' } as never);
-    const p = payloadOf(res as never);
+    const p = payloadOf(res);
     expect(p.surface).toBe('harness');
     expect(p.pages[0].body).toBe('BODY');
     expect(p).not.toHaveProperty('cached'); // get does not cache
@@ -217,8 +219,8 @@ describe('docs:search handler', () => {
     mockRegistry([]);
     const tool = (await import('../search')).default;
     const res = await tool.handler({ query: 'auth flow', limit: 8 } as never, { harnessSlug: '*' } as never);
-    expect(res.isError).toBe(true);
-    expect(payloadOf(res as never).error).toBe('harness_required');
+    expect(textResult(res).isError).toBe(true);
+    expect(payloadOf(res).error).toBe('harness_required');
     expect(searchDocs).not.toHaveBeenCalled();
   });
 
@@ -226,7 +228,7 @@ describe('docs:search handler', () => {
     mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
     const tool = (await import('../search')).default;
     const res = await tool.handler({ query: 'auth flow', limit: 8 } as never, { harnessSlug: 'sheets' } as never);
-    const p = payloadOf(res as never);
+    const p = payloadOf(res);
     expect(p.surface).toBe('harness');
     expect(p.hits[0].slug).toBe('p1');
     expect(searchDocs).toHaveBeenCalledTimes(1);
@@ -240,7 +242,7 @@ describe('docs:search handler', () => {
       { query: 'auth flow', limit: 8, harness: 'all' } as never,
       { harnessSlug: '*' } as never,
     );
-    expect(payloadOf(res as never).surface).toBe('project');
+    expect(payloadOf(res).surface).toBe('project');
     expect(searchDocs).toHaveBeenCalledTimes(1);
   });
 

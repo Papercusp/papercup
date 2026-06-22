@@ -32,6 +32,7 @@ import {
 } from './git-ops';
 import type { ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromEnv } from './perf-gate';
+import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
 
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
@@ -59,6 +60,13 @@ export interface CheckpointDeps {
    *  + flag-gated (a no-op `pass` unless PAPERCUSP_PERF_GATE=1) so existing stubs need not
    *  provide it and the default deploy behaviour is unchanged. */
   perfGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  /** P-016 (agent-tool-delta-protocol D-008): the delta-protocol SAFETY gate.
+   *  Runs post-runGreen / pre-advance on a GREEN candidate: if the production
+   *  semantic-delta flag is ON but the Lane-C scenarios (S23/S24/S25) are not
+   *  recorded-green-and-fresh, WARN (default) or BLOCK (owner-armed). Optional +
+   *  flag-gated (a no-op `pass` unless PAPERCUSP_DELTA_GATE=1) so existing stubs
+   *  need not provide it and the default deploy behaviour is unchanged. */
+  deltaGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
   log(s: string): void;
 }
 
@@ -67,7 +75,7 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'create-failed' | 'perf-held';
+  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'create-failed' | 'perf-held' | 'delta-held';
   summary?: string;
   /** P-012: a stable signature of what failed (test files / workspaces) on the
    *  not-green path, so the release-fixer dispatch dedups by FAILURE, not candidate sha. */
@@ -256,6 +264,25 @@ export async function runGreenCheckpoint(
     }
   }
 
+  // P-016 (agent-tool-delta-protocol D-008): the delta SAFETY gate. If the
+  // production semantic-delta flag is ON but the Lane-C scenarios (S23/S24/S25)
+  // are not recorded-green-and-fresh, do not advance the green pin into a state
+  // that ships an unverified silent-wrong-merge hazard. Default-WARN (surface +
+  // still advance); BLOCK only when the owner armed block-mode. Flag-gated +
+  // fail-closed-when-armed (a no-op `pass` unless enabled), so the default deploy
+  // path is unchanged until the owner opts in.
+  const delta = await deps.deltaGate?.(candidate).catch(() => undefined);
+  if (delta && delta.action !== 'pass') {
+    deps.log(delta.summary);
+    await deps.broadcast(delta.summary).catch(() => {});
+    if (delta.action === 'block') {
+      await deps
+        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} delta-unproven`, delta.summary)
+        .catch(() => {});
+      return { advanced: false, candidate, from: lastReady, green: true, reason: 'delta-held', summary: delta.summary };
+    }
+  }
+
   const adv = await deps.advance(candidate);
   if (adv.advanced && !opts.noPush) {
     await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
@@ -435,6 +462,27 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
     // (PAPERCUSP_PERF_GATE / PAPERCUSP_PERF_GATE_BLOCK). Inert (`pass`, reads nothing)
     // until the owner enables it.
     perfGate: (candidate) => runPerfGate(perfGatePolicyFromEnv(), candidate),
+    // P-016 (agent-tool-delta-protocol D-008): the real delta gate reads the
+    // baked production delta-flag default + the latest recorded Lane-C scenario
+    // verdicts (llm_test_runs) — NOT a synchronous live-model eval. Policy from
+    // the env flags (PAPERCUSP_DELTA_GATE / PAPERCUSP_DELTA_GATE_BLOCK). Inert
+    // (`pass`, reads nothing) until the owner enables it.
+    deltaGate: (candidate) =>
+      runDeltaGate(deltaGatePolicyFromEnv(), candidate, {
+        readFlagEnabled: async () => {
+          const { FLAG_DEFAULTS, FLAGS } = await import('@papercusp/flags');
+          // The deploy-gate signal is the BAKED default that ships, not a
+          // per-user PostHog eval — "is the delta opt-in flipped on in this build".
+          return FLAG_DEFAULTS[FLAGS.TOOL_DELTA_PROTOCOL] === true;
+        },
+        readVerdicts: async (ids) => {
+          const { latestScenarioVerdicts } = await import(
+            '@papercusp/operator-core/lib/llm-testing/storage'
+          );
+          return latestScenarioVerdicts(ids);
+        },
+        now: () => Date.now(),
+      }),
     log,
   };
 }

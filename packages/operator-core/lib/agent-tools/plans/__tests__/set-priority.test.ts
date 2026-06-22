@@ -43,7 +43,13 @@ const MAKE_CTX = (harnessSlug?: string) =>
   } as never);
 
 const run = async (args: Record<string, unknown>, ctxHarness?: string) =>
-  (await tool.handler(args as never, MAKE_CTX(ctxHarness))) as { content: { text: string }[] };
+  (await tool.handler(args as never, MAKE_CTX(ctxHarness))) as {
+    data: {
+      ok: true;
+      results: Array<Record<string, unknown>>;
+      counts: { ok: number; failed: number };
+    };
+  };
 
 beforeEach(() => {
   H.state.txCalls = [];
@@ -64,14 +70,14 @@ describe('plans:set-priority', () => {
     expect(values[3]).toBe('myharn');
     expect(values[4]).toBe('my-plan-2026-06-01');
 
-    const data = JSON.parse(res.content[0].text);
-    expect(data).toMatchObject({ ok: true, slug: 'my-plan-2026-06-01', harnessSlug: 'myharn', priority: 3 });
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).toMatchObject({ ok: true, slug: 'my-plan-2026-06-01', harnessSlug: 'myharn', priority: 3 });
   });
 
   it('threads a null priority through (clear → use started-order default)', async () => {
     const res = await run({ slug: 'p', priority: null, harness: 'myharn' });
     expect(H.state.txCalls[0].values[0]).toBeNull();
-    expect(JSON.parse(res.content[0].text).priority).toBeNull();
+    expect(res.data.results[0].priority).toBeNull();
   });
 
   it('resolves the harness from ctx when no explicit arg is given', async () => {
@@ -83,7 +89,7 @@ describe('plans:set-priority', () => {
     const home = operatorHomeHarnessSlug(); // 'papercusp' post-migration
     const res = await run({ slug: 'p', priority: 1, harness: 'all' });
     expect(H.state.txCalls[0].values[3]).toBe(home);
-    expect(JSON.parse(res.content[0].text).harnessSlug).toBe(home);
+    expect(res.data.results[0].harnessSlug).toBe(home);
   });
 
   it('refuses when neither an arg nor a ctx harness scope is present', async () => {

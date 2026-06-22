@@ -27,6 +27,11 @@ const cancelItemSchema = z
     message: 'pass await_id and/or delivery_id',
   });
 
+type CancelItem = {
+  await_id?: number;
+  delivery_id?: number;
+};
+
 export default defineTool({
   name: 'events:cancel',
   description:
@@ -52,12 +57,12 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const items = [
+    const items: CancelItem[] = [
       ...(args.await_id != null || args.delivery_id != null
         ? [{ await_id: args.await_id, delivery_id: args.delivery_id }]
         : []),
-      ...(args.await_ids ?? []).map((await_id) => ({ await_id })),
-      ...(args.delivery_ids ?? []).map((delivery_id) => ({ delivery_id })),
+      ...(args.await_ids ?? []).map((await_id): CancelItem => ({ await_id })),
+      ...(args.delivery_ids ?? []).map((delivery_id): CancelItem => ({ delivery_id })),
       ...(args.items ?? []),
     ];
     const env = await runBulk(

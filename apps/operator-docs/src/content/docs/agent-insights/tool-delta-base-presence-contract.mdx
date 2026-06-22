@@ -2,7 +2,7 @@
 title: "Tool result freshness: the delta base-presence contract"
 description: "How an agent tool answers `not_modified` instead of replaying an unchanged snapshot into the model's context — who owns the cursor, how the harness proves it still holds the base, and why this is base-presence-safe with no semantic deltas. The server half (framework plumbing) of agent-tool-delta-protocol; the harness half is the contract this page pins."
 discovered: 2026-06-22
-tags: [tool-results, delta, freshness, not-modified, cursor, mcp, tokens, negotiation, coord]
+tags: [tool-results, delta, freshness, not-modified, cursor, mcp, tokens, negotiation, coord, flag, safety-gate, deploy-gate]
 status: current
 documents:
   - libs/generic/tooldef/src/delta-protocol.ts
@@ -12,6 +12,10 @@ documents:
   - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
   - packages/operator-core/lib/coord-schema.ts
   - packages/operator-core/lib/agent-tools/plans/attention.ts
+  - apps/operator/lib/release/delta-gate.ts
+  - apps/operator/lib/release/green-checkpoint.ts
+  - packages/operator-core/lib/llm-testing/storage.ts
+  - libs/flags/src/types.ts
 ---
 
 ## The problem
@@ -235,3 +239,48 @@ a delta).
 
 > **Scope reminder.** Semantic deltas are scoped to OMP/psu (the base-presence
 > rule above). External Claude Code / Codex always get `full`.
+
+## Production rollout: the flag + the safety gate (P-016)
+
+The LLM-facing **semantic** delta (the `mode:delta` merge — Lane E) is the only
+risky part: a wrong merge is *plausible but incorrect*. Per the owner BUILD
+decision ([`D-007`/`D-008`](#)), that risk is retired **by test, not by
+avoidance** — so the semantic opt-in ships behind a flag and a gate, never on by
+default.
+
+**The flag — `papercusp-tool-delta-protocol`** (`libs/flags/src/types.ts`,
+default **OFF**, in `KNOWN_DARK_FLAGS` as `incomplete`). OFF ⇒ tools serve only
+the unconditionally-safe Lane-B responses (`full | not_modified`); a tool never
+emits a `mode:delta` body. The flag is the master switch for the semantic merge.
+It is a `FLAGS` entry, **not** an env boolean (env gates ship dark, dodge the
+default-on guard, and can't be flipped at runtime).
+
+**The safety gate — `apps/operator/lib/release/delta-gate.ts`**, wired into the
+green-checkpoint as `CheckpointDeps.deltaGate` (mirrors `perf-gate.ts`). Before
+advancing the green pin it asks: *is the production delta flag ON, and are the
+Lane-C scenarios (`su-S23`/`S24`/`S25`) recorded-green-and-fresh?* If the flag is
+ON but any scenario is red/errored/stale/missing, it **holds the deploy**
+(`reason: 'delta-held'`). Key properties:
+
+- **Reads recorded verdicts, never runs the live model.** It queries
+  `llm_test_runs` (via `storage.latestScenarioVerdicts`) — the nightly matrix runs
+  the model and persists the verdict; the gate reads it. So the gate is immune to
+  account 429s / opus-saturation.
+- **Flag-scoped.** Flag OFF ⇒ no-op `pass` (nothing risky shipping).
+- **Default-warn, fail-closed-when-armed.** Disabled by default
+  (`PAPERCUSP_DELTA_GATE=1` enables it); even enabled it only `warn`s until the
+  owner arms `PAPERCUSP_DELTA_GATE_BLOCK=1`. A missing/stale verdict is treated as
+  *not proven* (warn|block), never a silent pass — a safety gate must not
+  green-light an opt-in it could not verify. Freshness window:
+  `PAPERCUSP_DELTA_GATE_MAX_AGE_MS` (default 7d).
+
+**To flip the semantic opt-in on:** (1) confirm `su-S23`/`S24`/`S25` are green in
+the matrix; (2) flip `FLAG_DEFAULTS[TOOL_DELTA_PROTOCOL]` to `true` + remove it
+from `KNOWN_DARK_FLAGS`; (3) arm the gate (`PAPERCUSP_DELTA_GATE=1`, and
+`_BLOCK=1` once trusted) so a future regression that reds the scenarios holds the
+deploy instead of shipping a silent-wrong-merge.
+
+**Telemetry.** Every negotiated response records its mode on
+`tool_invocations.metadata_json.deltaMode` (`full | delta | not_modified`,
+`dispatch-stack.ts`) — the adoption + savings signal, and the source a
+mode-mix dashboard reads.

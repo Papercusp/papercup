@@ -29,6 +29,7 @@ import { getSpawnHandoffContext } from '../handoff-context';
 import { getWorkItemCheckpoint } from '../work-item-checkpoint';
 import { computeBeeWakeDossier } from '../hive/bee-wake-dossier';
 import { productionSpawnHydrationDeps } from './spawn-hydration-deps';
+import type { SpawnHydrationDeps } from './spawn-hydration';
 
 const flag = vi.mocked(getFlag);
 const listRoster = vi.mocked(listHiveRosterSnapshot);
@@ -37,7 +38,8 @@ const handoff = vi.mocked(getSpawnHandoffContext);
 const checkpoint = vi.mocked(getWorkItemCheckpoint);
 const dossier = vi.mocked(computeBeeWakeDossier);
 
-const deps = () => productionSpawnHydrationDeps();
+type ProductionDeps = Required<Pick<SpawnHydrationDeps, 'getHandoff' | 'getRoster' | 'getCheckpoint' | 'getDossier'>>;
+const deps = () => productionSpawnHydrationDeps() as ProductionDeps;
 beforeEach(() => vi.clearAllMocks());
 
 describe('getHandoff', () => {

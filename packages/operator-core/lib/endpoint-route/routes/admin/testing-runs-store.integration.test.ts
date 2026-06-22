@@ -61,6 +61,9 @@ vi.mock('../../../testing-branch-resolve', () => ({
 const fileHistory = (await import('./testing-file-history')).default;
 const fileStatus = (await import('./testing-file-status')).default;
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
+const ROUTE_CTX = {} as never;
+const callFileHistory = (url: string) => fileHistory.handler(new Request(url), ROUTE_CTX);
+const callFileStatus = (url: string) => fileStatus.handler(new Request(url), ROUTE_CTX);
 
 type FrameworkKind = 'vitest' | 'playwright' | 'node' | 'shell';
 type StatusKind = 'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running';
@@ -147,7 +150,7 @@ describe('test_runs store (real PG)', () => {
       await new Promise((r) => setTimeout(r, 20)); // distinct finished_at
       await insertRun({ filePath: file, status: 'fail', source: 'local', branch: 'staging', commit: 'c2', durationMs: 20, outputTail: 'boom' });
 
-      const res = await fileHistory.handler(new Request(`http://x/admin/testing/file-history?filePath=${encodeURIComponent(file)}`));
+      const res = await callFileHistory(`http://x/admin/testing/file-history?filePath=${encodeURIComponent(file)}`);
       const body = await res.json();
       expect(body.filePath).toBe(file);
       expect(body.rows).toHaveLength(2);
@@ -163,7 +166,7 @@ describe('test_runs store (real PG)', () => {
       const b = uniqueFile('only-b');
       await insertRun({ filePath: a });
       await insertRun({ filePath: b });
-      const res = await fileHistory.handler(new Request(`http://x/admin/testing/file-history?filePath=${encodeURIComponent(a)}`));
+      const res = await callFileHistory(`http://x/admin/testing/file-history?filePath=${encodeURIComponent(a)}`);
       const body = await res.json();
       expect(body.rows).toHaveLength(1);
       expect(body.rows.every((r: { status: string }) => typeof r.status === 'string')).toBe(true);
@@ -172,13 +175,13 @@ describe('test_runs store (real PG)', () => {
     it('clamps the limit (default 20, max 200, min 1)', async () => {
       const file = uniqueFile('limit');
       for (let i = 0; i < 5; i++) await insertRun({ filePath: file, status: 'pass' });
-      const res = await fileHistory.handler(new Request(`http://x/admin/testing/file-history?filePath=${encodeURIComponent(file)}&limit=2`));
+      const res = await callFileHistory(`http://x/admin/testing/file-history?filePath=${encodeURIComponent(file)}&limit=2`);
       const body = await res.json();
       expect(body.rows).toHaveLength(2);
     });
 
     it('400s when filePath is missing', async () => {
-      const res = await fileHistory.handler(new Request('http://x/admin/testing/file-history'));
+      const res = await callFileHistory('http://x/admin/testing/file-history');
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe('missing_query_param');
     });
@@ -186,9 +189,9 @@ describe('test_runs store (real PG)', () => {
 
   describe('file-status route (read: DISTINCT ON latest-per-file, branch filter, stale fallback)', () => {
     it('400 on missing domainId, 404 on unknown domain', async () => {
-      expect((await fileStatus.handler(new Request('http://x/admin/testing/file-status'))).status).toBe(400);
+      expect((await callFileStatus('http://x/admin/testing/file-status')).status).toBe(400);
       expect(
-        (await fileStatus.handler(new Request('http://x/admin/testing/file-status?domainId=unknown-domain'))).status,
+        (await callFileStatus('http://x/admin/testing/file-status?domainId=unknown-domain')).status,
       ).toBe(404);
     });
 
@@ -200,7 +203,7 @@ describe('test_runs store (real PG)', () => {
       await new Promise((r) => setTimeout(r, 20));
       await insertRun({ filePath: file, status: 'fail', source: 'local', branch: 'staging' }); // newer
 
-      const res = await fileStatus.handler(new Request('http://x/admin/testing/file-status?domainId=d1'));
+      const res = await callFileStatus('http://x/admin/testing/file-status?domainId=d1');
       const body = await res.json();
       expect(body.branch).toBe('staging');
       expect(body.statuses[file]).toMatchObject({ status: 'fail', branch: 'staging', stale: false });
@@ -213,7 +216,7 @@ describe('test_runs store (real PG)', () => {
       // The only row is on a different branch but source=admin-ui → matches the
       // first-pass (branch = X OR source = 'admin-ui'); NOT stale.
       await insertRun({ filePath: file, status: 'pass', source: 'admin-ui', branch: 'feature-x' });
-      const res = await fileStatus.handler(new Request('http://x/admin/testing/file-status?domainId=d1'));
+      const res = await callFileStatus('http://x/admin/testing/file-status?domainId=d1');
       const body = await res.json();
       expect(body.statuses[file]).toMatchObject({ status: 'pass', source: 'admin-ui', stale: false });
     });
@@ -225,7 +228,7 @@ describe('test_runs store (real PG)', () => {
       // Only a CI row on a different branch — misses the first pass, caught by
       // the second (any-source) pass and flagged stale.
       await insertRun({ filePath: file, status: 'pass', source: 'ci', branch: 'main' });
-      const res = await fileStatus.handler(new Request('http://x/admin/testing/file-status?domainId=d1'));
+      const res = await callFileStatus('http://x/admin/testing/file-status?domainId=d1');
       const body = await res.json();
       expect(body.statuses[file]).toMatchObject({ status: 'pass', source: 'ci', branch: 'main', stale: true });
     });
@@ -239,7 +242,7 @@ describe('test_runs store (real PG)', () => {
       await insertRun({ filePath: file, status: 'error', source: 'local', branch: 'staging' });
       await new Promise((r) => setTimeout(r, 15));
       await insertRun({ filePath: file, status: 'pass', source: 'local', branch: 'staging' }); // newest
-      const res = await fileStatus.handler(new Request('http://x/admin/testing/file-status?domainId=d1'));
+      const res = await callFileStatus('http://x/admin/testing/file-status?domainId=d1');
       const body = await res.json();
       expect(Object.keys(body.statuses)).toHaveLength(1);
       expect(body.statuses[file].status).toBe('pass');

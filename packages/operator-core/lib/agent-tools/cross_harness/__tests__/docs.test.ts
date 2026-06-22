@@ -27,8 +27,10 @@ const MAKE_CTX = (over: Record<string, unknown> = {}) =>
     ...over,
   } as never);
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+type TextToolResult = { content: Array<{ text: string }>; isError?: boolean };
+const textResult = (result: unknown) => result as TextToolResult;
+function parsePayload(result: unknown): Record<string, unknown> {
+  return JSON.parse(textResult(result).content[0].text);
 }
 
 beforeEach(async () => {
@@ -51,7 +53,7 @@ describe('cross_harness:docs_outline', () => {
     }));
     const tool = (await import('../docs_outline')).default;
     const result = await tool.handler({ harnessSlug: 'missing' }, MAKE_CTX());
-    expect(result.isError).toBe(true);
+    expect(textResult(result).isError).toBe(true);
     expect(parsePayload(result)).toEqual({ error: 'harness_not_registered', slug: 'missing' });
   });
 
@@ -102,7 +104,7 @@ describe('cross_harness:docs_get', () => {
     }));
     const tool = (await import('../docs_get')).default;
     const result = await tool.handler({ harnessSlug: 'missing', slugs: ['x'] }, MAKE_CTX());
-    expect(result.isError).toBe(true);
+    expect(textResult(result).isError).toBe(true);
     expect(parsePayload(result)).toEqual({ error: 'harness_not_registered', slug: 'missing' });
   });
 
@@ -143,7 +145,7 @@ describe('cross_harness:docs_search', () => {
       { harnessSlug: 'missing', query: 'spec', limit: 8 },
       MAKE_CTX(),
     );
-    expect(result.isError).toBe(true);
+    expect(textResult(result).isError).toBe(true);
   });
 
   it('returns ranked hits for known slug', async () => {

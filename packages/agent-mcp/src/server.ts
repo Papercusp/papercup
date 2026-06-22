@@ -53,6 +53,7 @@ import type {
   ResourceListEntry,
   ToolContext,
   ToolDefinition,
+  ToolResult,
   ToolResponse,
 } from '@papercusp/tooldef';
 
@@ -64,7 +65,7 @@ export interface DispatchOptions {
 
 export interface DispatchResult {
   ok: boolean;
-  response?: ToolResponse;
+  response?: ToolResponse | ToolResult;
   error?: { code: string; message: string };
 }
 
@@ -417,6 +418,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
     // MCP transport, so it defaults to compact; a client can override per call
     // via `_meta.format`. The envelope (nextCursor/degraded) rides in `_meta`.
     const r = result.response!;
+    if ('content' in r) return r;
     const meta = req.params._meta as { format?: string; structured?: boolean } | undefined;
     const serialized = serializeToolResponse(
       r,

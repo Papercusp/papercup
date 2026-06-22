@@ -62,8 +62,10 @@ const MAKE_CTX = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as never;
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+type TextToolResult = { content: Array<{ text: string }>; isError?: boolean };
+const textResult = (result: unknown) => result as TextToolResult;
+function parsePayload(result: unknown): Record<string, unknown> {
+  return JSON.parse(textResult(result).content[0].text);
 }
 
 function mockRegistry(projects: Array<{ slug: string; path: string }>) {
@@ -143,7 +145,7 @@ describe('cross_harness:plans_get', () => {
       { harnessSlug: HARNESS, slug: 'does-not-exist' },
       MAKE_CTX(),
     );
-    expect(result.isError).toBe(true);
+    expect(textResult(result).isError).toBe(true);
     const payload = parsePayload(result);
     expect(payload.error).toBe('not_found');
     expect(payload.harnessSlug).toBe(HARNESS);

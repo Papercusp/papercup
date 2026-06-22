@@ -42,6 +42,7 @@ vi.mock('../_engineering-adapter', () => ({
 }));
 
 import resource from '../resource-section';
+const RESOURCE_CTX = {} as never;
 
 beforeEach(() => {
   buildOutline.mockReset();
@@ -58,7 +59,7 @@ describe('docs:section — list()', () => {
         { slug: 'agents', title: 'Agents', description: 'agent docs' },
       ],
     });
-    const entries = await resource.list!();
+    const entries = await resource.list!(RESOURCE_CTX);
     expect(entries.map((e) => e.uri)).toEqual([
       'papercusp://docs/section/system',
       'papercusp://docs/section/agents',
@@ -75,7 +76,7 @@ describe('docs:section — list()', () => {
     buildOutline.mockResolvedValueOnce({
       sections: [{ slug: 'testing', title: 'Testing', description: undefined }],
     });
-    const [entry] = await resource.list!();
+    const [entry] = await resource.list!(RESOURCE_CTX);
     expect(entry.description).toBe(
       'Consolidated markdown for every page under /internal/docs/testing.',
     );
@@ -91,7 +92,7 @@ describe('docs:section — read()', () => {
     ]);
     getContent.mockImplementation(async (p: { title: string }) => `body-of-${p.title}`);
 
-    const out = await resource.read('papercusp://docs/section/system');
+    const out = await resource.read('papercusp://docs/section/system', RESOURCE_CTX);
     expect(out).toMatchObject({ uri: 'papercusp://docs/section/system', mimeType: 'text/markdown' });
     // Only the two `system` pages, each wrapped with its title preamble, joined.
     expect(out.text).toBe('[A]body-of-A\n\n[B]body-of-B');
@@ -101,14 +102,14 @@ describe('docs:section — read()', () => {
 
   it('THROWS on an out-of-range / unknown section (no pages) rather than serving empty', async () => {
     listPages.mockResolvedValueOnce([{ slugs: ['system', 'a'], title: 'A', url: '/u' }]);
-    await expect(resource.read('papercusp://docs/section/nonexistent')).rejects.toThrow(
+    await expect(resource.read('papercusp://docs/section/nonexistent', RESOURCE_CTX)).rejects.toThrow(
       /no pages found under section 'nonexistent'/,
     );
   });
 
   it('THROWS on a malformed URI (wrong scheme/shape)', async () => {
-    await expect(resource.read('papercusp://docs/section/a/b')).rejects.toThrow(/Invalid docs\/section URI/);
-    await expect(resource.read('not-a-docs-uri')).rejects.toThrow(/Invalid docs\/section URI/);
+    await expect(resource.read('papercusp://docs/section/a/b', RESOURCE_CTX)).rejects.toThrow(/Invalid docs\/section URI/);
+    await expect(resource.read('not-a-docs-uri', RESOURCE_CTX)).rejects.toThrow(/Invalid docs\/section URI/);
     // listPages is never reached when the URI doesn't parse.
     expect(listPages).not.toHaveBeenCalled();
   });

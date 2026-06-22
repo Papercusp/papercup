@@ -87,7 +87,7 @@ describe('plans:set-schedule persistence + result shaping', () => {
     expect(b).toMatchObject({ ok: true, slug: 'p1', scheduled: true });
     expect(b.warnings).toBeUndefined(); // weekly is not "frequent" → no warn
     expect(setSched).toHaveBeenCalledTimes(1);
-    const arg = setSched.mock.calls[0]![0] as Record<string, unknown>;
+    const arg = setSched.mock.calls[0]![0] as unknown as Record<string, unknown>;
     expect(arg.slug).toBe('p1');
     expect(arg.tzid).toBe('America/New_York'); // resolved from schedule.tzid
     expect((arg.schedule as { rrule: string }).rrule).toBe('FREQ=WEEKLY;BYDAY=MO,WE,FR');
@@ -104,7 +104,7 @@ describe('plans:set-schedule persistence + result shaping', () => {
     const out = await call({ schedule: null, scheduledAt: null });
     const b = body(out);
     expect(b).toMatchObject({ ok: true, scheduled: false });
-    expect((setSched.mock.calls[0]![0] as Record<string, unknown>).schedule).toBeNull();
+    expect((setSched.mock.calls[0]![0] as unknown as Record<string, unknown>).schedule).toBeNull();
   });
 
   it('a one-shot scheduledAt (no recurrence) still reports scheduled:true', async () => {

@@ -954,6 +954,20 @@ export const FLAGS = {
   // implementation is in-flight; flips ON at rollout after the :3170 verify.
   // KNOWN_DARK_FLAGS.
   QUEEN_CAPACITY_DISPATCH: "papercusp-queen-capacity-dispatch",
+  // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): gates the LLM-facing
+  // SEMANTIC-delta opt-in (mode:delta merge responses) — the silent-wrong-merge
+  // hazard the owner BUILD decision agreed to retire BY TEST. DEFAULT OFF until the
+  // Lane-C behavioral scenarios (su-S23/S24/S25) are recorded-green in the matrix
+  // AND the delta safety gate (apps/operator/lib/release/delta-gate.ts) clears.
+  // OFF ⇒ tools degrade to the unconditionally-safe Lane-B behaviour (full |
+  // not_modified), never a semantic delta. KNOWN_DARK_FLAGS.
+  TOOL_DELTA_PROTOCOL: "papercusp-tool-delta-protocol",
+  // agent-tool-delta-protocol-2026-06-22 P-009 (Lane D): gates the SSE state-snapshot
+  // DATA-CARRYING delta path (/api/operator/state-snapshot ?delta=1 → per-run card
+  // add/update/remove deltas instead of whole snapshots). A DISTINCT surface from
+  // TOOL_DELTA_PROTOCOL (the LLM tool-result delta) — proven by the state-delta
+  // round-trip test, not the Lane-C LLM scenarios. OFF ⇒ full snapshots (today).
+  STATE_SNAPSHOT_DELTAS: "papercusp-state-snapshot-deltas",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1483,6 +1497,16 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (queen-capacity-aware-dispatch-2026-06-22): capacity-aware dispatch is
   // being implemented. OFF ⇒ inert; flips ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
   [FLAGS.QUEEN_CAPACITY_DISPATCH]: false,
+  // DEFAULT OFF (agent-tool-delta-protocol-2026-06-22 P-016, D-007/D-008): the LLM-facing
+  // semantic-delta opt-in. The merge is unsafe until PROVEN on a live model — OFF until
+  // the Lane-C scenarios (su-S23/S24/S25) are recorded-green AND the delta safety gate
+  // clears. OFF ⇒ Lane-B behaviour only (full | not_modified). KNOWN_DARK_FLAGS.
+  [FLAGS.TOOL_DELTA_PROTOCOL]: false,
+  // DEFAULT OFF (agent-tool-delta-protocol P-009, Lane D): the SSE state-snapshot delta
+  // cutover. Complete + round-trip-proven (state-delta tests); OFF ⇒ /api/operator/state-snapshot
+  // serves full snapshots exactly as before. A reversible kill-switch the owner flips after an
+  // attended desktop verify (cards still render via deltas). KNOWN_DARK_FLAGS (case 'cutover').
+  [FLAGS.STATE_SNAPSHOT_DELTAS]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -118,7 +118,7 @@ const MOBILE_PRINCIPAL: Principal = {
   label: 'avi@storewolf.com',
 };
 
-function ctx(overrides: Partial<RouteContext<unknown>> = {}): RouteContext<unknown> {
+function ctx(overrides: Partial<RouteContext<any>> = {}): RouteContext<any> {
   return {
     principal: MOBILE_PRINCIPAL,
     input: undefined,
@@ -129,7 +129,7 @@ function ctx(overrides: Partial<RouteContext<unknown>> = {}): RouteContext<unkno
   };
 }
 
-function routeByPath(routes: RouteDefinition<never>[], method: string, path: string): RouteDefinition<never> {
+function routeByPath(routes: RouteDefinition<any>[], method: string, path: string): RouteDefinition<any> {
   const def = routes.find((r) => r.method === method && r.path === path);
   if (!def) throw new Error(`no ${method} ${path}`);
   return def;
@@ -145,7 +145,7 @@ describe('device/push/register', () => {
   });
 
   it('upserts the token scoped to the device principal', async () => {
-    const def = routeByPath(devicePush as RouteDefinition<never>[], 'POST', '/device/push/register');
+    const def = routeByPath(devicePush as RouteDefinition<any>[], 'POST', '/device/push/register');
     const res = await def.handler(
       new Request('http://x.test/api/device/push/register', { method: 'POST' }),
       ctx({ input: { platform: 'fcm', token: 'tok-123' } }),
@@ -163,14 +163,14 @@ describe('device/push/register', () => {
 
 describe('device/operator/conversation', () => {
   it('all routes declare device auth + cors', () => {
-    for (const def of deviceConverse as RouteDefinition<never>[]) {
+    for (const def of deviceConverse as RouteDefinition<any>[]) {
       expect((def.auth as { kind: string[] }).kind).toContain('device');
       expect(def.cors).toBe(true);
     }
   });
 
   it('GET conversation returns the active thread + recent turns', async () => {
-    const def = routeByPath(deviceConverse as RouteDefinition<never>[], 'GET', '/device/operator/conversation');
+    const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'GET', '/device/operator/conversation');
     const res = await def.handler(new Request('http://x.test/api/device/operator/conversation?limit=10'), ctx());
     expect(res.status).toBe(200);
     const body = (await res.json()) as { conversation: { id: string }; turns: unknown[]; hasMoreEarlier: boolean };
@@ -180,13 +180,13 @@ describe('device/operator/conversation', () => {
   });
 
   it('GET conversation/turns requires conversationId', async () => {
-    const def = routeByPath(deviceConverse as RouteDefinition<never>[], 'GET', '/device/operator/conversation/turns');
+    const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'GET', '/device/operator/conversation/turns');
     const res = await def.handler(new Request('http://x.test/api/device/operator/conversation/turns'), ctx());
     expect(res.status).toBe(400);
   });
 
   it('POST converse rejects an empty message', async () => {
-    const def = routeByPath(deviceConverse as RouteDefinition<never>[], 'POST', '/device/operator/converse');
+    const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'POST', '/device/operator/converse');
     const res = await def.handler(
       new Request('http://x.test/api/device/operator/converse', {
         method: 'POST',
@@ -201,7 +201,7 @@ describe('device/operator/conversation', () => {
 
 describe('device/plans', () => {
   it('GET /device/plans fans out across pots and summarises item counts', async () => {
-    const def = routeByPath(devicePlans as RouteDefinition<never>[], 'GET', '/device/plans');
+    const def = routeByPath(devicePlans as RouteDefinition<any>[], 'GET', '/device/plans');
     const res = await def.handler(new Request('http://x.test/api/device/plans'), ctx());
     expect(res.status).toBe(200);
     const body = (await res.json()) as { plans: Array<{ slug: string; itemCounts: Record<string, number>; nowNext: string }> };
@@ -214,13 +214,13 @@ describe('device/plans', () => {
   });
 
   it('GET /device/plans/:slug returns 404 for a missing plan', async () => {
-    const def = routeByPath(devicePlans as RouteDefinition<never>[], 'GET', '/device/plans/:slug');
+    const def = routeByPath(devicePlans as RouteDefinition<any>[], 'GET', '/device/plans/:slug');
     const res = await def.handler(new Request('http://x.test/api/device/plans/missing'), ctx({ params: { slug: 'missing' } }));
     expect(res.status).toBe(404);
   });
 
   it('GET /device/plans/:slug returns the parsed structure', async () => {
-    const def = routeByPath(devicePlans as RouteDefinition<never>[], 'GET', '/device/plans/:slug');
+    const def = routeByPath(devicePlans as RouteDefinition<any>[], 'GET', '/device/plans/:slug');
     const res = await def.handler(new Request('http://x.test/api/device/plans/p1'), ctx({ params: { slug: 'p1' } }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { slug: string; now: unknown; items: unknown[] };
@@ -229,7 +229,7 @@ describe('device/plans', () => {
   });
 
   it('POST item status dispatches plans:set-status in-process', async () => {
-    const def = routeByPath(devicePlans as RouteDefinition<never>[], 'POST', '/device/plans/:slug/items/:itemId/status');
+    const def = routeByPath(devicePlans as RouteDefinition<any>[], 'POST', '/device/plans/:slug/items/:itemId/status');
     const res = await def.handler(
       new Request('http://x.test/api/device/plans/p1/items/P-001/status', { method: 'POST' }),
       ctx({ params: { slug: 'p1', itemId: 'P-001' }, input: { status: 'done' } }),
@@ -248,13 +248,13 @@ describe('device/plans', () => {
 
 describe('device/attention', () => {
   it('declares device auth + cors', () => {
-    const def = (deviceAttention as RouteDefinition<never>[])[0];
+    const def = (deviceAttention as RouteDefinition<any>[])[0];
     expect((def.auth as { kind: string[] }).kind).toContain('device');
     expect(def.cors).toBe(true);
   });
 
   it('returns canonical groups + work_items-native attention items', async () => {
-    const def = routeByPath(deviceAttention as RouteDefinition<never>[], 'GET', '/device/attention');
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
     const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
     expect(res.status).toBe(200);
     const body = (await res.json()) as {

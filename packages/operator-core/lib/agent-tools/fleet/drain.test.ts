@@ -21,10 +21,21 @@ vi.mock('../coordination/identity', () => ({
 import drainTool from './drain';
 
 const ctx = { workspaceId: 'ws-1', isSuperuser: true } as never;
+interface DrainBulkResult {
+  ok: true;
+  counts: { ok: number; failed: number };
+  results: Array<{
+    ok: boolean;
+    bee_id: string;
+    timeout_sec?: number;
+    next?: string;
+    error?: string;
+  }>;
+}
 const env = async (x: unknown) => {
   const parsed = (drainTool.args as { parse: (v: unknown) => unknown }).parse(x);
   const res = (await drainTool.handler(parsed as never, ctx)) as { data: unknown };
-  return res.data;
+  return res.data as DrainBulkResult;
 };
 
 beforeEach(() => {
@@ -69,7 +80,7 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
   it('bee_ids:[…] sends ONE cue per bee, each result keyed by bee_id', async () => {
     const b = await env({ bee_ids: ['s-bee-1', 's-bee-2'] });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
-    expect(b.results.map((r: any) => r.bee_id)).toEqual(['s-bee-1', 's-bee-2']);
+    expect(b.results.map((r) => r.bee_id)).toEqual(['s-bee-1', 's-bee-2']);
     expect(sendMessage).toHaveBeenCalledTimes(2);
     // Each cue addressed its own bee — never a single broadcast.
     expect((sendMessage.mock.calls[0]![1] as { to: string[] }).to).toEqual(['s-bee-1']);
@@ -84,7 +95,7 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
     const b = await env({ bee_ids: ['s-bee-1', 's-bee-bad', 's-bee-2'] });
     expect(b.ok).toBe(true);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
-    expect(b.results.map((r: any) => [r.bee_id, r.ok])).toEqual([
+    expect(b.results.map((r) => [r.bee_id, r.ok])).toEqual([
       ['s-bee-1', true],
       ['s-bee-bad', false],
       ['s-bee-2', true],

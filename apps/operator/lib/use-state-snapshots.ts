@@ -81,7 +81,10 @@ export function useStateSnapshots(): {
 
   useEffect(() => {
     const source = createResilientEventSource({
-      url: '/api/operator/state-snapshot',
+      // Always advertise delta-capability; the SERVER decides whether to actually send
+      // deltas (gated by the papercusp-state-snapshot-deltas flag, default OFF). The
+      // delta handler below applies them; full snapshots remain the fallback.
+      url: '/api/operator/state-snapshot?delta=1',
       onOpen: () => setConnected(true),
       onError: () => setConnected(false),
       handlers: {
