@@ -26,11 +26,15 @@ import {
   QueueFullError,
   AimdConcurrencyController,
   priorityFromLabel,
+  tierOf,
+  shedTierCaps,
   classifyHttpError,
   parseUsageResetMs,
   type RateLimitGovernor,
   type AdmissionSnapshot,
   type AimdSnapshot,
+  type TierAdmissionConfig,
+  type PriorityTierMap,
 } from '@papercusp/papercusp-shared/agent';
 import { withOAuthBeta } from './credential-store';
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
@@ -324,6 +328,10 @@ export interface AccountPool {
    *  this pool object's identity (the gateway holds it for life). Optional: a pool that can't hot-reload
    *  omits it. The launch-layer reload primitive re-resolves the DB account pool then calls this. */
   reload?(next: readonly ActiveAccount[]): void;
+  /** Count of accounts currently IN rotation (not exhausted/paused) — the live capacity denominator the
+   *  priority-tier `/stats` reports alongside the per-tier demand so an operator sees headroom vs queueing.
+   *  Optional: a single-account pool omits it (the gateway then reports 1). */
+  healthyCount?(): number;
 }
 
 export interface GatewayDeps {
@@ -370,6 +378,17 @@ export interface GatewayDeps {
   maxQueued?: number;
   /** Aging interval for the priority queue (ms a waiter takes to gain +1 priority). Default 1000. */
   agingIntervalMs?: number;
+  /** OPTIONAL priority-TIER admission layer (gateway-priority-tiers-2026-06-22, `GATEWAY_PRIORITY_TIERS`).
+   *  Resolved + flag-gated by the launch layer: ABSENT ⇒ the gateway behaves byte-identically to today (a
+   *  flat priority+aging gate). PRESENT ⇒ the queue gains per-tier in-flight caps + a reserved tier-1 floor,
+   *  requests are tiered from the `x-papercusp-priority` role via `map`, and the AIMD shrink also sheds the
+   *  bottom tier caps (4→3→2, holding tier 1). */
+  priorityTiers?: {
+    /** Role/label → tier map (`x-papercusp-priority` header value → admission band, 1 = highest). */
+    map: PriorityTierMap;
+    /** Steady-state per-tier caps + reserved tier-1 floor (the un-shed baseline). */
+    config: TierAdmissionConfig;
+  };
   /** Max wait for upstream RESPONSE HEADERS before the request is aborted as stalled. A stalled
    *  upstream (Anthropic accepts the socket during an overload but never responds) used to hang the
    *  proxy task forever, leaking its admission slot until the pool deadlocked (the 2026-06-19 outage).
@@ -420,8 +439,18 @@ export interface GatewayStats {
   totalRequests: number;
   inFlight: number;
   queueDepth: number;
-  /** Per-priority queue breakdown (P-011 / P-014). */
+  /** Per-priority queue breakdown (P-011 / P-014). With the priority-TIER layer on, `admission.byTier`
+   *  carries the per-tier {cap,inFlight,queued} and `admission.tier1Reserve` the reserved floor. */
   admission: AdmissionSnapshot;
+  /** Priority-TIER admission summary (gateway-priority-tiers-2026-06-22) — the per-tier
+   *  {tier,cap,inFlight,queued} from the queue PLUS the pool-wide `healthyAccounts` capacity denominator,
+   *  and the reserved tier-1 floor. PRESENT only when the tier layer is configured (flag ON); ABSENT under
+   *  flag-OFF so the stats payload is byte-identical to today. */
+  priorityTiers?: {
+    healthyAccounts: number;
+    tier1Reserve: number;
+    tiers: { tier: number; cap: number | null; inFlight: number; queued: number }[];
+  };
   upstream429: number;
   queued429: number;
   /** Count of 429s returned because the admission queue hit `maxQueued` (load-shed, not a task error). */
@@ -651,7 +680,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const selfHealEnabled = deps.selfHeal?.enabled ?? DEFAULT_SELFHEAL_ENABLED;
   const selfHealFreezeMs = deps.selfHeal?.freezeMs ?? DEFAULT_SELFHEAL_FREEZE_MS;
   const selfHealPollMs = deps.selfHeal?.pollMs ?? DEFAULT_SELFHEAL_POLL_MS;
-  const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs, maxQueued });
+  // Priority-TIER layer (gateway-priority-tiers-2026-06-22, flag-gated upstream): when `deps.priorityTiers`
+  // is present the queue gains per-tier in-flight caps + a reserved tier-1 floor; when absent it is a flat
+  // priority+aging gate, byte-identical to before. `tierMap` resolves a request's `x-papercusp-priority`
+  // role → its band; `baseTierCaps` is the steady-state ceiling the AIMD shrink sheds from (4→3→2 first).
+  const tierLayer = deps.priorityTiers;
+  const tiered = !!tierLayer;
+  const tierMap = tierLayer?.map;
+  const baseTierCaps: Record<number, number> = { ...(tierLayer?.config.caps ?? {}) };
+  const queue = new PriorityAdmissionQueue({
+    maxConcurrent: concurrency,
+    agingIntervalMs: deps.agingIntervalMs,
+    maxQueued,
+    ...(tierLayer ? { tiers: tierLayer.config } : {}),
+  });
 
   // AIMD adaptive admission concurrency (B-GW-1): the queue's maxConcurrent is the cap; this controller
   // shrinks the LIVE effective concurrency under sustained upstream 429s (driving queue.setMaxConcurrent
@@ -666,6 +708,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     increaseEvery: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
     onChange: (eff) => {
       queue.setMaxConcurrent(eff);
+      // TIER-AWARE SHEDDING (step 4): as AIMD shrinks live concurrency under a sustained storm, also shrink
+      // the bottom tier caps (4→3→2, holding tier 1) by the SAME number of lost slots — so the protected
+      // interactive lane keeps its full ceiling while the sheddable batch bands give up headroom first. On
+      // recovery (`eff` climbs back toward the cap) the caps re-grow toward their steady-state baseline.
+      // No-op without the tier layer (flag-OFF stays byte-identical).
+      if (tiered) {
+        const shedCaps = shedTierCaps(baseTierCaps, concurrency - eff);
+        for (const [t, cap] of Object.entries(shedCaps)) queue.setTierCap(Number(t), cap);
+      }
       log('warn', `inference-gateway: AIMD admission concurrency → ${eff}/${concurrency} (effective/cap)`);
     },
   });
@@ -961,6 +1012,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const gov = governorForAccount('claude-opus-4', active.accountId);
     const snap = gov.snapshot();
     const admission = queue.snapshot();
+    // Priority-tier /stats (step 5): per-tier demand from the queue + the pool-wide healthy-account
+    // capacity denominator. Present only with the tier layer (admission.byTier set) → flag-OFF stays
+    // byte-identical. `healthyCount()` is absent on a single-account pool → report 1.
+    const priorityTiers = admission.byTier
+      ? {
+          healthyAccounts: pool.healthyCount ? pool.healthyCount() : 1,
+          tier1Reserve: admission.tier1Reserve ?? 0,
+          tiers: admission.byTier,
+        }
+      : undefined;
     return {
       accountId: active.accountId,
       upstreamBase,
@@ -968,6 +1029,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       inFlight: admission.running,
       queueDepth: admission.queued,
       admission,
+      ...(priorityTiers ? { priorityTiers } : {}),
       upstream429,
       queued429,
       shed429,
@@ -1995,13 +2057,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: 'inference-gateway only proxies /v1/*' }, gateway: true });
       return;
     }
-    const pri = priorityFromLabel((req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined);
+    const priLabel = (req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined;
+    const pri = priorityFromLabel(priLabel);
+    // Tier the request from its `x-papercusp-priority` role (only when the tier layer is on — `tierMap`
+    // present). Passed to queue.run as `opts.tier`; it is IGNORED by the queue when the tier layer is off,
+    // so this is a safe no-op under flag-OFF.
+    const tier = tierMap ? tierOf(priLabel, tierMap) : undefined;
     // Route the OpenAI-compatible Codex path (/v1/responses) to the Codex pool; EVERYTHING ELSE — /v1/messages
     // AND any other /v1/* — goes to the Claude proxy (the gateway's primary). Defaulting UNKNOWN paths to Claude
     // (not Codex) avoids a confusing "no Codex pool" 503 for a legitimate non-/v1/messages Claude request (e.g.
     // a future /v1/… endpoint), and matches the only codex path the integration uses (2026-06-22 audit).
     const handler = providerForGatewayPath(url, providerAdapters).id === 'codex' ? proxyOpenAi : proxy;
-    queue.run(pri, () => handler(req, res, url)).catch((e) => {
+    queue.run(pri, () => handler(req, res, url), tier !== undefined ? { tier } : undefined).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
       // instead of growing an unbounded backlog until it wedges.
