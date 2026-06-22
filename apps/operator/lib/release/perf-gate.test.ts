@@ -104,9 +104,18 @@ const critSignals: PerfSignalsV1 = {
 };
 
 /** A stale capture (well beyond budgets.staleMs of 10min). */
+// Briefly stale: older than staleMs (10min) but within blindMs (30min) — a skipped
+// capture tick → verdict `unknown` (numbers untrustworthy, not yet "monitor blind").
 const staleSignals: PerfSignalsV1 = {
   ...critSignals,
-  capturedAt: '2026-06-19T15:00:00Z',
+  capturedAt: '2026-06-19T16:20:00Z', // ~15min old
+};
+
+// Very stale: past blindMs (30min) — the capture producer is DEAD, not skipped-a-tick →
+// verdict `warn` "host SLO monitor blind" (still never crit/block; WI-324 recurrence guard).
+const blindSignals: PerfSignalsV1 = {
+  ...critSignals,
+  capturedAt: '2026-06-19T15:00:00Z', // ~95min old
 };
 
 function fakeIO(over: Partial<PerfGateIO> & { signals?: PerfSignalsV1 | null } = {}): PerfGateIO & { reads: number } {
@@ -144,10 +153,20 @@ describe('runPerfGate — IO + policy end to end', () => {
     expect(d.action).toBe('warn');
   });
 
-  it('stale capture → unknown → pass even when armed', async () => {
+  it('briefly-stale capture → unknown → pass even when armed', async () => {
     const d = await runPerfGate(ARMED, 'abc1234567', fakeIO({ signals: staleSignals }));
     expect(d.action).toBe('pass');
     expect(d.verdictStatus).toBe('unknown');
+  });
+
+  it('very-stale (dead-producer/blind) capture → warn but NEVER blocks, even when armed', async () => {
+    // WI-324 recurrence guard: a dead capture timer surfaces as warn (visible) but must
+    // not hold a deploy — fail-soft on missing/blind perf data still holds.
+    const d = await runPerfGate(ARMED, 'abc1234567', fakeIO({ signals: blindSignals }));
+    expect(d.action).toBe('warn'); // surfaced, not silently passed
+    expect(d.action).not.toBe('block'); // …but the deploy proceeds
+    expect(d.verdictStatus).toBe('warn');
+    expect(d.reasons.join(' ')).toMatch(/blind|stale/i);
   });
 
   it('read error → pass (fail-soft), never blocks the deploy', async () => {

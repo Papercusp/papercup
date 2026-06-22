@@ -635,6 +635,12 @@ defineTestDomain({
         'packages/operator-core/lib/agent-tools/search/**/*.test.ts',
       ] },
     { id: 'adapters', label: 'Adapters', globs: ['packages/operator-core/lib/agent-tools/cross_harness/docs*.test.ts'] },
+    // The doc-freshness engine + the doc-steward (docs-corpus-audit WS2 P-008): drift detection,
+    // anchoring, the post-sync sweep + self-bootstrap + create-seed, and the doc-steward dispatch
+    // (the LLM consumer that re-syncs a drifted doc to the code).
+    { id: 'freshness', label: 'Freshness + steward', globs: [
+        'packages/operator-core/lib/harness/docs/**/*.test.ts',
+      ] },
   ],
 });
 

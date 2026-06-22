@@ -1,10 +1,17 @@
 /**
- * artifacts:* tool tests — stub ctx.tx's sql template tag and verify each
- * tool's input validation + output shape + role gate via
- * dispatchProjectedTool. The handlers read ctx.tx (the host-scoped,
- * RLS-subject handle — audit P-012), NOT getOrgPg, so the stub lives on
- * the ctx; the RLS isolation itself is covered by
- * artifacts-rls.integration.test.ts.
+ * artifacts:* tool tests — bulk keyed-array contract
+ * (bulk-endpoint-standardization-2026-06-21). Stub ctx.tx's sql template tag and
+ * verify each tool's input validation + output ENVELOPE shape + role gate via
+ * dispatchProjectedTool. The handlers read ctx.tx (the host-scoped, RLS-subject
+ * handle — audit P-012), NOT getOrgPg, so the stub lives on the ctx; the RLS
+ * isolation itself is covered by artifacts-rls.integration.test.ts.
+ *
+ * Each tool now returns the house envelope
+ * `{ ok, results:[{ ok, slug, rel_path, …data | error }], counts }`; the n=1
+ * single-call shape (`{ slug?, rel_path, … }`) yields exactly one result. The
+ * compound key is `(slug, rel_path)` — slug defaults to ctx.harnessSlug, and a
+ * missing/invalid slug becomes a per-item `{ ok:false, error }` on the bulk
+ * (`items`) path (vs the dispatcher `precondition_failed` on the single path).
  */
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,6 +39,10 @@ const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
   ...over,
 });
 
+// Unwrap the house bulk envelope from a dispatched ToolResult.
+const envelopeOf = (r: { result?: { content: { text?: string }[] } }) =>
+  JSON.parse((r.result!.content[0] as { text: string }).text);
+
 // Side-effect-import the 4 tool modules once. They self-register into the
 // projection registry; subsequent tests re-use the same registrations.
 beforeAll(async () => {
@@ -47,7 +58,7 @@ beforeEach(() => {
 });
 
 describe('artifacts:load', () => {
-  it('returns found:false when no row matches', async () => {
+  it('returns found:false as a single result when no row matches', async () => {
     const tool = lookupByMcpName('artifacts:load')!;
     expect(tool).toBeDefined();
     expect(tool.agentRoles).toContain('worker');
@@ -61,8 +72,10 @@ describe('artifacts:load', () => {
       {},
     );
     expect(r.ok).toBe(true);
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload).toEqual({
+    const env = envelopeOf(r);
+    expect(env).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(env.results[0]).toEqual({
+      ok: true,
       slug: 'test',
       rel_path: 'memory/raw.md',
       found: false,
@@ -81,10 +94,10 @@ describe('artifacts:load', () => {
       MAKE_CTX(),
       {},
     );
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload.found).toBe(true);
-    expect(payload.content).toBe('hello world');
-    expect(payload.updated_at).toBe(1234567);
+    const item = envelopeOf(r).results[0];
+    expect(item.found).toBe(true);
+    expect(item.content).toBe('hello world');
+    expect(item.updated_at).toBe(1234567);
   });
 
   it('strips a leading .papercusp/ prefix from rel_path', async () => {
@@ -96,8 +109,7 @@ describe('artifacts:load', () => {
       MAKE_CTX(),
       {},
     );
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload.rel_path).toBe('memory/raw.md');
+    expect(envelopeOf(r).results[0].rel_path).toBe('memory/raw.md');
   });
 
   it('falls back to ctx.harnessSlug when slug arg is omitted', async () => {
@@ -109,14 +121,32 @@ describe('artifacts:load', () => {
       MAKE_CTX({ harnessSlug: 'fallback-slug' }),
       {},
     );
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload.slug).toBe('fallback-slug');
+    expect(envelopeOf(r).results[0].slug).toBe('fallback-slug');
   });
 
-  it('rejects precondition_failed when neither arg slug nor ctx.harnessSlug is set (declarative requires:)', async () => {
-    // The former in-handler `if (!slug) throw` (→ handler_error) is lifted into
-    // a `requires:` precondition — the DISPATCHER rejects before the handler
-    // runs (adopt-event-rules-engines, the requires:-half).
+  it('loads MANY via items:[…]; correlate by (slug, rel_path)', async () => {
+    sqlImpl
+      .mockResolvedValueOnce([{ content: 'A', updated_at: '10' }])
+      .mockResolvedValueOnce([]);
+    const tool = lookupByMcpName('artifacts:load')!;
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:load',
+      { items: [{ slug: 'test', rel_path: 'a.md' }, { slug: 'test', rel_path: 'b.md' }] },
+      MAKE_CTX(),
+      {},
+    );
+    const env = envelopeOf(r);
+    expect(env.counts).toEqual({ ok: 2, failed: 0 });
+    expect(env.results.map((x: { rel_path: string; found: boolean }) => [x.rel_path, x.found])).toEqual([
+      ['a.md', true],
+      ['b.md', false],
+    ]);
+  });
+
+  it('rejects precondition_failed when neither arg slug nor ctx.harnessSlug is set (single path)', async () => {
+    // The single-call slug guard stays a declarative `requires:` precondition —
+    // the DISPATCHER rejects before the handler runs (adopt-event-rules-engines).
     const tool = lookupByMcpName('artifacts:load')!;
     const r = await dispatchProjectedTool(
       tool,
@@ -130,9 +160,7 @@ describe('artifacts:load', () => {
     expect(r.error?.message).toMatch(/required/i);
   });
 
-  it('rejects precondition_failed on an invalid ctx.harnessSlug (the valid-ctx-slug spec)', async () => {
-    // An arg slug is zod-validated; a CTX slug is only guarded by the
-    // `valid-ctx-slug` precondition — the lifted `SLUG_RE.test` guard.
+  it('rejects precondition_failed on an invalid ctx.harnessSlug (single path, valid-ctx-slug)', async () => {
     const tool = lookupByMcpName('artifacts:load')!;
     const r = await dispatchProjectedTool(
       tool,
@@ -144,6 +172,24 @@ describe('artifacts:load', () => {
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('precondition_failed');
     expect(r.error?.message).toMatch(/invalid harnessSlug/i);
+  });
+
+  it('on the items path, a missing-slug item fails ONLY itself (no batch reject)', async () => {
+    // With items present, the declarative precondition short-circuits and the
+    // handler re-asserts per-item slug presence against ctx.harnessSlug.
+    const tool = lookupByMcpName('artifacts:load')!;
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:load',
+      { items: [{ rel_path: 'a.md' }] },
+      MAKE_CTX({ harnessSlug: undefined }),
+      {},
+    );
+    expect(r.ok).toBe(true);
+    const env = envelopeOf(r);
+    expect(env.counts).toEqual({ ok: 0, failed: 1 });
+    expect(env.results[0]).toMatchObject({ ok: false, rel_path: 'a.md' });
+    expect(env.results[0].error).toMatch(/slug.*required/i);
   });
 });
 
@@ -157,7 +203,7 @@ describe('artifacts:save', () => {
     expect(tool.agentRoles).not.toContain('reviewer');
   });
 
-  it('returns byte count + updated_at', async () => {
+  it('returns byte count + updated_at as a single result', async () => {
     const tool = lookupByMcpName('artifacts:save')!;
     const r = await dispatchProjectedTool(
       tool,
@@ -167,10 +213,27 @@ describe('artifacts:save', () => {
       {},
     );
     expect(r.ok).toBe(true);
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload.bytes).toBe(5);
-    expect(payload.updated_at).toEqual(expect.any(Number));
-    expect(payload.slug).toBe('test');
+    const item = envelopeOf(r).results[0];
+    expect(item.bytes).toBe(5);
+    expect(item.updated_at).toEqual(expect.any(Number));
+    expect(item.slug).toBe('test');
+  });
+
+  it('saves MANY via items:[…]', async () => {
+    const tool = lookupByMcpName('artifacts:save')!;
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:save',
+      { items: [{ slug: 'test', rel_path: 'a.md', content: 'aa' }, { slug: 'test', rel_path: 'b.md', content: 'bbb' }] },
+      MAKE_CTX(),
+      {},
+    );
+    const env = envelopeOf(r);
+    expect(env.counts).toEqual({ ok: 2, failed: 0 });
+    expect(env.results.map((x: { rel_path: string; bytes: number }) => [x.rel_path, x.bytes])).toEqual([
+      ['a.md', 2],
+      ['b.md', 3],
+    ]);
   });
 
   it('rejects validator role via dispatcher gate', async () => {
@@ -199,9 +262,9 @@ describe('artifacts:append', () => {
       {},
     );
     expect(r.ok).toBe(true);
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload.appended_bytes).toBe(' + appended'.length);
-    expect(payload.total_bytes).toBe('previous + appended'.length);
+    const item = envelopeOf(r).results[0];
+    expect(item.appended_bytes).toBe(' + appended'.length);
+    expect(item.total_bytes).toBe('previous + appended'.length);
   });
 
   it('falls back to suffix when RETURNING produces no rows', async () => {
@@ -214,8 +277,7 @@ describe('artifacts:append', () => {
       MAKE_CTX(),
       {},
     );
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload.total_bytes).toBe('new content'.length);
+    expect(envelopeOf(r).results[0].total_bytes).toBe('new content'.length);
   });
 });
 
@@ -240,7 +302,6 @@ describe('artifacts:delete', () => {
 
   it('returns deleted:true when count > 0', async () => {
     // postgres.js DELETE returns the result with a `count` property.
-    Object.defineProperty(sqlTag, 'count', { value: 1, writable: true, configurable: true });
     sqlImpl.mockImplementationOnce(async () => {
       const arr: Array<unknown> = [];
       Object.defineProperty(arr, 'count', { value: 1, configurable: true });
@@ -255,13 +316,12 @@ describe('artifacts:delete', () => {
       {},
     );
     expect(r.ok).toBe(true);
-    const payload = JSON.parse((r.result!.content[0] as { text: string }).text);
-    expect(payload.deleted).toBe(true);
+    expect(envelopeOf(r).results[0].deleted).toBe(true);
   });
 });
 
 describe('artifacts:* — slug validation', () => {
-  it('rejects slug with whitespace', async () => {
+  it('rejects slug with whitespace (zod regex on the single-call slug)', async () => {
     const tool = lookupByMcpName('artifacts:load')!;
     const r = await dispatchProjectedTool(
       tool,
@@ -271,11 +331,8 @@ describe('artifacts:* — slug validation', () => {
       {},
     );
     expect(r.ok).toBe(false);
-    // Schema-validation failures are caller-class `invalid_input` (EI-334:
-    // they were previously miscoded `handler_error`, the structural class).
+    // Schema-validation failures are caller-class `invalid_input` (EI-334).
     expect(r.error?.code).toBe('invalid_input');
-    // Zod schema regex catches whitespace before the handler's manual
-    // SLUG_RE check; either path is fine.
     expect(r.error?.message).toMatch(/invalid_args|pattern|slug/i);
   });
 });

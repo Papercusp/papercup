@@ -36,16 +36,26 @@
 
 import type { UnifiedPresenceRecord } from './federated-presence';
 import type { PresenceTier1Joins } from './presence-tier1';
+import type { SessionState } from './presence-wakeability';
 
 /**
  * A coord:presence roster row at the point it is emitted: the unified
- * local+federated record, plus the derived `lastActiveSecAgo` and the
- * (local-only) Tier-1 join scalars from `mergeTier1`. The Tier-1 fields and
- * `lastActiveSecAgo` are optional so a raw (un-enriched) stale record is also a
- * valid input — `partitionPresenceRow` reads every field defensively.
+ * local+federated record, plus the derived `lastActiveSecAgo`, the coordinator
+ * wakeability signals (`sessionState` / `wakeable`, P-001), and the (local-only)
+ * Tier-1 join scalars from `mergeTier1`. All are optional so a raw (un-enriched)
+ * stale record — or a federated row with no local wakeability join — is also a
+ * valid input; `partitionPresenceRow` reads every field defensively.
  */
 export type RosterRow = UnifiedPresenceRecord &
-  Partial<{ lastActiveSecAgo: number | null } & PresenceTier1Joins>;
+  Partial<
+    {
+      lastActiveSecAgo: number | null;
+      /** P-001: live | parked | ended (null for a federated/unknown row). */
+      sessionState: SessionState | null;
+      /** P-001: a live inbox-wake await exists → a wake will be delivered. */
+      wakeable: boolean | null;
+    } & PresenceTier1Joins
+  >;
 
 /** IDENTITY lane — stable for the life of the session. */
 export const PRESENCE_IDENTITY_FIELDS = [
@@ -79,10 +89,17 @@ export const PRESENCE_STATE_FIELDS = [
   'revoked',
 ] as const satisfies readonly (keyof RosterRow)[];
 
-/** LIVENESS lane — continuous; snapshot + SSE only, NEVER injected as a delta. */
+/** LIVENESS lane — continuous; snapshot + SSE only, NEVER injected as a delta.
+ *  `sessionState` / `wakeable` (P-001) live here, not in the delta-eligible set,
+ *  because they are derived from continuous liveness signals (heartbeat freshness
+ *  + activity recency) — a live↔parked flip on every turn-park is exactly the
+ *  churn the delta channel must not carry. A coordinator reads them from the
+ *  snapshot (coord:presence), which is their use case. */
 export const PRESENCE_LIVENESS_FIELDS = [
   'lastActiveSecAgo',
   'stale',
+  'sessionState',
+  'wakeable',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /**
@@ -163,5 +180,11 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     ...identity,
     ...state,
     lastActiveSecAgo: (liveness.lastActiveSecAgo as number | null | undefined) ?? null,
+    // P-001: the coordinator's "can I hand this agent work?" signals. Emitted as
+    // explicit nulls for a federated/unknown row (its await lives on its home
+    // instance, so we cannot derive them locally) rather than omitted, so the
+    // field is always present for a reader.
+    sessionState: (liveness.sessionState as SessionState | null | undefined) ?? null,
+    wakeable: (liveness.wakeable as boolean | null | undefined) ?? null,
   };
 }

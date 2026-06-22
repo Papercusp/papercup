@@ -194,27 +194,48 @@ afterAll(async () => {
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
+// features:get/history/list_related are bulk-standardized (the house keyed-array
+// contract, bulk-endpoint-standardization-2026-06-21): the n=1 single-call shape
+// these tests use yields `{ ok, results:[{ ok, slug, feature_id, … | error }], counts }`.
 describe('features:get', () => {
   it('returns the full row for an existing (slug, feature_id)', async () => {
     // drizzle `.select()` returns rows keyed by schema PROPERTY names (camelCase).
     const { r } = await call('features:get', { slug: 'h1', feature_id: 'F-1' });
-    const row = payload(r) as { featureId: string; title: string; status: string };
+    const env = payload(r) as { results: Array<{ ok: boolean; feature: { featureId: string; title: string; status: string } }> };
+    expect(env.results[0].ok).toBe(true);
+    const row = env.results[0].feature;
     expect(row.featureId).toBe('F-1');
     expect(row.title).toBe('Auth login');
     expect(row.status).toBe('todo');
   });
-  it('not-found → data:null + degradedReasons', async () => {
+  it('not-found → that item fails (ok:false + error), batch ok stays true', async () => {
     const { r } = await call('features:get', { slug: 'h1', feature_id: 'F-NOPE' });
-    const p = payload(r) as { data: null; degraded: boolean; degradedReasons: string[] };
-    expect(p.data).toBeNull();
-    expect(p.degraded).toBe(true);
-    expect(p.degradedReasons.join(' ')).toMatch(/not found/i);
+    const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; error: string }>; counts: { failed: number } };
+    expect(env.ok).toBe(true);
+    expect(env.counts.failed).toBe(1);
+    expect(env.results[0].ok).toBe(false);
+    expect(env.results[0].error).toMatch(/not found/i);
   });
-  it('invalid slug → degraded before any query', async () => {
+  it('invalid slug → that item fails before any query', async () => {
     const { r } = await call('features:get', { slug: 'has space', feature_id: 'F-1' });
-    const p = payload(r) as { data: null; degradedReasons: string[] };
-    expect(p.data).toBeNull();
-    expect(p.degradedReasons.join(' ')).toMatch(/invalid slug/i);
+    const env = payload(r) as { results: Array<{ ok: boolean; error: string }> };
+    expect(env.results[0].ok).toBe(false);
+    expect(env.results[0].error).toMatch(/invalid slug/i);
+  });
+  it('fetches MANY via items:[…]; a not-found item fails only itself', async () => {
+    const { r } = await call('features:get', {
+      items: [
+        { slug: 'h1', feature_id: 'F-1' },
+        { slug: 'h1', feature_id: 'F-NOPE' },
+      ],
+    });
+    const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; feature_id: string }>; counts: { ok: number; failed: number } };
+    expect(env.ok).toBe(true);
+    expect(env.counts).toEqual({ ok: 1, failed: 1 });
+    expect(env.results.map((x) => [x.feature_id, x.ok])).toEqual([
+      ['F-1', true],
+      ['F-NOPE', false],
+    ]);
   });
   it('rejects a principal lacking the features:read capability', async () => {
     // The legacy projected read tools gate on capability (principal.capabilities),
@@ -254,14 +275,18 @@ describe('features:search', () => {
 describe('features:list_related', () => {
   it('finds tag/see_also-related features of a source', async () => {
     const { r } = await call('features:list_related', { slug: 'h1', feature_id: 'F-1' });
-    const rows = payload(r) as Array<{ feature_id: string; relation_kind: string }>;
-    const f2 = rows.find((x) => x.feature_id === 'F-2');
+    const env = payload(r) as { results: Array<{ ok: boolean; related: Array<{ feature_id: string; relation_kind: string }> }> };
+    expect(env.results[0].ok).toBe(true);
+    const f2 = env.results[0].related.find((x) => x.feature_id === 'F-2');
     expect(f2).toBeDefined();
     expect(f2!.relation_kind).toBe('both'); // F-2 is in see_also AND shares tag 'auth'
   });
-  it('unknown source → empty (degraded info is dropped for []-data by the projection)', async () => {
+  it('unknown source → that item fails (ok:false + error)', async () => {
     const { r } = await call('features:list_related', { slug: 'h1', feature_id: 'F-NOPE' });
-    expect(payload(r)).toEqual([]);
+    const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; error: string }> };
+    expect(env.ok).toBe(true);
+    expect(env.results[0].ok).toBe(false);
+    expect(env.results[0].error).toMatch(/not found/i);
   });
 });
 
@@ -277,15 +302,20 @@ describe('features:tag_vocabulary', () => {
 describe('features:history', () => {
   it('renders notes + debugger findings + recent activity', async () => {
     const { r } = await call('features:history', { slug: 'h1', feature_id: 'F-1' });
-    const md = payload(r) as string;
+    const env = payload(r) as { results: Array<{ ok: boolean; history: string }> };
+    expect(env.results[0].ok).toBe(true);
+    const md = env.results[0].history;
     expect(md).toContain('Notes');
     expect(md).toContain('implementation note body');
     expect(md).toContain('Debugger findings');
     expect(md).toContain('Recent activity');
   });
-  it('no history → degraded empty string', async () => {
+  it('no history → that item fails (ok:false + "no history yet")', async () => {
     const { r } = await call('features:history', { slug: 'h1', feature_id: 'F-2' });
-    expect(payload(r)).toBe('');
+    const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; error: string }> };
+    expect(env.ok).toBe(true);
+    expect(env.results[0].ok).toBe(false);
+    expect(env.results[0].error).toMatch(/no history yet/i);
   });
 });
 

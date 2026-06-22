@@ -51,7 +51,8 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
 import { TABLE_TO_QUERY_NAMES } from '../table-to-query-names';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, '../../../../../..');
+// HERE = packages/operator-core/lib/sync-resolver/__tests__ → up 5 to the repo root.
+const REPO_ROOT = resolve(HERE, '../../../../..');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 const MIGRATION_RUNNER = resolve(
   REPO_ROOT,

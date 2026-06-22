@@ -892,6 +892,13 @@
           "globs": [
             "packages/operator-core/lib/agent-tools/cross_harness/docs*.test.ts"
           ]
+        },
+        {
+          "id": "freshness",
+          "label": "Freshness + steward",
+          "globs": [
+            "packages/operator-core/lib/harness/docs/**/*.test.ts"
+          ]
         }
       ]
     },

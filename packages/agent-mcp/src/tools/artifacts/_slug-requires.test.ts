@@ -44,9 +44,18 @@ describe('slugRequires', () => {
     expect(ctxClause['ctx.harnessSlug'].matches.flags).toBe('i');
   });
 
-  it('accepts the slug via either args.slug OR ctx.harnessSlug (the presence precondition is an any-clause)', () => {
+  it('accepts the slug via args.items (bulk), args.slug, OR ctx.harnessSlug (the presence precondition is an any-clause)', () => {
+    // The bulk (`items`) path carries per-item slugs the declarative condition
+    // can't reach, so `args.items` present short-circuits the precondition and
+    // per-item slug validity is re-asserted in the handler.
     const presence = slugRequires('artifacts:save').find((s) => s.id === 'harness-slug')!;
     const keys = (presence.when as { any: Array<Record<string, unknown>> }).any.flatMap((c) => Object.keys(c));
-    expect(keys).toEqual(['args.slug', 'ctx.harnessSlug']);
+    expect(keys).toEqual(['args.items', 'args.slug', 'ctx.harnessSlug']);
+  });
+
+  it('lets the bulk items path short-circuit the ctx-slug validity precondition too', () => {
+    const validCtx = slugRequires('artifacts:save').find((s) => s.id === 'valid-ctx-slug')!;
+    const keys = (validCtx.when as { any: Array<Record<string, unknown>> }).any.flatMap((c) => Object.keys(c));
+    expect(keys).toEqual(['args.items', 'args.slug', 'ctx.harnessSlug']);
   });
 });

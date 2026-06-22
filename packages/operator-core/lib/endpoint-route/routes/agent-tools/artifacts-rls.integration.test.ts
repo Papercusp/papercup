@@ -69,8 +69,11 @@ describe('artifacts:* cross-workspace denial via ctx.tx + RLS (audit P-012)', ()
     } as never;
   }
 
+  // Each handler now returns the house bulk envelope { ok, results:[…], counts }
+  // (bulk-endpoint-standardization-2026-06-21); the single-call shape these
+  // tests use yields exactly one result, so unwrap results[0].
   const payloadOf = (r: { content: Array<{ text: string }> }) =>
-    JSON.parse(r.content[0].text) as Record<string, unknown>;
+    (JSON.parse(r.content[0].text) as { results: Record<string, unknown>[] }).results[0];
 
   const tool = (name: string) => lookupByMcpName(name)!;
 
@@ -124,8 +127,11 @@ describe('artifacts:* cross-workspace denial via ctx.tx + RLS (audit P-012)', ()
   it('DENIAL: ws-B cannot append onto ws-A\'s (slug, rel_path) — RLS rejects the upsert; content unchanged', async () => {
     // The PK is (harness_slug, rel_path) without workspace_id, so ws-B's
     // INSERT conflicts with ws-A's row; the ON CONFLICT UPDATE then targets
-    // a row ws-B's policy cannot see/modify → Postgres raises rather than
-    // letting B clobber A.
+    // a row ws-B's policy cannot see/modify → Postgres raises. Under the bulk
+    // contract `runBulk` catches the per-item throw into { ok:false, error },
+    // but the RLS violation has ABORTED the surrounding `callInWorkspace`
+    // transaction, so its COMMIT re-raises the PostgresError — the append is
+    // denied either way and ws-A's row is untouched.
     await expect(
       callInWorkspace(WS_B, (tx) =>
         tool('artifacts:append').fn(

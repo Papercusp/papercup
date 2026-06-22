@@ -11,7 +11,7 @@ vi.mock('../../blueprint/launch-blueprint', () => ({
   fireLaunchBlueprintForEvent: (...a: unknown[]) => mockFire(...a),
 }));
 
-import { dispatchDocStewardForDrift, type DriftedDoc } from './sweep-after-sync';
+import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
 
 const docs: DriftedDoc[] = [
   { docId: 'agent-insights/a.mdx', anchorPaths: ['src/a.ts'], reason: 'src/a.ts changed', source: 'manual' },

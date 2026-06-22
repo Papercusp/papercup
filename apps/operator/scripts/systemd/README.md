@@ -80,3 +80,40 @@ Edit the `.timer` file's `OnCalendar=` line:
 - `OnCalendar=*-*-* 09,21:00:00` — twice a day at 09:00 + 21:00
 
 After editing: `systemctl --user daemon-reload && systemctl --user restart llm-test-nightly.timer`.
+
+---
+
+# perf-signals capture — installation
+
+The host-side producer for the perf-signals-v1 SLO/CLOSE_WAIT guard
+(`packages/operator-core/lib/system-health/perf-budgets.ts`, consumed by the infra
+health panel AND the green-checkpoint perf-gate). Runs the read-only host probe
+`../perf/capture-signals.py` on a 2-min cadence so the latest capture never goes
+stale (`staleMs` = 10 min) and the budgets keep evaluating live. Without it the
+guard silently degrades to `unknown` — the WI-324 finding (the capture had gone 62h
+stale because nothing scheduled it). Deliberately a systemd timer, NOT a DBOS
+scheduled workflow / in-process tick (dev-box host signals = infra monitoring, and a
+per-tick DBOS workflow_status row is the high-freq bloat that froze the engine —
+EI-1622 / dbos-scheduler-consolidation D-004).
+
+## Install (one-time)
+
+```bash
+ln -sf "$(pwd)/papercup-perf-signals-capture.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/papercup-perf-signals-capture.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-perf-signals-capture.timer
+```
+
+## Verify
+
+```bash
+systemctl --user list-timers papercup-perf-signals-capture.timer
+# newest capture should be < 2 min old:
+ls -t ~/.papercusp/perf-baselines/*-scheduled.json | head -1
+```
+
+The wrapper (`../perf/capture-perf-signals.sh`) prunes to the newest 15
+`*-scheduled.json` files (~30 min of history); ad-hoc/manual captures (other labels)
+are never touched. If the timer dies, a capture older than `blindMs` (30 min) surfaces
+on the infra panel as `warn` ("host SLO monitor blind") instead of silent `unknown`.

@@ -21,7 +21,8 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
-import { toStableRosterRow } from './presence-payload';
+import { toStableRosterRow, type RosterRow } from './presence-payload';
+import { fetchWakeability, deriveSessionState, type WakeabilitySignals } from './presence-wakeability';
 import { writeWatermark } from './watermarks';
 import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
 import type { Watermark } from '@papercusp/coordination/core';
@@ -53,7 +54,16 @@ export interface PresenceSnapshot {
   scope: string;
   hive?: string;
   scope_note?: string;
-  summary: { active: number; stale: number; federated: number };
+  /** `wakeable` (P-001) is the count a coordinator should read INSTEAD of
+   *  `active` — agents an events:emit / coord:dispatch will actually reach.
+   *  `byState` breaks the roster down live | parked | ended. */
+  summary: {
+    active: number;
+    stale: number;
+    federated: number;
+    wakeable: number;
+    byState: { live: number; parked: number; ended: number };
+  };
   active: Record<string, unknown>[];
   stale?: Record<string, unknown>[];
 }
@@ -119,16 +129,42 @@ export async function assemblePresenceSnapshot(
   const active = all.filter((r) => !r.stale);
   const stale = all.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();
-  const localIds = active
-    .filter((r) => !(r as { federated?: boolean }).federated)
-    .map((r) => r.ownerId);
+  const isFederated = (r: { federated?: boolean }) => !!r.federated;
+  // Tier-1 enrichment stays ACTIVE-only (cost, P-003); wakeability is fetched for
+  // BOTH active AND stale locals — a stale (heartbeat>10min) row with a live await
+  // is `parked`, not gone, and that is exactly the dispatch target P-001 surfaces.
+  const localActiveIds = active.filter((r) => !isFederated(r)).map((r) => r.ownerId);
+  const localAllIds = all.filter((r) => !isFederated(r)).map((r) => r.ownerId);
   let joins = new Map<string, PresenceTier1Joins>();
-  try {
-    joins = await fetchPresenceTier1(localIds);
-  } catch {
-    /* best-effort enrichment — presence must list even if a join fails */
-  }
-  const activeEnriched = mergeTier1(active, joins, now);
+  let wakeability = new Map<string, WakeabilitySignals>();
+  await Promise.all([
+    // each best-effort + independent — presence must list even if either join fails.
+    fetchPresenceTier1(localActiveIds)
+      .then((m) => {
+        joins = m;
+      })
+      .catch(() => {}),
+    fetchWakeability(localAllIds)
+      .then((m) => {
+        wakeability = m;
+      })
+      .catch(() => {}),
+  ]);
+
+  /** Attach the P-001 wakeability signals. A federated/unknown row has no local
+   *  entry → sessionState/wakeable stay absent (emitted as null by toStableRosterRow). */
+  const withWakeability = <T extends RosterRow>(r: T): T => {
+    const w = wakeability.get(r.ownerId);
+    if (!w) return r;
+    return {
+      ...r,
+      wakeable: w.wakeable,
+      sessionState: deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn }),
+    };
+  };
+
+  const activeEnriched = mergeTier1(active, joins, now).map(withWakeability);
+  const staleEnriched = stale.map((r) => withWakeability(r as RosterRow));
   let activeRows = activeEnriched.map(toStableRosterRow);
 
   // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the
@@ -138,11 +174,22 @@ export async function assemblePresenceSnapshot(
   // escalation detail keeps its dedicated tools (events:* / coord:inbox) rather
   // than being duplicated into this org-PG read.
   if (opts.detail) {
-    const held = await fetchPresenceHeldFiles(localIds, opts.detail.coordinationDomain);
+    const held = await fetchPresenceHeldFiles(localActiveIds, opts.detail.coordinationDomain);
     activeRows = activeRows.map((r) => {
       const files = held.get(r.ownerId as string);
       return files && files.length ? { ...r, heldFiles: files } : r;
     });
+  }
+
+  // P-001 summary: count wakeable agents + the live/parked/ended breakdown across
+  // the WHOLE roster (active + stale) — `wakeable` is the headline a coordinator
+  // reads instead of `active`, and `byState` separates the dispatchable (parked)
+  // from the busy (live) and the dead (ended).
+  const byState = { live: 0, parked: 0, ended: 0 };
+  let wakeable = 0;
+  for (const r of [...activeEnriched, ...staleEnriched]) {
+    if (r.wakeable === true) wakeable += 1;
+    if (r.sessionState && r.sessionState in byState) byState[r.sessionState] += 1;
   }
 
   return {
@@ -150,9 +197,15 @@ export async function assemblePresenceSnapshot(
     scope,
     ...(hiveId ? { hive: hiveId } : {}),
     ...(scopeNote ? { scope_note: scopeNote } : {}),
-    summary: { active: active.length, stale: stale.length, federated: federated.length },
+    summary: {
+      active: active.length,
+      stale: stale.length,
+      federated: federated.length,
+      wakeable,
+      byState,
+    },
     active: activeRows,
-    ...(opts.includeStale ? { stale: stale.map(toStableRosterRow) } : {}),
+    ...(opts.includeStale ? { stale: staleEnriched.map(toStableRosterRow) } : {}),
   };
 }
 
