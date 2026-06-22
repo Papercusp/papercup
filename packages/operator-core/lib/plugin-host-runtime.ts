@@ -66,7 +66,16 @@ import { InMemoryAuditWriter as _InMemoryAuditWriter } from '@papercusp/plugin-l
 // live host (EI-3 / revive-plugin-system-2026-06-04). Matches the established
 // operator-core pattern (pty-bridge.ts createRequire, prompt-assembly.ts
 // fileURLToPath __dirname).
-const require = createRequire(import.meta.url);
+//
+// BROWSER-SAFE: the operator SPA pulls this module in via the route tree and
+// externalizes node:module for the browser (→ `createRequire` is undefined). An
+// EAGER top-level call threw at module eval — "createRequire is not a function" —
+// and blanked the entire desktop app on load. Guard the creation so importing is
+// browser-safe; `require(...)` + `require.cache` below only ever execute
+// server-side (plugin discovery/hot-reload), never in the SPA.
+const require = (typeof createRequire === 'function'
+  ? createRequire(import.meta.url)
+  : undefined) as NodeRequire;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let _operatorAuditWriter: import('@papercusp/plugin-loader').AuditWriter | null = null;

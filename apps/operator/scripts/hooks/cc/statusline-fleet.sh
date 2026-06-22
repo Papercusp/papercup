@@ -221,7 +221,11 @@ if not isinstance(glance, dict) or 'wake' not in glance:
     if not isinstance(rows, list) or not rows:
         sys.exit(0)
     n, peer = peer_glance(rows)
-    parts = lead()
+    # objective_part(glance) is None here (the legacy activity payload carries no
+    # self.objective) — but prepend through the same path so the 🔭 segment leads
+    # whenever the field IS present, with no special-casing.
+    obj = objective_part(glance)
+    parts = ([obj] if obj else []) + lead()
     parts.append(f'{n} peer{"" if n == 1 else "s"}' if n else 'solo')
     if peer is not None:
         p = peer_part(peer)
@@ -237,7 +241,10 @@ gov = glance.get('governor') or {}
 tips = glance.get('tips') or []
 n, peer = peer_glance(glance.get('activity'))
 
-parts = lead()
+# 🔭 <objective> LEADS line 1 — what THIS terminal is working on, ahead of the
+# fleet shorthand. None (absent/blank/old-operator) → segment simply omitted.
+obj = objective_part(glance)
+parts = ([obj] if obj else []) + lead()
 mode = wake.get('default')
 staged = wake.get('stagedTotal') or 0
 if mode in ('auto', 'manual'):

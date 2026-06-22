@@ -22,6 +22,10 @@ type Events = {
 };
 
 const DRAIN_LIMIT = 50;
+// NOTIFY is the primary, low-latency path; this slow re-drain is a SAFETY BACKSTOP so a
+// missed notification (e.g. a dropped LISTEN connection) can never strand a pending intent
+// on this critical dispatch path. ~12x less frequent than the old 250ms hot poll.
+const BACKSTOP_MS = 3000;
 
 export default defineTool({
   method: 'GET',
@@ -85,8 +89,12 @@ export default defineTool({
           void drain();
         });
         void drain(); // initial: deliver intents already pending at connect
+        // Safety backstop (see BACKSTOP_MS) — never strand a pending intent on a missed NOTIFY.
+        const backstop = setInterval(() => void drain(), BACKSTOP_MS);
+        if (typeof backstop.unref === 'function') backstop.unref();
 
         sink.onClose(() => {
+          clearInterval(backstop);
           if (unsubscribe) unsubscribe();
         });
       },

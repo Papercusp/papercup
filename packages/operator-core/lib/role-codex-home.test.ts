@@ -50,6 +50,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-coord-inbox.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
   return dir;
 }
@@ -134,15 +135,17 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.PostToolUse).toHaveLength(1);
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
+    // No sid → no objective-title hook either (it keys the glance read off the sid).
+    expect(JSON.stringify(hooks)).not.toContain('posttooluse-objective-title.sh');
   });
 
-  it('a role session WITH a sid gets the activity-bridge hook (worker activity → fleet view), still no coord', async () => {
+  it('a role session WITH a sid gets the activity-bridge + objective-title hooks (worker activity → fleet view), still no coord', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({ sessionKey: 71, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-abc-9' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // Two PostToolUse entries: lock-release + activity (NO coord — roles don't ride the SU bus).
-    expect(hooks.hooks.PostToolUse).toHaveLength(2);
+    // Three PostToolUse entries: lock-release + activity + objective-title (NO coord — roles don't ride the SU bus).
+    expect(hooks.hooks.PostToolUse).toHaveLength(3);
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
     const activity = hooks.hooks.PostToolUse.find(
       (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-activity-report.sh'),
@@ -152,6 +155,14 @@ describe('writeRoleCodexHome', () => {
     // SID + agent baked (codex hands hooks a minimal env, can't env-expand).
     expect(activity.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(activity.hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+    // Objective-title hook (session-objective-display-2026-06-22): terminal title
+    // ← coord:glance self.objective, matcher .*, baked SID = the session id.
+    const objective = hooks.hooks.PostToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-objective-title.sh'),
+    );
+    expect(objective).toBeTruthy();
+    expect(objective.matcher).toBe('.*');
+    expect(objective.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
   });
 
   it('writeCodexLockHooks no-ops (no hooks.json) when the hook scripts are absent', async () => {
@@ -323,8 +334,8 @@ describe('writeSuCodexHome', () => {
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({ sessionKey: 12, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-abc-123' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // Three PostToolUse entries: lock-release + coord push + activity report.
-    expect(hooks.hooks.PostToolUse).toHaveLength(3);
+    // Four PostToolUse entries: lock-release + coord push + activity report + objective-title.
+    expect(hooks.hooks.PostToolUse).toHaveLength(4);
     const coord = hooks.hooks.PostToolUse.find(
       (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-coord-inbox.sh'),
     );
@@ -342,6 +353,15 @@ describe('writeSuCodexHome', () => {
     expect(activity.matcher).toBe('.*');
     expect(activity.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(activity.hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+
+    // The objective-title hook (session-objective-display-2026-06-22): terminal
+    // title ← coord:glance self.objective, matcher .*, baked SID = the session id.
+    const objective = hooks.hooks.PostToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-objective-title.sh'),
+    );
+    expect(objective).toBeTruthy();
+    expect(objective.matcher).toBe('.*');
+    expect(objective.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
   });
 
   it('no coord/activity hooks when only the lock scripts are installed', async () => {

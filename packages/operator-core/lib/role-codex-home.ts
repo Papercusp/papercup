@@ -262,10 +262,18 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * the lock hooks bake their values). Unlike the coord hook this fires for BOTH
  * su AND role sessions — role sessions ARE workers, so their activity belongs in
  * the fleet view.
+ *
+ * OBJECTIVE-TITLE HOOK (su + role) — NOT inert when `objectiveSid` is given. The
+ * codex leg of the SESSION-OBJECTIVE DISPLAY (session-objective-display-2026-06-22,
+ * P-003): codex has no statusline, but it owns a tty, so each PostToolUse sets the
+ * terminal TITLE to this session's `coord:glance` self.objective via an OSC-0
+ * escape — the same objective the Claude statusline renders as its leading 🔭
+ * segment. Fires for su AND role (both want their tab/window title to say what
+ * they're doing). PAPERCUSP_SID=<objectiveSid> is baked (codex's minimal hook env).
  */
 export function writeCodexLockHooks(
   codexHome: string,
-  opts: { coordSid?: string; activitySid?: string; agentSession?: boolean } = {},
+  opts: { coordSid?: string; activitySid?: string; objectiveSid?: string; agentSession?: boolean } = {},
 ): boolean {
   const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
@@ -300,6 +308,20 @@ export function writeCodexLockHooks(
       hooks: [{
         type: 'command',
         command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} ${activity}`,
+      }],
+    });
+  }
+
+  // Objective-title hook (matcher `.*`): set the terminal title to this session's
+  // coord:glance self.objective (session-objective-display-2026-06-22). Baked
+  // PAPERCUSP_SID = the session's coord identity (the glance read keys off it).
+  const objective = join(dir, 'posttooluse-objective-title.sh');
+  if (opts.objectiveSid && existsSync(objective)) {
+    postToolUse.push({
+      matcher: '.*',
+      hooks: [{
+        type: 'command',
+        command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_SID=${shellSingleQuote(opts.objectiveSid)} ${objective}`,
       }],
     });
   }
@@ -408,7 +430,11 @@ export function writeRoleCodexHome(opts: {
   // a silent gap). Launcher must pass --dangerously-bypass-hook-trust. A role
   // session is a WORKER, so it also reports to the activity bridge (under its
   // session identity); no coord-inbox hook (roles don't ride the SU coord bus).
-  const hooksInstalled = writeCodexLockHooks(codexHome, { activitySid: opts.sid, agentSession: true });
+  const hooksInstalled = writeCodexLockHooks(codexHome, {
+    activitySid: opts.sid,
+    objectiveSid: opts.sid,
+    agentSession: true,
+  });
   writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied });
 
   return { codexHome, agentsPath, configPath };
@@ -639,7 +665,11 @@ export function writeSuCodexHome(opts: {
   // injected mid-turn, parity with the Claude global-settings coord entry) AND
   // the activity-bridge hook (an SU/engineer session is a worker too) — both
   // keyed to the session id.
-  const hooksInstalled = writeCodexLockHooks(codexHome, { coordSid: opts.sid, activitySid: opts.sid });
+  const hooksInstalled = writeCodexLockHooks(codexHome, {
+    coordSid: opts.sid,
+    activitySid: opts.sid,
+    objectiveSid: opts.sid,
+  });
   writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied });
 
   return { codexHome, agentsPath, configPath };

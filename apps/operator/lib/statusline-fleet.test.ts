@@ -168,6 +168,92 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(out).not.toContain('a21353');
   });
 
+  it('self.objective renders as a leading 🔭 segment ahead of the fleet shorthand', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: 'wire objective display' },
+    });
+    const line1 = out.split('\n')[0];
+    // 🔭 leads — before 'papercusp' and the ◇ id chip.
+    expect(line1.startsWith('🔭 wire objective display · papercusp')).toBe(true);
+    expect(line1).toContain('◇ su-me');
+  });
+
+  it('absent self.objective → no 🔭 segment (line 1 unchanged)', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: null },
+    });
+    expect(out).not.toContain('🔭');
+    expect(out.split('\n')[0].startsWith('papercusp')).toBe(true);
+  });
+
+  it('a missing self key (older operator) → no 🔭 segment, render fails open', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+    });
+    expect(out).not.toContain('🔭');
+    expect(out.split('\n')[0].startsWith('papercusp')).toBe(true);
+  });
+
+  it('a blank-string objective is treated as absent — no empty 🔭 segment', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: '   ' },
+    });
+    expect(out).not.toContain('🔭');
+    expect(out.split('\n')[0].startsWith('papercusp')).toBe(true);
+  });
+
+  it('a long objective is clipped with an ellipsis so it cannot swallow line 1', () => {
+    const long = 'implement the cross-CLI session objective display across every fleet client now';
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: long },
+    });
+    const line1 = out.split('\n')[0];
+    expect(line1.startsWith('🔭 ')).toBe(true);
+    expect(line1).toContain('…');
+    // The clipped objective segment stays well under the full objective length.
+    const objSeg = line1.split(' · ')[0];
+    expect([...objSeg].length).toBeLessThanOrEqual(50);
+    expect(line1).toContain('papercusp');
+  });
+
+  it('the 🔭 objective also leads the legacy fallback line when present', () => {
+    // Activity-shaped payload (no wake key) but WITH a self.objective → the
+    // segment leads the single-line legacy render too.
+    const out = render({ activity, self: { objective: 'legacy path objective' } });
+    expect(out.split('\n')).toHaveLength(1);
+    expect(out.startsWith('🔭 legacy path objective · papercusp')).toBe(true);
+    expect(out).toContain('2 peers');
+  });
+
   it('garbage fixture prints nothing and exits 0', () => {
     expect(render([1, 2, 3])).toBe('');
   });

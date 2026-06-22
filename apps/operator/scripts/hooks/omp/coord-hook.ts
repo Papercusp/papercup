@@ -1201,6 +1201,60 @@ export async function reportLifecycle(phase: 'start' | 'shutdown'): Promise<void
   });
 }
 
+// ── Objective title (session-objective-display-2026-06-22, P-004) ────────
+//
+// The OMP leg of the SESSION-OBJECTIVE DISPLAY. OMP has no statusline, but it
+// owns a tty, so each turn we set the terminal TITLE to this session's
+// coord:glance self.objective — the same objective the Claude statusline renders
+// as its leading 🔭 segment and the Codex hooks.json hook puts in the codex
+// terminal title. Mirrors the Codex hook: an OSC-0 escape written to /dev/tty
+// (the CLIENT owns the tty; the hook only nudges its title), fail-open.
+
+const OBJECTIVE_TITLE_MAX = 60; // a window/tab title is short — clip a verbose objective.
+
+/**
+ * Pure: build the OSC-0 set-title escape for an objective, or '' when there's
+ * nothing to show. Clips long objectives and strips control chars that could
+ * break out of the OSC string (the objective is operator-controlled, but a title
+ * escape must stay well-formed). Unit-tested.
+ */
+export function buildObjectiveTitleOsc(objective: string | null | undefined): string {
+  if (typeof objective !== 'string') return '';
+  let obj = objective.trim();
+  if (obj.length === 0) return '';
+  if (obj.length > OBJECTIVE_TITLE_MAX) obj = `${obj.slice(0, OBJECTIVE_TITLE_MAX - 1).trimEnd()}…`;
+  obj = [...obj].filter((c) => c.codePointAt(0)! >= 32 && c !== '\x07' && c !== '\x1b').join('');
+  if (obj.length === 0) return '';
+  // OSC 0 sets BOTH icon name and window title: ESC ] 0 ; <text> BEL.
+  return `\x1b]0;🔭 ${obj}\x07`;
+}
+
+/**
+ * Fire-and-forget: read coord:glance self.objective and set the terminal title.
+ * Attached-only in spirit (callMcpTool returns null detached → no-op). Writes the
+ * OSC escape to /dev/tty when it's writable (a piped/headless session has none →
+ * skip). Never throws; never writes to stdout/stderr (an OSC there could corrupt
+ * OMP's TUI render). Best-effort, like reportActivity.
+ */
+export async function emitObjectiveTitle(): Promise<void> {
+  const glance = (await callMcpTool('coord:glance', {
+    audience: 'user',
+    activity_limit: 0,
+  })) as { self?: { objective?: string | null } } | null;
+  const osc = buildObjectiveTitleOsc(glance?.self?.objective ?? null);
+  if (osc.length === 0) return;
+  try {
+    const fh = await fsp.open('/dev/tty', 'w');
+    try {
+      await fh.write(osc);
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    /* no controlling tty / not writable → fail open, the title just isn't set */
+  }
+}
+
 export async function onToolCall(
   event: ToolCallEvent,
 ): Promise<{ block?: boolean; reason?: string }> {
@@ -1397,6 +1451,10 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('turn_start', async (_event, ctx) => {
+    // Per-turn objective title (session-objective-display-2026-06-22, P-004):
+    // set the terminal title to coord:glance self.objective. Fire-and-forget —
+    // it never gates the reminder and swallows its own errors.
+    void safe(() => emitObjectiveTitle(), undefined);
     const { reminder, degraded } = await safe(() => onTurnStart(ctx), {
       reminder: '',
       degraded: true,

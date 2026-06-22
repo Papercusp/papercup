@@ -14,9 +14,49 @@ import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
 import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type AccountPool, type ActiveAccount, type InferenceGateway } from './gateway';
+import {
+  parsePriorityTierMap,
+  tiersOfMap,
+  defaultTierCaps,
+  DEFAULT_GATEWAY_PRIORITY_MAP,
+  type PriorityTierMap,
+  type TierAdmissionConfig,
+} from '@papercusp/papercusp-shared/agent';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
+
+/** Reserved-floor fraction of the admission pool held for tier 1 (gateway-priority-tiers-2026-06-22).
+ *  `reserve = max(1, ceil(poolSlots * frac))`. Env-tunable via `GATEWAY_T1_RESERVE_FRAC`. */
+export const DEFAULT_T1_RESERVE_FRAC = 0.15;
+
+/**
+ * Resolve the priority-TIER admission config (gateway-priority-tiers-2026-06-22), flag-gated by
+ * `GATEWAY_PRIORITY_TIERS`. Returns `null` when the flag is OFF (the gateway then runs its flat
+ * priority+aging queue, byte-identical to today). When ON, builds the role→tier map (defaults merged
+ * with the `GATEWAY_PRIORITY_MAP` JSON env), the per-tier in-flight caps + the reserved tier-1 floor
+ * (`max(1, ceil(poolSlots * GATEWAY_T1_RESERVE_FRAC))`) sized to `poolSlots` (the admission concurrency).
+ * Pure-ish: the only side effect is the flag read; env parsing is the resilience lib's pure helpers.
+ */
+export async function resolvePriorityTiers(
+  poolSlots: number,
+  opts: { flagOverride?: boolean; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ map: PriorityTierMap; config: TierAdmissionConfig } | null> {
+  let on = opts.flagOverride;
+  if (on === undefined) {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    on = await getFlag(FLAGS.GATEWAY_PRIORITY_TIERS, 'system');
+  }
+  if (!on) return null;
+  const env = opts.env ?? process.env;
+  const map = parsePriorityTierMap(env.GATEWAY_PRIORITY_MAP, DEFAULT_GATEWAY_PRIORITY_MAP);
+  const fracRaw = Number(env.GATEWAY_T1_RESERVE_FRAC);
+  const frac = Number.isFinite(fracRaw) && fracRaw >= 0 ? fracRaw : DEFAULT_T1_RESERVE_FRAC;
+  const tiers = tiersOfMap(map);
+  const { caps, reserve } = defaultTierCaps(poolSlots, tiers, frac);
+  return { map, config: { caps, tier1Reserve: reserve } };
+}
 
 export interface GatewayServiceOptions {
   port?: number;
@@ -217,12 +257,30 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   const codexPool = createOptionalFailoverPool(buildBearerEntries(codexAccounts), { log });
   const unobserve = observePool(primary.accountId, opts.workspace, log);
 
+  // Priority-TIER admission config (gateway-priority-tiers-2026-06-22) — flag-gated; null (omitted) under
+  // flag-OFF so the gateway runs its flat priority+aging queue unchanged. Sized to the admission concurrency
+  // (the slot pool the reserved tier-1 floor protects).
+  const DEFAULT_CONCURRENCY = 24; // mirrors gateway.ts's default; the reserved floor is sized to this pool
+  const priorityTiers = await resolvePriorityTiers(opts.concurrency ?? DEFAULT_CONCURRENCY).catch((e) => {
+    // Fail-safe: a flag/env read fault must never block the gateway from starting → fall back to the flat
+    // queue (flag-OFF behavior), loudly.
+    log('warn', `inference-gateway: priority-tier config resolve failed (${(e as Error).message}) — running the flat admission queue`);
+    return null;
+  });
+  if (priorityTiers) {
+    log(
+      'info',
+      `inference-gateway: priority-tier admission ON — reserve=${priorityTiers.config.tier1Reserve} caps=${JSON.stringify(priorityTiers.config.caps)}`,
+    );
+  }
+
   const gateway = createInferenceGateway({
     pool,
     codexPool,
     upstreamBase: opts.upstreamBase,
     openaiUpstreamBase: process.env.OPENAI_BASE_URL_UPSTREAM || undefined,
     concurrency: opts.concurrency,
+    ...(priorityTiers ? { priorityTiers } : {}),
     fetchImpl: opts.fetchImpl,
     log,
     onResponse: makeWindowProjector(opts.workspace, log),

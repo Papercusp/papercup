@@ -1048,6 +1048,7 @@ export async function spawnAgentInHarness(
       slug,
       ownerId: spawnId,
       backend,
+      role, // gateway-priority-tiers: role → admission tier (flag-gated header)
     }),
   );
   // Start the stall-waker poll loop once the gateway is in play (idempotent + unref'd): it watches the

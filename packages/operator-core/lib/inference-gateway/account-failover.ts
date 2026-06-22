@@ -116,5 +116,11 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     log('info', `inference-gateway: account pool hot-reloaded → [${live.map((e) => e.accountId).join(', ')}]`);
   }
 
-  return { active, onExhausted, select, reload, readmit };
+  /** Accounts currently IN rotation (budget available, not paused) — the live capacity denominator the
+   *  priority-tier `/stats` reports. Counts the same `available()` predicate `active()` round-robins over. */
+  function healthyCount(): number {
+    return live.reduce((n, e) => n + (available(e) ? 1 : 0), 0);
+  }
+
+  return { active, onExhausted, select, reload, readmit, healthyCount };
 }

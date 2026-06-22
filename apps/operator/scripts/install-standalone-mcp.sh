@@ -162,6 +162,12 @@ CC_LIFECYCLE_HOOK="${CC_HOOK_DEST_DIR}/lifecycle-report.sh"
 # Registered NON-destructively (only when the user has no existing statusLine) so
 # it never clobbers a personal statusline; trivially removable.
 CC_STATUSLINE="${CC_HOOK_DEST_DIR}/statusline-fleet.sh"
+# PostToolUse objective-title hook (session-objective-display-2026-06-22): set the
+# terminal title to this session's coord:glance self.objective — the Codex/OMP
+# counterpart of the Claude statusline's leading 🔭 segment (those CLIs have no
+# statusline but own a tty). Wired into each per-session codex hooks.json by
+# writeCodexLockHooks; the OMP coord-hook fires it per-turn.
+CC_OBJECTIVE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-objective-title.sh"
 # PreToolUse Bash gate: refuse a raw destructive command (systemctl restart /
 # psql -f / …) that collides with an in-flight EXCLUSIVE hold on a registered
 # named resource (plan named-resource-locks-drain, P-026). Its own settings
@@ -731,6 +737,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
   if [ -f "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" "$CC_STATUSLINE"
     chmod 755 "$CC_STATUSLINE"
+  fi
+  if [ -f "${CC_HOOK_SRC_DIR}/posttooluse-objective-title.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/posttooluse-objective-title.sh" "$CC_OBJECTIVE_HOOK"
+    chmod 755 "$CC_OBJECTIVE_HOOK"
   fi
   if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" "$CC_BASH_GATE_HOOK"

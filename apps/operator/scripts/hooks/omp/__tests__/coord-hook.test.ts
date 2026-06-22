@@ -11,6 +11,7 @@ import { join } from 'node:path';
 
 import {
   buildActivityArgs,
+  buildObjectiveTitleOsc,
   callMcpTool,
   collapseDigestNotifies,
   detectSymlinkedPaths,
@@ -1565,5 +1566,46 @@ describe('reportLifecycle (OMP session lifecycle → activity bridge)', () => {
   it('reports a "■ session ended" lifecycle row on shutdown', async () => {
     const p = await capture('shutdown');
     expect(p?.arguments).toMatchObject({ kind: 'lifecycle', summary: '■ session ended' });
+  });
+});
+
+describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () => {
+  const ESC = '\x1b]0;';
+  const BEL = '\x07';
+
+  it('wraps a real objective in an OSC-0 set-title escape with the 🔭 marker', () => {
+    expect(buildObjectiveTitleOsc('wire objective display')).toBe(`${ESC}🔭 wire objective display${BEL}`);
+  });
+
+  it('the fallback chain absences (null / undefined / blank) all yield no escape', () => {
+    expect(buildObjectiveTitleOsc(null)).toBe('');
+    expect(buildObjectiveTitleOsc(undefined)).toBe('');
+    expect(buildObjectiveTitleOsc('')).toBe('');
+    expect(buildObjectiveTitleOsc('   ')).toBe('');
+  });
+
+  it('a non-string objective is treated as absent (fail-open against a malformed payload)', () => {
+    expect(buildObjectiveTitleOsc(42 as unknown as string)).toBe('');
+    expect(buildObjectiveTitleOsc({} as unknown as string)).toBe('');
+  });
+
+  it('clips a long objective with an ellipsis so it cannot overflow the title bar', () => {
+    const long = 'implement the cross-CLI session objective display across every fleet client right now';
+    const osc = buildObjectiveTitleOsc(long);
+    expect(osc.startsWith(`${ESC}🔭 `)).toBe(true);
+    expect(osc.endsWith(BEL)).toBe(true);
+    expect(osc).toContain('…');
+    // The title text (between the 🔭 marker and BEL) stays bounded.
+    const inner = osc.slice(`${ESC}🔭 `.length, -1);
+    expect([...inner].length).toBeLessThanOrEqual(60);
+  });
+
+  it('strips embedded control chars that could break out of the OSC string', () => {
+    // A BEL or ESC inside the objective must not terminate / re-open the escape.
+    const osc = buildObjectiveTitleOsc('evil\x07title\x1bhere');
+    expect(osc).toBe(`${ESC}🔭 eviltitlehere${BEL}`);
+    // Exactly one BEL (the terminator) and one ESC (the introducer).
+    expect([...osc].filter((c) => c === BEL)).toHaveLength(1);
+    expect([...osc].filter((c) => c === '\x1b')).toHaveLength(1);
   });
 });

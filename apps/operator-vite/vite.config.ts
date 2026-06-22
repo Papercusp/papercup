@@ -110,6 +110,14 @@ export default defineConfig({
         find: /^(corestore|hyperswarm|hyperdht|hyperbee|hypercore|hypercore-crypto|sodium-universal|sodium-native|sodium-secretstream|udx-native|dht-rpc|blind-relay)(?:\/.*)?$/,
         replacement: resolve(import.meta.dirname, 'src/shims/substrate-browser.ts'),
       },
+      // node:module has NO browser polyfill (unlike path/url/fs/buffer/process), so Vite
+      // externalizes it → `createRequire` is undefined. An eager
+      // `const require = createRequire(import.meta.url)` at module scope in any
+      // route-tree-reachable backend module (connection.ts, plugin-host-runtime, …) then
+      // crashed the WHOLE desktop app at module-eval ("createRequire is not a function").
+      // Shim node:module so createRequire EXISTS (no-op) in the browser; the require it
+      // returns throws only if called, which never happens in the SPA.
+      { find: /^node:module$/, replacement: resolve(import.meta.dirname, 'src/shims/node-module-browser.ts') },
       { find: '@', replacement: operatorRoot },
     ],
     // Operator components and the Vite shell must share ONE React

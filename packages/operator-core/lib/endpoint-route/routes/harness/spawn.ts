@@ -411,6 +411,7 @@ const invoke = defineTool({
           slug: project.slug,
           ownerId: hiveSpawnId ?? undefined,
           backend: routeBackend,
+          role, // gateway-priority-tiers: role → admission tier (flag-gated header)
         }),
       );
     }

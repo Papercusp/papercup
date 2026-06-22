@@ -112,12 +112,7 @@ describe('presence row cost (P-012 lean-row budget)', () => {
   it('a heavy-but-realistic lean row stays under the per-agent budget', () => {
     const cost = presenceRowCost(makeHeavyRow(1));
     expect(cost.tokens).toBeGreaterThan(0);
-    expect(cost.tokens).toBeLessThan(
-      PRESENCE_LEAN_ROW_TOKEN_BUDGET,
-      `A single heavy lean roster row is ${cost.tokens} tokens (${cost.chars} chars); budget is ` +
-        `${PRESENCE_LEAN_ROW_TOKEN_BUDGET}. If this fails, a presence field grew the per-agent ` +
-        `read — trim the default field set (do NOT touch the projection) or justify a budget bump.`,
-    );
+    expect(cost.tokens).toBeLessThan(PRESENCE_LEAN_ROW_TOKEN_BUDGET);
   });
 
   it('an idle row is cheaper than a busy one (state drives the cost, not identity)', () => {
@@ -134,16 +129,11 @@ describe('hive-scale snapshot cost (P-012 inline-glance budget)', () => {
       as_of: '2026-06-18T08:43:00.000Z',
       scope: 'hive',
       hive: 'papercup-hive',
-      summary: { active: rows.length, stale: 0, federated: 0 },
+      summary: { active: rows.length, stale: 0, federated: 0, wakeable: 0, byState: { live: 0, parked: 0, ended: 0 } },
       active: rows.map(toStableRosterRow),
     };
     const cost = presenceSnapshotCost(snapshot);
-    expect(cost.tokens).toBeLessThan(
-      PRESENCE_INLINE_GLANCE_TOKEN_BUDGET,
-      `A ${PRESENCE_HIVE_SCALE_AGENTS}-agent hive snapshot is ${cost.tokens} tokens (${cost.chars} chars); ` +
-        `the inline-glance budget is ${PRESENCE_INLINE_GLANCE_TOKEN_BUDGET}. Over this, the default ` +
-        `hive read file-persists and re-reads on every later turn (D-004 lever #2).`,
-    );
+    expect(cost.tokens).toBeLessThan(PRESENCE_INLINE_GLANCE_TOKEN_BUDGET);
     // And the per-agent average stays small — the lean-glance property.
     const perAgent = cost.tokens / PRESENCE_HIVE_SCALE_AGENTS;
     expect(perAgent).toBeLessThan(PRESENCE_LEAN_ROW_TOKEN_BUDGET);
