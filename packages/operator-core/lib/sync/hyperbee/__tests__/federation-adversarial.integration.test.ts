@@ -51,10 +51,9 @@
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type postgres from 'postgres';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
@@ -72,10 +71,6 @@ import { buildHarnessFeaturesProjection } from '../projections/harness-features'
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, SUBSTRATE_OUTBOX_DDL } from '../../../../test/_work-items-schema';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// .../packages/operator-core/lib/sync/hyperbee/__tests__ → repo root is seven up.
-const REPO_ROOT = resolve(__dirname, '../../../../../..');
-const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 
 // ── Shared identity / swarm constants. Same binding on both peers → same topic. ──
 const WORKSPACE_ID = 'ws-fed-adversarial';
