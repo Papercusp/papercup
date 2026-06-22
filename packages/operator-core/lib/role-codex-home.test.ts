@@ -69,7 +69,9 @@ describe('writeRoleCodexHome', () => {
     expect(out.agentsPath).toBe(join(out.codexHome, 'AGENTS.md'));
     expect(out.configPath).toBe(join(out.codexHome, 'config.toml'));
 
-    expect(readFileSync(out.agentsPath, 'utf8')).toBe('WORKER ROLE PROMPT BODY');
+    const agents = readFileSync(out.agentsPath, 'utf8');
+    expect(agents).toContain('WORKER ROLE PROMPT BODY');
+    expect(agents).toContain('## Codex Lock Enforcement Status');
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('[mcp_servers.papercusp]');
     expect(toml).toContain(`url = "${url}"`);
@@ -103,7 +105,7 @@ describe('writeRoleCodexHome', () => {
     const second = writeRoleCodexHome({ sessionKey: 9, mcpUrl: 'http://x/?role=worker&sig=2', promptText: 'NEW PROMPT' });
 
     expect(second.codexHome).toBe(first.codexHome);
-    expect(readFileSync(second.agentsPath, 'utf8')).toBe('NEW PROMPT');
+    expect(readFileSync(second.agentsPath, 'utf8')).toContain('NEW PROMPT');
     expect(existsSync(join(second.codexHome, 'STALE.txt'))).toBe(false);
     expect(readFileSync(second.configPath, 'utf8')).toContain('sig=2');
   });
@@ -156,6 +158,9 @@ describe('writeRoleCodexHome', () => {
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({ sessionKey: 8, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
     expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(false);
+    const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
+    expect(diag.lockEnforcement).toBe('soft-hooks-missing');
+    expect(diag.requiresExplicitPapercuspLocks).toBe(true);
   });
 
   it('a ROLE home gets the native-scheduler guard (bash gate + baked agent marker) — native-scheduler-lockout P-010', async () => {
@@ -185,7 +190,9 @@ describe('writeSuCodexHome', () => {
       token: 'TESTBEARER123456',
     });
     expect(out.codexHome).toBe(join(fakeHome, '.papercusp', 'su-codex-homes', 'session-5'));
-    expect(readFileSync(out.agentsPath, 'utf8')).toBe('ENGINEER PLAYBOOK BODY');
+    const agents = readFileSync(out.agentsPath, 'utf8');
+    expect(agents).toContain('ENGINEER PLAYBOOK BODY');
+    expect(agents).toContain('locks:acquire');
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('[mcp_servers.papercusp-su]');
     // D-006: bearer baked as http_headers (codex 0.135 ignores bearer_token_env_var for HTTP).
@@ -220,9 +227,48 @@ describe('writeSuCodexHome', () => {
     const second = writeSuCodexHome({ sessionKey: 'k', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'NEW', sid: 's2' });
 
     expect(lstatSync(join(second.codexHome, 'auth.json')).isSymbolicLink()).toBe(true);
-    expect(readFileSync(second.agentsPath, 'utf8')).toBe('NEW');
+    expect(readFileSync(second.agentsPath, 'utf8')).toContain('NEW');
     expect(existsSync(join(second.codexHome, 'STALE.txt'))).toBe(false);
     expect(readFileSync(second.configPath, 'utf8')).toContain('client=s2');
+  });
+
+  it('inherits user Codex skills/plugins/prompts and trusted workspace state into the isolated home', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const realCodex = join(fakeHome, '.codex');
+    mkdirSync(join(realCodex, 'skills'), { recursive: true });
+    mkdirSync(join(realCodex, 'plugins'), { recursive: true });
+    mkdirSync(join(realCodex, 'prompts'), { recursive: true });
+    writeFileSync(join(realCodex, 'prompts', 'user-prompt.md'), 'USER PROMPT');
+    writeFileSync(join(realCodex, 'config.toml'), [
+      'model = "gpt-5"',
+      '',
+      '[trusted_workspaces]',
+      '"/repo" = true',
+      '',
+      '[model_providers.default]',
+      'name = "Default"',
+      '',
+    ].join('\n'));
+
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 'inherit', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+
+    expect(lstatSync(join(out.codexHome, 'skills')).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(out.codexHome, 'skills'))).toBe(join(realCodex, 'skills'));
+    expect(lstatSync(join(out.codexHome, 'plugins')).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(out.codexHome, 'plugins'))).toBe(join(realCodex, 'plugins'));
+
+    const promptsLink = join(out.codexHome, 'prompts');
+    expect(lstatSync(promptsLink).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(promptsLink)).toBe(join(out.codexHome, 'prompts.user'));
+    expect(readFileSync(join(out.codexHome, 'prompts', 'user-prompt.md'), 'utf8')).toBe('USER PROMPT');
+
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toContain('[trusted_workspaces]');
+    expect(toml).toContain('"/repo" = true');
+    expect(toml).not.toContain('[model_providers.default]');
+    const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
+    expect(diag.inheritedPromptsCopied).toBe(true);
   });
 
   it('installs the SU-locks hooks.json when hooks are present', async () => {
@@ -231,6 +277,9 @@ describe('writeSuCodexHome', () => {
     const out = writeSuCodexHome({ sessionKey: 6, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
     expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(true);
     expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
+    const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
+    expect(diag.lockEnforcement).toBe('soft-hooks-configured');
+    expect(diag.codexPreToolUseStatus).toBe('upstream-inert-for-apply-patch-and-shell');
   });
 
   it('the HUMAN su home gets NO native-scheduler guard (native-scheduler-lockout D-003)', async () => {

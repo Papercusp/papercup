@@ -313,6 +313,18 @@ describe('bootstrap-su', () => {
     );
   });
 
+  it('codex folds launch_context into AGENTS.md prompt text before writing CODEX_HOME', async () => {
+    const kickoff = join(LC_DIR, 'kickoff.md');
+    writeFileSync(kickoff, 'KICKOFF CONTEXT\n- continue the rollout\n');
+    const res = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'my-plan', launch_context: kickoff });
+    expect(res.status).toBe(200);
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptText: expect.stringContaining('PLAYBOOK + CTX BODY\n\n---\n## Launch Context\n\nKICKOFF CONTEXT\n- continue the rollout'),
+      }),
+    );
+  });
+
   it('claude: mints + records + returns a native session id (the launcher forces it via --session-id)', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     expect(json.nativeSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);

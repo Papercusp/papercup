@@ -1,0 +1,111 @@
+export type InteractiveBackend = 'claude' | 'codex' | 'omp';
+
+export type BackendFeature =
+  | 'fresh-su'
+  | 'resume'
+  | 'role-session'
+  | 'launch-context'
+  | 'saved-prompts'
+  | 'slash-tool-prompts'
+  | 'account-pinning'
+  | 'gateway-routing'
+  | 'file-lock-enforcement'
+  | 'native-fork'
+  | 'forced-native-session-id'
+  | 'runtime-home-inheritance'
+  | 'mcp-http-auth'
+  | 'settings-diagnostics';
+
+export type CapabilityState = 'supported' | 'soft' | 'unsupported';
+
+export interface BackendFeatureCapability {
+  state: CapabilityState;
+  mechanism: string;
+  unsupportedReason?: string;
+}
+
+export type BackendFeatureMatrix = Record<InteractiveBackend, Record<BackendFeature, BackendFeatureCapability>>;
+
+const supported = (mechanism: string): BackendFeatureCapability => ({ state: 'supported', mechanism });
+const soft = (mechanism: string, unsupportedReason: string): BackendFeatureCapability => ({
+  state: 'soft',
+  mechanism,
+  unsupportedReason,
+});
+const unsupported = (mechanism: string, unsupportedReason: string): BackendFeatureCapability => ({
+  state: 'unsupported',
+  mechanism,
+  unsupportedReason,
+});
+
+export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
+  claude: {
+    'fresh-su': supported('raw claude launch with prompt file and user-level papercusp-su MCP'),
+    resume: supported('native claude --resume/--continue with tracked adv session correlation'),
+    'role-session': supported('raw claude role launch with prompt file and signed role MCP config'),
+    'launch-context': supported('--append-system-prompt-file'),
+    'saved-prompts': supported('.claude/commands materialization'),
+    'slash-tool-prompts': supported('MCP prompt/slash surface through Claude command discovery'),
+    'account-pinning': supported('inference-gateway Anthropic headers and env'),
+    'gateway-routing': supported('Anthropic-compatible inference gateway route'),
+    'file-lock-enforcement': supported('Claude PreToolUse/PostToolUse hooks'),
+    'native-fork': supported('claude --fork-session'),
+    'forced-native-session-id': supported('claude --session-id'),
+    'runtime-home-inheritance': supported('interactive Claude config mirror of ~/.claude with isolated projects'),
+    'mcp-http-auth': supported('user-level MCP config with bearer headers'),
+    'settings-diagnostics': supported('existing Claude/account/session settings surfaces'),
+  },
+  codex: {
+    'fresh-su': supported('raw codex launch with per-session CODEX_HOME'),
+    resume: supported('codex resume using tracked CODEX_HOME and rollout discovery'),
+    'role-session': supported('raw codex role launch with per-session CODEX_HOME'),
+    'launch-context': supported('bootstrap folds launch-context into CODEX_HOME/AGENTS.md'),
+    'saved-prompts': supported('$CODEX_HOME/prompts materialization'),
+    'slash-tool-prompts': supported('$CODEX_HOME/prompts slash-tool prompt materialization'),
+    'account-pinning': supported('Codex account id baked into per-session model_provider gateway config'),
+    'gateway-routing': supported('OpenAI-compatible /v1 gateway route with account header'),
+    'file-lock-enforcement': soft(
+      'locks are configured in hooks.json and the playbook requires explicit locks',
+      'Codex PreToolUse hooks are currently inert for apply_patch/shell, so enforcement is prompt/platform guarded until upstream hook emission works',
+    ),
+    'native-fork': unsupported(
+      'capability-gated in the launcher',
+      'Codex CLI has no Claude-style native fork-session flag; parity requires an equivalent platform fallback, not a fake native fork',
+    ),
+    'forced-native-session-id': unsupported(
+      'tracked via CODEX_HOME and rollout id discovery',
+      'Codex CLI cannot be launched with a forced native session UUID',
+    ),
+    'runtime-home-inheritance': supported('per-session CODEX_HOME inherits auth, skills, plugins, prompts, and trusted-workspace state'),
+    'mcp-http-auth': supported('per-session config.toml bakes HTTP MCP Authorization headers'),
+    'settings-diagnostics': supported('account and gateway diagnostics expose Codex provider routeability'),
+  },
+  omp: {
+    'fresh-su': supported('raw omp launch with prompt and coordination extension'),
+    resume: soft('omp thread resume with PTY/headless handshake', 'live wake/resume still needs the full smoke matrix'),
+    'role-session': supported('raw omp role launch with prompt and cwd-discovered MCP config'),
+    'launch-context': supported('--append-system-prompt'),
+    'saved-prompts': supported('.claude/commands materialization shared with OMP command discovery'),
+    'slash-tool-prompts': supported('MCP prompt/slash surface through OMP-compatible command discovery'),
+    'account-pinning': unsupported('capability-gated', 'OMP provider account routing is not implemented yet'),
+    'gateway-routing': unsupported('capability-gated', 'OMP provider gateway adapter is not implemented yet'),
+    'file-lock-enforcement': supported('OMP coordination extension'),
+    'native-fork': unsupported('capability-gated in the launcher', 'OMP has no Claude-style native fork-session flag'),
+    'forced-native-session-id': unsupported('thread id tracking', 'OMP resumes by thread id and does not accept a forced Claude-style session UUID'),
+    'runtime-home-inheritance': supported('per-spawn OMP agent dir copies auth/config/tool cache'),
+    'mcp-http-auth': supported('OMP mcp.json carries HTTP MCP headers'),
+    'settings-diagnostics': soft('OMP settings pages exist', 'provider account/gateway diagnostics are pending OMP gateway work'),
+  },
+};
+
+export function backendFeatureCapability(
+  backend: InteractiveBackend,
+  feature: BackendFeature,
+): BackendFeatureCapability {
+  return BACKEND_FEATURE_CAPABILITIES[backend][feature];
+}
+
+export function backendSupportsFeature(backend: InteractiveBackend, feature: BackendFeature): boolean {
+  return backendFeatureCapability(backend, feature).state === 'supported';
+}
+

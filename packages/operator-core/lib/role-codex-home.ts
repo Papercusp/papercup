@@ -97,6 +97,14 @@ const CODEX_ISOLATION_PREAMBLE = [
   '',
 ].join('\n');
 
+const CODEX_LOCK_ENFORCEMENT_NOTE = [
+  '---',
+  '## Codex Lock Enforcement Status',
+  '',
+  'Codex PreToolUse hooks for file edits and shell commands are currently soft in Papercusp: hooks.json is installed when local hook scripts exist, but current Codex builds do not reliably fire those hooks for apply_patch or shell. Before editing files or running commands that mutate shared state, explicitly acquire Papercusp locks with locks:acquire and release them with locks:release.',
+  '',
+].join('\n');
+
 /** Escape a value for a TOML double-quoted basic string. */
 function tomlEscape(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -197,19 +205,21 @@ function inheritedCodexTrustedWorkspaceToml(): string[] {
   return out.length > 0 ? ['# Inherited trusted workspace state from ~/.codex/config.toml.', ...out, ''] : [];
 }
 
-function copyInheritedCodexPrompts(codexHome: string): void {
+function copyInheritedCodexPrompts(codexHome: string): boolean {
   const prompts = join(codexHome, 'prompts');
-  if (!existsSync(prompts)) return;
+  if (!existsSync(prompts)) return false;
   try {
     if (lstatSync(prompts).isSymbolicLink()) {
       const managed = join(codexHome, 'prompts.user');
       unlinkSync(prompts);
       cpSync(join(homedir(), '.codex', 'prompts'), managed, { recursive: true, force: true, dereference: true });
       symlinkSync(managed, prompts, 'dir');
+      return true;
     }
   } catch {
     /* saved-prompt materialization can recreate prompts if inheritance fails */
   }
+  return false;
 }
 
 /**
@@ -329,6 +339,23 @@ export function writeCodexLockHooks(
   return true;
 }
 
+function writeCodexHomeDiagnostics(
+  codexHome: string,
+  opts: { hooksInstalled: boolean; inheritedPromptsCopied: boolean },
+): void {
+  const body = {
+    lockEnforcement: opts.hooksInstalled ? 'soft-hooks-configured' : 'soft-hooks-missing',
+    codexPreToolUseStatus: 'upstream-inert-for-apply-patch-and-shell',
+    requiresExplicitPapercuspLocks: true,
+    inheritedPromptsCopied: opts.inheritedPromptsCopied,
+  };
+  writeFileSync(join(codexHome, 'papercusp-diagnostics.json'), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
+}
+
+function codexAgentsPrompt(promptText: string): string {
+  return `${promptText.replace(/\n+$/, '')}\n\n${CODEX_LOCK_ENFORCEMENT_NOTE}`;
+}
+
 /**
  * Build (or rebuild) a per-session CODEX_HOME under
  * `~/.papercusp/role-codex-homes/session-<key>`. Idempotent: the dir is
@@ -354,13 +381,13 @@ export function writeRoleCodexHome(opts: {
   // path wrote to a separate `role-codex-homes/` root the resume leg never
   // looked in, so a woken codex role session resumed from nothing.
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
-  copyInheritedCodexPrompts(codexHome);
+  const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   // AGENTS.md = the role prompt. codex has no per-launch system-prompt
   // flag; its instruction file is $CODEX_HOME/AGENTS.md (same mechanism
   // codex-su uses for the engineer playbook).
   const agentsPath = join(codexHome, 'AGENTS.md');
-  writeFileSync(agentsPath, opts.promptText, { mode: 0o600 });
+  writeFileSync(agentsPath, codexAgentsPrompt(opts.promptText), { mode: 0o600 });
 
   // config.toml: the role-scoped MCP server. The url is already signed
   // (sig-auth), so — unlike the codex-su home — there is no
@@ -385,7 +412,8 @@ export function writeRoleCodexHome(opts: {
   // a silent gap). Launcher must pass --dangerously-bypass-hook-trust. A role
   // session is a WORKER, so it also reports to the activity bridge (under its
   // session identity); no coord-inbox hook (roles don't ride the SU coord bus).
-  writeCodexLockHooks(codexHome, { activitySid: opts.sid, agentSession: true });
+  const hooksInstalled = writeCodexLockHooks(codexHome, { activitySid: opts.sid, agentSession: true });
+  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied });
 
   return { codexHome, agentsPath, configPath };
 }
@@ -437,10 +465,10 @@ export function writeSuCodexHome(opts: {
   codexGatewayAccountId?: string | null;
 }): SuCodexHome {
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
-  copyInheritedCodexPrompts(codexHome);
+  const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
-  writeFileSync(agentsPath, opts.promptText, { mode: 0o600 });
+  writeFileSync(agentsPath, codexAgentsPrompt(opts.promptText), { mode: 0o600 });
 
   // Bake the per-session client identity into the url (codex can't env-expand
   // config.toml) + the superuser bearer as an http_headers Authorization
@@ -468,7 +496,8 @@ export function writeSuCodexHome(opts: {
   // injected mid-turn, parity with the Claude global-settings coord entry) AND
   // the activity-bridge hook (an SU/engineer session is a worker too) — both
   // keyed to the session id.
-  writeCodexLockHooks(codexHome, { coordSid: opts.sid, activitySid: opts.sid });
+  const hooksInstalled = writeCodexLockHooks(codexHome, { coordSid: opts.sid, activitySid: opts.sid });
+  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied });
 
   return { codexHome, agentsPath, configPath };
 }
