@@ -4,6 +4,12 @@ description: Unit tests can't catch CREATE TABLE typos, missing CHECK constraint
 discovered: 2026-05-25
 tags: [postgres, ensure, regression, testing, pre-commit]
 status: active
+documents:
+  - apps/operator/test/fresh-migrate.integration.test.ts
+  - packages/operator-core/lib/db-tools/verify-baseline.ts
+  - apps/operator/scripts/verify-trigger-consolidation.mjs
+plans:
+  - self-contained-migration-baseline-2026-06-02
 sidebar:
   order: 25
 ---

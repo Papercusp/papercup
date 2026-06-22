@@ -4,6 +4,14 @@ description: WI-148 moved papercup data 'default'→'papercusp-workspace' in loc
 discovered: 2026-06-16
 tags: [release, deploy, migration, lockstep, shared-db, two-port, health-probe, workspace-identity]
 status: active
+documents:
+  - packages/operator-core/lib/agent-tools/plans/source.ts
+  - apps/operator/lib/release/health-probe.ts
+  - apps/operator/lib/release/verify-release-paths.ts
+  - apps/operator/lib/release/deploy.ts
+plans:
+  - release-gate-ready-branch-2026-06-04
+  - staging-branch-pipeline-2026-06-06
 ---
 
 ## What
