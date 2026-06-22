@@ -13,6 +13,8 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getNextForBee } from '../../scheduler/claim-spec-store';
@@ -43,11 +45,15 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
+    // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
+    const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
     const res = await getNextForBee({
       beeId: ident.ownerId,
       harness: args.harness,
       heldPaths: args.heldPaths,
       states: args.states,
+      ignoreStoredSpec: !specOn,
     });
     return {
       content: [

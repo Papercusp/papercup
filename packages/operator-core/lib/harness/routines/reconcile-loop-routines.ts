@@ -232,7 +232,11 @@ export async function reconcileLoopRoutines(
         continue; // still in flight / nothing to fold — leave it
       }
 
-      const reArmDate = new Date(completedAt + intervalMs);
+      // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's
+      // pooled `prepare: false` connection rejects a Date bind param ("the string argument must
+      // be … Received an instance of Date") — the write-side mirror of the string-read quirk
+      // (EI-2549). A string + cast binds cleanly on BOTH that connection and a direct one.
+      const reArmIso = new Date(completedAt + intervalMs).toISOString();
 
       // ONE statement for BOTH kinds (d5a84's LEAST tip):
       //   pure loop parked  → next_fire_at='infinity' matches → LEAST(infinity, X) = X (re-arm)
@@ -243,11 +247,11 @@ export async function reconcileLoopRoutines(
       // untouched (the WHERE never matches), so a cron's cadence is never delayed.
       const updated = await db<{ id: string }[]>`
         UPDATE harness_shared.routines
-           SET next_fire_at = LEAST(next_fire_at, ${reArmDate}), updated_at = now()
+           SET next_fire_at = LEAST(next_fire_at, ${reArmIso}::timestamptz), updated_at = now()
          WHERE id = ${row.id}
            AND reschedule_interval_sec IS NOT NULL
            AND ( next_fire_at = 'infinity'::timestamptz
-                 OR next_fire_at > ${reArmDate} )
+                 OR next_fire_at > ${reArmIso}::timestamptz )
         RETURNING id
       `;
       if (updated.length > 0) {

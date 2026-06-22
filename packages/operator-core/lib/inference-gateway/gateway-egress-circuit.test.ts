@@ -128,6 +128,26 @@ test('N consecutive transport failures OPEN the egress circuit (account paused +
   assert.equal(s.egressFailRateByAccount.DEAD, 1, 'egressFailRateByAccount = fails/attempts = 3/3 = 1.0 (dead proxy)');
 });
 
+test('GET /admin/route?owner — reports the account that served an identified owner\'s most-recent turn (routed-account visibility, 2026-06-22)', async () => {
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('OK')]),
+    fetchImpl: egressFetch(new Set()), // OK is healthy → serves 200
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 2000,
+  });
+  port = await gw.listen(0);
+  // Unknown owner before any request → account null (never falsely attributed).
+  const before = (await (await fetch(`http://127.0.0.1:${port}/admin/route?owner=su-xyz`)).json()) as { account: string | null };
+  assert.equal(before.account, null, 'no route recorded yet for an unseen owner');
+  // An IDENTIFIED request (x-papercusp-owner) served by OK records the route.
+  const res = await post({ 'x-papercusp-owner': 'su-xyz' });
+  assert.equal(res.status, 200, 'the request is served');
+  const after = (await (await fetch(`http://127.0.0.1:${port}/admin/route?owner=su-xyz`)).json()) as { account: string | null; owner: string | null };
+  assert.equal(after.account, 'OK', 'the served account is reported back for the owner (what the statusline shows)');
+  assert.equal(after.owner, 'su-xyz', 'the queried owner is echoed');
+});
+
 test('a successful response RESETS the streak — a flapping proxy that recovers does not accumulate toward the circuit', async () => {
   const dead = new Set<string>(['FLAP']);
   gw = createInferenceGateway({

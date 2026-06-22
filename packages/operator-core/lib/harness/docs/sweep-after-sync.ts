@@ -107,7 +107,12 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   // A harness with no doc records (and none newly registered) can't have any drift.
   if (records.size === 0) return null;
 
-  return sweepHarnessDocs({
+  // The NEWLY-drifted docs this sweep — the callbacks fire once per drift episode
+  // (sweepHarnessDocs gates them on !regenEnqueuedAt/!reverifyFlaggedAt), so this is a
+  // deduped batch for the doc-steward (P-008).
+  const staleDocs: Array<{ docId: string; anchorPaths: string[]; reason: string; source: string }> = [];
+
+  const result = await sweepHarnessDocs({
     harnessSlug,
     workspaceId,
     repoRoot,
@@ -115,6 +120,7 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     changedPaths,
     resolveFeatureCommits: makeFeatureCommitLookup(harnessSlug, workspaceId),
     onRegenNeeded: async (doc, detail) => {
+      staleDocs.push({ docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source });
       await sendMessage(DOCS_IDENTITY, {
         to: ['*'],
         summary: `📄 ${harnessSlug}: generated doc ${doc.docId} is STALE (${detail ?? 'subject code changed'}) — regeneration enqueued`,
@@ -122,6 +128,7 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
       }).catch(() => {});
     },
     onReverifyNeeded: async (doc, detail) => {
+      staleDocs.push({ docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source });
       await sendMessage(DOCS_IDENTITY, {
         to: ['*'],
         summary: `📄 ${harnessSlug}: manual doc ${doc.docId} needs RE-VERIFY (${detail ?? 'subject code changed'})`,
@@ -129,4 +136,29 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
       }).catch(() => {});
     },
   });
+
+  // P-008 doc-steward — dispatch the LLM consumer to FIX the newly-drifted docs against the
+  // current code (the deterministic counterpart to detection). Flag-gated on the owner-authority
+  // `papercusp-doc-steward` (OFF until the owner-verified end-to-end check), and best-effort —
+  // a dispatch failure must NEVER wedge the sweep / git-sync. The sweep already deduped, so we
+  // fire ONE doc-steward for the whole batch (mirrors git-sync → merge-resolution on conflict).
+  if (staleDocs.length > 0) {
+    try {
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      if (await getFlag(FLAGS.DOC_STEWARD, harnessSlug)) {
+        const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
+        await fireLaunchBlueprintForEvent('docs:drift', {
+          installSlug: harnessSlug,
+          workspaceId,
+          kickoff: `Re-sync ${staleDocs.length} drifted doc(s) in ${harnessSlug} to the current code: ${staleDocs.map((d) => d.docId).join(', ')}`,
+          extra: ['--doc-drift', JSON.stringify({ docs: staleDocs })],
+        });
+      }
+    } catch {
+      /* best-effort: doc-steward dispatch must never break the sweep */
+    }
+  }
+
+  return result;
 }

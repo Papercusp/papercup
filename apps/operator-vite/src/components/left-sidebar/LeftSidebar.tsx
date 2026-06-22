@@ -255,11 +255,10 @@ export default function LeftSidebar() {
               {/* Voice controls pinned to the top of the rail — always shown,
                   on every tab (not just Sentinel). */}
               <SentinelVoiceBar />
+              {/* Active-tab title heading removed (owner 2026-06-22): the
+                  highlighted tab already shows which view you're on, so the
+                  label was redundant. The collapse control stays. */}
               <div className="pclsb__header">
-                <span className="pclsb__title">
-                  <active.icon size={14} aria-hidden="true" />
-                  {active.id === 'swarm' ? t('fleet') : active.label}
-                </span>
                 <span className="pclsb__spacer" />
                 <button
                   type="button"

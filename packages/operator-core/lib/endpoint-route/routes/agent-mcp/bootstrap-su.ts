@@ -150,6 +150,7 @@ export async function resolveAccountPin(
   workspaceId: string,
   requested: string | null | undefined,
   agent: SuAgent = 'claude',
+  ownerId?: string,
 ): Promise<{ env: Record<string, string>; notice: string | null; accountId: string | null; provider: BackendAccountProvider | null }> {
   const id = requested?.trim();
   if (!id) return { env: {}, notice: null, accountId: null, provider: null };
@@ -187,7 +188,9 @@ export async function resolveAccountPin(
     if (provider === 'claude') {
       const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
       return {
-        env: { ...gatewaySpawnEnv(true, { accountId: id }), PAPERCUSP_ACCOUNT_ID: id },
+        // Pass ownerId so the session ALSO sends x-papercusp-owner (not just the account pin) — this lets the
+        // gateway attribute the session's routed account (GET /admin/route → the statusline ⇢ <account> chip).
+        env: { ...gatewaySpawnEnv(true, { accountId: id, ownerId }), PAPERCUSP_ACCOUNT_ID: id },
         notice: `pinned to account ${id} (routed through the inference gateway).`,
         accountId: id,
         provider,
@@ -499,7 +502,7 @@ const post = defineTool({
 
     // psu-account-chooser: resolve before writing Codex launch artifacts so a Codex
     // account pin can be baked into CODEX_HOME/config.toml.
-    const accountPin = await resolveAccountPin(workspace, body.account, agent);
+    const accountPin = await resolveAccountPin(workspace, body.account, agent, sid);
     const launchContextPath = body.launch_context?.trim() || null;
     let promptText = spec.promptText;
     if (agent === 'codex' && launchContextPath) {

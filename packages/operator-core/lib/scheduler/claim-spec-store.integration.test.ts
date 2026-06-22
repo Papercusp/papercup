@@ -23,7 +23,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { setClaimSpec, getClaimSpec } = await import('./claim-spec-store');
+const { setClaimSpec, getClaimSpec, listRunningClaims } = await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,11 @@ beforeAll(async () => {
   db = await createFreshPgDb('beespecs');
   h.sql = db.sql;
   await db.sql.unsafe(mig('372-bee-claim-specs.sql'));
+  // Minimal harness_features_consolidated (just the columns listRunningClaims reads) — self-contained.
+  await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
+    harness_slug text NOT NULL, feature_id text NOT NULL, item_kind text NOT NULL DEFAULT 'feature',
+    status text NOT NULL DEFAULT 'todo', taken_by text, taken_at timestamptz,
+    last_progress_at timestamptz, workspace_id text NOT NULL DEFAULT 'default')`);
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup?.();
@@ -68,5 +73,26 @@ describe('bee_claim_specs store (mig 372)', () => {
     expect(r.ok).toBe(false);
     expect(r.errors.length).toBeGreaterThan(0);
     expect(await getClaimSpec({ beeId: 'su-bee-2' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
+  });
+});
+
+describe('listRunningClaims (live-execution view, P-001)', () => {
+  it('lists in-flight claims with the running spec revision; excludes untaken + terminal', async () => {
+    const H = 'sched-live';
+    await setClaimSpec({ beeId: 'su-runner', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    const seed = (fid: string, takenBy: string | null, status: string) =>
+      db.sql`INSERT INTO harness_shared.harness_features_consolidated
+        (harness_slug, feature_id, status, taken_by, taken_at)
+        VALUES (${H}, ${fid}, ${status}, ${takenBy}, ${takenBy ? new Date() : null})`;
+    await seed('F-RUN', 'su-runner', 'wip'); // in-flight + has a spec
+    await seed('F-NOSPEC', 'su-other', 'building'); // in-flight, no spec
+    await seed('F-FREE', null, 'todo'); // untaken → excluded
+    await seed('F-DONE', 'su-runner', 'passed'); // terminal → excluded
+
+    const running = await listRunningClaims(H, db.sql);
+    expect(running.map((r) => r.itemId).sort()).toEqual(['F-NOSPEC', 'F-RUN']);
+    expect(running.find((r) => r.itemId === 'F-RUN')!.owner).toBe('su-runner');
+    expect(running.find((r) => r.itemId === 'F-RUN')!.specRevision).toBe(0); // running under its stored spec
+    expect(running.find((r) => r.itemId === 'F-NOSPEC')!.specRevision).toBeNull(); // no spec → default
   });
 });

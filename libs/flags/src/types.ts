@@ -605,6 +605,12 @@ export const FLAGS = {
   // DEFAULT OFF: it rewrites the commit hot path; OFF = today's single `git add -A` commit,
   // byte-identical. No new agent ceremony (attribution is DERIVED). Owner flips post-review.
   GIT_SYNC_DERIVED_ATTRIBUTION: "papercusp-git-sync-derived-attribution",
+  // docs-corpus-audit WS2 P-008 / deterministic-commit-workitem-attribution P-005: the
+  // doc-steward — the post-git-sync freshness sweep, on a drifted doc, dispatches a
+  // doc-steward agent to re-verify/regenerate it against the current code (the LLM consumer
+  // that closes the doc-drift loop). DEFAULT OFF: it auto-edits the doc corpus (owner-authority
+  // surface) + spawns an agent per drift — flip ON after the owner-verified end-to-end check.
+  DOC_STEWARD: "papercusp-doc-steward",
   // plan-federation-regrain-2026-06-13 P-005/P-006: per-PART plan federation —
   // kills the whole-document LWW clobber where two peers editing DIFFERENT plan
   // items lose one edit (D-009). DEFAULT-OFF: an UNVERIFIED cutover that needs a
@@ -1355,6 +1361,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // attributed commits). OFF = today's single `git add -A` commit, byte-identical. Owner
   // flips post-review (also listed in KNOWN_DARK_FLAGS).
   [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION]: false,
+  // DEFAULT OFF (docs-corpus WS2 P-008): the doc-steward auto-edits the doc corpus + spawns an
+  // agent per drift — an owner-authority surface flipped ON only after a verified end-to-end run.
+  [FLAGS.DOC_STEWARD]: false,
   // DEFAULT OFF (P-142 / D-003) — genuinely incomplete-until-ramped: the operator-hosted
   // worker:chunk-loop is the coding HOT PATH and ships dark, then dark-launch → 25/50/100
   // ramp → retire (worker-chunk-loop-operator-hosted-2026-06-14). OFF = the subprocess
