@@ -472,6 +472,40 @@ export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
 };
 
 /**
+ * SU-S21 (reach for the bulk READ arg over a per-id hand-loop;
+ * bulk-endpoint-standardization-2026-06-21 P-007). work_items:list returns 6 open
+ * items WITHOUT the detail the question needs (assignee + parent), so answering
+ * "who owns each and what's the parent" requires work_items:get over all 6 — which
+ * is now ONE bulk `work_items:get { ids:[…] }` call (every repeated-call read is
+ * dual-arity, n=1 ≡ bulk-of-one), not 6 round-trips. The override returns the
+ * keyed-array bulk envelope when called with `ids` (the smart path "succeeds"), and
+ * a believable single-item envelope when called with a scalar `id` (so a hand-loop
+ * is not punished by a stub — the assert, not the stub, flags the fan-out).
+ */
+const S21_OPEN_ITEMS = Array.from({ length: 6 }, (_, i) => ({ id: `WI-${600 + i}`, title: `Open item ${600 + i}`, kind: 'feature' }));
+function s21WorkItem(id: string) {
+  const n = Number(id.split('-')[1] ?? 0);
+  return { id, kind: 'feature', state: 'open', assignee: `su-${(n % 3) + 1}`, parent: n % 2 === 0 ? `F-${n - 1}` : null };
+}
+export const BULK_GET_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'work_items:list') {
+      return { content: [{ text: JSON.stringify({ items: S21_OPEN_ITEMS, count: S21_OPEN_ITEMS.length }) }] };
+    }
+    if (canon === 'work_items:get') {
+      const ids = Array.isArray(a.ids) ? (a.ids as string[]) : a.id ? [String(a.id)] : [];
+      const results = ids.map((id) => ({ ok: true as const, id, workItem: s21WorkItem(id) }));
+      return {
+        content: [{ text: JSON.stringify({ ok: true, results, counts: { ok: results.length, failed: 0 } }) }],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
  * SU-S18 (do NOT over-apply coord:orient on a single inbox check): a believable
  * coord:inbox result. "Any new messages?" is one direct coord:inbox call — wrapping
  * it in coord:orient over-fetches assignments + claimable + plan-events + a memory

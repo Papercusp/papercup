@@ -16,6 +16,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -66,17 +67,8 @@ beforeAll(async () => {
       rel text NOT NULL, created_by text,
       created_at timestamptz DEFAULT now() NOT NULL
     )`);
-  // Minimal-but-faithful READ surface (payload jsonb, updated_ts bigint) for the stamp query.
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      harness_slug text NOT NULL, feature_id text NOT NULL, workspace_id text NOT NULL,
-      payload jsonb, updated_ts bigint
-    )`);
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.engineer_issues (
-      workspace_id text NOT NULL, issue_id text NOT NULL,
-      payload jsonb, updated_at timestamptz DEFAULT now()
-    )`);
+  // P-010 unification: work_items base + hfc/ei compat views (replaces hand-rolled hfc + ei).
+  await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = rootSql;
 }, 90_000);
 

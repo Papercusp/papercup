@@ -1,6 +1,11 @@
 ---
 title: "The standing :3055 can serve a FROZEN module cache — hours-old code with no error"
 description: "An agent-launched operator-vite on :3055 without PAPERCUSP_ENABLE_HMR=1 never invalidates dev transforms: your landed edits render as the OLD page (UI checks and e2e silently test stale code). Symptom signature + verify + restart-under-lock recipe."
+discovered: 2026-06-11
+status: active
+documents:
+  - apps/operator-vite/vite.config.ts
+  - apps/operator/e2e/settings-agent-autosave.spec.ts
 ---
 
 **Symptom signature:** you've edited client code (it's in the tree, vitest is

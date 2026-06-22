@@ -13,6 +13,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { cancelSubtree, assertCanComplete, openChildCount } from './nursery';
 import { recordSpawn, finishSpawn, getSpawn } from './spawn-tree';
 import type { LockTarget, LockReleaseResult } from './lock-release';
@@ -55,16 +56,6 @@ const SPAWNED_AGENTS_DDL = `
     launcher_host text,
     heartbeat_at timestamptz NOT NULL DEFAULT now(),
     last_output_at timestamptz)`;
-
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL, feature_id text NOT NULL, title text, summary text,
-    status text NOT NULL DEFAULT 'todo', attempts bigint DEFAULT 0,
-    item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
-    taken_by text, taken_at timestamptz,
-    workspace_id text NOT NULL DEFAULT 'default',
-    ts bigint, created_ts bigint, updated_ts bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
 
 const PLAN_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
@@ -113,7 +104,7 @@ async function spawn(
 beforeAll(async () => {
   db = await createFreshPgDb('nursery');
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
-  await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(PLAN_ITEM_CLAIMS_DDL);
 }, 90_000);
 

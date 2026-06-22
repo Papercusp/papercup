@@ -8,6 +8,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { recordSpawn, finishSpawn, getSpawn } from './spawn-tree';
 import {
   recordRestartIntensity,
@@ -31,12 +32,6 @@ const SPAWNED_AGENTS_DDL = `
     restart_strategy text NOT NULL DEFAULT 'one_for_one', restart_count int NOT NULL DEFAULT 0,
     restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
     pid int, launcher_host text, heartbeat_at timestamptz NOT NULL DEFAULT now(), last_output_at timestamptz)`;
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL, feature_id text NOT NULL, status text NOT NULL DEFAULT 'todo',
-    taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
-    item_kind text NOT NULL DEFAULT 'feature', created_ts bigint, updated_ts bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
 const PLAN_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
     workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL, item_id text NOT NULL,
@@ -70,7 +65,7 @@ async function spawn(spawnId: string, opts: { parent?: string | null; strategy?:
 beforeAll(async () => {
   db = await createFreshPgDb('supervision');
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
-  await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(PLAN_ITEM_CLAIMS_DDL);
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });

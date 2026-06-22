@@ -100,6 +100,11 @@ import { SU_S17_ORIENT_BOOTSTRAP } from './su/S17-orient-bootstrap';
 import { SU_S18_ORIENT_NOT_FOR_SINGLE } from './su/S18-orient-not-for-single';
 import { SU_S19_OVERVIEW_STATE_OF_X } from './su/S19-overview-state-of-x';
 import { SU_S20_OVERVIEW_NOT_FOR_SINGLE } from './su/S20-overview-not-for-single';
+// SU-S21/S22: bulk-endpoint-standardization-2026-06-21 P-007 — does the engineer REACH for the
+// dual-arity bulk READ arg on N items (S21: one work_items:get { ids:[…] } over a per-id loop)
+// and NOT over-apply it on a single known id (S22: the n=1 scalar form, no queue browse)?
+import { SU_S21_BULK_READ_NOT_HAND_LOOP } from './su/S21-bulk-read-not-hand-loop';
+import { SU_S22_BULK_NOT_FOR_SINGLE } from './su/S22-bulk-not-for-single';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
@@ -193,6 +198,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S18_ORIENT_NOT_FOR_SINGLE,
   SU_S19_OVERVIEW_STATE_OF_X,
   SU_S20_OVERVIEW_NOT_FOR_SINGLE,
+  SU_S21_BULK_READ_NOT_HAND_LOOP,
+  SU_S22_BULK_NOT_FOR_SINGLE,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

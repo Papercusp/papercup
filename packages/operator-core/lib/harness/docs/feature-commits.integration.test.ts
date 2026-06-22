@@ -11,6 +11,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
 
@@ -39,11 +40,8 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      workspace_id text NOT NULL, harness_slug text NOT NULL, feature_id text NOT NULL,
-      completion_ref jsonb
-    )`);
+  // P-010 unification: work_items base + hfc/ei compat views.
+  await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = rootSql;
 }, 90_000);
 

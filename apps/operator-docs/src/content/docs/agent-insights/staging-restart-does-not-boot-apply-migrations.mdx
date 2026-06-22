@@ -1,6 +1,12 @@
 ---
 title: "A papercup-staging-api restart does NOT boot-apply migrations"
 description: ":3170 is a secondary host (PAPERCUSP_BACKGROUND_WORKERS=0) and skips the A1 boot-apply by design — apply pending sql/*.sql via the runner directly, not by restarting staging"
+discovered: 2026-06-12
+status: active
+documents:
+  - apps/operator/bin/host-bootstrap.ts
+  - packages/operator-core/lib/db-boot-migrate.ts
+  - packages/operator-core/lib/embedded-pg-discovery.ts
 ---
 
 ## The trap

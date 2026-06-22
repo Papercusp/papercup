@@ -59,24 +59,8 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // FAITHFUL to baseline: NOT-NULL-with-default columns so minimal inserts work; provenance cols nullable.
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.harness_features_consolidated (
-      harness_slug text NOT NULL,
-      feature_id text NOT NULL,
-      title text,
-      workspace_id text NOT NULL,
-      see_also text[] DEFAULT '{}'::text[] NOT NULL,
-      needs_design boolean DEFAULT false NOT NULL,
-      discarded_design_work boolean DEFAULT false NOT NULL,
-      working_users bigint[] DEFAULT '{}'::bigint[] NOT NULL,
-      worked_by_history jsonb DEFAULT '[]'::jsonb NOT NULL,
-      source_plan_slug text,
-      source_plan_item_ids text[],
-      origin text DEFAULT 'local'::text NOT NULL,
-      CONSTRAINT hfc_workspace_nonempty CHECK (workspace_id <> ''),
-      PRIMARY KEY (workspace_id, harness_slug, feature_id)
-    )`);
+  // P-010 unification: work_items is the base table + hfc/ei compat views.
+  await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = rootSql;
 }, 90_000);
 

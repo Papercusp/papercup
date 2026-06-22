@@ -3,7 +3,12 @@ title: Sleep-mode shared-checkout discipline
 description: When working overnight in a shared checkout with parallel agents, every commit must be staged file-by-file with a pre-commit diff check. Skipping this WILL bundle another agent's in-flight work into your commit.
 discovered: 2026-05-25
 tags: [operations, autonomous, shared-checkout, git]
-status: active
+status: superseded
+documents:
+  - packages/operator-core/lib/harness/git-sync/run-git-sync.ts
+plans:
+  - git-sync-auto-commit-2026-06-03
+  - staging-branch-pipeline-2026-06-06
 sidebar:
   order: 17
 ---
