@@ -36,6 +36,9 @@ async function seed(
 beforeAll(async () => {
   db = await createFreshPgDb('hive-survey');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
+  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
+  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   // EI-865 — the frontier anti-joins hive_placements to exclude cursed items, so the
   // table must exist. The migration's trailing GRANT / DO-block is stripped by
   // readMigration's line filter (breaking the DO body); the CREATE TABLE + INDEX is

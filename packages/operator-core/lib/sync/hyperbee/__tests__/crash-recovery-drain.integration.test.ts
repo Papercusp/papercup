@@ -35,7 +35,6 @@ import { buildHarnessFeaturesProjection } from '../projections/harness-features'
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -191,7 +190,6 @@ function crashAfter(handle: BootedHarnessHandle, k: number): BootedHarnessHandle
 describe('Brief S — crash/restart recovery: drain resume (#1) + at-least-once dedup (#4)', () => {
   it('#1 instance crash mid-drain → restart → outbox resumes, no loss, no dup, joiner converges', async () => {
     const dbA: FreshPgDb = await createFreshPgDb('crashA');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     cleanups.push(() => dbA.cleanup());
     const dbB: FreshPgDb = await createFreshPgDb('crashB');
     cleanups.push(() => dbB.cleanup());

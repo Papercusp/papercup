@@ -87,44 +87,26 @@ export default defineTool({
       return r;
     }
 
-    if (args.items?.length || args.lock_ids?.length || args.resources?.length) {
-      const env = await runBulk(
-        bulkItems,
-        async (item) => {
-          const r = await releaseOne(item);
-          return {
-            ok: true as const,
-            ...(item.lock_id ? { lock_id: item.lock_id } : {}),
-            ...(item.resource ? { resource: item.resource } : {}),
-            released: r.released,
-            released_modes: r.releasedModes,
-            exclusive_resources: r.exclusiveResources,
-          };
-        },
-        {
-          keyOf: (item) => ({
-            ...(item.lock_id ? { lock_id: item.lock_id } : {}),
-            ...(item.resource ? { resource: item.resource } : {}),
-          }),
-        },
-      );
-      return bulkContent(env);
-    }
-
-    const r = await releaseOne(bulkItems[0]!);
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            released: r.released,
-            released_modes: r.releasedModes,
-            exclusive_resources: r.exclusiveResources,
-          }),
-        },
-      ],
-    };
+    const env = await runBulk(
+      bulkItems,
+      async (item) => {
+        const r = await releaseOne(item);
+        return {
+          ok: true as const,
+          ...(item.lock_id ? { lock_id: item.lock_id } : {}),
+          ...(item.resource ? { resource: item.resource } : {}),
+          released: r.released,
+          released_modes: r.releasedModes,
+          exclusive_resources: r.exclusiveResources,
+        };
+      },
+      {
+        keyOf: (item) => ({
+          ...(item.lock_id ? { lock_id: item.lock_id } : {}),
+          ...(item.resource ? { resource: item.resource } : {}),
+        }),
+      },
+    );
+    return bulkContent(env);
   },
 });

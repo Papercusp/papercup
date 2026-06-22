@@ -25,11 +25,17 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => vi.clearAllMocks());
 
 describe('locks:release_granular handler', () => {
-  it('releases the lock-set by lock_id (owner-scoped) and returns the freed nodes', async () => {
+  it('wraps a single lock_id release through the keyed bulk envelope (n=1)', async () => {
     relM.mockResolvedValue({ released: ['', 'src', 'src/a.ts'] } as never);
     const out = (await tool.handler({ lock_id: '44444444-4444-4444-4444-444444444444' } as never, {} as never)) as Out;
     expect(relM).toHaveBeenCalledWith({}, 'dom', 'me', '44444444-4444-4444-4444-444444444444');
-    expect(body(out)).toMatchObject({ ok: true, released: ['', 'src', 'src/a.ts'] });
+    expect(body(out)).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [
+        { ok: true, lock_id: '44444444-4444-4444-4444-444444444444', released: ['', 'src', 'src/a.ts'] },
+      ],
+    });
   });
 
   it('releases selected lock_ids as a keyed bulk envelope', async () => {

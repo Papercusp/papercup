@@ -24,7 +24,6 @@ import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
 import type { HiveMemberRow } from '../projections/hive-members';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -60,7 +59,6 @@ describe('hive_members federation capture trigger (real PG, mig 189)', () => {
 
   beforeAll(async () => {
     db = await createFreshPgDb('hive_members_fed_trg');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
 
     await db.sql.unsafe(`
       DO $r$ BEGIN

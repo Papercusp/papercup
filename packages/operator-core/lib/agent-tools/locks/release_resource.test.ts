@@ -42,19 +42,31 @@ describe('locks:release_resource handler', () => {
     expect(releaseM).not.toHaveBeenCalled();
   });
 
-  it('releases a shared hold and does NOT broadcast (nothing exclusive freed)', async () => {
+  it('wraps a single lock_id release through the keyed bulk envelope and does NOT broadcast for shared holds', async () => {
     releaseM.mockResolvedValue({ released: ['L1'], releasedModes: ['shared'], exclusiveResources: [], waiters: {} } as never);
     const b = body(await call({ lock_id: '11111111-1111-1111-1111-111111111111' }));
-    expect(b).toMatchObject({ ok: true, released: ['L1'], released_modes: ['shared'], exclusive_resources: [] });
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [
+        { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: ['L1'], released_modes: ['shared'], exclusive_resources: [] },
+      ],
+    });
     expect(backUpM).not.toHaveBeenCalled();
   });
 
-  it('broadcasts "back up" to waiters when an exclusive resource is freed', async () => {
+  it('wraps a single resource release through the keyed bulk envelope and broadcasts when exclusive', async () => {
     releaseM.mockResolvedValue({
       released: ['L2'], releasedModes: ['exclusive'], exclusiveResources: ['dev-server'], waiters: { 'dev-server': ['w1'] },
     } as never);
     const b = body(await call({ resource: 'dev-server' }));
-    expect(b).toMatchObject({ ok: true, exclusive_resources: ['dev-server'] });
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [
+        { ok: true, resource: 'dev-server', released: ['L2'], released_modes: ['exclusive'], exclusive_resources: ['dev-server'] },
+      ],
+    });
     expect(backUpM).toHaveBeenCalledTimes(1);
     expect(backUpM.mock.calls[0]![0]).toMatchObject({ resource: 'dev-server', waiters: ['w1'] });
   });

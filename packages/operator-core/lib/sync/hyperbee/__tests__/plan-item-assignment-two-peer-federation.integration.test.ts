@@ -38,7 +38,6 @@ import { drainOutboxOnce } from '../outbox-drain';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
 import { buildPlanItemAssignmentsProjection } from '../projections/plan-item-assignments';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -211,7 +210,6 @@ describe('Phase-4 (a): a plan-item assignment federates A↔B end-to-end through
     'an assignment written on A lands in B (and B→A), with origin=remote + the echo-loop terminating',
     async () => {
       const dbA: FreshPgDb = await createFreshPgDb('piA');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
       cleanups.push(() => dbA.cleanup());
       const dbB: FreshPgDb = await createFreshPgDb('piB');
       cleanups.push(() => dbB.cleanup());

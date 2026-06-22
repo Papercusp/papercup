@@ -1,8 +1,7 @@
 /**
  * release.test.ts — locks:release handler selected-list bulk support.
  *
- * Pins the additive lock_ids:[…] path without changing legacy single/all_mine
- * response shapes used by lock hooks.
+ * Pins that selected lock releases use the shared bulk contract, including n=1.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/release.test.ts
  */
@@ -34,17 +33,22 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  routeM.mockImplementation(async (_domain, op: { remote?: { payload?: { lockId?: string } } }) => ({
-    value: { released: [`released:${op.remote?.payload?.lockId ?? 'all'}`] },
+  routeM.mockImplementation(async (_domain, op) => ({
+    value: { released: [`released:${(op.remote?.payload as { lockId?: string } | undefined)?.lockId ?? 'all'}`] },
   }) as never);
   releaseResourcesM.mockResolvedValue({ released: 0, exclusiveResources: [], waiters: {} } as never);
 });
 
 describe('locks:release handler', () => {
-  it('keeps the legacy single lock_id response shape', async () => {
+  it('wraps a single lock_id release through the keyed bulk envelope (n=1)', async () => {
     const b = body(await call({ lock_id: '11111111-1111-1111-1111-111111111111' }));
-    expect(b).toMatchObject({ ok: true, released: ['released:11111111-1111-1111-1111-111111111111'], owner: 'me' });
-    expect(b.results).toBeUndefined();
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [
+        { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: ['released:11111111-1111-1111-1111-111111111111'] },
+      ],
+    });
   });
 
   it('releases selected lock_ids as a keyed bulk envelope', async () => {

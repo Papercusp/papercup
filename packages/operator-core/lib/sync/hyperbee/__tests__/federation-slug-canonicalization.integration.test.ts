@@ -18,7 +18,6 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -59,7 +58,6 @@ describe('federation harness_slug canonicalization (migration 359, real PG)', ()
 
   beforeAll(async () => {
     db = await createFreshPgDb('fed_canon');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     await db.sql.unsafe(`
       DO $r$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_app') THEN CREATE ROLE harness_app NOLOGIN; END IF;

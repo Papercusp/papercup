@@ -106,6 +106,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();

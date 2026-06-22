@@ -24,7 +24,6 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { backfillLocalState } from './backfill-local-state';
 import type { BootedHarnessHandle } from './boot';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../test/_work-items-schema";
 
 const WS = 'ws_backfill';
 const SLUG = 'backfill';
@@ -121,7 +120,6 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
 
   beforeAll(async () => {
     db = await createFreshPgDb('backfill');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     // The consolidated tables (subset of the real columns the SELECT touches),
     // the outbox, and the marker table. NO capture trigger here — the backfill
     // INSERTs into the outbox itself, so the trigger is irrelevant; and we want

@@ -103,7 +103,7 @@ export default defineTool({
       }
     }
 
-    if (args.lock_ids?.length) {
+    if (lockIds.length > 0) {
       const env = await runBulk(
         lockIds,
         async (lockId) => {
@@ -119,7 +119,7 @@ export default defineTool({
     // authority the matching acquire routed to, so a lock taken on a remote authority's
     // store is actually freed there (else it lingers to TTL). N=1 → op.local() passthrough
     // (no peers); a routing fault degrades to the raw local release.
-    const result = await releaseFileLocks(args.lock_id, Boolean(args.all_mine));
+    const result = await releaseFileLocks(undefined, true);
 
     // Session-end (all_mine) also clears this owner's NAMED-resource locks
     // (P-019) — file locks and resource locks live in separate tables, so one

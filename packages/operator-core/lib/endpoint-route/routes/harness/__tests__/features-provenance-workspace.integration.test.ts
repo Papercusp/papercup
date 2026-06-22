@@ -21,7 +21,6 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { withTestSchema } from '@papercusp/test-config';
 import { updateFeatureProvenance } from '../features';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../../test/_work-items-schema";
 
 const SLUG = `ei124-${randomBytes(4).toString('hex')}`;
 const FID = `F-EI124-${randomBytes(4).toString('hex').toUpperCase()}`;

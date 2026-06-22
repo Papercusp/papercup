@@ -35,7 +35,6 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { buildHarnessPlansProjection, type HarnessPlanRow } from '../projections/harness-plans';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -80,7 +79,6 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
 
   beforeAll(async () => {
     db = await createFreshPgDb('ei117_replay_guard');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
 
     await db.sql.unsafe(`
       DO $r$ BEGIN

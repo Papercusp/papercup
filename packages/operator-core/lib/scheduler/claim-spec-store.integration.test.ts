@@ -15,7 +15,6 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../test/_work-items-schema";
 
 // Keep the import chain (claim-spec-store → get-next → work-items) safe at module load.
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -38,7 +37,6 @@ const mig = (f: string) =>
 let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('beespecs');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = db.sql;
   await db.sql.unsafe(mig('372-bee-claim-specs.sql'));
   // Minimal harness_features_consolidated (just the columns listRunningClaims reads) — self-contained.

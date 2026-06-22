@@ -36,26 +36,16 @@ export default defineTool({
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readIdentity(ctx);
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
-    if (lockIds.length > 1 || args.lock_ids?.length) {
-      const env = await runBulk(
-        lockIds,
-        async (lockId) => {
-          const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-            releaseGranular(tx, coordinationDomain, ownerId, lockId),
-          );
-          return { ok: true as const, lock_id: lockId, released: r.released };
-        },
-        { keyOf: (lockId) => ({ lock_id: lockId }) },
-      );
-      return bulkContent(env);
-    }
-
-    const lockId = lockIds[0]!;
-    const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-      releaseGranular(tx, coordinationDomain, ownerId, lockId),
+    const env = await runBulk(
+      lockIds,
+      async (lockId) => {
+        const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+          releaseGranular(tx, coordinationDomain, ownerId, lockId),
+        );
+        return { ok: true as const, lock_id: lockId, released: r.released };
+      },
+      { keyOf: (lockId) => ({ lock_id: lockId }) },
     );
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, released: r.released }) }],
-    };
+    return bulkContent(env);
   },
 });

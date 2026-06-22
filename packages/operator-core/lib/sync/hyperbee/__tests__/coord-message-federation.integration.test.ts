@@ -35,7 +35,6 @@ vi.mock('../../../agent-tools/coordination/inbox-wake', () => ({
   })),
 }));
 import { wakeRecipients } from '../../../agent-tools/coordination/inbox-wake';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -75,7 +74,6 @@ describe('coord_event_log federation (real PG)', () => {
 
   beforeAll(async () => {
     db = await createFreshPgDb('coord_msg_fed');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
     await db.sql.unsafe(`
       DO $r$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_app') THEN CREATE ROLE harness_app NOLOGIN; END IF;

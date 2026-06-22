@@ -35,6 +35,9 @@ async function seed(
 beforeAll(async () => {
   db = await createFreshPgDb('wake-frontier');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
+  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
+  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
 }, 90_000);
 
 afterAll(async () => {

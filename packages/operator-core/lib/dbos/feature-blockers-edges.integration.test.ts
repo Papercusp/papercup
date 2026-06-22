@@ -19,13 +19,11 @@ vi.mock('@papercusp/db-org', async () => {
 
 import { getFeatureBlockers, featureBlockEdges, syncFeatureBlockEdges } from './feature-blockers-edges';
 import { readFrontierFeatures } from './orchestrator-loop';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../test/_work-items-schema";
 
 let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('ei1-feature-blockers');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = db.sql;
   // coord_links (migration 123 shape) + its unique edge index, plus the post-155
   // feature surface: NO blocked_by column (blocking lives in coord_links), with the

@@ -112,6 +112,10 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql)
+  await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
+  await db.sql.unsafe(readMigration('241-signal-provenance-origin.sql')).simple();
+  await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
+  await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
   await db.sql.unsafe(`

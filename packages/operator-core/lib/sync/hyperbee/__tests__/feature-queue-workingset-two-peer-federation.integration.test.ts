@@ -34,7 +34,6 @@ import {
   type FeatureWorkingSetRow,
 } from '../projections/feature-working-set';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 afterEach(rigAfterEach);
 

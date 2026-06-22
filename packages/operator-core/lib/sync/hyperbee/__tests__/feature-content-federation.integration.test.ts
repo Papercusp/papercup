@@ -84,7 +84,6 @@ import { buildHiveMembersProjection, type HiveMemberRow } from '../projections/h
 import type { HarnessIssueRow } from '../projections/issues';
 import type { ProvenanceContext } from '../projection';
 import { PendingMembershipContent } from '../pending-membership-content';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../../../../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../apps/operator/lib/sync/hyperbee/__tests__ → repo root is six levels up.
@@ -437,7 +436,6 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
     async () => {
       // ── Two SEPARATE databases — peer A's DB and peer B's DB. ──
       const dbA: FreshPgDb = await createFreshPgDb('fedA');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
       cleanups.push(() => dbA.cleanup());
       const dbB: FreshPgDb = await createFreshPgDb('fedB');
       cleanups.push(() => dbB.cleanup());
