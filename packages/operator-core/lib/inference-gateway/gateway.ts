@@ -1355,7 +1355,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
             (!unifiedRejected || shouldRetry);
           let usageCapResetAt: number | undefined;
           if (up.body) {
-            const peek = await peekBody(up.body, USAGE_LIMIT_PEEK_BYTES);
+            let peek: { head: Buffer; rest: Readable | null };
+            try {
+              peek = await withDeadline(peekBody(up.body, USAGE_LIMIT_PEEK_BYTES), upstreamBodyIdleTimeoutMs, 'peekBody');
+            } catch {
+              // BOUNDED peek (2026-06-22 audit F3): peekBody's reader isn't wired to ac.abort, so a non-200 body
+              // that's ACK'd but never arrives would hold the slot past the stall deadline. Cap it + treat as
+              // un-peekable (empty head → no usage-cap/org classification → forwarded as a normal error).
+              try {
+                await up.body.cancel();
+              } catch {
+                /* drain the stalled body */
+              }
+              peek = { head: Buffer.alloc(0), rest: null };
+            }
             peekedHead = peek.head;
             peekedRest = peek.rest;
             const text = peek.head.toString('utf8');
@@ -1396,7 +1409,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // (avi-storewolf, 2026-06-18). Treat it like a hard cap: pause this account out of rotation +
           // fail over to a healthy one. A DIFFERENT 403 (not org/subscription) is forwarded unchanged.
           if (up.body) {
-            const peek = await peekBody(up.body, USAGE_LIMIT_PEEK_BYTES);
+            let peek: { head: Buffer; rest: Readable | null };
+            try {
+              peek = await withDeadline(peekBody(up.body, USAGE_LIMIT_PEEK_BYTES), upstreamBodyIdleTimeoutMs, 'peekBody');
+            } catch {
+              // BOUNDED peek (2026-06-22 audit F3): peekBody's reader isn't wired to ac.abort, so a non-200 body
+              // that's ACK'd but never arrives would hold the slot past the stall deadline. Cap it + treat as
+              // un-peekable (empty head → no usage-cap/org classification → forwarded as a normal error).
+              try {
+                await up.body.cancel();
+              } catch {
+                /* drain the stalled body */
+              }
+              peek = { head: Buffer.alloc(0), rest: null };
+            }
             peekedHead = peek.head;
             peekedRest = peek.rest;
             if (ORG_DISALLOWED_RE.test(peek.head.toString('utf8'))) {
@@ -1603,7 +1629,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable' }, gateway: true });
       return;
     }
-    const bodyBuf = await readBody(req);
+    // BOUNDED body read (2026-06-22 audit F1): a Codex bee that stalls mid-upload must not hold this admission
+    // slot forever — the Claude proxy's ceiling timer covers its readBody; the codex path had none, and
+    // proxyOpenAi never registers in inFlightReg so the self-heal valve can't reclaim it. Cap it + free the slot.
+    let bodyBuf: Buffer;
+    try {
+      bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex readBody '${active.accountId}'`);
+    } catch {
+      try {
+        req.destroy();
+      } catch {
+        /* already torn down */
+      }
+      if (!res.headersSent) {
+        sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: Codex request body read stalled; retry shortly' }, gateway: true });
+      }
+      return;
+    }
     // Stream detection — PARITY with the Claude proxy (backlog #1 / 2026-06-22 audit follow-up): a stream:true
     // request gets the SHORT TTFB headers deadline + a per-chunk body-idle guard; non-streaming keeps the
     // generous headers deadline. Without this a stalled codex STREAM squatted its admission slot for the full
