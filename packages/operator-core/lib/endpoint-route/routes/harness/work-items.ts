@@ -17,7 +17,14 @@
  * `FEATURE_COLS` / the canonical `WorkItem` facade — deliberately, because widening
  * FEATURE_COLS breaks ~25 integration tests (D-009). The pure merge is unit-tested.
  */
-import { listWorkItems, isWorkItemKind, type WorkItem, type WorkItemKind } from '../../../work-items';
+import {
+  listWorkItems,
+  countWorkItems,
+  isWorkItemKind,
+  WORK_ITEMS_MAX_LIMIT,
+  type WorkItem,
+  type WorkItemKind,
+} from '../../../work-items';
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -101,7 +108,7 @@ export async function listEnrichedWorkItems(opts: {
   state?: string;
   limit?: number;
 }): Promise<EnrichedWorkItem[]> {
-  const limit = Math.min(opts.limit ?? 200, 500);
+  const limit = Math.min(opts.limit ?? 200, WORK_ITEMS_MAX_LIMIT);
   const workItems = await listWorkItems({ harness: opts.harness, kind: opts.kind, state: opts.state, limit });
   const featureIds = workItems.filter((w) => w.family === 'feature').map((w) => w.id);
   const { planMap, spineMap } = await fetchDimensionMaps(opts.harness, featureIds);
@@ -118,10 +125,16 @@ const getWorkItems = defineTool({
     const kindParam = url.searchParams.get('kind');
     const kind = kindParam && isWorkItemKind(kindParam) ? kindParam : undefined;
     const state = url.searchParams.get('state') || undefined;
-    const limit = Math.min(Number(url.searchParams.get('limit') ?? '200') || 200, 500);
+    const limit = Math.min(Number(url.searchParams.get('limit') ?? '200') || 200, WORK_ITEMS_MAX_LIMIT);
     try {
-      const enriched = await listEnrichedWorkItems({ harness: slug, kind, state, limit });
-      return Response.json({ harness: slug, count: enriched.length, workItems: enriched });
+      const [enriched, total] = await Promise.all([
+        listEnrichedWorkItems({ harness: slug, kind, state, limit }),
+        countWorkItems({ harness: slug, kind, state }),
+      ]);
+      // `count` = rows returned (may be capped); `total` = the true count in the
+      // store for this filter, so a consumer never reads the downloaded length
+      // as the total.
+      return Response.json({ harness: slug, count: enriched.length, total, workItems: enriched });
     } catch (e) {
       return Response.json({ error: `work-items list failed: ${(e as Error).message}` }, { status: 500 });
     }

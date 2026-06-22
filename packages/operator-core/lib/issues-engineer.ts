@@ -372,6 +372,31 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
   return rows.map(toIssue);
 }
 
+/**
+ * COUNT companion to {@link listIssues} — the true total for the same filter,
+ * minus order/limit. Lets a capped read render "N of TOTAL" instead of the
+ * downloaded length. Topic-filtered counts fall back to listIssues (the topic
+ * edge join is rare and not on the count hot-path).
+ */
+export async function countIssues(filter: ListIssuesFilter = {}): Promise<number> {
+  if (filter.topic) return (await listIssues({ ...filter, limit: 100_000 })).length;
+  const { sql } = getOrgPg();
+  const kindSet: readonly IssueStoreKind[] =
+    filter.kind ? [filter.kind] : filter.kinds ?? ISSUE_KINDS;
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${issuesScopeWorkspace()}
+       AND kind = ANY(${kindSet as string[]}::text[])
+       AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
+       AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
+       AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
+       AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+       AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+       AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}`;
+  return rows[0]?.n ?? 0;
+}
+
 export async function getIssue(id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`

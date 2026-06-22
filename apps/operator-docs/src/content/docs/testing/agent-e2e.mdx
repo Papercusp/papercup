@@ -46,6 +46,12 @@ Rust bridge inside the webview, so DOM queries, `eval`, `click`,
 `type`, IPC monitoring, and DOM-targeted screenshots all work without
 focus-stealing or OCR.
 
+The shell also opens a **second window** — a ghostty terminal running the
+zellij `pui` dock with the live agent TUIs (the **Sentinel chat** there is a
+Claude-Code session, and the **Queen** runs beside it). `tauri-agent-tools`
+**cannot** see that window; drive/observe it with `zellij action` +
+screenshots — see **§16**.
+
 Marketing/website surfaces (`/`, `/marketplace`, `/support`, `/docs`,
 auth pages) deliberately omit some app-side affordances (e.g. the
 Oracle dock); don't flag those as failures — see the route table for
@@ -1524,3 +1530,87 @@ the expando path is only needed for **value-tracked** inputs. Also remember a
 value injected this way bypasses UI constraints: only pass values the real
 control could produce (e.g. an option that exists in the select), or you are
 testing a state the user can never reach.
+
+## 16. Driving the zellij `pui` chat dock (the Sentinel / Queen TUIs)
+
+Everything above drives the **Tauri webview**. The desktop ALSO opens a *second*
+window: a **ghostty terminal running a zellij `pui` dock** — the live agent TUIs
+(owner directive 2026-06-11: "every agent chat is a LIVE TUI"). This is where the
+**Sentinel chat** and the **Queen** actually run for the user. `tauri-agent-tools`
+**cannot see it** (it's not the webview) — drive it with `zellij action` +
+window screenshots instead.
+
+### 16.1 What's in the dock
+
+Launched by `ghostty … -e pui chat`, which starts a zellij session from
+`~/.papercusp/pui-chat-dock.kdl` (three tabs: `this hive` / `network` / `plans`).
+The `this hive` tab stacks:
+
+| Pane | Command it runs | What it is |
+|---|---|---|
+| 👁 overwatch | `pui brain-view --overwatch` | read-only live transcript |
+| ♛ queen | `pui brain-view --queen` | the Queen's brain transcript (read-only) |
+| ♛✉ prompt / ⏸ wakes / ✉ mail / ☑ work | `pui {prompt,wake,mail,work}-pane --queen` | Queen control panes |
+| **🛡 sentinel** | **`psu --no-picker --agent=claude --role=operator`** | **the Sentinel chat — a Claude Code session acting as the operator, voiced via ElevenLabs** |
+| colony | `pui dock-driver` | reactively appends one `claude --resume` TUI per live bee |
+| ⏸ wakes | `pui wake-pane` | fleet-wide wake board |
+
+> ⚠ **The Sentinel chat is a `psu`/Claude-Code TUI — NOT the `apps/tui` (`pui`)
+> ratatui converse client.** They are different surfaces; don't conflate "the TUI
+> chat" with `apps/tui`. (The `apps/tui` ratatui is a separate interactive
+> converse client; it is not what this dock's sentinel pane runs.)
+
+### 16.2 Find the session + window
+
+```sh
+zellij ls                                    # → pui-dock-<pid> (the live one; ignore "EXITED")
+DISPLAY=:0 wmctrl -l | grep pui-dock         # → ghostty window id (title "pui-dock-… | 🛡 sentinel")
+```
+
+### 16.3 Observe — read-only, always safe
+
+```sh
+# text of the FOCUSED pane (strip ANSI for grepping):
+zellij -s pui-dock-<pid> action dump-screen | sed 's/\x1b\[[0-9;]*m//g'
+# the whole dock (all panes) as the faithful "what the user sees":
+DISPLAY=:0 import -window <window-id> /tmp/dock.png
+```
+
+`dump-screen` captures only the **focused** pane (no path arg in this zellij —
+it writes to stdout). To read another pane, focus it (16.4) first, or use the
+window screenshot (which shows the whole stack).
+
+### 16.4 Interact — ⚠ these are LIVE agents
+
+```sh
+zellij -s pui-dock-<pid> action write-chars "your message"  # types into the FOCUSED pane's composer
+zellij -s pui-dock-<pid> action write 13                    # Enter (submit)
+zellij -s pui-dock-<pid> action write 127                   # Backspace
+zellij -s pui-dock-<pid> action move-focus down             # move focus between panes
+```
+
+- **Writes hit the FOCUSED pane** — confirm focus with `dump-screen` before
+  typing (the 🛡 sentinel pane is `focus=true` in the layout, so it's usually it).
+- **Render race:** a `write-chars` immediately followed by `dump-screen` often
+  doesn't show the text yet (the terminal hasn't repainted). Re-dump, or space
+  the `zellij action` calls out (each CLI call is a round-trip, which usually
+  suffices). For a non-destructive smoke test, type a marker and delete it with
+  `write 127` — **without** Enter — then confirm via `dump-screen`.
+- **Enter submits a real turn** to a real Claude-Code operator/Queen — it will
+  act on it. Never drive the user's live panes while they're working without
+  permission.
+- Dock keybinds differ from stock zellij (set in the layout): **Tab** =
+  fullscreen the focused pane (not prompt-complete), **Alt+↑/↓** = scroll the
+  agent stack, **↑/↓** = forwarded to the pane as cursor up/down.
+
+### 16.5 What you can't verify headlessly right now
+
+- A **brain reply** (Sentinel/Queen) needs LLM capacity. If the account pool is
+  rate-starved (every account in a 429 cooldown — surfaced as `[infra-liveness]
+  all N LLM pool account(s) paused` escalations in the operator conversation),
+  the panes render but won't answer. Verify *rendering* now; defer
+  *reply*-verification until capacity returns.
+- A pane only shows the Phase-2 `apps/tui` cards if it's running the `apps/tui`
+  ratatui (and a freshly-built `pui` binary) — **not** the `psu`/Claude-Code
+  sentinel pane above. Check the running binary's mtime vs the build, and the
+  pane's launch command, before concluding "cards work in the TUI."

@@ -4,6 +4,13 @@ description: "Shared-hive federation bugs pass the hermetic suite but fail the r
 discovered: 2026-06-20
 tags: [shared-hive, federation, witnessing, two-instance-smoke, re-key, c-001, a-003, green-rig-red-binary]
 status: active
+documents:
+  - papercusp-desktop/bin/live-federation-gate.sh
+  - packages/operator-core/lib/sync/hyperbee/projections/register-all.ts
+  - packages/operator-core/lib/sync/hyperbee/hive-epoch-boundary-wiring.ts
+plans:
+  - shared-hive-rekey-2026-06-19
+  - shared-hive-member-content-federation-2026-06-20
 ---
 
 ## The trap: green rig, red binary

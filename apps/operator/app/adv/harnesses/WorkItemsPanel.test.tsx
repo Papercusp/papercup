@@ -25,14 +25,26 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows, onRowClick }: { rows: { id: string }[]; onRowClick?: (r: { id: string }) => void }) => (
-    <div data-testid="grid">
-      {rows.map((r) => (
-        <button key={r.id} data-testid={`row-${r.id}`} onClick={() => onRowClick?.(r)}>{r.id}</button>
-      ))}
-    </div>
-  ),
+  // The panel renders virtualized (`virtualMode`, no `rows`); the mock resolves
+  // rows from whichever prop is present so the assertions are unchanged.
+  RichGrid: ({ rows, virtualMode, onRowClick }: {
+    rows?: { id: string }[];
+    virtualMode?: { totalRows: number; rowAt: (i: number) => { id: string } };
+    onRowClick?: (r: { id: string }) => void;
+  }) => {
+    const data = rows ?? (virtualMode ? Array.from({ length: virtualMode.totalRows }, (_, i) => virtualMode.rowAt(i)) : []);
+    return (
+      <div data-testid="grid">
+        {data.map((r) => (
+          <button key={r.id} data-testid={`row-${r.id}`} onClick={() => onRowClick?.(r)}>{r.id}</button>
+        ))}
+      </div>
+    );
+  },
   usePersistedColumnWidths: () => [{}, vi.fn()],
+}));
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: () => ({ measure: vi.fn(), getVirtualItems: () => [], getTotalSize: () => 0 }),
 }));
 vi.mock('../../harness/filters', () => ({
   useColumnFilters: (_cols: unknown, rows: unknown[]) => ({
@@ -105,6 +117,17 @@ describe('WorkItemsPanel', () => {
     expect(screen.getByTestId('row-WI-1')).toBeTruthy();
     expect(screen.getByTestId('row-F-2')).toBeTruthy();
     expect(setTitle).toHaveBeenCalledWith('Work items · alpha (2)');
+  });
+
+  it('shows "N of TOTAL" when the read was capped (true total on row[0]._meta)', () => {
+    // Resolver stashes the true store total on the first row; the read returned
+    // 2 rows but 57 exist → the title must report both, never the downloaded 2.
+    wiState = {
+      loading: false, fetching: false, error: null,
+      data: [{ ...ROWS[0], _meta: { total: 57 } }, ROWS[1]],
+    };
+    renderPanel();
+    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (2 of 57)');
   });
 
   it('applies the quick-search substring filter (wq)', () => {

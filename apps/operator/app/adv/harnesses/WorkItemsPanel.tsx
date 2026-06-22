@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
@@ -49,7 +50,24 @@ export interface WorkItemRow {
   origin: string | null;
   auditVerdict: string | null;
   verifiedAuthorGithubUserId: number | null;
+  /**
+   * Page metadata stashed on the FIRST row by the `workItems.byHarness` resolver
+   * (the flat-row sync contract carries no envelope — same pattern as coord.feed).
+   * `total` is the TRUE count in the store for this harness, independent of how
+   * many rows the capped read returned.
+   */
+  _meta?: { total: number };
 }
+
+/**
+ * Fetch ceiling for the live work-items read. The grid is virtualized
+ * (`virtualMode`), so render cost no longer scales with row count — this is a
+ * generous bound that loads a harness's full work-item set in practice (local
+ * desktop app, all data is local). It exists only to bound the LIVE sync query's
+ * per-invalidation re-assembly; when a harness exceeds it the header shows the
+ * honest "N of TOTAL" rather than truncating-as-total. Mirrors WORK_ITEMS_MAX_LIMIT.
+ */
+const WORK_ITEMS_FETCH_LIMIT = 2000;
 
 // Grid-cell truncation (native title= is the approved pattern for dynamic
 // per-row truncation tooltips — see design/gotchas).
@@ -77,7 +95,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
 
   const query = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug, limit: 300 },
+    args: { harnessSlug: slug, limit: WORK_ITEMS_FETCH_LIMIT },
     enabled: Boolean(slug),
   });
   const items = query.loading ? null : query.data;
@@ -95,9 +113,15 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const isTrusted = (r: WorkItemRow): boolean =>
     r.verifiedAuthorGithubUserId != null && trustedSet.has(r.verifiedAuthorGithubUserId);
 
+  // True total in the store (stashed on the first row's `_meta` by the resolver),
+  // falling back to the downloaded length. The title shows "N of TOTAL" only when
+  // the read was actually capped, so the count is never a downloaded-length lie.
+  const total = items?.[0]?._meta?.total ?? items?.length ?? 0;
   useEffect(() => {
-    if (items) api.setTitle(`Work items · ${slug} (${items.length})`);
-  }, [items, slug, api]);
+    if (!items) return;
+    const n = items.length;
+    api.setTitle(`Work items · ${slug} (${total > n ? `${n} of ${total}` : total})`);
+  }, [items, total, slug, api]);
 
   const columns: ColumnDef<WorkItemRow>[] = [
     {
@@ -262,6 +286,20 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     );
   }, [cf.rows, search]);
 
+  // Virtualized rows — only the visible window mounts as DOM, so the grid scales
+  // to the full work-item set without the per-row render cost that the old
+  // limit:300 cap was quietly papering over. (Same pattern as AdvAgentsPanel.)
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: filtered.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 30,
+    overscan: 12,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [filtered, rowVirtualizer]);
+
   if (!slug) return <div className="pc-advpanel__empty">Pick a harness to view its work items.</div>;
 
   return (
@@ -302,10 +340,15 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           {items.length === 0 ? 'No work items for this harness.' : 'No work items match the filter.'}
         </div>
       ) : (
-        <div style={{ flex: 1, minHeight: 0 }}>
+        <div ref={scrollRef} style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
           <RichGrid<WorkItemRow>
+            inline
             columns={columns}
-            rows={filtered}
+            virtualMode={{
+              virtualizer: rowVirtualizer,
+              totalRows: filtered.length,
+              rowAt: (i) => filtered[i],
+            }}
             resizableColumns
             columnWidths={colWidths}
             onColumnWidthsChange={setColWidths}

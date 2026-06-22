@@ -1,6 +1,11 @@
 ---
 title: "Spawns silently fell to `omp -p` after a settings save — empty config used to delete the host's AGENT_CMD env"
 description: "A /settings/agent save with empty cmd/models deleted the .env.local-provided AGENT_CMD/AGENT_MODELS from the live operator process until restart (EI-337, fixed). Symptom signature + the boot-env-restore rule."
+discovered: 2026-06-11
+status: active
+documents:
+  - packages/operator-core/lib/agent-config.ts
+  - packages/operator-core/lib/agent-config-env.test.ts
 ---
 
 **Symptom signature (what it looked like):** fleet spawns finish in ~4s with

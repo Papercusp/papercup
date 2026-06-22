@@ -57,6 +57,7 @@ import {
   getIssue,
   getIssueDetail,
   listIssues,
+  countIssues,
   setIssueState,
   claimIssue,
   releaseIssue,
@@ -81,6 +82,16 @@ export const FEATURE_FAMILY_KINDS: readonly FeatureFamilyKind[] = ['feature', 'r
 // delegated-work record. It lives in engineer_issues alongside bug|change but is
 // excluded from the issues:* surface (listIssues default).
 export const ISSUE_FAMILY_KINDS: readonly IssueStoreKind[] = ['bug', 'change', 'task'];
+
+/**
+ * Hard ceiling for a single work-items LIST read (both families). Local desktop
+ * app + a virtualized grid (RichGrid `virtualMode`) means render cost no longer
+ * scales with row count, so this is generous — it exists only to bound the
+ * per-invalidation re-assembly + serialization of the LIVE sync query, not the
+ * UI. A read that hits this ceiling is reported honestly via `countWorkItems`
+ * ("N of TOTAL"), never silently truncated-as-total.
+ */
+export const WORK_ITEMS_MAX_LIMIT = 2000;
 export const WORK_ITEM_KINDS: readonly WorkItemKind[] = [...FEATURE_FAMILY_KINDS, ...ISSUE_FAMILY_KINDS];
 
 export function familyOf(kind: string): WorkItemFamily {
@@ -369,7 +380,7 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
 /** Cross-kind list. Default = top-level items only (chunks surface under their parent, D-004). */
 export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
-  const limit = Math.min(filter.limit ?? 100, 500);
+  const limit = Math.min(filter.limit ?? 100, WORK_ITEMS_MAX_LIMIT);
   // assignedBy is an issue-family-only concept, so it excludes all feature rows.
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
   const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
@@ -417,6 +428,55 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
 
   out.sort(filter.orderByRank ? compareByHeadOfLine : compareByRecency);
   return out.slice(0, limit);
+}
+
+/**
+ * COUNT companion to {@link listWorkItems} — the true total across BOTH families
+ * for the same filter, minus limit/order. A capped list read pairs with this to
+ * show "N of TOTAL" instead of letting the downloaded length masquerade as the
+ * total. Two cheap COUNT(*)s (one per family), mirroring listWorkItems' WHERE
+ * exactly so the total is consistent with what the list would return uncapped.
+ */
+export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<number> {
+  const { sql } = getOrgPg();
+  const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
+  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  let total = 0;
+
+  if (wantFeature) {
+    const ws = activeWorkspaceId();
+    const rows = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.harness_features_consolidated
+       WHERE item_kind IN ('feature', 'research-task', 'chunk')
+         AND workspace_id = ${ws}
+         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
+         AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
+         AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
+         AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
+         AND ${
+           filter.parent
+             ? sql`parent_id = ${filter.parent}`
+             : filter.includeChildren
+               ? sql`TRUE`
+               : sql`(parent_id IS NULL OR parent_id = '')`
+         }`;
+    total += rows[0]?.n ?? 0;
+  }
+
+  // Issues are always top-level, so a `parent` filter excludes them (mirrors listWorkItems).
+  if (wantIssue && !filter.parent) {
+    total += await countIssues({
+      kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
+      kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
+      scope: filter.harness ? `harness:${filter.harness}` : undefined,
+      state: (filter.state as IssueState) || undefined,
+      assignee: filter.assignee,
+      assignedBy: filter.assignedBy,
+    });
+  }
+
+  return total;
 }
 
 /** Resolve one work-item by id, searching both kind-tables (ids are disjoint across families). */

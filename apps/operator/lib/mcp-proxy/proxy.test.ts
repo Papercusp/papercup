@@ -1,0 +1,107 @@
+/**
+ * Resilient MCP proxy tests (P-005). Pins the load-bearing safety invariant
+ * (retry ONLY a refused/pre-connect upstream — never replay a call that may have
+ * reached :3070, so a non-idempotent tools/call is never double-applied) plus the
+ * passthrough + refused-then-recovers behavior against in-process stub upstreams.
+ */
+import { describe, it, expect, afterEach } from 'vitest';
+import http from 'node:http';
+import { shouldRetry, createMcpProxy } from './proxy';
+
+describe('shouldRetry — refused-only + in-window (no double-execution)', () => {
+  it('retries when NOT connected and within the window', () => {
+    expect(shouldRetry(false, 1_000, 45_000)).toBe(true);
+  });
+  it('does NOT retry once connected (the request may already be processed at :3070)', () => {
+    expect(shouldRetry(true, 1_000, 45_000)).toBe(false);
+  });
+  it('does NOT retry past the window even if still refused', () => {
+    expect(shouldRetry(false, 46_000, 45_000)).toBe(false);
+  });
+});
+
+const servers: http.Server[] = [];
+afterEach(() => {
+  for (const s of servers) s.close();
+  servers.length = 0;
+});
+
+function track<T extends http.Server>(s: T): T {
+  servers.push(s);
+  return s;
+}
+function port(s: http.Server): number {
+  return (s.address() as { port: number }).port;
+}
+function listen(s: http.Server, p = 0): Promise<http.Server> {
+  return new Promise((res) => s.listen(p, '127.0.0.1', () => res(s)));
+}
+function freePort(): Promise<number> {
+  return new Promise((res) => {
+    const s = http.createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const p = port(s);
+      s.close(() => res(p));
+    });
+  });
+}
+function request(p: number, body = '{"jsonrpc":"2.0"}'): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port: p, method: 'POST', path: '/api/mcp' }, (res) => {
+      let b = '';
+      res.on('data', (d) => (b += d));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
+    });
+    r.on('error', reject);
+    r.end(body);
+  });
+}
+
+describe('createMcpProxy — forwarding + restart recovery', () => {
+  it('passes a request through to the upstream and returns its response', async () => {
+    const upstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 50, log: () => {} }));
+    await listen(proxy);
+
+    const r = await request(port(proxy));
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"ok"}');
+  });
+
+  it('RETRIES a refused upstream and recovers when :3070 comes back (restart invisible)', async () => {
+    const targetPort = await freePort(); // nothing listening yet → connection refused
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort, retryWindowMs: 5_000, retryBackoffMs: 100, log: () => {} }));
+    await listen(proxy);
+
+    // Fire the request while the upstream is DOWN; bring it up ~300ms later.
+    const pending = request(port(proxy));
+    setTimeout(() => {
+      const upstream = track(
+        http.createServer((_req, res) => {
+          res.writeHead(200);
+          res.end('{"result":"recovered"}');
+        }),
+      );
+      void listen(upstream, targetPort);
+    }, 300);
+
+    const r = await pending;
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"recovered"}');
+  });
+
+  it('503s (not a hang, not a replay) when the upstream is refused for the whole window', async () => {
+    const targetPort = await freePort(); // stays down
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort, retryWindowMs: 400, retryBackoffMs: 100, log: () => {} }));
+    await listen(proxy);
+    const r = await request(port(proxy));
+    expect(r.status).toBe(503);
+    expect(r.body).toContain('mcp_proxy_upstream_unavailable');
+  });
+});

@@ -117,3 +117,37 @@ The wrapper (`../perf/capture-perf-signals.sh`) prunes to the newest 15
 `*-scheduled.json` files (~30 min of history); ad-hoc/manual captures (other labels)
 are never touched. If the timer dies, a capture older than `blindMs` (30 min) surfaces
 on the infra panel as `warn` ("host SLO monitor blind") instead of silent `unknown`.
+
+---
+
+# Resilient MCP proxy — installation (OPT-IN)
+
+`papercup-mcp-proxy.service` runs an always-up local proxy on `:9071` that forwards to
+`:3070/api/mcp` and RETRIES across a `:3070` deploy restart (mcp-host-availability-resilience-2026-06-22
+P-005). Point an MCP client (Claude Code) at the proxy and a `:3070` restart becomes
+invisible — the client→proxy connection stays up, and a `tools/call` issued mid-restart
+just waits a beat instead of erroring + stranding the session toolless. Code: `../../bin/mcp-proxy.ts`
++ `../../lib/mcp-proxy/proxy.ts` (tested: `proxy.test.ts`).
+
+SAFETY: the proxy RETRIES only a *refused* upstream (the request provably never reached
+`:3070`), never a post-connect error — so a non-idempotent `tools/call` is never double-applied.
+
+## Install + run the proxy (harmless on its own — nothing connects until you repoint a client)
+
+```bash
+ln -sf "$(pwd)/papercup-mcp-proxy.service" ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-mcp-proxy.service
+# verify passthrough:
+curl -s http://127.0.0.1:9071/api/health   # → the real :3070 health JSON
+```
+
+## Repoint a client at the proxy (the actual opt-in — ATTENDED cutover)
+
+In `~/.claude.json`, change the `papercusp-su` server URL host:port from `localhost:3070`
+to `localhost:9071` (keep the `?superuser=1&...` query + the bearer). Or set the psu
+launcher's MCP URL env. Then VERIFY restart-survival before trusting it: force a `:3070`
+deploy/restart (`PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`)
+and confirm an in-flight agent's native MCP tools keep working (no toolless session, no
+relaunch). Leave the default config on `:3070` until that e2e passes — this is a fleet-wide
+cutover, so the owner should green-light + attend it.

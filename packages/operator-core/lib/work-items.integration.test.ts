@@ -539,3 +539,28 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
     expect(row.taken_by).toBeNull();
   });
 });
+
+describe('countWorkItems — true total, independent of the list cap', () => {
+  it('counts BOTH families for a harness and is unaffected by a capped list read', async () => {
+    const H = 'count-h';
+    for (let i = 0; i < 3; i++) await wi.createWorkItem({ kind: 'feature', title: `f${i}`, harness: H });
+    await wi.createWorkItem({ kind: 'bug', title: 'b', harness: H });
+    await wi.createWorkItem({ kind: 'change', title: 'c', harness: H });
+    await wi.createWorkItem({ kind: 'task', title: 't', harness: H });
+    // An item in a DIFFERENT harness must not leak into the count.
+    await wi.createWorkItem({ kind: 'feature', title: 'other', harness: 'elsewhere' });
+
+    // 3 features + 3 issue-family (bug|change|task) = 6 for this harness.
+    expect(await wi.countWorkItems({ harness: H })).toBe(6);
+
+    // A capped list returns fewer ROWS, but the COUNT is the full total — the bug
+    // this fixes: the header must show the total, not the downloaded length.
+    const capped = await wi.listWorkItems({ harness: H, limit: 2 });
+    expect(capped.length).toBe(2);
+    expect(await wi.countWorkItems({ harness: H })).toBe(6);
+
+    // Filters narrow list and count consistently.
+    expect(await wi.countWorkItems({ harness: H, kind: 'feature' })).toBe(3);
+    expect(await wi.countWorkItems({ harness: H, kind: 'bug' })).toBe(1);
+  });
+});

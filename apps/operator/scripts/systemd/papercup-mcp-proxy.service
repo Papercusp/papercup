@@ -1,0 +1,18 @@
+[Unit]
+Description=Papercusp resilient MCP proxy (:9071 → :3070) — opt-in front-door so a :3070 deploy restart is invisible to MCP clients (mcp-host-availability-resilience-2026-06-22 P-005)
+# Always-up dev-box infra (like the watchdog units): runs from the INTEGRATION tree
+# so it never restarts on a deploy (deploys restart :3070, not this). Stateless
+# passthrough with retry-on-refused, so a :3070 restart window is bridged transparently.
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/marsh-office/papercupai-workspace/papercup/apps/operator
+Environment=PAPERCUSP_MCP_PROXY_PORT=9071
+# :3071-3079 are taken on the dev box; 9071 is free. Override TARGET/RETRY via env if needed.
+ExecStart=/usr/bin/bash -c 'exec npx tsx bin/mcp-proxy.ts'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
