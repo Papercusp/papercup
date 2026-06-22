@@ -476,6 +476,16 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   const { url } = target;
   const scopes = conflicts.map((c) => c.scope);
   const filesSummary = conflicts.map((c) => `${c.scope}: ${c.conflictedFiles.join(', ')}`).join('; ');
+  // P-006: pre-compute authorship/intent for the conflicted files (deterministic, best-effort)
+  // so the resolver integrates per each side's intent without spending tool calls to discover it.
+  let authorship: Awaited<ReturnType<typeof computeConflictAuthorship>> = [];
+  try {
+    const { projectDirForSlug } = await import('../../operator-notes');
+    const repoRoot = await projectDirForSlug(slug);
+    if (repoRoot) authorship = await computeConflictAuthorship(repoRoot, conflicts);
+  } catch {
+    /* best-effort: the resolver prompt has a git-log fallback */
+  }
   const dispatchedAt = Date.now();
 
   // (1) durable "dispatched" marker, awaited — observable even if (2) is lost.
@@ -499,7 +509,7 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
       // P-007: the superproject branch comes from the routine's resolved config
       // (cfg.branch ?? 'main') — it is NOT papercup's 'staging' for other harnesses.
       kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on the branch each conflicted repo has checked out — superproject = \`${superprojectBranch}\`, submodules = their own default). Conflicted: ${filesSummary}`,
-      extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary })],
+      extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary, authorship })],
       // P-010: a real multi-file merge by a higher-effort model needs well beyond the
       // route's 90s default. The invoke-route ceiling is 1200s (the old "~300s ceiling"
       // comment was stale). It drains+takes the git-sync lock (≤120s) first, then merges;
@@ -848,6 +858,55 @@ async function recordSyncedCommitAttribution(slug: string, workspaceId: string):
     await recordCommitAttribution(rows);
   } catch {
     // best-effort: commit attribution must never affect git-sync.
+  }
+}
+
+/**
+ * P-006 (deterministic-commit-workitem-attribution-2026-06-22): pre-compute authorship/intent
+ * context for the conflicted files so the merge-resolver receives it WITHOUT spending tool calls
+ * to discover it (D-006). Reads the recent commits that touched each conflicted file + their
+ * `Papercusp-Work-Item/Agent` trailers (git-sync's per-agent commits write them; the commit
+ * subject IS the authoring agent's intent). Deterministic git reads, best-effort: returns [] on
+ * any failure — the merge-resolver.md prompt has a git-log fallback. Bounded to 20 files/scope.
+ */
+async function computeConflictAuthorship(
+  repoRoot: string,
+  conflicts: RepoConflict[],
+): Promise<
+  Array<{ scope: string; file: string; recent: Array<{ sha: string; subject: string; workItems: string[]; agent?: string }> }>
+> {
+  try {
+    const { runGit } = await import('../docs/git-runner');
+    const out: Array<{
+      scope: string;
+      file: string;
+      recent: Array<{ sha: string; subject: string; workItems: string[]; agent?: string }>;
+    }> = [];
+    for (const c of conflicts) {
+      // a submodule conflict's files are relative to the submodule repo; cd there (D-015).
+      const repoDir = c.scope === 'superproject' ? repoRoot : `${repoRoot}/${c.scope}`;
+      for (const file of c.conflictedFiles.slice(0, 20)) {
+        // %x1f field-sep, %x1e record-sep so a multi-line %B body parses unambiguously.
+        const res = await runGit(['log', '-n', '5', '--format=%H%x1f%B%x1e', '--', file], repoDir);
+        if (res.code !== 0) continue;
+        const recent = res.stdout
+          .split('\x1e')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((block) => {
+            const sep = block.indexOf('\x1f');
+            const sha = (sep >= 0 ? block.slice(0, sep) : block).trim();
+            const body = sep >= 0 ? block.slice(sep + 1) : '';
+            const t = parsePapercuspTrailers(body);
+            return { sha: sha.slice(0, 12), subject: body.split('\n')[0]?.trim() ?? '', workItems: t.workItems, agent: t.agent };
+          })
+          .filter((r) => r.sha.length > 0);
+        if (recent.length > 0) out.push({ scope: c.scope, file, recent });
+      }
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 

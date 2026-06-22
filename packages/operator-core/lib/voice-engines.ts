@@ -136,6 +136,20 @@ export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
     sttKind = 'deepgram';
   }
 
+  // STT fallback: the user WANTS speech input (engine !== 'off') but the chosen
+  // engine was unavailable — a cloud engine with no key (deepgram), or web-speech
+  // without the leak ack — so the chain above left `stt` null and STT would be
+  // SILENTLY OFF (mic dead, the user speaks and nothing transcribes, with no
+  // signal why). When the LOCAL Voicemode/Whisper server is up, drop to it: it's
+  // keyless and privacy-safe (audio never leaves the machine, so no ack needed).
+  // Mirrors the TTS branch's always-available browser fallback. An explicit
+  // 'off' is preserved (no degradation when the user disabled STT on purpose).
+  if (!stt && prefs.sttEngine !== 'off' && whisperBase) {
+    const { createVoicemodeWhisper } = await import('./voice-engines/whisper');
+    stt = createVoicemodeWhisper(whisperBase);
+    sttKind = 'voicemode';
+  }
+
   // TTS selection (per v4 §1.2)
   let tts: TtsEngine;
   let ttsKind: TtsEngineKind;
