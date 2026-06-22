@@ -2220,7 +2220,7 @@
           "POST"
         ]
       },
-      "description": "Answer a question conversation. Appends an answer to its thread and notifies subscribers (the asker gets it in their inbox). The asker/resolver accepts an answer with conversations:resolve.",
+      "description": "Answer one OR many question conversations. Appends an answer to each thread and notifies subscribers (the asker gets it in their inbox). The asker/resolver accepts an answer with conversations:resolve. Single: { id, body, mentions? }. Many same body: { ids:[…], body }. Many heterogeneous: items:[{ id, body, mentions? }] (each carries its own answer). Returns { ok, results:[{ ok, id, post_id? | error }], counts } — correlate by id; one not-found item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -2240,7 +2240,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve.",
+        "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve. Answer several at once via items:[…] (each item supplies its own body).",
         "notWhen": "For a non-answer comment/clarification, use conversations:post. To accept your own/another answer and close the question, use conversations:resolve.",
         "chaining": "conversations:answer → the asker conversations:resolve (accepts it, captures it to the knowledge layer for the next asker)."
       }
@@ -2253,7 +2253,7 @@
           "POST"
         ]
       },
-      "description": "Read one conversation in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count.",
+      "description": "Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest.",
       "capabilities": [
         "coord:read"
       ],
@@ -2273,9 +2273,9 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You have a conversation_id (from coord:ask, conversations:list, or an inbox notice) and want the full thread.",
+        "when": "You have one or more conversation_ids (from coord:ask, conversations:list, or an inbox notice) and want the full thread. Pass every id you need at once via `ids` instead of calling per id.",
         "notWhen": "Browsing many → conversations:list.",
-        "chaining": "conversations:get → conversations:answer / conversations:post / conversations:join / conversations:resolve."
+        "chaining": "conversations:get { ids:[…] } → conversations:answer / conversations:post / conversations:join / conversations:resolve."
       }
     },
     {
@@ -2286,7 +2286,7 @@
           "POST"
         ]
       },
-      "description": "Follow a single conversation so its updates are injected into your inbox. mode = full | digest | mention (D-006). Idempotent — re-joining updates the mode/TTL. Pass leave:true to stop following.",
+      "description": "Follow one OR many conversations so their updates are injected into your inbox. mode = full | digest | mention (D-006). Idempotent — re-joining updates the mode/TTL. leave:true stops following. Single: { id, mode?, ttl_sec?, leave? }. Many same mode: { ids:[…], mode?, leave? }. Many heterogeneous: items:[{ id, mode?, ttl_sec?, leave? }]. Returns { ok, results:[{ ok, id, mode? | left? | error }], counts } — correlate by id; one not-found item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -2306,7 +2306,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode.",
+        "when": "A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode. Follow several at once via ids:[…] or items:[…].",
         "notWhen": "To follow an AREA (not one thread), use topics:subscribe. For a one-time read, just conversations:get.",
         "chaining": "conversations:list / conversations:get → conversations:join."
       }
@@ -2385,7 +2385,7 @@
           "POST"
         ]
       },
-      "description": "Promote a conversation (question/discussion) into an engineer issue, carrying its thread. Mints an engineer_issues row (with the conversation's topics + scope), closes the conversation, and records the issue id. Use when a discussion concludes there is a real problem to track.",
+      "description": "Promote one OR many conversations (question/discussion) into engineer issues, carrying their thread. Mints an engineer_issues row (with the conversation's topics + scope), closes the conversation, and records the issue id. Single: { id, severity?, source?, harness? }. Many same severity/source: { ids:[…], severity?, source? }. Many heterogeneous: items:[{ id, severity?, source?, harness? }]. Returns { ok, results:[{ ok, id, issue? + thread_carried | error }], counts } — correlate by id; one not-found item never fails the rest. Use when a discussion concludes there is a real problem to track.",
       "capabilities": [
         "coord:write"
       ],
@@ -2405,7 +2405,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "A conversation has concluded that there is a concrete, trackable problem — turn it into an issue so it can be claimed, prioritized, and promoted to a feature.",
+        "when": "A conversation has concluded that there is a concrete, trackable problem — turn it into an issue so it can be claimed, prioritized, and promoted to a feature. Promote several at once via ids:[…] or items:[…].",
         "notWhen": "A question that just needs an answer → conversations:resolve (captures the answer). An open discussion still in progress → leave it. To file a fresh issue unrelated to a conversation → issues:create.",
         "chaining": "conversations:get → conversations:promote → issues:get / issues:claim. The issue keeps the conversation's thread; further discussion uses issues:comment."
       }
@@ -2418,7 +2418,7 @@
           "POST"
         ]
       },
-      "description": "Resolve a question: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is captured to the knowledge layer (mem0 by default) so the next coord:ask finds it synchronously. Notifies subscribers.",
+      "description": "Resolve one OR many questions: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is captured to the knowledge layer (mem0 by default) so the next coord:ask finds it synchronously. Notifies subscribers. Single: { id, accepted_answer | accepted_post_id, capture? }. Many heterogeneous: items:[{ id, accepted_answer | accepted_post_id, capture? }] (each carries its own answer). Returns { ok, results:[{ ok, id, state? | error }], counts } — correlate by id; one item that lacks an answer or is not found never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -2438,9 +2438,9 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again.",
+        "when": "A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again. Resolve several at once via items:[…] (each item supplies its own accepted answer).",
         "notWhen": "Still gathering answers → leave it open. For an open-ended discussion that just ran its course, this still works (capture is skippable with capture:none).",
-        "chaining": "conversations:answer → conversations:resolve { accepted_post_id }. Provide accepted_answer to write a synthesized answer instead of quoting a single post."
+        "chaining": "conversations:answer → conversations:resolve { id, accepted_post_id }. Provide accepted_answer to write a synthesized answer instead of quoting a single post."
       }
     },
     {
@@ -2451,7 +2451,7 @@
           "POST"
         ]
       },
-      "description": "Acknowledge a coord message by its msg_id. Posts a `kind: \"ack\"` entry in your outbox addressed back at the original sender, so they can see you received it.",
+      "description": "Acknowledge one OR many coord messages by msg_id. Posts a `kind: \"ack\"` entry in your outbox addressed back at each original sender, so they can see you received it. Single: { msg_id }. Many: { msg_ids:[…] } or items:[{ msg_id }]. Returns { ok, results:[{ ok, msg_id, ack_msg_id? + acked_from? | error }], counts } — correlate by msg_id; an unknown msg_id never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -2471,7 +2471,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "After acting on (or deliberately not acting on) a coord message — closes the loop for the sender.",
+        "when": "After acting on (or deliberately not acting on) coord message(s) — closes the loop for the sender. Ack several at once via msg_ids:[…].",
         "notWhen": "For routine read-and-forget. Acks are most useful for hand-offs and questions where the sender is waiting."
       }
     },
@@ -3068,7 +3068,7 @@
           "POST"
         ]
       },
-      "description": "Resolve an escalation by msg_id. Records the chosen option id (or arbitrary string) and optional note as an append-only escalation_resolved event.",
+      "description": "Resolve one OR many escalations by msg_id. Records the chosen option id (or arbitrary string) and optional note as an append-only escalation_resolved event. Single: { msg_id, choice, note? }. Many same choice: { msg_ids:[…], choice, note? }. Many heterogeneous: items:[{ msg_id, choice, note? }]. Returns { ok, results:[{ ok, msg_id, escalation? | error }], counts } — correlate by msg_id; a not_found / already_resolved on one item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -3088,7 +3088,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "The human (or an authorised agent acting on their behalf) has decided how to proceed on an open escalation.",
+        "when": "The human (or an authorised agent acting on their behalf) has decided how to proceed on open escalation(s). Resolve several at once via msg_ids:[…]+choice or items:[…].",
         "notWhen": "Acknowledging without deciding — use coord:ack. The escalation file is the human-resolution surface."
       }
     },
@@ -3100,7 +3100,7 @@
           "POST"
         ]
       },
-      "description": "Send a message to other coordination agents. `to` is ownerIds; [\"*\"] broadcasts, [\"human\"] surfaces to the user. Default: INJECTED — lands in the recipient's inbox, seen next turn (cheap). `wake:'required'` ALSO re-invokes a sleeping recipient now; a miss (reached nobody) returns recipient_absent:true. `wake:'optimistic'` = silent best-effort wake over a durable backstop. Targeted to the addressees, never a broadcast. Returns msg_id.",
+      "description": "Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; [\"*\"] broadcasts, [\"human\"] surfaces to the user. Default: INJECTED — lands in the recipient's inbox, seen next turn (cheap). `wake:'required'` ALSO re-invokes a sleeping recipient now; a miss (reached nobody) returns recipient_absent:true. `wake:'optimistic'` = silent best-effort wake over a durable backstop. Single: { to, summary, body?, wake?, … }. Many distinct messages: items:[{ to, summary, body?, wake?, … }]. Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate each result by its `to` (+ msg_id), not by position; one failed message never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -3120,8 +3120,8 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "Sharing context, asking a question, or handing off work. wake:'required' ONLY when the recipient is idle and MUST act now (a Queen waking a sleeping bee) — a miss returns recipient_absent. wake:'optimistic' when a durable backstop catches a miss (the Queen survey re-dispatches). A running recipient already sees the inject mid-turn — a wake is wasted on it.",
-        "notWhen": "For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don't set a wake for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in)."
+        "when": "Sharing context, asking a question, or handing off work. Send several DISTINCT messages at once via items:[…] instead of looping. wake:'required' ONLY when the recipient is idle and MUST act now (a Queen waking a sleeping bee) — a miss returns recipient_absent. wake:'optimistic' when a durable backstop catches a miss (the Queen survey re-dispatches). A running recipient already sees the inject mid-turn — a wake is wasted on it.",
+        "notWhen": "For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don't set a wake for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in). For ONE message to MANY recipients, use the single form with `to:[…]` — `items` is the \"many distinct messages\" axis, not the multi-recipient one."
       }
     },
     {
@@ -5247,7 +5247,7 @@
           "POST"
         ]
       },
-      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness AND progress joined in). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued` (items in rank order), `load` (work-item count) — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict judgment; the ordered plan → affinity). The single LIVE source for \"is X really being worked\": surfaces `orphaned` claims (live lease, DEAD holder) AND `stalled` claims (live holder, NO item-scoped progress in the window) — both reclaimable, neither \"covered\" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast (agent-activity-liveness-truth).",
+      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued`, `load` — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict; ordered plan → affinity). The single LIVE source for \"is X really being worked\": surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither \"covered\" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast (agent-activity-liveness-truth).",
       "capabilities": [
         "work_items:read"
       ],
@@ -5268,9 +5268,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Answering \"who's running / what is agent X doing / what is X's ordered work-list / how loaded is X / is anyone on plan P\". This is the state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.",
-        "notWhen": "You want to be notified of future changes (subscribe the fleet_assignment change-feed / your coord subscriptions) or you need full message history (coord:inbox).",
-        "chaining": "fleet:assignments { plan } → see an orphaned OR stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release to free it, or pick it up yourself; never assume \"someone's on it\" from a coord message. fleet:assignments { agent } before messaging an agent about its work."
+        "when": "Answering \"who's running / what is agent X doing / X's ordered work-list / how loaded is X / is anyone on plan P\". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.",
+        "notWhen": "You want to be notified of future changes (subscribe the fleet_assignment change-feed) or you need full message history (coord:inbox).",
+        "chaining": "fleet:assignments { plan } → an orphaned/stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release, or pick it up yourself; never assume \"someone's on it\" from a coord message. fleet:assignments { agent } before messaging an agent about its work."
       }
     },
     {
@@ -10146,7 +10146,7 @@
           "POST"
         ]
       },
-      "description": "Push-assign a plan item (P-NNN) to a stable agent-NAME. Durable intent — survives interruption; the named agent reads it via plan_items:my_items and claims it. Intra-user only: you may assign to a name you own (a fresh name is claimed for you); a name owned by another user is refused (cross-user is pull-only).",
+      "description": "Push-assign one OR many plan items (P-NNN) to a stable agent-NAME. Durable intent — survives interruption; the named agent reads it via plan_items:my_items and claims it. Intra-user only: a name you own (a fresh name is claimed for you); a name owned by another user is refused (cross-user is pull-only). Single: { plan, item, assignee }. Many same plan+assignee: { plan, itemIds:[…], assignee }. Many heterogeneous: items:[{ plan, item, assignee, harness?, strategy?, note? }]. Returns { ok, results:[{ ok, plan, item, assignment? | refused | error }], counts } — correlate by { plan, item }; one refusal never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -10166,7 +10166,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You are dividing your own plan work across your named agents — \"builder-1 takes P-001..P-003\".",
+        "when": "You are dividing your own plan work across your named agents — \"builder-1 takes P-001..P-003\". Assign several at once via itemIds:[…] or items:[…].",
         "notWhen": "You want to start working on an item right now — that is plan_items:claim (the live grip). Handing work to another USER's agents — they pull it (you cannot push onto their machine).",
         "chaining": "plan_items:assign { harness, plan, item, assignee } → the named agent: plan_items:my_items → plan_items:claim."
       }
@@ -10179,7 +10179,7 @@
           "POST"
         ]
       },
-      "description": "Take the live, heartbeat-leased grip on a plan item — what you call when you actually START it. Refused if the item is assigned to a different agent-name, or unassigned in a plan whose work-group you have not joined. Returns the claim (with claim_id + lease expiry); keep it alive with plan_items:heartbeat, drop it with plan_items:release.",
+      "description": "Take the live, heartbeat-leased grip on one OR many plan items — what you call when you actually START them. Refused per item if it is assigned to a different agent-name, or unassigned in a plan whose work-group you have not joined. Single: { plan, item }. Many same plan: { plan, itemIds:[…] }. Many heterogeneous: items:[{ plan, item, intent?, mode?, ttl_sec?, harness? }]. Returns { ok, results:[{ ok, plan, item, result (claim with claim_id + lease expiry), convertStatus?, workItem? }], counts } — correlate by { plan, item }; a refused/conflicted claim is that item's ok:false without failing the rest. Keep a claim alive with plan_items:heartbeat, drop it with plan_items:release.",
       "capabilities": [
         "coord:write"
       ],
@@ -10199,7 +10199,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You are about to begin work on an item (yours via assignment, or pulled from the pool).",
+        "when": "You are about to begin work on item(s) (yours via assignment, or pulled from the pool). Claim several at once via itemIds:[…] or items:[…].",
         "notWhen": "You only want to mark intent for later without starting — that is assignment, not a claim. Renewing an existing claim — that is plan_items:heartbeat.",
         "chaining": "plan_items:claim { harness, plan, item } → work → plan_items:heartbeat (per turn) → plan_items:release when done."
       }
@@ -10212,7 +10212,7 @@
           "POST"
         ]
       },
-      "description": "Convert-at-pickup (D-015): pick up a plan item by converting it to a work_item in one call — takes the policy-checked plan-item lease, mints (or idempotently resumes) the work_item with you as assignee, links it back (`implements` edge + payload stamp), and auto-flips the plan item to wip. The work_item is then your execution record: work_items:complete on it reflects the plan item to done.",
+      "description": "Convert-at-pickup (D-015): pick up one OR many plan items by converting each to a work_item in one call — takes the policy-checked plan-item lease, mints (or idempotently resumes) the work_item with you as assignee, links it back (`implements` edge + payload stamp), and auto-flips the plan item to wip. Single: { plan, item }. Many same plan: { plan, itemIds:[…] }. Many heterogeneous: items:[{ plan, item, kind?, title?, brief?, … }]. Returns { ok, results:[{ ok, plan, item, status, workItem?, planItem? }], counts } — correlate by { plan, item }; a refused/conflicted convert is that item's ok:false without failing the rest. The work_item is then your execution record: work_items:complete on it reflects the plan item to done.",
       "capabilities": [
         "coord:write"
       ],
@@ -10232,7 +10232,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You are picking up a plan item to work it — this replaces a bare plan_items:claim: every worked item gets a tracked work_item (no untracked self-item).",
+        "when": "You are picking up plan item(s) to work them — this replaces a bare plan_items:claim: every worked item gets a tracked work_item (no untracked self-item). Pick up several at once via itemIds:[…] or items:[…].",
         "notWhen": "You only want the lease without an execution record (rare; plan_items:claim). The item is already converted and you hold it — just keep working; re-converting is a harmless resume.",
         "chaining": "plans:items { actionable:true } → plan_items:convert { plan, item } → work → work_items:complete { id, completion } (reflects the plan item to done) or work_items:release (returns it to todo)."
       }
@@ -10245,7 +10245,7 @@
           "POST"
         ]
       },
-      "description": "Renew your claim's lease. Send kind=\"activity\" when you complete a unit of work (the turn-based pulse a SHARED harness needs), kind=\"extend\" with a larger ttl_sec for a legitimately long single operation, or kind=\"keepalive\" to prove liveness on a LOCAL harness. claim_id optional (resolved from your current claim).",
+      "description": "Renew your claim's lease on one OR many plan items. Send kind=\"activity\" when you complete a unit of work (the turn-based pulse a SHARED harness needs), kind=\"extend\" with a larger ttl_sec for a legitimately long single operation, or kind=\"keepalive\" to prove liveness on a LOCAL harness. claim_id optional (resolved from your current claim). Single: { plan, item, kind? }. Many same plan+kind: { plan, itemIds:[…], kind? }. Many heterogeneous: items:[{ plan, item, kind?, ttl_sec?, claim_id?, harness? }]. Returns { ok, results:[{ ok, plan, item, renewed?, held?, … | note }], counts } — correlate by { plan, item }; holding no claim on one item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -10265,7 +10265,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "Periodically while holding a claim — ideally once per completed turn (kind=\"activity\"), or kind=\"extend\" before a long uninterrupted op.",
+        "when": "Periodically while holding a claim — ideally once per completed turn (kind=\"activity\"), or kind=\"extend\" before a long uninterrupted op. Pulse several held items at once via itemIds:[…] or items:[…].",
         "notWhen": "You are done — that is plan_items:release. The claim has already lapsed — re-acquire with plan_items:claim (a lapsed claim cannot be heartbeated back to life).",
         "chaining": "plan_items:claim → plan_items:heartbeat { kind: \"activity\" } per turn → plan_items:release."
       }
@@ -10377,7 +10377,7 @@
           "POST"
         ]
       },
-      "description": "Drop your live claim on a plan item so it returns to your assignee status (if assigned) or the pool (if pulled). Does NOT clear the assignment — the item stays yours by name; you just stop holding it. claim_id is optional (resolved from your current claim).",
+      "description": "Drop your live claim on one OR many plan items so each returns to your assignee status (if assigned) or the pool (if pulled). Does NOT clear the assignment — the item stays yours by name; you just stop holding it. claim_id is optional (resolved from your current claim). Single: { plan, item, claim_id? }. Many same plan: { plan, itemIds:[…] }. Many heterogeneous: items:[{ plan, item, harness?, claim_id? }]. Returns { ok, results:[{ ok, plan, item, released? | note }], counts } — correlate by { plan, item }; holding no claim on one item never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -10397,7 +10397,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You finished (or are pausing) work on an item you claimed and want to free the live grip.",
+        "when": "You finished (or are pausing) work on item(s) you claimed and want to free the live grip. Release several at once via itemIds:[…] or items:[…].",
         "notWhen": "You want to give up the item entirely — also plan_items:unassign it.",
         "chaining": "plan_items:claim → … → plan_items:release { harness, plan, item }."
       }
@@ -10443,7 +10443,7 @@
           "POST"
         ]
       },
-      "description": "Release a plan item's assignment so it returns to the unassigned pool. The item's history persists (soft-release). Does NOT drop a live claim — release that with plan_items:release.",
+      "description": "Release one OR many plan items' assignment so each returns to the unassigned pool. History persists (soft-release). Does NOT drop a live claim — release that with plan_items:release. Single: { plan, item }. Many same plan: { plan, itemIds:[…] }. Many heterogeneous: items:[{ plan, item, harness? }]. Returns { ok, results:[{ ok, plan, item, released? | error }], counts } — correlate by { plan, item }; a no-op (no active assignment) stays ok:true with released:null.",
       "capabilities": [
         "coord:write"
       ],
@@ -10463,7 +10463,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "An assignment is no longer wanted — reassigning to nobody, or freeing an item back to the pool.",
+        "when": "An assignment is no longer wanted — reassigning to nobody, or freeing item(s) back to the pool. Unassign several at once via itemIds:[…] or items:[…].",
         "notWhen": "You just want to stop actively working but keep the item assigned to you — that is plan_items:release (drops the live claim, keeps the assignment).",
         "chaining": "plan_items:status to see assignments → plan_items:unassign { harness, plan, item }."
       }
@@ -10476,7 +10476,7 @@
           "POST"
         ]
       },
-      "description": "Append a new decision to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:.",
+      "description": "Append one OR many new decisions to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:. Single: { slug, title, body }. Many: items:[{ slug, title, body, refs?, affects? }]. Returns { ok, results:[{ ok, slug, decisionId, propagated_to? | error }], counts } — each result embeds the NEW decisionId; correlate by id, not position; one failure never fails the rest.",
       "capabilities": [
         "plans:write"
       ],
@@ -10494,7 +10494,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate.",
+        "when": "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate. Add several at once via items:[…].",
         "notWhen": "Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.",
         "chaining": "plans:add-decision → optionally plans:set-now referencing the new D-NNN in **State:**."
       }
@@ -10507,7 +10507,7 @@
           "POST"
         ]
       },
-      "description": "Append a new item to a phase. Allocates the next P-NNN id inside a lock. Creates the phase section if it doesn't exist. Auto-bumps frontmatter updated:.",
+      "description": "Append one OR many new items to a phase. Allocates the next P-NNN id inside a lock. Creates the phase section if it doesn't exist. Auto-bumps frontmatter updated:. Single: { slug, phase, text, importance }. Many to one phase: { slug, phase, importance, items:[{ text, blockedBy? }] }. Heterogeneous: items:[{ slug, phase, text, importance }]. Returns { ok, results:[{ ok, slug, itemId, createdPhase | error }], counts } — each result embeds the NEW itemId; correlate by { slug, itemId }, not position; one failure never fails the rest.",
       "capabilities": [
         "plans:write"
       ],
@@ -10525,7 +10525,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one).",
+        "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).",
         "notWhen": "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
         "chaining": "plans:add-item → plans:set-status to flip newly added items off `todo` when work starts."
       }
@@ -10785,7 +10785,7 @@
           "POST"
         ]
       },
-      "description": "Read ONE plan item (P-NNN) — its text, storedStatus + resolved effectiveStatus, importance, phase, blockedBy, and any blocking engineer-issues — from the PG-canonical structured index, WITHOUT loading + parsing the whole plan. The single-item read the surface lacked (vs plans:get the whole doc, or plans:items cross-plan).",
+      "description": "Read ONE or MANY plan items (P-NNN) — each one's text, storedStatus + resolved effectiveStatus, importance, phase, blockedBy, and any blocking engineer-issues — from the PG-canonical structured index, WITHOUT loading + parsing the whole plan. Single: { slug, itemId }. Many of one plan: { slug, itemIds:[…] }. Cross-plan: items:[{ slug, itemId, harness? }]. Returns { ok, results:[{ ok, slug, itemId, item? | error }], counts } — correlate by { slug, itemId }, not position; a missing item never fails the rest.",
       "capabilities": [
         "plans:read"
       ],
@@ -10803,7 +10803,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "Inspecting one specific P-NNN (its status / blockers / phase / importance) without pulling the whole plan. The targeted read between plans:items (many) and plans:get (the whole plan).",
+        "when": "Inspecting one or more specific P-NNN (their status / blockers / phase / importance) without pulling the whole plan. The targeted read between plans:items (many by status) and plans:get (the whole plan). Read several at once via itemIds:[…] (one plan) or items:[…] (cross-plan).",
         "notWhen": "You need the whole plan (Now / decisions / prose) — plans:get. Many items by status — plans:items.",
         "chaining": "plans:get-item { slug, itemId } → plans:set-status / plans:set-item-blocked-by / plans:set-item-phase to act on it."
       }
@@ -11466,7 +11466,7 @@
           "POST"
         ]
       },
-      "description": "Change one item's importance (urgent|high|normal|low). Adds/replaces the trailing `importance:` keyword; setting `normal` removes it. Auto-bumps frontmatter updated:.",
+      "description": "Change one OR many items' importance (urgent|high|normal|low). Adds/replaces the trailing `importance:` keyword; setting `normal` removes it. Auto-bumps frontmatter updated:. Single: { slug, itemId, importance }. Many of one plan: { slug, itemIds:[…], importance }. Heterogeneous: items:[{ slug, itemId, importance }]. Returns { ok, results:[{ ok, slug, itemId, … | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
       "capabilities": [
         "plans:write"
       ],
@@ -11484,7 +11484,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "An item's importance changes — escalating a stuck or aging item, or correcting a level set wrong at creation.",
+        "when": "An item's importance changes — escalating a stuck or aging item, or correcting a level set wrong at creation. Re-rank several at once via itemIds:[…] (one plan) or items:[…].",
         "notWhen": "Setting importance when creating an item — that's plans:add-item's required arg. Changing lifecycle status — plans:set-status.",
         "chaining": "plans:items (sorted urgent→low) → plans:set-importance to re-rank what the human sees first."
       }
@@ -11528,7 +11528,7 @@
           "POST"
         ]
       },
-      "description": "Set or clear an item's `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. The structured setter the surface lacked (vs a plans:edit string-replace).",
+      "description": "Set or clear one OR many items' `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. Single: { slug, itemId, blockedBy }. Many of one plan: { slug, itemIds:[…], blockedBy }. Heterogeneous: items:[{ slug, itemId, blockedBy }]. Returns { ok, results:[{ ok, slug, itemId, from, to | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
       "capabilities": [
         "plans:write"
       ],
@@ -11546,7 +11546,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "An item's dependencies change — a new prerequisite surfaced, or a blocker cleared (blockedBy:[] to un-block). The structured alternative to a plans:edit on the item line.",
+        "when": "An item's dependencies change — a new prerequisite surfaced, or a blocker cleared (blockedBy:[] to un-block). The structured alternative to a plans:edit on the item line. Set several at once via itemIds:[…] (one plan) or items:[…].",
         "notWhen": "Flipping lifecycle status (plans:set-status) or importance (plans:set-importance). Moving an item to another phase (plans:set-item-phase).",
         "chaining": "plans:get-item { slug, itemId } to see current blockers → plans:set-item-blocked-by."
       }
@@ -11559,7 +11559,7 @@
           "POST"
         ]
       },
-      "description": "Move an item to a different phase — relocates the whole item line under the target `## Phase …` heading (an item's phase is positional, not an inline keyword), every token preserved. Creates the phase section if it doesn't exist. No-op when already there. Inside the plan lock, records a revision. The structured move vs a plans:edit cut-and-paste.",
+      "description": "Move one OR many items to a different phase — relocates the whole item line under the target `## Phase …` heading (an item's phase is positional, not an inline keyword), every token preserved. Creates the phase section if it doesn't exist. No-op when already there. Inside the plan lock, records a revision. Single: { slug, itemId, phase }. Many of one plan: { slug, itemIds:[…], phase }. Heterogeneous: items:[{ slug, itemId, phase }]. Returns { ok, results:[{ ok, slug, itemId, fromPhase, toPhase, moved, createdPhase | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
       "capabilities": [
         "plans:write"
       ],
@@ -11577,7 +11577,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "An item belongs under a different phase — re-sequencing work across phases, or correcting a mis-placed item. The structured alternative to manually cutting + pasting the line with plans:edit.",
+        "when": "An item belongs under a different phase — re-sequencing work across phases, or correcting a mis-placed item. The structured alternative to manually cutting + pasting the line with plans:edit. Move several at once via itemIds:[…] (one plan) or items:[…].",
         "notWhen": "Adding a NEW item (plans:add-item — it takes the phase directly). Changing status/importance/blockers (their dedicated setters). Renaming a phase heading itself (plans:edit / plans:set-content).",
         "chaining": "plans:get-item { slug, itemId } to see the current phase → plans:set-item-phase."
       }
@@ -11744,7 +11744,7 @@
           "POST"
         ]
       },
-      "description": "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); flipping to done/dropped releases your claim AND clears the item's assignment (a finished item is held + assigned by no one).",
+      "description": "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with a per-item claim_conflict when a live peer holds it); flipping to done/dropped releases your claim AND clears the item's assignment (a finished item is held + assigned by no one). Single: { slug, itemId, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, itemId, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
       "capabilities": [
         "plans:write"
       ],
@@ -11762,9 +11762,9 @@
         "bee"
       ],
       "guidance": {
-        "when": "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked).",
+        "when": "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
         "notWhen": "You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.",
-        "chaining": "plans:items { actionable: true } → plans:set-status { itemId, status: \"wip\" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On claim_conflict: coord:send the holder or pick another item."
+        "chaining": "plans:items { actionable: true } → plans:set-status { itemId, status: \"wip\" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On a per-item claim_conflict: coord:send the holder or pick another item."
       }
     },
     {
@@ -13504,7 +13504,7 @@
           "POST"
         ]
       },
-      "description": "Read everything tagged with a topic — across issues, conversations, features, and plans — the whole work-stream of an area. Each item carries its title + current state.",
+      "description": "Read everything tagged with one OR many topics — across issues, conversations, features, and plans — the whole work-stream of an area. Each item carries its title + current state. Single: { topic }. Many: { topics:[…] } or items:[{ topic }]. Returns { ok, results:[{ ok, topic, count, items | error }], counts } — correlate by topic, not position; a topic that fails to read never fails the rest.",
       "capabilities": [
         "coord:read"
       ],
@@ -13524,7 +13524,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind.",
+        "when": "To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind. Read several areas at once via topics:[…].",
         "notWhen": "You want messages waiting for you (coord:inbox) or just the list of topics (topics:list).",
         "chaining": "topics:list → topics:feed { topic } → issues:get / conversations:get on an item."
       }
@@ -13602,7 +13602,7 @@
           "POST"
         ]
       },
-      "description": "Subscribe to a topic so its updates are injected into your inbox — the named sugar for watch(topic,{wake:false}). mode = full | digest | mention (D-006 noise tiering). Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL.",
+      "description": "Subscribe to one OR many topics so their updates are injected into your inbox — the named sugar for watch(topic,{wake:false}). mode = full | digest | mention (D-006 noise tiering). Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL. Single: { topic, mode?, ttl_sec? }. Many same mode: { topics:[…], mode?, ttl_sec? }. Many heterogeneous: items:[{ topic, mode?, ttl_sec? }]. Returns { ok, results:[{ ok, topic, subscription? | error }], counts } — correlate by topic, not position; one failure never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -13622,7 +13622,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet.",
+        "when": "A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet. Subscribe to several at once via topics:[…] or items:[…].",
         "notWhen": "You only need a one-time look — just topics:list. To follow a specific object (one thread/issue), that is the object’s own subscribe, not a topic.",
         "chaining": "topics:list → topics:subscribe; topics:unsubscribe to stop."
       }
@@ -13635,7 +13635,7 @@
           "POST"
         ]
       },
-      "description": "Tag a coordination object (issue / conversation / feature / plan) with a topic so it appears in that topic's feed and its changes reach the topic's subscribers. Pass remove:true to untag.",
+      "description": "Tag one OR many coordination objects (issue / conversation / feature / plan) with a topic so each appears in that topic's feed and its changes reach the topic's subscribers. Pass remove:true to untag. Single: { object_kind, object_ref, topic, remove? }. Many heterogeneous: items:[{ object_kind, object_ref, topic, remove? }]. Returns { ok, results:[{ ok, topic, object, topics? | error }], counts } — correlate by topic (not position); one failure never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -13655,7 +13655,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic.",
+        "when": "You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic. Tag several at once via items:[…].",
         "notWhen": "The topic does not exist yet — topics:create it first (prefer an existing one). For an issue you can also use issues:tag.",
         "chaining": "topics:list → topics:tag { object_kind, object_ref, topic } → topics:feed { topic }."
       }
@@ -13668,7 +13668,7 @@
           "POST"
         ]
       },
-      "description": "Unsubscribe from a topic. Idempotent — unsubscribing from a topic you do not follow is a no-op.",
+      "description": "Unsubscribe from one OR many topics. Idempotent — unsubscribing from a topic you do not follow is a no-op. Single: { topic }. Many: { topics:[…] } or items:[{ topic }]. Returns { ok, results:[{ ok, topic, error? }], counts } — correlate by topic, not position; one failure never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -13688,7 +13688,7 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "A topic you followed is no longer relevant and its updates are noise.",
+        "when": "A topic you followed is no longer relevant and its updates are noise. Drop several at once via topics:[…].",
         "notWhen": "You want to mute briefly — set the subscription to mention mode via topics:subscribe instead of dropping it."
       }
     },

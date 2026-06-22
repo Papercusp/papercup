@@ -37,6 +37,7 @@ import {
   nativeSessionHandleForSpawnedAgent,
   type NativeSessionHandle,
 } from './native-session-handles';
+import { resolveSpawnBackendModel } from './harness-invoke-once';
 import {
   getAllWakeModeOverrides,
   getDefaultWakeMode,
@@ -159,20 +160,47 @@ export interface RosterEntry {
  * the bee pane (P-004). Best-effort: a read error yields an empty map (no resume
  * handle → the bee gets no dock pane; it stays visible in the colony roster).
  */
-export async function spawnedAgentSessionsByOwner(): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+export async function spawnedAgentNativeSessionsByOwner(): Promise<Map<string, NativeSessionHandle>> {
+  const out = new Map<string, NativeSessionHandle>();
   try {
     const { sql } = getOrgPg();
     const rows = await sql`
-      SELECT spawn_id, session_id
+      SELECT spawn_id, session_owner, child_role, model_spec, session_id
       FROM harness_shared.spawned_agents
-      WHERE session_id IS NOT NULL
+      WHERE COALESCE(session_owner, spawn_id) IS NOT NULL
     `;
-    for (const r of rows as unknown as Array<{ spawn_id: string; session_id: string }>) {
-      if (r.spawn_id && r.session_id) out.set(r.spawn_id, r.session_id);
+    for (const r of rows as unknown as Array<{
+      spawn_id: string;
+      session_owner: string | null;
+      child_role: string | null;
+      model_spec: string | null;
+      session_id: string | null;
+    }>) {
+      if (!r.spawn_id) continue;
+      const backend = resolveSpawnBackendModel(
+        r.child_role ?? 'worker',
+        r.model_spec ?? undefined,
+      ).backend;
+      const handle = nativeSessionHandleForSpawnedAgent({
+        spawnId: r.spawn_id,
+        sessionOwner: r.session_owner,
+        backend,
+        sessionId: r.session_id,
+      });
+      out.set(r.spawn_id, handle);
+      if (r.session_owner) out.set(r.session_owner, handle);
     }
   } catch {
     /* best-effort — no resume handles, those bees get no dock panes */
+  }
+  return out;
+}
+
+export async function spawnedAgentSessionsByOwner(): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const handles = await spawnedAgentNativeSessionsByOwner();
+  for (const [owner, handle] of handles) {
+    if (handle.backend === 'claude' && handle.sessionId) out.set(owner, handle.sessionId);
   }
   return out;
 }
@@ -274,7 +302,7 @@ export function mergeRosterEntries(
   advByOwner: Map<string, AdvSessionRow>,
   nowMs: number,
   claimsByOwner: Map<string, AgentClaim[]> = new Map(),
-  sessionsByOwner: Map<string, string> = new Map(),
+  sessionsByOwner: Map<string, string | NativeSessionHandle> = new Map(),
   wakeModesByOwner: Map<string, WakeMode> = new Map(),
   defaultWakeMode: WakeMode = 'auto',
   pendingWakesByOwner: Map<string, number> = new Map(),
@@ -306,18 +334,21 @@ export function mergeRosterEntries(
             : 'stale';
       if (LIVENESS_RANK[nurseryLiveness] > LIVENESS_RANK[liveness]) liveness = nurseryLiveness;
     }
-    const spawnedSessionId = sessionsByOwner.get(p.ownerId) ?? null;
-    const sessionId = spawnedSessionId ?? adv?.sessionId ?? null;
-    const nativeSession = spawnedSessionId
-      ? nativeSessionHandleForSpawnedAgent({
-        spawnId: nursery?.spawnId ?? p.ownerId,
-        sessionOwner: p.ownerId,
-        backend: 'claude-code',
-        sessionId: spawnedSessionId,
-      })
-      : adv
-        ? nativeSessionHandleForAdvSession(adv)
-        : null;
+    const spawnedHandleOrSessionId = sessionsByOwner.get(p.ownerId) ?? null;
+    const spawnedNativeSession =
+      typeof spawnedHandleOrSessionId === 'string'
+        ? nativeSessionHandleForSpawnedAgent({
+          spawnId: nursery?.spawnId ?? p.ownerId,
+          sessionOwner: p.ownerId,
+          backend: 'claude-code',
+          sessionId: spawnedHandleOrSessionId,
+        })
+        : spawnedHandleOrSessionId;
+    const sessionId =
+      spawnedNativeSession?.backend === 'claude'
+        ? spawnedNativeSession.sessionId
+        : adv?.sessionId ?? null;
+    const nativeSession = spawnedNativeSession ?? (adv ? nativeSessionHandleForAdvSession(adv) : null);
     return {
       ownerId: p.ownerId,
       label: p.ownerLabel,
@@ -504,7 +535,7 @@ export async function mergeRosterWithAssignments(
     listPresence(),
     advSessionsByCoordOwner(),
     listFleetAssignments({ workspaceId }).catch(() => []),
-    spawnedAgentSessionsByOwner(),
+    spawnedAgentNativeSessionsByOwner(),
     getAllWakeModeOverrides().catch(() => new Map<string, WakeMode>()),
     getDefaultWakeMode().catch(() => 'auto' as WakeMode),
     countAllPendingWakes().catch(() => new Map<string, number>()),

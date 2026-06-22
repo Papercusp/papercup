@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
-import type { RosterEntry } from './SessionsRosterView';
+import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
 
 // ── Server DTO mirror (apps/operator/lib/adv-agent-detail.ts). Inlined, not
 //    imported, so this client component never pulls the PG-backed server module.
@@ -116,6 +116,7 @@ export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
   coord: AgentCoordState;
+  nativeSession: NativeSessionHandle | null;
   codex: CodexHomeDiagnostics | null;
 }
 
@@ -188,6 +189,24 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }): R
   );
 }
 
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function nativeSessionCommand(handle: NativeSessionHandle): string | null {
+  if (handle.backend === 'claude') {
+    return handle.sessionId ? `claude --resume ${handle.sessionId}` : null;
+  }
+  if (handle.backend === 'codex') {
+    if (!handle.codexHome) return null;
+    const prefix = `CODEX_HOME=${shellSingleQuote(handle.codexHome)}`;
+    return handle.rolloutId
+      ? `${prefix} codex exec resume ${handle.rolloutId}`
+      : `${prefix} codex resume --last`;
+  }
+  return handle.ompThreadId ? `omp -r ${handle.ompThreadId} --approval-mode yolo` : null;
+}
+
 export default function AgentDossier({
   ownerId,
   entry,
@@ -201,6 +220,7 @@ export default function AgentDossier({
   const locks = detail?.locks;
   const coord = detail?.coord;
   const codex = detail?.codex;
+  const nativeSession = detail?.nativeSession ?? entry?.nativeSession ?? null;
 
   // Files this agent holds / waits on — to cross-mark the file list.
   const heldPaths = new Set(locks?.held.map((l) => l.path) ?? []);
@@ -257,6 +277,39 @@ export default function AgentDossier({
           <MetaRow label="window" value={entry.windowId} />
           <MetaRow label="omp thread" value={entry.ompThreadId} />
           <MetaRow label="user" value={entry.userId} />
+        </section>
+      ) : null}
+
+      {nativeSession ? (
+        <section className="pc-dossier__section">
+          <h4 className="pc-dossier__h">
+            Native Session
+            <span className="pc-dossier__badge-count">{nativeSession.backend}</span>
+            {!nativeSession.exactResumeSupported && nativeSession.missingReason ? (
+              <span className="pc-dossier__h-note pc-dossier__h-note--err">
+                {' '}
+                · {nativeSession.missingReason}
+              </span>
+            ) : null}
+          </h4>
+          <MetaRow label="source" value={nativeSession.source} />
+          <MetaRow label="exact resume" value={nativeSession.exactResumeSupported ? 'supported' : 'not ready'} />
+          <MetaRow label="resume" value={nativeSessionCommand(nativeSession)} />
+          {nativeSession.backend === 'claude' ? (
+            <MetaRow label="session" value={nativeSession.sessionId ?? 'not recorded'} />
+          ) : null}
+          {nativeSession.backend === 'codex' ? (
+            <>
+              <MetaRow label="home" value={nativeSession.codexHome || 'not recorded'} />
+              <MetaRow label="rollout" value={nativeSession.rolloutId ?? 'not recorded yet'} />
+            </>
+          ) : null}
+          {nativeSession.backend === 'omp' ? (
+            <>
+              <MetaRow label="thread" value={nativeSession.ompThreadId ?? 'not linked yet'} />
+              <MetaRow label="agent home" value={nativeSession.agentHome} />
+            </>
+          ) : null}
         </section>
       ) : null}
 

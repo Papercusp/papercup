@@ -37,6 +37,8 @@ function entry(over: Partial<RosterEntry> = {}): RosterEntry {
     mode: 'console',
     windowId: 'w-1',
     ompThreadId: null,
+    sessionId: null,
+    nativeSession: null,
     cwd: '/repo',
     launchStartedAt: null,
     ...over,
@@ -84,6 +86,7 @@ const DETAIL: AgentDetail = {
     openEscalations: [],
     error: null,
   },
+  nativeSession: null,
   codex: null,
 };
 
@@ -125,11 +128,84 @@ describe('AgentDossier', () => {
     expect(getByText('over to codex')).toBeTruthy(); // open handoff
   });
 
+  it('renders a backend-neutral Claude native session handle from the roster entry', () => {
+    const { getByText } = render(
+      <AgentDossier
+        ownerId="su-1"
+        entry={entry({
+          sessionId: 'claude-uuid-1',
+          nativeSession: {
+            backend: 'claude',
+            source: 'spawned_agents',
+            ownerId: 'su-1',
+            sessionId: 'claude-uuid-1',
+            exactResumeSupported: true,
+            missingReason: null,
+          },
+        })}
+        onClose={() => {}}
+      />,
+    );
+    expect(getByText('Native Session')).toBeTruthy();
+    expect(getByText('claude --resume claude-uuid-1')).toBeTruthy();
+    expect(getByText('spawned_agents')).toBeTruthy();
+    expect(getByText('supported')).toBeTruthy();
+  });
+
+  it('prefers the lazy detail native session when it has a Codex rollout id', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ...DETAIL,
+        nativeSession: {
+          backend: 'codex',
+          source: 'adv_sessions',
+          ownerId: 'su-codex',
+          codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
+          rolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
+          exactResumeSupported: true,
+          missingReason: null,
+        },
+      } satisfies AgentDetail),
+    });
+    const { findByText, getByText } = render(
+      <AgentDossier
+        ownerId="su-codex"
+        entry={entry({
+          ownerId: 'su-codex',
+          agent: 'codex',
+          source: 'codex',
+          nativeSession: {
+            backend: 'codex',
+            source: 'adv_sessions',
+            ownerId: 'su-codex',
+            codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
+            rolloutId: null,
+            exactResumeSupported: false,
+            missingReason: 'codex rollout id is not recorded under CODEX_HOME yet',
+          },
+        })}
+        onClose={() => {}}
+      />,
+    );
+    expect(await findByText('019eeb2b-0742-72a0-85a4-5dc505cfe62d')).toBeTruthy();
+    expect(getByText("CODEX_HOME='/home/user/.papercusp/su-codex-homes/session-77' codex exec resume 019eeb2b-0742-72a0-85a4-5dc505cfe62d")).toBeTruthy();
+  });
+
   it('renders Codex runtime diagnostics when the selected agent has a tracked CODEX_HOME', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         ...DETAIL,
+        nativeSession: {
+          backend: 'codex',
+          source: 'adv_sessions',
+          ownerId: 'su-codex',
+          codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
+          rolloutId: '019eeb2b-0742-72a0-85a4-5dc505cfe62d',
+          exactResumeSupported: true,
+          missingReason: null,
+        },
         codex: {
           codexHome: '/home/user/.papercusp/su-codex-homes/session-77',
           exists: true,
@@ -159,13 +235,13 @@ describe('AgentDossier', () => {
         },
       } satisfies AgentDetail),
     });
-    const { findByText, getByText } = render(
+    const { findByText, getByText, getAllByText } = render(
       <AgentDossier ownerId="su-codex" entry={entry({ ownerId: 'su-codex', agent: 'codex', source: 'codex' })} onClose={() => {}} />,
     );
     expect(await findByText('Codex Runtime')).toBeTruthy();
-    expect(getByText('/home/user/.papercusp/su-codex-homes/session-77')).toBeTruthy();
+    expect(getAllByText('/home/user/.papercusp/su-codex-homes/session-77').length).toBeGreaterThan(0);
     expect(getByText("CODEX_HOME='/home/user/.papercusp/su-codex-homes/session-77' codex resume --last")).toBeTruthy();
-    expect(getByText('019eeb2b-0742-72a0-85a4-5dc505cfe62d')).toBeTruthy();
+    expect(getAllByText('019eeb2b-0742-72a0-85a4-5dc505cfe62d').length).toBeGreaterThan(0);
     expect(getByText('soft-hooks-configured')).toBeTruthy();
     expect(getByText('required')).toBeTruthy();
   });

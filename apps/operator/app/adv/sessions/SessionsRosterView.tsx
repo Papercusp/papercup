@@ -54,9 +54,39 @@ export interface RosterEntry {
   mode: 'omp' | 'console' | null;
   windowId: string | null;
   ompThreadId: string | null;
+  sessionId?: string | null;
+  nativeSession?: NativeSessionHandle | null;
   cwd: string | null;
   launchStartedAt: string | null;
 }
+
+export type NativeSessionHandle =
+  | {
+      backend: 'claude';
+      source: 'adv_sessions' | 'spawned_agents';
+      ownerId: string | null;
+      sessionId: string | null;
+      exactResumeSupported: boolean;
+      missingReason: string | null;
+    }
+  | {
+      backend: 'codex';
+      source: 'adv_sessions' | 'spawned_agents';
+      ownerId: string | null;
+      codexHome: string;
+      rolloutId: string | null;
+      exactResumeSupported: boolean;
+      missingReason: string | null;
+    }
+  | {
+      backend: 'omp';
+      source: 'adv_sessions' | 'spawned_agents';
+      ownerId: string | null;
+      ompThreadId: string | null;
+      agentHome: string | null;
+      exactResumeSupported: boolean;
+      missingReason: string | null;
+    };
 
 /** The relevant fields of an ended adv_sessions row (AdvSessionRow subset). */
 export interface EndedRow {
@@ -69,7 +99,7 @@ export interface EndedRow {
   endedAt: string | null;
 }
 
-interface RosterResponse {
+export interface RosterResponse {
   active: RosterEntry[];
   ended: EndedRow[];
 }
@@ -496,8 +526,8 @@ export function SessionsRosterList({
   onToggleStale?: () => void;
 }): React.JSX.Element {
   const { data, error, loading } = useRosterData();
-  const rawActive = data?.active ?? [];
-  const ended = data?.ended ?? [];
+  const rawActive: RosterEntry[] = data?.active ?? [];
+  const ended: EndedRow[] = data?.ended ?? [];
 
   // Role options come from the UNfiltered roster so picking a role never empties
   // its own dropdown.
@@ -655,7 +685,7 @@ export function SessionsRosterDetail({
   onSelectAgent?: (ownerId: string | null) => void;
 }): React.JSX.Element {
   const { data } = useRosterData();
-  const rawActive = data?.active ?? [];
+  const rawActive: RosterEntry[] = data?.active ?? [];
   const selectedEntry = selectedAgent
     ? rawActive.find((e) => e.ownerId === selectedAgent) ?? null
     : null;

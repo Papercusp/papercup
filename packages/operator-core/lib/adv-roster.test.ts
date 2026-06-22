@@ -353,6 +353,55 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     });
   });
 
+  it('surfaces backend-neutral spawned Codex and OMP handles from the spawned-agent handle map', () => {
+    const [codex, omp] = mergeRosterEntries(
+      [
+        presence({ ownerId: 'codex-spawn' }),
+        presence({ ownerId: 'omp-spawn' }),
+      ],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map([
+        [
+          'codex-spawn',
+          {
+            backend: 'codex',
+            source: 'spawned_agents',
+            ownerId: 'codex-spawn',
+            codexHome: '',
+            rolloutId: null,
+            exactResumeSupported: false,
+            missingReason: 'spawned Codex agent has no durable CODEX_HOME/rollout handle recorded',
+          },
+        ],
+        [
+          'omp-spawn',
+          {
+            backend: 'omp',
+            source: 'spawned_agents',
+            ownerId: 'omp-spawn',
+            ompThreadId: null,
+            agentHome: null,
+            exactResumeSupported: false,
+            missingReason: 'spawned OMP agent has no thread id recorded',
+          },
+        ],
+      ]),
+    );
+    expect(codex.sessionId).toBeNull();
+    expect(codex.nativeSession).toMatchObject({
+      backend: 'codex',
+      source: 'spawned_agents',
+      exactResumeSupported: false,
+    });
+    expect(omp.nativeSession).toMatchObject({
+      backend: 'omp',
+      source: 'spawned_agents',
+      exactResumeSupported: false,
+    });
+  });
+
   it('resolves each agent wake mode (override ?? default ?? auto) for the P-008 badge', () => {
     // per-agent override wins
     const [overridden] = mergeRosterEntries(

@@ -27,6 +27,10 @@ import {
 import { lockCoordinationDomain } from './agent-tools/locks/coordination-domain';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './role-codex-home';
+import {
+  nativeSessionHandleForAdvSession,
+  type NativeSessionHandle,
+} from './native-session-handles';
 
 // ──────────────────────────── DTOs (the endpoint JSON contract) ────────────
 // Dates are ISO strings on the wire (readQueue returns Date objects; we map).
@@ -112,6 +116,7 @@ export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
   coord: AgentCoordState;
+  nativeSession: NativeSessionHandle | null;
   codex: CodexHomeDiagnostics | null;
 }
 
@@ -293,12 +298,29 @@ async function getAgentCodexDiagnostics(owner: string): Promise<CodexHomeDiagnos
   }
 }
 
+async function getAgentNativeSession(owner: string): Promise<NativeSessionHandle | null> {
+  try {
+    const session = await latestAdvSessionByCoordOwner(owner);
+    if (!session) return null;
+    if (session.agent === 'codex') {
+      const diagnostics = readCodexHomeDiagnostics(session.id);
+      return nativeSessionHandleForAdvSession(session, {
+        findCodexRolloutId: () => diagnostics.latestRolloutId,
+      });
+    }
+    return nativeSessionHandleForAdvSession(session);
+  } catch {
+    return null;
+  }
+}
+
 /** The full Tier-3 dossier for one agent: locks + coord + client diagnostics, fetched concurrently. */
 export async function getAgentDetail(owner: string): Promise<AgentDetail> {
-  const [locks, coord, codex] = await Promise.all([
+  const [locks, coord, nativeSession, codex] = await Promise.all([
     getAgentLocks(owner),
     getAgentCoordState(owner),
+    getAgentNativeSession(owner),
     getAgentCodexDiagnostics(owner),
   ]);
-  return { ownerId: owner, locks, coord, codex };
+  return { ownerId: owner, locks, coord, nativeSession, codex };
 }
