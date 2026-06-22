@@ -254,10 +254,9 @@ fn run_workbench() -> Result<()> {
 
 /// Materialise the chat-only dock (operator chat | brain) and hand off to zellij
 /// — the surface the desktop-docked native terminal runs (native-terminal-desktop
-/// P-013 / D-011). The brain pane is THE canonical brain: `psu --brain` resumes
-/// the pinned brain session exactly (D-013 auto-pin — psu launches + pins a
-/// fresh one when no pin exists). Override the whole brain command with
-/// PAPERCUSP_BRAIN_CMD (e.g. "psu --resume <id>" to drive a different session).
+/// P-013 / D-011). `psu --brain` was retired on 2026-06-21; the default brain
+/// pane is the backend-neutral shared brain view. Override the whole brain
+/// command with PAPERCUSP_BRAIN_CMD for local experiments.
 async fn run_chat_dock() -> Result<()> {
     let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
     let brain_argv = layout::default_brain_argv(env.as_deref());

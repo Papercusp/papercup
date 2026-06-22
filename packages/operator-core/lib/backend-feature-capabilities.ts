@@ -13,6 +13,7 @@ export type BackendFeature =
   | 'gateway-routing'
   | 'file-lock-enforcement'
   | 'native-fork'
+  | 'brain-pinning'
   | 'forced-native-session-id'
   | 'runtime-home-inheritance'
   | 'mcp-http-auth'
@@ -58,6 +59,10 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'gateway-routing': supported('Anthropic-compatible inference gateway route'),
     'file-lock-enforcement': supported('Claude PreToolUse/PostToolUse hooks'),
     'native-fork': supported('claude --fork-session'),
+    'brain-pinning': unsupported(
+      'retired psu --brain and bootstrap brain paths; use operator/sentinel converse',
+      'Pinned brain sessions were retired on 2026-06-21; use the backend-neutral operator/sentinel converse surface or a normal psu session',
+    ),
     'forced-native-session-id': supported('claude --session-id'),
     'runtime-home-inheritance': supported('interactive Claude config mirror of ~/.claude with isolated projects'),
     'mcp-http-auth': supported('user-level MCP config with bearer headers'),
@@ -80,6 +85,10 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
       'capability-gated in the launcher',
       'Codex CLI has no Claude-style native fork-session flag; branch by launching a new Codex session with explicit launch_context instead of pretending to native-fork',
     ),
+    'brain-pinning': unsupported(
+      'retired psu --brain and bootstrap brain paths; use operator/sentinel converse',
+      'Pinned brain sessions were retired on 2026-06-21; use the backend-neutral operator/sentinel converse surface or a normal psu session',
+    ),
     'forced-native-session-id': unsupported(
       'tracked via CODEX_HOME and rollout id discovery',
       'Codex CLI cannot be launched with a forced native session UUID',
@@ -101,6 +110,10 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     'native-fork': unsupported(
       'capability-gated in the launcher',
       'OMP has no Claude-style native fork-session flag; branch by launching a new OMP session with explicit launch_context instead of pretending to native-fork',
+    ),
+    'brain-pinning': unsupported(
+      'retired psu --brain and bootstrap brain paths; use operator/sentinel converse',
+      'Pinned brain sessions were retired on 2026-06-21; use the backend-neutral operator/sentinel converse surface or a normal psu session',
     ),
     'forced-native-session-id': unsupported('thread id tracking', 'OMP resumes by thread id and does not accept a forced Claude-style session UUID'),
     'runtime-home-inheritance': supported('per-spawn OMP agent dir copies auth/config/tool cache'),

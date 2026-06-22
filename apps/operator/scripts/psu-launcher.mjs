@@ -201,6 +201,8 @@ export function forkUnsupportedMessage(agent) {
  */
 export const NATIVE_SCHEDULER_DENY_FLAG =
   '--disallowedTools=CronCreate,CronDelete,CronList,ScheduleWakeup,Skill(schedule),Skill(loop),Bash(crontab:*),Bash(systemd-run:*),Bash(batch:*)';
+export const BRAIN_TOMBSTONE_MESSAGE =
+  'psu: --brain is deprecated and no longer launches a pinned brain session. Use the live operator/sentinel converse surface or a normal `psu` session.';
 
 /**
  * Per-backend args for an interactive ROLE session — exec the raw CLI
@@ -1649,7 +1651,7 @@ async function resumeFlow(args = {}) {
 // `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old
 // scripts fail clearly instead of accidentally launching a normal SU session.
 async function brainFlow(args = {}) {
-  console.error('psu: --brain is deprecated and no longer launches a pinned brain session. Use the live operator/sentinel converse surface or a normal `psu` session.');
+  console.error(BRAIN_TOMBSTONE_MESSAGE);
   process.exitCode = 2;
 }
 

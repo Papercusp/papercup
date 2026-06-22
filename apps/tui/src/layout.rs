@@ -209,7 +209,7 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 /// (hive-network-surface-2026-06-11 P-007 / B-10; plans tab added
 /// pui-plans-status-board-2026-06-14):
 ///   * tab **"this hive"** (focus) — the live-TUI dock VERBATIM: the queen
-///     split (`psu --brain` + her data boards) over the agent stack
+///     split (`pui brain-view --queen` + her data boards) over the agent stack
 ///     (operator/sentinel chat, the reactive dock-driver, the fleet wake board).
 ///     No workbench HUD, no work-area agent panes, no swap presets.
 ///   * tab **"network"** — `pui network-pane`, the cross-hive capability-ladder
@@ -226,8 +226,8 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 /// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
 /// operator pane is the `operator` term (Queen). The pinned-pane ARGS
 /// (`network-pane`, `wake-pane`, …) are internal identifiers and never change.
-/// `_brain_argv` (the interactive `psu --brain` command) is retained for a future
-/// "take control" action; the ♛ queen + 👁 overwatch dock panes now render the
+/// `_brain_argv` is retained for a future "take control" action; the ♛ queen
+/// + 👁 overwatch dock panes now render the
 /// READ-ONLY shared transcript view (`pui brain-view`, queen-overwatch-live-
 /// visibility D-003) so every instance shows the SAME live agent and survives a
 /// shell exit, instead of a per-window interactive shell. Pure (no I/O) so it is
@@ -282,13 +282,13 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // pui-chat-pane single stack is gone with it):
     //
     // EVERY agent chat in the dock is a LIVE TUI (owner directive 2026-06-11)
-    // — never a pui-rendered substitute. The QUEEN is the real interactive
-    // `psu --brain` session with her staged-wake board (`pui wake-pane
-    // --queen`) in a pane directly beside it (zellij owns the split). A
-    // one-pane pui-internal [chat | wakes] split (`pui agent-pane`) was tried
-    // 2026-06-11 and REVERTED: pui cannot embed the live session — it could
-    // only render a DIFFERENT conversation (the sentinel's), which both showed
-    // the wrong agent and dropped the interactive queen. Below her: the agent
+    // — never a pui-rendered substitute. The QUEEN is now the shared read-only
+    // brain view with her staged-wake board (`pui wake-pane --queen`) in a pane
+    // directly beside it (zellij owns the split). A one-pane pui-internal
+    // [chat | wakes] split (`pui agent-pane`) was tried 2026-06-11 and REVERTED:
+    // pui could only render a DIFFERENT conversation (the sentinel's), which
+    // both showed the wrong agent and dropped the interactive queen. Below her:
+    // the agent
     // STACK — the sentinel (ElevenLabs voice) psu chat, the dock-driver (which
     // reactively appends one live `claude --resume` TUI per bee), and the
     // fleet-wide wake board (per-bee queues grouped there).
@@ -344,9 +344,9 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
         )
     };
     format!(
-        r#"// Papercusp chat dock (owner directive 2026-06-11): every agent chat is a
-// LIVE TUI. The QUEEN is the real interactive `psu --brain` session with her
-// staged-wake board in a pane directly beside it; below her, the agent
+r#"// Papercusp chat dock (owner directive 2026-06-11): every agent chat is a
+// LIVE TUI. The QUEEN is the shared read-only `pui brain-view --queen` pane with
+// her staged-wake board directly beside it; below her, the agent
 // STACK — the operator (ElevenLabs voice) sentinel chat, the dock-driver that
 // reactively appends one live `claude --resume` TUI per bee, and the fleet-wide
 // wake board. Alt+↑/↓ (or clicking a title bar) scrolls the stack through ALL
@@ -621,16 +621,14 @@ pub fn desired_hive_tabs(groups: &[HiveGroup]) -> Vec<HiveTabSpec> {
         .collect()
 }
 
-/// The chat dock's brain-pane command (native-terminal-desktop D-013): the
-/// canonical brain — `psu --brain` resumes THE pinned brain session exactly
-/// (no picker; psu launches + pins a fresh one when no pin exists or it no
-/// longer resolves). `env` is PAPERCUSP_BRAIN_CMD's value when set — a
-/// whitespace-split full-command override (e.g. "psu --resume <id>" to drive
-/// a different session, or "psu --resume" for the picker). Pure — unit-tested.
+/// The chat dock's brain-pane command fallback. `psu --brain` was retired on
+/// 2026-06-21, so the default is the backend-neutral read-only brain view.
+/// `env` is PAPERCUSP_BRAIN_CMD's value when set — a whitespace-split
+/// full-command override. Pure — unit-tested.
 pub fn default_brain_argv(env: Option<&str>) -> Vec<String> {
     match env {
         Some(s) if !s.trim().is_empty() => s.split_whitespace().map(|x| x.to_string()).collect(),
-        _ => vec!["psu".to_string(), "--brain".to_string()],
+        _ => vec!["pui".to_string(), "brain-view".to_string(), "--queen".to_string()],
     }
 }
 
@@ -827,7 +825,7 @@ mod tests {
     #[test]
     fn chat_dock_is_the_queen_split_over_the_agent_stack() {
         // The dock (hive-agent-tabs, sole shape since P-014): the queen split
-        // (psu --brain + her data boards) over the agent stack (psu sentinel,
+        // (brain-view + her data boards) over the agent stack (psu sentinel,
         // dock-driver, fleet wake board). The retired `pui chat-pane` widget
         // must never reappear.
         let lex = Lexicon::default();
@@ -875,7 +873,10 @@ mod tests {
         // VERBATIM; tab 2 "network" hosts `pui network-pane`; tab 3 "plans"
         // hosts `pui plans-pane`. The bars live in a `default_tab_template`
         // shared by all tabs. The workbench swap presets never appear here.
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        let kdl = chat_dock_kdl(
+            &["pui".to_string(), "brain-view".to_string(), "--queen".to_string()],
+            &Lexicon::default(),
+        );
         // A shared tab template carries the bars exactly once.
         assert!(kdl.contains("default_tab_template {"), "no default_tab_template");
         assert!(kdl.contains("children"), "template has no children placeholder");
@@ -1085,7 +1086,7 @@ mod tests {
     #[test]
     fn chat_dock_queen_pane_is_read_only_brain_view() {
         // queen-overwatch-live-visibility D-003: the queen pane no longer threads
-        // brain_argv (it is NOT an interactive `psu --brain` resume) — it renders the
+        // brain_argv (it is NOT an interactive brain resume) — it renders the
         // READ-ONLY shared transcript view so every instance shows the SAME live queen
         // and survives shell exit. brain_argv is retained for a future "take control"
         // action but is NOT threaded into the default dock pane.
@@ -1105,12 +1106,10 @@ mod tests {
     }
 
     #[test]
-    fn brain_default_is_the_canonical_pinned_brain() {
-        // D-013 auto-pin: the dock's brain pane resumes THE pinned brain
-        // (`psu --brain`), not the recent-session picker.
-        assert_eq!(default_brain_argv(None), vec!["psu", "--brain"]);
-        assert_eq!(default_brain_argv(Some("")), vec!["psu", "--brain"]);
-        assert_eq!(default_brain_argv(Some("   ")), vec!["psu", "--brain"]);
+    fn brain_default_is_the_backend_neutral_read_only_view() {
+        assert_eq!(default_brain_argv(None), vec!["pui", "brain-view", "--queen"]);
+        assert_eq!(default_brain_argv(Some("")), vec!["pui", "brain-view", "--queen"]);
+        assert_eq!(default_brain_argv(Some("   ")), vec!["pui", "brain-view", "--queen"]);
     }
 
     #[test]

@@ -35,6 +35,7 @@ import {
   AGENTS,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
+  BRAIN_TOMBSTONE_MESSAGE,
   fetchWithResilience,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
@@ -66,13 +67,13 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
-  it('parses --brain (D-013 canonical-brain resume; defaults false)', () => {
+  it('parses retired --brain as a tombstoned flag, not a backend-specific capability', () => {
     expect(parseArgs(['--brain']).brain).toBe(true);
     expect(parseArgs([]).brain).toBe(false);
-    // Composable with a model override (the dock may pin a model).
     const both = parseArgs(['--brain', '--model=opus']);
     expect(both.brain).toBe(true);
     expect(both.model).toBe('opus');
+    expect(BRAIN_TOMBSTONE_MESSAGE).toMatch(/operator\/sentinel converse/i);
   });
 
   it('parses the scripting-escape flags', () => {

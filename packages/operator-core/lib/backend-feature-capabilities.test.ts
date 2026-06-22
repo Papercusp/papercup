@@ -22,6 +22,7 @@ const FEATURES: BackendFeature[] = [
   'gateway-routing',
   'file-lock-enforcement',
   'native-fork',
+  'brain-pinning',
   'forced-native-session-id',
   'runtime-home-inheritance',
   'mcp-http-auth',
@@ -58,6 +59,15 @@ describe('BACKEND_FEATURE_CAPABILITIES', () => {
       state: 'unsupported',
       unsupportedReason: expect.stringMatching(/launch_context/i),
     });
+  });
+
+  it('documents retired brain pinning as backend-neutral converse, not a Claude-only path', () => {
+    for (const backend of BACKENDS) {
+      expect(backendFeatureCapability(backend, 'brain-pinning')).toMatchObject({
+        state: 'unsupported',
+        unsupportedReason: expect.stringMatching(/operator\/sentinel converse/i),
+      });
+    }
   });
 
   it('keeps OMP gateway/account work capability-gated until its provider adapter exists', () => {
