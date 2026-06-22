@@ -19,6 +19,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { sweepStalePresence, listPresence } from './presence';
+import { fetchWakeability } from './presence-wakeability';
+import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;

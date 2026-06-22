@@ -103,6 +103,37 @@ describe('expandAudience', () => {
     expect(await expandAudience(['@plan:ghost'], r)).toEqual([]);
   });
 
+  it('an empty selector body resolves to no one (never a broadcast — the guard fires before any resolver call)', async () => {
+    const r = makeResolvers({
+      subs: { 'topic:': ['x'], 'object:': ['y'] }, // would match only if the empty-body guard failed
+      presence: [{ ownerId: 'p', planSlug: null, files: [''] }],
+    });
+    expect(await expandAudience(['@plan:', '@topic:', '@object:', '@file:'], r)).toEqual([]);
+  });
+
+  it('trims surrounding whitespace in a selector body before resolving', async () => {
+    const r = makeResolvers({ subs: { 'topic:federation': ['a'] } });
+    expect(await expandAudience(['@topic:  federation  '], r)).toEqual(['a']);
+  });
+
+  it('@object with a ref containing NO colon resolves direct subscribers only (no tagged-topic lookup)', async () => {
+    let taggedCalls = 0;
+    const r: AudienceResolvers = {
+      async listTargetSubscribers(kind, ref) {
+        return kind === 'object' && ref === 'plainref' ? ['direct'] : [];
+      },
+      async listActivePresence() {
+        return [];
+      },
+      async listTaggedTopics() {
+        taggedCalls += 1;
+        return [];
+      },
+    };
+    expect(await expandAudience(['@object:plainref'], r)).toEqual(['direct']);
+    expect(taggedCalls).toBe(0); // colon <= 0 → the tagged-topic branch is skipped
+  });
+
   it('calls listActivePresence at most once across multiple presence selectors', async () => {
     let calls = 0;
     const r: AudienceResolvers = {

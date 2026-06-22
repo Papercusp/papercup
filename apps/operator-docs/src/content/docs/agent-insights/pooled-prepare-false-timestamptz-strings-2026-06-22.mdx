@@ -1,6 +1,11 @@
 ---
 title: "getOrgPg()'s prepare:false connection returns timestamptz as STRINGS (and rejects Date bind params)"
 description: "Why a query that works in tests + dev:pg_query silently no-ops in the operator — the pooled prepare:false connection doesn't parse timestamptz to Date or accept Date params. Root cause of the fleet-wide engine-loop re-arm death (EI-2549)."
+discovered: 2026-06-22
+status: active
+documents:
+  - packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts
+  - libs/papercusp/libs/db/src/connection.ts
 ---
 
 ## TL;DR
