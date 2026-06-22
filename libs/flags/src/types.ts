@@ -971,7 +971,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.COORD_PER_WORKSPACE]: false,
   // DEFAULT OFF (deliberate) — per-workspace engineer-issues cutover, reversible
   // kill-switch; OFF = today's `default`-pinned issue bus, byte-identical. Listed in KNOWN_DARK_FLAGS.
-  [FLAGS.ISSUES_PER_WORKSPACE]: false,
+  [FLAGS.ISSUES_PER_WORKSPACE]: true,
   [FLAGS.WORKITEM_CLAIM_LEASE]: false,
   // DEFAULT OFF (deliberate) — routines per-workspace ON CONFLICT (phase 1), reversible
   // kill-switch; OFF = today's ON CONFLICT (install_slug,name), byte-identical. KNOWN_DARK_FLAGS.
@@ -1184,7 +1184,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // rail auto-authors a template:rubric draft per detected gap). Ships dark so the
   // owner can observe gap quality before Scout starts creating draft plans live; the
   // detection (P-008 rubricGaps) is always on, only the auto-authoring is gated.
-  [FLAGS.SCOUT_RUBRIC_RAIL]: false,
+  [FLAGS.SCOUT_RUBRIC_RAIL]: true,
   // OFF by default — same D-001 dark-ship rule as the loops above: the
   // deferral-interest refit is a frontier learning loop (SQL-only, zero LLM
   // spend); the flag flip + an owner-set per-cycle governor budget on loop
@@ -1274,12 +1274,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.CAPABILITY_ENVELOPE]: false,
   // P-008 — capability grant tool ships DARK (owner-authority / D-007); the flag gates the
   // loadRoleCapabilities grant-union, so OFF = byte-identical capability resolution.
-  [FLAGS.CAPABILITY_GRANT_TOOL]: false,
+  [FLAGS.CAPABILITY_GRANT_TOOL]: true,
   // P-007 — work-item redundancy is N× model spend; ships DARK (owner flips via /admin/features).
-  [FLAGS.WORKITEM_REDUNDANCY]: false,
+  [FLAGS.WORKITEM_REDUNDANCY]: true,
   // P-009 — runtime capability-envelope overrides modify AUTH on the dispatch hot path (D-010);
   // ship DARK. OFF = the sync-cache stays empty = byte-identical envelope resolution.
-  [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES]: false,
+  [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES]: true,
   // P-020 — telemetry-buffer config is operational + safe (empty store = byte-identical); ships
   // ON per the default-on policy, as a kill-switch (OFF forces the baked telemetry-buffer defaults).
   [FLAGS.TELEMETRY_BUFFER_CONFIG]: true,
@@ -1408,7 +1408,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // coord_open_escalations projection. The projection table+trigger (mig 355) are additive +
   // harmless while OFF; flip ON only after the migration+backfill is verified in prod.
   // OFF ⇒ the authoritative event-fold (byte-identical). KNOWN_DARK_FLAGS.
-  [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: false,
+  [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

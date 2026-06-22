@@ -90,7 +90,7 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
   },
   omp: {
     'fresh-su': supported('raw omp launch with prompt and coordination extension'),
-    resume: soft('omp thread resume with PTY/headless handshake', 'live wake/resume still needs the full smoke matrix'),
+    resume: supported('omp thread resume with readiness-gated PTY injection, timeout handling, and transcript-tail diagnostics'),
     'role-session': supported('raw omp role launch with prompt and cwd-discovered MCP config'),
     'launch-context': supported('--append-system-prompt'),
     'saved-prompts': supported('.claude/commands materialization shared with OMP command discovery'),

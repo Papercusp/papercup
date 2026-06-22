@@ -25,6 +25,7 @@ import {
   estimateTokens,
   parseRateReset,
   parseUnifiedWindow,
+  peekBody,
   ACCOUNT_HEADER,
   OWNER_HEADER,
   ROUTED_ACCOUNT_HEADER,
@@ -472,5 +473,96 @@ describe('admin + observability endpoints', () => {
     const res2 = await ask(`/admin/stalls?since=${Date.now() + 60_000}`, { method: 'GET' });
     const b2 = (await res2.json()) as { stalls?: unknown[] };
     expect(b2.stalls).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 4 — peekBody: the non-200 body cap split (exported helper)
+ *
+ * The gateway peeks up to USAGE_LIMIT_PEEK_BYTES (64KB) of a NON-200 upstream body
+ * to sniff a usage/session-limit signature WITHOUT buffering a successful 200 stream.
+ * Byte-exactness across the cap boundary is load-bearing: a bug truncates/corrupts the
+ * error body the gateway forwards. These pin the head/rest split precisely.
+ * ------------------------------------------------------------------ */
+
+/** A web ReadableStream that emits the given byte chunks then closes. */
+function streamOf(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+  let i = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i < chunks.length) controller.enqueue(chunks[i++]);
+      else controller.close();
+    },
+  });
+}
+/** Drain a Node Readable to a single Buffer. */
+async function drain(r: import('node:stream').Readable): Promise<Buffer> {
+  const parts: Buffer[] = [];
+  for await (const c of r) parts.push(Buffer.from(c as Uint8Array));
+  return Buffer.concat(parts);
+}
+/** n bytes filled with `fill` (default 'a'). */
+const bytes = (n: number, fill = 0x61) => new Uint8Array(n).fill(fill);
+
+describe('peekBody — non-200 body cap split', () => {
+  it('a body that ENDS within the cap returns the whole body as head, rest=null', async () => {
+    const { head, rest } = await peekBody(streamOf([bytes(10), bytes(10)]), 1000);
+    expect(head.length).toBe(20);
+    expect(rest).toBeNull();
+  });
+
+  it('an EMPTY stream returns an empty head and rest=null', async () => {
+    const { head, rest } = await peekBody(streamOf([]), 1000);
+    expect(head.length).toBe(0);
+    expect(rest).toBeNull();
+  });
+
+  it('a body LARGER than the cap splits into head(≥cap) + rest, reassembling BYTE-EXACT', async () => {
+    // 100 bytes in 10-byte chunks (distinct fill each), cap 25 → head accrues whole chunks until ≥25 (30 bytes), rest = the other 70.
+    const chunks = Array.from({ length: 10 }, (_, i) => bytes(10, 0x41 + i));
+    const original = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    const { head, rest } = await peekBody(streamOf(chunks), 25);
+    expect(head.length).toBeGreaterThanOrEqual(25);
+    expect(rest).not.toBeNull();
+    const restBuf = await drain(rest!);
+    // No byte lost or duplicated across the head/rest split.
+    expect(Buffer.concat([head, restBuf]).equals(original)).toBe(true);
+  });
+
+  it('a SINGLE chunk larger than the cap becomes the whole head (whole-chunk aligned), rest yields nothing', async () => {
+    const { head, rest } = await peekBody(streamOf([bytes(50)]), 10);
+    expect(head.length).toBe(50); // head is NOT clipped to the cap — it is whole-chunk aligned
+    expect(rest).not.toBeNull();
+    expect((await drain(rest!)).length).toBe(0); // nothing after the over-cap chunk
+  });
+
+  it('hitting the cap EXACTLY on a chunk boundary (stream continues) → head=cap, rest=remainder', async () => {
+    const { head, rest } = await peekBody(streamOf([bytes(10), bytes(10)]), 10);
+    expect(head.length).toBe(10);
+    expect(rest).not.toBeNull();
+    expect((await drain(rest!)).length).toBe(10);
+  });
+
+  it('hitting the cap EXACTLY on the LAST chunk → head=cap, rest is a non-null but EMPTY stream', async () => {
+    // The loop breaks on `total >= cap`, not on `done`, so rest is non-null even though nothing remains.
+    const { head, rest } = await peekBody(streamOf([bytes(10)]), 10);
+    expect(head.length).toBe(10);
+    expect(rest).not.toBeNull();
+    expect((await drain(rest!)).length).toBe(0);
+  });
+});
+
+describe('200 passthrough — a large body is streamed, never peeked/clipped', () => {
+  it('a 200 body LARGER than the 64KB peek cap reaches the client INTACT (the 200 path never peeks)', async () => {
+    const big = 'x'.repeat(100 * 1024); // 100KB > USAGE_LIMIT_PEEK_BYTES (64KB)
+    await boot((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ blob: big }));
+    });
+    const res = await postMsg({ model: 'claude-opus-4', max_tokens: 4, messages: [] });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { blob: string };
+    expect(j.blob.length).toBe(big.length);
+    expect(j.blob).toBe(big);
   });
 });

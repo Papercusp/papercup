@@ -10,7 +10,9 @@ import {
   codexHomeForAdvSession,
   executeWake,
   findCodexRolloutSessionId,
+  injectOmpWakeTurnWhenReady,
   hiveInstallSlugFromLabel,
+  ompResumePtyLooksReady,
   resumeCommandFor,
   wakeTurnText,
   type ExecuteWakeDeps,
@@ -107,6 +109,17 @@ const session = (over: Record<string, unknown> = {}) => ({
 
 const livePresence = { stale: false, revoked: false } as never;
 const stalePresence = { stale: true, revoked: false } as never;
+
+function fakeOmpPty(id = 'pty-omp') {
+  return {
+    id,
+    onData: new Set<(chunk: Buffer) => void>(),
+    onExit: new Set<(code: number, signal: number) => void>(),
+    history: [] as Buffer[],
+    killed: false,
+    exitCode: null as number | null,
+  };
+}
 
 function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
   return {
@@ -267,6 +280,12 @@ describe('resumeCommandFor', () => {
     expect(r!.bin).toBe('omp');
     expect(r!.args).toEqual(['-r', 'th-9', '--approval-mode', 'yolo']);
     expect(r!.promptViaPty).toBe(true);
+  });
+
+  it('omp readiness detector recognizes prompt-like resume screens', () => {
+    expect(ompResumePtyLooksReady('OMP ready\n> ')).toBe(true);
+    expect(ompResumePtyLooksReady('Type a message to continue')).toBe(true);
+    expect(ompResumePtyLooksReady('booting provider adapters...')).toBe(false);
   });
 
   it('codex: headless `exec resume <uuid> <prompt>` when the conversation id is known', () => {
@@ -486,10 +505,11 @@ describe('executeWake — the liveness ladder', () => {
     expect(spawnManagedPty).not.toHaveBeenCalled();
   });
 
-  it('exited omp → resume + the prompt injected into the new pty after the TUI settles', async () => {
+  it('exited omp → resume + readiness-gated prompt injection into the new pty', async () => {
     const write = vi.fn(() => true);
-    const spawnManagedPty = vi.fn(() => ({ id: 'pty-omp' }));
-    const out = await executeWake(
+    const pty = fakeOmpPty();
+    const spawnManagedPty = vi.fn(() => pty);
+    const pending = executeWake(
       work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' }) }),
       deps({
         getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' })) as never,
@@ -498,19 +518,64 @@ describe('executeWake — the liveness ladder', () => {
         write: write as never,
       }),
     );
-    expect(out).toEqual({ kind: 'delivered', channel: 'resume' });
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(write).not.toHaveBeenCalled();
+    for (const cb of pty.onData) cb(Buffer.from('OMP ready\n> '));
     // Audit P-034: the prompt must land as TWO writes — text, then the submit
     // CR as a separate keystroke after a settle. The old single text+CR buffer
     // tripped the TUI paste detector (CR → literal newline, turn never submits).
-    vi.advanceTimersByTime(2_600);
+    await vi.advanceTimersByTimeAsync(1);
     expect(write).toHaveBeenCalledTimes(1);
     const [ptyId, textBuf] = write.mock.calls[0] as unknown as [string, Buffer];
     expect(ptyId).toBe('pty-omp');
     expect(textBuf.toString()).not.toMatch(/\r$/);
-    vi.advanceTimersByTime(400);
+    await vi.advanceTimersByTimeAsync(400);
     expect(write).toHaveBeenCalledTimes(2);
     expect((write.mock.calls[1] as unknown as [string, Buffer])[1].toString()).toBe('\r');
+    await expect(pending).resolves.toEqual({ kind: 'delivered', channel: 'resume' });
+  });
+
+  it('exited omp readiness timeout → error with transcript tail and pty cleanup', async () => {
+    const write = vi.fn(() => true);
+    const pty = fakeOmpPty();
+    const kill = vi.fn(() => true);
+    const pending = executeWake(
+      work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' }) }),
+      deps({
+        getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' })) as never,
+        alive: vi.fn(() => false),
+        spawnManagedPty: vi.fn(() => pty) as never,
+        write: write as never,
+        kill: kill as never,
+      }),
+    );
+    for (const cb of pty.onData) cb(Buffer.from('loading account router'));
+    await vi.advanceTimersByTimeAsync(16_000);
+    await expect(pending).resolves.toMatchObject({
+      kind: 'error',
+      error: expect.stringContaining('did not become ready'),
+    });
+    expect(write).not.toHaveBeenCalled();
+    expect(kill).toHaveBeenCalledWith('pty-omp');
+  });
+
+  it('omp prompt helper accepts a quiet settled screen and captures transcript tail', async () => {
+    const write = vi.fn(() => true);
+    const pty = fakeOmpPty('pty-helper');
+    const pending = injectOmpWakeTurnWhenReady({
+      pty,
+      wakeText: 'WAKE',
+      write: write as never,
+      readyTimeoutMs: 1_000,
+      quietReadyMs: 100,
+      submitCrDelayMs: 25,
+    });
+    for (const cb of pty.onData) cb(Buffer.from('restored thread th-1\n'));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(write).toHaveBeenCalledWith('pty-helper', Buffer.from('WAKE', 'utf8'));
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(pending).resolves.toEqual({ ok: true, transcriptTail: 'restored thread th-1\n' });
+    expect(write).toHaveBeenLastCalledWith('pty-helper', Buffer.from('\r', 'utf8'));
   });
 
   it('NO recorded pid + fresh presence → park (never concurrent-resume a live session)', async () => {

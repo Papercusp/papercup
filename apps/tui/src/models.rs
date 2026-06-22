@@ -139,6 +139,11 @@ pub struct RosterEntry {
     #[serde(default)]
     #[allow(dead_code)]
     pub session_id: Option<String>,
+    /// Backend-neutral native session handle (adv-roster.ts nativeSession). This
+    /// is the durable attach/resume contract for hive tabs: Claude session ids,
+    /// Codex CODEX_HOME+rollout handles, and OMP thread ids.
+    #[serde(default)]
+    pub native_session: Option<NativeSessionHandle>,
     /// The agent's effective wake mode ("auto" | "manual"), the P-008 badge. None
     /// for pending entries / pre-flag payloads. Rendered in the Fleet roster.
     #[serde(default)]
@@ -187,20 +192,27 @@ impl RosterEntry {
     }
 
     /// The dock pane command for this entry as a fleet bee (hive-agent-tabs P-004
-    /// / D-007). A claude bee with a recorded native session id resumes as a real
-    /// Claude TUI (`claude --resume <id>`) — the "looks like the Queen" surface.
-    /// `None` = no resumable session (omp/codex bee, or a claude bee before its
-    /// session id is recorded) → the bee gets NO dock pane; it stays visible in
-    /// the colony roster + fleet boards. (The read-only `pui watch-pane`
-    /// fallback was retired by P-014.) NB: the resume FORM + the live attach
-    /// are validated in the owner's live dock — a still-running `-p` session
-    /// can't be attached, so it's a between/after-turns takeover (D-007).
+    /// / D-007). Prefer the backend-neutral native session handle; fall back to
+    /// the legacy Claude `session_id` field for older roster payloads. `None` =
+    /// no actionable backend handle yet, so the bee stays visible in rosters but
+    /// gets no dock pane.
     pub fn dock_pane_argv(&self) -> Option<Vec<String>> {
+        if let Some(handle) = &self.native_session {
+            if let Some(argv) = handle.dock_pane_argv() {
+                return Some(argv);
+            }
+        }
         self.session_id
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|sid| vec!["claude".to_string(), "--resume".to_string(), sid.to_string()])
+            .map(|sid| {
+                vec![
+                    "claude".to_string(),
+                    "--resume".to_string(),
+                    sid.to_string(),
+                ]
+            })
     }
 
     /// A short summary of what this agent is currently doing — its declared coord
@@ -208,9 +220,117 @@ impl RosterEntry {
     /// None when nothing's declared (the title falls back to the owner id).
     pub fn work_summary(&self) -> Option<String> {
         let pick = |s: &Option<String>| {
-            s.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(|t| t.to_string())
+            s.as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_string())
         };
         pick(&self.intent).or_else(|| pick(&self.feature))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "backend", rename_all = "camelCase")]
+pub enum NativeSessionHandle {
+    #[serde(rename = "claude", rename_all = "camelCase")]
+    Claude {
+        #[serde(default)]
+        source: String,
+        #[serde(default)]
+        owner_id: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        exact_resume_supported: bool,
+        #[serde(default)]
+        missing_reason: Option<String>,
+    },
+    #[serde(rename = "codex", rename_all = "camelCase")]
+    Codex {
+        #[serde(default)]
+        source: String,
+        #[serde(default)]
+        owner_id: Option<String>,
+        #[serde(default)]
+        codex_home: String,
+        #[serde(default)]
+        rollout_id: Option<String>,
+        #[serde(default)]
+        exact_resume_supported: bool,
+        #[serde(default)]
+        missing_reason: Option<String>,
+    },
+    #[serde(rename = "omp", rename_all = "camelCase")]
+    Omp {
+        #[serde(default)]
+        source: String,
+        #[serde(default)]
+        owner_id: Option<String>,
+        #[serde(default)]
+        omp_thread_id: Option<String>,
+        #[serde(default)]
+        agent_home: Option<String>,
+        #[serde(default)]
+        exact_resume_supported: bool,
+        #[serde(default)]
+        missing_reason: Option<String>,
+    },
+}
+
+impl NativeSessionHandle {
+    pub fn dock_pane_argv(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Claude { session_id, .. } => session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|sid| {
+                    vec![
+                        "claude".to_string(),
+                        "--resume".to_string(),
+                        sid.to_string(),
+                    ]
+                }),
+            Self::Codex {
+                codex_home,
+                rollout_id,
+                ..
+            } => {
+                let home = codex_home.trim();
+                if home.is_empty() {
+                    return None;
+                }
+                let mut argv = vec![
+                    "env".to_string(),
+                    format!("CODEX_HOME={home}"),
+                    "codex".to_string(),
+                    "resume".to_string(),
+                ];
+                if let Some(id) = rollout_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    argv.push(id.to_string());
+                } else {
+                    argv.push("--last".to_string());
+                }
+                Some(argv)
+            }
+            Self::Omp { omp_thread_id, .. } => omp_thread_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|thread| {
+                    vec![
+                        "omp".to_string(),
+                        "-r".to_string(),
+                        thread.to_string(),
+                        "--approval-mode".to_string(),
+                        "yolo".to_string(),
+                    ]
+                }),
+        }
     }
 }
 
@@ -2440,16 +2560,71 @@ mod tests {
 
     #[test]
     fn roster_entry_dock_pane_argv_bee_resume_vs_none() {
-        use super::RosterEntry;
-        let bee = RosterEntry { owner_id: "s-1".into(), session_id: Some("uuid-x".into()), ..Default::default() };
-        // claude session id → claude --resume (Claude TUI, P-004/D-007)
+        use super::{NativeSessionHandle, RosterEntry};
+        let bee = RosterEntry {
+            owner_id: "s-1".into(),
+            session_id: Some("uuid-x".into()),
+            ..Default::default()
+        };
+        // Legacy claude session id → claude --resume (Claude TUI, P-004/D-007)
         assert_eq!(
             bee.dock_pane_argv(),
-            Some(vec!["claude".to_string(), "--resume".to_string(), "uuid-x".to_string()])
+            Some(vec![
+                "claude".to_string(),
+                "--resume".to_string(),
+                "uuid-x".to_string()
+            ])
         );
-        // no session id (omp bee / between turns) → no dock pane (P-014 retired
-        // the read-only watch-pane fallback).
-        let nosid = RosterEntry { owner_id: "s-2".into(), session_id: None, ..Default::default() };
+        let codex = RosterEntry {
+            owner_id: "s-codex".into(),
+            native_session: Some(NativeSessionHandle::Codex {
+                source: "spawned_agents".into(),
+                owner_id: Some("s-codex".into()),
+                codex_home: "/tmp/codex-home".into(),
+                rollout_id: Some("019eeb2b-0742-72a0-85a4-5dc505cfe62d".into()),
+                exact_resume_supported: true,
+                missing_reason: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            codex.dock_pane_argv(),
+            Some(vec![
+                "env".to_string(),
+                "CODEX_HOME=/tmp/codex-home".to_string(),
+                "codex".to_string(),
+                "resume".to_string(),
+                "019eeb2b-0742-72a0-85a4-5dc505cfe62d".to_string(),
+            ])
+        );
+        let omp = RosterEntry {
+            owner_id: "s-omp".into(),
+            native_session: Some(NativeSessionHandle::Omp {
+                source: "spawned_agents".into(),
+                owner_id: Some("s-omp".into()),
+                omp_thread_id: Some("thread-1".into()),
+                agent_home: Some("/home/me/.omp/agent".into()),
+                exact_resume_supported: true,
+                missing_reason: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            omp.dock_pane_argv(),
+            Some(vec![
+                "omp".to_string(),
+                "-r".to_string(),
+                "thread-1".to_string(),
+                "--approval-mode".to_string(),
+                "yolo".to_string(),
+            ])
+        );
+        // no handle → no dock pane (P-014 retired the read-only watch-pane fallback).
+        let nosid = RosterEntry {
+            owner_id: "s-2".into(),
+            session_id: None,
+            ..Default::default()
+        };
         assert_eq!(nosid.dock_pane_argv(), None);
     }
 

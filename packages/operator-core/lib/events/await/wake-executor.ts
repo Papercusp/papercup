@@ -27,7 +27,7 @@
  */
 
 import { spawn as childSpawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import {
   sessionClaudeConfigDir,
@@ -37,7 +37,7 @@ import {
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { getAdvSession } from '../../adv-sessions';
-import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
+import { findPtyByPid, killPty, spawnPty, writePty } from '../../pty-bridge';
 import {
   freshContextWarmInjectTarget,
   runFreshContextWarmInject,
@@ -60,9 +60,10 @@ const CODEX_ROLLOUT_UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
  * clap ambiguity where the prompt would be read as the session id. null if none.
  */
 export function findCodexRolloutSessionId(codexHome: string): string | null {
-  let best: { id: string; mtime: number } | null = null;
+  type RolloutMatch = { id: string; mtime: number };
+  let best: RolloutMatch | null = null;
   const walk = (dir: string): void => {
-    let entries: ReturnType<typeof readdirSync>;
+    let entries: Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {
@@ -86,7 +87,7 @@ export function findCodexRolloutSessionId(codexHome: string): string | null {
     }
   };
   walk(join(codexHome, 'sessions'));
-  return best?.id ?? null;
+  return (best as RolloutMatch | null)?.id ?? null;
 }
 
 /** The per-session CODEX_HOME bootstrap-su/psu minted for a tracked codex
@@ -269,8 +270,20 @@ export function hiveInstallSlugFromLabel(label: string | null | undefined): stri
   return slug || null;
 }
 
-/** How long an omp resume gets before we inject the prompt into its pty. */
-const PTY_PROMPT_DELAY_MS = 2_500;
+/** Upper bound for an omp resume PTY to present an injectable screen. */
+const OMP_RESUME_READY_TIMEOUT_MS = Number(process.env.PAPERCUSP_OMP_RESUME_READY_TIMEOUT_MS) || 15_000;
+
+/** A settled OMP screen is injectable even when its prompt chrome changes. */
+const OMP_RESUME_QUIET_READY_MS = Number(process.env.PAPERCUSP_OMP_RESUME_QUIET_READY_MS) || 750;
+
+const OMP_RESUME_TRANSCRIPT_TAIL_BYTES = 4_096;
+
+const OMP_READY_PATTERNS = [
+  /(^|[\r\n])\s*(>|[$#])\s*$/m,
+  /(?:type|enter|send)\s+(?:a\s+)?(?:message|prompt|request)/i,
+  /(?:what would you like|how can i help|ask me anything)/i,
+  /\/help/i,
+];
 
 /** Delay before the submit Enter (CR) is sent as its OWN keystroke after a turn's
  *  text. A one-shot `text + CR` burst is swallowed by the Claude Code TUI's paste
@@ -280,6 +293,123 @@ const PTY_PROMPT_DELAY_MS = 2_500;
  *  read the SAME env var to stay in lockstep. */
 const TURN_SUBMIT_CR_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_CR_MS) || 150;
 
+interface OmpResumePtyLike {
+  id: string;
+  onData?: Set<(chunk: Buffer) => void>;
+  onExit?: Set<(code: number, signal: number) => void>;
+  history?: Buffer[];
+  killed?: boolean;
+  exitCode?: number | null;
+}
+
+export type OmpPtyPromptInjectionResult =
+  | { ok: true; transcriptTail: string }
+  | { ok: false; error: string; transcriptTail: string };
+
+function timer(fn: () => void, ms: number): NodeJS.Timeout {
+  const t = setTimeout(fn, ms);
+  t.unref?.();
+  return t;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    timer(resolve, ms);
+  });
+}
+
+function tailBytes(chunks: Buffer[], maxBytes: number): string {
+  if (chunks.length === 0) return '';
+  let bytes = 0;
+  const out: Buffer[] = [];
+  for (let i = chunks.length - 1; i >= 0 && bytes < maxBytes; i -= 1) {
+    const b = chunks[i];
+    if (!b) continue;
+    bytes += b.length;
+    out.unshift(b);
+  }
+  return Buffer.concat(out).subarray(-maxBytes).toString('utf8');
+}
+
+export function ompResumePtyLooksReady(transcript: string): boolean {
+  return OMP_READY_PATTERNS.some((p) => p.test(transcript));
+}
+
+export async function injectOmpWakeTurnWhenReady(input: {
+  pty: OmpResumePtyLike;
+  wakeText: string;
+  write: typeof writePty;
+  readyTimeoutMs?: number;
+  quietReadyMs?: number;
+  submitCrDelayMs?: number;
+}): Promise<OmpPtyPromptInjectionResult> {
+  const readyTimeoutMs = input.readyTimeoutMs ?? OMP_RESUME_READY_TIMEOUT_MS;
+  const quietReadyMs = input.quietReadyMs ?? OMP_RESUME_QUIET_READY_MS;
+  const submitCrDelayMs = input.submitCrDelayMs ?? TURN_SUBMIT_CR_DELAY_MS;
+  const chunks = [...(input.pty.history ?? [])];
+
+  const transcript = () => tailBytes(chunks, OMP_RESUME_TRANSCRIPT_TAIL_BYTES);
+  const initial = transcript();
+  if (!ompResumePtyLooksReady(initial)) {
+    const ready = await new Promise<{ ok: true } | { ok: false; error: string }>((resolve) => {
+      let done = false;
+      let quietTimer: NodeJS.Timeout | null = null;
+
+      const cleanup = () => {
+        done = true;
+        clearTimeout(timeoutTimer);
+        if (quietTimer) clearTimeout(quietTimer);
+        input.pty.onData?.delete(onData);
+        input.pty.onExit?.delete(onExit);
+      };
+      const finish = (result: { ok: true } | { ok: false; error: string }) => {
+        if (done) return;
+        cleanup();
+        resolve(result);
+      };
+      const markQuietReady = () => {
+        if (quietTimer) clearTimeout(quietTimer);
+        quietTimer = timer(() => finish({ ok: true }), quietReadyMs);
+      };
+      const onData = (chunk: Buffer) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const t = transcript();
+        if (ompResumePtyLooksReady(t)) finish({ ok: true });
+        else markQuietReady();
+      };
+      const onExit = (code: number, signal: number) => {
+        finish({ ok: false, error: `omp resume pty exited before readiness (code ${code}, signal ${signal})` });
+      };
+      const timeoutTimer = timer(() => {
+        finish({ ok: false, error: `omp resume pty did not become ready within ${readyTimeoutMs}ms` });
+      }, readyTimeoutMs);
+
+      if (input.pty.killed || input.pty.exitCode !== null) {
+        finish({ ok: false, error: 'omp resume pty is already closed' });
+        return;
+      }
+      input.pty.onData?.add(onData);
+      input.pty.onExit?.add(onExit);
+    });
+    if (!ready.ok) return { ok: false, error: ready.error, transcriptTail: transcript() };
+  }
+
+  try {
+    const wrotePrompt = input.write(input.pty.id, Buffer.from(input.wakeText, 'utf8'));
+    if (!wrotePrompt) return { ok: false, error: 'omp resume pty rejected prompt write', transcriptTail: transcript() };
+    await sleep(submitCrDelayMs);
+    const wroteSubmit = input.write(input.pty.id, Buffer.from('\r', 'utf8'));
+    if (!wroteSubmit) return { ok: false, error: 'omp resume pty rejected submit write', transcriptTail: transcript() };
+    return { ok: true, transcriptTail: transcript() };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `omp resume pty injection failed: ${err instanceof Error ? err.message : String(err)}`,
+      transcriptTail: transcript(),
+    };
+  }
+}
+
 export interface ExecuteWakeDeps {
   /** Injected for tests; default real implementations below. */
   getSession?: typeof getAdvSession;
@@ -287,6 +417,7 @@ export interface ExecuteWakeDeps {
   write?: typeof writePty;
   spawnManagedPty?: typeof spawnPty;
   spawnDetached?: (bin: string, args: string[], opts: { cwd: string; env: Record<string, string> }) => number | null;
+  kill?: typeof killPty;
   presence?: typeof getPresence;
   alive?: (pid: number | null) => boolean;
   resumePlanRun?: (input: { runId: number; wakeText: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -311,6 +442,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const findPty = deps.findPty ?? findPtyByPid;
   const write = deps.write ?? writePty;
   const spawnManaged = deps.spawnManagedPty ?? spawnPty;
+  const kill = deps.kill ?? killPty;
   const presence = deps.presence ?? getPresence;
   const alive = deps.alive ?? pidAlive;
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
@@ -558,26 +690,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         rows: 36,
       });
       if (resume.promptViaPty) {
-        const ptyId = h.id;
-        setTimeout(() => {
-          // Two writes — the text, then the Enter (CR) as a SEPARATE keystroke
-          // after a settle — mirroring the pty-inject channel above (audit
-          // P-034): a single text+CR buffer trips the TUI paste detector (the
-          // CR becomes a literal newline) and the turn never submits.
+        const injected = await injectOmpWakeTurnWhenReady({ pty: h, wakeText: text, write });
+        if (!injected.ok) {
           try {
-            write(ptyId, Buffer.from(text, 'utf8'));
+            kill(h.id);
           } catch {
-            /* the resumed session still surfaces the inbox copy */
-            return;
+            /* best-effort cleanup of a non-ready resume pty */
           }
-          setTimeout(() => {
-            try {
-              write(ptyId, Buffer.from('\r', 'utf8'));
-            } catch {
-              /* pty may have closed between the text write and the CR */
-            }
-          }, TURN_SUBMIT_CR_DELAY_MS).unref?.();
-        }, PTY_PROMPT_DELAY_MS).unref?.();
+          const tail = injected.transcriptTail ? ` transcript tail: ${JSON.stringify(injected.transcriptTail.slice(-1000))}` : '';
+          return { kind: 'error', error: `${injected.error}.${tail}` };
+        }
       }
       return { kind: 'delivered', channel: 'resume' };
     } catch (err) {

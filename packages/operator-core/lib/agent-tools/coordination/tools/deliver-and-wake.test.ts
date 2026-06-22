@@ -130,6 +130,12 @@ const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown
   tool.args.parse(x) as T;
 const out = (res: unknown) =>
   JSON.parse((res as { content: { text: string }[] }).content[0].text);
+// coord:send is now bulk (bulk-endpoint-standardization-2026-06-21 P-004): the
+// SINGLE form returns the house envelope { ok, results:[…], counts }; the one
+// message's per-message fields (wake / notWoken / endTurn / msg_id) live in
+// results[0]. (coord:message-agent + coord:await-inbox are NOT bulk — they stay
+// flat, asserted via `out`.)
+const send1 = (res: unknown) => out(res).results[0];
 
 describe('inboxWakeKey helper', () => {
   it('round-trips an ownerId through the inbox-wake key', () => {
@@ -166,7 +172,7 @@ describe('coord:send', () => {
     expect(lines).toHaveLength(1); // enqueued to the inbox
     expect(lines[0].to).toEqual(['su-bee-1']);
     expect(emitAwaitedEvent).not.toHaveBeenCalled(); // no wake fired
-    expect(out(res).wake).toBeUndefined();
+    expect(send1(res).wake).toBeUndefined();
   });
 
   it('default path REPORTS an idle recipient (no watcher) as notWoken, without firing a wake (P-001)', async () => {
@@ -176,7 +182,8 @@ describe('coord:send', () => {
     // delivery still happened, and STILL no wake was fired (report-only).
     expect(await log.readLines('messages')).toHaveLength(1);
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
-    const body = out(res);
+    expect(out(res).ok).toBe(true); // the envelope ran
+    const body = send1(res);
     expect(body.ok).toBe(true);
     expect(body.wake).toBeUndefined();
     expect(body.notWoken.idleRecipients).toEqual(['su-bee-1']);
@@ -187,14 +194,14 @@ describe('coord:send', () => {
     listActiveAwaitsForKey.mockResolvedValue([{ id: 1 }]); // one active watcher
     const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
-    expect(out(res).notWoken).toBeUndefined();
+    expect(send1(res).notWoken).toBeUndefined();
   });
 
   it('default path NEVER reports a federated recipient (not in the local roster) as idle (P-001 invariant c)', async () => {
     // su-remote isn't in the roster → unknown/advisory, never falsely flagged idle.
     const res = await coordSend.handler(parse(coordSend, { to: ['su-remote'], summary: 'fyi' }), ctx);
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
-    expect(out(res).notWoken).toBeUndefined();
+    expect(send1(res).notWoken).toBeUndefined();
   });
 
   it('default path DEGRADES (no notWoken, send still ok) on a roster read hiccup (P-001 invariant c)', async () => {
@@ -204,8 +211,8 @@ describe('coord:send', () => {
     listPresence.mockReset();
     listPresence.mockRejectedValue(new Error('roster down'));
     const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
-    const body = out(res);
-    expect(body.ok).toBe(true); // the send succeeding is sacred
+    expect(out(res).ok).toBe(true); // the send succeeding is sacred
+    const body = send1(res);
     expect(body.notWoken).toBeUndefined();
     expect(await log.readLines('messages')).toHaveLength(1);
     warn.mockRestore();
@@ -217,7 +224,7 @@ describe('coord:send', () => {
       parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: 'required' }),
       ctx,
     );
-    expect(out(res).notWoken).toBeUndefined();
+    expect(send1(res).notWoken).toBeUndefined();
     // the no-wake probe must not run on the wake path
     expect(listActiveAwaitsForKey).not.toHaveBeenCalled();
   });
@@ -234,7 +241,7 @@ describe('coord:send', () => {
     // wake half: ONE emit per recipient, each on that recipient's OWN key.
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
     expect(keys).toEqual([inboxWakeKey('su-bee-1'), inboxWakeKey('su-bee-2')]);
-    expect(out(res).wake).toMatchObject({ targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
+    expect(send1(res).wake).toMatchObject({ targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
   });
 
   it('NEVER fires a broadcast key — "*" and "human" are not wakeable (P-042)', async () => {
@@ -255,10 +262,10 @@ describe('coord:send', () => {
       ctx,
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
-    expect(out(res).wake).toMatchObject({ targets: [], woken: 0 });
+    expect(send1(res).wake).toMatchObject({ targets: [], woken: 0 });
     // No live targets ⇒ NOT a wake-into-the-void: the warning is gated on
     // targets.length > 0 (a broadcast that wakes no one is by design, not a gap).
-    expect(out(res).wake.warning).toBeUndefined();
+    expect(send1(res).wake.warning).toBeUndefined();
     // the broadcast message is still in the inbox (delivery is unaffected)
     expect(await log.readLines('messages')).toHaveLength(1);
   });
@@ -281,7 +288,7 @@ describe('coord:send', () => {
     );
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
     expect(keys).toEqual([inboxWakeKey('su-bee-1')]);
-    const { wake } = out(res);
+    const { wake } = send1(res);
     expect(wake.mode).toBe('required');
     expect(wake.targets).toEqual(['su-bee-1']);
     expect(wake.woken).toBe(0);
@@ -304,7 +311,7 @@ describe('coord:send', () => {
       parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: true }),
       ctx,
     );
-    const { wake } = out(res);
+    const { wake } = send1(res);
     expect(wake.mode).toBe('required');
     expect(wake.recipient_absent).toBe(true);
   });
@@ -321,7 +328,7 @@ describe('coord:send', () => {
       parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', wake: 'optimistic' }),
       ctx,
     );
-    const { wake } = out(res);
+    const { wake } = send1(res);
     expect(wake.mode).toBe('optimistic');
     expect(wake.woken).toBe(0);
     expect(wake.recipient_absent).toBeUndefined(); // a miss over a backstop is not loud
@@ -334,7 +341,7 @@ describe('coord:send', () => {
       parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: 'required' }),
       ctx,
     );
-    const { wake } = out(res);
+    const { wake } = send1(res);
     expect(wake).toMatchObject({ mode: 'required', targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
     expect(wake.recipient_absent).toBeUndefined();
   });
@@ -345,7 +352,7 @@ describe('coord:send', () => {
       ctx,
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
-    const { wake } = out(res);
+    const { wake } = send1(res);
     expect(wake.targets).toEqual([]);
     expect(wake.recipient_absent).toBeUndefined();
   });

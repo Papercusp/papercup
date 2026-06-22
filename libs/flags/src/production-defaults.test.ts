@@ -23,18 +23,8 @@ import { ALL_FLAG_KEYS, FLAGS, FLAG_DEFAULTS, type FlagKey } from './types';
  * flips to default-ON.
  */
 const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
-  // live-configurability-audit-2026-06-20 P-008: capability:grant_role / capability:revoke_role is a
-  // privilege-escalation surface D-007 assigns to OWNER-AUTHORITY — ships dark; the owner's flag
-  // flip is the ratification/activation gate after reviewing the D-009 design. Safe dark: the
-  // loadRoleCapabilities grant-union is flag-gated, so OFF = byte-identical capability resolution.
-  FLAGS.CAPABILITY_GRANT_TOOL,
-  // live-configurability-audit-2026-06-20 P-007: BOINC work-item redundancy (N× model spend) —
-  // migrated off the PAPERCUSP_WORKITEM_REDUNDANCY env gate to a FLAG; ships dark, owner-ratified.
-  FLAGS.WORKITEM_REDUNDANCY,
-  // live-configurability-audit-2026-06-20 P-009: runtime per-role capability-envelope overrides
-  // modify AUTH on the dispatch hot path (D-010) — ships DARK pending owner ratification (mirrors
-  // the P-008 owner-authority pause). OFF = byte-identical (the D-010 sync-cache stays empty).
-  FLAGS.CAPABILITY_ENVELOPE_OVERRIDES,
+  // (CAPABILITY_GRANT_TOOL + WORKITEM_REDUNDANCY + CAPABILITY_ENVELOPE_OVERRIDES graduated to
+  // default-ON 2026-06-22 — owner ratified the owner-authority flips in-session.)
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
   FLAGS.CLOUDFLARE_PUBLISH, // cut for V1 — publish surface not shipping
   FLAGS.HARNESS_PHASES, // cut for V1
@@ -61,11 +51,8 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // owner-directed — the work-items-everywhere ledger's two halves were built+tested but left dark
   // (promotion dogfood-verified D-007; claim-auto-convert 48 green tests). Finished work ships ON,
   // not dark — removed from the allowlist per the rule.)
-  // infra-perf-reliability-audit-round4 P-005 (D-005): gates the listEscalations read cutover
-  // onto the coord_open_escalations projection (mig 355). DARK until the migration+backfill is
-  // verified applied in prod; the table+trigger are additive + harmless while OFF, so OFF ⇒ the
-  // authoritative event-fold (byte-identical). su-f9b53 flips ON after verifying the apply.
-  FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION,
+  // (COORD_OPEN_ESCALATIONS_PROJECTION graduated to default-ON 2026-06-22 — mig 355 verified applied
+  // (harness_shared.coord_open_escalations exists, trigger live); owner-directed flip.)
   // NOTE: SU_BLUEPRINT_PERSONA (P-006) is now DEFAULT ON (owner-authorized 2026-06-18) — removed from
   // this allowlist after the P-008 papercup-hive su instance-override content was authored + seeded.
   // NOTE: REPLACE_CLAUDE_BASE (P-013/P-014) is now DEFAULT ON (owner-authorized 2026-06-18) — removed
@@ -254,13 +241,7 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // to gym routing); the owner flips it after reviewing the mechanical proposal→arms
   // mapping (the LLM-polished candidate-overlay generation is the follow-on).
   FLAGS.SCOUT_EXPERIMENT_RAIL,
-  // plan-templates-and-rubric-v2-2026-06-20 P-009 (Phase 4 auto-crystallization): the
-  // Scout `rubric` rail auto-authors a `template: rubric` DRAFT plan on each detected
-  // rubric gap. DELIBERATE dark ship — a brand-new autonomous PLAN-WRITE behavior; the
-  // gap DETECTION (P-008) is always live, only the auto-authoring is gated so the owner
-  // observes gap quality before Scout starts creating drafts. Drafts are Queen-gated
-  // (invisible to rubrics:list until promoted). Pending flip surfaced in the plan's ## Now.
-  FLAGS.SCOUT_RUBRIC_RAIL,
+  // (SCOUT_RUBRIC_RAIL graduated to default-ON 2026-06-22 — owner-directed; drafts stay Queen-gated.)
   // overwatch-role-2026-06-15 B-10 (D-002 / D-004): the OVERWATCH autonomous
   // system-health role. DELIBERATE dark ship (NOT the alpha default-on policy) —
   // a brand-new, not-yet-proven autonomous role that nudges the live fleet; a
@@ -320,10 +301,8 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // preserved so OFF fully restores it). Verify on :3170 (bees receive inboxes, Queen
   // surveys, escalations route) before promoting.
   FLAGS.COORD_PER_WORKSPACE,
-  // workspace-data-isolation-leaks-2026-06-17 F (owner D-001): per-workspace engineer-issues
-  // cutover of the shared `default` issue bus. DELIBERATE dark ship — reversible kill-switch
-  // the owner flips ON (OFF = today's behavior, byte-identical; old `default` issues preserved).
-  FLAGS.ISSUES_PER_WORKSPACE,
+  // (ISSUES_PER_WORKSPACE graduated to default-ON 2026-06-22 — owner-directed; reversible,
+  // old default-partition issues preserved.)
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (phase 1): routines per-workspace ON CONFLICT.
   // DELIBERATE dark ship — reversible; OFF = today's ON CONFLICT (install_slug,name), byte-identical.
   FLAGS.ROUTINES_PER_WORKSPACE,
