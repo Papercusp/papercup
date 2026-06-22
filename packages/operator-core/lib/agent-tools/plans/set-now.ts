@@ -28,13 +28,21 @@ const argsSchema = z.object({
   state: z
     .string()
     .min(1)
-    .max(2000)
-    .describe('One paragraph describing where the plan currently stands.'),
+    .max(
+      2000,
+      'state must be ≤2000 chars. The Now block is a cold-resume ANCHOR, not a log — trim to the essentials; move long-form detail (backlog, history, design notes) into the plan body via plans:set-content / set-content-chunk, or onto plan items / decisions.',
+    )
+    .describe(
+      'One paragraph (≤2000 chars) describing where the plan currently stands. Keep it tight — the Now block is a cold-resume anchor, NOT a log. If it would exceed 2000 chars, trim to essentials and put the long-form detail in the plan body via plans:set-content / set-content-chunk (or on items/decisions); do not pad the Now block.',
+    ),
   next: z
     .string()
     .min(1)
-    .max(800)
-    .describe('One sentence — the single next concrete action and who should do it.'),
+    .max(
+      800,
+      'next must be ≤800 chars — it is ONE next concrete action, not a plan. Trim it; multi-step detail belongs in plan items or the body.',
+    )
+    .describe('One sentence (≤800 chars) — the single next concrete action and who should do it.'),
   rationale: z
     .string()
     .optional()
@@ -85,13 +93,13 @@ export function replaceNowBlock(body: string, state: string, next: string): stri
 export default defineTool({
   name: 'plans:set-now',
   description:
-    "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field. Auto-bumps frontmatter updated:.",
+    "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (trim hard; long-form backlog/history/design detail belongs in the plan body via plans:set-content / set-content-chunk, not the Now block). Auto-bumps frontmatter updated:.",
   guidance: {
     when: 'Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.',
     notWhen:
       'Per-item flip — that\'s plans:set-status. Or a decision — that\'s plans:add-decision.',
     chaining:
-      'plans:set-status to flip current item → plans:set-now reflecting the new state.',
+      'plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — if either overflows, trim it and offload the detail to plans:set-content / set-content-chunk rather than retrying a too-long Now.',
   },
   capability: 'plans:write',
   requirePrincipal: false,

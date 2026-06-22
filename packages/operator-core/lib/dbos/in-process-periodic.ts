@@ -26,6 +26,7 @@
  * gotcha: DBOS dedup'd by workflow-id; in-process does not).
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
+import { createConnectionPressureGovernor } from '../connection-pressure-governor';
 
 /** One in-process periodic check. The tick must be idempotent — a throw is
  *  caught + logged and the next interval retries (no durable recovery). */
@@ -111,9 +112,15 @@ const harnessStatusSweepCheck: PeriodicCheck = {
   },
 };
 
+// One per process (this tick runs only on the background-worker host, so the AIMD
+// penalty fires once — not N× across the :3070 cluster). Closure-held debounce state.
+const connectionPressureGovernor = createConnectionPressureGovernor();
+
 // Every 30s: connection-pressure watch (backend-connection-scaling C5-1). pgHealth()
 // reports server-wide saturation; warn LOUDLY past 85% with the top holders. LIGHT
-// probe — NOT shed (we want the signal precisely under load).
+// probe — NOT shed-on-loop-pressure (we want the signal precisely under load), but
+// it DOES feed the connection-pressure governor (C5-1) which sheds agent concurrency
+// via AIMD at critical saturation — the admission half that closes the loop.
 const connectionPressureCheck: PeriodicCheck = {
   name: 'connection-pressure',
   intervalMs: 30_000,
@@ -121,6 +128,20 @@ const connectionPressureCheck: PeriodicCheck = {
     const { pgHealth } = await import('../dev-data');
     const h = await pgHealth().catch(() => null);
     if (!h || h.maxConnections <= 0) return;
+
+    // C5-1: close the loop — feed saturation into the AIMD concurrency governor so
+    // critical PG saturation sheds agent concurrency (recovering as it falls).
+    // Gated by CONNECTION_PRESSURE_GOVERNOR (default ON); fail-OPEN to the default-on
+    // behavior so a flag-read error can't silently disable the backpressure. OFF ⇒
+    // signal-only (just the warn below) — the operator's escape hatch.
+    const { FLAGS } = await import('@papercusp/flags');
+    const { getFlag } = await import('@papercusp/flags/server');
+    const governorOn = await getFlag(
+      FLAGS.CONNECTION_PRESSURE_GOVERNOR,
+      'connection-pressure',
+    ).catch(() => true);
+    if (governorOn) connectionPressureGovernor.observe(h.saturationPct);
+
     if (h.saturationPct >= 85) {
       const top = h.byApplication
         .slice(0, 6)

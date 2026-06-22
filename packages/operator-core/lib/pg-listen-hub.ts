@@ -9,10 +9,11 @@
  * single backend (verified), so routing them all through one shared instance
  * collapses 4 backends → 1.
  *
- * GATED behind `PAPERCUSP_LISTEN_HUB=1` (default OFF). Wake delivery is
- * fleet-critical, so the default keeps every bus on its own connection
- * (byte-identical to the historical behavior, zero risk); the flag lets the
- * shared hub be reviewed and enabled deliberately. See D-002 @
+ * DEFAULT-ON for server-class hosts (see {@link listenHubEnabled}) — proven live
+ * on the :3070 cluster + an integration test, so it no longer ships dark.
+ * `PAPERCUSP_LISTEN_HUB=0` is the instant kill-switch back to one dedicated LISTEN
+ * connection per bus (the historical, byte-identical behavior). Desktop
+ * (laptop/workstation class) stays per-bus. See D-002 @
  * backend-connection-scaling-2026-06-17.
  *
  * Host-only — opens a long-lived PG connection, so only the Hono host imports
@@ -22,10 +23,36 @@
  */
 import postgres from "postgres";
 import { getHarnessAdminUrl } from "./embedded-pg-discovery";
+import { getResourceProfile } from "./resource-profile";
 
-/** Whether the shared listen hub is enabled (default OFF). */
+/**
+ * Whether the shared listen hub is enabled. DEFAULT-ON for server-class hosts
+ * (mirrors `pgbouncerEnabled()` — "finished work must not ship dark"):
+ *   - `PAPERCUSP_LISTEN_HUB=1` → force ON  (explicit override)
+ *   - `PAPERCUSP_LISTEN_HUB=0` → force OFF (kill-switch — instant revert to one
+ *      dedicated LISTEN connection per bus, the historical behavior)
+ *   - unset → ON for a SERVER-class host (the dev box + any dedicated server /
+ *      cluster), OFF for laptop/workstation — every Tauri DESKTOP (single process,
+ *      embedded PG: the 4 LISTEN backends are negligible and cross-process
+ *      sync-invalidate is moot, so the hub adds risk without benefit there).
+ *
+ * Gated on `hostClass` (NOT resource-profile `embeddedPg`) for the same reason as
+ * `pgbouncerEnabled()`: `detectEmbeddedPg()` misfires on any host with an explicit
+ * DATABASE_URL. The hub collapses the 4 homogeneous wake-bus LISTEN backends
+ * (agent-activity, fleet-assignment, pending-events, coord-inbox) onto ONE per
+ * process, and is REQUIRED under clustering so cross-process sync-invalidate rides
+ * PG NOTIFY (operator-scalability-event-loop-2026-06-16). C1-3 / D-002 @
+ * backend-connection-scaling-2026-06-17 — proven live on :3070 + integration test.
+ */
 export function listenHubEnabled(): boolean {
-  return process.env.PAPERCUSP_LISTEN_HUB === "1";
+  const flag = process.env.PAPERCUSP_LISTEN_HUB;
+  if (flag === "1") return true;
+  if (flag === "0") return false;
+  try {
+    return getResourceProfile().hostClass === "server";
+  } catch {
+    return false; // resource-profile unreadable → safe default (per-bus direct)
+  }
 }
 
 /** The single shared LISTEN connection (lazily created, nulled on last unsub). */

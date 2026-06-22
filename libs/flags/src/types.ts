@@ -277,6 +277,15 @@ export const FLAGS = {
   // Safe always-on (bounded under the user's cap, self-recovering); the flag is the
   // operator's escape hatch.
   LOOP_PRESSURE_GOVERNOR: "papercusp-loop-pressure-governor",
+  // backend-connection-scaling-2026-06-17 C5-1: kill-switch for the CONNECTION-pressure
+  // concurrency governor (the sibling of LOOP_PRESSURE_GOVERNOR). ON: the fleet sheds
+  // effective agent concurrency (same AIMD seam) when server-wide PG saturation crosses
+  // the critical threshold, recovering as it falls — defense-in-depth if PgBouncer is
+  // killed/bypassed or a connection storm hits, shedding BEFORE PG returns "too many
+  // clients". OFF: the 30s connection-pressure tick only WARNS (today's signal-only
+  // behavior). Safe always-on (only sheds at ≥90% saturation, no-op without a finite cap,
+  // hysteresis + transition-debounce, self-recovering); the flag is the escape hatch.
+  CONNECTION_PRESSURE_GOVERNOR: "papercusp-connection-pressure-governor",
   // inference-gateway-robustness-audit-2026-06-20 (gateway P2 / B-GW-4): the fleet
   // OPUS-BUDGET governor. ON (alpha default-on): as the aggregate Claude-Max 5h opus
   // utilization climbs, a spawn's NON-CRITICAL opus tier-escalation is shed back to
@@ -1199,6 +1208,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ON by default (alpha flags-default-on) — finished, safe work (bounded under the
   // user's concurrency cap, self-recovering). P5-2 kill-switch.
   [FLAGS.LOOP_PRESSURE_GOVERNOR]: true,
+  // ON by default (alpha flags-default-on) — finished, safe work: sheds agent concurrency
+  // only at ≥90% PG saturation (rare with PgBouncer on), no-op without a finite cap,
+  // self-recovering. backend-connection-scaling C5-1 kill-switch.
+  [FLAGS.CONNECTION_PRESSURE_GOVERNOR]: true,
   // ON by default (alpha flags-default-on) — B-GW-4 opus-budget pacing. Safe always-on:
   // only sheds a non-critical opus ESCALATION to sonnet under 5h budget pressure, never
   // below a role floor; self-healing as the window decays. Escape hatch flag.

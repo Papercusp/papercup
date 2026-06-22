@@ -4,6 +4,12 @@ description: User-facing errors live in three separate, non-overlapping stores �
 discovered: 2026-06-21
 tags: [debugging, console-errors, toastlog, perf-recorder, tauri, webkitgtk, testing]
 status: active
+documents:
+  - apps/operator/app/admin/testing/_lib/vitals-recorder.ts
+  - packages/operator-core/lib/endpoint-route/routes/zero-harness
+plans:
+  - app-wide-test-coverage-2026-06-05
+  - tests-page-2026-05-14
 ---
 
 When chasing "is the console clean?" or "what error did the user see?", three
@@ -80,7 +86,8 @@ tauri-agent-tools console-monitor --port <port> --token <tok> --duration 30000 -
 **⚠ `"Fetch API cannot load X due to access control checks"` is misleading — on WebKitGTK
 it almost always means the fetch TIMED OUT (Next dev lazy-compile slowness), not real
 CORS.** Check `curl -w "%{time_total}"` against the same URL before chasing ACAO headers;
-the fix is pre-warming routes via the `instrumentation-node.ts` register hook.
+the fix is to pre-warm the slow route before the webview fetches it (first-hit dev
+compile latency), not to chase ACAO headers.
 
 ## Trichotomy summary
 

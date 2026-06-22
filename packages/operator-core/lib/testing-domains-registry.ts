@@ -908,6 +908,7 @@ defineTestDomain({
       globs: [
         'packages/operator-core/lib/inference-gateway/gateway.test.ts',
         'packages/operator-core/lib/inference-gateway/gateway-thorough.test.ts',
+        'packages/operator-core/lib/inference-gateway/gateway-openai-proxy.test.ts',
         'packages/operator-core/lib/inference-gateway/unified-7d-window.test.ts',
       ],
     },

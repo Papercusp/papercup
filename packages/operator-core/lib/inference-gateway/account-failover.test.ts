@@ -134,3 +134,25 @@ describe('createFailoverPool — reload() hot-swap (B-HOT-1)', () => {
     expect(new Set([p.active().accountId, p.active().accountId]).has('a')).toBe(true);
   });
 });
+
+describe('createFailoverPool — readmit() (egress-circuit half-open recovery)', () => {
+  it('clears an account pause AHEAD of its reset so it rejoins rotation immediately', () => {
+    const t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 3_600_000); // a out of rotation for ~1h
+    // a is skipped while paused
+    expect(new Set([p.active().accountId, p.active().accountId]).has('a')).toBe(false);
+    p.readmit!('a'); // a half-open egress probe confirmed a's proxy recovered
+    // a is back in rotation immediately — well before its 1h reset would have passed
+    expect(new Set([p.active().accountId, p.active().accountId]).has('a')).toBe(true);
+  });
+
+  it('is a no-op for an account that is not paused (or unknown) — never throws, never disturbs rotation', () => {
+    const p = createFailoverPool([acct('a'), acct('b')]);
+    expect(() => p.readmit!('a')).not.toThrow(); // a was never paused
+    expect(() => p.readmit!('ghost')).not.toThrow(); // not even in the pool
+    // rotation cursor untouched by the no-op readmit
+    expect(p.active().accountId).toBe('a');
+    expect(p.active().accountId).toBe('b');
+  });
+});
