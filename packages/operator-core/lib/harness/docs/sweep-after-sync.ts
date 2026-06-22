@@ -15,10 +15,13 @@
 import { projectDirForSlug } from '../../operator-notes';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { relative } from 'node:path';
 import { runGit, repoHeadSha, repoChangedPaths } from './git-runner';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { sweepHarnessDocs, type SweepResult } from './freshness-sweep';
 import { listDocRecords } from './doc-record';
+import { resolveHarnessDocPaths } from './harness-repo';
+import { anchorManualDoc } from './manual-anchor';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
 const DOCS_IDENTITY: AgentIdentity = {
@@ -56,14 +59,11 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   // unregistered harness degrades to "no sweep", never a silent cross-workspace read (D-003).
   const workspaceId = await resolveWorkspaceForHarness(harnessSlug, input.workspaceId);
 
-  // Cheap early-out: a harness with no doc records can't have any drift.
-  const records = await listDocRecords(harnessSlug, workspaceId);
-  if (records.size === 0) return null;
-
   const repoRoot = await projectDirForSlug(harnessSlug);
   if (!repoRoot) return null;
 
-  // Derive the changed paths for the prefilter. prevSha==headSha → nothing moved.
+  // Derive the changed paths for the prefilter AND the self-bootstrap. prevSha==headSha
+  // → nothing moved.
   let changedPaths: string[] | undefined;
   const prev = (input.prevSha ?? '').trim();
   const head = (input.headSha ?? '').trim();
@@ -75,6 +75,37 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
       changedPaths = diff;
     }
   }
+
+  const records = await listDocRecords(harnessSlug, workspaceId);
+
+  // Self-bootstrap (owner 2026-06-22): once a harness is doc-tracked (≥1 record — e.g.
+  // from the harness:create seed), a doc TOUCHED in this commit that has no record yet
+  // is registered NOW — so tracking grows page-by-page with zero `harness_docs:record`
+  // ceremony. Reuses anchorManualDoc (deterministic, no LLM — D-006). Bounded to the
+  // commit's changed doc-paths (cheap). A never-tracked / opted-out harness keeps 0
+  // records, so the bail below holds and the sweep never auto-starts it.
+  if (records.size > 0 && changedPaths?.length) {
+    try {
+      const paths = await resolveHarnessDocPaths(harnessSlug);
+      if (paths) {
+        const docsRel = relative(paths.repoRoot, paths.docsRoot);
+        const prefix = docsRel && docsRel !== '.' ? docsRel.replace(/\/?$/, '/') : '';
+        for (const p of changedPaths) {
+          if (!/\.(md|mdx)$/i.test(p)) continue;
+          if (prefix && !p.startsWith(prefix)) continue;
+          const docId = prefix ? p.slice(prefix.length) : p;
+          if (!docId || records.has(docId)) continue;
+          const res = await anchorManualDoc({ harnessSlug, docId, verify: true, workspaceId });
+          if (res.ok) records.set(docId, res.record);
+        }
+      }
+    } catch {
+      // best-effort: a self-bootstrap failure must never wedge the sweep / git-sync.
+    }
+  }
+
+  // A harness with no doc records (and none newly registered) can't have any drift.
+  if (records.size === 0) return null;
 
   return sweepHarnessDocs({
     harnessSlug,
