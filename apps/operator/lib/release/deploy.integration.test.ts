@@ -113,6 +113,10 @@ function makeDeps(health: () => Promise<{ healthy: boolean; attempts: number; el
     },
     health,
     verifyPaths: async () => ({ ok: true, failures: [] }),
+    preflight: async () => {
+      calls.push('preflight');
+      return { ok: true };
+    },
     restoreSnapshot: async () => {
       calls.push('restoreSnapshot');
     },

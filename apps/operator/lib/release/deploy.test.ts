@@ -43,6 +43,7 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
     restart: () => rec('restart', undefined).then(() => undefined),
     health: () => rec('health', { healthy: true, attempts: 1, elapsedMs: 10 }),
     verifyPaths: () => rec('verifyPaths', { ok: true, failures: [] }),
+    preflight: () => rec('preflight', { ok: true }),
     restoreSnapshot: () => rec('restoreSnapshot', undefined).then(() => undefined),
     broadcast: (s) => {
       calls.push(`broadcast:${s.includes('✅') ? 'ok' : s.includes('❌') ? 'fail' : 'other'}`);
@@ -111,7 +112,9 @@ describe('executeDeploy — happy path', () => {
     // drain wraps everything; snapshot precedes swap precedes migrate precedes restart
     expect(calls[0]).toBe('drain:acquire');
     expect(calls.indexOf('snapshot')).toBeLessThan(calls.indexOf('runSetup:abcd'));
-    expect(calls.indexOf('runSetup:abcd')).toBeLessThan(calls.indexOf('migrate'));
+    // P-001: preflight runs AFTER the swap but strictly BEFORE migrate + the live restart.
+    expect(calls.indexOf('runSetup:abcd')).toBeLessThan(calls.indexOf('preflight'));
+    expect(calls.indexOf('preflight')).toBeLessThan(calls.indexOf('migrate'));
     expect(calls.indexOf('migrate')).toBeLessThan(calls.indexOf('restart'));
     expect(calls.indexOf('restart')).toBeLessThan(calls.indexOf('health'));
     expect(calls).toContain('broadcast:ok');
@@ -162,6 +165,58 @@ describe('executeDeploy — rollback on failure', () => {
     const res = await executeDeploy(cfg, plan, deps);
     expect(res.ok).toBe(false);
     expect(res.rolledBack).toBe(false);
+    expect(calls).toContain('broadcast:fail');
+  });
+});
+
+describe('executeDeploy — pre-cutover preflight (P-001, the MODULE_NOT_FOUND crash-loop guard)', () => {
+  it('a FAILING preflight aborts before cutover: no migrate, NO live restart, tree reverted, zero downtime', async () => {
+    let preflightCalled = false;
+    const { deps, calls } = makeDeps({
+      preflight: () => {
+        preflightCalled = true;
+        return Promise.resolve({ ok: false, error: "Cannot find module '@papercusp/x' (MODULE_NOT_FOUND)" });
+      },
+    });
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(preflightCalled).toBe(true);
+    expect(res.ok).toBe(false);
+    // Pre-cutover failure ⇒ the live process never changed ⇒ counts as rolled back (to prev).
+    expect(res.rolledBack).toBe(true);
+    expect(calls).toContain('runSetup:abcd'); // the swap happened
+    expect(calls).not.toContain('migrate'); // aborted BEFORE migrate (no schema change)
+    expect(calls).not.toContain('restart'); // :3070 was NEVER cut over (no crash-loop, no downtime)
+    expect(calls).not.toContain('restoreSnapshot'); // no migration applied → no destructive DB restore
+    expect(calls).toContain('runSetup:1111'); // tree reverted to the prior consistent sha
+    expect(calls).toContain('broadcast:fail');
+    expect(calls[calls.length - 1]).toBe('drain:release');
+  });
+
+  it('a PASSING preflight proceeds to the normal cutover', async () => {
+    const { deps, calls } = makeDeps(); // default preflight ok:true
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(res.ok).toBe(true);
+    expect(calls).toContain('preflight');
+    expect(calls.indexOf('preflight')).toBeLessThan(calls.indexOf('restart'));
+  });
+
+  it('rollback-side preflight failure (prev also won\'t boot) → no second restart, manual recovery (P-002)', async () => {
+    let pfCalls = 0;
+    const { deps, calls } = makeDeps({
+      // pass the pre-cutover check (so we DO cut over), then FAIL the rollback-side check
+      preflight: () => {
+        pfCalls++;
+        return Promise.resolve(pfCalls === 1 ? { ok: true } : { ok: false, error: 'prev node_modules incomplete' });
+      },
+      // health fails after the live restart → forces a rollback
+      health: () => Promise.resolve({ healthy: false, attempts: 1, elapsedMs: 5, error: 'down' }),
+    });
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(res.ok).toBe(false);
+    expect(pfCalls).toBe(2); // pre-cutover + rollback-side preflight both ran
+    expect(res.rolledBack).toBe(false); // prev won't boot → rollback could not safely complete
+    expect(calls).toContain('runSetup:1111'); // tree reverted to prev (code)
+    expect(calls.filter((c) => c === 'restart').length).toBe(1); // deploy restart only — rollback-restart SKIPPED (no 2nd crash-loop)
     expect(calls).toContain('broadcast:fail');
   });
 });

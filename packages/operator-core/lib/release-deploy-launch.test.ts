@@ -73,11 +73,16 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.recommendation).toMatch(/owner/i); // force only with owner sign-off
   });
 
-  it('a red gate is never triggerable even if green code is technically ahead', () => {
+  it('a green PIN ahead is triggerable even when the gate is currently RED (the pin is green by construction)', () => {
     const s = computeDeployStatus(mkSnap({ consecutiveReds: 1 }, { deployedBehindReady: 3 }));
-    // hasGreenAhead routes to green-deployable, but canTriggerGreen also requires gateGreen.
+    // A later red must NOT strand an already-green pin: hasGreenAhead → green-deployable AND
+    // canTriggerGreen, decoupled from the current gate color (auto-serve ships "green main ahead"
+    // regardless). Previously canTriggerGreen also required gateGreen, which wedged op:trigger in
+    // exactly the state whose recommendation told you to run it.
     expect(s.gate.green).toBe(false);
-    expect(s.canTriggerGreen).toBe(false);
+    expect(s.state).toBe('green-deployable');
+    expect(s.canTriggerGreen).toBe(true);
+    expect(s.recommendation).toMatch(/trigger/i);
   });
 
   it('gate-wedged: 0 reds but the checkpoint is not firing → surface to an operator', () => {

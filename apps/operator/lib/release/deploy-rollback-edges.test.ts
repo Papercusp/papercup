@@ -46,6 +46,7 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
     restart: () => rec('restart', undefined).then(() => undefined),
     health: () => rec('health', { healthy: true, attempts: 1, elapsedMs: 10 }),
     verifyPaths: () => rec('verifyPaths', { ok: true, failures: [] }),
+    preflight: () => rec('preflight', { ok: true }),
     restoreSnapshot: () => rec('restoreSnapshot', undefined).then(() => undefined),
     broadcast: (s) => {
       calls.push(`broadcast:${s.includes('✅') ? 'ok' : s.includes('❌') ? 'fail' : 'other'}`);

@@ -1,6 +1,11 @@
 ---
 title: "`import { RRule } from 'rrule'` crashes DBOS boot (CJS-in-ESM)"
 description: A static named import of the CommonJS `rrule` package throws at module load under the ESM/tsx operator host — taking down the whole routinesTick (git-sync, green-checkpoint, deploys, scheduled plans). Use createRequire. vitest does NOT catch this.
+discovered: 2026-06-17
+status: active
+documents:
+  - packages/operator-core/lib/harness/routines/schedule-next.ts
+  - packages/operator-core/lib/harness/routines/claim.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';

@@ -55,6 +55,7 @@ function makeStubDeps(over: Partial<DeployDeps> = {}): DeployDeps {
     restart: async () => {},
     health: async () => ({ healthy: true, attempts: 1, elapsedMs: 0 }),
     verifyPaths: async () => ({ ok: true, failures: [] }),
+    preflight: async () => ({ ok: true }),
     restoreSnapshot: async () => {},
     broadcast: async () => {},
     log: () => {},

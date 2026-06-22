@@ -120,6 +120,14 @@ export interface DeployDeps {
   health(): Promise<HealthResult>;
   /** Confirm every runtime read resolves under the release checkout. */
   verifyPaths(): Promise<{ ok: boolean; failures: string[] }>;
+  /** PRE-CUTOVER boot check (mcp-host-availability-resilience-2026-06-22 P-001):
+   *  import the swapped release checkout's side-effect-free host-handler module
+   *  graph (all routes + the agent-tools/MCP registry) in a child process,
+   *  resolving against ITS node_modules — WITHOUT starting a server or bootstrap.
+   *  A missing/incomplete dep throws MODULE_NOT_FOUND here, so the deploy aborts
+   *  BEFORE the live `:3070` cutover instead of crash-looping systemd after the
+   *  restart. `ok:false` ⇒ do not cut over (the OLD process keeps serving). */
+  preflight(): Promise<{ ok: boolean; error?: string }>;
   /** Restore the workspace/DB from a snapshot (rollback of schema). */
   restoreSnapshot(snap: SnapshotInfo): Promise<void>;
   /** coord:send broadcast. */
@@ -273,11 +281,30 @@ export async function executeDeploy(
     const prevReleaseSha = plan.currentReleaseSha;
     let snapshot: SnapshotInfo | null = null;
     let migrations: MigrateResult | undefined;
+    // Track how far the deploy got, so rollback only undoes what actually happened:
+    //   migrateRan  → migrations were applied (need a DB restore on rollback)
+    //   liveCutover → :3070 was restarted into the new release (need a live restart back)
+    // A pre-cutover failure (e.g. preflight) leaves BOTH false ⇒ the live process never
+    // changed ⇒ rollback just reverts the tree, zero downtime.
+    let migrateRan = false;
+    let liveCutover = false;
     try {
       snapshot = await step('snapshot', () => deps.snapshot(`pre-deploy ${short(plan.targetSha)}`));
       await step('swap', () => deps.runSetup(plan.targetSha));
+      // PRE-CUTOVER boot check (P-001): confirm the swapped checkout can load its
+      // module graph BEFORE touching live :3070. If a botched swap left node_modules
+      // incomplete (→ MODULE_NOT_FOUND), we catch it here while the OLD process is
+      // still serving — no crash-loop, and rollback reverts the tree without a restart.
+      const preflight = await step('preflight', () => deps.preflight());
+      if (!preflight.ok) {
+        throw new Error(
+          `pre-cutover boot check failed — release checkout would not boot, refusing to cut over :3070: ${preflight.error ?? 'unknown'}`,
+        );
+      }
       migrations = await step('migrate', () => deps.migrate());
+      migrateRan = true;
       await step('restart', () => deps.restart());
+      liveCutover = true;
 
       const health = await step('health', () => deps.health());
       if (!health.healthy) throw new Error(`health probe failed after restart: ${health.error ?? 'unhealthy'}`);
@@ -322,15 +349,38 @@ export async function executeDeploy(
       let rolledBack = false;
       if (rollbackOnFailure && prevReleaseSha) {
         try {
+          // Always revert the on-disk tree to the prior (consistent) sha.
           await step('rollback-code', () => deps.runSetup(prevReleaseSha));
-          // DB restore only when schema actually changed — otherwise a code-ref
-          // revert + restart is enough and avoids a destructive workspace restore.
-          if (snapshot && plan.migrations.length > 0) {
+          // DB restore only when migrations were actually APPLIED — a pre-cutover
+          // failure (e.g. preflight) aborts before `migrate`, so the schema is
+          // unchanged and a (destructive) workspace restore must be skipped.
+          if (snapshot && migrateRan && plan.migrations.length > 0) {
             await step('rollback-db', () => deps.restoreSnapshot(snapshot!));
           }
-          await step('rollback-restart', () => deps.restart());
-          const h = await step('rollback-health', () => deps.health());
-          rolledBack = h.healthy;
+          if (liveCutover) {
+            // :3070 was already restarted into the bad release. Before restarting back
+            // onto prev, VERIFY prev still boots (P-002): a heuristic runSetup can leave
+            // prev-code + target-node_modules inconsistent (the documented "rollback ALSO
+            // failed → manual recovery" class). If prev won't boot, don't restart into a
+            // SECOND crash-loop — fall through to the loud manual-recovery broadcast.
+            const rollbackPreflight = await step('rollback-preflight', () => deps.preflight());
+            if (rollbackPreflight.ok) {
+              await step('rollback-restart', () => deps.restart());
+              const h = await step('rollback-health', () => deps.health());
+              rolledBack = h.healthy;
+            } else {
+              deps.log(
+                `✖ rollback preflight failed — prev checkout will not boot either (${rollbackPreflight.error ?? 'unknown'}); skipping restart, manual recovery needed`,
+              );
+            }
+          } else {
+            // PRE-CUTOVER failure: the live :3070 is still the pre-deploy process and
+            // never went down. Tree reverted to prev ⇒ fully back to the pre-deploy
+            // state with ZERO downtime; no live restart needed. THIS is the path that
+            // turns a botched deploy from a crash-loop into a no-op (P-001).
+            deps.log('pre-cutover failure — tree reverted to prev; live :3070 untouched (no restart, no downtime)');
+            rolledBack = true;
+          }
         } catch (re) {
           deps.log(`✖ rollback ALSO failed: ${re instanceof Error ? re.message : re}`);
         }

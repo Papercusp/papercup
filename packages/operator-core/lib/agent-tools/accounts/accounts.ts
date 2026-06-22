@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
 const ok = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
@@ -85,23 +86,42 @@ export const accountsListTool = defineTool({
 
 export const accountsRemoveTool = defineTool({
   name: 'accounts:remove',
-  description: "Remove a Claude account from the pool. Does NOT tear down anything already deployed on it. Returns {ok, removed}.",
+  description:
+    "Remove one OR many Claude accounts from the pool. Pass `id` for one or `ids` for several. Does NOT tear down anything already deployed on them. Returns { ok, results:[{ ok, id, removed }], counts } — correlate each result by its id, not by position.",
   guidance: {
-    when: 'Retiring an account from the pool (e.g. a subscription you no longer use).',
+    when: 'Retiring account(s) from the pool (e.g. subscriptions you no longer use). Retiring several at once? Pass them all via `ids`.',
     notWhen: 'Tearing down a deployed frame — deploy:teardown / deploy:teardown_hive.',
   },
   capability: 'harness:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ id: z.string().min(1).describe('Account id to remove'), workspace: wsArg }),
+  args: z
+    .object({
+      id: z.string().min(1).optional().describe('Account id to remove (n=1 shorthand for ids:[id])'),
+      ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('Account ids to remove (1–100)'),
+      workspace: wsArg,
+    })
+    .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
+      message: 'pass `id` (one) or `ids` (many)',
+    }),
   async handler(args) {
     const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
     const { removeAccount, getAccount } = await import('../../deployment/account-pool');
     const ws = args.workspace ?? activeWorkspaceId();
-    const pool = await loadAccountPool(ws);
-    const existed = !!getAccount(pool, args.id);
-    await saveAccountPool(removeAccount(pool, args.id), ws);
-    return ok({ removed: existed, id: args.id });
+    const ids = mergeIds(args.id, args.ids);
+    // Read-modify-write per id, sequentially (runBulk is sequential) so each
+    // remove sees the prior write's pool state.
+    const env = await runBulk(
+      ids,
+      async (id) => {
+        const pool = await loadAccountPool(ws);
+        const existed = !!getAccount(pool, id);
+        await saveAccountPool(removeAccount(pool, id), ws);
+        return { ok: true as const, id, removed: existed };
+      },
+      { keyOf: (id) => ({ id }) },
+    );
+    return bulkContent(env);
   },
 });
 
@@ -135,20 +155,41 @@ export const accountsResetRateTool = defineTool({
   capability: 'harness:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ id: z.string().min(1).describe('Account id to reset'), workspace: wsArg }),
+  args: z
+    .object({
+      id: z.string().min(1).optional().describe('Account id to reset (n=1 shorthand for ids:[id])'),
+      ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('Account ids to reset (1–100)'),
+      workspace: wsArg,
+    })
+    .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
+      message: 'pass `id` (one) or `ids` (many)',
+    }),
   async handler(args) {
     const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
     const { recordAccountReset, getAccount } = await import('../../deployment/account-pool');
     const ws = args.workspace ?? activeWorkspaceId();
-    const pool = await loadAccountPool(ws);
-    if (!getAccount(pool, args.id)) return fail({ error: 'unknown_account', id: args.id });
-    const next = recordAccountReset(pool, args.id);
-    await saveAccountPool(next, ws);
-    // Live UI reflection — the Accounts tab reads accounts.pool.
-    void import('../../sync-sse')
-      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
-      .catch(() => {});
-    return ok({ account: getAccount(next, args.id) });
+    const ids = mergeIds(args.id, args.ids);
+    let anyReset = false;
+    // Read-modify-write per id, sequentially so each reset sees the prior write.
+    const env = await runBulk(
+      ids,
+      async (id) => {
+        const pool = await loadAccountPool(ws);
+        if (!getAccount(pool, id)) return { ok: false as const, id, error: 'unknown_account' };
+        const next = recordAccountReset(pool, id);
+        await saveAccountPool(next, ws);
+        anyReset = true;
+        return { ok: true as const, id, account: getAccount(next, id) };
+      },
+      { keyOf: (id) => ({ id }) },
+    );
+    // Live UI reflection — the Accounts tab reads accounts.pool. Fire ONCE for the batch.
+    if (anyReset) {
+      void import('../../sync-sse')
+        .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
+        .catch(() => {});
+    }
+    return bulkContent(env);
   },
 });
 

@@ -108,7 +108,14 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
   // Green code ahead of the live deploy that we could ship right now.
   const hasGreenAhead = typeof deployedBehindReady === 'number' && deployedBehindReady > 0;
   const nothingToDeploy = deployedBehindReady === 0;
-  const canTriggerGreen = gateGreen && hasGreenAhead;
+  // The green pin ("ready") is green BY CONSTRUCTION — it is the last commit that PASSED the
+  // green checkpoint. Expediting its deploy therefore only requires that the pin is AHEAD of the
+  // live deploy; it must NOT also demand the gate be *currently* green. A later red (or a wedged
+  // checkpoint) must never strand an already-green pin — the auto-serve itself ships on "green
+  // main ahead of the release checkout" regardless of current gate color. Coupling this to
+  // gateGreen wedged op:trigger in exactly the 'green-deployable' state whose own recommendation
+  // tells you to run it (deploy-trigger-and-gate-unblock-2026-06-21 follow-up).
+  const canTriggerGreen = hasGreenAhead;
 
   let state: DeployStateKind;
   let recommendation: string;
@@ -116,8 +123,8 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
     // There IS green, deployable code that hasn't reached :3070 — the expedite case.
     state = 'green-deployable';
     recommendation =
-      `${deployedBehindReady} green commit(s) are deployable but not yet live on :3070 ` +
-      `(auto-serve stalled/backed-off). Run release:deploy { op: 'trigger', confirm: true } to expedite — it can only ship the green pin.`;
+      `${deployedBehindReady} green commit(s) are deployable but not yet live on :3070. ` +
+      `The auto-serve ships these each cycle; to expedite now run release:deploy { op: 'trigger', confirm: true } — it can only ship the green pin (safe even while the gate is currently red).`;
   } else if (g.consecutiveReds > 0) {
     state = 'gate-red';
     recommendation =

@@ -1,6 +1,13 @@
 ---
 title: Reaching an imperative library instance via React fiber walk
 description: How to read a useRef-held instance (vditor, monaco, etc.) from a webview eval when the component doesn't expose it on window.
+discovered: 2026-05-21
+status: active
+documents:
+  - apps/operator/app/_components/MarkdownEditor.tsx
+  - apps/operator/app/admin/plans/PlanEditor.tsx
+plans:
+  - plans-admin-ui-2026-05-20
 ---
 
 When you need to drive an imperative library instance (vditor, monaco, codemirror, chart libs) from a webview eval — a spike, a debugging session, a `tauri-agent-tools` bridge call — the instance is usually held in `useRef<...>` inside the React wrapper component. It is **not on `window`**, has no global handle, and walking the DOM only gives you the host element.

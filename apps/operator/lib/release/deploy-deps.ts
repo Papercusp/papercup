@@ -62,23 +62,42 @@ function safeWorkspaceId(): string | null {
 function run(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env } });
     let stdout = '';
     let stderr = '';
+    // Bound the run (preflight uses this): a child that hangs at import (e.g. a
+    // top-level await that never resolves) is itself a deploy-abort signal, not a
+    // wedge to wait on forever. SIGKILL + reject; a fired+cleared timer is a no-op.
+    let timer: NodeJS.Timeout | undefined;
+    if (opts.timeoutMs && opts.timeoutMs > 0) {
+      timer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        reject(new Error(`${cmd} ${args.join(' ')} timed out after ${opts.timeoutMs}ms:\n${stderr}\n${stdout}`));
+      }, opts.timeoutMs);
+      timer.unref?.();
+    }
     child.stdout.on('data', (d) => (stdout += d.toString()));
     child.stderr.on('data', (d) => (stderr += d.toString()));
-    child.on('error', reject);
-    child.on('close', (code) =>
+    child.on('error', (e) => {
+      if (timer) clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
       code === 0
         ? resolve({ stdout, stderr })
         // Include BOTH streams: a failing verify-paths prints its human text to
         // stderr but the machine-readable marker line to stdout — the caller
         // parses the marker out of this message on the failure path.
-        : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}:\n${stderr}\n${stdout}`)),
-    );
+        : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}:\n${stderr}\n${stdout}`));
+    });
   });
 }
 
@@ -211,6 +230,35 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
         if (parsed) return parsed;
         const m = msg.match(/"failures":\s*(\[[^\]]*\])/);
         return { ok: false, failures: m ? (JSON.parse(m[1]) as string[]) : [msg] };
+      }
+    },
+
+    async preflight(): Promise<{ ok: boolean; error?: string }> {
+      // Import-resolution smoke (mcp-host-availability-resilience-2026-06-22 P-001):
+      // load the side-effect-free host-handler module graph (all routes + the
+      // agent-tools/MCP registry) in the RELEASE checkout, resolving against ITS
+      // node_modules, WITHOUT starting a server or running bootstrap. A missing /
+      // incomplete dep throws MODULE_NOT_FOUND at import — caught HERE, before the
+      // live :3070 cutover, instead of crash-looping systemd after the restart
+      // (the documented @dnd-kit/core / setup-script entry-set-blind-spot class).
+      // Mirrors the systemd launch: cwd = release apps/operator, source .env.local,
+      // `npx tsx` (so it resolves exactly as the real boot will).
+      const appDir = path.join(cfg.releaseRoot, 'apps/operator');
+      const handlerPath = path.join(cfg.releaseRoot, 'apps/operator/bin/host-handler.ts');
+      const sq = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
+      const smoke =
+        `import(${JSON.stringify(handlerPath)})` +
+        `.then(() => { console.log('PREFLIGHT_OK'); process.exit(0); })` +
+        `.catch((e) => { console.error(e && e.stack ? e.stack : String(e)); process.exit(1); });`;
+      const bashCmd = `set -a; [ -f .env.local ] && . ./.env.local; set +a; exec npx tsx -e ${sq(smoke)}`;
+      try {
+        await run('bash', ['-c', bashCmd], { cwd: appDir, timeoutMs: 90_000 });
+        log('preflight: release checkout module graph resolves (host-handler imported clean) — safe to cut over');
+        return { ok: true };
+      } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        log(`preflight FAILED — release checkout would not boot, refusing cutover: ${error.slice(0, 400)}`);
+        return { ok: false, error: error.slice(0, 1200) };
       }
     },
 

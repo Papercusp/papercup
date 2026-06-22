@@ -73,34 +73,61 @@ describe('accounts:register', () => {
   });
 });
 
-describe('accounts:remove', () => {
-  it('reports removed:true when the account existed', async () => {
+describe('accounts:remove (bulk keyed-array, P-006)', () => {
+  it('n=1 { id } reports removed:true when the account existed; one keyed result', async () => {
     getAcct.mockReturnValue({ id: 'A1' } as never);
     const b = body(await removeTool.handler({ id: 'A1' } as never, {} as never) as Out);
-    expect(b).toMatchObject({ ok: true, removed: true, id: 'A1' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'A1', removed: true });
     expect(saveM).toHaveBeenCalledTimes(1);
   });
 
   it('reports removed:false when the account did not exist', async () => {
     getAcct.mockReturnValue(undefined as never);
     const b = body(await removeTool.handler({ id: 'ghost' } as never, {} as never) as Out);
-    expect(b).toMatchObject({ ok: true, removed: false });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'ghost', removed: false });
+  });
+
+  it('ids:[…] removes many, each result keyed by id', async () => {
+    getAcct.mockImplementation((_pool: unknown, id: string) => (id === 'A1' ? ({ id } as never) : (undefined as never)));
+    const b = body(await removeTool.handler({ ids: ['A1', 'gone'] } as never, {} as never) as Out);
+    expect(b.counts).toEqual({ ok: 2, failed: 0 }); // both remove ops succeed; `removed` differs
+    expect(b.results.map((r: any) => [r.id, r.removed])).toEqual([
+      ['A1', true],
+      ['gone', false],
+    ]);
+    expect(saveM).toHaveBeenCalledTimes(2);
   });
 });
 
-describe('accounts:reset-rate', () => {
-  it('guards unknown_account and does NOT save', async () => {
+describe('accounts:reset-rate (bulk keyed-array, P-006)', () => {
+  it('n=1 guards unknown_account as that item\'s { ok:false } and does NOT save', async () => {
     getAcct.mockReturnValue(undefined as never);
     const b = body(await resetTool.handler({ id: 'ghost' } as never, {} as never) as Out);
-    expect(b).toMatchObject({ ok: false, error: 'unknown_account', id: 'ghost' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'ghost', error: 'unknown_account' });
     expect(saveM).not.toHaveBeenCalled();
   });
 
-  it('resets a known account and saves', async () => {
+  it('resets a known account and saves; one keyed result', async () => {
     getAcct.mockReturnValue({ id: 'A1' } as never);
     const b = body(await resetTool.handler({ id: 'A1' } as never, {} as never) as Out);
-    expect(b).toMatchObject({ ok: true, account: { id: 'A1' } });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'A1', account: { id: 'A1' } });
     expect(saveM).toHaveBeenCalledTimes(1);
+  });
+
+  it('ids:[…] resets many; an unknown one fails ONLY itself (no save for it)', async () => {
+    getAcct.mockImplementation((_pool: unknown, id: string) => (id === 'gone' ? (undefined as never) : ({ id } as never)));
+    const b = body(await resetTool.handler({ ids: ['A1', 'gone', 'A2'] } as never, {} as never) as Out);
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.results.map((r: any) => [r.id, r.ok])).toEqual([
+      ['A1', true],
+      ['gone', false],
+      ['A2', true],
+    ]);
+    expect(b.results[1]).toMatchObject({ error: 'unknown_account' });
+    expect(saveM).toHaveBeenCalledTimes(2); // only the two known accounts saved
   });
 });
 

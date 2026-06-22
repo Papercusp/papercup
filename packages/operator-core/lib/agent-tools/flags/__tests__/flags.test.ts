@@ -39,6 +39,15 @@ function parseTextPayload(result: { content: Array<{ text: string }> }): Record<
   return JSON.parse(result.content[0].text);
 }
 
+/** Parse the bulk keyed-array envelope (flags:get / flags:set are bulk, P-006). */
+function parseEnvelope(result: { content: Array<{ text: string }> }): {
+  ok: boolean;
+  results: any[];
+  counts: { ok: number; failed: number };
+} {
+  return JSON.parse(result.content[0].text);
+}
+
 beforeEach(() => {
   vi.resetModules();
   vi.doMock('@papercusp/flags/server', () => ({ getFlag, getAllFlags, setFlag, setFlagOverride }));
@@ -62,20 +71,39 @@ afterEach(() => {
   setFlagOverride.mockClear();
 });
 
-describe('flags:get', () => {
-  it('resolves a flag via getFlag(key, distinctId) and wraps {key, enabled}', async () => {
+describe('flags:get (bulk keyed-array, P-006)', () => {
+  it('n=1 { key } resolves via getFlag(key, distinctId) → one keyed result', async () => {
     getFlag.mockResolvedValue(true);
     const { default: tool } = await import('../get');
-    const result = await tool.handler({ key: KEY }, MAKE_CTX());
+    const b = parseEnvelope(await tool.handler({ key: KEY }, MAKE_CTX()) as never);
     expect(getFlag).toHaveBeenCalledWith(KEY, 'did-test');
-    expect(parseTextPayload(result as never)).toEqual({ key: KEY, enabled: true });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, key: KEY, enabled: true });
   });
 
   it('reflects a disabled flag', async () => {
     getFlag.mockResolvedValue(false);
     const { default: tool } = await import('../get');
-    const result = await tool.handler({ key: KEY }, MAKE_CTX());
-    expect(parseTextPayload(result as never)).toEqual({ key: KEY, enabled: false });
+    const b = parseEnvelope(await tool.handler({ key: KEY }, MAKE_CTX()) as never);
+    expect(b.results[0]).toMatchObject({ ok: true, key: KEY, enabled: false });
+  });
+
+  it('keys:[…] resolves many, each result keyed by key (deduped)', async () => {
+    const k0 = ALL_FLAG_KEYS[0];
+    const k1 = ALL_FLAG_KEYS[1] ?? k0; // single-key builds: dedup collapses to one
+    getFlag.mockImplementation(async (k: string) => k === k0);
+    const { default: tool } = await import('../get');
+    const b = parseEnvelope(await tool.handler({ keys: [k0, k1] }, MAKE_CTX()) as never);
+    if (k0 !== k1) {
+      expect(b.counts).toEqual({ ok: 2, failed: 0 });
+      expect(b.results.map((r) => [r.key, r.enabled])).toEqual([
+        [k0, true],
+        [k1, false],
+      ]);
+    } else {
+      expect(b.counts).toEqual({ ok: 1, failed: 0 }); // deduped to one
+      expect(b.results[0]).toMatchObject({ key: k0, enabled: true });
+    }
   });
 });
 
@@ -91,36 +119,36 @@ describe('flags:list', () => {
   });
 });
 
-describe('flags:set', () => {
-  it('flips a flag, publishes the change, and returns {ok:true, backend:posthog}', async () => {
+describe('flags:set (bulk keyed-array, P-006)', () => {
+  it('n=1 { key, enabled } flips a flag, publishes the change → one keyed result {backend:posthog}', async () => {
     setFlag.mockResolvedValue({ ok: true });
     const { default: tool } = await import('../set');
-    const result = await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX());
+    const b = parseEnvelope(await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX()) as never);
     expect(setFlag).toHaveBeenCalledWith(KEY, true);
     expect(setFlagOverride).toHaveBeenCalledWith(KEY, null);
     expect(publishFlagChange).toHaveBeenCalledWith(KEY);
-    expect(parseTextPayload(result as never)).toEqual({ ok: true, key: KEY, enabled: true, backend: 'posthog' });
-    expect((result as { isError?: boolean }).isError).toBeUndefined();
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toEqual({ ok: true, key: KEY, enabled: true, backend: 'posthog' });
   });
 
-  it('on flag-backend-not-configured: falls back to pg-override and returns {ok:true, backend:pg-override}', async () => {
+  it('on flag-backend-not-configured: falls back to pg-override → {ok:true, backend:pg-override}', async () => {
     setFlag.mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
     setFlagOverride.mockResolvedValue({ ok: true });
     const { default: tool } = await import('../set');
-    const result = await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX());
+    const b = parseEnvelope(await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX()) as never);
     expect(setFlag).toHaveBeenCalledWith(KEY, true);
     expect(setFlagOverride).toHaveBeenCalledWith(KEY, true);
     expect(publishFlagChange).toHaveBeenCalledWith(KEY);
-    expect(parseTextPayload(result as never)).toEqual({ ok: true, key: KEY, enabled: true, backend: 'pg-override' });
-    expect((result as { isError?: boolean }).isError).toBeUndefined();
+    expect(b.results[0]).toEqual({ ok: true, key: KEY, enabled: true, backend: 'pg-override' });
   });
 
-  it('on other backend failure: flags isError, forwards the reason, and does NOT publish', async () => {
+  it('on other backend failure: the item fails ({ ok:false, key, error }) and does NOT publish; batch ok:true', async () => {
     setFlag.mockResolvedValue({ ok: false, reason: 'posthog_error' });
     const { default: tool } = await import('../set');
-    const result = await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX());
-    expect((result as { isError?: boolean }).isError).toBe(true);
-    expect(parseTextPayload(result as never)).toEqual({ ok: false, reason: 'posthog_error', key: KEY });
+    const b = parseEnvelope(await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX()) as never);
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, key: KEY, error: 'posthog_error' });
     expect(publishFlagChange).not.toHaveBeenCalled();
   });
 
@@ -140,6 +168,28 @@ describe('flags:set', () => {
     const { default: tool } = await import('../set');
     await tool.handler({ key: KEY, enabled: true, reason: 'enable it' }, MAKE_CTX());
     expect(recordFlagAudit).toHaveBeenCalledWith(KEY, true, 'agent', { reason: 'enable it', backend: 'posthog' });
+  });
+
+  it('items:[…] flips many heterogeneous keys; one backend failure fails ONLY itself', async () => {
+    const [k0, k1] = [ALL_FLAG_KEYS[0], ALL_FLAG_KEYS[1] ?? ALL_FLAG_KEYS[0]];
+    setFlag.mockImplementation(async (k: string) => (k === k1 && k0 !== k1 ? { ok: false, reason: 'posthog_error' } : { ok: true }));
+    const { default: tool } = await import('../set');
+    const b = parseEnvelope(
+      await tool.handler(
+        { items: [{ key: k0, enabled: true }, { key: k1, enabled: false }], reason: 'batch flip for release' },
+        MAKE_CTX(),
+      ) as never,
+    );
+    expect(b.ok).toBe(true);
+    if (k0 !== k1) {
+      // Distinct keys: k0 succeeds, k1 fails only itself.
+      expect(b.counts).toEqual({ ok: 1, failed: 1 });
+      expect(b.results[0]).toMatchObject({ ok: true, key: k0, enabled: true });
+      expect(b.results[1]).toMatchObject({ ok: false, key: k1, error: 'posthog_error' });
+    } else {
+      // Single-key build: both items resolve ok.
+      expect(b.counts.failed).toBe(0);
+    }
   });
   // recordFlagAudit's best-effort "never throws even on a write failure"
   // contract is covered against a real dead connection in

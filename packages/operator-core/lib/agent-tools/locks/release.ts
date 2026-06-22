@@ -119,7 +119,13 @@ export default defineTool({
     // authority the matching acquire routed to, so a lock taken on a remote authority's
     // store is actually freed there (else it lingers to TTL). N=1 → op.local() passthrough
     // (no peers); a routing fault degrades to the raw local release.
-    const result = await releaseFileLocks(undefined, true);
+    //
+    // Reached ONLY when lockIds.length===0 AND args.all_mine===true — the two guards above
+    // enforce it (neither → error, both → error, any lock_id(s) → the bulk branch). Pass the
+    // arg explicitly rather than a hardcoded literal so the all_mine intent stays coupled to
+    // the caller (defense-in-depth if those guards ever change); tryRelease filters by
+    // owner=ownerId, so all_mine only ever frees the CALLER's own locks (no cross-agent reach).
+    const result = await releaseFileLocks(undefined, Boolean(args.all_mine));
 
     // Session-end (all_mine) also clears this owner's NAMED-resource locks
     // (P-019) — file locks and resource locks live in separate tables, so one

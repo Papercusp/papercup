@@ -1,6 +1,14 @@
 ---
 title: Replay-consumer loops must not re-ledger battery spend
 description: runGovernedReplay already ledgers every battery dollar on frontier:replay-harness — a consumer loop (regret/transfer/ablation) that also records the returned totalCostUsd on its own governor loop double-counts it on the one visible spend number.
+discovered: 2026-06-12
+status: active
+documents:
+  - packages/operator-core/lib/replay/governed.ts
+  - packages/operator-core/lib/transfer/tick.ts
+  - packages/operator-core/lib/transfer/replay-adapter.ts
+plans:
+  - self-learning-frontier-2026-06-12
 ---
 
 **The trap.** The frontier consumer loops (regret mining FB-07, transfer
