@@ -21,7 +21,7 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
   it('gets detail, claims, and (with intent) declares — 3 round-trips collapsed into one', async () => {
     const { call, calls } = fakeCall({
       'work_items:get': () => ({ ok: true, results: [{ ok: true, id: 'WI-1', workItem: { id: 'WI-1', kind: 'task', title: 'T' } }] }),
-      'work_items:claim': () => ({ ok: true, workItem: { id: 'WI-1', assignee: 'me' } }),
+      'work_items:claim': () => ({ ok: true, results: [{ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } }], counts: { ok: 1, failed: 0 } }),
       'coord:declare-intent': () => ({ ok: true, presence: { intent: 'doing WI-1' } }),
     });
     const r = await composePickup({ id: 'WI-1', intent: 'doing WI-1', plan: 'p', items: ['P-001'] }, call);
@@ -37,7 +37,7 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
   it('skips declare-intent when no intent is given (2 round-trips → one)', async () => {
     const { call, calls } = fakeCall({
       'work_items:get': () => ({ ok: true, results: [{ ok: true, id: 'WI-2', workItem: { id: 'WI-2' } }] }),
-      'work_items:claim': () => ({ ok: true, workItem: { id: 'WI-2' } }),
+      'work_items:claim': () => ({ ok: true, results: [{ ok: true, id: 'WI-2', workItem: { id: 'WI-2' } }], counts: { ok: 1, failed: 0 } }),
     });
     const r = await composePickup({ id: 'WI-2' }, call);
     expect(r.ok).toBe(true);
@@ -58,7 +58,7 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
   it('short-circuits step=claim (returning the fetched item) when claim fails; never declares', async () => {
     const { call, calls } = fakeCall({
       'work_items:get': () => ({ ok: true, results: [{ ok: true, id: 'WI-3', workItem: { id: 'WI-3', title: 'taken' } }] }),
-      'work_items:claim': () => ({ ok: false, error: 'already claimed by peer' }),
+      'work_items:claim': () => ({ ok: true, results: [{ ok: false, id: 'WI-3', error: 'already claimed by peer' }], counts: { ok: 0, failed: 1 } }),
     });
     const r = await composePickup({ id: 'WI-3', intent: 'x', plan: 'p' }, call);
     expect(r.ok).toBe(false);
@@ -71,7 +71,7 @@ describe('composePickup (B-CX-1B compound: get + claim + declare-intent)', () =>
   it('does not forward items without a plan (declare-intent rejects items sans plan)', async () => {
     const { call, calls } = fakeCall({
       'work_items:get': () => ({ ok: true, results: [{ ok: true, id: 'WI-4', workItem: { id: 'WI-4' } }] }),
-      'work_items:claim': () => ({ ok: true, workItem: { id: 'WI-4' } }),
+      'work_items:claim': () => ({ ok: true, results: [{ ok: true, id: 'WI-4', workItem: { id: 'WI-4' } }], counts: { ok: 1, failed: 0 } }),
       'coord:declare-intent': () => ({ ok: true, presence: {} }),
     });
     await composePickup({ id: 'WI-4', intent: 'x', items: ['P-001'] }, call); // no plan

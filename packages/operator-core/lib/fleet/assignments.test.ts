@@ -8,10 +8,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  deriveActivity,
   groupByAgent,
   orphanedClaims,
+  reclaimableClaims,
+  stalledClaims,
   type FleetAssignmentRow,
 } from './assignments';
+import { classifyItemActivity, isReclaimable, type ItemActivity } from '../item-activity';
 
 const base: FleetAssignmentRow = {
   source: 'presence',
