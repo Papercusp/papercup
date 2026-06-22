@@ -5,6 +5,7 @@ export type BackendParitySmokeArea =
   | 'omp-resume-leg'
   | 'codex-home-recovery'
   | 'spawned-agent-attach'
+  | 'retired-brain-pinning'
   | 'gateway-account-pin-fail-closed'
   | 'prompt-materialization'
   | 'operator-command-run'
@@ -44,6 +45,7 @@ export const REQUIRED_BACKEND_PARITY_SMOKE_AREAS: readonly BackendParitySmokeAre
   'omp-resume-leg',
   'codex-home-recovery',
   'spawned-agent-attach',
+  'retired-brain-pinning',
   'gateway-account-pin-fail-closed',
   'prompt-materialization',
   'operator-command-run',
@@ -137,6 +139,23 @@ export const BACKEND_PARITY_SMOKE_MATRIX: readonly BackendParitySmokeRow[] = [
       { backend: 'claude', feature: 'resume', state: 'supported' },
       { backend: 'codex', feature: 'resume', state: 'supported' },
       { backend: 'omp', feature: 'resume', state: 'supported' },
+    ],
+  },
+  {
+    id: 'retired-brain-pinning',
+    area: 'retired-brain-pinning',
+    title: 'Pinned brain sessions are retired for every interactive backend',
+    backends: ['claude', 'codex', 'omp'],
+    requirement: 'psu --brain fails closed instead of silently launching a backend-specific pinned session',
+    coverage: [
+      { kind: 'vitest', path: 'apps/operator/lib/psu-launcher.test.ts' },
+      { kind: 'vitest', path: 'packages/operator-core/lib/backend-feature-capabilities.test.ts' },
+      { kind: 'retired-surface', path: 'apps/operator-docs/src/content/docs/agent-spawning/terminal-wrappers.mdx' },
+    ],
+    capabilities: [
+      { backend: 'claude', feature: 'brain-pinning', state: 'unsupported' },
+      { backend: 'codex', feature: 'brain-pinning', state: 'unsupported' },
+      { backend: 'omp', feature: 'brain-pinning', state: 'unsupported' },
     ],
   },
   {

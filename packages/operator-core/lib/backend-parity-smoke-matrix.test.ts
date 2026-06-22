@@ -14,6 +14,10 @@ import {
 
 const ALL_BACKENDS: readonly InteractiveBackend[] = ['claude', 'codex', 'omp'];
 
+function repoPathExists(path: string): boolean {
+  return existsSync(join(process.cwd(), path)) || existsSync(join(process.cwd(), '..', '..', path));
+}
+
 describe('BACKEND_PARITY_SMOKE_MATRIX', () => {
   it('covers every P-017 acceptance area exactly once', () => {
     const ids = BACKEND_PARITY_SMOKE_MATRIX.map((row) => row.id);
@@ -40,7 +44,7 @@ describe('BACKEND_PARITY_SMOKE_MATRIX', () => {
           continue;
         }
         expect(coverage.path, row.id).toBeTruthy();
-        expect(existsSync(join(process.cwd(), coverage.path!)), `${row.id}: ${coverage.path}`).toBe(true);
+        expect(repoPathExists(coverage.path!), `${row.id}: ${coverage.path}`).toBe(true);
       }
     }
   });
@@ -61,6 +65,7 @@ describe('BACKEND_PARITY_SMOKE_MATRIX', () => {
     const crossBackendAreas: BackendParitySmokeArea[] = [
       'psu-launch-resume-wake',
       'spawned-agent-attach',
+      'retired-brain-pinning',
       'gateway-account-pin-fail-closed',
       'prompt-materialization',
       'operator-command-run',
@@ -106,5 +111,24 @@ describe('BACKEND_PARITY_SMOKE_MATRIX', () => {
     expect(accountProviderForInteractiveBackend('claude')).toBe('claude');
     expect(accountProviderForInteractiveBackend('codex')).toBe('codex');
     expect(accountProviderForInteractiveBackend('omp')).toBeNull();
+  });
+
+  it('keeps retired brain pinning fail-closed for every backend', () => {
+    const row = BACKEND_PARITY_SMOKE_MATRIX.find(
+      (candidate) => candidate.area === 'retired-brain-pinning',
+    );
+    expect(row?.backends).toEqual(ALL_BACKENDS);
+    expect(row?.coverage).toEqual(
+      expect.arrayContaining([
+        { kind: 'retired-surface', path: 'apps/operator-docs/src/content/docs/agent-spawning/terminal-wrappers.mdx' },
+      ]),
+    );
+    expect(row?.capabilities).toEqual(
+      expect.arrayContaining([
+        { backend: 'claude', feature: 'brain-pinning', state: 'unsupported' },
+        { backend: 'codex', feature: 'brain-pinning', state: 'unsupported' },
+        { backend: 'omp', feature: 'brain-pinning', state: 'unsupported' },
+      ]),
+    );
   });
 });
