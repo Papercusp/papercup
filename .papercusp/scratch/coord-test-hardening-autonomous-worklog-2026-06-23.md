@@ -30,10 +30,20 @@
 | 4 | `card-link.ts` | 7 ✓ | unblockLinkedCard: unlinked/non-string correlationId → no-op (resolver not called); submit picks:[choice]; expectedWorkspaceId conditional; res.ok passthrough; throw swallowed |
 | 5 | `log.ts` (coordLog seam) | 7 ✓ | configureCoordLog/resetCoordLog swap; coordWorkspaceId (impl.workspaceId ?? DEFAULT); coordHasPgFastPath (typeof getSql); coordSql returns backend handle; coordLog delegates every method; reset restores PG fast-path |
 
-**Tally: 48 tests across 5 modules (feed, topics-core, plan-events, card-link, log).**
+| 6 | `audience-host.ts` (pure surface) | 5 ✓ | audienceMode() env kill-switch ('broadcast' exact else 'scoped'); listActivePresence drops stale/revoked + maps to {ownerId,planSlug,files} |
 
-## Near exhaustion
-Last genuine pure candidate: `audience-host.ts` (audienceMode() env-pure + listActivePresence filter via mock ./presence) — small. After it: everything left is covered (__tests__) or PG-only (messages.ts/topics.ts/subscription-store/gc/audience-host-resolvers) or a re-export shim (envelope.ts) → EXHAUSTION → final report.
+**FINAL TALLY: 53 tests across 6 modules (feed 15, topics-core 10, plan-events 9, card-link 7, log 7, audience-host 5).**
+
+## LOOP CONCLUDED 2026-06-23 — pure/seamable backlog EXHAUSTED
+Final sweep confirms every remaining uncovered coordination module is one of:
+- **PG-only (no mockable seam → integration-test territory, SKIP):** conversations-store (318),
+  presence-snapshot (323), slot-parked-store (217), presence (126), topics (94), message-log-gc (93),
+  escalation-log-gc (81), notify-gc (30), subscription-store (31).
+- **Re-export shim / boot wiring (no logic):** envelope.ts (16), wire-agent-question-gate.ts (25).
+- **Already covered under `__tests__/` or referenced by a test:** agent-question-gate,
+  agent-question-decider-gate, conversations-core (+3 integration), watermarks, promote, handoffs,
+  ask-knowledge-tier.
+No genuinely-uncovered pure/seamable module with real logic remains. Loop stopped (no further wakes).
 
 ## Backlog status (thinning — approaching exhaustion)
 Genuinely-uncovered remaining: `audience-host.ts` (mostly PG wiring; only `audienceMode()` env-pure + `listActivePresence` filter testable), `log.ts` (small pure `coordScopeWorkspace`/`coordWorkspaceId`), `agent-question-gate.ts` (207, check purity), `agent-question-decider-gate.ts` (74). PG-only (SKIP): `message-log-gc.ts`, `escalation-log-gc.ts`, `notify-gc.ts` (getOrgPg().sql, no seam). Covered under `__tests__/`: watermarks, promote, conversations-core/store.

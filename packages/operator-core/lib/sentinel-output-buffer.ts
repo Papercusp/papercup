@@ -4,31 +4,61 @@
  * tool → `pushSentinelSay`; the webview voice runtime drains via
  * `drainSentinelSays` (GET /api/operator/sentinel-output poll) → `speak()`/TTS.
  *
- * ⚠ KNOWN LIMITATION (2026-06-22): this is a PROCESS-LOCAL in-memory FIFO, so it
- * only bridges a push+poll that hit the SAME operator process. Full voice-OUT
- * needs a CROSS-process store because the Sentinel's MCP operator (green `:3070`)
- * and the webview's operator differ — see plan Phase D. A PG-backed version
- * (table `harness_shared.sentinel_says` + migration) is the fix, but it was
- * deferred: the dev `:5432` DB is drifted from the committed schema, so a local
- * `pull-schema` can't cleanly regenerate `generated.ts`, and committing a
- * migration without that regen fails CI's drift gate (blocks deploys). Do the PG
- * swap on a clean DB. Async signatures are kept here so that swap is drop-in.
- * LOCAL APP USER ONLY (owner constraint) — not the P2P voice-channel system.
+ * CROSS-PROCESS via PG (migration 390). `voice:say` executes inside the
+ * agent-mcp process the psu Sentinel's role-scoped MCP connects to (observed:
+ * 127.0.0.1:9071), while the webview drains on a DIFFERENT operator process —
+ * so the prior PROCESS-LOCAL in-memory FIFO never bridged them (the user spoke,
+ * got a correct TUI answer, and heard nothing). A single GLOBAL FIFO in shared
+ * PG (`harness_shared.sentinel_says`) does: every operator/agent-mcp process on
+ * the box talks to one database (native :5432 in dev, embedded in the shipped
+ * app). LOCAL APP USER ONLY (owner constraint) — not the P2P voice-channel system.
  */
-const MAX = 32;
-const buffer: string[] = [];
+import { getOrgPg } from '@papercusp/db-org';
 
-/** Append a spoken line (from the Sentinel's `voice:say`). No-ops on blank. */
+/** Keep the queue bounded — a slow/absent webview drain must not grow it without limit. */
+const MAX = 32;
+
+/**
+ * Append a spoken line (from the Sentinel's `voice:say`). No-ops on blank, and
+ * never throws: a voice-out relay failure must not fail the Sentinel's turn.
+ */
 export async function pushSentinelSay(text: string): Promise<void> {
   const t = text.trim();
   if (!t) return;
-  buffer.push(t);
-  while (buffer.length > MAX) buffer.shift();
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.sentinel_says (line, created_at)
+      VALUES (${t}, ${Date.now()})
+    `;
+    // Bound the table to the most-recent MAX rows (best-effort).
+    await sql`
+      DELETE FROM harness_shared.sentinel_says
+       WHERE id NOT IN (
+         SELECT id FROM harness_shared.sentinel_says ORDER BY id DESC LIMIT ${MAX}
+       )
+    `;
+  } catch (e) {
+    console.warn(`[sentinel-output-buffer] pushSentinelSay failed: ${String(e).slice(0, 160)}`);
+  }
 }
 
-/** Return + clear all buffered spoken lines (the webview drains on poll). */
+/**
+ * Return + clear all buffered spoken lines (the webview drains on poll). Never
+ * throws: on any PG error the poll just sees an empty batch this tick.
+ */
 export async function drainSentinelSays(): Promise<string[]> {
-  const out = buffer.slice();
-  buffer.length = 0;
-  return out;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ line: string }[]>`
+      WITH drained AS (
+        DELETE FROM harness_shared.sentinel_says RETURNING id, line
+      )
+      SELECT line FROM drained ORDER BY id ASC
+    `;
+    return rows.map((r) => r.line);
+  } catch (e) {
+    console.warn(`[sentinel-output-buffer] drainSentinelSays failed: ${String(e).slice(0, 160)}`);
+    return [];
+  }
 }
