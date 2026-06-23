@@ -185,6 +185,28 @@ export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ work_item: { type: 'string' }, brief: { type: 'string' } }, ['work_item']),
   },
   {
+    name: 'scheduler:set_claim_spec',
+    description:
+      "Steer a bee's claim path by authoring (or re-steering) its per-bee claim SPEC — a versioned, declarative scoped VIEW (filter) + ORDERING (rank) over the live work-item DAG that the scheduler compiles into the bee's scheduler:get_next pulls. This is how the Queen decentralizes PICKUP while centralizing JUDGMENT: you decide WHICH items are eligible + in what order (the spec); the bee decides WHEN to take the next one (the pull). Re-steer a running bee by bumping the spec REVISION, not by re-dispatching each item.",
+    input: obj(
+      {
+        beeId: { type: 'string', description: "The bee to steer (its spawn/agent id)." },
+        spec: {
+          type: 'object',
+          description:
+            "The claim spec: { view: { filter }, rank: { mode, terms } } over the primitive vocabulary (item fields priority/tags/kind/paths/plan/plan_item/age, predicates =/!=/</in/contains/glob with all/any/not, rank terms incl. affinity). The spec NARROWS + REORDERS within the global floors — it can never widen past a floor.",
+        },
+      },
+      ['beeId', 'spec'],
+    ),
+  },
+  {
+    name: 'scheduler:running',
+    description:
+      "The live-execution view: each running bee run — the bee, its current item, its spec specId@revision, progress, lease/heartbeat, idle/blocked reason. Read it to see whether bees are pulling under the specs you authored.",
+    input: obj({ harness: { type: 'string' } }),
+  },
+  {
     name: 'coord:send',
     description: 'Send a coordination message to agents (inject; wake:true to re-invoke a sleeper).',
     input: obj({

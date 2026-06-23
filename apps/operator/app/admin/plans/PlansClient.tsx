@@ -281,18 +281,23 @@ export default function PlansClient() {
     'scope',
     parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
-  const [registryProjects, setRegistryProjects] = useState<HarnessNodeForScope[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/harness/projects/lite', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => {
-        if (cancelled) return;
-        setRegistryProjects(Array.isArray(d?.projects) ? d.projects : []);
-      })
-      .catch(() => { /* selector still works on the existing plan-row harness set */ });
-    return () => { cancelled = true; };
-  }, []);
+  // LIVE harness registry (harnessProjects.lite). Replaces the old one-shot
+  // /api/harness/projects/lite fetch (data-sync-push-completion P-010): the
+  // resolver is invalidated from the registry write seam, so creates / deletes
+  // / renames / forks from ANY operator process live-update the scope union +
+  // the NewPlanButton target list (EI-206). The resolver row is the same
+  // ProjectsLiteEntry shape the REST endpoint put under `d.projects`;
+  // HarnessNodeForScope is its structural subset (slug + parent_slug), so the
+  // cast needs no field renaming.
+  const registryQuery = useSyncQuery<HarnessNodeForScope>({
+    queryName: 'harnessProjects.lite',
+    args: {},
+    staleTime: 60_000,
+  });
+  const registryProjects = useMemo<HarnessNodeForScope[]>(
+    () => (registryQuery.data ?? []) as HarnessNodeForScope[],
+    [registryQuery.data],
+  );
   const harnessSlugsForFetch = useMemo<readonly string[] | undefined>(() => {
     if (harnessFilter) return [harnessFilter];
     // "All harnesses": fan out over every harness in the workspace. The

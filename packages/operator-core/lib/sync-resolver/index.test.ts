@@ -150,6 +150,19 @@ describe('sync-resolver v2 registry', () => {
       expect(new Set(names).size, 'queryNames are distinct').toBe(names.length);
     });
 
+    it('includes the network.* push-driven discovery queries (data-sync-push-completion P-009)', () => {
+      const names = knownQueryNamesV2();
+      for (const expected of [
+        // existing network.* family
+        'network.board',
+        // P-009: the two discovery panels migrated off polling onto the rail.
+        'network.hiveDirectory',
+        'network.federationStatus',
+      ]) {
+        expect(names).toContain(expected);
+      }
+    });
+
     it('includes the plans.* Create-tab live queries', () => {
       const names = knownQueryNamesV2();
       for (const expected of [

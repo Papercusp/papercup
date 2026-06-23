@@ -144,6 +144,11 @@ export async function sendCrossHiveAsk(
     .then((m) => {
       void m.notifySyncInvalidate('network.board').catch(() => {});
       void m.notifySyncInvalidate('network.hive.asks').catch(() => {});
+      // P-009 (data-sync-push-completion): co-located with the other network.board
+      // announce/ask/beacon push points so the directory browse + federation-status
+      // panels also converge off their polls. Workspace-singleton, no-arg consumers.
+      void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
+      void m.notifySyncInvalidate('network.federationStatus').catch(() => {});
     })
     .catch(() => {});
 

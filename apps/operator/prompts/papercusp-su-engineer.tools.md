@@ -391,6 +391,12 @@ autonomous-fleet agent.
   (three `get`s over three ids) still batches; N=3 is NOT too small. (A few DIFFERENT
   one-off calls is NOT a loop — call those directly; the trigger is REPETITION of the
   SAME call over items, not raw call count.) When in doubt, script it.
+  **Reuse before you author:** every successful `code:run` is saved as a reusable
+  RECIPE your hive can rerun, so the multi-step script may already exist. Before
+  authoring one, `recipes:search { query }`; on a close hit `recipes:run { id }` (it
+  runs under YOUR role-scoped envelope, not the author's) instead of re-authoring; act
+  on the `similarRecipes` a run surfaces; and pass a clear `title`+`description` so the
+  recipe you leave behind is findable (`recipes:list` browses the most-run).
   **Trigger — catch the cue early:** the moment you're about to call the SAME tool
   once per item in a list (a `get` per id, a check per file), that repetition IS
   the signal — reach for `code:run` BEFORE the first such call; don't fire several

@@ -115,6 +115,11 @@ function observationMatchesPlan(row: ObservationRow, planSlugs: readonly string[
   const refs = row.refs.map((r) => r.toLowerCase());
   return planSlugs.some((slug) => {
     const s = slug.toLowerCase();
-    return refs.some((ref) => ref === s || ref === `plan:${s}` || ref.includes(s));
+    const token = new RegExp(`(^|[^a-z0-9_-])${escapeRegExp(s)}($|[^a-z0-9_-])`);
+    return refs.some((ref) => ref === s || ref === `plan:${s}` || token.test(ref));
   });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

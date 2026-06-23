@@ -110,10 +110,29 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
   const gossip = createDirectoryGossip({
     swarm: opts.swarm,
     // P-005: the shared gossip channel carries announces AND withdrawal
-    // tombstones — route by frame kind, synchronously (the test fakes deliver
-    // inline); old peers shape-reject unlist frames harmlessly.
-    onAnnounce: (frame) =>
-      isHiveUnlistFrame(frame) ? dir.ingestUnlist(frame) : dir.ingestAnnounce(frame),
+    // tombstones — route by frame kind (the test fakes deliver inline); old peers
+    // shape-reject unlist frames harmlessly.
+    // P-009 (data-sync-push-completion): the verify→add-to-set / withdraw-
+    // tombstone ingest is the PRIMARY mutation point for the discovered set —
+    // push the directory browse + federation-status panels on every ACCEPTED
+    // change so the desktop converges off its old 30s/10s polls. Lazy fire-and-
+    // forget so this boot module never statically depends on the SSE layer (a
+    // missing bus is a no-op); only an ACCEPTED ingest is a real change worth a
+    // push (a rejected/superseded/muted frame leaves the set untouched).
+    onAnnounce: async (frame) => {
+      const res = isHiveUnlistFrame(frame)
+        ? await dir.ingestUnlist(frame)
+        : await dir.ingestAnnounce(frame);
+      if (res.accepted) {
+        void import('./sync-sse')
+          .then((m) => {
+            void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
+            void m.notifySyncInvalidate('network.federationStatus').catch(() => {});
+          })
+          .catch(() => {});
+      }
+      return res;
+    },
     getOwnAnnounces: (topicHex) => dir.buildOwnedAnnounces({ topicHex }),
     refreshMs: opts.refreshMs,
   });

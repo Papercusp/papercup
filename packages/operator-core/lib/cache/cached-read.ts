@@ -26,9 +26,9 @@
  * invalidation already wired off the change stream.
  */
 
-import type { CacheOutcome } from '@papercusp/cache';
-import { getOperatorCache } from './instance';
-import { activeWorkspaceId } from '../workspace-registry';
+import type { CacheOutcome } from "@papercusp/cache";
+import { getOperatorCache } from "./instance";
+import { activeWorkspaceId } from "../workspace-registry";
 
 /** The slice of a tool ctx cachedRead needs — workspace resolution only. */
 export interface CachedReadCtx {
@@ -63,9 +63,12 @@ export interface CachedReadOptions {
  * if no non-empty workspace can be resolved (the D-010 cross-workspace guard).
  */
 export function resolveCacheWorkspaceId(ctx: CachedReadCtx): string {
-  const ws = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+  const ws =
+    ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
   if (!ws || !ws.trim()) {
-    throw new Error('cachedRead: no workspace to scope the cache key (workspace-scoped — D-010)');
+    throw new Error(
+      "cachedRead: no workspace to scope the cache key (workspace-scoped — D-010)",
+    );
   }
   return ws;
 }
@@ -83,7 +86,7 @@ export function stableKey(value: unknown): string {
 }
 
 function canonicalize(value: unknown): unknown {
-  if (value === null || typeof value !== 'object') return value;
+  if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(canonicalize);
   const obj = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
@@ -93,6 +96,22 @@ function canonicalize(value: unknown): unknown {
     out[k] = canonicalize(v);
   }
   return out;
+}
+
+// ── vitest safety gate ──────────────────────────────────────────────────────────────
+// Under the vitest runner the cache-invalidation ECA (change-stream → cache.bumpTags)
+// is NOT wired, so a cached tool read can't observe a same-process write — which would
+// silently break the many tool-handler tests that create/mutate then re-read (e.g.
+// work_items create→get→claim→get). So cachedRead BYPASSES under VITEST unless a cache
+// test explicitly opts in via __setCachedReadEnabledForTests(true). This gates ONLY the
+// tool-read wrapper, not getOperatorCache() itself (the cache-infra tests are untouched),
+// and is inert outside vitest — a real-operator test (Playwright/LLM, VITEST unset) has
+// the ECA wired, so caching stays coherent there.
+let testCacheEnabled = false;
+
+/** Test-only: enable cachedRead under the vitest runner (it bypasses by default — see above). */
+export function __setCachedReadEnabledForTests(on: boolean): void {
+  testCacheEnabled = on;
 }
 
 // ── per-tool telemetry (the shared cache.stats can't attribute per consumer) ────────
@@ -111,9 +130,9 @@ function recordOutcome(tool: string, outcome: CacheOutcome): void {
     s = { hits: 0, misses: 0, stale: 0, bypass: 0 };
     TOOL_STATS.set(tool, s);
   }
-  if (outcome === 'hit') s.hits++;
-  else if (outcome === 'miss') s.misses++;
-  else if (outcome === 'stale') s.stale++;
+  if (outcome === "hit") s.hits++;
+  else if (outcome === "miss") s.misses++;
+  else if (outcome === "stale") s.stale++;
   else s.bypass++;
 }
 
@@ -140,8 +159,11 @@ export async function cachedRead<V>(
   opts: CachedReadOptions,
   factory: () => Promise<V> | V,
 ): Promise<V> {
+  // Vitest safety gate: bypass the cache under test (the ECA isn't wired) unless a cache
+  // test opted in. Byte-identical to no cache — just runs the factory.
+  if (process.env.VITEST && !testCacheEnabled) return factory();
   const workspaceId = resolveCacheWorkspaceId(ctx);
-  const keyPart = typeof opts.key === 'string' ? opts.key : stableKey(opts.key);
+  const keyPart = typeof opts.key === "string" ? opts.key : stableKey(opts.key);
   const fullKey = `${opts.tool}|${keyPart}`;
   return getOperatorCache().getOrSet(workspaceId, fullKey, factory, {
     tags: opts.tags,

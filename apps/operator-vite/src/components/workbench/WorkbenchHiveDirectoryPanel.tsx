@@ -10,14 +10,19 @@
  * lists fine but its Join is disabled with a "link required" hint (D-002: the
  * directory is discovery; joining still runs the full admission flow).
  *
- * Data-fetch via useEffect + fetch (the loopback /api): the directory is not a
- * sync entity. loading/error/joining are lifecycle state (useState per the nuqs
- * rule). Registered as `workbench:hive-directory` via the workbench route.
+ * Data via the `network.hiveDirectory` sync resolver (data-sync-push-completion
+ * P-009): the directory is push-driven — a withdrawn hive drops out / a new
+ * announce appears off the directory's own invalidations (the ingest path +
+ * announce/withdraw/beacon writers), NOT the old 30s poll. The resolver serves
+ * the SAME row shape the GET /api/discovery/hives endpoint did, so rendering is
+ * identical. joining is lifecycle state (useState per the nuqs rule). Registered
+ * as `workbench:hive-directory` via the workbench route.
  */
 
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { panelRegistry } from '@/app/harness/dock/panel-registry';
 import { Tooltip } from '@/app/harness/Tooltip';
 
@@ -55,38 +60,15 @@ const headerRow: React.CSSProperties = {
   padding: '8px 12px 0',
 };
 
-/** G-003: re-fetch the live directory on this cadence so withdrawn hives drop
- *  out and new announces show up without a panel remount. */
-const DIRECTORY_REFRESH_MS = 30_000;
-
 export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
-  const [rows, setRows] = useState<HiveRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // P-009: push-driven directory. The resolver serves the same flat HiveRow[] the
+  // /api/discovery/hives endpoint did; a withdrawn hive drops out / a new announce
+  // appears off the directory's invalidations, no poll. While the first push is in
+  // flight (or no provider is mounted) `data` is undefined → the loading state below.
+  const { data, error, invalidate } = useSyncQuery({ queryName: 'network.hiveDirectory' });
+  const rows = (data as HiveRow[] | undefined) ?? null;
   const [joining, setJoining] = useState<string | null>(null);
   const [joinMsg, setJoinMsg] = useState<Record<string, string>>({});
-
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch('/api/discovery/hives');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { rows: HiveRow[] };
-      setRows(data.rows ?? []);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setRows([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-    // G-003 (Brief G): the directory is a LIVE P2P set — a withdrawn/stale hive
-    // must disappear and a newly-announced one appear WITHOUT remounting the
-    // panel. A single mount-time fetch froze a point-in-time snapshot. Poll to
-    // converge automatically; the Refresh button forces it on demand.
-    const id = setInterval(() => void load(), DIRECTORY_REFRESH_MS);
-    return () => clearInterval(id);
-  }, [load]);
 
   const join = useCallback(async (hive: HiveRow) => {
     if (hive.memberLinks.length === 0) return;
@@ -126,7 +108,7 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
   const refreshBtn = (
     <div style={headerRow}>
       <Tooltip label="Re-fetch the discovered hives now">
-        <button type="button" data-testid="hive-directory-refresh" onClick={() => void load()}>
+        <button type="button" data-testid="hive-directory-refresh" onClick={() => invalidate()}>
           Refresh
         </button>
       </Tooltip>
@@ -137,7 +119,7 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
     return (
       <div style={fill} data-testid="hive-directory">
         {refreshBtn}
-        <div style={mute}>Directory unavailable: {error}</div>
+        <div style={mute}>Directory unavailable: {error instanceof Error ? error.message : String(error)}</div>
       </div>
     );
   }

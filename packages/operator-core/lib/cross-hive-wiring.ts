@@ -313,6 +313,11 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
       .then((m) => {
         void m.notifySyncInvalidate('network.board').catch(() => {});
         void m.notifySyncInvalidate('network.hive.asks').catch(() => {});
+        // P-009 (data-sync-push-completion): co-located with the network.board
+        // push points so the directory + federation-status panels converge off
+        // their polls. Workspace-singleton, no-arg consumers.
+        void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
+        void m.notifySyncInvalidate('network.federationStatus').catch(() => {});
       })
       .catch(() => {});
   };
@@ -358,6 +363,11 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
       .then((m) => {
         void m.notifySyncInvalidate('network.board').catch(() => {});
         void m.notifySyncInvalidate('network.hive.asks').catch(() => {});
+        // P-009 (data-sync-push-completion): co-located with the network.board
+        // push points so the directory + federation-status panels converge off
+        // their polls. Workspace-singleton, no-arg consumers.
+        void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
+        void m.notifySyncInvalidate('network.federationStatus').catch(() => {});
       })
       .catch(() => {});
     try {

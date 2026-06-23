@@ -31,5 +31,6 @@ export {
   resolveCacheWorkspaceId,
   snapshotCachedReadStats,
   resetCachedReadStatsForTests,
+  __setCachedReadEnabledForTests,
 } from './cached-read';
 export type { CachedReadCtx, CachedReadOptions, CachedReadToolStats } from './cached-read';

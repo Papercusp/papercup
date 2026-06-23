@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import { animate, stagger } from 'motion';
@@ -330,7 +331,6 @@ export function OracleDock() {
   const [activeId, setActiveId] = useQueryState('oracleId', parseAsString.withDefault(''));
   const [pickerOpen, setPickerOpen] = useQueryState('oraclePicker', parseAsBoolean.withDefault(false));
   const [supportEverOpened, setSupportEverOpened] = useState(false);
-  const [pickerHarnesses, setPickerHarnesses] = useState<{ slug: string; harness_kind?: string }[] | null>(null);
   const [agentRoles, setAgentRoles] = useState<string[]>(FALLBACK_AGENT_ROLES);
   const [pickerFocusSlug, setPickerFocusSlug] = useState<string | null>(null);
   const [pickerFocusRole, setPickerFocusRole] = useState<string | null>(null);
@@ -370,26 +370,26 @@ export function OracleDock() {
   }, [pathname, searchParams]);
   const harnessSlug = activeHarnessSlug;
 
-  // Lazy-load harness list the first time the picker opens. Cached for
-  // the dock's lifetime; reopening the picker is instant after that.
-  useEffect(() => {
-    if (!pickerOpen || pickerHarnesses !== null) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await fetch('/api/harness/projects/lite', { cache: 'no-store' });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const d: any = await r.json();
-        const list = Array.isArray(d?.projects)
-          ? (d.projects as any[]).map((p) => ({ slug: String(p.slug), harness_kind: p.harness_kind }))
-          : [];
-        if (!cancelled) setPickerHarnesses(list);
-      } catch {
-        if (!cancelled) setPickerHarnesses([]);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [pickerOpen, pickerHarnesses]);
+  // LIVE harness registry for the "+" picker (harnessProjects.lite). Replaces
+  // the old lazy one-shot /api/harness/projects/lite fetch (data-sync-push-
+  // completion P-010): the resolver is invalidated from the registry write seam,
+  // so creates / deletes / renames / forks from ANY operator process live-update
+  // the picker (EI-206). The resolver row is the same ProjectsLiteEntry shape the
+  // REST endpoint put under `d.projects`, so we read slug + harness_kind off the
+  // row with no field renaming. `data === undefined` is the unresolved/loading
+  // state the picker previously modeled with `pickerHarnesses === null`.
+  const pickerHarnessesQuery = useSyncQuery<{ slug: string; harness_kind?: string | null }>({
+    queryName: 'harnessProjects.lite',
+    args: {},
+    staleTime: 60_000,
+  });
+  const pickerHarnesses = useMemo<{ slug: string; harness_kind?: string }[] | null>(() => {
+    if (pickerHarnessesQuery.data === undefined) return null;
+    return (pickerHarnessesQuery.data ?? []).map((p) => ({
+      slug: String(p.slug),
+      harness_kind: p.harness_kind ?? undefined,
+    }));
+  }, [pickerHarnessesQuery.data]);
 
   // Lazy-load the agent role list when the picker opens. Falls back
   // silently to FALLBACK_AGENT_ROLES on error so the picker stays usable.

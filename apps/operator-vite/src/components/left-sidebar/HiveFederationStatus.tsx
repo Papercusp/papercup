@@ -5,8 +5,10 @@
  * Before this the desktop had member counts + a declared-visibility badge but NO
  * way to see "is my hive reaching peers / is my substrate live" — so a user who
  * published to 0 peers (the G-001 stranded-publish case) had no corrective in-app
- * signal (findings-G G-004). This reads GET /api/discovery/federation-status and
- * renders the HONEST signals available today.
+ * signal (findings-G G-004). Push-driven via the `network.federationStatus` sync
+ * query (data-sync-push-completion P-009 — the same composition the
+ * /api/discovery/federation-status loopback GET serves), it renders the HONEST
+ * signals available today.
  *
  * HONESTY CONTRACT ("the UI never lies" — the brief's whole point):
  *   - "reach" is the hive's ANNOUNCE/discovery topic peer count (who can FIND it),
@@ -19,7 +21,7 @@
  *     not exist cleanly (shared swarm; see findings-M), and inventing one would be
  *     the exact dishonesty this surface exists to prevent.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 
 export interface FedHive {
   hiveId: string;
@@ -87,31 +89,16 @@ export function substrateLabel(s: FedStatus['substrate']): string {
   return `substrate active · ${parts.join(' · ')}`;
 }
 
-/** 10s poll — live-status feedback cadence (the directory panel polls at 30s for a
- *  slower-changing set; reach/health move faster, so a tighter cadence here). */
-const FED_REFRESH_MS = 10_000;
-
 export default function HiveFederationStatus() {
-  const [data, setData] = useState<FedStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch('/api/discovery/federation-status');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as FedStatus;
-      setData(body);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-    const id = setInterval(() => void load(), FED_REFRESH_MS);
-    return () => clearInterval(id);
-  }, [load]);
+  // P-009 (data-sync-push-completion): push-driven federation status. The
+  // `network.federationStatus` resolver serves the SAME { ok, substrate, hives }
+  // FedStatus the GET /api/discovery/federation-status endpoint did, as a flat
+  // one-element array (the resolver contract) — read data[0]. Pushed by the
+  // directory ingest path + announce/withdraw/beacon writers; substrate/drain
+  // changes (harness boots) converge via the sync library's drift-repair tick.
+  // No poll. While the first push is in flight `rows` is undefined → data null.
+  const { data: rows, error } = useSyncQuery({ queryName: 'network.federationStatus' });
+  const data = (rows as FedStatus[] | undefined)?.[0] ?? null;
 
   const degraded = data?.substrate.degraded ?? 0;
 
@@ -121,7 +108,11 @@ export default function HiveFederationStatus() {
         <span className="pclsb-panel__bar-label">federation status</span>
       </div>
 
-      {error && !data && <div className="pclsb-panel__error">status unavailable: {error}</div>}
+      {error && !data && (
+        <div className="pclsb-panel__error">
+          status unavailable: {error instanceof Error ? error.message : String(error)}
+        </div>
+      )}
 
       {data && (
         <>

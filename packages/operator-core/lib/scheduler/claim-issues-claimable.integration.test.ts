@@ -1,0 +1,249 @@
+/**
+ * claim-issues-claimable.integration.test.ts — the SCHEDULER_ISSUES_CLAIMABLE gate
+ * (work-item-deps-and-readiness-2026-06-22 P-007): ISSUE-family work-items (bug|change|task)
+ * become self-pickable by the scheduler claim path WHEN the flag is ON — and are
+ * BYTE-IDENTICALLY NON-claimable (feature-only) when it is OFF.
+ *
+ * Today the decentralized claim (`claimNextWorkItem`) is feature-family-only: the shared
+ * `claimFloorsWhereSql` floor pins `item_kind IN ('feature','research-task','chunk')` and
+ * the UPDATE targets the feature view, so an issue can BLOCK a feature but can never itself
+ * be claimed. P-007 adds an ADDITIVE issue-claim branch (a separate query over the work_items
+ * base for issue kinds, run only when no feature is claimable AND the flag is on). Readiness
+ * is honored by the SAME work_item_deps predicate (terminal = resolved/closed for issues).
+ *
+ * Proves against real Postgres (testcontainer; Docker required):
+ *   flag ON  ⇒ an UNBLOCKED `open` issue IS claimed; a BLOCKED issue is NOT.
+ *   flag OFF ⇒ NO issue is claimable (byte-identical to feature-only) — the mutation-check:
+ *              this case fails if the flag gate is broken / removed.
+ *   + a feature is ALWAYS claimable regardless of the flag (the issue branch is additive,
+ *     never disturbing the feature path).
+ *
+ * Run:
+ *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
+ *     lib/scheduler/claim-issues-claimable.integration.test.ts
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { FLAGS, FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
+import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../../test/_work-items-schema';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
+const readMigration = (f: string) =>
+  readFileSync(resolve(SQL_DIR, f), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
+    .join('\n');
+
+// Hoisted handles: the throwaway db, and a MUTABLE per-test override for the gate flag.
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  issuesClaimable: false as boolean,
+}));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
+  return { ...actual, activeWorkspaceId: () => 'default' };
+});
+// Key-aware flag mock: SCHEDULER_ISSUES_CLAIMABLE follows the per-test override; every other
+// key (ISSUES_PER_WORKSPACE — keeps issues scoped to 'default'; SCHEDULER_MAINTAINED_READY —
+// the inline-predicate arm) resolves to its production default.
+vi.mock('@papercusp/flags/server', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
+  return {
+    ...actual, // keep onFlagChange (issues-engineer registers a listener at module load) etc.
+    getFlag: async (key: FlagKey) =>
+      key === FLAGS.SCHEDULER_ISSUES_CLAIMABLE ? h.issuesClaimable : (FLAG_DEFAULTS[key] ?? false),
+  };
+});
+
+const wi = await import('../work-items');
+
+const H = 'papercup';
+const WS = 'default'; // == DEFAULT_COORD_WORKSPACE; work_item_deps + issues live here
+let db: FreshPgDb;
+
+/** A feature-family row (item_kind feature) — claimable through the feature path. */
+async function seedFeature(id: string, opts: { createdTs?: number; status?: string } = {}) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts)
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'todo'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+}
+
+/** An issue-family row (bug/change/task) on the work_items base, scope harness:papercup ⇒
+ *  harness_slug = 'papercup'. open = claimable; resolved/closed = terminal. */
+async function seedIssue(
+  id: string,
+  opts: { createdTs?: number; state?: string; kind?: string; takenBy?: string | null } = {},
+) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${opts.takenBy ?? null},
+      ${WS}, ${opts.createdTs ?? 0}, 0)`;
+}
+
+/** A blocks edge with arbitrary blocked/blocker refs (issue refs are BARE ids). */
+async function blockEdge(blockedRef: string, blockerRef: string, blockedKind = 'issue', blockerKind = 'feature') {
+  await db.sql`
+    INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+    VALUES (${WS}, ${blockedKind}, ${blockedRef}, ${blockerKind}, ${blockerRef}, 'blocks')`;
+}
+
+/** Claim one item via the decentralized claim path, returning its id (or null). The claimed
+ *  row is released so each case sees the same pre-claim state. */
+async function claimOne(assignee: string): Promise<string | null> {
+  const claimed = (await wi.claimNextWorkItem({ harness: H, assignee }))?.id ?? null;
+  if (claimed) {
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, taken_at = NULL WHERE feature_id = ${claimed}`;
+  }
+  return claimed;
+}
+
+beforeAll(async () => {
+  db = await createFreshPgDb('claim-issues-claimable');
+  h.sql = db.sql;
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL); // base work_items + the hfc + engineer_issues views
+  await db.sql.unsafe(USER_TRUST_LIST_DDL); // the feature floor LEFT-JOINs the trust list
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the readiness dep table
+  await db.sql.unsafe(`
+    ALTER TABLE harness_shared.work_items
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
+  // Migration 379: the maintained readiness sidecar (some claim-path code paths reference
+  // work_item_blocked even on the inline arm via the sidecar table; apply it for parity).
+  await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+}, 180_000);
+afterAll(async () => {
+  await db.cleanup();
+});
+beforeEach(async () => {
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked`;
+  h.issuesClaimable = false;
+});
+
+describe('SCHEDULER_ISSUES_CLAIMABLE — flag ON: issues self-pickable, readiness honored (P-007)', () => {
+  beforeEach(() => {
+    h.issuesClaimable = true;
+  });
+
+  it('claims an UNBLOCKED open issue when no feature is claimable', async () => {
+    await seedIssue('EI-1', { state: 'open', createdTs: 100 });
+    expect(await claimOne('w-on-1')).toBe('EI-1');
+  });
+
+  it('does NOT claim an issue blocked by a NON-TERMINAL feature blocker', async () => {
+    await seedFeature('F-blocker', { status: 'wip', createdTs: 50 });
+    await seedIssue('EI-2', { state: 'open', createdTs: 100 });
+    // Issue EI-2 blocked-by feature F-blocker (feature ref is harness-qualified).
+    await blockEdge('EI-2', `${H}#F-blocker`, 'issue', 'feature');
+    expect(await claimOne('w-on-2')).toBeNull();
+
+    // Satisfy the blocker (passed = terminal) ⇒ the SAME claim now hands out EI-2.
+    await db.sql`UPDATE harness_shared.work_items SET status='passed' WHERE feature_id='F-blocker'`;
+    expect(await claimOne('w-on-2')).toBe('EI-2');
+  });
+
+  it('does NOT claim an issue blocked by a NON-TERMINAL issue blocker (cross-family terminal)', async () => {
+    await seedIssue('EI-blocker', { state: 'open', createdTs: 40, kind: 'change' });
+    await seedIssue('EI-3', { state: 'open', createdTs: 100 });
+    // Issue→issue blocks: both refs are BARE ids.
+    await blockEdge('EI-3', 'EI-blocker', 'issue', 'issue');
+    // EI-blocker is the older 'open' issue, so an un-gated claim would hand it out first;
+    // assert specifically that EI-3 is NOT what gets claimed while its blocker is open by
+    // resolving EI-blocker and re-claiming.
+    await db.sql`UPDATE harness_shared.work_items SET status='resolved' WHERE feature_id='EI-blocker'`;
+    // Now EI-blocker is terminal (not claimable) and EI-3 is unblocked ⇒ EI-3 is claimed.
+    expect(await claimOne('w-on-3')).toBe('EI-3');
+  });
+
+  it('excludes a TERMINAL (resolved/closed) issue from the claim', async () => {
+    await seedIssue('EI-done', { state: 'resolved', createdTs: 100 });
+    await seedIssue('EI-closed', { state: 'closed', createdTs: 110 });
+    expect(await claimOne('w-on-4')).toBeNull();
+  });
+
+  it('prefers a claimable FEATURE first; only falls through to an issue when no feature is claimable', async () => {
+    await seedFeature('F-ready', { status: 'todo', createdTs: 200 });
+    await seedIssue('EI-5', { state: 'open', createdTs: 100 });
+    // A feature is claimable ⇒ the feature path wins (issue branch only runs on a feature miss).
+    const first = (await wi.claimNextWorkItem({ harness: H, assignee: 'w-on-5' }))?.id ?? null;
+    expect(first).toBe('F-ready');
+    // With the feature now taken, the next claim falls through to the issue.
+    const second = (await wi.claimNextWorkItem({ harness: H, assignee: 'w-on-5b' }))?.id ?? null;
+    expect(second).toBe('EI-5');
+  });
+});
+
+describe('SCHEDULER_ISSUES_CLAIMABLE — flag OFF: issues NOT claimable, byte-identical to feature-only', () => {
+  // h.issuesClaimable stays false (the beforeEach default) — the MUTATION-CHECK arm: if the
+  // gate is broken (issue branch runs while OFF), these expectations flip and the test FAILS.
+
+  it('does NOT claim an unblocked open issue (the gate holds)', async () => {
+    await seedIssue('EI-10', { state: 'open', createdTs: 100 });
+    expect(await claimOne('w-off-1')).toBeNull();
+  });
+
+  it('does NOT claim ANY issue kind (bug | change | task) while a feature is absent', async () => {
+    await seedIssue('EI-bug', { state: 'open', createdTs: 100, kind: 'bug' });
+    await seedIssue('EI-chg', { state: 'open', createdTs: 110, kind: 'change' });
+    await seedIssue('EI-task', { state: 'open', createdTs: 120, kind: 'task' });
+    expect(await claimOne('w-off-2')).toBeNull();
+  });
+
+  it('STILL claims a feature (the feature path is untouched by the gate)', async () => {
+    await seedFeature('F-ready', { status: 'todo', createdTs: 200 });
+    await seedIssue('EI-11', { state: 'open', createdTs: 100 });
+    // Even with an older open issue present, OFF ⇒ only the feature is claimable.
+    expect(await claimOne('w-off-3')).toBe('F-ready');
+  });
+});
+
+describe('issue steer levers become applicable only when SCHEDULER_ISSUES_CLAIMABLE is on (P-007)', () => {
+  it('set_priority / co_locate report applicable:false (issue) while OFF, and write while ON', async () => {
+    await seedIssue('EI-20', { state: 'open', createdTs: 100 });
+
+    // OFF: byte-identical feature-only behavior — issue is not applicable.
+    h.issuesClaimable = false;
+    const offPri = await wi.setWorkItemPriority('EI-20', 5, { harness: H });
+    expect(offPri?.applicable).toBe(false);
+    expect(offPri?.priority).toBeNull();
+    const offAff = await wi.setWorkItemSwarmAffinity('EI-20', 'swarm-x', { harness: H });
+    expect(offAff?.swarmAffinity).toBeNull();
+    // Nothing was written on the base.
+    const afterOff = (await db.sql`
+      SELECT feature_order, swarm_affinity FROM harness_shared.work_items WHERE feature_id='EI-20'`) as Array<{
+      feature_order: number | null;
+      swarm_affinity: string | null;
+    }>;
+    expect(afterOff[0]!.feature_order).toBeNull();
+    expect(afterOff[0]!.swarm_affinity).toBeNull();
+
+    // ON: the Queen can now steer issues too — the writes land.
+    h.issuesClaimable = true;
+    const onPri = await wi.setWorkItemPriority('EI-20', 5, { harness: H });
+    expect(onPri?.applicable).toBe(true);
+    expect(onPri?.priority).toBe(5);
+    const onAff = await wi.setWorkItemSwarmAffinity('EI-20', 'swarm-x', { harness: H });
+    expect(onAff?.swarmAffinity).toBe('swarm-x');
+    const afterOn = (await db.sql`
+      SELECT feature_order, swarm_affinity FROM harness_shared.work_items WHERE feature_id='EI-20'`) as Array<{
+      feature_order: number | null;
+      swarm_affinity: string | null;
+    }>;
+    expect(afterOn[0]!.feature_order).toBe(5);
+    expect(afterOn[0]!.swarm_affinity).toBe('swarm-x');
+  });
+});

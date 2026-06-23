@@ -94,12 +94,14 @@ describe('<ObservationsPanel />', () => {
       mkRow({ id: 'a', title: 'Alpha exact', refs: ['plan-alpha'] }),
       mkRow({ id: 'b', title: 'Alpha tagged', refs: ['plan:plan-alpha'] }),
       mkRow({ id: 'c', title: 'Beta', refs: ['plan-beta'] }),
+      mkRow({ id: 'd', title: 'Prefix only', refs: ['plan-alphabet'] }),
     ];
     const { container } = render(<ObservationsPanel />);
     expect(container.querySelectorAll('ul > li')).toHaveLength(2);
     expect(screen.getByText('Alpha exact')).toBeTruthy();
     expect(screen.getByText('Alpha tagged')).toBeTruthy();
     expect(screen.queryByText('Beta')).toBeNull();
+    expect(screen.queryByText('Prefix only')).toBeNull();
   });
 
   it('shows a selected-plan empty state when the filter removes every observation', () => {

@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 //
 // WorkbenchHiveDirectoryPanel render + Join CTA gating (p2p-hive-directory P-007).
+// P-009 (data-sync-push-completion): the directory is now push-driven via the
+// `network.hiveDirectory` sync query (not the old /api/discovery/hives poll), so
+// the directory data is mocked through useSyncQuery (the AdvNowRunning pattern);
+// only the Join POST still goes through fetch. Refresh now calls the query's
+// invalidate().
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, fireEvent } from '@testing-library/react';
 
 // The panel-registry import pulls in @/app dock code; stub it to a no-op registry.
@@ -10,87 +15,95 @@ vi.mock('@/app/harness/dock/panel-registry', () => ({
   panelRegistry: { register: () => {} },
 }));
 
+// Push-driven sync mock — the panel subscribes to network.hiveDirectory. `dirRows`
+// is the live discovered set; `invalidateSpy` is the Refresh handler we assert on.
+let dirRows: unknown[] | undefined = [];
+const invalidateSpy = vi.fn();
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    if (queryName === 'network.hiveDirectory') {
+      return { data: dirRows, error: null, invalidate: invalidateSpy };
+    }
+    return { data: undefined, error: null, invalidate: () => {} };
+  },
+}));
+
 import { WorkbenchHiveDirectoryPanel } from './WorkbenchHiveDirectoryPanel';
 
-function mockFetch(rows: unknown[]) {
+function mockJoinFetch() {
   return vi.fn(async (url: string, init?: RequestInit) => {
-    if (typeof url === 'string' && url.startsWith('/api/discovery/hives')) {
-      return { ok: true, json: async () => ({ count: rows.length, rows }) } as Response;
-    }
-    // D-007 (hive-from-repo-hardening): Join now makes ONE composed call to
+    // D-007 (hive-from-repo-hardening): Join makes ONE composed call to
     // /api/discovery/join-hive (join the HIVE + materialize the local view),
     // not N per-link /api/harness/join-link POSTs. Response carries per-member
     // results so the panel can report "<okCount>/<total> member(s)".
     if (typeof url === 'string' && url === '/api/discovery/join-hive') {
-      const body = JSON.parse((init?.body as string) ?? '{}') as { memberLinks?: string[] };
+      const body = JSON.parse((init?.body as string) ?? '{}') as { memberLinks?: string[]; hiveId?: string };
       const members = (body.memberLinks ?? []).map(() => ({ ok: true }));
       return {
         ok: true,
-        json: async () => ({ ok: true, hiveSlug: `${(JSON.parse((init?.body as string) ?? '{}') as { hiveId?: string }).hiveId}-hive`, members }),
+        json: async () => ({ ok: true, hiveSlug: `${body.hiveId}-hive`, members }),
       } as Response;
     }
     return { ok: false, status: 404, json: async () => ({}) } as Response;
   });
 }
 
+beforeEach(() => {
+  dirRows = [];
+  invalidateSpy.mockReset();
+});
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
 
-describe('WorkbenchHiveDirectoryPanel (P-007)', () => {
+describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
   it('renders discovered hives (title/owner/visibility)', async () => {
-    vi.stubGlobal('fetch', mockFetch([
+    dirRows = [
       { hiveId: 'ash', title: 'Ash Hive', description: 'shop work', owner: 'alice', visibility: 'public', memberTopics: ['a'], memberLinks: ['papercusp://harness?topic=a'], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
-    ]));
+    ];
     render(<WorkbenchHiveDirectoryPanel />);
     expect(await screen.findByText('Ash Hive')).toBeTruthy();
     expect(screen.getByText(/owner: alice/)).toBeTruthy();
   });
 
+  it('shows the loading state while the first push has not resolved', () => {
+    dirRows = undefined;
+    render(<WorkbenchHiveDirectoryPanel />);
+    expect(screen.getByText(/Loading the hive directory/)).toBeTruthy();
+  });
+
   it('shows the empty-state when no hives are discovered', async () => {
-    vi.stubGlobal('fetch', mockFetch([]));
+    dirRows = [];
     render(<WorkbenchHiveDirectoryPanel />);
     expect(await screen.findByText(/No hives discovered yet/)).toBeTruthy();
   });
 
   it('disables Join + shows "link required" for a topic-only hive (no member links)', async () => {
-    vi.stubGlobal('fetch', mockFetch([
+    dirRows = [
       { hiveId: 'topic-only', title: 'Topic Hive', description: '', owner: 'bob', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: [], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
-    ]));
+    ];
     render(<WorkbenchHiveDirectoryPanel />);
     const btn = (await screen.findByRole('button', { name: 'Join' })) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(screen.getByText('link required')).toBeTruthy();
   });
 
-  it('G-003: Refresh re-fetches the live directory — a withdrawn hive disappears (no remount)', async () => {
-    let call = 0;
-    const fetchMock = vi.fn(async (url: string) => {
-      if (typeof url === 'string' && url.startsWith('/api/discovery/hives')) {
-        call += 1;
-        // First load shows the hive; after the owner withdraws it, the next
-        // fetch returns it gone — the panel must converge (brief scenario 3:
-        // "stale/withdrawn hives disappear"), not freeze the mount-time snapshot.
-        const rows = call === 1
-          ? [{ hiveId: 'gone', title: 'Soon Gone', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 }]
-          : [];
-        return { ok: true, json: async () => ({ count: rows.length, rows }) } as Response;
-      }
-      return { ok: false, status: 404, json: async () => ({}) } as Response;
-    });
-    vi.stubGlobal('fetch', fetchMock);
+  it('P-009: Refresh forces the push query to re-fetch (invalidate), not a poll', async () => {
+    dirRows = [
+      { hiveId: 'ash', title: 'Ash Hive', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
+    ];
     render(<WorkbenchHiveDirectoryPanel />);
-    expect(await screen.findByText('Soon Gone')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('hive-directory-refresh'));
-    await waitFor(() => expect(screen.queryByText('Soon Gone')).toBeNull());
-    expect(screen.getByText(/No hives discovered yet/)).toBeTruthy();
+    fireEvent.click(await screen.findByTestId('hive-directory-refresh'));
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
   });
 
   it('Join makes ONE composed POST to /api/discovery/join-hive carrying every member link (D-007)', async () => {
-    const fetchMock = mockFetch([
+    dirRows = [
       { hiveId: 'joinable', title: 'Joinable', description: '', owner: 'cat', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: ['papercusp://harness?topic=a', 'papercusp://harness?topic=b'], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
-    ]);
+    ];
+    const fetchMock = mockJoinFetch();
     vi.stubGlobal('fetch', fetchMock);
     render(<WorkbenchHiveDirectoryPanel />);
     const btn = await screen.findByRole('button', { name: 'Join' });

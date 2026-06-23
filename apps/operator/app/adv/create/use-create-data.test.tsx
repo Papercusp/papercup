@@ -18,12 +18,29 @@
  *    and refresh() fanning out to all four sources.
  *
  * plans-api's fetch hooks are mocked (fixtures); bucketOf stays REAL. nuqs
- * runs under withNuqsTestingAdapter; the registry fetch is stubbed.
+ * runs under withNuqsTestingAdapter; the LIVE harness registry
+ * (harnessProjects.lite via useSyncQuery — data-sync-push-completion P-010,
+ * replacing the old one-shot /api/harness/projects/lite fetch) is mocked as a
+ * queryName dispatcher.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
+
+// ── @papercusp/sync mock (the harnessProjects.lite registry query) ──────────
+// useSyncQuery dispatches by queryName; harnessProjects.lite resolves to the
+// `registryRows` fixture (the resolver returns the ProjectsLiteEntry array
+// directly — the same rows the old REST endpoint put under `d.projects`).
+let registryRows: Array<{ slug: string; parent_slug?: string | null }> | undefined;
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    if (queryName === 'harnessProjects.lite') {
+      return { data: registryRows, error: null, loading: false, invalidate: vi.fn() };
+    }
+    return { data: undefined, error: null, loading: false, invalidate: vi.fn() };
+  },
+}));
 
 // ── plans-api mock (fetch hooks only; pure helpers stay real) ───────────────
 
@@ -82,9 +99,7 @@ import {
 } from './use-create-data';
 import type { PlanBucket, PlanItemRow, PlanListRow } from '@/app/admin/plans/plans-api';
 
-// ── fetch stub (the /api/harness/projects/lite registry read) ───────────────
-
-const mockFetch = vi.fn<typeof fetch>();
+// ── registry stub (the harnessProjects.lite live query) ─────────────────────
 
 // This env's window.localStorage is Node's --localstorage-file object with NO
 // Storage methods (getItem/setItem/removeItem all undefined) — stub a real one.
@@ -95,18 +110,16 @@ const lsStub = {
   removeItem: (k: string) => void lsStore.delete(k),
   clear: () => lsStore.clear(),
 };
+
+// Set the harnessProjects.lite query result. 'fail' (a dead registry read)
+// surfaces to the hook as an empty registry, so the scope falls back to the
+// active slug exactly like the old fetch-rejection .catch() did.
 function stubRegistry(projects: Array<{ slug: string; parent_slug?: string | null }> | 'fail') {
-  mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
-    expect(String(input)).toContain('/api/harness/projects/lite');
-    if (projects === 'fail') return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
-    return { ok: true, status: 200, json: async () => ({ projects }) } as unknown as Response;
-  });
+  registryRows = projects === 'fail' ? [] : projects;
 }
 
 beforeEach(() => {
-  mockFetch.mockReset();
   stubRegistry([]);
-  vi.stubGlobal('fetch', mockFetch);
   hookFixtures.planList = { data: undefined, loading: false, error: null };
   hookFixtures.needsHuman = { items: [] };
   hookFixtures.actionable = { items: [] };
@@ -134,16 +147,20 @@ describe('useCreateScope', () => {
     expect(result.current.harnessFilter).toBe('picked');
   });
 
-  it('scope=all fetches across every registry slug once loaded (undefined before)', async () => {
+  it('scope=all fans out across every registry slug', async () => {
     stubRegistry([{ slug: 'a' }, { slug: 'b' }]);
     const { result } = renderHook(() => useCreateScope(), wrap('?slug=active&scope=all'));
-    expect(result.current.harnessSlugsForFetch).toBeUndefined(); // registry not yet loaded
     await waitFor(() => expect(result.current.harnessSlugsForFetch).toEqual(['a', 'b']));
   });
 
-  it('no active slug → undefined (ctx-harness-only)', async () => {
+  it('scope=all is undefined (ctx-harness-only) until the registry resolves', () => {
+    registryRows = undefined; // query unresolved (data === undefined)
+    const { result } = renderHook(() => useCreateScope(), wrap('?slug=active&scope=all'));
+    expect(result.current.harnessSlugsForFetch).toBeUndefined();
+  });
+
+  it('no active slug → undefined (ctx-harness-only)', () => {
     const { result } = renderHook(() => useCreateScope(), wrap(''));
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
     expect(result.current.harnessSlugsForFetch).toBeUndefined();
     expect(result.current.scopeMode).toBe('expanded'); // the default
   });
@@ -169,10 +186,9 @@ describe('useCreateScope', () => {
     );
   });
 
-  it('a failed registry fetch falls back to the active slug', async () => {
+  it('a failed registry read falls back to the active slug', () => {
     stubRegistry('fail');
     const { result } = renderHook(() => useCreateScope(), wrap('?slug=active'));
-    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
     expect(result.current.harnessSlugsForFetch).toEqual(['active']);
   });
 });

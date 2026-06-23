@@ -275,6 +275,11 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   a loop of just 2–3 IDENTICAL calls (three `get`s over three ids) still batches, N=3
   is NOT too small. (A few DIFFERENT one-off calls is NOT a loop — call those directly;
   the cue is REPETITION of the same call, not call count.) When in doubt, script it.
+  **Reuse before you author:** every successful `code:run` is saved as a reusable
+  RECIPE — `recipes:search { query }` before authoring a multi-step script; on a hit
+  `recipes:run { id }` (runs under YOUR envelope, not the author's) instead of
+  re-authoring; act on the `similarRecipes` a run returns; title+describe so what you
+  save is findable.
   **Trigger:** about to call the SAME tool once per item in a list (a `get` per id,
   a check per file)? That repetition IS the cue — reach for `code:run` BEFORE the
   first such call, not after firing several one-at-a-time. NOT for a single call or

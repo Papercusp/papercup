@@ -22,6 +22,10 @@ let needsHumanItems: unknown[];
 let actionableItems: unknown[];
 let blockedItems: unknown[];
 let attentionGroups: unknown[];
+// The LIVE harness registry (harnessProjects.lite via useSyncQuery —
+// data-sync-push-completion P-010, replacing the old one-shot
+// /api/harness/projects/lite fetch). Feeds the scope-union + NewPlanButton.
+let registryRows: unknown[];
 
 vi.mock('./plans-api', async (importActual) => {
   const actual = await importActual<typeof import('./plans-api')>();
@@ -46,8 +50,17 @@ vi.mock('./plans-api', async (importActual) => {
   };
 });
 
+// useSyncQuery dispatches by queryName: harnessProjects.lite → the registry
+// rows; decision.ledger (Queen's-log) → an empty list. Both return the flat
+// row-array shape the resolvers emit.
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: [], error: null, fetching: false, loading: false, invalidate: vi.fn() }),
+  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+    data: queryName === 'harnessProjects.lite' ? registryRows : [],
+    error: null,
+    fetching: false,
+    loading: false,
+    invalidate: vi.fn(),
+  }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -105,8 +118,9 @@ vi.mock('@/app/harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: ReactElement }) => <>{children}</>,
 }));
 
-// Avoid touching the network for the harness-projects fetch effect.
-vi.stubGlobal('fetch', vi.fn(async () => new Response('{"projects":[]}', { status: 200 })));
+// Inert fetch — the harness registry now arrives via the mocked useSyncQuery
+// (harnessProjects.lite), not a fetch; this only guards any incidental call.
+vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
 
 import PlansClient from './PlansClient';
 
@@ -139,6 +153,7 @@ beforeEach(() => {
   actionableItems = [];
   blockedItems = [];
   attentionGroups = [];
+  registryRows = [];
 });
 afterEach(cleanup);
 
@@ -190,6 +205,15 @@ describe('PlansClient (Plans admin shell)', () => {
     renderClient();
     // No items → no count span; the Queue button label still renders.
     expect(screen.getByRole('button', { name: /Queue/ })).toBeTruthy();
+  });
+
+  it('renders with a live harnessProjects.lite registry (scope=all fan-out path)', () => {
+    // A populated registry drives harnessSlugsForFetch (registryProjects.map)
+    // for scope=all — the migrated useSyncQuery source replaces the old fetch.
+    registryRows = [{ slug: 'h1', parent_slug: null }, { slug: 'h2', parent_slug: 'h1' }];
+    renderClient('?scope=all');
+    expect(screen.getByRole('button', { name: /Plans/ })).toBeTruthy();
+    expect(screen.getByTestId('plan-rail')).toBeTruthy();
   });
 
   it('clicking the Queue button switches to the queue view', async () => {

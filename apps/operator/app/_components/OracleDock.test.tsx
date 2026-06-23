@@ -42,6 +42,20 @@ vi.mock('@/lib/router-compat/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+// The "+" picker's harness list now comes from the LIVE harnessProjects.lite
+// query (data-sync-push-completion P-010, replacing the old one-shot
+// /api/harness/projects/lite fetch). useSyncQuery dispatches by queryName;
+// the resolver returns the ProjectsLiteEntry rows directly (slug + harness_kind).
+let pickerRegistryRows: Array<{ slug: string; harness_kind?: string | null }> | undefined;
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    if (queryName === 'harnessProjects.lite') {
+      return { data: pickerRegistryRows, error: null, loading: false, invalidate: vi.fn() };
+    }
+    return { data: undefined, error: null, loading: false, invalidate: vi.fn() };
+  },
+}));
+
 // motion + reduced-motion: no-op animate, reduced motion ON so the fancy
 // animate effect early-returns (no DOM querying in jsdom).
 vi.mock('motion', () => ({ animate: () => ({ stop: vi.fn() }), stagger: () => 0 }));
@@ -86,6 +100,9 @@ function installStorage(name: 'localStorage' | 'sessionStorage') {
 
 beforeEach(() => {
   lastChatProps = {};
+  // Default: a resolved (empty) harness registry so the picker renders its
+  // "no harnesses" branch rather than the perpetual loading state.
+  pickerRegistryRows = [];
   installStorage('localStorage');
   installStorage('sessionStorage');
   // Mark the tutorial done + dock seen so first-run auto-open + tutorial POST
@@ -126,6 +143,16 @@ describe('OracleDock (always-mounted assistant dock)', () => {
     fireEvent.click(add);
     // Picker region appears with its harness/agent fields.
     expect(screen.getByRole('region', { name: 'Start a new chat' })).toBeTruthy();
+  });
+
+  it('lists harnesses from the live harnessProjects.lite registry in the picker', () => {
+    // The migrated useSyncQuery source feeds the picker's harness dropdown
+    // (replacing the old /api/harness/projects/lite fetch). A real (non-test)
+    // slug surfaces in the harness trigger.
+    pickerRegistryRows = [{ slug: 'sheets-app', harness_kind: 'app' }];
+    renderDock('?oracle=true');
+    fireEvent.click(screen.getByLabelText('New chat'));
+    expect(screen.getByText('sheets-app')).toBeTruthy();
   });
 
   it('the Close header button hides the dock (clears ?oracle)', () => {

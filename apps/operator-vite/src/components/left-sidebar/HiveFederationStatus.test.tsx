@@ -8,18 +8,36 @@
  * announced" (NOT "0 peers", which would imply a failed reach); the substrate line
  * is install-wide health, never a per-peer sync claim; and the scope note that
  * reach ≠ content-sync is always present. The pure label fns carry the core; the
- * rendered DOM pins the wiring. `fetch` is mocked.
+ * rendered DOM pins the wiring.
+ *
+ * P-009 (data-sync-push-completion): the panel is now push-driven via the
+ * `network.federationStatus` sync query (the resolver serves the SAME FedStatus
+ * as a flat one-element array; the panel reads data[0]) — so the status is mocked
+ * through useSyncQuery (the AdvNowRunning pattern), not fetch.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
+
+// Push-driven sync mock — the panel subscribes to network.federationStatus and
+// reads data[0]. `fedRows` is the live one-element FedStatus array (or undefined
+// for the no-data state); `fedError` exercises the error branch.
+let fedRows: unknown[] | undefined;
+let fedError: Error | null = null;
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    if (queryName === 'network.federationStatus') {
+      return { data: fedRows, error: fedError, invalidate: () => {} };
+    }
+    return { data: undefined, error: null, invalidate: () => {} };
+  },
+}));
+
 import HiveFederationStatus, { reachLabel, substrateLabel, drainLabel, type FedStatus } from './HiveFederationStatus';
 
-function mockFetch(body: FedStatus | null, ok = true) {
-  global.fetch = vi.fn(async () => ({
-    ok,
-    status: ok ? 200 : 500,
-    json: async () => body,
-  })) as unknown as typeof fetch;
+/** Push one FedStatus onto the panel's sync query (flat one-element array). */
+function mockSync(body: FedStatus | null, error: Error | null = null) {
+  fedRows = body ? [body] : undefined;
+  fedError = error;
 }
 
 const status = (over: Partial<FedStatus> = {}): FedStatus => ({
@@ -27,6 +45,11 @@ const status = (over: Partial<FedStatus> = {}): FedStatus => ({
   substrate: { active: true, bootedHarnesses: 2, healthy: 2, booting: 0, degraded: 0 },
   hives: [],
   ...over,
+});
+
+beforeEach(() => {
+  fedRows = undefined;
+  fedError = null;
 });
 
 afterEach(() => {
@@ -88,7 +111,7 @@ describe('drainLabel (install-wide SYNC honesty — EI-1618/EI-1599)', () => {
 
 describe('<HiveFederationStatus>', () => {
   it('renders an announced hive\'s reach + the install substrate line', async () => {
-    mockFetch(status({ hives: [{ hiveId: 'h1', title: 'My Hive', visibility: 'public', memberCount: 1, reachablePeers: 4 }] }));
+    mockSync(status({ hives: [{ hiveId: 'h1', title: 'My Hive', visibility: 'public', memberCount: 1, reachablePeers: 4 }] }));
     render(<HiveFederationStatus />);
     expect((await screen.findByTestId('fed-reach-h1')).textContent).toBe('discoverable to 4 peers');
     expect(screen.getByTestId('fed-substrate').textContent).toContain('2 harnesses booted');
@@ -97,7 +120,7 @@ describe('<HiveFederationStatus>', () => {
   });
 
   it('shows a 0-peer published hive as STRANDED (void copy + down dot), never "synced"', async () => {
-    mockFetch(status({ hives: [{ hiveId: 'h0', title: 'Lonely', visibility: 'public', memberCount: 1, reachablePeers: 0 }] }));
+    mockSync(status({ hives: [{ hiveId: 'h0', title: 'Lonely', visibility: 'public', memberCount: 1, reachablePeers: 0 }] }));
     render(<HiveFederationStatus />);
     const reach = await screen.findByTestId('fed-reach-h0');
     expect(reach.textContent).toBe('no peers connected yet — broadcasting into the void');
@@ -107,13 +130,13 @@ describe('<HiveFederationStatus>', () => {
   });
 
   it('shows a private hive honestly (not announced), not a 0-peer failure', async () => {
-    mockFetch(status({ hives: [{ hiveId: 'hp', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 }] }));
+    mockSync(status({ hives: [{ hiveId: 'hp', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 }] }));
     render(<HiveFederationStatus />);
     expect((await screen.findByTestId('fed-reach-hp')).textContent).toBe('private — not announced');
   });
 
   it('flags a degraded substrate with a down dot', async () => {
-    mockFetch(status({ substrate: { active: true, bootedHarnesses: 2, healthy: 1, booting: 0, degraded: 1 } }));
+    mockSync(status({ substrate: { active: true, bootedHarnesses: 2, healthy: 1, booting: 0, degraded: 1 } }));
     render(<HiveFederationStatus />);
     const sub = await screen.findByTestId('fed-substrate');
     expect(sub.textContent).toContain('⚠ 1 degraded');
@@ -121,7 +144,7 @@ describe('<HiveFederationStatus>', () => {
   });
 
   it('renders the SYNC-stall row when a harness outbox is stalled (down dot, never "synced")', async () => {
-    mockFetch(
+    mockSync(
       status({
         substrate: {
           active: true,
@@ -142,7 +165,7 @@ describe('<HiveFederationStatus>', () => {
   });
 
   it('renders NO sync-stall row when nothing is stalled (silence = healthy, no false claim)', async () => {
-    mockFetch(
+    mockSync(
       status({
         substrate: {
           active: true,
@@ -160,14 +183,14 @@ describe('<HiveFederationStatus>', () => {
   });
 
   it('honest empty state when no hives are published', async () => {
-    mockFetch(status({ hives: [] }));
+    mockSync(status({ hives: [] }));
     render(<HiveFederationStatus />);
     expect((await screen.findByTestId('fed-no-hives')).textContent).toMatch(/No hives published/);
   });
 
-  it('surfaces a fetch error instead of claiming health', async () => {
-    mockFetch(null, false);
+  it('surfaces a sync error instead of claiming health', async () => {
+    mockSync(null, new Error('resolver failed'));
     render(<HiveFederationStatus />);
-    expect((await screen.findByText(/status unavailable/)).textContent).toMatch(/HTTP 500/);
+    expect((await screen.findByText(/status unavailable/)).textContent).toMatch(/resolver failed/);
   });
 });
