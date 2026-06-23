@@ -822,7 +822,7 @@ function mcpInstructionsForServer(): string | undefined {
  *     tools. Listing hint only; tools/call is unaffected. tool-allowlist.ts.
  */
 async function resolveVisibleToolListings(extra: unknown): Promise<
-  | { kind: 'failed' }
+  | { kind: 'failed'; reason: string }
   | {
       kind: 'ok' | 'none';
       spawnRes: TrySpawnContextResult;
@@ -830,7 +830,9 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
     }
 > {
   const spawnRes = await tryBuildSpawnContext(extra);
-  if (spawnRes.kind === 'failed') return { kind: 'failed' };
+  // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
+  // silently advertising an empty tool list (which is indistinguishable from a healthy server).
+  if (spawnRes.kind === 'failed') return { kind: 'failed', reason: spawnRes.reason };
   const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
   const rawProfile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
   // GENERIC profile (P-025) → engineer-like tool visibility (the manifest filter only gates
@@ -890,7 +892,17 @@ const handler = createMcpHandler(
         // (strict-mode + manifest + allowlist semantics documented there).
         const vis = await resolveVisibleToolListings(extra);
         if (vis.kind === 'failed') {
-          return { tools: [] };
+          // WI-574 (loud auth-fail): a REJECTED auth context (expired per-spawn signed URL, invalid
+          // superuser bearer, bad signature) must NOT return a silent empty tool list — that is
+          // indistinguishable from a healthy server with no tools and is the root of the "toolless
+          // session that looks connected" class. Throw a specific JSON-RPC error so the client + agent
+          // KNOW the session is unauthenticated and WHY. (Mirrors tools/call, which already hard-fails
+          // a rejected spawn ctx.) A bare no-params probe is `kind:'none'`, not 'failed', and still lists.
+          throw new Error(
+            `mcp_auth_failed: ${vis.reason} — this MCP session is UNAUTHENTICATED, so it exposes NO tools ` +
+              '(this is NOT "a healthy server with zero tools"). Typical causes: an EXPIRED per-spawn signed ' +
+              'URL token (re-mint/reconnect) or a missing/invalid superuser bearer. Fix the credential and reconnect.',
+          );
         }
         const filtered = vis.listings;
         // Objectify boolean sub-schemas (z.unknown() → `true`) so strict

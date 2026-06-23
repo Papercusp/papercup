@@ -90,6 +90,7 @@ describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustnes
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
 
   it("a stuck-park backstop re-arm feeds the circuit with 'error' (channel-agnostic dead-turn signal)", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // the stuck-park backstop logs (expected)
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
     const sql = fakeSql(

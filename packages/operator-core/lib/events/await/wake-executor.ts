@@ -99,8 +99,10 @@ export function defaultSpawnDetached(
     child.stderr?.on('data', (b: Buffer) => err.push(b));
     child.stdout?.on('error', () => {});
     child.stderr?.on('error', () => {});
-    child.stdout?.unref?.();
-    child.stderr?.unref?.();
+    // unref the pipe sockets so they never keep the operator's loop alive on the child
+    // (Readable doesn't type `unref`, but the socket-backed stdio pipes have it).
+    (child.stdout as unknown as { unref?: () => void } | null)?.unref?.();
+    (child.stderr as unknown as { unref?: () => void } | null)?.unref?.();
     let settled = false;
     const settle = (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;

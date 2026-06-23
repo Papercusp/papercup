@@ -30,3 +30,16 @@ export async function repoChangedPaths(repoRoot: string, a: string, b: string): 
   if (r.code !== 0) return null;
   return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
 }
+
+/** Submodule paths (repo-relative) declared in `<repoRoot>/.gitmodules`, or [] if none.
+ *  Used by the drift checker to route a submodule anchor's `git log` into the submodule
+ *  against its own baseline (docs-audit 2026-06-23 #3). */
+export async function listSubmodulePaths(repoRoot: string): Promise<string[]> {
+  const r = await runGit(['config', '-f', '.gitmodules', '--get-regexp', 'path'], repoRoot);
+  if (r.code !== 0) return [];
+  // lines: "submodule.<name>.path <path>"
+  return r.stdout
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/)[1])
+    .filter((p): p is string => Boolean(p));
+}

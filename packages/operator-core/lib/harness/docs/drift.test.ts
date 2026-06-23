@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkSubjectRefDrift, checkDocDrift } from './drift';
+import { checkSubjectRefDrift, checkDocDrift, submoduleForPath } from './drift';
 import type { GitRunner } from './subject-ref';
 
 /** Real git runner over a fixture repo — exactly the shape run-git-sync injects. */
@@ -215,5 +215,108 @@ describe('checkDocDrift (multi-ref)', () => {
     );
     expect(r.stale).toBe(false);
     expect(r.error).toBeUndefined();
+  });
+});
+
+// ── submodule routing (docs-audit 2026-06-23 #3) ──────────────────────────────
+describe('submoduleForPath (pure)', () => {
+  it('returns null when the path is under no submodule', () => {
+    expect(submoduleForPath('packages/a/b.ts', ['libs/x'])).toBeNull();
+    expect(submoduleForPath('libs/xenon/a.ts', ['libs/x'])).toBeNull(); // prefix must be a path boundary
+  });
+  it('matches and relativizes a path inside a submodule', () => {
+    expect(submoduleForPath('libs/x/mod.ts', ['libs/x'])).toEqual({ sub: 'libs/x', rel: 'mod.ts' });
+  });
+  it('longest matching prefix wins (nested submodules)', () => {
+    expect(submoduleForPath('libs/x/y/z.ts', ['libs/x', 'libs/x/y'])).toEqual({ sub: 'libs/x/y', rel: 'z.ts' });
+  });
+  it('the submodule root itself → empty rel', () => {
+    expect(submoduleForPath('libs/x', ['libs/x/'])).toEqual({ sub: 'libs/x', rel: '' });
+  });
+});
+
+describe('submodule drift routing (#3): superproject log is blind; routed log sees inside', () => {
+  let sup: string;
+  let sub: string;
+  const s: Record<string, string> = {};
+  const g = (cwd: string, args: string[]): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  const initRepo = (dir: string) => {
+    g(dir, ['init', '-q']);
+    g(dir, ['config', 'user.email', 't@p.dev']);
+    g(dir, ['config', 'user.name', 'T']);
+    g(dir, ['config', 'commit.gpgsign', 'false']);
+  };
+
+  beforeAll(() => {
+    // Standalone submodule repo with a function + a stable file. sub c0 = baseline.
+    sub = mkdtempSync(join(tmpdir(), 'drift-sub-'));
+    initRepo(sub);
+    writeFileSync(join(sub, 'mod.ts'), 'export function s() {\n  return 1;\n}\n');
+    writeFileSync(join(sub, 'stable.ts'), 'export const k = 1;\n');
+    g(sub, ['add', '-A']);
+    g(sub, ['commit', '-q', '-m', 'sub c0']);
+    s.subc0 = g(sub, ['rev-parse', 'HEAD']);
+
+    // Superproject embedding it at libs/x; sup c0 records the gitlink at sub c0.
+    sup = mkdtempSync(join(tmpdir(), 'drift-sup-'));
+    initRepo(sup);
+    writeFileSync(join(sup, 'app.ts'), 'export const a = 1;\n');
+    g(sup, ['add', '-A']);
+    g(sup, ['commit', '-q', '-m', 'sup init']);
+    g(sup, ['-c', 'protocol.file.allow=always', 'submodule', 'add', sub, 'libs/x']);
+    g(sup, ['commit', '-q', '-m', 'add submodule @ sub c0']);
+    s.supc0 = g(sup, ['rev-parse', 'HEAD']);
+
+    // Advance the submodule by committing INSIDE the clone (sup/libs/x) — a commit in
+    // the original `sub` repo would not exist in the clone — then bump the gitlink.
+    const clone = join(sup, 'libs/x');
+    g(clone, ['config', 'user.email', 't@p.dev']);
+    g(clone, ['config', 'user.name', 'T']);
+    g(clone, ['config', 'commit.gpgsign', 'false']);
+    writeFileSync(join(clone, 'mod.ts'), 'export function s() {\n  return 2;\n}\n');
+    g(clone, ['add', '-A']);
+    g(clone, ['commit', '-q', '-m', 'sub c1 edit s()']);
+    s.subc1 = g(clone, ['rev-parse', 'HEAD']);
+    g(sup, ['add', 'libs/x']);
+    g(sup, ['commit', '-q', '-m', 'bump submodule → sub c1']);
+  });
+  afterAll(() => {
+    if (sub) rmSync(sub, { recursive: true, force: true });
+    if (sup) rmSync(sup, { recursive: true, force: true });
+  });
+
+  it('WITHOUT submodulePaths: superproject log cannot see inside → false fresh (the bug)', async () => {
+    const r = await checkSubjectRefDrift({ kind: 'path', globs: ['libs/x/mod.ts'] }, s.supc0, { runGit, repoRoot: sup });
+    expect(r.stale).toBe(false); // the silent-rot the fix closes
+  });
+
+  it('WITH submodulePaths: routes into the submodule against its own baseline → detects drift', async () => {
+    const r = await checkSubjectRefDrift({ kind: 'path', globs: ['libs/x/mod.ts'] }, s.supc0, {
+      runGit,
+      repoRoot: sup,
+      submodulePaths: ['libs/x'],
+    });
+    expect(r.stale).toBe(true);
+    expect(r.changedPaths).toContain('libs/x/mod.ts'); // changed paths re-prefixed to repo-relative
+  });
+
+  it('WITH submodulePaths: a submodule file unchanged since baseline stays fresh', async () => {
+    const r = await checkSubjectRefDrift({ kind: 'path', globs: ['libs/x/stable.ts'] }, s.supc0, {
+      runGit,
+      repoRoot: sup,
+      submodulePaths: ['libs/x'],
+    });
+    expect(r.stale).toBe(false);
+    expect(r.error).toBeUndefined();
+  });
+
+  it('symbol anchor inside a submodule routes + detects the function-body change', async () => {
+    const r = await checkSubjectRefDrift({ kind: 'symbol', file: 'libs/x/mod.ts', name: 's' }, s.supc0, {
+      runGit,
+      repoRoot: sup,
+      submodulePaths: ['libs/x'],
+    });
+    expect(r.stale).toBe(true);
   });
 });

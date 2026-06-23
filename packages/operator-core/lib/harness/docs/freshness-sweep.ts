@@ -96,6 +96,9 @@ export interface DriftDeps {
   runGit: GitRunner;
   repoRoot: string;
   resolveFeatureCommits?: FeatureCommitLookup;
+  /** Submodule roots (repo-relative). Anchors under a submodule are drift-checked
+   *  inside it against its own baseline (#3); omitted → superproject-only. */
+  submodulePaths?: string[];
 }
 
 /** Forward on-demand: recompute one doc's status from git right now. */

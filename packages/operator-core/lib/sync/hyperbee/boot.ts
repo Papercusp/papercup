@@ -320,6 +320,19 @@ export interface BootHarnessOpts {
    */
   loadRevokedOverride?: () => Promise<Set<string>>;
   /**
+   * Test seam (WI-559) — override the same-hive membership lookup. Production
+   * leaves this undefined and the real `loadHiveMemberDevicePubkeys(workspaceId,
+   * hiveHomeSlug, githubUserId)` (reads `hive_members` from PG) is used. Tests
+   * inject a pure async loader returning the member's registered device pubkeys
+   * so the same-hive cross-member admission AND the membership-miss → pending →
+   * retry-admit path can be exercised without a database. `workspaceId` is closed
+   * over by boot; the loader receives `(hiveHomeSlug, githubUserId)`.
+   */
+  loadHiveMembersOverride?: (
+    hiveHomeSlug: string,
+    githubUserId: number,
+  ) => Promise<string[]>;
+  /**
    * Slow re-verify interval (ms). At this cadence, every admitted peer's
    * channel-2 binding is re-checked via `verifyBinding`. A conclusive `'fail'`
    * drops the peer from the admitted set (but does NOT add it to the published
@@ -1454,6 +1467,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // `revoke()` below; the decider closes over the same Set instance.
     revoked,
   });
+
+  // WI-559: the same-hive membership lookup, captured once (test seam or the real
+  // PG-backed `loadHiveMemberDevicePubkeys`). Used by `resolveScope` for both the
+  // same-hive cross-member admit AND the membership-miss → pending → retry-admit
+  // path. Never throws (fail-closed to an empty member set → not-a-member → buffer).
+  const loadHiveMembers: (hiveHomeSlug: string, githubUserId: number) => Promise<string[]> =
+    opts.loadHiveMembersOverride ??
+    (async (hiveHomeSlug, githubUserId) => {
+      const { loadHiveMemberDevicePubkeys } = await import('../../hive-membership-store');
+      return loadHiveMemberDevicePubkeys(opts.workspaceId, hiveHomeSlug, githubUserId).catch(
+        () => [] as string[],
+      );
+    });
 
   /**
    * Admit (or reject) an inbound signed announce. Verifies the sig, runs the

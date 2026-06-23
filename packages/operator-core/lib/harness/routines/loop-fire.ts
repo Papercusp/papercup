@@ -28,6 +28,10 @@ import type { Sql } from 'postgres';
 import { checkFireGate as defaultCheckFireGate, recordFire as defaultRecordFire } from '../../autoloop';
 import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
+import {
+  checkLoopDeadMan as defaultCheckLoopDeadMan,
+  incrementLoopFireCount as defaultIncrementLoopFireCount,
+} from './loop-dead-man';
 
 /** The wake-turn text delivered when the loop's row carries no explicit kickoff. Mirrors the
  *  D-006 / B-LOOP-5 convention: each wake, create + SELF-ASSIGN this iteration's work_items
@@ -63,6 +67,8 @@ export interface LoopFireDeps {
   recordFire?: typeof defaultRecordFire;
   wake?: typeof defaultWakeRecipients;
   costCap?: typeof defaultCheckLoopCostCap;
+  deadMan?: typeof defaultCheckLoopDeadMan;
+  incrementFireCount?: typeof defaultIncrementLoopFireCount;
 }
 
 export interface LoopFireResult {

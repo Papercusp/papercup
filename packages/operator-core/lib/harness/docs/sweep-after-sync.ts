@@ -16,10 +16,10 @@ import { projectDirForSlug } from '../../operator-notes';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { relative } from 'node:path';
-import { runGit, repoHeadSha, repoChangedPaths } from './git-runner';
+import { runGit, repoHeadSha, repoChangedPaths, listSubmodulePaths } from './git-runner';
 import { makeFeatureCommitLookup } from './feature-commits';
-import { sweepHarnessDocs, type SweepResult } from './freshness-sweep';
-import { listDocRecords } from './doc-record';
+import { sweepHarnessDocs, recomputeDocStatus, type SweepResult } from './freshness-sweep';
+import { listDocRecords, setDocStatus } from './doc-record';
 import { resolveHarnessDocPaths } from './harness-repo';
 import { anchorManualDoc } from './manual-anchor';
 import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
@@ -63,6 +63,11 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   const repoRoot = await projectDirForSlug(harnessSlug);
   if (!repoRoot) return null;
 
+  // Submodule roots, so the drift checker routes a submodule anchor's `git log` into
+  // the submodule against its own baseline (#3) instead of a superproject log that
+  // can't see inside it (silent rot). Best-effort; [] = superproject-only behavior.
+  const submodulePaths = await listSubmodulePaths(repoRoot).catch(() => [] as string[]);
+
   // Derive the changed paths for the prefilter AND the self-bootstrap. prevSha==headSha
   // → nothing moved.
   let changedPaths: string[] | undefined;
@@ -91,13 +96,38 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
       if (paths) {
         const docsRel = relative(paths.repoRoot, paths.docsRoot);
         const prefix = docsRel && docsRel !== '.' ? docsRel.replace(/\/?$/, '/') : '';
+        const reanchorDeps = {
+          runGit,
+          repoRoot,
+          resolveFeatureCommits: makeFeatureCommitLookup(harnessSlug, workspaceId),
+          submodulePaths,
+        };
         for (const p of changedPaths) {
           if (!/\.(md|mdx)$/i.test(p)) continue;
           if (prefix && !p.startsWith(prefix)) continue;
           const docId = prefix ? p.slice(prefix.length) : p;
-          if (!docId || records.has(docId)) continue;
-          const res = await anchorManualDoc({ harnessSlug, docId, verify: true, workspaceId });
-          if (res.ok) records.set(docId, res.record);
+          if (!docId) continue;
+          if (!records.has(docId)) {
+            // NEW doc → register + set the verify baseline (page-by-page tracking growth).
+            const res = await anchorManualDoc({ harnessSlug, docId, verify: true, workspaceId });
+            if (res.ok) records.set(docId, res.record);
+            continue;
+          }
+          // TRACKED doc whose FILE changed this commit → its `documents:` frontmatter may
+          // have changed, so RE-DERIVE its anchors — the cache must never drift from the
+          // frontmatter (docs-audit #2; before this, anchors were only derived on the FIRST
+          // bootstrap, so a later `documents:` edit silently left a stale anchor cache and
+          // the sweep matched the wrong paths). anchorManualDoc (no verify) re-parses the
+          // frontmatter and upserts subject_ref/anchor_paths; the upsert COALESCEs
+          // last_verified_sha (baseline preserved). We then recompute status from the FRESH
+          // anchors so a pure-frontmatter edit doesn't stick at the transient 'review'
+          // anchorManualDoc writes for an un-verified anchor.
+          const res = await anchorManualDoc({ harnessSlug, docId, workspaceId });
+          if (res.ok) {
+            const { status, detail } = await recomputeDocStatus(res.record, reanchorDeps);
+            await setDocStatus(harnessSlug, docId, status, detail, workspaceId);
+            records.set(docId, { ...res.record, status, statusDetail: detail });
+          }
         }
       }
     } catch {
@@ -119,6 +149,7 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     repoRoot,
     runGit,
     changedPaths,
+    submodulePaths,
     resolveFeatureCommits: makeFeatureCommitLookup(harnessSlug, workspaceId),
     onRegenNeeded: async (doc, detail) => {
       staleDocs.push({ docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source });

@@ -20,7 +20,12 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
 
 const h = vi.hoisted(() => ({ url: '' }));
-vi.mock('../embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => h.url }));
+vi.mock('../embedded-pg-discovery', () => ({
+  getHarnessAdminUrl: () => h.url,
+  // storage.ts also resolves the admin URL via the with-source variant; the mock must expose
+  // it too or persistRunReport throws "No export getHarnessAdminUrlWithSource on the mock".
+  getHarnessAdminUrlWithSource: () => ({ url: h.url, source: 'test' }),
+}));
 
 const { persistRunReport, decompressTranscript } = await import('./storage');
 

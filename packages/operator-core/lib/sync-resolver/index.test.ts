@@ -4,7 +4,32 @@ import {
   isRegisteredV2,
   resolveNamedQueryV2,
   NAME_NOT_FOUND,
+  jsonSafeRows,
 } from './index';
+
+describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query serializer)', () => {
+  it('coerces a BigInt id so the row is JSON-serializable (the user_actions 500 class)', () => {
+    const out = jsonSafeRows([{ id: 42n, kind: 'tool', startedAt: 1700000000000 }]);
+    expect(out[0]).toEqual({ id: 42, kind: 'tool', startedAt: 1700000000000 });
+    expect(() => JSON.stringify(out)).not.toThrow();
+    expect(typeof (out[0] as { id: unknown }).id).toBe('number');
+  });
+
+  it('coerces every BigInt field, not just id', () => {
+    const out = jsonSafeRows([{ id: 1n, count: 9n, name: 'x' }]) as Array<Record<string, unknown>>;
+    expect(out[0]).toEqual({ id: 1, count: 9, name: 'x' });
+  });
+
+  it('returns the same row object untouched when there is no BigInt (no hot-path alloc)', () => {
+    const row = { id: 7, kind: 'view' };
+    const out = jsonSafeRows([row]);
+    expect(out[0]).toBe(row);
+  });
+
+  it('passes through non-object rows', () => {
+    expect(jsonSafeRows(['a', 3, null])).toEqual(['a', 3, null]);
+  });
+});
 
 describe('sync-resolver v2 registry', () => {
   describe('knownQueryNamesV2', () => {

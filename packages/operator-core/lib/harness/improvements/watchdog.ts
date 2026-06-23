@@ -61,6 +61,12 @@ export type WatchdogSource =
   | 'migration-drift' | 'routine-failure' | 'stuck-plan' | 'failed-spawn' | 'expired-lease' | 'unresolved-escalation'
   // a role fire-path in error-backoff (autoloop_state.consecutive_errors):
   | 'fire-circuit-open'
+  // an engine LOOP (loop:arm) parked at 'infinity' far past its fire with NO completion
+  // marker + no session activity — its wake turn likely died silently (e.g. a 429 during a
+  // rate-limit storm) and only the ≥30min stuck-park backstop will recover it. The early,
+  // visible signal for the loop-wake-rate-limit-robustness class (P1b — agent-insights/
+  // loop-wake-turn-deaths-recorded-as-delivered):
+  | 'loop-stalled'
   // an ACTIVE agent-insight runbook citing repo files that no longer exist
   // (learning-system-audit P-051 — insight-staleness.ts):
   | 'insight-staleness'
@@ -1024,6 +1030,76 @@ export async function collectRoutineFailureSignals(sql: Sql): Promise<WatchdogSi
   return routineFailureSignalsFromRows(rows);
 }
 
+interface LoopStalledRow {
+  id: string;
+  name: string;
+  install_slug: string;
+  target_owner_id: string;
+  interval_sec: number;
+  parked_secs: number;
+}
+/** Pure: loop-stalled rows → signals (one per stalled loop, keyed by install_slug:name). */
+export function loopStalledSignalsFromRows(rows: LoopStalledRow[]): WatchdogSignal[] {
+  return rows.map((r) => {
+    const mins = Math.round(r.parked_secs / 60);
+    return {
+      source: 'loop-stalled' as const,
+      key: `loop-stalled:${r.install_slug}:${r.name}`,
+      title: `Engine loop ${r.name} stalled (parked, no completion)`,
+      body:
+        `Watchdog signal (loop-stalled): loop '${r.name}' (owner ${r.target_owner_id}, harness ${r.install_slug}, ` +
+        `interval ${r.interval_sec}s) has been parked at 'infinity' for ~${mins}min with NO post-fire completion ` +
+        `marker and no session activity. Its re-wake turn likely DIED silently (the classic case: a 429 during an ` +
+        `account-wide rate-limit storm killed the detached resume turn) — the delivery was recorded 'delivered' on ` +
+        `spawn, so nothing observed the death. Only the ≥30min stuck-park backstop will recover it. ` +
+        `See agent-insights/loop-wake-turn-deaths-recorded-as-delivered.`,
+      severity: 'major' as const,
+      kind: 'bug' as const,
+      // Origin scope (P-032): a loop belongs to ONE harness (its install_slug).
+      scope: `harness:${r.install_slug}`,
+    };
+  });
+}
+
+/**
+ * loop-stalled (P1b): an engine loop (loop:arm — `reschedule_interval_sec` + `target_owner_id`)
+ * parked at 'infinity' (its turn in flight) for ≥ max(30min, 4×interval) past its fire, with NO
+ * post-fire lifecycle 'ended' marker AND no genuine session activity since the fire — i.e. its
+ * wake turn died/never-delivered, not a legitimately long turn (which keeps producing activity).
+ * The same predicate the reconcile stuck-park backstop recovers on; here it is SURFACED as a
+ * visible signal (the doc's P1b — the loop otherwise goes quiet with no observability). Read-only
+ * + conservative.
+ */
+export async function collectLoopStalledSignals(sql: Sql, stuckParkSec = 1800): Promise<WatchdogSignal[]> {
+  const rows = await sql<LoopStalledRow[]>`
+    SELECT r.id,
+           r.name,
+           r.install_slug,
+           r.target_owner_id,
+           r.reschedule_interval_sec AS interval_sec,
+           EXTRACT(EPOCH FROM (now() - r.last_fired_at))::float8 AS parked_secs
+      FROM harness_shared.routines r
+     WHERE r.active = true
+       AND r.reschedule_interval_sec IS NOT NULL
+       AND r.target_owner_id IS NOT NULL
+       AND r.next_fire_at = 'infinity'::timestamptz
+       AND r.last_fired_at IS NOT NULL
+       AND r.last_fired_at < now() - make_interval(secs => GREATEST(${stuckParkSec}::int, 4 * r.reschedule_interval_sec))
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.agent_activity a
+          WHERE a.owner_id = r.target_owner_id
+            AND a.kind = 'lifecycle'
+            AND a.summary ILIKE '%end%'
+            AND a.created_at > r.last_fired_at)
+       AND COALESCE(
+             (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p WHERE p.owner_id = r.target_owner_id),
+             'epoch'::timestamptz
+           ) <= r.last_fired_at
+     ORDER BY r.last_fired_at ASC
+     LIMIT 20`;
+  return loopStalledSignalsFromRows(rows);
+}
+
 interface StuckPlanRow { harness_slug: string; plan_slug: string; status: string; stale_hours: number }
 /** Pure: stuck-plan rows → signals. */
 export function stuckPlanSignalsFromRows(rows: StuckPlanRow[]): WatchdogSignal[] {
@@ -1703,6 +1779,9 @@ export async function defaultPapercuspCollectors(
     { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql, opts) },
     { name: 'papercusp-unresolved-escalation', collect: () => collectEscalationSignals(getOrgPg().sql, workspaceId) },
     { name: 'papercusp-fire-circuit-open', collect: () => collectCircuitOpenSignals(getOrgPg().sql, workspaceId) },
+    // loop-wake-rate-limit-robustness P1b: an engine loop parked-stalled with a dead/undelivered
+    // wake turn (the early, visible signal before the ≥30min stuck-park backstop recovers it).
+    { name: 'papercusp-loop-stalled', collect: () => collectLoopStalledSignals(getOrgPg().sql) },
     // Hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
     // liveness (stalled dispatchable work), hygiene (reclaim non-execution),
     // safety (systematic ESCALATE volume).

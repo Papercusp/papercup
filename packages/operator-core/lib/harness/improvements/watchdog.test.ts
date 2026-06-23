@@ -13,6 +13,7 @@ import {
   rollupWatchdogTicks,
   collectMigrationDriftSignals,
   routineFailureSignalsFromRows,
+  loopStalledSignalsFromRows,
   stuckPlanSignalsFromRows,
   escalationSignalsFromRows,
   circuitOpenSignalsFromRows,
@@ -398,6 +399,19 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals.map((s) => s.key)).toEqual(['routine:git-sync']);
     expect(signals[0].severity).toBe('major');
     expect(signals[0].body).toContain('oversized blob');
+  });
+
+  it('loop-stalled (P1b): one signal per parked-dead loop, harness-scoped, citing the runbook', () => {
+    const signals = loopStalledSignalsFromRows([
+      { id: 'rt-1', name: 'loop-su-x', install_slug: 'papercusp', target_owner_id: 'su-x', interval_sec: 120, parked_secs: 2400 },
+    ]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].source).toBe('loop-stalled');
+    expect(signals[0].key).toBe('loop-stalled:papercusp:loop-su-x');
+    expect(signals[0].body).toContain('~40min'); // 2400s
+    expect(signals[0].body).toContain('loop-wake-turn-deaths-recorded-as-delivered');
+    expect(signals[0].kind).toBe('bug');
+    expect(signals[0].scope).toBe('harness:papercusp');
   });
 
   it('stuck-plan: one signal per stuck plan, keyed by harness+plan', () => {

@@ -518,13 +518,14 @@ describe('tools/list — strict-mode listing matrix', () => {
     expect(h.handlers.has('tools/call')).toBe(true);
   });
 
-  it('a spawn URL that FAILS signature verification gets an EMPTY list (mirrors tools/call)', async () => {
+  it('a spawn URL that FAILS signature verification throws a LOUD auth error, not a silent empty list (WI-574)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       h.verifySpawnParams.mockResolvedValueOnce({ ok: false, reason: 'expired' });
-      const res = await listTools(extraFor(signedUrl()));
-      expect(res.tools).toEqual([]);
-      // The failure is audited, not silent.
+      // WI-574: a rejected auth ctx no longer silently lists zero tools (which looked like a
+      // healthy-but-empty server) — tools/list throws mcp_auth_failed with the reason.
+      await expect(listTools(extraFor(signedUrl()))).rejects.toThrow(/mcp_auth_failed.*spawn_sig_expired/);
+      // The failure is still audited (before the throw), not silent.
       expect(h.logVerificationFailure).toHaveBeenCalledTimes(1);
       expect(h.logVerificationFailure.mock.calls[0][0]).toMatchObject({
         reason: 'expired',
@@ -539,14 +540,15 @@ describe('tools/list — strict-mode listing matrix', () => {
     }
   });
 
-  it('?superuser=1 from a NON-loopback host is a failed ctx → empty list (real isLoopbackRequest)', async () => {
-    const res = await listTools(
-      extraFor(`${MCP}?superuser=1`, {
-        host: 'evil.example.com',
-        authorization: 'Bearer test-su-bearer',
-      }),
-    );
-    expect(res.tools).toEqual([]);
+  it('?superuser=1 from a NON-loopback host is a failed ctx → throws loud auth error (WI-574, real isLoopbackRequest)', async () => {
+    await expect(
+      listTools(
+        extraFor(`${MCP}?superuser=1`, {
+          host: 'evil.example.com',
+          authorization: 'Bearer test-su-bearer',
+        }),
+      ),
+    ).rejects.toThrow(/mcp_auth_failed.*superuser_non_loopback/);
   });
 
   it('a verified role-scoped caller sees ONLY tools its role admits', async () => {

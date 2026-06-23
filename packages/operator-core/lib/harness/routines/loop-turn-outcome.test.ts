@@ -117,6 +117,7 @@ describe('computeDeathRearmMs (P1a — 429-aware re-arm)', () => {
 
 describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn)', () => {
   it('a 429 DEATH on a loop wake records an error + re-arms the parked loop', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // the handler logs the observed death (expected)
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
     const recordFire = vi.fn(async () => {});
     const res = await handleLoopResumeTurnExit(loopDelivery(), deathRaw(), { sql: sql as never, recordFire });
