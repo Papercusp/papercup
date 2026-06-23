@@ -75,6 +75,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_registry': ['harnessProjects.lite', 'network.board'],
   // ── Per-harness HYPERBEE-bucket tables ────────────────────────────
   'harness_shared.harness_text_artifacts': ['harnessTextArtifact.byHarness'],
+  // harness_design_artifacts backs the Design tab's sketch pane (designSketches.byFeature).
+  // Trigger attached in mig 380 (data-sync-push-completion P-003) so a sketch save — POST
+  // /api/design/sketches, raw SQL, or a FEDERATED git-doc write — pushes the pane live.
+  'harness_shared.harness_design_artifacts': ['designSketches.byFeature'],
   'harness_shared.harness_project_files': ['harnessProjectFiles.byHarness'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
@@ -153,6 +157,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.work_items': [
     'featuresConsolidated.bySlug',
     'featuresConsolidated.byPlanSlug',
+    // designFeatures.byHarness (data-sync-push-completion P-003) — the Design dashboard's
+    // "features needing design" list reads work_items (needs_design / design_status /
+    // design_spec_id columns) via harness_features_consolidated. A design-state flip on a
+    // feature lands on work_items + fires work_items.changed, so the dashboard push-updates
+    // instead of going stale until interaction.
+    'designFeatures.byHarness',
     // featuresConsolidated.byHive (WI-259 P-006) — the cross-member rollup. A
     // FEDERATED content write lands on work_items under the AUTHOR member's slug and
     // fires work_items.changed (emit_change_notify), so a peer member's new/edited
@@ -172,6 +182,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'featuresConsolidated.byHive',
     'workItems.byHarness',
     'scheduler.running',
+    // designFeatures.byHarness (P-003) — documentary mirror of the work_items producer
+    // above; this key is a compat VIEW (COVERAGE_EXEMPT) so the real .changed comes from
+    // work_items, but listing it keeps the two arrays in sync.
+    'designFeatures.byHarness',
   ],
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   // engineer_issues = the issue-family compat view over work_items (post-374; the base
