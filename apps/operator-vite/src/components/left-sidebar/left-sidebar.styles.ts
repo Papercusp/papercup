@@ -495,7 +495,6 @@ body.has-left-sidebar .pc-header {
   font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--fg-mute, #7f9bb4);
 }
 .pclsb-expand__head:first-child {
